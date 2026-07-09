@@ -1012,12 +1012,18 @@ async fn start_hermes_bridge_inner(
         None
     };
     let june_recorder_mcp = sync_june_recorder_mcp(app, &command)?;
+    // Resolved from the live catalog so Hermes' vision tools attach an image
+    // straight to a vision-capable model's context instead of falling back to
+    // the (unconfigured) auxiliary vision LLM. `provider: custom` hides the
+    // capability from Hermes, so June has to declare it via config.
+    let supports_vision = crate::providers::generation_model_supports_vision().await;
     sync_hermes_config(
         app,
         &hermes_home,
         provider_proxy.port,
         &provider_proxy.token,
         &provider_proxy.recorder_token,
+        supports_vision,
         &june_context_mcp,
         &june_web_mcp,
         &june_image_mcp,
@@ -6658,6 +6664,7 @@ fn sync_hermes_config(
     provider_proxy_port: u16,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
+    supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
@@ -6669,6 +6676,7 @@ fn sync_hermes_config(
         provider_proxy_port,
         provider_proxy_token,
         recorder_proxy_token,
+        supports_vision,
         june_context_mcp,
         june_web_mcp,
         june_image_mcp,
@@ -6684,6 +6692,7 @@ fn sync_hermes_config_with_external_dirs(
     provider_proxy_port: u16,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
+    supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
@@ -6698,6 +6707,7 @@ fn sync_hermes_config_with_external_dirs(
         effective_external_skill_dirs_from_config(&config_path, default_external_skill_dirs);
     let config = render_hermes_config(
         &model,
+        supports_vision,
         &base_url,
         provider_proxy_token,
         recorder_proxy_token,
@@ -6884,6 +6894,7 @@ fn external_skill_dir_identity(dir: &Path, relative_base: Option<&Path>) -> Path
 #[allow(clippy::too_many_arguments)]
 fn render_hermes_config(
     model: &str,
+    supports_vision: bool,
     base_url: &str,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
@@ -6913,6 +6924,7 @@ fn render_hermes_config(
   base_url: {base_url}
   api_key: {provider_proxy_token}
   api_mode: chat_completions
+  supports_vision: {supports_vision}
 agent:
   max_turns: 90
 display:
@@ -10528,6 +10540,7 @@ mcp_servers:
 
         let rendered = render_hermes_config(
             "new-model",
+            false,
             "http://127.0.0.1:9/v1",
             "new-token",
             "recorder-token",
@@ -10766,6 +10779,7 @@ mcp_servers:
             4242,
             "proxy-token",
             "recorder-proxy-token",
+            false,
             &test_june_context_mcp_config(),
             &test_june_web_mcp_config(),
             &test_june_image_mcp_config(),
@@ -10810,6 +10824,7 @@ mcp_servers:
         ];
         let config = render_hermes_config(
             "glm",
+            false,
             "http://127.0.0.1:9/v1",
             "tok",
             "recorder-tok",
@@ -10845,6 +10860,7 @@ mcp_servers:
     fn render_hermes_config_emits_empty_external_dirs_when_none() {
         let config = render_hermes_config(
             "glm",
+            false,
             "http://127.0.0.1:9/v1",
             "tok",
             "recorder-tok",
@@ -10902,6 +10918,7 @@ mcp_servers:
         let recorder = test_june_recorder_mcp_config();
         let config = render_hermes_config(
             "glm",
+            false,
             "http://127.0.0.1:9/v1",
             "proxy-tok",
             "recorder-proxy-tok",
@@ -10965,6 +10982,7 @@ mcp_servers:
         let image = test_june_image_mcp_config();
         let config = render_hermes_config(
             "glm",
+            false,
             "http://127.0.0.1:9/v1",
             "proxy-tok",
             "recorder-proxy-tok",
@@ -10991,6 +11009,7 @@ mcp_servers:
     fn render_hermes_config_emits_empty_mcp_servers_without_configs() {
         let config = render_hermes_config(
             "glm",
+            false,
             "http://127.0.0.1:9/v1",
             "tok",
             "recorder-tok",
@@ -11006,6 +11025,50 @@ mcp_servers:
         );
 
         assert!(config.contains("mcp_servers: {}\n"));
+    }
+
+    #[test]
+    fn render_hermes_config_declares_model_vision_support() {
+        // `provider: custom` hides vision capability from Hermes, so the
+        // `supports_vision` override is what lets its vision tools attach an
+        // image straight to a vision-capable model instead of the unconfigured
+        // auxiliary vision LLM. Render it explicitly for BOTH values so a merge
+        // over a prior spawn's config never leaves a stale one behind.
+        let vision = render_hermes_config(
+            "kimi",
+            true,
+            "http://127.0.0.1:9/v1",
+            "proxy-token",
+            "recorder-proxy-token",
+            "web, memory",
+            &[],
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+                recorder: None,
+            },
+        );
+        assert!(vision.contains("  supports_vision: true\n"));
+
+        let no_vision = render_hermes_config(
+            "glm",
+            false,
+            "http://127.0.0.1:9/v1",
+            "proxy-token",
+            "recorder-proxy-token",
+            "web, memory",
+            &[],
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+                recorder: None,
+            },
+        );
+        assert!(no_vision.contains("  supports_vision: false\n"));
     }
 
     #[test]
@@ -11302,6 +11365,7 @@ mcp_servers:
             4242,
             "proxy-token",
             "recorder-proxy-token",
+            false,
             &mcp,
             &web,
             &image,

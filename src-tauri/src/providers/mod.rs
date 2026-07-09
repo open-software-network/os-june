@@ -366,6 +366,43 @@ fn context_tokens_cache() -> &'static Mutex<Option<(String, i64)>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+/// Whether the configured generation model reports vision (image input) support
+/// in the backend catalog. Hermes' vision tools only take the native fast path
+/// (attach the image straight to the model's context) for providers they
+/// recognize OR when `model.supports_vision` is set in `config.yaml`; June's
+/// proxy is `provider: custom`, so that override is the only signal, and the
+/// spawn path resolves it here (see `render_hermes_config`). Returns `false`
+/// when the catalog is unreachable (offline, signed out) or the model reports no
+/// vision capability — the conservative default keeps the prior behavior, where
+/// Hermes falls back to its (unconfigured) auxiliary vision LLM.
+pub async fn generation_model_supports_vision() -> bool {
+    if generation_provider() == PROVIDER_LOCAL {
+        return false;
+    }
+    let model_id = generation_model();
+    let Ok(models) = crate::june_api::list_models(ModelMode::Generation.api_type()).await else {
+        return false;
+    };
+    models
+        .into_iter()
+        .find(|model| model.id == model_id)
+        .is_some_and(|model| capabilities_include_vision(&model.capabilities))
+}
+
+/// Mirrors the frontend `modelSupportsImageInput`: key off the authoritative
+/// `capabilities` list (never `traits`), matching the normalized `supportsVision`
+/// name so a rename to snake_case still resolves.
+fn capabilities_include_vision(capabilities: &[String]) -> bool {
+    capabilities.iter().any(|capability| {
+        let normalized: String = capability
+            .chars()
+            .filter(char::is_ascii_alphabetic)
+            .map(|ch| ch.to_ascii_lowercase())
+            .collect();
+        normalized.contains("supportsvision")
+    })
+}
+
 // Legacy name kept for callers we haven't migrated yet.
 pub fn venice_generation_model() -> String {
     generation_model()
@@ -1355,6 +1392,20 @@ impl ModelMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capabilities_include_vision_matches_normalized_supports_vision() {
+        // Mirrors the frontend `modelSupportsImageInput`: normalize (lowercase,
+        // strip non-letters) then match `supportsvision`, so a rename to
+        // snake_case still resolves. Never keys off marketing `traits`.
+        assert!(capabilities_include_vision(&["supportsVision".to_string()]));
+        assert!(capabilities_include_vision(&[
+            "supportsTools".to_string(),
+            "supports_vision".to_string(),
+        ]));
+        assert!(!capabilities_include_vision(&["supportsTools".to_string()]));
+        assert!(!capabilities_include_vision(&[]));
+    }
 
     #[test]
     fn model_mode_deserializes_canonical_values() {
