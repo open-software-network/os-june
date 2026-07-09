@@ -14,6 +14,7 @@ pub mod venice;
 pub mod venice_augment;
 pub mod venice_image;
 pub mod venice_image_edit;
+pub mod venice_video;
 pub mod wav_probe;
 
 mod retry;
@@ -35,4 +36,5 @@ pub use venice::{
 pub use venice_augment::VeniceAugment;
 pub use venice_image::VeniceImageGenerator;
 pub use venice_image_edit::VeniceImageEditor;
+pub use venice_video::VeniceVideoProvider;
 pub use wav_probe::{ProbeError, WavDurationProbe};

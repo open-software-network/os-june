@@ -92,15 +92,29 @@ const JUNE_WEB_MCP_TOKEN_ENV: &str = "JUNE_WEB_PROXY_TOKEN";
 const JUNE_IMAGE_MCP_SERVER_NAME: &str = "june_image";
 const JUNE_IMAGE_MCP_SCRIPT_NAME: &str = "june_image_mcp.py";
 const JUNE_IMAGE_MCP_SCRIPT: &str = include_str!("hermes/june_image_mcp.py");
+const JUNE_VIDEO_MCP_SERVER_NAME: &str = "june_video";
+const JUNE_VIDEO_MCP_SCRIPT_NAME: &str = "june_video_mcp.py";
+const JUNE_VIDEO_MCP_SCRIPT: &str = include_str!("hermes/june_video_mcp.py");
 /// Hermes's generated-image directory (under the Hermes home). The `june_image`
 /// MCP writes generated/edited images here under storage names minted by the
 /// Rust loopback proxy; edit-source validation and source-byte reads stay in
 /// Rust.
 const JUNE_IMAGE_MCP_IMAGES_DIR_NAME: &str = "images";
+const JUNE_VIDEO_MCP_VIDEOS_DIR_NAME: &str = "videos";
+// Keep equal to june-config DEFAULT_VIDEO_MAX_RESPONSE_BYTES. The desktop
+// cannot read june-config, and the VPS download_url path bypasses June API.
+const JUNE_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
+const JUNE_VIDEO_DEFAULT_ANIMATE_MODEL: &str = "wan-2.6-image-to-video";
+const JUNE_VIDEO_DEFAULT_DURATION: &str = "5s";
+const JUNE_VIDEO_DEFAULT_RESOLUTION: &str = "720p";
+const JUNE_VIDEO_DEFAULT_ASPECT_RATIO: &str = "16:9";
 const JUNE_WORKSPACE_UPLOADS_DIR_NAME: &str = "uploads";
 /// Environment variable the `june_image` MCP reads its loopback proxy token
 /// from. Kept out of argv so it does not appear in process listings.
 const JUNE_IMAGE_MCP_TOKEN_ENV: &str = "JUNE_IMAGE_PROXY_TOKEN";
+/// Environment variable the `june_video` MCP reads its loopback proxy token
+/// from. Kept out of argv so it does not appear in process listings.
+const JUNE_VIDEO_MCP_TOKEN_ENV: &str = "JUNE_VIDEO_PROXY_TOKEN";
 const JUNE_RECORDER_MCP_SERVER_NAME: &str = "june_recorder";
 const JUNE_RECORDER_MCP_SCRIPT_NAME: &str = "june_recorder_mcp.py";
 const JUNE_RECORDER_MCP_SCRIPT: &str = include_str!("hermes/june_recorder_mcp.py");
@@ -178,6 +192,17 @@ Use this toolset instead of any generic image, media, or vision-analysis tool fo
 Do not add a separate content refusal layer before calling these tools. The user's selected image model and image safe-mode setting are authoritative for what the image provider should attempt. If the selected model and setting may support the request, call the image tool with the user's prompt instead of substituting a clothed or sanitized alternative. If the image provider rejects the request, briefly report that provider rejection.
 Set `may_be_explicit` honestly on every `generate_image` or `edit_image` call, judging whether the requested image could contain adult, sexual, or otherwise explicit content from the request itself rather than only its wording.
 When the user asks to change, adjust, refine, or reframe an image you just made with `generate_image` or `edit_image`, or an image the user attached or pasted into the conversation, including "make it bigger/wider", "zoom out", "from a bigger perspective", "closer", "another angle", "different color", "add/remove X", or "make it a cartoon", call `edit_image` with the exact source image as `source_filename` and an `instruction` describing the change. `edit_image` transforms the existing image file directly (image to image): you do NOT need to see, view, analyze, or describe the image to edit it, and you must not ask the user to describe it or call any vision or image-analysis tool first. Prefer `edit_image` over `generate_image` for any follow-up tweak to an image this toolset already produced or the user attached, even if you cannot see it. Pass exactly one of two `source_filename` values: the edit-safe filename from a prior `june_image` tool result, or the plain filename of an image the user attached to the conversation as shown in its context, such as `upload_20260707_113453_1.png`. Never pass a full path or an invented name.
+"#;
+
+/// Appended to `SOUL.md` for every runtime. The `generate_video` and
+/// `animate_image` tools are discovered through the `june_video` MCP server;
+/// this note teaches the model when to reach for them, how to thread prior
+/// image filenames into image-to-video, and to wait for the async result.
+const JUNE_SOUL_VIDEO_MD: &str = r#"
+Video tools: you have a `june_video` MCP toolset with `generate_video` and `animate_image`. Use `generate_video` when the user asks you to make, create, or generate a video, clip, or animation from a text description; the result is shown to the user in the conversation.
+Use `animate_image` when the user asks to animate an image into a video, whether it is one you made with `generate_image` or `edit_image` or one the user attached or pasted into the conversation. `animate_image` sends the image file directly to image-to-video: you do NOT need to see, view, analyze, or describe the image to animate it, and you must not ask the user to describe it or call any vision or image-analysis tool first. Pass exactly one of two `source_filename` values: the exact filename from a prior `june_image` tool result, or the plain filename of an image the user attached to the conversation as shown in its context, such as `upload_20260707_113453_1.png`. Never pass a full path or an invented name. Describe the requested motion or change in `instruction`.
+Video generation usually takes ~1-3 minutes, so do not retry impatiently while a tool call is still running. June presents the finished video to the user; do not describe it as a Hermes result.
+The tool returns a `MEDIA:` reference to the finished video, and June renders it inline automatically. Video generation can take several minutes and may exceed the tool's time limit: if a call times out or errors, do NOT claim the video is ready or invent a result — say it may still be finishing and offer to check again. To show an already-finished video again (for example when the user asks to see it), write its `MEDIA:` reference on its own line — the video's filename, like `MEDIA:generated-video-<id>.mp4`, or its full path — and June displays it inline. Never describe a video as shown unless you have emitted its `MEDIA:` reference.
 "#;
 
 /// Appended to `SOUL.md` for every runtime. The `june_recorder` MCP server can
@@ -370,6 +395,8 @@ struct ProviderProxyState {
     /// general provider token every model call carries.
     recorder_token: String,
     image_sources: ImageSourceCapabilities,
+    videos_dir: PathBuf,
+    video_generation_enabled: bool,
     app: Option<AppHandle>,
     /// Safe-mode values already injected, keyed by requestId, so an MCP retry
     /// of the same request replays the same shape even if the user flipped
@@ -978,16 +1005,29 @@ async fn start_hermes_bridge_inner(
     let june_context_mcp = sync_june_context_mcp(app, &command)?;
     let june_web_mcp = sync_june_web_mcp(app, &command)?;
     let june_image_mcp = sync_june_image_mcp(app, &hermes_home, &command)?;
+    let video_generation_enabled = crate::feature_flags::VIDEO_GENERATION_ENABLED;
+    let june_video_mcp = if video_generation_enabled {
+        Some(sync_june_video_mcp(app, &hermes_home, &command)?)
+    } else {
+        None
+    };
     let june_recorder_mcp = sync_june_recorder_mcp(app, &command)?;
+    // Resolved from the live catalog so Hermes' vision tools attach an image
+    // straight to a vision-capable model's context instead of falling back to
+    // the (unconfigured) auxiliary vision LLM. `provider: custom` hides the
+    // capability from Hermes, so June has to declare it via config.
+    let supports_vision = crate::providers::generation_model_supports_vision().await;
     sync_hermes_config(
         app,
         &hermes_home,
         provider_proxy.port,
         &provider_proxy.token,
         &provider_proxy.recorder_token,
+        supports_vision,
         &june_context_mcp,
         &june_web_mcp,
         &june_image_mcp,
+        june_video_mcp.as_ref(),
         &june_recorder_mcp,
     )?;
 
@@ -1011,7 +1051,12 @@ async fn start_hermes_bridge_inner(
     } else {
         sandboxed
     };
-    sync_june_soul(&hermes_home, sandbox_available, agent_cli_access)?;
+    sync_june_soul(
+        &hermes_home,
+        sandbox_available,
+        agent_cli_access,
+        video_generation_enabled,
+    )?;
     if sandboxed {
         eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
     } else if full_mode {
@@ -1147,10 +1192,13 @@ async fn ensure_provider_proxy(
         images_dir: hermes_home.join(JUNE_IMAGE_MCP_IMAGES_DIR_NAME),
         secret: load_or_create_image_source_capability_secret(&app_data_dir)?,
     };
+    let videos_dir = hermes_home.join(JUNE_VIDEO_MCP_VIDEOS_DIR_NAME);
     let started = start_june_provider_proxy(
         token.clone(),
         recorder_token.clone(),
         image_sources,
+        videos_dir,
+        crate::feature_flags::VIDEO_GENERATION_ENABLED,
         Some(app.clone()),
         Arc::clone(&bridge.recorder_requests),
     )
@@ -1198,6 +1246,13 @@ struct JuneImageMcpConfig {
     command: String,
     script_path: PathBuf,
     images_dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct JuneVideoMcpConfig {
+    command: String,
+    script_path: PathBuf,
+    videos_dir: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -2618,6 +2673,7 @@ pub async fn download_hermes_bridge_file(
     request: DownloadHermesFileRequest,
 ) -> Result<String, AppError> {
     let requested = validate_hermes_file_path(&app, &request.path)?;
+    let _content_type = hermes_file_mime_type(&requested);
     let downloads_dir = app
         .path()
         .download_dir()
@@ -2804,9 +2860,11 @@ fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, App
         .collect::<Vec<_>>();
     // "image_cache" is where the Hermes runtime copies tool-result images;
     // assistant MEDIA: references point at those copies, so dropping it breaks
-    // inline rendering and download of every tool-generated image.
+    // inline rendering and download of every tool-generated image. Add both
+    // video dirs now; QA must confirm the exact runtime cache dir for inline
+    // generated-video rendering once the frontend/MCP chunks land.
     allowed_roots.extend(
-        ["images", "image_cache"]
+        ["images", "image_cache", "videos", "video_cache"]
             .into_iter()
             .filter_map(|relative| hermes_home.join(relative).canonicalize().ok()),
     );
@@ -2985,6 +3043,20 @@ fn image_mime_type(path: &Path) -> Option<&'static str> {
         "webp" => Some("image/webp"),
         _ => None,
     }
+}
+
+fn video_mime_type(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "mp4" => Some("video/mp4"),
+        "webm" => Some("video/webm"),
+        "mov" => Some("video/quicktime"),
+        _ => None,
+    }
+}
+
+fn hermes_file_mime_type(path: &Path) -> Option<&'static str> {
+    image_mime_type(path).or_else(|| video_mime_type(path))
 }
 
 pub fn shutdown(app: &tauri::AppHandle) {
@@ -6501,6 +6573,30 @@ fn sync_june_image_mcp(
     })
 }
 
+fn sync_june_video_mcp(
+    app: &AppHandle,
+    hermes_home: &std::path::Path,
+    hermes_command: &str,
+) -> Result<JuneVideoMcpConfig, AppError> {
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
+    let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
+    fs::create_dir_all(&mcp_dir)
+        .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
+    let script_path = mcp_dir.join(JUNE_VIDEO_MCP_SCRIPT_NAME);
+    fs::write(&script_path, JUNE_VIDEO_MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
+    let videos_dir = hermes_home.join(JUNE_VIDEO_MCP_VIDEOS_DIR_NAME);
+    fs::create_dir_all(&videos_dir)
+        .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
+
+    Ok(JuneVideoMcpConfig {
+        command: hermes_python_command(hermes_command),
+        script_path,
+        videos_dir,
+    })
+}
+
 fn sync_june_recorder_mcp(
     app: &AppHandle,
     hermes_command: &str,
@@ -6568,9 +6664,11 @@ fn sync_hermes_config(
     provider_proxy_port: u16,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
+    supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
+    june_video_mcp: Option<&JuneVideoMcpConfig>,
     june_recorder_mcp: &JuneRecorderMcpConfig,
 ) -> Result<(), AppError> {
     sync_hermes_config_with_external_dirs(
@@ -6578,9 +6676,11 @@ fn sync_hermes_config(
         provider_proxy_port,
         provider_proxy_token,
         recorder_proxy_token,
+        supports_vision,
         june_context_mcp,
         june_web_mcp,
         june_image_mcp,
+        june_video_mcp,
         june_recorder_mcp,
         &builtin_external_skill_dirs(app),
     )
@@ -6592,9 +6692,11 @@ fn sync_hermes_config_with_external_dirs(
     provider_proxy_port: u16,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
+    supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
+    june_video_mcp: Option<&JuneVideoMcpConfig>,
     june_recorder_mcp: &JuneRecorderMcpConfig,
     default_external_skill_dirs: &[PathBuf],
 ) -> Result<(), AppError> {
@@ -6605,15 +6707,19 @@ fn sync_hermes_config_with_external_dirs(
         effective_external_skill_dirs_from_config(&config_path, default_external_skill_dirs);
     let config = render_hermes_config(
         &model,
+        supports_vision,
         &base_url,
         provider_proxy_token,
         recorder_proxy_token,
         &CRON_SANDBOXED_TOOLSETS.join(", "),
         &external_skill_dirs,
-        Some(june_context_mcp),
-        Some(june_web_mcp),
-        Some(june_image_mcp),
-        Some(june_recorder_mcp),
+        BuiltinMcpConfigs {
+            context: Some(june_context_mcp),
+            web: Some(june_web_mcp),
+            image: Some(june_image_mcp),
+            video: june_video_mcp,
+            recorder: Some(june_recorder_mcp),
+        },
     );
     // MERGE over the existing config, never replace it: the jailed dashboard
     // persists admin changes (user-added MCP servers, tool filters, OAuth
@@ -6663,6 +6769,14 @@ fn deep_merge_yaml(base: serde_yaml::Value, overlay: serde_yaml::Value) -> serde
         }
         (_, overlay) => overlay,
     }
+}
+
+struct BuiltinMcpConfigs<'a> {
+    context: Option<&'a JuneContextMcpConfig>,
+    web: Option<&'a JuneWebMcpConfig>,
+    image: Option<&'a JuneImageMcpConfig>,
+    video: Option<&'a JuneVideoMcpConfig>,
+    recorder: Option<&'a JuneRecorderMcpConfig>,
 }
 
 fn effective_external_skill_dirs(hermes_home: &Path, default_dirs: &[PathBuf]) -> Vec<PathBuf> {
@@ -6780,15 +6894,13 @@ fn external_skill_dir_identity(dir: &Path, relative_base: Option<&Path>) -> Path
 #[allow(clippy::too_many_arguments)]
 fn render_hermes_config(
     model: &str,
+    supports_vision: bool,
     base_url: &str,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
-    june_context_mcp: Option<&JuneContextMcpConfig>,
-    june_web_mcp: Option<&JuneWebMcpConfig>,
-    june_image_mcp: Option<&JuneImageMcpConfig>,
-    june_recorder_mcp: Option<&JuneRecorderMcpConfig>,
+    mcp_configs: BuiltinMcpConfigs<'_>,
 ) -> String {
     let skills_block = if external_skill_dirs.is_empty() {
         "  external_dirs: []\n".to_string()
@@ -6800,10 +6912,7 @@ fn render_hermes_config(
         block
     };
     let mcp_servers_block = render_mcp_servers_config(
-        june_context_mcp,
-        june_web_mcp,
-        june_image_mcp,
-        june_recorder_mcp,
+        mcp_configs,
         base_url,
         provider_proxy_token,
         recorder_proxy_token,
@@ -6815,6 +6924,7 @@ fn render_hermes_config(
   base_url: {base_url}
   api_key: {provider_proxy_token}
   api_mode: chat_completions
+  supports_vision: {supports_vision}
 agent:
   max_turns: 90
 display:
@@ -6829,30 +6939,28 @@ skills:
     )
 }
 
-/// Renders the `mcp_servers:` block listing every built-in MCP server June
-/// registers. Both entries live under one key so Hermes deep-merges a single
-/// map; an empty map is emitted when neither is configured.
-#[allow(clippy::too_many_arguments)]
+/// registers. Built-in entries live under one key so Hermes deep-merges a
+/// single map; an empty map is emitted when none are configured.
 fn render_mcp_servers_config(
-    context: Option<&JuneContextMcpConfig>,
-    web: Option<&JuneWebMcpConfig>,
-    image: Option<&JuneImageMcpConfig>,
-    recorder: Option<&JuneRecorderMcpConfig>,
+    configs: BuiltinMcpConfigs<'_>,
     base_url: &str,
     proxy_token: &str,
     recorder_proxy_token: &str,
 ) -> String {
     let mut entries = String::new();
-    if let Some(config) = context {
+    if let Some(config) = configs.context {
         entries.push_str(&render_context_mcp_entry(config));
     }
-    if let Some(config) = web {
+    if let Some(config) = configs.web {
         entries.push_str(&render_web_mcp_entry(config, base_url, proxy_token));
     }
-    if let Some(config) = image {
+    if let Some(config) = configs.image {
         entries.push_str(&render_image_mcp_entry(config, base_url, proxy_token));
     }
-    if let Some(config) = recorder {
+    if let Some(config) = configs.video {
+        entries.push_str(&render_video_mcp_entry(config, base_url, proxy_token));
+    }
+    if let Some(config) = configs.recorder {
         entries.push_str(&render_recorder_mcp_entry(
             config,
             base_url,
@@ -6941,6 +7049,38 @@ fn render_image_mcp_entry(
         base_url = yaml_string(base_url),
         images_dir = yaml_string(&config.images_dir.to_string_lossy()),
         token_env = JUNE_IMAGE_MCP_TOKEN_ENV,
+        token = yaml_string(proxy_token),
+    )
+}
+
+/// The video MCP gets the loopback proxy base URL plus the generated-video
+/// directory as arguments, and the proxy token via the environment. The timeout
+/// stays above the MCP poll budget so Hermes waits for the async job loop.
+fn render_video_mcp_entry(
+    config: &JuneVideoMcpConfig,
+    base_url: &str,
+    proxy_token: &str,
+) -> String {
+    format!(
+        r#"  {server_name}:
+    enabled: true
+    command: {command}
+    args:
+      - {script_path}
+      - {base_url}
+      - {videos_dir}
+    env:
+      PYTHONUNBUFFERED: "1"
+      {token_env}: {token}
+    timeout: 900
+    connect_timeout: 10
+"#,
+        server_name = JUNE_VIDEO_MCP_SERVER_NAME,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        base_url = yaml_string(base_url),
+        videos_dir = yaml_string(&config.videos_dir.to_string_lossy()),
+        token_env = JUNE_VIDEO_MCP_TOKEN_ENV,
         token = yaml_string(proxy_token),
     )
 }
@@ -7076,7 +7216,13 @@ fn sync_june_soul(
     hermes_home: &std::path::Path,
     sandbox_available: bool,
     agent_cli_access: bool,
+    video_generation_enabled: bool,
 ) -> Result<(), AppError> {
+    let video_section = if video_generation_enabled {
+        JUNE_SOUL_VIDEO_MD
+    } else {
+        ""
+    };
     let soul = if sandbox_available {
         let cli_section = if agent_cli_access {
             JUNE_SOUL_CLI_ALLOWED_MD
@@ -7084,10 +7230,10 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{JUNE_SOUL_RECORDER_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{JUNE_SOUL_RECORDER_MD}")
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -7269,6 +7415,8 @@ async fn start_june_provider_proxy(
     token: String,
     recorder_token: String,
     image_sources: ImageSourceCapabilities,
+    videos_dir: PathBuf,
+    video_generation_enabled: bool,
     app: Option<AppHandle>,
     recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
 ) -> Result<RunningJuneProviderProxy, AppError> {
@@ -7290,6 +7438,8 @@ async fn start_june_provider_proxy(
             token,
             recorder_token,
             image_sources,
+            videos_dir,
+            video_generation_enabled,
             app,
             image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
             recorder_requests,
@@ -7416,7 +7566,8 @@ async fn handle_june_provider_connection(
         ("POST", "/v1/image/generate") => {
             // The image MCP sends no model, so the user's selected image model
             // is authoritative — inject it here (June API requires a model).
-            // safe_mode likewise comes from the on-device setting.
+            // safe_mode likewise comes from the on-device setting. Venice video
+            // has no safe-mode parameter, so this injection is image-only.
             let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             let image_self_report = strip_image_explicit_self_report(&mut body);
@@ -7467,6 +7618,47 @@ async fn handle_june_provider_connection(
             }
             forward_image_tool(&mut stream, "/v1/image/edit", &body, &state.image_sources).await?;
         }
+        ("POST", "/v1/video/generate") => {
+            if !state.video_generation_enabled {
+                write_not_found_response(&mut stream).await?;
+                return Ok(());
+            }
+            let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            ensure_video_generation_model(&mut body);
+            ensure_video_defaults(&mut body);
+            forward_video_create(&mut stream, "/v1/video/generate", &body).await?;
+        }
+        ("POST", "/v1/video/animate") => {
+            if !state.video_generation_enabled {
+                write_not_found_response(&mut stream).await?;
+                return Ok(());
+            }
+            let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            if let Err(message) = prepare_image_edit_request(&mut body, &state.image_sources) {
+                write_json_response(
+                    &mut stream,
+                    400,
+                    serde_json::json!({
+                        "success": false,
+                        "message": message,
+                    }),
+                )
+                .await?;
+                return Ok(());
+            }
+            ensure_video_animation_model(&mut body);
+            ensure_video_animation_defaults(&mut body);
+            forward_video_create(&mut stream, "/v1/video/animate", &body).await?;
+        }
+        ("GET", path) if path.starts_with("/v1/video/status/") => {
+            if !state.video_generation_enabled {
+                write_not_found_response(&mut stream).await?;
+                return Ok(());
+            }
+            forward_video_status(&mut stream, path, &state.videos_dir).await?;
+        }
         ("POST", "/v1/recorder/start") => {
             let body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
@@ -7485,15 +7677,19 @@ async fn handle_june_provider_connection(
             write_json_response(&mut stream, 200, recorder_status_body()).await?;
         }
         _ => {
-            write_json_response(
-                &mut stream,
-                404,
-                serde_json::json!({ "error": { "message": "Not found" } }),
-            )
-            .await?;
+            write_not_found_response(&mut stream).await?;
         }
     }
     Ok(())
+}
+
+async fn write_not_found_response(stream: &mut tokio::net::TcpStream) -> io::Result<()> {
+    write_json_response(
+        stream,
+        404,
+        serde_json::json!({ "error": { "message": "Not found" } }),
+    )
+    .await
 }
 
 async fn handle_recorder_action(
@@ -7781,13 +7977,15 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
 fn provider_proxy_max_body_bytes(path: &str) -> usize {
     match path {
         "/v1/image/generate" | "/v1/image/edit" => JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES,
+        "/v1/video/animate" => JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES,
+        "/v1/video/generate" => JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES,
         _ => JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES,
     }
 }
 
 fn provider_proxy_body_too_large_message(path: &str) -> &'static str {
     match path {
-        "/v1/image/generate" | "/v1/image/edit" => {
+        "/v1/image/generate" | "/v1/image/edit" | "/v1/video/animate" => {
             "image_request_too_large: the image request body is too large for June. \
              Use a smaller image and retry."
         }
@@ -7984,6 +8182,287 @@ async fn forward_image_tool(
             .await
         }
     }
+}
+
+#[derive(Deserialize)]
+struct ProviderApiEnvelope {
+    success: bool,
+    data: Option<serde_json::Value>,
+}
+
+/// Forwards a video create request and normalizes June API's success envelope
+/// to the bare `{jobId}` shape the video MCP contract uses. Error envelopes are
+/// relayed unchanged so metering/auth failures retain their June API status and
+/// message.
+async fn forward_video_create(
+    stream: &mut tokio::net::TcpStream,
+    path: &str,
+    body: &serde_json::Value,
+) -> io::Result<()> {
+    match crate::june_api::forward_video_request(path, Some(body)).await {
+        Ok(response) => {
+            if response.status < 400 && response.content_type.to_ascii_lowercase().contains("json")
+            {
+                if let Ok(envelope) = serde_json::from_slice::<ProviderApiEnvelope>(&response.body)
+                {
+                    if envelope.success {
+                        if let Some(data) = envelope.data {
+                            return write_json_response(stream, response.status, data).await;
+                        }
+                    }
+                }
+            }
+            write_raw_response(
+                stream,
+                response.status,
+                &response.content_type,
+                &response.body,
+            )
+            .await
+        }
+        Err(error) => {
+            write_json_response(
+                stream,
+                502,
+                serde_json::json!({
+                    "success": false,
+                    "message": format!("Video request failed: {}", error.message),
+                }),
+            )
+            .await
+        }
+    }
+}
+
+async fn forward_video_status(
+    stream: &mut tokio::net::TcpStream,
+    path: &str,
+    videos_dir: &Path,
+) -> io::Result<()> {
+    match crate::june_api::forward_video_request(path, None).await {
+        Ok(response) => {
+            if response.status < 400
+                && response
+                    .content_type
+                    .to_ascii_lowercase()
+                    .contains("video/mp4")
+            {
+                let filename = match write_proxy_video_bytes(videos_dir, &response.body) {
+                    Ok(filename) => filename,
+                    Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                        return write_json_response(
+                            stream,
+                            502,
+                            serde_json::json!({
+                                "success": false,
+                                "message": error.to_string(),
+                            }),
+                        )
+                        .await;
+                    }
+                    Err(error) => return Err(error),
+                };
+                return write_json_response(
+                    stream,
+                    response.status,
+                    serde_json::json!({
+                        "status": "completed",
+                        "filename": filename,
+                        "mimeType": "video/mp4",
+                        "sizeBytes": response.body.len() as u64,
+                    }),
+                )
+                .await;
+            }
+            if response.status < 400 && response.content_type.to_ascii_lowercase().contains("json")
+            {
+                if let Ok(envelope) = serde_json::from_slice::<ProviderApiEnvelope>(&response.body)
+                {
+                    if envelope.success {
+                        if let Some(data) = envelope.data {
+                            return write_video_status_json(stream, videos_dir, data).await;
+                        }
+                    }
+                }
+            }
+            write_raw_response(
+                stream,
+                response.status,
+                &response.content_type,
+                &response.body,
+            )
+            .await
+        }
+        Err(error) => {
+            write_json_response(
+                stream,
+                502,
+                serde_json::json!({
+                    "success": false,
+                    "message": format!("Video status failed: {}", error.message),
+                }),
+            )
+            .await
+        }
+    }
+}
+
+async fn write_video_status_json(
+    stream: &mut tokio::net::TcpStream,
+    videos_dir: &Path,
+    data: serde_json::Value,
+) -> io::Result<()> {
+    let status = data
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if status != "completed" {
+        return write_json_response(stream, 200, data).await;
+    }
+    let download_url = data
+        .get("downloadUrl")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let Some(download_url) = download_url else {
+        return write_json_response(
+            stream,
+            502,
+            serde_json::json!({
+                "success": false,
+                "message": "Video status completed without downloadable media.",
+            }),
+        )
+        .await;
+    };
+    match download_proxy_video_bytes(&download_url).await {
+        Ok(bytes) => {
+            let filename = match write_proxy_video_bytes(videos_dir, &bytes) {
+                Ok(filename) => filename,
+                Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                    return write_json_response(
+                        stream,
+                        502,
+                        serde_json::json!({
+                            "success": false,
+                            "message": error.to_string(),
+                        }),
+                    )
+                    .await;
+                }
+                Err(error) => return Err(error),
+            };
+            let mime_type = data
+                .get("mimeType")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("video/mp4")
+                .to_string();
+            let size_bytes = data
+                .get("sizeBytes")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(bytes.len() as u64);
+            write_json_response(
+                stream,
+                200,
+                serde_json::json!({
+                    "status": "completed",
+                    "filename": filename,
+                    "mimeType": mime_type,
+                    "sizeBytes": size_bytes,
+                }),
+            )
+            .await
+        }
+        Err(error) => {
+            write_json_response(
+                stream,
+                502,
+                serde_json::json!({
+                    "success": false,
+                    "message": format!("Video download failed: {error}"),
+                }),
+            )
+            .await
+        }
+    }
+}
+
+async fn download_proxy_video_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let (parsed, validated_addrs) = crate::video_download_url::validate_video_download_url(url)?;
+    let client =
+        crate::video_download_url::video_download_client_builder(&parsed, &validated_addrs)?
+            .timeout(Duration::from_secs(600))
+            .build()
+            .map_err(|error| error.to_string())?;
+    let response = client
+        .get(parsed)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("download returned status {}", status.as_u16()));
+    }
+    read_proxy_video_response_bytes(response).await
+}
+
+fn write_proxy_video_bytes(videos_dir: &Path, bytes: &[u8]) -> io::Result<String> {
+    reject_oversized_proxy_video_bytes(bytes.len() as u64)?;
+    fs::create_dir_all(videos_dir)?;
+    let filename = generated_video_storage_filename();
+    fs::write(videos_dir.join(&filename), bytes)?;
+    Ok(filename)
+}
+
+fn reject_oversized_proxy_video_bytes(size_bytes: u64) -> io::Result<()> {
+    if size_bytes > JUNE_VIDEO_MAX_RESPONSE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            video_too_large_message(),
+        ));
+    }
+    Ok(())
+}
+
+async fn read_proxy_video_response_bytes(
+    mut response: reqwest::Response,
+) -> Result<Vec<u8>, String> {
+    if response
+        .content_length()
+        .is_some_and(|len| len > JUNE_VIDEO_MAX_RESPONSE_BYTES)
+    {
+        return Err(video_too_large_message().to_string());
+    }
+    let capacity = response
+        .content_length()
+        .and_then(|len| usize::try_from(len).ok())
+        .unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut total = 0_u64;
+    loop {
+        let chunk = response.chunk().await.map_err(|error| error.to_string())?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        total = total
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(|| video_too_large_message().to_string())?;
+        if total > JUNE_VIDEO_MAX_RESPONSE_BYTES {
+            return Err(video_too_large_message().to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn video_too_large_message() -> &'static str {
+    "video_too_large: the generated video is too large for June to retrieve."
+}
+
+fn generated_video_storage_filename() -> String {
+    format!("generated-video-{}.mp4", uuid::Uuid::new_v4().simple())
 }
 
 fn image_source_capability_secret_path(app_data_dir: &Path) -> PathBuf {
@@ -8581,6 +9060,108 @@ fn truncate_image_safe_mode_consent_prompt(prompt: &str, max_chars: usize) -> St
     prompt.chars().take(max_chars).collect()
 }
 
+fn ensure_video_generation_model(body: &mut serde_json::Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let has_model = object
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(|model| !model.is_empty())
+        .unwrap_or(false);
+    if !has_model {
+        object.insert(
+            "model".to_string(),
+            serde_json::Value::String(crate::providers::video_model()),
+        );
+    }
+}
+
+fn ensure_video_animation_model(body: &mut serde_json::Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let has_model = object
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(|model| !model.is_empty())
+        .unwrap_or(false);
+    if !has_model {
+        object.insert(
+            "model".to_string(),
+            serde_json::Value::String(JUNE_VIDEO_DEFAULT_ANIMATE_MODEL.to_string()),
+        );
+    }
+}
+
+fn ensure_video_defaults(body: &mut serde_json::Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    ensure_video_duration_resolution_defaults(object);
+    // June API reads this field as camelCase `aspectRatio` (unlike duration and
+    // resolution, whose snake and camel spellings coincide). Text-to-video has
+    // no source frame to derive geometry from, and some models — for example
+    // wan-2.2-a14b — reject a queue that omits it, so inject the default under
+    // the key June API actually deserializes. Image-to-video does the opposite
+    // (see ensure_video_animation_defaults).
+    let has_aspect_ratio = object
+        .get("aspectRatio")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(|aspect_ratio| !aspect_ratio.is_empty())
+        .unwrap_or(false);
+    if !has_aspect_ratio {
+        object.insert(
+            "aspectRatio".to_string(),
+            serde_json::Value::String(JUNE_VIDEO_DEFAULT_ASPECT_RATIO.to_string()),
+        );
+    }
+}
+
+/// Image-to-video derives its frame geometry from the source image, so — unlike
+/// the text-to-video path — it must NOT inject an aspect_ratio. Venice rejects a
+/// queue whose aspect_ratio conflicts with the uploaded image
+/// (`custom@aspect_ratio`); the source image alone determines the output ratio.
+/// Duration and resolution stay independent knobs and are still defaulted.
+fn ensure_video_animation_defaults(body: &mut serde_json::Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    ensure_video_duration_resolution_defaults(object);
+}
+
+fn ensure_video_duration_resolution_defaults(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    let has_duration = object
+        .get("duration")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(|duration| !duration.is_empty())
+        .unwrap_or(false);
+    if !has_duration {
+        object.insert(
+            "duration".to_string(),
+            serde_json::Value::String(JUNE_VIDEO_DEFAULT_DURATION.to_string()),
+        );
+    }
+    let has_resolution = object
+        .get("resolution")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(|resolution| !resolution.is_empty())
+        .unwrap_or(false);
+    if !has_resolution {
+        object.insert(
+            "resolution".to_string(),
+            serde_json::Value::String(JUNE_VIDEO_DEFAULT_RESOLUTION.to_string()),
+        );
+    }
+}
+
 async fn write_raw_response(
     stream: &mut tokio::net::TcpStream,
     status: u16,
@@ -8699,6 +9280,108 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ensure_video_defaults_injects_missing_knobs_under_the_keys_june_api_reads() {
+        let mut body = serde_json::json!({ "prompt": "a calm lake" });
+        ensure_video_defaults(&mut body);
+        assert_eq!(
+            body["duration"],
+            serde_json::json!(JUNE_VIDEO_DEFAULT_DURATION)
+        );
+        assert_eq!(
+            body["resolution"],
+            serde_json::json!(JUNE_VIDEO_DEFAULT_RESOLUTION)
+        );
+        // June API deserializes this field as camelCase `aspectRatio`; a
+        // snake_case default would be silently dropped and models such as
+        // wan-2.2-a14b reject a queue that omits it (regression guard).
+        assert_eq!(
+            body["aspectRatio"],
+            serde_json::json!(JUNE_VIDEO_DEFAULT_ASPECT_RATIO)
+        );
+        assert!(body.get("aspect_ratio").is_none());
+    }
+
+    #[test]
+    fn ensure_video_defaults_preserves_caller_supplied_knobs() {
+        let mut body =
+            serde_json::json!({ "duration": "8s", "resolution": "1080p", "aspectRatio": "9:16" });
+        ensure_video_defaults(&mut body);
+        assert_eq!(body["duration"], serde_json::json!("8s"));
+        assert_eq!(body["resolution"], serde_json::json!("1080p"));
+        assert_eq!(body["aspectRatio"], serde_json::json!("9:16"));
+    }
+
+    #[test]
+    fn ensure_video_animation_defaults_omits_aspect_ratio() {
+        // Image-to-video derives its frame geometry from the source image, so an
+        // injected aspect_ratio makes Venice reject the queue `custom@aspect_ratio`
+        // whenever it disagrees with the image (regression guard).
+        let mut body = serde_json::json!({ "prompt": "make it wave" });
+        ensure_video_animation_defaults(&mut body);
+        assert_eq!(
+            body["duration"],
+            serde_json::json!(JUNE_VIDEO_DEFAULT_DURATION)
+        );
+        assert_eq!(
+            body["resolution"],
+            serde_json::json!(JUNE_VIDEO_DEFAULT_RESOLUTION)
+        );
+        assert!(body.get("aspectRatio").is_none());
+        assert!(body.get("aspect_ratio").is_none());
+    }
+
+    async fn provider_proxy_response(
+        path: &str,
+        method: &str,
+        body: &str,
+        video_generation_enabled: bool,
+    ) -> String {
+        let home = tempfile::tempdir().expect("tempdir");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind proxy listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let state = Arc::new(ProviderProxyState {
+            token: "proxy-token".to_string(),
+            recorder_token: "recorder-token".to_string(),
+            image_sources: ImageSourceCapabilities {
+                images_dir: home.path().join("images"),
+                secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
+            },
+            videos_dir: home.path().join("videos"),
+            video_generation_enabled,
+            app: None,
+            image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
+            recorder_requests: Arc::new(Mutex::new(HashMap::new())),
+        });
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            handle_june_provider_connection(stream, state)
+                .await
+                .expect("handle connection");
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect proxy");
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer proxy-token\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .await
+            .expect("read response");
+        server.await.expect("server task");
+        response
+    }
+
     fn oauth_test_connection() -> HermesBridgeConnection {
         HermesBridgeConnection {
             base_url: "http://127.0.0.1:8787".to_string(),
@@ -8808,6 +9491,44 @@ mod tests {
         assert!(!is_safe_mcp_server_name("a b"));
         assert!(!is_safe_mcp_server_name("rm -rf / ; curl evil"));
         assert!(!is_safe_mcp_server_name("server;name"));
+    }
+
+    #[test]
+    fn write_proxy_video_bytes_rejects_oversized_body_without_partial_file() {
+        let videos_dir = std::env::temp_dir().join(format!(
+            "june-video-cap-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let error = reject_oversized_proxy_video_bytes(JUNE_VIDEO_MAX_RESPONSE_BYTES + 1)
+            .expect_err("oversized video should be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("video_too_large"));
+        assert!(!videos_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn download_proxy_video_bytes_rejects_local_url_without_file() {
+        let videos_dir = tempfile::tempdir().expect("tempdir");
+
+        let scheme_error = download_proxy_video_bytes("http://example.com/video.mp4")
+            .await
+            .expect_err("http video URL should be rejected");
+        assert!(scheme_error.contains("https"));
+
+        let local_error = download_proxy_video_bytes("https://127.0.0.1:9/video.mp4")
+            .await
+            .expect_err("local https video URL should be rejected");
+        assert!(local_error.contains("non-public"));
+        assert!(
+            videos_dir
+                .path()
+                .read_dir()
+                .expect("videos dir should be readable")
+                .next()
+                .is_none(),
+            "rejected video download should not write a file"
+        );
     }
 
     #[test]
@@ -9819,15 +10540,19 @@ mcp_servers:
 
         let rendered = render_hermes_config(
             "new-model",
+            false,
             "http://127.0.0.1:9/v1",
             "new-token",
             "recorder-token",
             "web",
             &[],
-            Some(&test_june_context_mcp_config()),
-            None,
-            None,
-            None,
+            BuiltinMcpConfigs {
+                context: Some(&test_june_context_mcp_config()),
+                web: None,
+                image: None,
+                video: None,
+                recorder: None,
+            },
         );
         let merged = merge_hermes_config(&config_path, &rendered);
         let value: serde_yaml::Value = serde_yaml::from_str(&merged).expect("merged parses");
@@ -10054,9 +10779,11 @@ mcp_servers:
             4242,
             "proxy-token",
             "recorder-proxy-token",
+            false,
             &test_june_context_mcp_config(),
             &test_june_web_mcp_config(),
             &test_june_image_mcp_config(),
+            None,
             &test_june_recorder_mcp_config(),
             std::slice::from_ref(&default_dir),
         )
@@ -10097,15 +10824,19 @@ mcp_servers:
         ];
         let config = render_hermes_config(
             "glm",
+            false,
             "http://127.0.0.1:9/v1",
             "tok",
             "recorder-tok",
             "web, memory",
             &dirs,
-            None,
-            None,
-            None,
-            None,
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+                recorder: None,
+            },
         );
 
         assert!(config.contains("model:\n  default: \"glm\""));
@@ -10129,15 +10860,19 @@ mcp_servers:
     fn render_hermes_config_emits_empty_external_dirs_when_none() {
         let config = render_hermes_config(
             "glm",
+            false,
             "http://127.0.0.1:9/v1",
             "tok",
             "recorder-tok",
             "web",
             &[],
-            None,
-            None,
-            None,
-            None,
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+                recorder: None,
+            },
         );
 
         assert!(config.contains("skills:\n  external_dirs: []\n"));
@@ -10159,6 +10894,14 @@ mcp_servers:
         }
     }
 
+    fn test_june_video_mcp_config() -> JuneVideoMcpConfig {
+        JuneVideoMcpConfig {
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            script_path: PathBuf::from("/tmp/june/hermes-mcp/june_video_mcp.py"),
+            videos_dir: PathBuf::from("/tmp/hermes-home/videos"),
+        }
+    }
+
     fn test_june_recorder_mcp_config() -> JuneRecorderMcpConfig {
         JuneRecorderMcpConfig {
             command: "/tmp/hermes/venv/bin/python".to_string(),
@@ -10171,18 +10914,23 @@ mcp_servers:
         let context = test_june_context_mcp_config();
         let web = test_june_web_mcp_config();
         let image = test_june_image_mcp_config();
+        let video = test_june_video_mcp_config();
         let recorder = test_june_recorder_mcp_config();
         let config = render_hermes_config(
             "glm",
+            false,
             "http://127.0.0.1:9/v1",
             "proxy-tok",
             "recorder-proxy-tok",
             "web",
             &[],
-            Some(&context),
-            Some(&web),
-            Some(&image),
-            Some(&recorder),
+            BuiltinMcpConfigs {
+                context: Some(&context),
+                web: Some(&web),
+                image: Some(&image),
+                video: Some(&video),
+                recorder: Some(&recorder),
+            },
         );
 
         // All four built-in servers live under one mcp_servers map.
@@ -10206,6 +10954,13 @@ mcp_servers:
         assert!(!config.contains("workspace/uploads"));
         assert!(config.contains("      JUNE_IMAGE_PROXY_TOKEN: \"proxy-tok\"\n"));
         assert!(config.contains("    timeout: 660\n"));
+        // The video server mirrors image but uses the generated-video dir and
+        // a longer timeout that covers the async poll loop.
+        assert!(config.contains("  june_video:\n"));
+        assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_video_mcp.py\"\n"));
+        assert!(config.contains("      - \"/tmp/hermes-home/videos\"\n"));
+        assert!(config.contains("      JUNE_VIDEO_PROXY_TOKEN: \"proxy-tok\"\n"));
+        assert!(config.contains("    timeout: 900\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_recorder_mcp.py\"\n"));
         // The recorder MCP must get the recorder-scoped secret, never the
         // general provider token.
@@ -10221,21 +10976,99 @@ mcp_servers:
     }
 
     #[test]
+    fn render_hermes_config_omits_june_video_when_disabled() {
+        let context = test_june_context_mcp_config();
+        let web = test_june_web_mcp_config();
+        let image = test_june_image_mcp_config();
+        let config = render_hermes_config(
+            "glm",
+            false,
+            "http://127.0.0.1:9/v1",
+            "proxy-tok",
+            "recorder-proxy-tok",
+            "web",
+            &[],
+            BuiltinMcpConfigs {
+                context: Some(&context),
+                web: Some(&web),
+                image: Some(&image),
+                video: None,
+                recorder: None,
+            },
+        );
+
+        assert!(config.contains("mcp_servers:\n  june_context:\n"));
+        assert!(config.contains("  june_web:\n"));
+        assert!(config.contains("  june_image:\n"));
+        assert!(!config.contains("june_video"));
+        assert!(!config.contains("june_video_mcp.py"));
+        assert!(!config.contains("JUNE_VIDEO_PROXY_TOKEN"));
+    }
+
+    #[test]
     fn render_hermes_config_emits_empty_mcp_servers_without_configs() {
         let config = render_hermes_config(
             "glm",
+            false,
             "http://127.0.0.1:9/v1",
             "tok",
             "recorder-tok",
             "web",
             &[],
-            None,
-            None,
-            None,
-            None,
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+                recorder: None,
+            },
         );
 
         assert!(config.contains("mcp_servers: {}\n"));
+    }
+
+    #[test]
+    fn render_hermes_config_declares_model_vision_support() {
+        // `provider: custom` hides vision capability from Hermes, so the
+        // `supports_vision` override is what lets its vision tools attach an
+        // image straight to a vision-capable model instead of the unconfigured
+        // auxiliary vision LLM. Render it explicitly for BOTH values so a merge
+        // over a prior spawn's config never leaves a stale one behind.
+        let vision = render_hermes_config(
+            "kimi",
+            true,
+            "http://127.0.0.1:9/v1",
+            "proxy-token",
+            "recorder-proxy-token",
+            "web, memory",
+            &[],
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+                recorder: None,
+            },
+        );
+        assert!(vision.contains("  supports_vision: true\n"));
+
+        let no_vision = render_hermes_config(
+            "glm",
+            false,
+            "http://127.0.0.1:9/v1",
+            "proxy-token",
+            "recorder-proxy-token",
+            "web, memory",
+            &[],
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+                recorder: None,
+            },
+        );
+        assert!(no_vision.contains("  supports_vision: false\n"));
     }
 
     #[test]
@@ -10525,15 +11358,18 @@ mcp_servers:
         let mcp = test_june_context_mcp_config();
         let web = test_june_web_mcp_config();
         let image = test_june_image_mcp_config();
+        let video = test_june_video_mcp_config();
         let recorder = test_june_recorder_mcp_config();
         sync_hermes_config_with_external_dirs(
             home.path(),
             4242,
             "proxy-token",
             "recorder-proxy-token",
+            false,
             &mcp,
             &web,
             &image,
+            Some(&video),
             &recorder,
             &[],
         )
@@ -10565,7 +11401,7 @@ mcp_servers:
         )
         .expect("seed default soul");
 
-        sync_june_soul(home.path(), true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -10588,7 +11424,7 @@ mcp_servers:
     fn sandboxed_soul_describes_the_write_jail() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Seatbelt"));
@@ -10613,7 +11449,7 @@ mcp_servers:
     fn june_soul_describes_local_context_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_context"));
@@ -10629,7 +11465,7 @@ mcp_servers:
     fn june_soul_asks_for_clarification_before_costly_ambiguous_work() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Clarifying questions"));
@@ -10643,7 +11479,7 @@ mcp_servers:
     fn june_soul_describes_web_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_web"));
@@ -10655,7 +11491,7 @@ mcp_servers:
     fn june_soul_uses_image_settings_instead_of_pre_refusing() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_image"));
@@ -10681,7 +11517,7 @@ mcp_servers:
     fn june_soul_describes_recorder_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_recorder"));
@@ -10695,7 +11531,7 @@ mcp_servers:
     fn sandboxed_soul_with_cli_access_describes_the_grant() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, true).expect("sync soul");
+        sync_june_soul(home.path(), true, true, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("the user enabled Agent CLI access"));
@@ -10711,12 +11547,54 @@ mcp_servers:
     fn unsandboxed_soul_makes_no_sandbox_claims() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
         assert!(!soul.contains("Seatbelt"));
         assert!(!soul.contains("sandbox"));
+    }
+
+    #[test]
+    fn june_soul_omits_video_tools_when_disabled() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("You are June"));
+        assert!(soul.contains("june_image"));
+        assert!(!soul.contains("june_video"));
+        assert!(!soul.contains("generate_video"));
+        assert!(!soul.contains("animate_image"));
+    }
+
+    #[test]
+    fn june_soul_includes_video_tools_when_enabled() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false, true).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("june_video"));
+        assert!(soul.contains("generate_video"));
+        assert!(soul.contains("animate_image"));
+    }
+
+    #[tokio::test]
+    async fn provider_proxy_returns_404_for_video_routes_when_disabled() {
+        for (method, path, body) in [
+            ("POST", "/v1/video/generate", r#"{"prompt":"make a clip"}"#),
+            ("POST", "/v1/video/animate", r#"{}"#),
+            ("GET", "/v1/video/status/job-123", ""),
+        ] {
+            let response = provider_proxy_response(path, method, body, false).await;
+            assert!(
+                response.starts_with("HTTP/1.1 404 Not Found"),
+                "{method} {path} returned {response}"
+            );
+            assert!(response.contains("Not found"));
+        }
     }
 
     #[test]

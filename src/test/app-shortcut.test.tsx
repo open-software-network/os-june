@@ -86,11 +86,14 @@ const mocks = vi.hoisted(() => ({
   listHermesSessionMessages: vi.fn(),
   listHermesSessions: vi.fn(),
   listVeniceModels: vi.fn(),
+  localVideoFileSrc: vi.fn((path: string) => `asset://${path}`),
   p3aSettings: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
   providerModelSettings: vi.fn(),
   setP3aEnabled: vi.fn(),
+  videoGenerate: vi.fn(),
+  videoStatus: vi.fn(),
   startHermesBridge: vi.fn(),
   startPeriodicJuneUpdateChecks: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
@@ -142,6 +145,7 @@ vi.mock("../app/update-decision", async () => {
 });
 
 vi.mock("../lib/tauri", () => ({
+  primeGeneratedVideoDir: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   // The agent workspace mounts the pending skill-writes tray, whose loader
   // reaches the Rust bridge through this named `invoke`. A quiet stub keeps
@@ -191,6 +195,9 @@ vi.mock("../lib/tauri", () => ({
   providerModelSettings: mocks.providerModelSettings,
   setP3aEnabled: mocks.setP3aEnabled,
   listVeniceModels: mocks.listVeniceModels,
+  localVideoFileSrc: mocks.localVideoFileSrc,
+  videoGenerate: mocks.videoGenerate,
+  videoStatus: mocks.videoStatus,
   setVeniceApiKey: vi.fn(async () => ({
     generationModel: "",
     veniceApiKeyConfigured: true,

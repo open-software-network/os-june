@@ -61,6 +61,7 @@ vi.mock("../lib/recording-sounds", () => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  primeGeneratedVideoDir: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,

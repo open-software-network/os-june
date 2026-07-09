@@ -110,6 +110,8 @@ function labelFromName(normalizedName: string) {
   if (GENERIC_TOOL_NAMES.has(normalizedName)) return "Running command";
   if (isWebSearchToolName(normalizedName)) return "Searching web";
   if (isWebToolName(normalizedName)) return "Browsing";
+  // Video before image: `animate_image` (image-to-video) reads as video work.
+  if (isVideoToolName(normalizedName)) return "Working with video";
   if (isImageToolName(normalizedName)) return "Working with images";
   if (isEditToolName(normalizedName)) return "Editing files";
   if (isSearchToolName(normalizedName)) return "Searching files";
@@ -147,6 +149,12 @@ function isWebSearchToolName(value: string) {
 
 function isImageToolName(value: string) {
   return hasSegment(value, ["image", "screenshot", "vision"]);
+}
+
+function isVideoToolName(value: string) {
+  return (
+    hasSegment(value, ["video", "animate"]) || hasPhrase(value, ["generate_video", "animate_image"])
+  );
 }
 
 function isFileToolName(value: string) {

@@ -9,13 +9,14 @@ use june_providers::{
     LogP3aSink, MultiFormatDurationProbe, OsAccountsHttpClient, OsAccountsP3aSink,
     OsPlatformIssueReportSink, RoutingTranscriber, VeniceAgentChat, VeniceAugment, VeniceCleaner,
     VeniceGenerator, VeniceImageEditor, VeniceImageGenerator, VeniceModelCatalog,
-    client_with_timeout, default_client, jwks_client,
+    VeniceVideoProvider, client_with_timeout, default_client, jwks_client,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
     ImageService, ImageServiceDeps, IssueReportService, IssueReportServiceDeps,
     NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
-    P3aReportService, P3aReportServiceDeps, PricingTable, WebAugmentService, WebAugmentServiceDeps,
+    P3aReportService, P3aReportServiceDeps, PricingTable, VideoModelPrice, VideoService,
+    VideoServiceDeps, WebAugmentService, WebAugmentServiceDeps,
 };
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -227,6 +228,30 @@ fn build_router(
         // image hold TTL rather than adding a second knob.
         hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_image_secs,
     }));
+    let video = Arc::new(VideoService::new(VideoServiceDeps {
+        os_accounts: os_accounts.clone(),
+        provider: build_video_provider(
+            clients.metered_inference,
+            &config.upstreams.venice,
+            Duration::from_secs(image_client_timeout_secs(
+                config.server.request_timeout_secs,
+            )),
+            config.video_max_response_bytes,
+        ),
+        pricing: config
+            .video_pricing
+            .iter()
+            .map(|(model, markup)| (model.clone(), VideoModelPrice::venice(*markup)))
+            .collect(),
+        animate_pricing: config
+            .video_animate_pricing
+            .iter()
+            .map(|(model, markup)| (model.clone(), VideoModelPrice::venice(*markup)))
+            .collect(),
+        default_animate_model: config.default_video_animate_model.clone(),
+        max_credits_per_request: config.video_max_credits_per_request,
+        hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_video_secs,
+    }));
     let dictate = Arc::new(DictateService::new(DictateServiceDeps {
         pricing: pricing.clone(),
         os_accounts,
@@ -249,6 +274,7 @@ fn build_router(
         dictate,
         web,
         image,
+        video,
         issue_reports,
         p3a_reports,
         limits: ApiLimits {
@@ -295,6 +321,20 @@ fn build_image_editor(
         upstream_http.clone(),
         venice,
         leg_budget,
+    ))
+}
+
+fn build_video_provider(
+    upstream_http: &reqwest::Client,
+    venice: &june_config::UpstreamConfig,
+    call_timeout: Duration,
+    max_response_bytes: u64,
+) -> Arc<dyn june_domain::VideoProvider> {
+    Arc::new(VeniceVideoProvider::from_config(
+        upstream_http.clone(),
+        venice,
+        call_timeout,
+        max_response_bytes,
     ))
 }
 
