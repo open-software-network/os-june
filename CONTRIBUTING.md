@@ -55,7 +55,7 @@ on PRs to avoid paying for repeated hosted runners while a branch is still
 changing. After pushing a clean branch, run the path-aware local signoff:
 
 ```sh
-make signoff-pr
+make local-ci
 ```
 
 See [docs/local-ci-signoff.md](docs/local-ci-signoff.md) for setup, the

@@ -28,10 +28,10 @@ From a clean pushed branch:
 
 ```sh
 git push -u origin HEAD
-make signoff-pr
+make local-ci
 ```
 
-`make signoff-pr` compares the branch with the PR base, runs the tests needed
+`make local-ci` compares the branch with the PR base, runs the tests needed
 for the changed paths, and posts both required statuses:
 
 - `signoff/frontend`
@@ -67,7 +67,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 If checks pass, the command posts the matching `signoff/*` status to the current
-pushed commit. If the branch changes later, run `make signoff-pr` again for the
+pushed commit. If the branch changes later, run `make local-ci` again for the
 new HEAD.
 
 ## Force cloud macOS CI

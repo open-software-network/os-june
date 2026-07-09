@@ -8,7 +8,7 @@
 	tauri-fmt tauri-fmt-check tauri-lint tauri-test \
 	june-api-fmt june-api-fmt-check june-api-lint june-api-test \
 	fmt fmt-check lint test verify \
-	signoff-pr signoff-frontend signoff-rust-macos \
+	local-ci signoff-pr signoff-frontend signoff-rust-macos \
 	skills-update skills-restore skills-sync
 
 .DEFAULT_GOAL := help
@@ -94,8 +94,10 @@ test: test-web tauri-test june-api-test  ## Run all test suites
 
 verify: check typecheck test-web tauri-fmt-check tauri-lint tauri-test june-api-fmt-check june-api-lint june-api-test  ## Full CI-parity gate
 
-signoff-pr:  ## Run path-aware local PR signoffs and post required signoff/* statuses
-	./scripts/signoff-pr.sh
+local-ci:  ## Run path-aware local PR checks and post required signoff/* statuses
+	./scripts/local-ci.sh
+
+signoff-pr: local-ci
 
 signoff-frontend:  ## Run local frontend typecheck/tests and post signoff/frontend
 	./scripts/signoff-frontend.sh
