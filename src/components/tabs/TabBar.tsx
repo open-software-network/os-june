@@ -129,6 +129,7 @@ export function TabBar({
   // A lone tab carries no meaning to switch between, but the strip stays so the
   // "+" affordance is always discoverable.
   const showClose = tabs.length > 1;
+  const showCloseOthers = visible.length > 1;
 
   // How wide each visible tab actually renders, so the strip can shed the label
   // and then the close button as it tightens — ending at a centered icon, the
@@ -352,17 +353,18 @@ export function TabBar({
           >
             Close tab
           </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={tabs.length <= 1}
-            onClick={() => {
-              onCloseOthers(menu.tabId);
-              setMenu(null);
-            }}
-          >
-            Close other tabs
-          </button>
+          {showCloseOthers ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onCloseOthers(menu.tabId);
+                setMenu(null);
+              }}
+            >
+              Close other tabs
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

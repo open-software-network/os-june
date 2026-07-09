@@ -114,6 +114,72 @@ describe("TabBar", () => {
     expect(props.onDragRegionPointerDown).not.toHaveBeenCalled();
   });
 
+  it("omits the close-other-tabs menu item when only one tab is open", () => {
+    renderTabBar({ tabs: [tabs[0]], activeTabId: "tab-1" });
+
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "New session" }));
+
+    expect(screen.getByRole("menuitem", { name: "Close tab" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Close other tabs" })).not.toBeInTheDocument();
+  });
+
+  it("omits the close-other-tabs menu item when only one tab fits on the strip", () => {
+    const originalClientWidth = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientWidth",
+    );
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get() {
+        return this.classList?.contains("tab-strip") ? 70 : 0;
+      },
+    });
+
+    try {
+      renderTabBar();
+
+      expect(screen.getByRole("button", { name: "Show all 2 tabs" })).toBeInTheDocument();
+      fireEvent.contextMenu(screen.getByRole("tab", { name: "New session" }));
+
+      expect(screen.getByRole("menuitem", { name: "Close tab" })).toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: "Close other tabs" })).not.toBeInTheDocument();
+    } finally {
+      if (originalClientWidth) {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", originalClientWidth);
+      } else {
+        delete (HTMLElement.prototype as unknown as { clientWidth?: number }).clientWidth;
+      }
+    }
+  });
+
+  it("keeps the close-other-tabs menu item active when multiple tabs are open", () => {
+    const originalClientWidth = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "clientWidth",
+    );
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get() {
+        return this.classList?.contains("tab-strip") ? 360 : 0;
+      },
+    });
+
+    try {
+      const { props } = renderTabBar();
+
+      fireEvent.contextMenu(screen.getByRole("tab", { name: "New session" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Close other tabs" }));
+
+      expect(props.onCloseOthers).toHaveBeenCalledWith("tab-1");
+    } finally {
+      if (originalClientWidth) {
+        Object.defineProperty(HTMLElement.prototype, "clientWidth", originalClientWidth);
+      } else {
+        delete (HTMLElement.prototype as unknown as { clientWidth?: number }).clientWidth;
+      }
+    }
+  });
+
   it("freezes adaptive layout while the sidebar is being resized", () => {
     let observerCallback: ResizeObserverCallback | undefined;
     const OriginalResizeObserver = globalThis.ResizeObserver;
