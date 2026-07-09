@@ -28,6 +28,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0016](adr/0016-private-connectors-local-mode.md) — private connectors (local mode): Keychain-only token custody, app-proxied MCP calls straight to Google, trust modes enforced in the Rust proxy, earned autonomy, event-trigger daemon
 - [adr/0017](adr/0017-browser-use-via-june-extension.md) — browser use in the user's own browser via the June extension, two tracks behind one broker; computer use productizes the pinned toolset
 - [adr/0018](adr/0018-session-model-changes-apply-at-agent-run-boundaries.md) — session model changes are staged at Send and applied only at the next idle agent-run boundary
+- [adr/0019](adr/0019-windows-dictation-helper.md) — Windows dictation uses a platform-native helper process
 
 ## Enforceable rules (spec/)
 
@@ -76,6 +77,7 @@ Per-repo config the engineering skills read before acting (see the
   - [Documents](plugins/documents-prd.md) — [implementation plan](plugins/documents-implementation-plan.md)
   - [Spreadsheets](plugins/spreadsheets-prd.md) — [implementation plan](plugins/spreadsheets-implementation-plan.md)
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
+- [dictation-helper-protocol.md](dictation-helper-protocol.md) — JSON-lines protocol shared by platform-native dictation helpers
 - [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
 - [telemetry.md](telemetry.md) — public overview of June telemetry, current behavior, and policies
 - [telemetry-p3a-prd.md](telemetry-p3a-prd.md) — June P3A: opt-in, privacy-preserving product telemetry
