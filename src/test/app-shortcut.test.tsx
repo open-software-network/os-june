@@ -764,7 +764,7 @@ describe("App shortcuts", () => {
 
     mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
 
-    expect(await screen.findByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
   });
 
   it("refreshes Accessibility after requesting access without opening settings over the native prompt", async () => {
@@ -929,7 +929,7 @@ describe("App shortcuts", () => {
         mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
       });
 
-      expect(await screen.findByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
       const blockedRow = screen.getByText("System audio").closest(".settings-row");
       expect(blockedRow).not.toBeNull();
       expect(within(blockedRow as HTMLElement).getByLabelText("Blocked")).toBeInTheDocument();
@@ -975,7 +975,7 @@ describe("App shortcuts", () => {
         mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
       });
 
-      expect(await screen.findByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
       const blockedRow = screen.getByText("System audio").closest(".settings-row");
       expect(blockedRow).not.toBeNull();
 
@@ -1051,7 +1051,7 @@ describe("App shortcuts", () => {
         mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
       });
 
-      expect(await screen.findByRole("heading", { name: "Appearance" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
       const blockedRow = screen.getByText("System audio").closest(".settings-row");
       expect(blockedRow).not.toBeNull();
 

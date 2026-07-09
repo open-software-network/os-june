@@ -70,6 +70,12 @@ import type { ReportCategory } from "../agent/composer/reportCategory";
 import { getStoredTheme, setStoredTheme, type ThemePreference } from "../../lib/theme";
 import { BRAND_PRESETS, getStoredBrand, setStoredBrand, type BrandId } from "../../lib/brand";
 import {
+  FONT_SCALE_PRESETS,
+  getStoredFontScale,
+  setStoredFontScale,
+  type FontScaleId,
+} from "../../lib/font-scale";
+import {
   getReleaseChannel,
   reconcileToStable,
   setReleaseChannel,
@@ -160,6 +166,16 @@ const THEME_OPTIONS: readonly {
   },
 ];
 
+const FONT_SCALE_OPTIONS: readonly {
+  value: FontScaleId;
+  label: ReactNode;
+  ariaLabel: string;
+}[] = FONT_SCALE_PRESETS.map((preset) => ({
+  value: preset.id,
+  label: preset.label,
+  ariaLabel: `${preset.label} text size`,
+}));
+
 const DATE_FORMAT_OPTIONS = [
   { value: "system", label: "System" },
   { value: "month-first", label: "Jul 9" },
@@ -242,6 +258,7 @@ const MIC_TEST_DURATION_SECONDS = 5;
 
 export type SettingsTab =
   | "general"
+  | "appearance"
   | "billing"
   | "shortcuts"
   | "dictation"
@@ -266,6 +283,7 @@ export type SettingsTab =
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
   { id: "billing", label: "Billing" },
   { id: "shortcuts", label: "Shortcuts" },
   { id: "dictation", label: "Dictation" },
@@ -421,6 +439,7 @@ export function AppSettings({
   const [micOpen, setMicOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [brand, setBrand] = useState<BrandId>(() => getStoredBrand());
+  const [fontScale, setFontScale] = useState<FontScaleId>(() => getStoredFontScale());
   const [dateFormat, setDateFormat] = useState<DateFormatPreference>(() => getStoredDateFormat());
   const [releaseChannel, setReleaseChannelValue] = useState<ReleaseChannel>("stable");
   // Set only when a leave-rc switch turns up an installable stable, so the
@@ -1367,7 +1386,7 @@ export function AppSettings({
           <>
             <SettingsPageHeader
               title="General"
-              blurb="Your account, appearance, and everyday June preferences."
+              blurb="Your account and everyday June preferences."
             />
             <AccountSettingsSection
               account={account}
@@ -1375,87 +1394,6 @@ export function AppSettings({
               onAccountChanged={onAccountChanged}
               onRefresh={onAccountRefresh}
             />
-
-            <section className="settings-group" aria-labelledby="appearance-heading">
-              <h2 id="appearance-heading" className="settings-group-heading">
-                Appearance
-              </h2>
-              <div className="settings-card">
-                <div className="settings-rows">
-                  <div className="settings-row">
-                    <div className="settings-row-info">
-                      <h3 className="settings-row-title">Theme</h3>
-                      <p className="settings-row-description">
-                        Match the system or force light or dark mode.
-                      </p>
-                    </div>
-                    <div className="settings-row-control">
-                      <SegmentedControl<ThemePreference>
-                        aria-label="App theme"
-                        value={theme}
-                        options={THEME_OPTIONS}
-                        onValueChange={(next) => {
-                          setTheme(next);
-                          setStoredTheme(next);
-                        }}
-                      />
-                    </div>
-                  </div>
-                  <div className="settings-row">
-                    <div className="settings-row-info">
-                      <h3 className="settings-row-title">Accent</h3>
-                      <p className="settings-row-description">
-                        The brand color used across buttons, highlights, and the recorder.
-                      </p>
-                    </div>
-                    <div className="settings-row-control">
-                      <Select
-                        className="accent-select"
-                        value={brand}
-                        options={BRAND_PRESETS.map((preset) => ({
-                          value: preset.id,
-                          label: preset.label,
-                          color: preset.value,
-                        }))}
-                        placeholder="Clay"
-                        ariaLabel={`Accent color: ${
-                          BRAND_PRESETS.find((preset) => preset.id === brand)?.label ??
-                          BRAND_PRESETS[0].label
-                        }`}
-                        onChange={(id) => {
-                          setBrand(id as BrandId);
-                          setStoredBrand(id as BrandId);
-                        }}
-                      />
-                    </div>
-                  </div>
-                  <div className="settings-row">
-                    <div className="settings-row-info">
-                      <h3 className="settings-row-title">Date format</h3>
-                      <p className="settings-row-description">
-                        Choose how older session dates appear in the sidebar.
-                      </p>
-                    </div>
-                    <div className="settings-row-control">
-                      <Select
-                        value={dateFormat}
-                        options={DATE_FORMAT_OPTIONS}
-                        placeholder="System"
-                        ariaLabel={`Date format: ${
-                          DATE_FORMAT_OPTIONS.find((option) => option.value === dateFormat)
-                            ?.label ?? "System"
-                        }`}
-                        onChange={(value) => {
-                          const next = value as DateFormatPreference;
-                          setDateFormat(next);
-                          setStoredDateFormat(next);
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
 
             <PermissionsSettingsSection
               microphonePermissionStatus={microphonePermissionStatus}
@@ -1469,6 +1407,110 @@ export function AppSettings({
 
             <PrivacySettingsSection />
           </>
+        ) : null}
+
+        {activeTab === "appearance" ? (
+          <section className="settings-group" aria-labelledby="appearance-heading">
+            <SettingsPageHeader
+              id="appearance-heading"
+              title="Appearance"
+              blurb="Choose the theme, accent color, text size, and date format June uses."
+            />
+            <div className="settings-card">
+              <div className="settings-rows">
+                <div className="settings-row">
+                  <div className="settings-row-info">
+                    <h3 className="settings-row-title">Theme</h3>
+                    <p className="settings-row-description">
+                      Match the system or force light or dark mode.
+                    </p>
+                  </div>
+                  <div className="settings-row-control">
+                    <SegmentedControl<ThemePreference>
+                      aria-label="App theme"
+                      value={theme}
+                      options={THEME_OPTIONS}
+                      onValueChange={(next) => {
+                        setTheme(next);
+                        setStoredTheme(next);
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-info">
+                    <h3 className="settings-row-title">Text size</h3>
+                    <p className="settings-row-description">
+                      Make text across the app larger. Affects every label, note, and conversation.
+                    </p>
+                  </div>
+                  <div className="settings-row-control">
+                    <SegmentedControl<FontScaleId>
+                      aria-label="Text size"
+                      value={fontScale}
+                      options={FONT_SCALE_OPTIONS}
+                      onValueChange={(next) => {
+                        setFontScale(next);
+                        setStoredFontScale(next);
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-info">
+                    <h3 className="settings-row-title">Accent</h3>
+                    <p className="settings-row-description">
+                      The brand color used across buttons, highlights, and the recorder.
+                    </p>
+                  </div>
+                  <div className="settings-row-control">
+                    <Select
+                      className="accent-select"
+                      value={brand}
+                      options={BRAND_PRESETS.map((preset) => ({
+                        value: preset.id,
+                        label: preset.label,
+                        color: preset.value,
+                      }))}
+                      placeholder="Clay"
+                      ariaLabel={`Accent color: ${
+                        BRAND_PRESETS.find((preset) => preset.id === brand)?.label ??
+                        BRAND_PRESETS[0].label
+                      }`}
+                      onChange={(id) => {
+                        setBrand(id as BrandId);
+                        setStoredBrand(id as BrandId);
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-info">
+                    <h3 className="settings-row-title">Date format</h3>
+                    <p className="settings-row-description">
+                      Choose how older session dates appear in the sidebar.
+                    </p>
+                  </div>
+                  <div className="settings-row-control">
+                    <Select
+                      value={dateFormat}
+                      options={DATE_FORMAT_OPTIONS}
+                      placeholder="System"
+                      ariaLabel={`Date format: ${
+                        DATE_FORMAT_OPTIONS.find((option) => option.value === dateFormat)?.label ??
+                        "System"
+                      }`}
+                      onChange={(value) => {
+                        const next = value as DateFormatPreference;
+                        setDateFormat(next);
+                        setStoredDateFormat(next);
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
         ) : null}
 
         {activeTab === "billing" && !account.localDev ? (

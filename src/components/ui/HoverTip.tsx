@@ -12,6 +12,18 @@ import { createPortal } from "react-dom";
 
 const DEFAULT_TIP_WIDTH = 300;
 const TIP_GAP = 6;
+
+// Width caps (the `width` prop and the default above) are hand-tuned at the
+// base text size. Text width grows linearly with the text-size preference, so
+// the cap multiplies by the live --font-scale — otherwise a tip tuned to fit
+// one line at the base size wraps at Large/Larger. Falls back to 1 where the
+// token can't be read (jsdom).
+function currentFontScale(): number {
+  if (typeof document === "undefined") return 1;
+  const raw = getComputedStyle(document.documentElement).getPropertyValue("--font-scale");
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
 const VIEWPORT_MARGIN = 8;
 // Fallback flip threshold used only before the tip's real height is known (it
 // never is, since the side is decided in the measure pass from the measured
@@ -457,7 +469,9 @@ export function HoverTip({
               style={{
                 top: coords?.top ?? anchor.bottom,
                 left: coords?.left ?? 0,
-                maxWidth: width,
+                // Scale-adjusted at mount time; tips are ephemeral, so a
+                // text-size change is picked up on the next open.
+                maxWidth: width * currentFontScale(),
                 // Applied only after the tighten pass; while measuring the tip
                 // renders at its natural capped width so the wrap is real.
                 width: coords?.width,

@@ -783,6 +783,27 @@ pub fn june_open_community_page() -> Result<(), AppError> {
     crate::os_accounts::open_in_browser(JUNE_COMMUNITY_URL)
 }
 
+/// Opens an arbitrary external link in the default browser. This is the
+/// generic sibling of the fixed-URL commands above: the frontend's global
+/// anchor interceptor (src/lib/external-links.ts) routes every external
+/// `target="_blank"` click here, since the webview drops them otherwise.
+/// Scheme-checked to http/https so a crafted href can't reach other URL
+/// handlers (file:, tel:, custom schemes) through the OS opener.
+#[tauri::command]
+pub fn june_open_external_url(url: String) -> Result<(), AppError> {
+    let scheme_ok = {
+        let lower = url.trim_start().to_ascii_lowercase();
+        lower.starts_with("https://") || lower.starts_with("http://")
+    };
+    if !scheme_ok {
+        return Err(AppError::new(
+            "external_url_rejected",
+            "Only http(s) links can be opened externally.",
+        ));
+    }
+    crate::os_accounts::open_in_browser(url.trim())
+}
+
 #[tauri::command]
 pub async fn open_privacy_settings(request: OpenPrivacySettingsRequest) -> Result<(), AppError> {
     #[cfg(target_os = "macos")]

@@ -2831,7 +2831,7 @@ input:focus-visible,
 .agent-tool-icon-minimize {
   opacity: 0;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 15px;
+  font-size: var(--fs-lg);
   line-height: 1;
 }
 
@@ -7289,7 +7289,9 @@ input:focus-visible,
 .sidebar-brand {
   display: inline-flex;
   align-items: center;
-  height: 14px;
+  /* Matches .sidebar-brand-mark: the wordmark scales with the text-size
+   * preference, so its wrapper must grow with it. */
+  height: calc(14px * var(--font-scale));
   color: var(--foreground);
   text-decoration: none;
   flex: 0 1 auto;
@@ -7381,7 +7383,9 @@ input:focus-visible,
  * accent. Replaces the old light/dark <img> swap. */
 .sidebar-brand-mark {
   display: block;
-  height: 14px;
+  /* The wordmark is brand *text*, so it rides the text-size preference like
+   * the nav labels beside it — unlike glyph icons, which stay fixed chrome. */
+  height: calc(14px * var(--font-scale));
   width: auto;
   color: var(--foreground);
 }

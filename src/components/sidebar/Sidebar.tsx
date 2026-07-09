@@ -13,6 +13,7 @@ import { IconBuildingBlocks } from "central-icons/IconBuildingBlocks";
 import { IconElements } from "central-icons/IconElements";
 import { IconModelcontextprotocol } from "central-icons/IconModelcontextprotocol";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
+import { IconColorPalette } from "central-icons/IconColorPalette";
 import { IconCreditCard1 } from "central-icons/IconCreditCard1";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
@@ -219,6 +220,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
         id: "general",
         label: "General",
         icon: <IconSettingsGear4 size={16} />,
+      },
+      {
+        id: "appearance",
+        label: "Appearance",
+        icon: <IconColorPalette size={16} />,
       },
       {
         id: "billing",
@@ -637,8 +643,9 @@ export function Sidebar({
         action: () => onChangeView("settings"),
       },
       // Per-tab settings jumps surface only once a query is typed so ten
-      // rows don't flood the default Quick actions list. The general tab
-      // hosts Appearance, so its search text carries those terms too.
+      // rows don't flood the default Quick actions list. General and
+      // Appearance carry their row-level terms so "theme" or "account"
+      // still finds the right tab.
       ...(normalized
         ? SETTINGS_TABS.filter(
             (tab) =>
@@ -650,8 +657,10 @@ export function Sidebar({
               icon: <IconSettingsGear4 size={15} />,
               searchText: normalizeCommandQuery(
                 tab.id === "general"
-                  ? "settings general appearance theme accent account"
-                  : `settings ${tab.label}`,
+                  ? "settings general account permissions privacy"
+                  : tab.id === "appearance"
+                    ? "settings appearance theme accent text size dark light mode"
+                    : `settings ${tab.label}`,
               ),
               action: () => {
                 onSettingsTabChange?.(tab.id);
