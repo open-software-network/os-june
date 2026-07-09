@@ -75,7 +75,9 @@ export function useSystemAudioStatus(active: boolean): {
         } else if (system.permissionState === "denied" || system.permissionState === "restricted") {
           setStatus("denied");
         } else {
-          setStatus(system.ready ? "granted" : "unknown");
+          // `ready` only says this Mac is capable; an unprobed source carries
+          // no grant, so it stays unknown rather than reading as allowed.
+          setStatus("unknown");
         }
       })
       .catch(() => {
