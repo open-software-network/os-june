@@ -16,6 +16,13 @@ import { IconPause } from "central-icons/IconPause";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { describeHermesError } from "../../lib/errors";
 import {
+  TRUST_MODE_META,
+  eventTriggerScheduleDraft,
+  routineToolsetsFor,
+  routineTrustModeFromToolsets,
+  triggerConfigFromDraft,
+} from "../../lib/connectors";
+import {
   isReplaceableScheduledRunTitle,
   listScheduledRunSessions,
   scheduledRunJobId,
@@ -35,7 +42,7 @@ import {
 } from "../../lib/hermes-routines";
 import { compactScheduleLabel, humanizeSchedule } from "../../lib/routine-schedule";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
-import type { HermesSessionInfo } from "../../lib/tauri";
+import { connectorTriggerSet, routineTrustSet, type HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { HoverTip } from "../ui/HoverTip";
 import { RoutineCreate, type RoutineCreateInput } from "./RoutineCreate";
@@ -249,7 +256,56 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
   async function submitCreate(input: RoutineCreateInput) {
     setCreating(true);
     try {
-      const created = await createRoutine(input);
+      const eventTrigger = input.trigger.source !== "schedule" ? input.trigger : null;
+      // A routine is connector-aware when anything about it touches Google:
+      // a non-default trust mode, an event trigger, or a connector template's
+      // scope requirements. Plain routines keep the legacy create path
+      // untouched (no toolset override, no trust record).
+      const connectorAware =
+        input.trustMode !== "read_only" ||
+        eventTrigger !== null ||
+        (input.connectorScopes?.length ?? 0) > 0;
+      const created = await createRoutine(
+        connectorAware
+          ? {
+              prompt: input.prompt,
+              // Event routines still need a cron record underneath; a
+              // far-future one-time schedule plus the pause below hands the
+              // firing over to the trigger daemon.
+              schedule: eventTrigger ? eventTriggerScheduleDraft().schedule : input.schedule,
+              name: input.name,
+              enabledToolsets: routineToolsetsFor(input.trustMode, {
+                unrestricted: input.unrestricted,
+              }),
+            }
+          : {
+              prompt: input.prompt,
+              schedule: input.schedule,
+              name: input.name,
+              unrestricted: input.unrestricted,
+            },
+      );
+      if (connectorAware) {
+        await routineTrustSet({
+          jobId: created.job_id,
+          trustMode: input.trustMode,
+          autonomousTools: input.trustMode === "autonomous" ? input.autonomousTools : undefined,
+        });
+        if (eventTrigger && input.triggerAccountId) {
+          await pauseRoutine(created.job_id).catch(() => {});
+          await connectorTriggerSet({
+            jobId: created.job_id,
+            kind: eventTrigger.source,
+            accountId: input.triggerAccountId,
+            config: triggerConfigFromDraft(eventTrigger),
+          });
+        } else if (!eventTrigger) {
+          // The first run fires right away (still under the chosen trust
+          // mode, so actions wait for approval); best-effort, the schedule
+          // owns every later run.
+          await triggerRoutine(created.job_id).catch(() => {});
+        }
+      }
       await loadRoutines();
       setCreateError(null);
       setDetailError(null);
@@ -555,6 +611,17 @@ function TemplateGrid({ onPick }: { onPick: (template: RoutineTemplate) => void 
               ) : null}
             </span>
             <p className="routines-template-description">{template.description}</p>
+            {template.toolSummary ? (
+              <p className="routines-template-tools">
+                {template.toolSummary}
+                {template.trustMode ? (
+                  <span className="routines-template-trust">
+                    {" "}
+                    Trust: {TRUST_MODE_META[template.trustMode].label.toLowerCase()}.
+                  </span>
+                ) : null}
+              </p>
+            ) : null}
           </div>
           <button
             type="button"
@@ -587,6 +654,11 @@ function RoutineRow({
   const menuRef = useRef<HTMLDivElement>(null);
   const paused = routine.state === "paused";
   const completed = routine.state === "completed";
+  // Derived from the stored toolset override (no per-row round trip); only
+  // the action-capable modes get a badge — ambient read access is every
+  // routine's baseline and would read as noise.
+  const trustMode = routineTrustModeFromToolsets(routine.enabled_toolsets);
+  const trustBadge = trustMode === "approval" || trustMode === "autonomous" ? trustMode : null;
   const status = paused ? "Paused" : completed ? "Completed" : null;
   const activity =
     completed && routine.last_run_at ? `Last ran ${formatRunTime(routine.last_run_at)}` : null;
@@ -629,6 +701,15 @@ function RoutineRow({
               >
                 <IconShieldCrossed size={11} aria-hidden />
                 Unrestricted
+              </HoverTip>
+            ) : null}
+            {trustBadge ? (
+              <HoverTip
+                tip={TRUST_MODE_META[trustBadge].description}
+                className="routines-item-badge routines-item-badge-trust"
+                tabIndex={0}
+              >
+                {TRUST_MODE_META[trustBadge].label}
               </HoverTip>
             ) : null}
             {routine.last_status === "error" ? (

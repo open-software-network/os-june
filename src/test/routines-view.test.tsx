@@ -31,6 +31,24 @@ vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
   listScheduledRunSessions: adapterMocks.listScheduledRunSessions,
 }));
 
+// Connector commands the create/detail pages call. Defaults mimic a build
+// with the connectors module present but nothing connected.
+const tauriMocks = vi.hoisted(() => ({
+  connectorsList: vi.fn(),
+  connectorsConnect: vi.fn(),
+  connectorsApplyRuntime: vi.fn(),
+  routineTrustGet: vi.fn(),
+  routineTrustSet: vi.fn(),
+  connectorTriggersList: vi.fn(),
+  connectorTriggerSet: vi.fn(),
+  connectorTriggerDelete: vi.fn(),
+}));
+
+vi.mock("../lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/tauri")>()),
+  ...tauriMocks,
+}));
+
 function job(overrides: Partial<RoutineJob> = {}): RoutineJob {
   return {
     job_id: "abc123",
@@ -107,7 +125,41 @@ beforeEach(() => {
   mocks.createRoutine.mockResolvedValue(job());
   mocks.updateRoutine.mockResolvedValue(job());
   adapterMocks.listScheduledRunSessions.mockResolvedValue([]);
+  tauriMocks.connectorsList.mockResolvedValue([]);
+  tauriMocks.connectorsConnect.mockResolvedValue(googleAccount());
+  tauriMocks.connectorsApplyRuntime.mockResolvedValue(undefined);
+  tauriMocks.routineTrustGet.mockResolvedValue(null);
+  tauriMocks.routineTrustSet.mockImplementation(
+    async (input: { trustMode: string; autonomousTools?: string[] }) => ({
+      trustMode: input.trustMode,
+      approvalRunCount: 0,
+      autonomousTools: input.autonomousTools ?? [],
+    }),
+  );
+  tauriMocks.connectorTriggersList.mockResolvedValue([]);
+  tauriMocks.connectorTriggerSet.mockImplementation(
+    async (input: { jobId: string; kind: string; accountId: string; config: object }) => ({
+      id: "trig-1",
+      ...input,
+    }),
+  );
+  tauriMocks.connectorTriggerDelete.mockResolvedValue(undefined);
 });
+
+function googleAccount(overrides: Record<string, unknown> = {}) {
+  return {
+    accountId: "acc-1",
+    provider: "google" as const,
+    email: "alex@example.com",
+    scopes: [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.compose",
+      "https://www.googleapis.com/auth/calendar.events",
+    ],
+    status: "connected" as const,
+    ...overrides,
+  };
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -425,6 +477,137 @@ describe("RoutinesView templates and creation", () => {
 
     await userEvent.keyboard("{Escape}");
     expect(within(composer).queryByRole("menuitemradio", { name: /unrestricted/i })).toBeNull();
+  });
+});
+
+describe("RoutinesView connector templates", () => {
+  it("shows the connector templates with their tool summary and trust mode", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    renderView();
+
+    expect(await screen.findByText("Morning briefing")).toBeInTheDocument();
+    expect(screen.getByText("Auto-inbox")).toBeInTheDocument();
+    expect(screen.getByText("Meeting prep")).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/This routine can: read your mail, read your calendar/).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/This routine can: read your mail, draft replies, change labels/),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/Trust: approval/).length).toBeGreaterThan(0);
+  });
+
+  it("gates a connector template on the required Google scopes and connects inline", async () => {
+    tauriMocks.connectorsList.mockResolvedValueOnce([]).mockResolvedValue([googleAccount()]);
+    mocks.listRoutines.mockResolvedValue([]);
+    renderView();
+    await screen.findByText("Morning briefing");
+
+    await userEvent.click(screen.getByRole("button", { name: "Add Morning briefing" }));
+
+    // Blocked: no account with the template's bundles is connected yet.
+    expect(await screen.findByText(/needs a connected Google account/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Connect Google account" }));
+
+    await waitFor(() =>
+      expect(tauriMocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["gmail_read", "calendar_events"],
+      }),
+    );
+    await waitFor(() => expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create" })).toBeEnabled());
+  });
+
+  it("creates a scheduled connector routine with trust and an immediate first run", async () => {
+    tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
+    mocks.listRoutines.mockResolvedValueOnce([]);
+    renderView();
+    await screen.findByText("Morning briefing");
+
+    await userEvent.click(screen.getByRole("button", { name: "Add Morning briefing" }));
+    mocks.listRoutines.mockResolvedValue([job()]);
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(mocks.createRoutine).toHaveBeenCalled());
+    const createArgs = (mocks.createRoutine.mock.calls[0] as unknown[])[0] as {
+      schedule: string;
+      enabledToolsets?: string[];
+    };
+    expect(createArgs.schedule).toBe("0 8 * * *");
+    // Read-only trust: read servers ambient, no actions servers.
+    expect(createArgs.enabledToolsets).toContain("june_gmail");
+    expect(createArgs.enabledToolsets).toContain("june_gcal");
+    expect(createArgs.enabledToolsets).not.toContain("june_gmail_actions");
+
+    await waitFor(() =>
+      expect(tauriMocks.routineTrustSet).toHaveBeenCalledWith({
+        jobId: "abc123",
+        trustMode: "read_only",
+        autonomousTools: undefined,
+      }),
+    );
+    // The first run fires right away for scheduled connector routines.
+    await waitFor(() => expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"));
+  });
+
+  it("creates an event-triggered routine paused with the trigger subscription", async () => {
+    tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
+    mocks.listRoutines.mockResolvedValueOnce([]);
+    renderView();
+    await screen.findByText("Auto-inbox");
+
+    await userEvent.click(screen.getByRole("button", { name: "Add Auto-inbox" }));
+    // The "When" picker is preset to the email trigger, not a schedule.
+    expect(screen.getByRole("button", { name: "Trigger type" })).toHaveTextContent(
+      "When new email arrives",
+    );
+    mocks.listRoutines.mockResolvedValue([job()]);
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(mocks.createRoutine).toHaveBeenCalled());
+    const createArgs = (mocks.createRoutine.mock.calls[0] as unknown[])[0] as {
+      schedule: string;
+      enabledToolsets?: string[];
+    };
+    // Event routines get the far-future one-time schedule, never a cron.
+    expect(createArgs.schedule).toBe("2099-01-01T09:00:00Z");
+    // Approval trust: the actions servers ride along.
+    expect(createArgs.enabledToolsets).toContain("june_gmail_actions");
+
+    await waitFor(() => expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123"));
+    await waitFor(() =>
+      expect(tauriMocks.connectorTriggerSet).toHaveBeenCalledWith({
+        jobId: "abc123",
+        kind: "email_received",
+        accountId: "acc-1",
+        config: {},
+      }),
+    );
+    // Event-driven jobs never queue an immediate scheduler run.
+    expect(mocks.triggerRoutine).not.toHaveBeenCalled();
+  });
+
+  it("badges rows whose toolsets imply an action-capable trust mode", async () => {
+    mocks.listRoutines.mockResolvedValue([
+      job(),
+      job({
+        job_id: "def456",
+        name: "Inbox triage",
+        enabled_toolsets: ["web", "june_gmail", "june_gmail_actions"],
+      }),
+      job({
+        job_id: "ghi789",
+        name: "Auto archiver",
+        enabled_toolsets: ["web", "june_gmail", "june_gmail_auto_ab12cd34"],
+      }),
+    ]);
+    renderView();
+
+    const list = await screen.findByRole("list", { name: "Routines" });
+    expect(within(list).getByText("Approval")).toBeInTheDocument();
+    expect(within(list).getByText("Autonomous")).toBeInTheDocument();
   });
 });
 

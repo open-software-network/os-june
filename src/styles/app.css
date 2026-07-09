@@ -24274,3 +24274,332 @@ input:focus-visible,
 .app-shell[data-note-chat-resizing="true"] .note-chat-panel {
   transition: none;
 }
+
+/* ---------------------------------------------------------------------------
+ * Private Google connectors (local mode): the Connectors settings page, the
+ * routine trust picker, event triggers, and the biography card. Follows the
+ * .settings-* / .routines-* conventions above.
+ * ------------------------------------------------------------------------- */
+
+/* Trust-mode badge on routine rows: same recipe as .routines-item-badge with
+ * the accent wash, so "Approval" / "Autonomous" reads as a capability, not an
+ * error. */
+.routines-item-badge-trust {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: color-mix(in oklch, var(--primary) 12%, transparent);
+  color: var(--primary);
+}
+
+/* Connector template cards: the tool summary under the description ("This
+ * routine can: read your mail, draft replies"). */
+.routines-template-tools {
+  margin: 2px 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.routines-template-trust {
+  color: var(--foreground);
+}
+
+/* The create page's template access summary above the sections. */
+.routines-tool-summary {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Trust-mode picker (read only / approval / autonomous). */
+.trust-mode-picker {
+  display: flex;
+  flex-direction: column;
+}
+
+.trust-mode-locked-hint {
+  color: var(--muted-foreground);
+}
+
+.trust-mode-grants {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.trust-mode-grants-legend {
+  padding: 0 var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.trust-mode-grant {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Event-trigger picker: the "When" control's extra pieces beside the reused
+ * schedule-picker layout. */
+.trigger-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.trigger-picker-unit {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.trigger-picker-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Connectors settings page. */
+.connectors-account-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.connectors-account-row {
+  align-items: flex-start;
+}
+
+.connectors-account-email {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.connectors-account-status {
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+
+.connectors-account-status[data-tone="ok"] {
+  background: color-mix(in oklch, var(--success, var(--primary)) 12%, transparent);
+  color: var(--success, var(--primary));
+}
+
+.connectors-account-status[data-tone="attention"] {
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+  color: var(--destructive);
+}
+
+.connectors-account-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.connectors-empty {
+  padding: var(--sp-4);
+}
+
+.connectors-connect-row {
+  display: flex;
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.connectors-bundle-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: var(--sp-2) 0 var(--sp-4);
+}
+
+.connectors-bundle-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+
+.connectors-bundle-option input {
+  margin-top: 3px;
+}
+
+.connectors-bundle-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.connectors-bundle-label {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+}
+
+.connectors-bundle-description {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.connectors-revoke-option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-4);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Biography ("Your profile") card. */
+.biography-empty,
+.biography-view,
+.biography-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+}
+
+.biography-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.biography-content {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+
+.biography-textarea {
+  min-height: 180px;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.biography-textarea:focus {
+  outline: none;
+  border-color: var(--ring);
+}
+
+/* Connector approvals tray: a shell-level queue for parked action calls under
+   the approval trust mode. Fixed bottom-right, above the toast host. */
+.connector-approvals {
+  position: fixed;
+  right: var(--sp-4);
+  bottom: var(--sp-4);
+  z-index: 60;
+  width: min(360px, calc(100vw - var(--sp-8)));
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-lg);
+}
+
+.connector-approvals-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.connector-approvals-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-sm);
+}
+
+.connector-approvals-bulk {
+  display: inline-flex;
+  gap: var(--sp-1);
+}
+
+.connector-approvals-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-height: min(420px, 50vh);
+  overflow-y: auto;
+}
+
+.connector-approvals-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.connector-approvals-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.connector-approvals-summary {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.connector-approvals-meta {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+}
+
+.connector-approvals-preview {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.connector-approvals-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}

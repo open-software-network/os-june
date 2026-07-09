@@ -36,3 +36,4 @@ coverage
 # Agent worktrees
 .claude/worktrees/
 .worktrees/
+__pycache__/

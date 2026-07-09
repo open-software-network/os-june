@@ -95,6 +95,8 @@ import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
 import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
+import { BiographySection } from "./BiographySection";
+import { ConnectorsSection } from "./ConnectorsSection";
 import { ExternalDirsSection } from "./ExternalDirsSection";
 import { InstalledSkillsSection } from "./InstalledSkillsSection";
 import { SkillDetailSection } from "./SkillDetailSection";
@@ -237,6 +239,7 @@ export type SettingsTab =
   | "audio"
   | "models"
   | "agent"
+  | "connectors"
   | "skills"
   | "external-dirs"
   | "skill-review"
@@ -261,6 +264,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "audio", label: "Audio" },
   { id: "models", label: "Models" },
   { id: "agent", label: "Agent" },
+  { id: "connectors", label: "Connectors" },
   { id: "skills", label: "Installed skills" },
   { id: "external-dirs", label: "External skill directories" },
   { id: "skill-review", label: "Pending skill changes" },
@@ -2045,6 +2049,13 @@ export function AppSettings({
             onSelectPlatform={setAgentPlatformId}
             onBackFromPlatform={() => setAgentPlatformId(undefined)}
           />
+        ) : null}
+
+        {activeTab === "connectors" ? (
+          <>
+            <ConnectorsSection />
+            <BiographySection />
+          </>
         ) : null}
 
         {activeTab === "skills" ? <InstalledSkillsSection onOpenSkill={setOpenSkill} /> : null}

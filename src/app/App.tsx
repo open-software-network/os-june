@@ -49,6 +49,7 @@ import { IconProjects } from "central-icons/IconProjects";
 import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
+import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
 import { Dialog } from "../components/ui/Dialog";
 import { Toaster } from "../components/ui/Toaster";
 import {
@@ -3719,6 +3720,9 @@ export function App() {
       {/* Global toast host. Mounted once beside the dialogs; sonner portals its
           own list to document.body, so placement in the tree is immaterial. */}
       <Toaster />
+      {/* Connector action approvals (approval trust mode) can arrive from a
+          routine or chat in any view, so the tray is mounted at the shell. */}
+      <ConnectorApprovalsTray />
     </main>
   );
 }

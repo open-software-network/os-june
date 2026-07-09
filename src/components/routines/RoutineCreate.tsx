@@ -1,13 +1,30 @@
-import { useState } from "react";
+import { IconGoogle } from "central-icons/IconGoogle";
+import { useEffect, useState } from "react";
+import {
+  TRUST_MODE_META,
+  isConnectorNotConfiguredError,
+  scopesCoverBundles,
+  type TriggerDraft,
+} from "../../lib/connectors";
+import { messageFromError } from "../../lib/errors";
 import {
   draftFromSchedule,
   scheduleFromDraft,
   type ScheduleDraft,
 } from "../../lib/routine-schedule";
+import {
+  connectorsApplyRuntime,
+  connectorsConnect,
+  connectorsList,
+  type ConnectorAccount,
+  type RoutineTrustMode,
+} from "../../lib/tauri";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
+import { InlineNotice } from "../ui/InlineNotice";
 import { GrowingTextarea } from "./GrowingTextarea";
 import { RoutineModePicker } from "./RoutineModePicker";
-import { SchedulePicker } from "./SchedulePicker";
+import { TriggerPicker } from "./TriggerPicker";
+import { TrustModePicker } from "./TrustModePicker";
 import type { RoutineTemplate } from "./routine-templates";
 
 export type RoutineCreateInput = {
@@ -15,6 +32,16 @@ export type RoutineCreateInput = {
   schedule: string;
   name?: string;
   unrestricted: boolean;
+  /** Connector trust for the new routine (read only unless chosen). */
+  trustMode: RoutineTrustMode;
+  autonomousTools: string[];
+  /** The "When" choice: a schedule, or a connector event trigger. */
+  trigger: TriggerDraft;
+  /** Account the event trigger subscribes on (first connected account). */
+  triggerAccountId?: string;
+  /** Set when installing a connector template, so the create flow knows to
+   * persist trust and queue the immediate first run. */
+  connectorScopes?: RoutineTemplate["connectorScopes"];
 };
 
 type RoutineCreateProps = {
@@ -33,14 +60,80 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
   );
   const [prompt, setPrompt] = useState(template?.prompt ?? "");
   const [unrestricted, setUnrestricted] = useState(template?.unrestricted ?? false);
+  const [trustMode, setTrustMode] = useState<RoutineTrustMode>(template?.trustMode ?? "read_only");
+  const [autonomousTools, setAutonomousTools] = useState<string[]>([]);
+  const [trigger, setTrigger] = useState<TriggerDraft>(() => {
+    const templateTrigger = template?.trigger;
+    if (!templateTrigger) return { source: "schedule" };
+    if (templateTrigger.kind === "email_received") return { source: "email_received" };
+    return {
+      source: "event_upcoming",
+      leadMinutes: templateTrigger.leadMinutes ?? 30,
+      externalOnly: templateTrigger.externalOnly ?? true,
+    };
+  });
+  // null while loading; connector features degrade quietly (plain routines
+  // never need an account, and the Rust side may not be present in dev).
+  const [accounts, setAccounts] = useState<ConnectorAccount[] | null>(null);
+  const [connectBusy, setConnectBusy] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    connectorsList()
+      .then((list) => {
+        if (!cancelled) setAccounts(list);
+      })
+      .catch(() => {
+        if (!cancelled) setAccounts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const requiredScopes = template?.connectorScopes;
+  const connectedAccount = (accounts ?? []).find((account) => account.status === "connected");
+  const scopeGateSatisfied =
+    !requiredScopes ||
+    (accounts ?? []).some(
+      (account) =>
+        account.status === "connected" && scopesCoverBundles(account.scopes, requiredScopes),
+    );
+  const eventGateSatisfied = trigger.source === "schedule" || Boolean(connectedAccount);
+  const blocked = !scopeGateSatisfied || !eventGateSatisfied;
+
+  async function connectForTemplate() {
+    if (!requiredScopes || connectBusy) return;
+    setConnectBusy(true);
+    setConnectError(null);
+    try {
+      await connectorsConnect({ scopes: requiredScopes });
+      await connectorsApplyRuntime();
+      setAccounts(await connectorsList());
+    } catch (err) {
+      setConnectError(
+        isConnectorNotConfiguredError(err)
+          ? "Google connector isn't configured in this build."
+          : messageFromError(err),
+      );
+    } finally {
+      setConnectBusy(false);
+    }
+  }
 
   function submit() {
-    if (!prompt.trim()) return;
+    if (!prompt.trim() || blocked) return;
     onCreate({
       prompt: prompt.trim(),
       schedule: scheduleFromDraft(draft),
       name: name.trim() || undefined,
       unrestricted,
+      trustMode,
+      autonomousTools,
+      trigger,
+      triggerAccountId: connectedAccount?.accountId,
+      connectorScopes: requiredScopes,
     });
   }
 
@@ -58,7 +151,7 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
             <button
               type="button"
               className="primary-action primary-solid"
-              disabled={!prompt.trim() || creating}
+              disabled={!prompt.trim() || creating || blocked}
               onClick={submit}
             >
               {creating ? "Creating…" : "Create"}
@@ -78,13 +171,48 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
 
         {error ? <p className="error-banner">{error}</p> : null}
 
+        {template?.toolSummary ? (
+          <p className="routines-tool-summary">
+            {template.toolSummary}. Trust: {TRUST_MODE_META[trustMode].label.toLowerCase()}.
+          </p>
+        ) : null}
+
+        {requiredScopes && !scopeGateSatisfied ? (
+          <InlineNotice
+            tone="info"
+            aria-label="Google account required"
+            body={
+              connectError ??
+              "This routine needs a connected Google account with the listed access before it can be created."
+            }
+            actions={
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={connectBusy}
+                aria-busy={connectBusy || undefined}
+                onClick={() => void connectForTemplate()}
+              >
+                <IconGoogle size={13} aria-hidden />
+                {connectBusy ? "Waiting for browser…" : "Connect Google account"}
+              </button>
+            }
+          />
+        ) : null}
+
         <div className="routine-detail-body">
           <section className="settings-group" aria-labelledby="routine-schedule">
             <h2 id="routine-schedule" className="settings-group-heading">
-              Schedule
+              When
             </h2>
             <div className="settings-card">
-              <SchedulePicker draft={draft} onChange={setDraft} />
+              <TriggerPicker
+                trigger={trigger}
+                scheduleDraft={draft}
+                hasAccount={Boolean(connectedAccount)}
+                onTriggerChange={setTrigger}
+                onScheduleChange={setDraft}
+              />
             </div>
           </section>
 
@@ -107,6 +235,21 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
             </h2>
             <div className="settings-card">
               <RoutineModePicker unrestricted={unrestricted} onChange={setUnrestricted} />
+            </div>
+          </section>
+
+          <section className="settings-group" aria-labelledby="routine-trust">
+            <h2 id="routine-trust" className="settings-group-heading">
+              Actions
+            </h2>
+            <div className="settings-card">
+              <TrustModePicker
+                value={trustMode}
+                runCount={0}
+                autonomousTools={autonomousTools}
+                onChange={setTrustMode}
+                onAutonomousToolsChange={setAutonomousTools}
+              />
             </div>
           </section>
         </div>
