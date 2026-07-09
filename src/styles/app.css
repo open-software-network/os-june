@@ -4945,6 +4945,52 @@ input:focus-visible,
   gap: var(--sp-1);
 }
 
+.agent-steer-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+/* Expanded, a long turn's worth of steers scrolls inside a bounded height
+   rather than shoving the editor down the screen; collapsed the list only ever
+   holds a card or two, so it never needs the cap. */
+.agent-steer-cards-list[data-scroll="true"] {
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+/* "Show N earlier" / "Show fewer" toggle above a collapsed stack — a quiet
+   text button, never louder than the cards it gates. */
+.agent-steer-cards-more {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  align-self: flex-start;
+  min-height: var(--control-sm);
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  transition:
+    color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
+}
+
+.agent-steer-cards-more:hover {
+  color: var(--foreground);
+  background: var(--surface-subtle);
+}
+
+.agent-steer-cards-more-chevron {
+  transition: rotate var(--t-fast) var(--ease-out);
+}
+
+.agent-steer-cards-more-chevron[data-expanded="true"] {
+  rotate: 180deg;
+}
+
 .agent-steer-card {
   display: flex;
   align-items: center;
@@ -4961,15 +5007,23 @@ input:focus-visible,
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  color: var(--muted-foreground);
+  /* Diminished well below the text so the instruction is the focus — the glyph
+     just tags the row as a steer, it doesn't compete for the eye. */
+  color: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
 }
 
+/* Long steers wrap to two lines then ellipsize (rather than a single truncated
+   line) so more of the instruction is legible at rest; the full text stays
+   reachable via the card's title tooltip and Edit. */
 .agent-steer-card-text {
   flex: 1 1 auto;
   min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 /* Revealed on hover/focus like the queued-message row it's modeled on, so a
@@ -5010,7 +5064,9 @@ input:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-steer-card-actions {
+  .agent-steer-card-actions,
+  .agent-steer-cards-more,
+  .agent-steer-cards-more-chevron {
     transition: none;
   }
 }
@@ -5422,6 +5478,9 @@ input:focus-visible,
 .agent-composer-attachments {
   display: flex;
   flex-wrap: wrap;
+  /* Center-align so image tiles (44px) and file chips (~24px) share a baseline
+     in a mixed row instead of stretching to the tallest. */
+  align-items: center;
   gap: var(--sp-1);
   padding: var(--sp-1) var(--sp-1) 0;
 }
@@ -5582,6 +5641,70 @@ input:focus-visible,
 
 .agent-attachment-chip button:active {
   scale: 0.96;
+}
+
+/* Image attachments read as a bare rounded thumbnail — no chip chrome, no
+   filename — so a message or steer that carries an image stays scannable and
+   the tile doesn't compete with the steer cards above it. The remove control
+   tucks into the thumb's top-right corner and reveals on hover/focus. */
+.agent-attachment-chip[data-kind="image"] {
+  position: relative;
+  max-width: none;
+  padding: 0;
+  background: transparent;
+}
+
+.agent-attachment-chip[data-kind="image"] > img {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--r-md);
+}
+
+.agent-attachment-chip[data-kind="image"] .agent-attachment-name,
+.agent-attachment-chip[data-kind="image"] .agent-attachment-status {
+  display: none;
+}
+
+/* Failed image: the destructive tint has no chip body to sit on, so mark the
+   thumb's own edge instead. */
+.agent-attachment-chip[data-kind="image"][data-attach-status="failed"] {
+  background: transparent;
+}
+
+.agent-attachment-chip[data-kind="image"][data-attach-status="failed"] > img {
+  outline-color: var(--destructive);
+}
+
+.agent-attachment-chip[data-kind="image"] button {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--background);
+  color: var(--foreground);
+  box-shadow: 0 0 0 1px var(--border);
+  opacity: 0;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    scale var(--t-fast) var(--ease-out);
+}
+
+.agent-attachment-chip[data-kind="image"]:hover button,
+.agent-attachment-chip[data-kind="image"]:focus-within button {
+  opacity: 1;
+}
+
+.agent-attachment-chip[data-kind="image"] button:hover {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-attachment-chip[data-kind="image"] button {
+    transition: none;
+  }
 }
 
 .agent-composer-box:focus-within {
@@ -6193,8 +6316,9 @@ input:focus-visible,
 }
 
 /* Send is the primary action in the brand terracotta (the logo mark color);
- * dictation stays a ghost. The arrow is always in its slot — it just goes
- * quiet while there's nothing to send, and lights up as the user types. */
+ * dictation stays a ghost. The arrow holds its slot but settles in as the user
+ * types — lifting up, sharpening, and scaling to full — so the send has its own
+ * entrance motion, not just a color change (see the data-active resting state). */
 .agent-composer-send {
   display: inline-grid;
   place-items: center;
@@ -6208,7 +6332,10 @@ input:focus-visible,
   color: var(--on-solid);
   transition:
     background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out);
+    color var(--t-fast) var(--ease-out),
+    filter var(--t-med) var(--ease-out),
+    scale var(--t-med) var(--ease-spring),
+    translate var(--t-slow) var(--ease-spring);
   animation: agent-composer-action-in var(--t-fast) var(--ease-out);
 }
 
@@ -6220,6 +6347,15 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   cursor: default;
+}
+
+/* Resting (nothing to send): the arrow sits a hair low, soft, and scaled back,
+   so the first keystroke lifts + sharpens it into place. Scoped away from the
+   steer-send, which runs its own blur-in slide out from behind Stop. */
+.agent-composer-send:not(.agent-composer-send-steer):not([data-active="true"]) {
+  filter: blur(4px);
+  scale: 0.86;
+  translate: 0 2px;
 }
 
 /* Send and stop trade the same slot; the incoming control scales up out of
@@ -6235,6 +6371,13 @@ input:focus-visible,
   .agent-composer-send,
   .agent-composer-stop {
     animation: none;
+  }
+
+  /* Drop the resting lift/blur/scale — the arrow just goes quiet, no motion. */
+  .agent-composer-send:not(.agent-composer-send-steer):not([data-active="true"]) {
+    filter: none;
+    scale: 1;
+    translate: 0 0;
   }
 }
 

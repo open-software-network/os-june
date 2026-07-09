@@ -331,6 +331,12 @@ const QUEUED_STEER_RETRY_DELAY_MS = 300;
 const RESTORED_QUEUED_STEER_RECONCILE_DELAY_MS = 1000;
 const RESTORED_QUEUED_STEER_BUSY_RECONCILE_DELAY_MS = 3000;
 const COMPOSER_TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4;
+// Steer-card queue: past this many undelivered steers, collapse the stack
+// behind a "show earlier" toggle so a long turn's worth of steers can't push
+// the composer off-screen; the most recent few stay visible (they're the ones
+// still worth revising).
+const STEER_CARDS_COLLAPSE_THRESHOLD = 3;
+const STEER_CARDS_COLLAPSED_VISIBLE = 2;
 
 // What the user reads instead of the gateway's "session busy" rejection. No
 // action in the pill — the composer's send slot already shows stop while
@@ -2003,6 +2009,9 @@ export function AgentWorkspace({
     Record<string, { id: string; text: string }[]>
   >({});
   const steerCardSeqRef = useRef(0);
+  // When the steer-card stack overflows the collapse threshold, the user can
+  // expand to see (edit/remove) the earlier steers. Reset per session below.
+  const [steerCardsExpanded, setSteerCardsExpanded] = useState(false);
   const waitingSessionIdsRef = useRef<Set<string>>(waitingSessionIds);
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<Record<string, string>>(
     () => continuity?.runtimeSessionIds ?? {},
@@ -2630,6 +2639,23 @@ export function AgentWorkspace({
   // because the composer auto-grow effect below needs it as a dependency.
   const heroMode =
     !gallerySections && (newSessionMode || (!selectedHermesSessionId && !selectedTask));
+  // Composer steer state: the open session is mid-run (or a send is landing), so
+  // the send slot holds Stop and a typed message steers the running turn rather
+  // than starting a new one. Drives the steer-send button, the queue-style
+  // placeholder, and whether the steer-card stack renders.
+  const composerInSteerState =
+    !!selectedHermesSessionId &&
+    !selectedHermesSessionIsProvisional &&
+    (workingSessionIds.has(selectedHermesSessionId) || submitting || composerSteerDemo);
+  const selectedSteerCards = selectedHermesSessionId
+    ? (steerCardsBySessionId[selectedHermesSessionId] ?? [])
+    : [];
+  const steerCardsOverflow = selectedSteerCards.length > STEER_CARDS_COLLAPSE_THRESHOLD;
+  const steerCardsCollapsed = steerCardsOverflow && !steerCardsExpanded;
+  const visibleSteerCards = steerCardsCollapsed
+    ? selectedSteerCards.slice(selectedSteerCards.length - STEER_CARDS_COLLAPSED_VISIBLE)
+    : selectedSteerCards;
+  const hiddenSteerCardCount = selectedSteerCards.length - visibleSteerCards.length;
   const visibleErrorState = visibleAgentWorkspaceError(errorState, selectedHermesSessionId);
   const visibleError = visibleErrorState?.message ?? null;
   // The banner offers "Try again" for failures a reconnect-and-reload can clear:
@@ -7113,6 +7139,13 @@ export function AgentWorkspace({
     return () => window.removeEventListener(AGENT_GALLERY_EVENT, onGallery);
   }, []);
 
+  // Collapse the steer-card stack back down whenever the open session changes —
+  // "show earlier" is a per-session, per-glance affordance, not a sticky mode.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on session switch only
+  useEffect(() => {
+    setSteerCardsExpanded(false);
+  }, [selectedHermesSessionId]);
+
   // Dev-only composer steer-state driver (window.__composerSteerDemo): pick up
   // the desired state on mount and follow live toggles via the window event.
   useEffect(() => {
@@ -7633,34 +7666,56 @@ export function AgentWorkspace({
           ) : null}
         </AnimatePresence>
         <div ref={composerBoxRef} className="agent-composer-box">
-          {selectedHermesSessionId && steerCardsBySessionId[selectedHermesSessionId]?.length ? (
+          {selectedHermesSessionId && selectedSteerCards.length ? (
             <div className="agent-steer-cards">
-              {steerCardsBySessionId[selectedHermesSessionId].map((card) => (
-                <div key={card.id} className="agent-steer-card">
-                  <span className="agent-steer-card-icon" aria-hidden>
-                    <IconArrowCornerDownRight size={13} />
-                  </span>
-                  <span className="agent-steer-card-text">{card.text}</span>
-                  <div className="agent-steer-card-actions">
-                    <button
-                      type="button"
-                      aria-label="Edit steer"
-                      title="Edit"
-                      onClick={() => editSteerCard(selectedHermesSessionId, card.id, card.text)}
-                    >
-                      <IconPencil size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Remove steer"
-                      title="Remove"
-                      onClick={() => removeSteerCard(selectedHermesSessionId, card.id)}
-                    >
-                      <IconTrashCan size={13} />
-                    </button>
+              {steerCardsOverflow ? (
+                <button
+                  type="button"
+                  className="agent-steer-cards-more"
+                  aria-expanded={steerCardsExpanded}
+                  onClick={() => setSteerCardsExpanded((open) => !open)}
+                >
+                  <IconChevronDownSmall
+                    size={13}
+                    className="agent-steer-cards-more-chevron"
+                    data-expanded={steerCardsExpanded}
+                    aria-hidden
+                  />
+                  {steerCardsCollapsed
+                    ? `Show ${hiddenSteerCardCount} earlier ${
+                        hiddenSteerCardCount === 1 ? "message" : "messages"
+                      }`
+                    : "Show fewer"}
+                </button>
+              ) : null}
+              <div className="agent-steer-cards-list" data-scroll={steerCardsExpanded}>
+                {visibleSteerCards.map((card) => (
+                  <div key={card.id} className="agent-steer-card">
+                    <span className="agent-steer-card-icon" aria-hidden>
+                      <IconArrowCornerDownRight size={13} />
+                    </span>
+                    <span className="agent-steer-card-text">{card.text}</span>
+                    <div className="agent-steer-card-actions">
+                      <button
+                        type="button"
+                        aria-label="Edit steer"
+                        title="Edit"
+                        onClick={() => editSteerCard(selectedHermesSessionId, card.id, card.text)}
+                      >
+                        <IconPencil size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Remove steer"
+                        title="Remove"
+                        onClick={() => removeSteerCard(selectedHermesSessionId, card.id)}
+                      >
+                        <IconTrashCan size={13} />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           ) : null}
           {attachments.length ? (
@@ -7669,6 +7724,10 @@ export function AgentWorkspace({
                 <span
                   key={attachment.id}
                   className="agent-attachment-chip"
+                  // Images render as a bare rounded thumbnail (no filename), so a
+                  // steer with an attached image stays readable; other files keep
+                  // the icon + name chip, where the name is the only handle.
+                  data-kind={attachment.previewDataUrl ? "image" : "file"}
                   data-attach-status={attachment.attach.status}
                   title={attachment.attach.error ?? attachment.name}
                 >
@@ -7775,9 +7834,14 @@ export function AgentWorkspace({
                 ? "Generating image…"
                 : importingFiles
                   ? "Attaching file…"
-                  : heroMode
-                    ? "Ask June anything, run / commands"
-                    : "Send a message"
+                  : composerInSteerState
+                    ? // June is mid-run: a typed message steers this turn. Name the
+                      // queue behavior so the composer reads as "add to what's
+                      // running", not "start something new".
+                      "Queue a message…"
+                    : heroMode
+                      ? "Ask June anything, run / commands"
+                      : "Send a message"
             }
             onChange={(text, nextCategory) => {
               draftRef.current = text;
@@ -7914,6 +7978,11 @@ export function AgentWorkspace({
                 <button
                   type="submit"
                   className="agent-composer-send"
+                  // Drives the lift-and-sharpen motion as content appears, so the
+                  // primary send has entrance motion like the steer-send — not
+                  // just a color change (kept separate from `disabled`, which also
+                  // trips on submit/provisional and shouldn't animate the arrow).
+                  data-active={draft.trim().length > 0 || attachments.length > 0}
                   disabled={
                     submitting ||
                     importingFiles ||
