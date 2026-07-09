@@ -41,10 +41,10 @@ export function formatCalendarDate(
   });
   if (normalizedPreference === "system") return formatter.format(date);
 
-  const parts = formatter.formatToParts(date);
-  const month = parts.find((part) => part.type === "month")?.value;
-  const day = parts.find((part) => part.type === "day")?.value;
-  if (!month || !day) return formatter.format(date);
+  // Format each component on its own so locale-specific units stay attached
+  // when their order is forced (for example, Japanese `7月` and `9日`).
+  const month = new Intl.DateTimeFormat(locales, { month: "short" }).format(date);
+  const day = new Intl.DateTimeFormat(locales, { day: "numeric" }).format(date);
   return normalizedPreference === "month-first" ? `${month} ${day}` : `${day} ${month}`;
 }
 

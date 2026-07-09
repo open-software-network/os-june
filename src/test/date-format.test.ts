@@ -24,6 +24,8 @@ describe("date format preference", () => {
     const date = new Date("2026-07-09T12:00:00Z");
     expect(formatCalendarDate(date, "month-first", "en-US")).toBe("Jul 9");
     expect(formatCalendarDate(date, "day-first", "en-US")).toBe("9 Jul");
+    expect(formatCalendarDate(date, "month-first", "ja-JP")).toBe("7月 9日");
+    expect(formatCalendarDate(date, "day-first", "ja-JP")).toBe("9日 7月");
   });
 
   it("falls back to the system format for an invalid runtime preference", () => {
