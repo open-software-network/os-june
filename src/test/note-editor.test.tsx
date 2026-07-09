@@ -888,6 +888,48 @@ describe("NoteEditor", () => {
     expect(screen.queryByRole("switch", { name: "Capture system audio" })).not.toBeInTheDocument();
   });
 
+  it("does not offer the system audio switch when the grant exists but capture is unavailable", async () => {
+    const user = userEvent.setup();
+    const onSourceModeChange = vi.fn();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        sourceMode="microphoneOnly"
+        onSourceModeChange={onSourceModeChange}
+        sourceReadiness={{
+          sourceMode: "microphonePlusSystem",
+          ready: false,
+          checkedAt: now,
+          sources: [
+            {
+              source: "microphone",
+              required: true,
+              ready: true,
+              permissionState: "granted",
+              deviceAvailable: true,
+              captureAvailable: true,
+            },
+            {
+              source: "system",
+              required: true,
+              ready: false,
+              permissionState: "granted",
+              deviceAvailable: true,
+              captureAvailable: false,
+              recoveryAction: "restartApp",
+            },
+          ],
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Recording options" }));
+
+    expect(screen.getByRole("switch", { name: "Capture system audio" })).toBeDisabled();
+    expect(onSourceModeChange).not.toHaveBeenCalled();
+  });
+
   it("does not claim system audio is unsupported before readiness is known", async () => {
     const user = userEvent.setup();
     render(<NoteEditor {...props} note={note()} sourceMode="microphoneOnly" />);

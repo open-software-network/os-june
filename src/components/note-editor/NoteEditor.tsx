@@ -28,6 +28,7 @@ import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
 import { isMacLikePlatform } from "../../lib/platform";
+import { systemAudioAvailability } from "../../lib/source-readiness";
 import {
   isInvalidJuneResponseMessage,
   NoteFailureBanner,
@@ -188,13 +189,11 @@ export function NoteEditor({
     return transcriptTurns.filter((turn) => sourceKey(turn.source) === sourceFilter);
   }, [transcriptTurns, hasBothSources, sourceFilter]);
   const systemOn = sourceMode === "microphonePlusSystem";
-  const systemSource = sourceReadiness?.sources.find((source) => source.source === "system");
-  const systemDenied =
-    systemSource?.permissionState === "denied" || systemSource?.permissionState === "restricted";
-  // A readiness payload that omits the system source cannot offer it; an
-  // absent payload only means the probe has not answered yet.
-  const systemUnsupported =
-    !!sourceReadiness && (!systemSource || systemSource.permissionState === "unsupported");
+  const systemAvailability = systemAudioAvailability(sourceReadiness);
+  const systemUnsupported = systemAvailability === "unsupported";
+  // Denied and granted-but-uncapturable both mean the switch must not be
+  // offered; only the recovery copy differs.
+  const systemLocked = systemAvailability === "denied" || systemAvailability === "unavailable";
   const showRecordingOptions = isMacLikePlatform();
   // Mic denial is sourced from App via the dictation helper, not from
   // sourceReadiness — the Rust cpal-based check can't see TCC denials.
@@ -516,10 +515,10 @@ export function NoteEditor({
                         System audio requires macOS 14.2 or later.
                       </p>
                     ) : (
-                      <div className="record-options-row" data-locked={systemDenied || undefined}>
+                      <div className="record-options-row" data-locked={systemLocked || undefined}>
                         <Switch
                           checked={systemOn}
-                          disabled={systemDenied}
+                          disabled={systemLocked}
                           aria-labelledby="record-options-system"
                           onCheckedChange={(next) =>
                             onSourceModeChange(next ? "microphonePlusSystem" : "microphoneOnly")
@@ -528,7 +527,7 @@ export function NoteEditor({
                         <span id="record-options-system" className="record-options-label">
                           Capture system audio
                         </span>
-                        {systemDenied ? (
+                        {systemAvailability === "denied" ? (
                           <button
                             type="button"
                             className="btn btn-ghost record-options-enable"

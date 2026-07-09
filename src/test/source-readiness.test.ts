@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeSourceReadiness } from "../lib/source-readiness";
+import { mergeSourceReadiness, systemAudioAvailability } from "../lib/source-readiness";
 import type { RecordingSourceReadinessDto, SourceReadinessDto } from "../lib/tauri";
 
 function microphone(): SourceReadinessDto {
@@ -31,6 +31,57 @@ function readiness(
 ): RecordingSourceReadinessDto {
   return { sourceMode, ready: true, sources };
 }
+
+describe("systemAudioAvailability", () => {
+  it("is unknown until the probe answers", () => {
+    expect(systemAudioAvailability(undefined)).toBe("unknown");
+  });
+
+  it("is unsupported when the payload omits the system source", () => {
+    expect(systemAudioAvailability(readiness("microphoneOnly", [microphone()]))).toBe(
+      "unsupported",
+    );
+  });
+
+  it.each([
+    {
+      name: "below macOS 14.2",
+      overrides: { permissionState: "unsupported" as const },
+      expected: "unsupported",
+    },
+    {
+      name: "the user declined",
+      overrides: { permissionState: "denied" as const },
+      expected: "denied",
+    },
+    {
+      name: "policy restricts it",
+      overrides: { permissionState: "restricted" as const },
+      expected: "denied",
+    },
+    {
+      name: "granted but the capture is unavailable",
+      overrides: { permissionState: "granted" as const, ready: false },
+      expected: "unavailable",
+    },
+    {
+      name: "granted and capturable",
+      overrides: { permissionState: "granted" as const, ready: true },
+      expected: "usable",
+    },
+    {
+      // Capable but unprobed stays offerable, so turning the switch on can fire
+      // the permission probe.
+      name: "capable but never probed",
+      overrides: { permissionState: "unknown" as const, ready: true },
+      expected: "usable",
+    },
+  ])("is $expected when $name", ({ overrides, expected }) => {
+    const payload = readiness("microphonePlusSystem", [microphone(), system(overrides)]);
+
+    expect(systemAudioAvailability(payload)).toBe(expected);
+  });
+});
 
 describe("mergeSourceReadiness", () => {
   it("keeps a denied verdict when a microphone-only check reports the Mac as capable", () => {

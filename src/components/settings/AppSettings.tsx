@@ -76,6 +76,7 @@ import {
   type ReleaseChannel,
 } from "../../lib/updater";
 import { isMacLikePlatform } from "../../lib/platform";
+import { systemAudioAvailability } from "../../lib/source-readiness";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
 import {
@@ -470,12 +471,11 @@ export function AppSettings({
   const microphoneReadiness = sourceReadiness?.sources.find(
     (source) => source.source === "microphone",
   );
-  const systemState = systemReadiness?.permissionState;
-  const systemDenied = systemState === "denied" || systemState === "restricted";
-  // A readiness payload that omits the system source cannot offer it; an
-  // absent payload only means the probe has not answered yet.
-  const systemUnavailable =
-    !macLikePlatform || (!!sourceReadiness && !systemReadiness) || systemState === "unsupported";
+  const systemAvailability = systemAudioAvailability(sourceReadiness);
+  // Denied and granted-but-uncapturable both mean the switch must not be
+  // offered; the status label below tells the two apart.
+  const systemDenied = systemAvailability === "denied" || systemAvailability === "unavailable";
+  const systemUnavailable = !macLikePlatform || systemAvailability === "unsupported";
 
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;

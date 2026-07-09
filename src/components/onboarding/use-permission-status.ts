@@ -68,6 +68,9 @@ export function useSystemAudioStatus(active: boolean): {
     checkRecordingSourceReadiness("microphonePlusSystem")
       .then((readiness) => {
         const system = readiness.sources.find((source) => source.source === "system");
+        // This row reports the *grant*, not whether capture works right now: a
+        // granted-but-uncapturable helper recovers on restart and must not send
+        // the user back to System Settings, nor hold the Continue gate open.
         if (!system || system.permissionState === "unsupported") {
           setStatus("unsupported");
         } else if (system.permissionState === "granted") {
