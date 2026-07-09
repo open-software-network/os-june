@@ -948,6 +948,47 @@ pub async fn start_recording(
             started.device_label.clone(),
         )
         .await?;
+    repos
+        .add_checkpoint(
+            &started.session_id,
+            "source_readiness",
+            Some(
+                serde_json::json!({
+                    "sourceMode": readiness.source_mode,
+                    "ready": readiness.ready,
+                    "checkedAt": readiness.checked_at,
+                    "sourceCount": readiness.sources.len(),
+                    "requiredSourceCount": readiness.sources.iter().filter(|source| source.required).count(),
+                    "readySourceCount": readiness.sources.iter().filter(|source| source.ready).count(),
+                })
+                .to_string(),
+            ),
+        )
+        .await?;
+    for source in &readiness.sources {
+        repos
+            .add_source_checkpoint(
+                &started.session_id,
+                None,
+                Some(source.source.as_db()),
+                "source_readiness",
+                Some(
+                    serde_json::json!({
+                        "source": source.source.as_db(),
+                        "required": source.required,
+                        "ready": source.ready,
+                        "permissionState": source.permission_state,
+                        "deviceAvailable": source.device_available,
+                        "captureAvailable": source.capture_available,
+                        "recoveryAction": source.recovery_action,
+                        "message": source.message,
+                        "taxonomyCode": readiness_taxonomy_code(source),
+                    })
+                    .to_string(),
+                ),
+            )
+            .await?;
+    }
     for source in &started.sources {
         repos
             .create_pending_source_artifact(
@@ -1224,12 +1265,43 @@ async fn finish_recording_session(
         let file_size = std::fs::metadata(&source.final_path)
             .map(|metadata| metadata.len() as i64)
             .unwrap_or_default();
+        let valid = source_audio_passes_validation(source.source, &validation);
+        let validation_taxonomy_code = validation_taxonomy_code(&validation, valid);
+        repos
+            .add_source_checkpoint(
+                &finished.session_id,
+                source_artifact.map(|artifact| artifact.id.as_str()),
+                Some(source.source.as_db()),
+                "source_audio_validation",
+                Some(
+                    serde_json::json!({
+                        "path": source.final_path.to_string_lossy(),
+                        "elapsedMs": source.elapsed_ms,
+                        "fileSizeBytes": file_size,
+                        "checksum": checksum,
+                        "fileExists": validation.file_exists,
+                        "nonZeroSize": validation.non_zero_size,
+                        "readableAudio": validation.readable_audio,
+                        "expectedDurationMs": validation.expected_duration_ms,
+                        "actualDurationMs": validation.actual_duration_ms,
+                        "durationWithinTolerance": validation.duration_within_tolerance,
+                        "nonSilentSignal": validation.non_silent_signal,
+                        "recordedSilence": validation.recorded_silence,
+                        "peakAmplitude": validation.peak_amplitude,
+                        "rmsAmplitude": validation.rms_amplitude,
+                        "valid": valid,
+                        "taxonomyCode": validation_taxonomy_code,
+                        "warnings": validation.warnings,
+                    })
+                    .to_string(),
+                ),
+            )
+            .await?;
         if source.source == RecordingSource::Microphone {
             primary_validation = Some(validation.clone());
             primary_checksum = checksum.clone();
             primary_file_size = file_size;
         }
-        let valid = source_audio_passes_validation(source.source, &validation);
         if let Some(artifact) = source_artifact {
             let final_path = source.final_path.to_string_lossy().into_owned();
             repos
@@ -1451,6 +1523,42 @@ async fn finish_recording_session(
         processing_started: true,
         warnings,
     })
+}
+
+fn readiness_taxonomy_code(source: &SourceReadinessDto) -> &'static str {
+    if source.ready {
+        return "ready";
+    }
+    match source.permission_state.as_str() {
+        "unsupported" => "readiness_unsupported",
+        "denied" => "permission_denied",
+        "restricted" => "permission_restricted",
+        _ if !source.device_available => "device_unavailable",
+        _ if !source.capture_available => "capture_unavailable",
+        _ => "readiness_unknown",
+    }
+}
+
+fn validation_taxonomy_code(validation: &crate::domain::types::AudioValidationDto, valid: bool) -> &'static str {
+    if valid {
+        return "valid";
+    }
+    if !validation.file_exists {
+        return "missing_file";
+    }
+    if !validation.non_zero_size {
+        return "empty_file";
+    }
+    if !validation.readable_audio {
+        return "unreadable_wav";
+    }
+    if validation.recorded_silence {
+        return "recorded_silence";
+    }
+    if !validation.duration_within_tolerance {
+        return "duration_mismatch";
+    }
+    "validation_unknown"
 }
 
 fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSourceReadinessDto {
