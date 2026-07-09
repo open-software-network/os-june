@@ -1493,7 +1493,7 @@ async fn finish_recording_session(
         });
     }
 
-    repos
+    if let Err(error) = repos
         .add_checkpoint(
             &finished.session_id,
             "audio_validation",
@@ -1506,7 +1506,13 @@ async fn finish_recording_session(
                 .to_string(),
             ),
         )
-        .await?;
+        .await
+    {
+        eprintln!(
+            "failed to persist audio_validation checkpoint for {}: {}",
+            finished.session_id, error
+        );
+    }
 
     // Capture is single-instance, but processing runs asynchronously — so the
     // user may have already recorded (and stopped) another message on this note
