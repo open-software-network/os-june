@@ -254,6 +254,14 @@ impl DictationStyle {
     }
 }
 
+fn control_option_label(key: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("Ctrl+Alt+{key}")
+    } else {
+        format!("Ctrl+Opt+{key}")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationShortcutSetting {
@@ -331,7 +339,7 @@ impl DictationShortcutSetting {
                 option: true,
                 ..DictationShortcutModifiers::default()
             },
-            label: "Ctrl+Opt+D".to_string(),
+            label: control_option_label("D"),
             press_count: 1,
         }
     }
@@ -345,7 +353,7 @@ impl DictationShortcutSetting {
                 option: true,
                 ..DictationShortcutModifiers::default()
             },
-            label: "Ctrl+Opt+T".to_string(),
+            label: control_option_label("T"),
             press_count: 1,
         }
     }
@@ -430,6 +438,24 @@ pub enum DictationShortcutKind {
 pub struct DictationMicrophoneSetting {
     pub id: Option<String>,
     pub name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationCapabilities {
+    pub available: bool,
+    pub platform: &'static str,
+    pub shortcuts: bool,
+    pub paste: bool,
+    pub microphone_selection: bool,
+    pub accessibility_permission: bool,
+    pub system_audio: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationCapabilitiesResponse {
+    pub capabilities: DictationCapabilities,
 }
 
 #[derive(Debug, Serialize)]
@@ -601,6 +627,12 @@ impl DictationShortcutInput {
         let press_count = 1;
 
         if is_bare_fn_input(&self.code, &self.modifiers) {
+            #[cfg(target_os = "windows")]
+            return Err(AppError::new(
+                "dictation_shortcut_unsupported",
+                "The Fn key is not supported for Windows dictation shortcuts.",
+            ));
+            #[cfg(not(target_os = "windows"))]
             return Ok(DictationShortcutSetting {
                 press_count,
                 label: "Fn".to_string(),
@@ -745,6 +777,27 @@ pub fn setup(app: &mut tauri::App) {
         event: Mutex::new(event.clone()),
     });
     let _ = app.emit("dictation-event", event.to_string());
+}
+
+#[tauri::command]
+pub fn dictation_capabilities() -> DictationCapabilitiesResponse {
+    DictationCapabilitiesResponse {
+        capabilities: DictationCapabilities {
+            available: cfg!(any(target_os = "macos", target_os = "windows")),
+            platform: if cfg!(target_os = "macos") {
+                "macos"
+            } else if cfg!(target_os = "windows") {
+                "windows"
+            } else {
+                "unsupported"
+            },
+            shortcuts: cfg!(any(target_os = "macos", target_os = "windows")),
+            paste: cfg!(any(target_os = "macos", target_os = "windows")),
+            microphone_selection: cfg!(any(target_os = "macos", target_os = "windows")),
+            accessibility_permission: cfg!(target_os = "macos"),
+            system_audio: cfg!(target_os = "macos"),
+        },
+    }
 }
 
 #[tauri::command]

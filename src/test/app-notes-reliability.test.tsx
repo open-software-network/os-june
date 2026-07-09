@@ -82,6 +82,7 @@ vi.mock("../lib/recording-sounds", () => ({
 
 vi.mock("../lib/tauri", () => ({
   primeGeneratedVideoDir: vi.fn().mockResolvedValue(undefined),
+  dictationCapabilities: vi.fn().mockResolvedValue({ capabilities: { available: true, platform: "macos", shortcuts: true, paste: true, microphoneSelection: true, accessibilityPermission: true, systemAudio: true } }),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,

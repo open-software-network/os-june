@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  dictationCapabilities: vi.fn().mockResolvedValue({ capabilities: { available: true, platform: "macos", shortcuts: true, paste: true, microphoneSelection: true, accessibilityPermission: true, systemAudio: true } }),
   dictationSettings: mocks.dictationSettings,
   dictationHelperCommand: mocks.dictationHelperCommand,
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
@@ -537,17 +538,12 @@ describe("OnboardingFlow", () => {
       render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
 
       await screen.findByRole("heading", { name: "Welcome to June" });
-      expect(screen.getByText("Desktop notes for your work")).toBeInTheDocument();
-      expect(screen.getByText("Meeting notes from your mic")).toBeInTheDocument();
+      expect(screen.getByText("Speak instead of type")).toBeInTheDocument();
       expect(
-        screen.getByText("Record meetings from your microphone and turn them into notes."),
+        screen.getByText("June turns your voice into polished writing in any app on your computer."),
       ).toBeInTheDocument();
-      expect(screen.queryByText("Speak instead of type")).not.toBeInTheDocument();
-      expect(
-        screen.queryByText(/June turns your voice into polished writing/),
-      ).not.toBeInTheDocument();
-      expect(screen.queryByText("Effortlessly capture meetings")).not.toBeInTheDocument();
-      expect(screen.queryByText("Chat and work with June")).not.toBeInTheDocument();
+      expect(screen.getByText("Effortlessly capture meetings")).toBeInTheDocument();
+      expect(screen.getByText("Chat and work with June")).toBeInTheDocument();
     } finally {
       restoreNavigator();
     }
@@ -661,8 +657,7 @@ describe("OnboardingFlow", () => {
       await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
       await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-      await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
-      expect(screen.queryByRole("heading", { name: "Talk to June" })).not.toBeInTheDocument();
+      await screen.findByRole("heading", { name: "Talk to June" });
     } finally {
       restoreNavigator();
     }

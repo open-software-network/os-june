@@ -137,6 +137,20 @@ export type DictationSettingsDto = {
   language?: string;
 };
 
+export type DictationCapabilitiesDto = {
+  available: boolean;
+  platform: "macos" | "windows" | "unsupported";
+  shortcuts: boolean;
+  paste: boolean;
+  microphoneSelection: boolean;
+  accessibilityPermission: boolean;
+  systemAudio: boolean;
+};
+
+export type DictationCapabilitiesResponse = {
+  capabilities: DictationCapabilitiesDto;
+};
+
 export type DictationSettingsResponse = {
   settings: DictationSettingsDto;
 };
@@ -1698,6 +1712,10 @@ export async function osAccountsOpenPortal() {
 
 export async function osAccountsReferralSummary() {
   return invoke<ReferralSummary>("os_accounts_referral_summary");
+}
+
+export async function dictationCapabilities() {
+  return invoke<DictationCapabilitiesResponse>("dictation_capabilities");
 }
 
 export async function dictationSettings() {

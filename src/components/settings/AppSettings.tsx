@@ -84,6 +84,7 @@ import {
 } from "../../lib/updater";
 import { isMacLikePlatform } from "../../lib/platform";
 import { systemAudioAvailability } from "../../lib/source-readiness";
+import { fallbackDictationCapabilities } from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
 import {
@@ -514,7 +515,7 @@ export function AppSettings({
   const settingsTabs = account.localDev
     ? SETTINGS_TABS.filter((tab) => tab.id !== "billing")
     : SETTINGS_TABS;
-  const macLikePlatform = isMacLikePlatform();
+  const macLikePlatform = fallbackDictationCapabilities().platform === "macos";
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
       onTabChange?.(tab);
@@ -1649,7 +1650,7 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Dictation shortcuts unavailable</h3>
                       <p className="settings-row-description">
-                        Global dictation shortcuts are only supported on macOS.
+                        Global dictation shortcuts are not available on this device.
                       </p>
                     </div>
                   </div>
@@ -2453,7 +2454,7 @@ function PermissionsSettingsSection({
   onEnableAccessibility?: () => void;
   onEnableSystemAudio: () => void;
 }) {
-  const macLikePlatform = isMacLikePlatform();
+  const macLikePlatform = fallbackDictationCapabilities().platform === "macos";
   return (
     <section className="settings-group" aria-labelledby="permissions-heading">
       <h2 id="permissions-heading" className="settings-group-heading">

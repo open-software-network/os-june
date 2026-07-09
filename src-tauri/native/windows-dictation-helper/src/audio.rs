@@ -32,10 +32,14 @@ pub struct RecordingSummary {
 
 pub fn list_microphones() -> Result<(Vec<MicrophoneDevice>, Option<MicrophoneDevice>)> {
     let host = cpal::default_host();
-    let default_name = host.default_input_device().and_then(|device| device.name().ok());
+    let default_name = host
+        .default_input_device()
+        .and_then(|device| device.name().ok());
     let mut devices = Vec::new();
     for (index, device) in host.input_devices()?.enumerate() {
-        let name = device.name().unwrap_or_else(|_| format!("Microphone {}", index + 1));
+        let name = device
+            .name()
+            .unwrap_or_else(|_| format!("Microphone {}", index + 1));
         devices.push(MicrophoneDevice {
             id: name.clone(),
             name,
@@ -46,7 +50,12 @@ pub fn list_microphones() -> Result<(Vec<MicrophoneDevice>, Option<MicrophoneDev
             .iter()
             .find(|device| device.name == name)
             .cloned()
-            .or_else(|| Some(MicrophoneDevice { id: name.clone(), name }))
+            .or_else(|| {
+                Some(MicrophoneDevice {
+                    id: name.clone(),
+                    name,
+                })
+            })
     });
     Ok((devices, default))
 }
@@ -82,19 +91,40 @@ impl Recorder {
         let stream = match sample_format {
             SampleFormat::F32 => device.build_input_stream(
                 &config,
-                move |data: &[f32], _| write_samples(data, &writer_for_stream, &peak_for_stream, &latest_for_stream),
+                move |data: &[f32], _| {
+                    write_samples(
+                        data,
+                        &writer_for_stream,
+                        &peak_for_stream,
+                        &latest_for_stream,
+                    )
+                },
                 err_fn,
                 None,
             )?,
             SampleFormat::I16 => device.build_input_stream(
                 &config,
-                move |data: &[i16], _| write_samples(data, &writer_for_stream, &peak_for_stream, &latest_for_stream),
+                move |data: &[i16], _| {
+                    write_samples(
+                        data,
+                        &writer_for_stream,
+                        &peak_for_stream,
+                        &latest_for_stream,
+                    )
+                },
                 err_fn,
                 None,
             )?,
             SampleFormat::U16 => device.build_input_stream(
                 &config,
-                move |data: &[u16], _| write_samples(data, &writer_for_stream, &peak_for_stream, &latest_for_stream),
+                move |data: &[u16], _| {
+                    write_samples(
+                        data,
+                        &writer_for_stream,
+                        &peak_for_stream,
+                        &latest_for_stream,
+                    )
+                },
                 err_fn,
                 None,
             )?,

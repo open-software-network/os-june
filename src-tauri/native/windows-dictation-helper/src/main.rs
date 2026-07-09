@@ -68,7 +68,9 @@ impl HelperApp {
     fn handle_command(&mut self, command: CommandEnvelope) -> bool {
         match command.command_type.as_str() {
             "ping" => self.writer.emit(simple_event("pong")),
-            "get_permission_status" | "request_microphone_permission" | "request_accessibility_permission" => {
+            "get_permission_status"
+            | "request_microphone_permission"
+            | "request_accessibility_permission" => {
                 if command.command_type == "request_microphone_permission" {
                     open_microphone_settings();
                 }
@@ -95,7 +97,9 @@ impl HelperApp {
                     }),
                 ));
             }
-            "cancel_shortcut_capture" => self.writer.emit(simple_event("shortcut_capture_cancelled")),
+            "cancel_shortcut_capture" => {
+                self.writer.emit(simple_event("shortcut_capture_cancelled"))
+            }
             "start_listening" => self.start_listening(),
             "stop_and_paste" => self.stop_and_paste(),
             "toggle_listening" => {
@@ -143,7 +147,9 @@ impl HelperApp {
                     }),
                 ));
             }
-            Err(error) => self.writer.emit(error_event("microphone_list_failed", error.to_string())),
+            Err(error) => self
+                .writer
+                .emit(error_event("microphone_list_failed", error.to_string())),
         }
     }
 
@@ -158,7 +164,9 @@ impl HelperApp {
                 self.writer.emit(simple_event("listening_started"));
                 self.spawn_level_thread();
             }
-            Err(error) => self.writer.emit(error_event("recording_start_failed", error.to_string())),
+            Err(error) => self
+                .writer
+                .emit(error_event("recording_start_failed", error.to_string())),
         }
     }
 
@@ -184,13 +192,16 @@ impl HelperApp {
                     }),
                 ));
             }
-            Err(error) => self.writer.emit(error_event("recording_stop_failed", error.to_string())),
+            Err(error) => self
+                .writer
+                .emit(error_event("recording_stop_failed", error.to_string())),
         }
     }
 
     fn paste_text(&mut self, text: String) {
         if let Err(error) = clipboard::set_text(&text) {
-            self.writer.emit(error_event("clipboard_write_failed", error.to_string()));
+            self.writer
+                .emit(error_event("clipboard_write_failed", error.to_string()));
             return;
         }
         let Some(target) = self.pinned_target.take() else {
@@ -237,7 +248,9 @@ impl HelperApp {
 
     fn spawn_level_thread(&self) {
         let writer = self.writer.clone();
-        let Some((latest_level, active)) = self.recorder.as_ref().map(Recorder::latest_level_handle) else {
+        let Some((latest_level, active)) =
+            self.recorder.as_ref().map(Recorder::latest_level_handle)
+        else {
             return;
         };
         thread::spawn(move || {
