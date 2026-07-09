@@ -7033,12 +7033,12 @@ export function AgentWorkspace({
   // Every file the conversation has surfaced, in turn order — the session
   // bar's files button keeps them reachable after their cards scroll away.
   const surfacedArtifacts = [...turnArtifacts.values()].flat().concat(devArtifacts);
-  const downloadArtifact = (artifact: AgentArtifact) => {
+  const downloadPathBackedArtifact = (path: string, displayName: string) => {
     const requestSessionId = selectedHermesSessionIdRef.current;
-    void downloadHermesBridgeFile(artifact.path)
+    void downloadHermesBridgeFile(path)
       .then((destination) => {
         if (selectedHermesSessionIdRef.current === requestSessionId) {
-          toast.success(`Downloaded ${artifact.name}`, {
+          toast.success(`Downloaded ${displayName}`, {
             id: DOWNLOAD_TOAST_ID,
             action: {
               label: "Show file",
@@ -7050,6 +7050,9 @@ export function AgentWorkspace({
       .catch((err: unknown) => {
         setError(messageFromError(err), { sessionId: requestSessionId ?? null });
       });
+  };
+  const downloadArtifact = (artifact: AgentArtifact) => {
+    downloadPathBackedArtifact(artifact.path, artifact.name);
   };
   const openArtifact = (artifact: AgentArtifact) => setArtifactPanel({ view: "file", artifact });
 
@@ -7063,22 +7066,7 @@ export function AgentWorkspace({
     // no June-workspace path — its bytes live only in the inline data url, so
     // save those directly via an anchor download.
     if (part.path) {
-      const requestSessionId = selectedHermesSessionIdRef.current;
-      void downloadHermesBridgeFile(part.path)
-        .then((destination) => {
-          if (selectedHermesSessionIdRef.current === requestSessionId) {
-            toast.success(`Downloaded ${part.name?.trim() || "Generated image"}`, {
-              id: DOWNLOAD_TOAST_ID,
-              action: {
-                label: "Show file",
-                onClick: () => void revealPath(destination),
-              },
-            });
-          }
-        })
-        .catch((err: unknown) => {
-          setError(messageFromError(err), { sessionId: requestSessionId ?? null });
-        });
+      downloadPathBackedArtifact(part.path, part.name?.trim() || "Generated image");
       return;
     }
     if (part.dataUrl) {
