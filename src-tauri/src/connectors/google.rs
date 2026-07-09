@@ -26,6 +26,10 @@ use super::oauth::http_client;
 const GMAIL_BASE: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
 const CALENDAR_BASE: &str = "https://www.googleapis.com/calendar/v3";
 const API_ERROR_MESSAGE_MAX_LEN: usize = 200;
+/// Unread triage expands each message to a metadata summary (one call each), so
+/// the count is bounded to keep the tool responsive on a large unread backlog.
+const UNREAD_SUMMARY_DEFAULT: u32 = 15;
+const UNREAD_SUMMARY_MAX: u32 = 40;
 
 // --- Errors ------------------------------------------------------------------
 
@@ -276,6 +280,15 @@ pub struct MessagePage {
     pub next_page_token: Option<String>,
 }
 
+/// Unread inbox triage: compact per-message summaries, not bare ids.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreadPage {
+    pub messages: Vec<EmailSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_page_token: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRef {
@@ -303,6 +316,10 @@ pub struct EmailSummary {
     pub subject: Option<String>,
     pub snippet: String,
     pub date: Option<String>,
+    /// The RFC 2822 `Message-ID` header, for use as `in_reply_to` when replying
+    /// so the reply threads for recipients (Gmail's `thread_id` alone does not).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rfc_message_id: Option<String>,
     pub label_ids: Vec<String>,
     pub unread: bool,
 }
@@ -322,6 +339,10 @@ pub struct ThreadMessage {
     pub to: Option<String>,
     pub subject: Option<String>,
     pub date: Option<String>,
+    /// The RFC 2822 `Message-ID` header. Pass the latest message's value as
+    /// `in_reply_to` when replying so recipients' clients thread the reply.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rfc_message_id: Option<String>,
     pub snippet: String,
     /// Plain-text body; only populated by `read_thread` (format=full).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -457,13 +478,33 @@ pub async fn list_threads(
     })
 }
 
-/// Unread inbox messages (`q = "is:unread"`).
+/// Unread inbox messages as compact summaries (sender, subject, snippet, and
+/// the RFC Message-ID) for triage. Scoped to `in:inbox` so archived-but-unread
+/// mail is never surfaced as inbox triage, and expanded to metadata summaries
+/// (bounded) rather than the bare ids `list_messages` returns.
 pub async fn list_unread(
     access_token: &str,
     max_results: Option<u32>,
     page_token: Option<&str>,
-) -> Result<MessagePage, GoogleApiError> {
-    list_messages(access_token, Some("is:unread"), max_results, page_token).await
+) -> Result<UnreadPage, GoogleApiError> {
+    let limit = max_results
+        .unwrap_or(UNREAD_SUMMARY_DEFAULT)
+        .clamp(1, UNREAD_SUMMARY_MAX);
+    let page = list_messages(
+        access_token,
+        Some("is:unread in:inbox"),
+        Some(limit),
+        page_token,
+    )
+    .await?;
+    let mut messages = Vec::with_capacity(page.messages.len());
+    for message in &page.messages {
+        messages.push(get_message(access_token, &message.id).await?);
+    }
+    Ok(UnreadPage {
+        messages,
+        next_page_token: page.next_page_token,
+    })
 }
 
 /// users.messages.get format=metadata: compact summary, headers only.
@@ -674,6 +715,7 @@ fn metadata_headers_query() -> Vec<(&'static str, String)> {
         ("metadataHeaders", "To".to_string()),
         ("metadataHeaders", "Subject".to_string()),
         ("metadataHeaders", "Date".to_string()),
+        ("metadataHeaders", "Message-ID".to_string()),
     ]
 }
 
@@ -694,6 +736,7 @@ fn email_summary_from_message(wire: MessageWire) -> EmailSummary {
         to: header_value(payload, "To"),
         subject: header_value(payload, "Subject"),
         date: header_value(payload, "Date"),
+        rfc_message_id: header_value(payload, "Message-ID"),
         unread: wire.label_ids.iter().any(|label| label == "UNREAD"),
         id: wire.id,
         thread_id: wire.thread_id,
@@ -713,6 +756,7 @@ fn thread_detail_from_wire(wire: ThreadWire, include_bodies: bool) -> ThreadDeta
                 to: header_value(payload, "To"),
                 subject: header_value(payload, "Subject"),
                 date: header_value(payload, "Date"),
+                rfc_message_id: header_value(payload, "Message-ID"),
                 body_text: if include_bodies {
                     payload.and_then(extract_body_text)
                 } else {
@@ -1473,7 +1517,8 @@ mod tests {
                   {{"name": "From", "value": "Ada Lovelace <ada@example.com>"}},
                   {{"name": "To", "value": "june@example.com"}},
                   {{"name": "Subject", "value": "Q2 numbers"}},
-                  {{"name": "Date", "value": "Wed, 08 Jul 2026 10:00:00 -0700"}}
+                  {{"name": "Date", "value": "Wed, 08 Jul 2026 10:00:00 -0700"}},
+                  {{"name": "Message-Id", "value": "<q2-numbers@mail.example.com>"}}
                 ],
                 "parts": [
                   {{"mimeType": "text/plain", "filename": "", "body": {{"size": 42, "data": "{}"}}}}
@@ -1494,6 +1539,11 @@ mod tests {
         assert_eq!(summary.to.as_deref(), Some("june@example.com"));
         assert_eq!(summary.subject.as_deref(), Some("Q2 numbers"));
         assert_eq!(summary.snippet, "Quarterly numbers attached");
+        // The RFC Message-ID is exposed (case-insensitively) for reply threading.
+        assert_eq!(
+            summary.rfc_message_id.as_deref(),
+            Some("<q2-numbers@mail.example.com>")
+        );
         assert!(summary.unread);
         assert_eq!(summary.label_ids.len(), 3);
     }
