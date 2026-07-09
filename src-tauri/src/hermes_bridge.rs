@@ -7637,7 +7637,7 @@ async fn handle_june_provider_connection(
                 return Ok(());
             }
             ensure_video_animation_model(&mut body);
-            ensure_video_defaults(&mut body);
+            ensure_video_animation_defaults(&mut body);
             forward_video_create(&mut stream, "/v1/video/animate", &body).await?;
         }
         ("GET", path) if path.starts_with("/v1/video/status/") => {
@@ -9088,6 +9088,42 @@ fn ensure_video_defaults(body: &mut serde_json::Value) {
     let Some(object) = body.as_object_mut() else {
         return;
     };
+    ensure_video_duration_resolution_defaults(object);
+    // June API reads this field as camelCase `aspectRatio` (unlike duration and
+    // resolution, whose snake and camel spellings coincide). Text-to-video has
+    // no source frame to derive geometry from, and some models — for example
+    // wan-2.2-a14b — reject a queue that omits it, so inject the default under
+    // the key June API actually deserializes. Image-to-video does the opposite
+    // (see ensure_video_animation_defaults).
+    let has_aspect_ratio = object
+        .get("aspectRatio")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(|aspect_ratio| !aspect_ratio.is_empty())
+        .unwrap_or(false);
+    if !has_aspect_ratio {
+        object.insert(
+            "aspectRatio".to_string(),
+            serde_json::Value::String(JUNE_VIDEO_DEFAULT_ASPECT_RATIO.to_string()),
+        );
+    }
+}
+
+/// Image-to-video derives its frame geometry from the source image, so — unlike
+/// the text-to-video path — it must NOT inject an aspect_ratio. Venice rejects a
+/// queue whose aspect_ratio conflicts with the uploaded image
+/// (`custom@aspect_ratio`); the source image alone determines the output ratio.
+/// Duration and resolution stay independent knobs and are still defaulted.
+fn ensure_video_animation_defaults(body: &mut serde_json::Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    ensure_video_duration_resolution_defaults(object);
+}
+
+fn ensure_video_duration_resolution_defaults(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) {
     let has_duration = object
         .get("duration")
         .and_then(serde_json::Value::as_str)
@@ -9110,22 +9146,6 @@ fn ensure_video_defaults(body: &mut serde_json::Value) {
         object.insert(
             "resolution".to_string(),
             serde_json::Value::String(JUNE_VIDEO_DEFAULT_RESOLUTION.to_string()),
-        );
-    }
-    // June API reads this field as camelCase `aspectRatio` (unlike the
-    // single-word keys above, whose snake and camel spellings coincide). Some
-    // models — for example wan-2.2-a14b — reject a queue that omits it, so
-    // inject the default under the key June API actually deserializes.
-    let has_aspect_ratio = object
-        .get("aspectRatio")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .map(|aspect_ratio| !aspect_ratio.is_empty())
-        .unwrap_or(false);
-    if !has_aspect_ratio {
-        object.insert(
-            "aspectRatio".to_string(),
-            serde_json::Value::String(JUNE_VIDEO_DEFAULT_ASPECT_RATIO.to_string()),
         );
     }
 }
@@ -9278,6 +9298,25 @@ mod tests {
         assert_eq!(body["duration"], serde_json::json!("8s"));
         assert_eq!(body["resolution"], serde_json::json!("1080p"));
         assert_eq!(body["aspectRatio"], serde_json::json!("9:16"));
+    }
+
+    #[test]
+    fn ensure_video_animation_defaults_omits_aspect_ratio() {
+        // Image-to-video derives its frame geometry from the source image, so an
+        // injected aspect_ratio makes Venice reject the queue `custom@aspect_ratio`
+        // whenever it disagrees with the image (regression guard).
+        let mut body = serde_json::json!({ "prompt": "make it wave" });
+        ensure_video_animation_defaults(&mut body);
+        assert_eq!(
+            body["duration"],
+            serde_json::json!(JUNE_VIDEO_DEFAULT_DURATION)
+        );
+        assert_eq!(
+            body["resolution"],
+            serde_json::json!(JUNE_VIDEO_DEFAULT_RESOLUTION)
+        );
+        assert!(body.get("aspectRatio").is_none());
+        assert!(body.get("aspect_ratio").is_none());
     }
 
     async fn provider_proxy_response(
