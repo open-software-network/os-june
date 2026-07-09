@@ -1927,44 +1927,68 @@ export function AppSettings({
               </div>
             </section>
 
-            {IMAGE_GENERATION_ENABLED ? (
+            {IMAGE_GENERATION_ENABLED || VIDEO_GENERATION_ENABLED ? (
               <section
                 className="settings-group settings-models-group"
-                aria-labelledby="image-generation-heading"
+                aria-labelledby="media-generation-heading"
               >
-                <h2 id="image-generation-heading" className="settings-group-heading">
-                  Image generation
+                <h2 id="media-generation-heading" className="settings-group-heading">
+                  Image and video
                 </h2>
                 <p className="settings-group-description">
-                  Choose the model June uses when you ask it to generate an image.
+                  Choose the models June uses when you ask it to generate an image or video.
                 </p>
                 <div className="settings-card settings-models-card">
                   <div className="settings-rows">
-                    <ModelRow
-                      mode="image"
-                      title="Image"
-                      description="Used when you generate an image from chat."
-                      value={providerSettings.imageModel}
-                      options={imageOptions}
-                      open={pickerMode === "image"}
-                      summarySuppressed={pickerMode !== undefined}
-                      flyout={modelPickerFlyout}
-                      search={modelSearch}
-                      triggerRef={modelPickerTriggerRef}
-                      popoverRef={modelPickerPopoverRef}
-                      searchRef={modelPickerSearchRef}
-                      onToggle={() =>
-                        pickerMode === "image" ? closeModelPicker() : openModelPicker("image")
-                      }
-                      onFlyoutChange={setModelPickerFlyout}
-                      onSearchChange={setModelSearch}
-                      onSelect={(modelId) => selectModelFromPicker("image", modelId)}
-                    />
+                    {IMAGE_GENERATION_ENABLED ? (
+                      <ModelRow
+                        mode="image"
+                        title="Image"
+                        description="Used when you generate an image from chat."
+                        value={providerSettings.imageModel}
+                        options={imageOptions}
+                        open={pickerMode === "image"}
+                        summarySuppressed={pickerMode !== undefined}
+                        flyout={modelPickerFlyout}
+                        search={modelSearch}
+                        triggerRef={modelPickerTriggerRef}
+                        popoverRef={modelPickerPopoverRef}
+                        searchRef={modelPickerSearchRef}
+                        onToggle={() =>
+                          pickerMode === "image" ? closeModelPicker() : openModelPicker("image")
+                        }
+                        onFlyoutChange={setModelPickerFlyout}
+                        onSearchChange={setModelSearch}
+                        onSelect={(modelId) => selectModelFromPicker("image", modelId)}
+                      />
+                    ) : null}
+                    {VIDEO_GENERATION_ENABLED ? (
+                      <ModelRow
+                        mode="video"
+                        title="Video"
+                        description="Used when you generate a video from chat."
+                        value={providerSettings.videoModel}
+                        options={videoOptions}
+                        open={pickerMode === "video"}
+                        summarySuppressed={pickerMode !== undefined}
+                        flyout={modelPickerFlyout}
+                        search={modelSearch}
+                        triggerRef={modelPickerTriggerRef}
+                        popoverRef={modelPickerPopoverRef}
+                        searchRef={modelPickerSearchRef}
+                        onToggle={() =>
+                          pickerMode === "video" ? closeModelPicker() : openModelPicker("video")
+                        }
+                        onFlyoutChange={setModelPickerFlyout}
+                        onSearchChange={setModelSearch}
+                        onSelect={(modelId) => selectModelFromPicker("video", modelId)}
+                      />
+                    ) : null}
                     <div className="settings-row-divider" aria-hidden />
                     <button
                       type="button"
                       className="settings-more-options-trigger settings-more-options-row"
-                      aria-label="More options for image generation"
+                      aria-label="More options for image and video"
                       aria-expanded={showMoreImageOptions}
                       aria-controls="image-more-options-panel"
                       onClick={() => setShowMoreImageOptions((open) => !open)}
@@ -1972,7 +1996,7 @@ export function AppSettings({
                       <span className="settings-row-info">
                         <span className="settings-row-title">More options</span>
                         <span className="settings-row-description">
-                          Advanced image generation settings
+                          Advanced image and video settings
                         </span>
                       </span>
                       <IconChevronDownSmall
@@ -2002,44 +2026,6 @@ export function AppSettings({
                         </div>
                       </div>
                     ) : null}
-                  </div>
-                </div>
-              </section>
-            ) : null}
-
-            {VIDEO_GENERATION_ENABLED ? (
-              <section
-                className="settings-group settings-models-group"
-                aria-labelledby="video-generation-heading"
-              >
-                <h2 id="video-generation-heading" className="settings-group-heading">
-                  Video generation
-                </h2>
-                <p className="settings-group-description">
-                  Choose the model June uses when you ask it to generate a video.
-                </p>
-                <div className="settings-card settings-models-card">
-                  <div className="settings-rows">
-                    <ModelRow
-                      mode="video"
-                      title="Video"
-                      description="Used when you generate a video from chat."
-                      value={providerSettings.videoModel}
-                      options={videoOptions}
-                      open={pickerMode === "video"}
-                      summarySuppressed={pickerMode !== undefined}
-                      flyout={modelPickerFlyout}
-                      search={modelSearch}
-                      triggerRef={modelPickerTriggerRef}
-                      popoverRef={modelPickerPopoverRef}
-                      searchRef={modelPickerSearchRef}
-                      onToggle={() =>
-                        pickerMode === "video" ? closeModelPicker() : openModelPicker("video")
-                      }
-                      onFlyoutChange={setModelPickerFlyout}
-                      onSearchChange={setModelSearch}
-                      onSelect={(modelId) => selectModelFromPicker("video", modelId)}
-                    />
                   </div>
                 </div>
               </section>
