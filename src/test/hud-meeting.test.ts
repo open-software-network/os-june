@@ -324,7 +324,7 @@ describe("meeting detection HUD", () => {
     expect(hudShowCalls()).toBe(0);
   });
 
-  it("surfaces a long transcription notice", async () => {
+  it("surfaces a long dictation notice", async () => {
     vi.useFakeTimers();
     await loadHud();
 
@@ -339,7 +339,7 @@ describe("meeting detection HUD", () => {
     expect(document.querySelector("#hud-status")).toHaveTextContent("Still transcribing");
   });
 
-  it("re-arms the long transcription notice on the next dictation's clock", async () => {
+  it("re-arms the long dictation notice on the next dictation's clock", async () => {
     vi.useFakeTimers();
     await loadHud();
 

@@ -131,8 +131,9 @@ _Avoid_: dictation app, keyboard helper.
 The app the dictation helper types a finished transcript into, pinned at the
 instant the recording stops and never re-resolved afterwards (see
 [ADR-0014](docs/adr/0014-pinned-dictation-paste-target.md)). Pinning matters
-because the transcription round trip can outlast the user's attention: the
-frontmost app at paste time is often no longer the one they dictated into.
+because the dictation round trip (capture, then dictation transcription, then
+cleanup) can outlast the user's attention: the frontmost app at paste time is
+often no longer the one they dictated into.
 _Avoid_: foreground app, frontmost app (both name a live value, not the pin);
 focus target.
 

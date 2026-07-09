@@ -1730,7 +1730,6 @@ final class DictationController {
             return
         }
 
-        FocusTargetController.shared.pinCurrentTarget()
         emit("recording_ready", [
             "path": recordingURL.path,
             "observedAudioLevel": String(format: "%.4f", maxObservedAudioLevel),
@@ -1773,6 +1772,11 @@ final class DictationController {
 
     private func stopActiveRecording() {
         let purpose = recordingPurpose
+        if purpose == .dictation {
+            // Selected-device recorder teardown is asynchronous, so the paste
+            // target must be pinned before focus can drift during finalization.
+            FocusTargetController.shared.pinCurrentTarget()
+        }
         isListening = false
         isFinalizing = true
         micTestStopWorkItem?.cancel()
@@ -1979,6 +1983,13 @@ enum PasteboardInserter {
     /// to read the transcript from the pasteboard.
     private static let pasteboardRestoreDelay: TimeInterval = 0.7
 
+    private static func emitPasteTargetUnavailable() {
+        emit("error", [
+            "code": "paste_target_unavailable",
+            "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+        ])
+    }
+
     static func paste(_ text: String) {
         let pasteboard = NSPasteboard.general
         let snapshot = capture(pasteboard)
@@ -2009,10 +2020,7 @@ enum PasteboardInserter {
         }
 
         guard let target = FocusTargetController.shared.pasteTarget() else {
-            emit("error", [
-                "code": "paste_target_unavailable",
-                "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
-            ])
+            emitPasteTargetUnavailable()
             return
         }
 
@@ -2025,7 +2033,12 @@ enum PasteboardInserter {
         waitForActivation(
             of: target,
             deadline: DispatchTime.now() + activationTimeout
-        ) {
+        ) { targetAvailable in
+            guard targetAvailable, !target.isTerminated else {
+                emitPasteTargetUnavailable()
+                return
+            }
+
             postPasteShortcut()
             emit("paste_completed")
 
@@ -2040,17 +2053,22 @@ enum PasteboardInserter {
     private static func waitForActivation(
         of target: NSRunningApplication,
         deadline: DispatchTime,
-        completion: @escaping () -> Void
+        completion: @escaping (_ targetAvailable: Bool) -> Void
     ) {
+        guard !target.isTerminated else {
+            completion(false)
+            return
+        }
+
         if target.isActive {
             DispatchQueue.main.asyncAfter(deadline: .now() + activationSettleDelay) {
-                completion()
+                completion(!target.isTerminated)
             }
             return
         }
 
         guard DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else {
-            completion()
+            completion(!target.isTerminated)
             return
         }
 

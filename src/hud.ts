@@ -95,7 +95,7 @@ if (meetingStartIcon) {
 
 let hideTimer: number | undefined;
 let meetingPromptTimer: number | undefined;
-let longTranscribeTimer: number | undefined;
+let longDictationNoticeTimer: number | undefined;
 let brailleTimer: number | undefined;
 let brailleFrame = 0;
 let meetingPromptSuppressed = false;
@@ -124,7 +124,7 @@ const ERROR_LAYER_GAP = 8;
 const MEETING_PROMPT_TIMEOUT_MS = 30_000;
 // A short dictation round-trips in well under a second. Past this, the
 // user is watching a spinner wondering whether June hung, so say so.
-const LONG_TRANSCRIBE_NOTICE_MS = 6_000;
+const LONG_DICTATION_NOTICE_MS = 6_000;
 
 function invokeBestEffort(command: string, args?: Record<string, unknown>) {
   try {
@@ -227,7 +227,7 @@ function setHud(state: string, status: string): HudTransition {
     hud.classList.remove("hud-reveal-collapsed");
   }
   if (state !== "transcribing") {
-    clearLongTranscribeTimer();
+    clearLongDictationNotice();
   }
   if (state === "transcribing" || state === "pasting") {
     startBraille();
@@ -649,21 +649,21 @@ function startMeetingPromptTimer() {
   }, MEETING_PROMPT_TIMEOUT_MS);
 }
 
-function clearLongTranscribeTimer() {
-  if (longTranscribeTimer) {
-    window.clearTimeout(longTranscribeTimer);
-    longTranscribeTimer = undefined;
+function clearLongDictationNotice() {
+  if (longDictationNoticeTimer) {
+    window.clearTimeout(longDictationNoticeTimer);
+    longDictationNoticeTimer = undefined;
   }
 }
 
-function startLongTranscribeTimer() {
-  if (longTranscribeTimer !== undefined) return;
-  longTranscribeTimer = window.setTimeout(() => {
-    longTranscribeTimer = undefined;
+function startLongDictationNotice() {
+  if (longDictationNoticeTimer !== undefined) return;
+  longDictationNoticeTimer = window.setTimeout(() => {
+    longDictationNoticeTimer = undefined;
     if (hud?.dataset.state !== "transcribing") return;
     const transition = setHud("transcribing", "Still transcribing");
     void showHud(showOptionsForTransition(transition));
-  }, LONG_TRANSCRIBE_NOTICE_MS);
+  }, LONG_DICTATION_NOTICE_MS);
 }
 
 async function hideHud() {
@@ -884,7 +884,7 @@ async function handleDictationEventPayload(payload: unknown) {
     cancelPendingAudioLevel();
     const transition = setHud("transcribing", "Transcribing");
     await showHud(showOptionsForTransition(transition));
-    startLongTranscribeTimer();
+    startLongDictationNotice();
     return;
   }
 

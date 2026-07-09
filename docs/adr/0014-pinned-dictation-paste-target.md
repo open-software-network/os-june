@@ -24,9 +24,10 @@ paste.
 ## Why
 
 Dictation is not a single instant. The user releases push-to-talk, and only
-then does June upload the audio, transcribe it upstream, and optionally run a
-cleanup pass over the text. That round trip is fast for a short phrase and slow
-for a long one: **the wait scales with how long the user spoke.**
+then does June upload the audio, run dictation transcription upstream, and
+optionally run a cleanup pass over the text. That round trip is fast for a
+short phrase and slow for a long one: **the wait scales with how long the user
+spoke.**
 
 The helper used to resolve the paste destination at paste time, reading
 `lastExternalApp` — a field that a global `didActivateApplicationNotification`
