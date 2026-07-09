@@ -188,6 +188,7 @@ function buildProviderSettings() {
     generationModel: localState.enabled ? localState.modelId : "zai-org-glm-5-2",
     remoteGenerationModel: "zai-org-glm-5-2",
     imageModel: "venice-sd35",
+    videoModel: "wan-2.2-a14b-text-to-video",
     veniceApiKeyConfigured: false,
     localGeneration: {
       baseUrl: localState.baseUrl,
@@ -254,6 +255,7 @@ describe("AppSettings", () => {
         generationModel: "zai-org-glm-5-2",
         remoteGenerationModel: "zai-org-glm-5-2",
         imageModel: "venice-sd35",
+        videoModel: "wan-2.2-a14b-text-to-video",
         veniceApiKeyConfigured: false,
         localGeneration: {
           baseUrl: "",
@@ -410,6 +412,7 @@ describe("AppSettings", () => {
       generationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
       remoteGenerationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
       imageModel: mode === "image" ? modelId : "venice-sd35",
+      videoModel: mode === "video" ? modelId : "wan-2.2-a14b-text-to-video",
       veniceApiKeyConfigured: false,
       localGeneration: {
         baseUrl: localState.baseUrl,

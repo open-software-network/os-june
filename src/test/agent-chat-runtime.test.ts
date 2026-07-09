@@ -5,7 +5,9 @@ import {
   buildHermesSessionChatTurns,
   completedHermesMessageText,
   displayedComposerUserMessageText,
+  mediaVideoReferences,
   repairContractionSpacing,
+  videoPartsFromHermesContent,
 } from "../lib/agent-chat-runtime";
 import { categoryPrompt } from "../lib/issue-report-prompt";
 import { explicitSkillInvocationPrompt } from "../lib/skill-slash-commands";
@@ -152,6 +154,103 @@ describe("repairContractionSpacing", () => {
 });
 
 describe("Agent chat runtime", () => {
+  it("extracts video MEDIA references into video parts", () => {
+    const content = {
+      content: [
+        {
+          type: "text",
+          text: "Done MEDIA:/Users/alex/Library/Application Support/co.opensoftware.june/hermes/videos/clip.mp4",
+        },
+      ],
+    };
+
+    expect(mediaVideoReferences(content)).toEqual([
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/videos/clip.mp4",
+    ]);
+    expect(videoPartsFromHermesContent(content)).toEqual([
+      {
+        type: "video",
+        status: "complete",
+        prompt: "Generated video",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/videos/clip.mp4",
+        name: "clip.mp4",
+      },
+    ]);
+  });
+
+  it("extracts a bare generated-video filename the agent names to show a video again", () => {
+    // After a timed-out tool call, the agent often re-displays the finished
+    // video by filename only; localVideoFileSrc resolves it against the dir.
+    const content = {
+      content: [
+        {
+          type: "text",
+          text: "Here it is! MEDIA:generated-video-e697df06b60b441191a240f629e41a5e.mp4",
+        },
+      ],
+    };
+
+    expect(mediaVideoReferences(content)).toEqual([
+      "generated-video-e697df06b60b441191a240f629e41a5e.mp4",
+    ]);
+    expect(videoPartsFromHermesContent(content)).toEqual([
+      {
+        type: "video",
+        status: "complete",
+        prompt: "Generated video",
+        path: "generated-video-e697df06b60b441191a240f629e41a5e.mp4",
+        name: "generated-video-e697df06b60b441191a240f629e41a5e.mp4",
+      },
+    ]);
+  });
+
+  it("does not treat arbitrary bare filenames as video refs", () => {
+    // The bare alternative is pinned to June's naming so ordinary prose that
+    // mentions a `.mp4` filename does not spuriously render a player.
+    expect(
+      mediaVideoReferences({ content: [{ type: "text", text: "MEDIA:my-holiday.mp4" }] }),
+    ).toEqual([]);
+  });
+
+  it("strips assistant video MEDIA refs but preserves user-authored refs", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "user-1",
+        role: "user",
+        content: "I typed MEDIA:/tmp/local.mp4 literally.",
+        timestamp: "2026-06-11T12:00:00.000Z",
+      },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "Here is the video MEDIA:/tmp/generated.mp4",
+        timestamp: "2026-06-11T12:00:01.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "I typed MEDIA:/tmp/local.mp4 literally.",
+        status: "complete",
+      },
+    ]);
+    expect(turns[1]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Here is the video",
+        status: "complete",
+      },
+      {
+        type: "video",
+        status: "complete",
+        prompt: "Generated video",
+        path: "/tmp/generated.mp4",
+        name: "generated.mp4",
+      },
+    ]);
+  });
+
   it("strips the cron preamble and flags a scheduled-run turn", () => {
     const preamble =
       "[IMPORTANT: You are running as a scheduled cron job. SILENT: respond " +

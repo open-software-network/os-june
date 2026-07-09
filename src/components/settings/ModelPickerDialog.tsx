@@ -29,7 +29,7 @@ export function ModelMeta({ model }: { model: VeniceModelDto }) {
   const items: ReactNode[] = [];
   if (price) items.push(<span className="model-meta-price">{price}</span>);
   if (context) items.push(<span>{context}</span>);
-  if (model.modelType === "image" && model.description) {
+  if ((model.modelType === "image" || model.modelType === "video") && model.description) {
     items.push(<span>{model.description}</span>);
   }
   if (privacyBadge) {
@@ -135,7 +135,9 @@ export function ModelPickerDialog({
       ? "Transcription model"
       : mode === "image"
         ? "Image model"
-        : "Text model";
+        : mode === "video"
+          ? "Video model"
+          : "Text model";
 
   return (
     <Dialog

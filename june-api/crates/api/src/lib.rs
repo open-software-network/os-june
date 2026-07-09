@@ -22,8 +22,8 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 pub use envelope::{
     ApiResponse, ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_METERING, ERR_PAYLOAD_TOO_LARGE, ERR_TIMEOUT, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE,
-    ERR_UPSTREAM,
+    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_TIMEOUT, ERR_UNAUTHORIZED,
+    ERR_UNPROCESSABLE, ERR_UPSTREAM,
 };
 pub use error::ApiError;
 pub use handlers::dictate::{
@@ -35,6 +35,9 @@ pub use handlers::issues::IssueReportResponse;
 pub use handlers::models::ModelDto;
 pub use handlers::notes::{GenerateRequest, GenerateResponse, TranscribeResponse};
 pub use handlers::p3a::{P3aReportRequest, P3aReportResponse};
+pub use handlers::video::{
+    VideoAnimateRequest, VideoGenerateRequest, VideoJobResponse, VideoStatusResponse,
+};
 pub use handlers::web::{WebFetchRequest, WebSearchRequest};
 pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 
@@ -73,6 +76,21 @@ pub fn router(state: ApiState) -> Router {
             // budget rather than the small JSON budget or unrelated audio cap.
             "/v1/image/edit",
             post(handlers::image::edit).layer(DefaultBodyLimit::max(limits.max_image_edit_bytes)),
+        )
+        .route(
+            "/v1/video/generate",
+            post(handlers::video::generate).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+        )
+        .route(
+            // Animate carries a base64 source image, so it uses the image-edit
+            // body budget rather than the small JSON budget.
+            "/v1/video/animate",
+            post(handlers::video::animate)
+                .layer(DefaultBodyLimit::max(limits.max_image_edit_bytes)),
+        )
+        .route(
+            "/v1/video/status/{job_id}",
+            get(handlers::video::status).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .route(
             "/v1/dictate",

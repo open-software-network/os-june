@@ -81,7 +81,8 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$TEMP/os-june-dictation-*.m4a"
+          "$TEMP/os-june-dictation-*.m4a",
+          "$APPDATA/hermes/videos/*"
         ]
       },
       "capabilities": [
