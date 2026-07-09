@@ -18,7 +18,7 @@ if ! gh auth status -h github.com >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! gh extension list | awk '{print $1}' | grep -qx 'basecamp/gh-signoff'; then
+if ! gh extension list | grep -Eq '(^|[[:space:]])basecamp/gh-signoff([[:space:]]|$)'; then
   echo "gh-signoff is required. Run: gh extension install basecamp/gh-signoff" >&2
   exit 1
 fi
