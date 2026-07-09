@@ -6,8 +6,8 @@ pub use crate::audio::system_macos::{
 
 #[cfg(target_os = "windows")]
 pub use crate::audio::system_windows::{
-    helper_permission_check, system_audio_readiness, SystemAudioCapture,
-    SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT,
+    helper_permission_check, system_audio_readiness, SystemAudioCapture, SystemAudioFailure,
+    SystemAudioStopResult, SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT,
 };
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]

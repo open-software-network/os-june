@@ -1277,6 +1277,31 @@ async fn finish_recording_session(
                 );
             }
         }
+        if let Some(failure) = source.failure.as_ref() {
+            if let Err(error) = repos
+                .add_source_checkpoint(
+                    &finished.session_id,
+                    source_artifact.map(|artifact| artifact.id.as_str()),
+                    Some(source.source.as_db()),
+                    "capture_stream_error",
+                    Some(
+                        serde_json::json!({
+                            "message": failure.message,
+                            "code": failure.code,
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await
+            {
+                eprintln!(
+                    "failed to persist capture_stream_error checkpoint for {} source {}: {}",
+                    finished.session_id,
+                    source.source.as_db(),
+                    error
+                );
+            }
+        }
         let validation = validate_audio_artifact(
             &source.final_path,
             source.elapsed_ms,
@@ -1287,7 +1312,8 @@ async fn finish_recording_session(
         let file_size = std::fs::metadata(&source.final_path)
             .map(|metadata| metadata.len() as i64)
             .unwrap_or_default();
-        let valid = source_audio_passes_validation(source.source, &validation);
+        let valid =
+            source.failure.is_none() && source_audio_passes_validation(source.source, &validation);
         let validation_taxonomy = validation_taxonomy_code(&validation, valid);
         let validation_checkpoint_details = serde_json::json!({
             "path": source.final_path.to_string_lossy(),
@@ -1360,13 +1386,18 @@ async fn finish_recording_session(
             }
         }
         if !valid {
+            let failure_message = source
+                .failure
+                .as_ref()
+                .map(|failure| failure.message.clone())
+                .unwrap_or_else(|| validation.warnings.join("; "));
             warnings.push(crate::domain::types::SourceWarningDto {
                 source: source.source,
                 code: "source_validation_failed".to_string(),
                 message: format!(
                     "{} source did not pass validation: {}",
                     source.source.as_db(),
-                    validation.warnings.join("; ")
+                    failure_message
                 ),
             });
         }
@@ -1386,7 +1417,11 @@ async fn finish_recording_session(
             error: if valid {
                 None
             } else {
-                Some(validation.warnings.join("; "))
+                source
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.message.clone())
+                    .or_else(|| Some(validation.warnings.join("; ")))
             },
         });
     }

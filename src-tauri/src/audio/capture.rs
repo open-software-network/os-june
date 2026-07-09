@@ -5,7 +5,7 @@ use crate::{
             start_live_transcript_preview, start_system_live_transcript_preview,
             LivePreviewController, LivePreviewSink, SystemLivePreviewController,
         },
-        system_audio::SystemAudioCapture,
+        system_audio::{SystemAudioCapture, SystemAudioFailure, SystemAudioStopResult},
     },
     domain::types::{
         AppError, AudioLevelDto, RecordingSessionDto, RecordingSource, RecordingSourceMode,
@@ -94,6 +94,7 @@ pub struct FinishedSource {
     pub final_path: PathBuf,
     pub elapsed_ms: i64,
     pub capture_issue: Option<MicrophoneStreamIssue>,
+    pub failure: Option<SystemAudioFailure>,
 }
 
 pub struct CaptureRecoverySnapshot {
@@ -860,15 +861,31 @@ fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, A
             &last_callback_at,
         )
         .or_else(|| stall_latch.lock().ok().and_then(|latch| latch.clone())),
+        failure: None,
     }];
-    if let Some(system_path) = system_stopped {
-        let system_path = system_path?;
-        sources.push(FinishedSource {
-            source: RecordingSource::System,
-            final_path: system_final_path.unwrap_or(system_path.clone()),
-            elapsed_ms: recording_dto.elapsed_ms,
-            capture_issue: None,
-        });
+    if let Some(system_result) = system_stopped {
+        match system_result {
+            SystemAudioStopResult::Stopped(system_path) => {
+                sources.push(FinishedSource {
+                    source: RecordingSource::System,
+                    final_path: system_final_path.unwrap_or(system_path.clone()),
+                    elapsed_ms: recording_dto.elapsed_ms,
+                    capture_issue: None,
+                    failure: None,
+                });
+            }
+            SystemAudioStopResult::Failed(failure) => {
+                if let Some(system_path) = system_final_path {
+                    sources.push(FinishedSource {
+                        source: RecordingSource::System,
+                        final_path: system_path,
+                        elapsed_ms: recording_dto.elapsed_ms,
+                        capture_issue: None,
+                        failure: Some(failure),
+                    });
+                }
+            }
+        }
     }
     Ok(FinishedRecording {
         session_id,
