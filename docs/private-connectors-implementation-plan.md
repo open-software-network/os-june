@@ -18,19 +18,23 @@
 | Token | Who holds it | Where it lives | What it can do alone |
 |---|---|---|---|
 | App credential (Google client_id; PKCE native flow, no confidential secret) | OpenSoftware | Baked into app / June API config | Nothing — identifies the app, grants no data access |
-| User grant (refresh token + short-lived access tokens) | The user | macOS Keychain (default mode); sealed ciphertext (away-mode) | Nothing without the app credential |
+| User grant (refresh token + short-lived access tokens) | The user | macOS Keychain (default mode); sealed ciphertext (away-mode) | Effectively everything: Google native-app clients are public clients (the client_id is not a secret), so a stolen refresh token can be exchanged for access with public metadata alone |
 
-Reading a user's data requires both. The architecture keeps them co-located only (a) on the user's device, or (b) inside an attested enclave running published code.
+The user grant is therefore a **bearer secret** — Keychain custody (local mode)
+and the sealed vault (away-mode) are the real protections, not the token
+split. The architecture's job is to keep that grant only (a) on the user's
+device, or (b) inside an attested enclave running published code, and to make
+revocation immediate in both.
 
 ### 0.2 The two trust modes
 
-**Mode A — Local (default).** OAuth via Google's native-app flow with PKCE and loopback redirect. Refresh token minted directly to the device, stored in Keychain. All provider API calls originate on-device from local MCP servers. OpenSoftware's infrastructure is not in the data path at all. Polling (1–5 min while awake) drives proactive triggers.
+**Mode A — Local (default).** OAuth via Google's native-app flow with PKCE and loopback redirect. Refresh token minted directly to the device, stored in Keychain. All provider API calls originate on-device from local MCP servers. OpenSoftware's infrastructure is not in the *connector* data path (token custody + provider calls); model inference for routines still follows the user's provider selection — June API by default, fully local with a local model. Polling (1–5 min while awake) drives proactive triggers.
 
 **Mode B — Away (opt-in).** For real-time triggers while the Mac sleeps, and later for Slack (Events API has no polling equivalent). A relay service runs inside the June API enclave (Intel TDX on Phala Cloud, same chain as today):
 - Provider webhooks (Gmail `users.watch` → Pub/Sub push, Calendar push channels, Slack Events) terminate inside the enclave.
 - The user's refresh token is *lent* to the relay at enable-time, encrypted in transit to the enclave's attested key, then sealed (§3.3).
 - The relay fetches minimal event payloads, encrypts them to the device's registered X25519 public key, enqueues ciphertext, and deletes on acknowledged delivery (TTL 72h).
-- No plaintext at rest anywhere; the DB operator sees only blobs.
+- No plaintext *content* at rest anywhere. The DB operator still sees routing metadata — `user_id`, `device_key_id`, timestamps, event counts — which is enough for traffic analysis (who receives how many events, when). The threat-model page (§3.4) must state this plainly; "operator sees only blobs" is not a claim we can make.
 
 ### 0.3 Component map (new pieces in bold)
 
@@ -138,7 +142,7 @@ Design rules: tools return compact structured summaries by default (subject/send
 ### 3.4 Verifiability & governance
 
 - Extend reproducible builds + `/verify` to cover the relay image (it's the same June API workspace, so mostly free).
-- Publish a threat-model page (docs + marketing): exactly what away-mode adds to the trust surface — Intel TDX, Phala KMS, OpenSoftware upgrade governance — and what it doesn't (no plaintext at rest, no data path in local mode). This page is the source of truth for all marketing claims; copy review gates on it (claims-guardrails discipline).
+- Publish a threat-model page (docs + marketing): exactly what away-mode adds to the trust surface — Intel TDX, Phala KMS, OpenSoftware upgrade governance — what it doesn't (no plaintext content at rest; no connector data path in local mode), and what the operator can still observe (queue routing metadata: who receives how many events, when; plus inference routing when routines use June API rather than a local model). This page is the source of truth for all marketing claims; copy review gates on it (claims-guardrails discipline).
 - Upgrade governance: relay releases follow the existing rc→stable promote workflow; add a release-transparency note (measurement hash published per release in `os-june-releases`).
 
 ### 3.5 Metering
