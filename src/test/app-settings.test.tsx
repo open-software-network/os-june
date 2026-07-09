@@ -1555,6 +1555,71 @@ describe("AppSettings", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("locks the system audio switch without offering Enable when a restart is what it needs", async () => {
+    const user = userEvent.setup();
+    const restoreNavigator = stubNavigatorPlatform(
+      "MacIntel",
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+    );
+    try {
+      render(
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          sourceReadiness={{
+            sourceMode: "microphonePlusSystem",
+            ready: false,
+            checkedAt: "2026-06-08T12:00:00Z",
+            sources: [
+              {
+                source: "microphone",
+                required: true,
+                ready: true,
+                permissionState: "granted",
+                deviceAvailable: true,
+                captureAvailable: true,
+              },
+              {
+                source: "system",
+                required: true,
+                ready: false,
+                permissionState: "granted",
+                deviceAvailable: true,
+                captureAvailable: false,
+                recoveryAction: "restartApp",
+              },
+            ],
+          }}
+          checkingSourceReadiness={false}
+          microphonePermissionStatus="granted"
+          accessibilityPermissionStatus="granted"
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableMicrophone={vi.fn()}
+          onEnableAccessibility={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+        />,
+      );
+
+      await user.click(screen.getByRole("tab", { name: "Audio" }));
+
+      const sourceRow = screen
+        .getByText("Capture audio from other apps along with your microphone.")
+        .closest(".settings-row") as HTMLElement;
+
+      // The grant already exists, so "Enable" would send the user to System
+      // Settings to allow something they have already allowed.
+      expect(within(sourceRow).queryByRole("button", { name: "Enable" })).not.toBeInTheDocument();
+      expect(
+        within(sourceRow).getByRole("switch", { name: "Capture system audio for notes" }),
+      ).toBeDisabled();
+    } finally {
+      restoreNavigator();
+    }
+  });
+
   it("only lists microphone permissions on Windows", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",

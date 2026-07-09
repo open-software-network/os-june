@@ -472,9 +472,12 @@ export function AppSettings({
     (source) => source.source === "microphone",
   );
   const systemAvailability = systemAudioAvailability(sourceReadiness);
-  // Denied and granted-but-uncapturable both mean the switch must not be
-  // offered; the status label below tells the two apart.
-  const systemDenied = systemAvailability === "denied" || systemAvailability === "unavailable";
+  // Denied and granted-but-uncapturable both lock the switch, but only a real
+  // denial is fixable in System Settings: the uncapturable helper recovers on
+  // restart, so sending the user to grant an already-granted permission would
+  // be a dead end. The status label tells the two apart.
+  const systemDenied = systemAvailability === "denied";
+  const systemLocked = systemDenied || systemAvailability === "unavailable";
   const systemUnavailable = !macLikePlatform || systemAvailability === "unsupported";
 
   useEffect(() => {
@@ -1666,7 +1669,7 @@ export function AppSettings({
                       ) : null}
                       <Switch
                         checked={systemOn}
-                        disabled={checkingSourceReadiness || systemDenied}
+                        disabled={checkingSourceReadiness || systemLocked}
                         aria-label="Capture system audio for notes"
                         onCheckedChange={(next) =>
                           onSourceModeChange(next ? "microphonePlusSystem" : "microphoneOnly")
