@@ -9091,7 +9091,7 @@ mod tests {
         // startRecording, the command re-probes), each pass can wait the full
         // system-audio permission probe, then the first-run microphone prompt
         // and the capture watchdog run in sequence.
-        let worst_case = crate::audio::system_macos::SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT * 2
+        let worst_case = crate::audio::system_audio::SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT * 2
             + crate::audio::capture::MICROPHONE_PROMPT_TIMEOUT
             + crate::audio::capture::CAPTURE_START_TIMEOUT;
         assert!(

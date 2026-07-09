@@ -5,7 +5,7 @@ use crate::{
             start_live_transcript_preview, start_system_live_transcript_preview,
             LivePreviewController, LivePreviewSink, SystemLivePreviewController,
         },
-        system_macos::SystemAudioCapture,
+        system_audio::SystemAudioCapture,
     },
     domain::types::{
         AppError, AudioLevelDto, RecordingSessionDto, RecordingSource, RecordingSourceMode,
@@ -844,9 +844,9 @@ fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, A
         std::fs::rename(&partial_path, &final_path)
             .map_err(|error| AppError::new("audio_finalization_failed", error.to_string()))
     })();
-    // Stop the system-audio helper even when microphone finalization failed:
-    // dropping `SystemAudioCapture` without `stop()` would leave the helper
-    // process recording in the background.
+    // Stop the system-audio backend even when microphone finalization failed:
+    // dropping `SystemAudioCapture` without `stop()` could leave capture
+    // running in the background.
     let system_stopped = system_capture.map(SystemAudioCapture::stop);
     microphone_finalized?;
     let mut sources = vec![FinishedSource {
