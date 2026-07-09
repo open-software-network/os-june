@@ -89,6 +89,33 @@ pub struct AgentChatCompletion {
     pub usage: TokenUsage,
 }
 
+/// A streaming agent chat completion: response headers have been received
+/// from the upstream; body chunks arrive on `chunks` as the upstream
+/// produces them, and `outcome` resolves once the body has fully drained.
+///
+/// `chunks` is deliberately unbounded: the producer must be able to drain the
+/// upstream to its usage frame at upstream speed even when the client reads
+/// slowly, or billing settlement would be hostage to client pace. Worst-case
+/// memory is the full response body — the same profile as the buffered path.
+pub struct AgentChatStream {
+    pub content_type: String,
+    pub provider: String,
+    pub chunks: tokio::sync::mpsc::UnboundedReceiver<Result<bytes::Bytes, DomainError>>,
+    pub outcome: tokio::sync::oneshot::Receiver<AgentChatStreamOutcome>,
+}
+
+/// How a streamed agent chat body ended. Settlement branches on this: a
+/// transport failure must charge nothing (matching the buffered path, which
+/// errors before its charge line on the same failure), while a body that
+/// completed but carried no usage frame settles at the flat estimate —
+/// content WAS delivered, only the meter reading is missing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentChatStreamOutcome {
+    Usage(TokenUsage),
+    CompletedWithoutUsage,
+    Failed,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenUsage {
@@ -195,6 +222,8 @@ pub struct GenerationRequest {
     pub model: ModelId,
     pub system_prompt: String,
     pub provider_credentials: ProviderCredentials,
+    /// See `AgentChatRequest::unmetered`.
+    pub unmetered: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -214,6 +243,11 @@ pub struct AgentChatRequest {
     pub body: serde_json::Value,
     pub model: ModelId,
     pub provider_credentials: ProviderCredentials,
+    /// True when the caller settles no OS Accounts charge for this request
+    /// (user-supplied upstream key). Providers may then use their full-route
+    /// client: the shortened metered window exists only to keep settlement
+    /// inside the authorization hold, and there is no hold to protect.
+    pub unmetered: bool,
 }
 
 /// What an image generator needs: a prompt, the model, optional pixel
@@ -425,6 +459,11 @@ pub trait Cleaner: Send + Sync {
 pub trait AgentChatCompleter: Send + Sync {
     async fn complete(&self, request: AgentChatRequest)
     -> Result<AgentChatCompletion, DomainError>;
+
+    async fn complete_stream(
+        &self,
+        request: AgentChatRequest,
+    ) -> Result<AgentChatStream, DomainError>;
 }
 
 #[async_trait]

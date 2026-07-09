@@ -9,13 +9,13 @@ use june_config::{
     DEFAULT_MAX_IMAGE_EDIT_BYTES, ModelPriceConfig, ModelProvider, ModelType, PriceUnit,
 };
 use june_domain::{
-    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AudioDurationProbe, AuthError,
-    Authorization, AuthorizeRequest, CleanedText, Cleaner, CleanupRequest, Credits, DomainError,
-    GeneratedImage, GeneratedNote, GenerationRequest, Generator, ImageEditRequest, ImageEditor,
-    ImageGenerationRequest, ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient,
-    P3aReport, P3aSink, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
-    WebFetchRequest, WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult,
-    WebSearchResults, WebSearcher,
+    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
+    AgentChatStreamOutcome, AudioDurationProbe, AuthError, Authorization, AuthorizeRequest,
+    CleanedText, Cleaner, CleanupRequest, Credits, DomainError, GeneratedImage, GeneratedNote,
+    GenerationRequest, Generator, ImageEditRequest, ImageEditor, ImageGenerationRequest,
+    ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient, P3aReport, P3aSink, Receipt,
+    TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId, WebFetchRequest,
+    WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
@@ -75,12 +75,117 @@ async fn integration_note_generate_returns_enveloped_response() -> Result<(), Bo
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json")
+    );
     let body = response_json(response).await?;
     assert_eq!(body["success"], true);
     assert_eq!(body["data"]["content"], "Generated note body");
     assert_eq!(body["data"]["titleSuggestion"], "Generated title");
     assert_eq!(body["data"]["promptVersion"], NOTE_GENERATE_PROMPT_VERSION);
     assert_eq!(body["data"]["creditsCharged"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_stream_returns_result_event() -> Result<(), Box<dyn Error>> {
+    let buffered_response = send(json_request(
+        "/v1/notes/generate",
+        &note_generate_request(false),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+    assert_eq!(buffered_response.status(), StatusCode::OK);
+    let buffered_body = response_json(buffered_response).await?;
+
+    let response = send(json_request(
+        "/v1/notes/generate",
+        &note_generate_request(true),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let body = response_text(response).await?;
+    let event_body = sse_event_data(&body, "result")?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&event_body)?,
+        buffered_body
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_stream_returns_error_event() -> Result<(), Box<dyn Error>> {
+    let request = serde_json::json!({
+        "noteId": "note-1",
+        "promptVersion": "prompt-v1",
+        "title": "Planning",
+        "transcript": "boom",
+        "model": "text-model"
+    });
+    let buffered_response = send(json_request(
+        "/v1/notes/generate",
+        &request,
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+    assert_eq!(buffered_response.status(), StatusCode::BAD_GATEWAY);
+    let buffered_status = buffered_response.status().as_u16();
+    let buffered_body = response_json(buffered_response).await?;
+
+    let mut stream_request = request;
+    stream_request["stream"] = serde_json::Value::Bool(true);
+    let response = send(json_request(
+        "/v1/notes/generate",
+        &stream_request,
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_text(response).await?;
+    let event_body = serde_json::from_str::<serde_json::Value>(&sse_event_data(&body, "error")?)?;
+    assert_eq!(event_body["status"], buffered_status);
+    assert_eq!(event_body["body"], buffered_body);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_stream_sends_keep_alive_before_result()
+-> Result<(), Box<dyn Error>> {
+    let app = router(test_state_with_generator_and_timeout(
+        Arc::new(SlowGenerator),
+        30,
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/notes/generate",
+            &note_generate_request(true),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_text(response).await?;
+    let keep_alive_index = body.find(": keep-alive").ok_or("missing keep-alive")?;
+    let result_index = body.find("event: result").ok_or("missing result event")?;
+    assert!(keep_alive_index < result_index);
     Ok(())
 }
 
@@ -127,6 +232,31 @@ async fn integration_p3a_report_uses_user_auth_and_forwards_anonymous_bucket()
 }
 
 #[tokio::test]
+async fn integration_note_generate_stream_auth_failure_stays_json_401() -> Result<(), Box<dyn Error>>
+{
+    let response = send(json_request(
+        "/v1/notes/generate",
+        &note_generate_request(true),
+        None,
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json")
+    );
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["error_code"], 3001);
+    assert_eq!(body["message"], "missing_bearer_token");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_p3a_report_requires_user_auth() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/p3a/reports",
@@ -146,6 +276,32 @@ async fn integration_p3a_report_requires_user_auth() -> Result<(), Box<dyn Error
     let body = response_json(response).await?;
     assert_eq!(body["success"], false);
     assert_eq!(body["message"], "missing_bearer_token");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_stream_returns_upstream_sse_body() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/chat/completions",
+        &serde_json::json!({
+            "model": "text-model",
+            "stream": true,
+            "messages": [{ "role": "user", "content": "hello" }]
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let body = response_text(response).await?;
+    assert_eq!(body, "data: {\"choices\":[]}\n\n");
     Ok(())
 }
 
@@ -895,32 +1051,53 @@ fn test_state_with_sinks_and_transcriber(
     attestation: AttestationInfo,
     transcriber: Arc<dyn Transcriber>,
 ) -> ApiState {
-    test_state_with_all_sinks(
+    test_state_from_deps(TestStateDeps {
         issue_reports,
         attestation,
         transcriber,
-        Arc::new(RecordingP3aSink::default()),
-    )
+        generator: Arc::new(FakeGenerator),
+        request_timeout_secs: 5,
+        p3a_sink: Arc::new(RecordingP3aSink::default()),
+    })
+}
+
+fn test_state_with_generator_and_timeout(
+    generator: Arc<dyn Generator>,
+    request_timeout_secs: u64,
+) -> ApiState {
+    test_state_from_deps(TestStateDeps {
+        issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
+        attestation: test_attestation(),
+        transcriber: Arc::new(FakeTranscriber),
+        generator,
+        request_timeout_secs,
+        p3a_sink: Arc::new(RecordingP3aSink::default()),
+    })
 }
 
 fn test_state_with_p3a_sink(p3a_sink: Arc<dyn P3aSink>) -> ApiState {
-    test_state_with_all_sinks(
-        test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
-        test_attestation(),
-        Arc::new(FakeTranscriber),
+    test_state_from_deps(TestStateDeps {
+        issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
+        attestation: test_attestation(),
+        transcriber: Arc::new(FakeTranscriber),
+        generator: Arc::new(FakeGenerator),
+        request_timeout_secs: 5,
         p3a_sink,
-    )
+    })
 }
 
-fn test_state_with_all_sinks(
+struct TestStateDeps {
     issue_reports: Arc<IssueReportService>,
     attestation: AttestationInfo,
     transcriber: Arc<dyn Transcriber>,
+    generator: Arc<dyn Generator>,
+    request_timeout_secs: u64,
     p3a_sink: Arc<dyn P3aSink>,
-) -> ApiState {
+}
+
+fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
     let pricing = Arc::new(PricingTable::new(models()));
     let os_accounts = Arc::new(FakeOsAccounts);
-    let generator = Arc::new(FakeGenerator);
     let cleaner = Arc::new(FakeCleaner);
     let duration_probe = Arc::new(FakeDurationProbe);
     let chat_completer = Arc::new(FakeChatCompleter);
@@ -943,7 +1120,7 @@ fn test_state_with_all_sinks(
         note_transcribe: Arc::new(NoteTranscribeService::new(NoteTranscribeServiceDeps {
             pricing: pricing.clone(),
             os_accounts: os_accounts.clone(),
-            transcriber: transcriber.clone(),
+            transcriber: deps.transcriber.clone(),
             duration_probe: duration_probe.clone(),
             hold_ttl_seconds: 30,
             flat_estimate_credits: 1_000,
@@ -952,7 +1129,7 @@ fn test_state_with_all_sinks(
         note_generate: Arc::new(NoteGenerateService::new(NoteGenerateServiceDeps {
             pricing: pricing.clone(),
             os_accounts: os_accounts.clone(),
-            generator,
+            generator: deps.generator,
             hold_ttl_seconds: 30,
             flat_estimate_credits: 1_000,
         })),
@@ -966,7 +1143,7 @@ fn test_state_with_all_sinks(
         dictate: Arc::new(DictateService::new(DictateServiceDeps {
             pricing,
             os_accounts: os_accounts.clone(),
-            transcriber,
+            transcriber: deps.transcriber,
             cleaner,
             duration_probe,
             transcribe_hold_ttl_seconds: 30,
@@ -982,17 +1159,17 @@ fn test_state_with_all_sinks(
             hold_ttl_seconds: 30,
         })),
         image,
-        issue_reports,
+        issue_reports: deps.issue_reports,
         p3a_reports: Arc::new(P3aReportService::new(P3aReportServiceDeps {
-            sink: p3a_sink,
+            sink: deps.p3a_sink,
         })),
         limits: ApiLimits {
             max_audio_bytes: 1024 * 1024,
             max_json_bytes: 1024 * 1024,
             max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
-            request_timeout_secs: 5,
+            request_timeout_secs: deps.request_timeout_secs,
         },
-        attestation,
+        attestation: deps.attestation,
     })
 }
 
@@ -1060,6 +1237,32 @@ fn json_request(
         builder = builder.header(header::AUTHORIZATION, authorization);
     }
     builder.body(Body::from(value.to_string()))
+}
+
+fn note_generate_request(stream: bool) -> serde_json::Value {
+    let mut request = serde_json::json!({
+        "noteId": "note-1",
+        "promptVersion": "prompt-v1",
+        "title": "Planning",
+        "transcript": "System: launch is Friday",
+        "manualNotes": "Ask about rate limits",
+        "model": "text-model"
+    });
+    if stream {
+        request["stream"] = serde_json::Value::Bool(true);
+    }
+    request
+}
+
+fn sse_event_data(body: &str, event: &str) -> Result<String, Box<dyn Error>> {
+    let marker = format!("event: {event}\n");
+    let event_start = body.find(&marker).ok_or("missing SSE event")?;
+    let event_body = &body[event_start + marker.len()..];
+    let data = event_body
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .ok_or("missing SSE data")?;
+    Ok(data.to_string())
 }
 
 fn json_request_with_venice_api_key(
@@ -1343,6 +1546,9 @@ struct FakeGenerator;
 #[async_trait]
 impl Generator for FakeGenerator {
     async fn generate(&self, request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
+        if request.transcript.contains("boom") {
+            return Err(DomainError::UpstreamProvider);
+        }
         let content = if request.provider_credentials.venice_api_key.as_deref()
             == Some("VENICE_INFERENCE_KEY_user")
         {
@@ -1359,6 +1565,16 @@ impl Generator for FakeGenerator {
                 completion_tokens: 500,
             },
         })
+    }
+}
+
+struct SlowGenerator;
+
+#[async_trait]
+impl Generator for SlowGenerator {
+    async fn generate(&self, request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        FakeGenerator.generate(request).await
     }
 }
 
@@ -1394,6 +1610,27 @@ impl AgentChatCompleter for FakeChatCompleter {
                 prompt_tokens: 100,
                 completion_tokens: 100,
             },
+        })
+    }
+
+    async fn complete_stream(
+        &self,
+        _request: AgentChatRequest,
+    ) -> Result<AgentChatStream, DomainError> {
+        let (chunks_tx, chunks_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = chunks_tx.send(Ok(Vec::from(&b"data: {\"choices\":[]}\n\n"[..]).into()));
+            let _ = outcome_tx.send(AgentChatStreamOutcome::Usage(TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 100,
+            }));
+        });
+        Ok(AgentChatStream {
+            content_type: "text/event-stream".to_string(),
+            provider: "fake-chat".to_string(),
+            chunks: chunks_rx,
+            outcome: outcome_rx,
         })
     }
 }

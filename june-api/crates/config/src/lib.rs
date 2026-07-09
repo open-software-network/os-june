@@ -69,9 +69,14 @@ const fn base64_encoded_len(byte_count: usize) -> usize {
 }
 
 pub const fn image_client_timeout_secs(route_timeout_secs: u64) -> u64 {
-    route_timeout_secs
-        - OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS
-        - IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS
+    // Saturating with a 1s floor: validated configs can never get here with a
+    // route timeout at or below the budgets (validate_image_timeout_margin
+    // rejects them), but directly-built states (tests) bypass validation and
+    // a clamped window beats an underflow panic.
+    let window = route_timeout_secs
+        .saturating_sub(OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS)
+        .saturating_sub(IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS);
+    if window == 0 { 1 } else { window }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -730,7 +735,7 @@ impl Default for AppConfig {
                 jwks_refresh_secs: 300,
                 jwks_miss_min_backoff_secs: 5,
                 authorize_hold_ttl_note_transcribe_secs: 60,
-                authorize_hold_ttl_note_generate_secs: 300,
+                authorize_hold_ttl_note_generate_secs: DEFAULT_IMAGE_HOLD_TTL_SECS,
                 authorize_hold_ttl_dictate_transcribe_secs: 30,
                 authorize_hold_ttl_dictate_cleanup_secs: 30,
                 note_transcribe_preview_max_audio_secs: 30,
@@ -941,6 +946,7 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
         config.server.max_image_edit_bytes,
     )?;
     validate_image_hold_ttl(config)?;
+    validate_long_inference_hold_ttl(config)?;
     validate_hold_ttl_bounds(config)?;
     Ok(())
 }
@@ -962,6 +968,28 @@ fn validate_image_hold_ttl(config: &AppConfig) -> Result<(), ConfigError> {
         return Err(ConfigError::InvalidRequired {
             field: "os_accounts.authorize_hold_ttl_image_secs",
             reason: "must cover the image client timeout plus the settlement budget",
+        });
+    }
+    Ok(())
+}
+
+/// Note generation and agent chat run on the bounded metered-inference client
+/// (same window as images) and settle AFTER the upstream call — streamed chat
+/// settles after the body drains, streamed generate keeps the connection
+/// alive for the whole window. Their shared hold must therefore cover that
+/// client window plus the settlement budget, exactly like the image hold;
+/// a shorter hold silently expires before `charge` on every long call.
+fn validate_long_inference_hold_ttl(config: &AppConfig) -> Result<(), ConfigError> {
+    let minimum = config
+        .server
+        .request_timeout_secs
+        .saturating_sub(OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS)
+        .saturating_sub(IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS)
+        .saturating_add(IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS);
+    if config.os_accounts.authorize_hold_ttl_note_generate_secs < minimum {
+        return Err(ConfigError::InvalidRequired {
+            field: "os_accounts.authorize_hold_ttl_note_generate_secs",
+            reason: "must cover the metered-inference client timeout plus the settlement budget",
         });
     }
     Ok(())

@@ -7,12 +7,14 @@ use crate::{
 };
 use axum::{
     Json,
+    body::Body,
     extract::State,
     http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
 use june_domain::{ModelId, ModelKind};
 use june_services::AgentChatParams;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 pub(crate) async fn chat_completions(
     State(state): State<ApiState>,
@@ -36,6 +38,25 @@ pub(crate) async fn chat_completions(
             "model".to_string(),
             serde_json::Value::String(model_id.clone()),
         );
+    }
+    if body.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
+        let output = state
+            .agent_chat()
+            .complete_stream(AgentChatParams {
+                user_id,
+                model_id: ModelId(model_id),
+                body,
+                provider_credentials,
+            })
+            .await?;
+        // The route TimeoutLayer bounds this handler future; the streamed body
+        // is bounded by the upstream reqwest client's total timeout.
+        return Ok((
+            StatusCode::OK,
+            [(CONTENT_TYPE, output.content_type)],
+            Body::from_stream(UnboundedReceiverStream::new(output.chunks)),
+        )
+            .into_response());
     }
     let output = state
         .agent_chat()
