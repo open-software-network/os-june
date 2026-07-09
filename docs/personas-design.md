@@ -272,8 +272,9 @@ analysis.
   lists are binding.
 - Recognition composes with the existing turn model (ADR-0005 stands):
   detect turns → diarize → match → annotate. Do not touch turn detection.
-- The June API needs **no changes** — everything is local. Do not add
-  endpoints.
+- Recognition and persona storage are local, and persona tools follow the
+  existing agent chat path when selected context is needed for inference. This
+  design needs **no new June API endpoint**.
 - Repo spec rules apply to all UI (sentence case, design tokens, central
   icons, control sizes — see spec/index.md).
 - Start with the Phase 1 spike as a throwaway binary; its output (crate +

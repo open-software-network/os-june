@@ -48,9 +48,11 @@ or missing score pairs make the result inconclusive.
 The spike uses `sherpa-onnx` 1.13.4 because its current Rust API exposes both
 offline speaker diarization and reusable speaker embeddings, and it publishes
 native artifacts for macOS arm64/x86_64 and Windows x86_64. The wrapper pins
-and verifies the selected native archive before Cargo can use it. A build script
-rejects the native-library override, re-hashes the selected archive, and embeds
-that verified provenance into the binary's report. The high-level
+and verifies the selected native archive before Cargo can use it. The verified
+model paths are appended after caller arguments so they cannot be overridden,
+and their hashes are recorded in the report. A build script rejects the
+native-library override, re-hashes the selected archive, and embeds that
+verified provenance into the binary's report. The high-level
 diarizer returns speaker segments, not embeddings, so this prototype
 re-extracts one normalized embedding from each cluster. The isolated lockfile
 pins `url` 2.5.2 and `zeroize` 1.8.1 so the graph remains compatible with

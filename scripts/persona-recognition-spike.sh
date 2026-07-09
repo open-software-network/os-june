@@ -124,7 +124,7 @@ SHERPA_ONNX_ARCHIVE_NAME="$native_archive" \
 SHERPA_ONNX_ARCHIVE_SHA256="$native_checksum" \
 CARGO_TARGET_DIR="$CACHE/target/$native_checksum" \
 cargo run --locked --release --manifest-path "$CRATE" -- \
+  "$@" \
   --segmentation-model "$SEGMENTATION_MODEL" \
   --embedding-model "$EMBEDDING_MODEL" \
-  --output "$OUTPUT" \
-  "$@"
+  --output "$OUTPUT"
