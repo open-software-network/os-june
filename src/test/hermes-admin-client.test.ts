@@ -103,54 +103,6 @@ describe("HermesAdminClient — requests, auth, profile targeting", () => {
     expect(outcome.result).toBeUndefined();
   });
 
-  it("accepts a bodyless 2xx activation once the authoritative read confirms it", async () => {
-    // A bare {ok:true} (or empty) 2xx is a legitimate success shape elsewhere
-    // in this client; activation reconciles it against GET /api/profiles/active
-    // instead of trusting the requested name OR failing a switch that landed.
-    const responses: Array<() => Response> = [
-      () => new Response(JSON.stringify({ ok: true }), { status: 200 }),
-      () =>
-        new Response(JSON.stringify({ active: "research", current: "default" }), { status: 200 }),
-    ];
-    const fetchBareOk = vi.fn(
-      async () => responses.shift()?.() ?? new Response("{}", { status: 200 }),
-    );
-    const server = new FakeHermesServer();
-    const client = createHermesAdminClient(targetForFake(server), { fetch: fetchBareOk });
-    await expect(client.profiles.activate("research")).resolves.toBeUndefined();
-    expect(fetchBareOk).toHaveBeenCalledTimes(2);
-  });
-
-  it("rejects activation when the authoritative read reports a different profile", async () => {
-    // Neither the echo nor the follow-up sticky read names the requested
-    // profile: the switch did not land, and the error carries what Hermes
-    // actually reports so the UI stays honest.
-    const responses: Array<() => Response> = [
-      () => new Response(JSON.stringify({ ok: true, active: "default" }), { status: 200 }),
-      () =>
-        new Response(JSON.stringify({ active: "default", current: "default" }), { status: 200 }),
-    ];
-    const fetchMismatch = vi.fn(
-      async () => responses.shift()?.() ?? new Response("{}", { status: 200 }),
-    );
-    const server = new FakeHermesServer();
-    const client = createHermesAdminClient(targetForFake(server), { fetch: fetchMismatch });
-    await expect(client.profiles.activate("research")).rejects.toMatchObject({
-      safeMessage: 'Hermes reports "default" as the active profile.',
-    });
-    expect(fetchMismatch).toHaveBeenCalledTimes(2);
-  });
-
-  it("accepts activation when the response confirms the requested profile", async () => {
-    const { client } = makeAdminHarness({
-      profiles: [
-        { name: "default", active: true },
-        { name: "research", active: false },
-      ],
-    });
-    await expect(client.profiles.activate("research")).resolves.toBeUndefined();
-  });
-
   it("returns MCP test results as a MutationOutcome with the discovered tools", async () => {
     const { client } = makeAdminHarness(mcpStdioWithToolsScenario());
     const outcome = await client.mcp.testServer("sqlite");
@@ -252,6 +204,22 @@ describe("HermesAdminClient — real-contract paths and shapes (v2026.6.19)", ()
     const entry = server.requestLog.at(-1);
     expect(entry?.path).toBe("/api/skills/hub/update");
     expect(entry?.body).toEqual({});
+  });
+
+  it("startTestSession stops before open-terminal when the profile switch reports not-ok", async () => {
+    const { client, server } = makeAdminHarness({
+      profiles: [
+        { name: "alpha", active: false },
+        { name: "beta", active: true },
+      ],
+      profileActivateNotOk: true,
+    });
+    const result = await client.profiles.startTestSession("alpha");
+    // A body-level { ok: false } on the switch (HTTP 2xx) must short-circuit:
+    // the failure rides in the result and no terminal is opened under the
+    // un-switched profile (Greptile P1).
+    expect(result.result.ok).toBe(false);
+    expect(server.requestLog.some((r) => r.path.includes("/open-terminal"))).toBe(false);
   });
 
   it("config.setValueAtSegments writes a dotted name as ONE key, not nested", async () => {

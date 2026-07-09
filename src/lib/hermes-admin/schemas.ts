@@ -1435,9 +1435,7 @@ export function readExternalDirs(config: Record<string, unknown>): string[] {
 }
 
 // ----------------------------------------------------------------------------
-// Profiles (`GET /api/profiles`, `POST /api/profiles`, `GET /api/profiles/active`,
-// `POST /api/profiles/active`, `DELETE /api/profiles/{name}`,
-// `GET /api/profiles/sessions`)
+// Profiles (`GET /api/profiles`, `POST /api/profiles`, `GET /api/profiles/sessions`)
 // ----------------------------------------------------------------------------
 
 /** A Hermes profile as reported by `GET /api/profiles`. Hermes isolates config,
@@ -1483,26 +1481,8 @@ export function parseProfileList(raw: unknown): HermesProfileSummary[] {
   return items.map(parseProfile).filter((p): p is HermesProfileSummary => p !== undefined);
 }
 
-/** The active-profile pointer reported by `GET /api/profiles/active`. `active`
- * is the sticky default new sessions and CLI launches use; `current` is the
- * dashboard's currently scoped profile. June's switcher keys off `active`. */
-export type HermesActiveProfile = {
-  active: string;
-  current: string;
-};
-
-/** Defensive parser for `GET /api/profiles/active`. Missing, empty, or malformed
- * fields fall back to `"default"` so a bad dashboard response never strands the
- * profile switcher without a usable root profile. */
-export function parseActiveProfile(raw: unknown): HermesActiveProfile {
-  const record = asRecord(raw);
-  return {
-    active: pickString([record], ["active"]) ?? "default",
-    current: pickString([record], ["current"]) ?? "default",
-  };
-}
-
-/** A live/recent session row from `GET /api/profiles/sessions`. */
+/** A live/recent session row from `GET /api/profiles/sessions`. June reads it to
+ * confirm a freshly-created profile's test session actually started. */
 export type HermesProfileSession = {
   /** Session id, when reported. */
   id?: string;
@@ -1547,43 +1527,6 @@ export function parseProfileCreateResult(
   return {
     ok: pickBool([record], ["ok", "success", "created"]) ?? true,
     name: pickString([record, nested], ["name", "id", "slug", "profile"]) ?? requestedName,
-    raw,
-  };
-}
-
-/** Result of `POST /api/profiles/active`. */
-export type HermesProfileActivateResult = {
-  ok: boolean;
-  /** The profile Hermes reports as the sticky active value. Absent when the
-   * response body does not name one - callers must treat that as unconfirmed,
-   * never assume the requested name (a malformed 2xx or a mismatched `active`
-   * would silently desync June's store from the on-disk sticky pointer that
-   * Rust-side model overrides resolve against). */
-  active?: string;
-  raw: unknown;
-};
-
-export function parseProfileActivateResult(raw: unknown): HermesProfileActivateResult {
-  const record = asRecord(raw);
-  return {
-    ok: pickBool([record], ["ok", "success"]) ?? true,
-    active: pickString([record], ["active", "name", "profile"]),
-    raw,
-  };
-}
-
-/** Result of `DELETE /api/profiles/{name}`. */
-export type HermesProfileRemoveResult = {
-  ok: boolean;
-  path?: string;
-  raw: unknown;
-};
-
-export function parseProfileRemoveResult(raw: unknown): HermesProfileRemoveResult {
-  const record = asRecord(raw);
-  return {
-    ok: pickBool([record], ["ok", "success"]) ?? true,
-    path: pickString([record], ["path"]),
     raw,
   };
 }

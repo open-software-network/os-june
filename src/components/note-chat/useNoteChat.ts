@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { buildHermesSessionChatTurns, type AgentChatTurn } from "../../lib/agent-chat-runtime";
-import {
-  getActiveHermesProfileName,
-  refreshActiveHermesProfile,
-} from "../../lib/active-hermes-profile";
 import { messageFromError } from "../../lib/errors";
 import { hermesConnectionForMode } from "../../lib/hermes-connection";
 import { classifyHermesEvent } from "../../lib/hermes-control-plane/event-classifier";
@@ -89,7 +85,6 @@ async function connectGateway(startIfNeeded: boolean): Promise<HermesGatewayClie
       status = await startHermesBridge(undefined, false);
       connection = hermesConnectionForMode(status, false);
     }
-    await refreshActiveHermesProfile({ status, mode: "sandboxed" });
     const wsUrl = connection?.wsUrl;
     if (!wsUrl) throw new Error("Hermes bridge did not return a gateway URL.");
     if (!sharedGateway) {
@@ -325,12 +320,10 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         let runtimeSessionId = runtimeSessionIdRef.current;
         const modelId = pendingModelIdRef.current;
         if (!sessionId) {
-          const activeProfile = getActiveHermesProfileName();
           const created = await gateway.request<HermesRuntimeSessionResponse>("session.create", {
             title: noteTitle.trim() || "Note chat",
             cols: 96,
             ...(modelId ? { model: modelId } : {}),
-            ...(activeProfile !== "default" ? { profile: activeProfile } : {}),
           });
           sessionId = created.stored_session_id ?? created.session_id;
           if (!sessionId) throw new Error("Hermes did not create a session.");

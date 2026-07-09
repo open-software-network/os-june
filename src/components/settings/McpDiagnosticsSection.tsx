@@ -23,7 +23,6 @@ import {
 } from "../../lib/hermes-admin";
 import { hermesBridgeStatus, type HermesBridgeStatus } from "../../lib/tauri";
 import { AdminNotifications } from "./AdminNotifications";
-import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 type McpDiagnosticsSectionProps = {
   /** The write-access mode whose runtime this page targets. Defaults to the safe
@@ -46,17 +45,6 @@ type McpDiagnosticsSectionProps = {
  * surfaced, and the support export is sanitized through the shared redactor.
  */
 export function McpDiagnosticsSection({ mode = "sandboxed" }: McpDiagnosticsSectionProps) {
-  const activeProfile = useConfirmedSettingsProfile(mode);
-  if (activeProfile.pending) {
-    return <McpDiagnosticsView state={PENDING_MCP_DIAGNOSTICS_STATE} mode={mode} />;
-  }
-  return <McpDiagnosticsSectionReady mode={mode} profile={activeProfile.name} />;
-}
-
-function McpDiagnosticsSectionReady({
-  mode,
-  profile,
-}: McpDiagnosticsSectionProps & { mode: HermesAdminMode; profile: string }) {
   const [bridge, setBridge] = useState<HermesBridgeStatus>();
   const [bridgeError, setBridgeError] = useState<string>();
 
@@ -76,7 +64,7 @@ function McpDiagnosticsSectionReady({
     };
   }, []);
 
-  const engine = useMcpServersEngine(bridge, mode, profile);
+  const engine = useMcpServersEngine(bridge, mode);
   const base = useMcpDiagnosticsController(engine);
   const state: McpDiagnosticsState =
     engine === null && bridgeError
@@ -85,52 +73,6 @@ function McpDiagnosticsSectionReady({
 
   return <McpDiagnosticsView state={state} mode={mode} />;
 }
-
-const PENDING_MCP_DIAGNOSTICS_STATE: McpDiagnosticsState = {
-  status: "loading",
-  retryable: false,
-  lifecycle: {
-    state: "clean",
-    label: "Up to date",
-    detail: "No pending changes.",
-    canRestart: false,
-  },
-  notifications: [],
-  restartPending: false,
-  servers: [],
-  summary: {
-    total: 0,
-    enabled: 0,
-    disabled: 0,
-    failing: 0,
-    authNeeded: 0,
-    restartPending: false,
-  },
-  testing: new Set<string>(),
-  runningAll: false,
-  toolQuery: "",
-  refresh: () => {},
-  test: () => {},
-  runAllTests: async () => {},
-  setToolQuery: () => {},
-  buildBundle: () => ({
-    schemaVersion: 1,
-    generatedAt: new Date(0).toISOString(),
-    profile: "default",
-    mode: "sandboxed",
-    summary: {
-      total: 0,
-      enabled: 0,
-      disabled: 0,
-      failing: 0,
-      authNeeded: 0,
-      restartPending: false,
-    },
-    notes: [],
-    servers: [],
-  }),
-  dismissNotification: () => {},
-};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed

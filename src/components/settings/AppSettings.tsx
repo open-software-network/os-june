@@ -90,7 +90,7 @@ import {
   ModelPickerPopover,
   type ModelPickerFlyout,
 } from "./ModelPickerPopover";
-import { DEFAULT_IMAGE_MODEL, imageModelCatalog } from "../../lib/image-models";
+import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
 import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { ExternalDirsSection } from "./ExternalDirsSection";
@@ -268,7 +268,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "taps", label: "Team skill taps" },
   { id: "toolsets", label: "Toolsets" },
   { id: "bundles", label: "Bundles" },
-  { id: "profile-builder", label: "Profiles" },
+  { id: "profile-builder", label: "Profile builder" },
   { id: "integrations-health", label: "Integrations health" },
   { id: "import-export", label: "Import / export" },
   { id: "about", label: "About" },
@@ -1155,7 +1155,7 @@ export function AppSettings({
   // model when clicked.
   const generationOptions = modelOptions(generationCatalog, modelValueForMode("generation"));
   const imageOptions = IMAGE_GENERATION_ENABLED
-    ? modelOptions(imageModelCatalog(), providerSettings.imageModel)
+    ? modelOptions(IMAGE_MODELS, providerSettings.imageModel)
     : [];
   const localDraftBaseUrl = localGenerationDraft.baseUrl.trim();
   const localNonLoopback = localDraftBaseUrl.length > 0 && !isLoopbackUrl(localDraftBaseUrl);

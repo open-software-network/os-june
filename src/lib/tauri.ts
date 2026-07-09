@@ -191,12 +191,6 @@ export type ProviderModelSettingsDto = {
   imageSafeModePromptDismissed: boolean;
 };
 
-export type ProfileModelOverridesDto = {
-  transcriptionProvider?: string;
-  transcriptionModel?: string;
-  imageModel?: string;
-};
-
 export type LocalGenerationSettingsDto = {
   baseUrl: string;
   modelId: string;
@@ -216,7 +210,6 @@ export type ImagePromptScreenResponse = {
 
 export type ProviderModelSettingsResponse = {
   settings: ProviderModelSettingsDto;
-  effectiveSettings: ProviderModelSettingsDto;
 };
 
 export type P3aSettingsDto = {
@@ -1656,21 +1649,6 @@ export async function deleteDictationHistoryItem(id: string) {
 
 export async function providerModelSettings() {
   return invoke<ProviderModelSettingsResponse>("provider_model_settings");
-}
-
-export async function profileModelOverrides(profile: string) {
-  return invoke<ProfileModelOverridesDto | null>("profile_model_overrides", { profile });
-}
-
-export async function setProfileModelOverrides(
-  profile: string,
-  overrides: ProfileModelOverridesDto,
-) {
-  return invoke<void>("set_profile_model_overrides", { profile, overrides });
-}
-
-export async function deleteProfileModelOverrides(profile: string) {
-  return invoke<void>("delete_profile_model_overrides", { profile });
 }
 
 export async function p3aSettings() {

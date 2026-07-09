@@ -89,9 +89,8 @@ export function adminTargetFromConnection(
 export function adminTargetForMode(
   status: HermesBridgeStatus,
   mode: HermesAdminMode,
-  profile: string | null = DEFAULT_HERMES_PROFILE,
+  profile: string = DEFAULT_HERMES_PROFILE,
 ): HermesAdminTarget | undefined {
-  if (profile === null) return undefined;
   const wantFull = mode === "unrestricted";
   // A connection is only targetable once it carries a base URL. Production
   // connections always do, but a partially-populated status (e.g. a runtime
@@ -114,7 +113,7 @@ export function adminTargetForMode(
 export function adminTargetForCurrentMode(
   status: HermesBridgeStatus,
   currentMode: HermesAdminMode,
-  profile: string | null = DEFAULT_HERMES_PROFILE,
+  profile: string = DEFAULT_HERMES_PROFILE,
 ): HermesAdminTarget | undefined {
   return adminTargetForMode(status, currentMode, profile);
 }

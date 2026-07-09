@@ -2,63 +2,31 @@ import { IconArrowLeft } from "central-icons/IconArrowLeft";
 import { IconArrowRight } from "central-icons/IconArrowRight";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
-import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
-import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconRobot2 } from "central-icons/IconRobot2";
-import { IconTrashCan } from "central-icons/IconTrashCan";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-  type RefObject,
-} from "react";
+import { IconShield } from "central-icons/IconShield";
+import { useMemo, type ReactNode } from "react";
 import {
   PROFILE_BUILDER_STEPS,
   STEP_META,
-  attachableMcpServers,
   buildCreatePlan,
   bundledSkillOptions,
-  canActivateProfile,
   canCreateProfile,
-  canRemoveProfile,
-  describeProfile,
   installableCatalogEntries,
   selectedModelToolSupport,
   slugifyProfileName,
   stepIndex,
   useProfileBuilder,
-  useProfileManager,
   validateProfileName,
   validateStep,
   type ChangeRisk,
   type HermesAdminMode,
   type ProfileBuilderState,
   type ProfileBuilderStep,
-  type ProfileManagerState,
 } from "../../lib/hermes-admin";
-import {
-  deleteProfileModelOverrides,
-  type ProviderModelMode,
-  type VeniceModelDto,
-} from "../../lib/tauri";
 import { ProviderLogo } from "./ProviderLogo";
-import { selectedModel } from "./ModelPickerDialog";
-import {
-  ModelPickerCardContent,
-  ModelPickerPopover,
-  type ModelPickerFlyout,
-} from "./ModelPickerPopover";
 import { AdminNotifications } from "./AdminNotifications";
-import { BreadcrumbBar } from "../ui/BreadcrumbBar";
-import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { EmptyState as EmptyStateSurface } from "../ui/EmptyState";
-import { HoverTip } from "../ui/HoverTip";
-import { SettingsPageHeader } from "./AppSettings";
 
 type ProfileBuilderSectionProps = {
   /** The write-access mode whose runtime profiles are created in. Defaults to
@@ -67,9 +35,9 @@ type ProfileBuilderSectionProps = {
 };
 
 /**
- * June's native guided Profile Builder (spec 20). A five-step wizard that creates
- * an isolated Hermes profile with identity/SOUL, model/provider, skills, and MCP
- * servers, then optionally makes it active. It validates
+ * June's native guided Profile Builder (spec 20). A six-step wizard that creates
+ * an isolated Hermes profile with identity/SOUL, model/provider, sandbox policy,
+ * skills, and MCP servers, then optionally starts a test session. It validates
  * the model's tool-calling capability before allowing creation, shows exactly
  * what files/config will change (with risk labels) on the review step, and
  * surfaces success/failure with rollback messaging.
@@ -79,77 +47,16 @@ type ProfileBuilderSectionProps = {
  * drive it with a stubbed state (no Tauri, no network).
  */
 export function ProfileBuilderSection({ mode = "sandboxed" }: ProfileBuilderSectionProps) {
-  const managerState = useProfileManager(mode);
-  const builderState = useProfileBuilder(mode);
-  return (
-    <ProfilesSurfaceView managerState={managerState} builderState={builderState} mode={mode} />
-  );
-}
-
-export function ProfilesSurfaceView({
-  managerState,
-  builderState,
-  mode = "sandboxed",
-}: {
-  managerState: ProfileManagerState;
-  builderState: ProfileBuilderState;
-  mode?: HermesAdminMode;
-}) {
-  const [view, setView] = useState<"list" | "wizard">("list");
-
-  useEffect(() => {
-    if (view !== "wizard" || builderState.create.phase !== "created") return;
-    if (hasCreatedFailureMessage(builderState.create)) return;
-    managerState.refresh();
-    builderState.reset();
-    setView("list");
-  }, [builderState, managerState, view]);
-
-  if (view === "wizard") {
-    return (
-      <ProfileBuilderView
-        state={builderState}
-        mode={mode}
-        onBackToProfiles={() => {
-          builderState.reset();
-          managerState.refresh();
-          setView("list");
-        }}
-      />
-    );
-  }
-
-  return (
-    <ProfilesListView
-      state={managerState}
-      mode={mode}
-      onNewProfile={() => {
-        builderState.reset();
-        setView("wizard");
-      }}
-    />
-  );
-}
-
-function hasCreatedFailureMessage(create: ProfileBuilderState["create"]): boolean {
-  if (create.phase !== "created" || !create.message || !create.createdSlug) return false;
-  return create.message !== `Created "${create.createdSlug}".`;
-}
-
-function messageFromError(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) return error.message.trim();
-  if (typeof error === "string" && error.trim()) return error.trim();
-  return "Unknown error.";
+  const state = useProfileBuilder(mode);
+  return <ProfileBuilderView state={state} mode={mode} />;
 }
 
 export function ProfileBuilderView({
   state,
   mode = "sandboxed",
-  onBackToProfiles,
 }: {
   state: ProfileBuilderState;
   mode?: HermesAdminMode;
-  onBackToProfiles?: () => void;
 }) {
   const context = useMemo(
     () => ({ existingProfiles: state.existingProfiles, models: state.models }),
@@ -166,7 +73,7 @@ export function ProfileBuilderView({
 
   if (isUnavailable) {
     return (
-      <BuilderShell mode={state.mode ?? mode} profile={state.profile} showModeNote={false}>
+      <BuilderShell mode={state.mode ?? mode} profile={state.profile} show={false}>
         <EmptyState
           title="Hermes is not running"
           description="Start Hermes to create a profile. A profile gives a task its own model, skills, MCP servers, and instructions."
@@ -177,7 +84,7 @@ export function ProfileBuilderView({
 
   if (isErrored) {
     return (
-      <BuilderShell mode={state.mode ?? mode} profile={state.profile} showModeNote={false}>
+      <BuilderShell mode={state.mode ?? mode} profile={state.profile} show={false}>
         <ErrorState
           message={state.error ?? "Could not load profiles from Hermes."}
           retryable={state.retryable}
@@ -190,16 +97,7 @@ export function ProfileBuilderView({
   const created = state.create.phase === "created";
 
   return (
-    <BuilderShell mode={state.mode ?? mode} profile={state.profile} showModeNote>
-      {onBackToProfiles ? (
-        <div className="profile-builder-list-back">
-          <BreadcrumbBar
-            backLabel="Back to profiles"
-            onBack={onBackToProfiles}
-            items={[{ label: "Profiles", onClick: onBackToProfiles }, { label: "Profile builder" }]}
-          />
-        </div>
-      ) : null}
+    <BuilderShell mode={state.mode ?? mode} profile={state.profile} show>
       <AdminNotifications
         notifications={state.notifications}
         onDismiss={state.dismissNotification}
@@ -252,341 +150,32 @@ export function ProfileBuilderView({
 function BuilderShell({
   mode,
   profile,
-  showModeNote,
-  children,
-}: {
-  mode: HermesAdminMode;
-  profile?: string;
-  showModeNote: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <section className="settings-group profile-builder" aria-labelledby="profile-builder-heading">
-      <SettingsPageHeader
-        id="profile-builder-heading"
-        title="Profiles"
-        blurb={
-          <>
-            Create a specialized profile with its own model, skills, MCP servers, and instructions.
-            A profile keeps June's identity unless you give it its own.{" "}
-            <ModeNote
-              mode={mode}
-              profile={profile}
-              show={showModeNote}
-              prefix="New profiles target"
-            />
-          </>
-        }
-      />
-      {children}
-    </section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Profiles list
-// ---------------------------------------------------------------------------
-
-function ProfilesListView({
-  state,
-  mode,
-  onNewProfile,
-}: {
-  state: ProfileManagerState;
-  mode: HermesAdminMode;
-  onNewProfile: () => void;
-}) {
-  const [toDelete, setToDelete] = useState<string | undefined>();
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [cleanupError, setCleanupError] = useState<string | null>(null);
-  const isUnavailable = state.status === "unavailable";
-  const isErrored = state.status === "error";
-  const isLoadingFirst = state.status === "loading";
-  const hasProfiles = state.profiles.length > 0;
-  const onlyDefault = state.profiles.length === 1 && state.profiles[0]?.name === "default";
-  const [refreshSpins, setRefreshSpins] = useState(0);
-
-  useEffect(() => {
-    if (!toDelete) return;
-    const profile = state.profiles.find((candidate) => candidate.name === toDelete);
-    if (!profile) {
-      setToDelete(undefined);
-      setDeleteError(null);
-      return;
-    }
-    const guard = canRemoveProfile(toDelete, state.activeName, state.activeConfirmed);
-    if (!guard.ok) {
-      setToDelete(undefined);
-      setDeleteError(null);
-    }
-  }, [state.activeConfirmed, state.activeName, state.profiles, toDelete]);
-
-  useEffect(() => {
-    if (toDelete && state.error) setDeleteError(state.error);
-  }, [state.error, toDelete]);
-
-  if (isUnavailable) {
-    return (
-      <ProfilesShell mode={mode} profile={undefined} showModeNote={false}>
-        <EmptyState
-          title="Hermes is not running"
-          description="Start Hermes to create a profile. A profile gives a task its own model, skills, MCP servers, and instructions."
-        />
-      </ProfilesShell>
-    );
-  }
-
-  return (
-    <ProfilesShell mode={mode} profile={undefined} showModeNote>
-      <div className="profiles-actions">
-        <button
-          type="button"
-          className="icon-button profiles-refresh"
-          aria-label="Refresh profiles"
-          aria-busy={isLoadingFirst}
-          disabled={isLoadingFirst}
-          title="Refresh profiles"
-          onClick={() => {
-            setRefreshSpins((spins) => spins + 1);
-            state.refresh();
-          }}
-        >
-          <IconArrowRotateClockwise
-            size={14}
-            ariaHidden
-            className="balance-refresh-icon"
-            style={{ transform: `rotate(${refreshSpins * 360}deg)` }}
-          />
-        </button>
-        <button type="button" className="btn btn-secondary profiles-add" onClick={onNewProfile}>
-          <IconPlusMedium size={14} ariaHidden />
-          New profile
-        </button>
-      </div>
-      <div className="settings-card profiles-card">
-        {(state.error || cleanupError) && hasProfiles ? (
-          <p className="settings-row-error profiles-inline-error">
-            <IconExclamationCircle size={14} ariaHidden />
-            {state.error ?? cleanupError}
-          </p>
-        ) : null}
-
-        {isErrored && !hasProfiles ? (
-          <ErrorState
-            message={state.error ?? "Could not load profiles from Hermes."}
-            retryable
-            onRetry={state.refresh}
-          />
-        ) : isLoadingFirst ? (
-          <EmptyState
-            title="Loading profiles"
-            description="June is reading the profile list from Hermes."
-          />
-        ) : (
-          <>
-            <ul className="profiles-list" aria-label="Profiles">
-              {state.profiles.map((profile) => (
-                <ProfileRow
-                  key={profile.name}
-                  profile={profile}
-                  activeName={state.activeName}
-                  activeConfirmed={state.activeConfirmed}
-                  pending={state.pendingAction}
-                  onActivate={state.activate}
-                  onDelete={(name) => {
-                    setDeleteError(null);
-                    setToDelete(name);
-                  }}
-                />
-              ))}
-            </ul>
-            {!hasProfiles || onlyDefault ? (
-              <p className="profiles-empty-copy">
-                Create a profile when you want a task to use its own model, skills, MCP servers, or
-                instructions.
-              </p>
-            ) : null}
-          </>
-        )}
-      </div>
-
-      <DeleteProfileDialog
-        name={toDelete}
-        error={deleteError}
-        onClose={() => {
-          setToDelete(undefined);
-          setDeleteError(null);
-        }}
-        onConfirm={async () => {
-          if (!toDelete) throw new Error("No profile selected.");
-          const profile = state.profiles.find((candidate) => candidate.name === toDelete);
-          const guard = canRemoveProfile(toDelete, state.activeName, state.activeConfirmed);
-          if (!profile || !guard.ok) {
-            setDeleteError(guard.ok ? "That profile is no longer available." : guard.reason);
-            throw new Error("Profile removal is no longer available.");
-          }
-          const removed = await state.remove(toDelete);
-          if (!removed) {
-            setDeleteError(state.error ?? "Could not delete the profile. Refresh and try again.");
-            throw new Error("Profile removal failed.");
-          }
-          setCleanupError(null);
-          deleteProfileModelOverrides(toDelete).catch((error: unknown) => {
-            setCleanupError(
-              `Deleted "${toDelete}", but its model override cleanup failed: ${messageFromError(error)}`,
-            );
-          });
-        }}
-      />
-    </ProfilesShell>
-  );
-}
-
-function ProfilesShell({
-  mode,
-  profile,
-  showModeNote,
-  children,
-}: {
-  mode: HermesAdminMode;
-  profile?: string;
-  showModeNote: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <section className="settings-group profile-builder" aria-labelledby="profile-builder-heading">
-      <SettingsPageHeader
-        id="profile-builder-heading"
-        title="Profiles"
-        blurb={
-          <>
-            Manage profiles with their own model, skills, MCP servers, and instructions.{" "}
-            <ModeNote mode={mode} profile={profile} show={showModeNote} prefix="Showing" />
-          </>
-        }
-      />
-      {children}
-    </section>
-  );
-}
-
-function ModeNote({
-  mode,
-  profile,
   show,
-  prefix,
+  children,
 }: {
   mode: HermesAdminMode;
   profile?: string;
   show: boolean;
-  prefix: "Showing" | "New profiles target";
+  children: ReactNode;
 }) {
-  if (!show) return null;
   const modeLabel = mode === "unrestricted" ? "Full mode" : "Sandboxed";
   return (
-    <span className="profile-builder-mode-note">
-      {prefix} the {modeLabel} runtime
-      {profile ? ` (profile ${profile})` : ""}.
-    </span>
-  );
-}
-
-function ProfileRow({
-  profile,
-  activeName,
-  activeConfirmed,
-  pending,
-  onActivate,
-  onDelete,
-}: {
-  profile: ProfileManagerState["profiles"][number];
-  activeName: string;
-  activeConfirmed: boolean;
-  pending: ProfileManagerState["pendingAction"];
-  onActivate: (name: string) => Promise<boolean>;
-  onDelete: (name: string) => void;
-}) {
-  const activateGuard = canActivateProfile(profile.name, activeName, activeConfirmed);
-  const removeGuard = canRemoveProfile(profile.name, activeName, activeConfirmed);
-  const isActive = profile.name === activeName;
-  const pendingThisRow = pending?.name === profile.name;
-  const activating = pendingThisRow && pending?.kind === "activate";
-  const removing = pendingThisRow && pending?.kind === "remove";
-  const description = describeProfile(profile) || "No description provided.";
-
-  return (
-    <li className="profile-row">
-      <div className="profile-row-main">
-        <div className="profile-row-headline">
-          <span className="profile-row-name">{profile.name}</span>
-          {isActive ? <span className="profile-row-active">Active</span> : null}
-        </div>
-        <p className="profile-row-description">{description}</p>
-      </div>
-      <div className="profile-row-actions">
-        <button
-          type="button"
-          className="profile-row-activate"
-          disabled={!activateGuard.ok || pendingThisRow}
-          title={!activateGuard.ok ? activateGuard.reason : undefined}
-          onClick={() => void onActivate(profile.name)}
-        >
-          {activating ? "Saving" : "Make active"}
-        </button>
-        <button
-          type="button"
-          className="profile-row-delete"
-          aria-label={`Delete ${profile.name}`}
-          disabled={!removeGuard.ok || pendingThisRow}
-          title={!removeGuard.ok ? removeGuard.reason : "Delete profile"}
-          onClick={() => onDelete(profile.name)}
-        >
-          <IconTrashCan size={14} ariaHidden />
-          {removing ? "Deleting" : "Delete"}
-        </button>
-        {!removeGuard.ok ? <span className="profile-row-hint">{removeGuard.reason}</span> : null}
-      </div>
-    </li>
-  );
-}
-
-function DeleteProfileDialog({
-  name,
-  error,
-  onClose,
-  onConfirm,
-}: {
-  name?: string;
-  error?: string | null;
-  onClose: () => void;
-  onConfirm: () => Promise<void>;
-}) {
-  const description = name
-    ? `Remove ${name}? New sessions will no longer load it. This cannot be undone.`
-    : undefined;
-  return (
-    <ConfirmDialog
-      open={Boolean(name)}
-      onClose={onClose}
-      onConfirm={onConfirm}
-      title={name ? `Delete "${name}"?` : "Delete profile?"}
-      description={
-        description ? (
-          <>
-            <span>{description}</span>
-            {error ? (
-              <span className="settings-row-error profiles-inline-error" role="alert">
-                <IconExclamationCircle size={14} ariaHidden />
-                {error}
-              </span>
-            ) : null}
-          </>
-        ) : undefined
-      }
-      confirmLabel="Delete profile"
-      confirmBusyLabel="Deleting"
-      destructive
-    />
+    <section className="settings-group profile-builder" aria-labelledby="profile-builder-heading">
+      <h2 id="profile-builder-heading" className="settings-group-heading">
+        Profile builder
+      </h2>
+      <p className="settings-group-description">
+        Create a specialized profile with its own model, skills, MCP servers, and instructions. A
+        profile keeps June's identity unless you give it its own.{" "}
+        {show ? (
+          <span className="profile-builder-mode-note">
+            New profiles target the {modeLabel} runtime
+            {profile ? ` (profile ${profile})` : ""}.
+          </span>
+        ) : null}
+      </p>
+      {children}
+    </section>
   );
 }
 
@@ -682,9 +271,9 @@ function Footer({
             type="button"
             className="profile-builder-create"
             disabled={!canCreate || creating}
-            onClick={() => state.createProfile({ makeActive: true })}
+            onClick={() => state.createProfile({ startTestSession: true })}
           >
-            {creating ? (state.create.message ?? "Creating...") : "Create and make active"}
+            {creating ? (state.create.message ?? "Creating...") : "Create and start test session"}
           </button>
         </div>
       ) : (
@@ -712,6 +301,8 @@ function StepBody({ state }: { state: ProfileBuilderState }) {
       return <IdentityStep state={state} />;
     case "model":
       return <ModelStep state={state} />;
+    case "toolsets":
+      return <ToolsetsStep state={state} />;
     case "skills":
       return <SkillsStep state={state} />;
     case "mcps":
@@ -800,140 +391,59 @@ function IdentityStep({ state }: { state: ProfileBuilderState }) {
 function ModelStep({ state }: { state: ProfileBuilderState }) {
   const { form, models } = state;
   const support = selectedModelToolSupport(form, models);
-  const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
-  const [modelPickerFlyout, setModelPickerFlyout] = useState<ModelPickerFlyout>(null);
-  const [modelSearch, setModelSearch] = useState("");
-  const modelPickerTriggerRef = useRef<HTMLButtonElement>(null);
-  const modelPickerPopoverRef = useRef<HTMLDivElement>(null);
-  const modelPickerSearchRef = useRef<HTMLInputElement>(null);
-  const textOptions = useMemo(() => models.map(profileModelToVeniceModel), [models]);
-
-  const closeModelPicker = useCallback(() => {
-    setPickerMode(undefined);
-    setModelPickerFlyout(null);
-    setModelSearch("");
-  }, []);
-
-  function openModelPicker(mode: ProviderModelMode) {
-    setPickerMode(mode);
-    setModelPickerFlyout(null);
-    setModelSearch("");
-  }
-
-  function modelOptionsForMode(mode: ProviderModelMode): VeniceModelDto[] {
-    if (mode === "transcription") return [...state.voiceModels];
-    if (mode === "image") return [...state.imageModels];
-    return textOptions;
-  }
-
-  function selectModelFromPicker(mode: ProviderModelMode, modelId: string) {
-    const picked = modelOptionsForMode(mode).find((model) => model.id === modelId);
-    if (mode === "generation") {
-      state.update({ provider: picked?.provider ?? "venice", model: modelId });
-    } else if (mode === "transcription") {
-      state.update({ voiceProvider: picked?.provider ?? "venice", voiceModel: modelId });
-    } else {
-      state.update({ imageModel: modelId });
-    }
-    closeModelPicker();
-  }
-
-  useEffect(() => {
-    if (!pickerMode) return;
-    function onPointer(event: MouseEvent) {
-      const target = event.target as Node;
-      if (modelPickerPopoverRef.current?.contains(target)) return;
-      if (modelPickerTriggerRef.current?.contains(target)) return;
-      closeModelPicker();
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      if (modelPickerFlyout?.kind === "all") {
-        setModelPickerFlyout(null);
-        setModelSearch("");
-      } else {
-        closeModelPicker();
-      }
-    }
-    window.addEventListener("mousedown", onPointer);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointer);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [pickerMode, modelPickerFlyout, closeModelPicker]);
-
   return (
-    <div className="profile-builder-fields profile-builder-model-slots">
+    <div className="profile-builder-fields">
       {models.length === 0 ? (
         <p className="profile-builder-field-meta">
           No models were reported. Check your provider key in the Models tab.
         </p>
       ) : (
-        <>
-          <ProfileModelRow
-            mode="generation"
-            title="Text"
-            description="The agent model for this profile. It must support tool calling."
-            value={form.model}
-            options={textOptions}
-            open={pickerMode === "generation"}
-            flyout={modelPickerFlyout}
-            search={modelSearch}
-            triggerRef={modelPickerTriggerRef}
-            popoverRef={modelPickerPopoverRef}
-            searchRef={modelPickerSearchRef}
-            onToggle={() =>
-              pickerMode === "generation" ? closeModelPicker() : openModelPicker("generation")
-            }
-            onFlyoutChange={setModelPickerFlyout}
-            onSearchChange={setModelSearch}
-            onSelect={(modelId) => selectModelFromPicker("generation", modelId)}
-          />
-          <ProfileModelRow
-            mode="transcription"
-            title="Voice"
-            description="Speech-to-text for this profile. Leave it on June's default unless this profile needs its own choice."
-            value={form.voiceModel || state.effectiveModelSettings?.transcriptionModel || ""}
-            options={state.voiceModels}
-            open={pickerMode === "transcription"}
-            flyout={modelPickerFlyout}
-            search={modelSearch}
-            triggerRef={modelPickerTriggerRef}
-            popoverRef={modelPickerPopoverRef}
-            searchRef={modelPickerSearchRef}
-            defaulted={!form.voiceModel}
-            onReset={() => state.update({ voiceProvider: "", voiceModel: "" })}
-            onToggle={() =>
-              pickerMode === "transcription" ? closeModelPicker() : openModelPicker("transcription")
-            }
-            onFlyoutChange={setModelPickerFlyout}
-            onSearchChange={setModelSearch}
-            onSelect={(modelId) => selectModelFromPicker("transcription", modelId)}
-          />
-          <ProfileModelRow
-            mode="image"
-            title="Image"
-            description="Image generation for this profile. Leave it on June's default unless this profile needs its own choice."
-            value={form.imageModel || state.effectiveModelSettings?.imageModel || ""}
-            options={state.imageModels}
-            open={pickerMode === "image"}
-            flyout={modelPickerFlyout}
-            search={modelSearch}
-            triggerRef={modelPickerTriggerRef}
-            popoverRef={modelPickerPopoverRef}
-            searchRef={modelPickerSearchRef}
-            defaulted={!form.imageModel}
-            onReset={() => state.update({ imageModel: "" })}
-            onToggle={() =>
-              pickerMode === "image" ? closeModelPicker() : openModelPicker("image")
-            }
-            onFlyoutChange={setModelPickerFlyout}
-            onSearchChange={setModelSearch}
-            onSelect={(modelId) => selectModelFromPicker("image", modelId)}
-          />
-        </>
+        <ul className="profile-builder-model-list" aria-label="Generation models">
+          {models.map((model) => {
+            const selected = model.id === form.model && model.provider === form.provider;
+            const supportsTools = model.capabilities.some((capability) => {
+              const normalized = capability.toLowerCase().replace(/[^a-z]/g, "");
+              return normalized.includes("functioncalling") || normalized.includes("toolcalling");
+            });
+            return (
+              <li key={`${model.provider}:${model.id}`}>
+                <button
+                  type="button"
+                  className="profile-builder-model-row"
+                  data-selected={selected || undefined}
+                  aria-pressed={selected}
+                  onClick={() => state.update({ provider: model.provider, model: model.id })}
+                >
+                  <ProviderLogo
+                    provider={model.provider}
+                    id={model.id}
+                    name={model.name}
+                    size={18}
+                  />
+                  <span className="profile-builder-model-name">{model.name}</span>
+                  {supportsTools ? (
+                    <span
+                      className="profile-builder-model-tag"
+                      data-tone="info"
+                      title="Supports tool calling"
+                    >
+                      Tools
+                    </span>
+                  ) : (
+                    <span
+                      className="profile-builder-model-tag"
+                      data-tone="destructive"
+                      title="No tool calling"
+                    >
+                      No tools
+                    </span>
+                  )}
+                  {selected ? <IconCheckmark2Small size={15} ariaHidden /> : null}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
       )}
       {support && !support.supportsTools ? (
         <p className="profile-builder-field-meta">
@@ -945,127 +455,44 @@ function ModelStep({ state }: { state: ProfileBuilderState }) {
   );
 }
 
-function ProfileModelRow({
-  mode,
-  title,
-  description,
-  value,
-  options,
-  open,
-  flyout,
-  search,
-  triggerRef,
-  popoverRef,
-  searchRef,
-  defaulted,
-  onReset,
-  onToggle,
-  onFlyoutChange,
-  onSearchChange,
-  onSelect,
-}: {
-  mode: ProviderModelMode;
-  title: string;
-  description: string;
-  value: string;
-  options: readonly VeniceModelDto[];
-  open: boolean;
-  flyout: ModelPickerFlyout;
-  search: string;
-  triggerRef: RefObject<HTMLButtonElement>;
-  popoverRef: RefObject<HTMLDivElement>;
-  searchRef: RefObject<HTMLInputElement>;
-  defaulted?: boolean;
-  onReset?: () => void;
-  onToggle: () => void;
-  onFlyoutChange: (flyout: ModelPickerFlyout) => void;
-  onSearchChange: (value: string) => void;
-  onSelect: (modelId: string) => void;
-}) {
-  const model = selectedModel([...options], value);
-  const modelLabel = `${title.toLowerCase()} model`;
+function ToolsetsStep({ state }: { state: ProfileBuilderState }) {
+  const { form } = state;
   return (
-    <div className="settings-row settings-model-row">
-      <div className="settings-row-info">
-        <h3 className="settings-row-title">{title}</h3>
-        <p className="settings-row-description">{description}</p>
-        {defaulted ? (
-          <p className="settings-row-description settings-row-substatus">June's default</p>
-        ) : null}
-      </div>
-      <div className="settings-row-control settings-model-control profile-builder-model-control">
-        <HoverTip
-          tip={<ModelSummaryHoverDetails model={model} />}
-          className="model-summary-tip-anchor"
-          width={280}
-          delay={280}
-          suppressed={open}
-        >
-          <button
-            ref={open ? triggerRef : undefined}
-            type="button"
-            className="model-summary-button"
-            onClick={onToggle}
-            aria-label={`Change ${modelLabel}`}
-            aria-haspopup="dialog"
-            aria-expanded={open}
-          >
-            <span className="model-summary-logo" aria-hidden>
-              <ProviderLogo provider={model.provider} id={model.id} name={model.name} />
-            </span>
-            <span className="model-summary-name">{model.name || "Choose model"}</span>
-            <IconChevronDownSmall size={14} aria-hidden />
-          </button>
-        </HoverTip>
-        {!defaulted && onReset ? (
-          <button
-            type="button"
-            className="profile-builder-model-reset"
-            onClick={onReset}
-            aria-label={`Reset ${modelLabel} to June's default`}
-          >
-            Reset
-          </button>
-        ) : null}
-        {open ? (
-          <ModelPickerPopover
-            mode={mode}
-            flyout={flyout}
-            model={model}
-            options={[...options]}
-            search={search}
-            popoverRef={popoverRef}
-            searchRef={searchRef}
-            className="settings-model-popover"
-            title={modelLabel[0].toUpperCase() + modelLabel.slice(1)}
-            ariaLabel={`Choose ${modelLabel}`}
-            onFlyoutChange={onFlyoutChange}
-            onSearchChange={onSearchChange}
-            onSelect={onSelect}
-          />
-        ) : null}
-      </div>
-    </div>
+    <fieldset className="profile-builder-fieldset">
+      <legend className="profile-builder-field-label">Sandbox policy</legend>
+      <label className="profile-builder-radio">
+        <input
+          type="radio"
+          name="sandbox"
+          checked={form.sandbox === "sandboxed"}
+          onChange={() => state.update({ sandbox: "sandboxed" })}
+        />
+        <span>
+          <span className="profile-builder-radio-title">
+            <IconShield size={13} ariaHidden /> Sandboxed (default)
+          </span>
+          <span className="profile-builder-radio-detail">
+            Local subprocesses, scripts, and external directories stay jailed. The safe default for
+            most profiles.
+          </span>
+        </span>
+      </label>
+      <label className="profile-builder-radio">
+        <input
+          type="radio"
+          name="sandbox"
+          checked={form.sandbox === "unrestricted"}
+          onChange={() => state.update({ sandbox: "unrestricted" })}
+        />
+        <span>
+          <span className="profile-builder-radio-title">Full mode</span>
+          <span className="profile-builder-radio-detail">
+            No sandbox. Use only for trusted work that needs broad local access.
+          </span>
+        </span>
+      </label>
+    </fieldset>
   );
-}
-
-function ModelSummaryHoverDetails({ model }: { model: VeniceModelDto }) {
-  return (
-    <span className="agent-composer-model-detail model-summary-hovercard">
-      <ModelPickerCardContent model={model} withDescription />
-    </span>
-  );
-}
-
-function profileModelToVeniceModel(model: ProfileBuilderState["models"][number]): VeniceModelDto {
-  return {
-    provider: model.provider,
-    id: model.id,
-    name: model.name,
-    modelType: "generation",
-    traits: [],
-    capabilities: [...model.capabilities],
-  };
 }
 
 function SkillsStep({ state }: { state: ProfileBuilderState }) {
@@ -1088,7 +515,7 @@ function SkillsStep({ state }: { state: ProfileBuilderState }) {
       </label>
 
       {form.keepBundledSkills && bundled.length > 0 ? (
-        <div className="profile-builder-skill-list" role="group" aria-label="Bundled skills">
+        <div className="profile-builder-skill-list" aria-label="Bundled skills">
           {bundled.map((skill) => {
             const keptAll = form.keepSkills.length === 0;
             const checked = keptAll || form.keepSkills.includes(skill.name);
@@ -1123,22 +550,17 @@ function SkillsStep({ state }: { state: ProfileBuilderState }) {
 
 function McpStep({ state }: { state: ProfileBuilderState }) {
   const { form } = state;
-  const attachableServers = useMemo(
-    () => attachableMcpServers(state.mcpServers),
-    [state.mcpServers],
-  );
   const installable = installableCatalogEntries(state.mcpCatalog);
   return (
     <div className="profile-builder-fields">
       <span className="profile-builder-field-label">Attach MCP servers</span>
-      <p className="profile-builder-field-meta">June's built-in tools are always included.</p>
-      {attachableServers.length === 0 ? (
+      {state.mcpServers.length === 0 ? (
         <p className="profile-builder-field-meta">
           No MCP servers configured yet. Add servers from the MCP servers tab.
         </p>
       ) : (
-        <div className="profile-builder-mcp-list" role="group" aria-label="MCP servers">
-          {attachableServers.map((server) => {
+        <div className="profile-builder-mcp-list" aria-label="MCP servers">
+          {state.mcpServers.map((server) => {
             const checked = form.mcpServers.includes(server.name);
             return (
               <label key={server.name} className="profile-builder-checkbox">
@@ -1162,7 +584,7 @@ function McpStep({ state }: { state: ProfileBuilderState }) {
       {installable.length > 0 ? (
         <>
           <span className="profile-builder-field-label">Install from catalog</span>
-          <div className="profile-builder-mcp-list" role="group" aria-label="MCP catalog">
+          <div className="profile-builder-mcp-list" aria-label="MCP catalog">
             {installable.map((entry) => {
               const checked = form.mcpCatalogInstalls.includes(entry.installName);
               return (
@@ -1189,24 +611,16 @@ function McpStep({ state }: { state: ProfileBuilderState }) {
 }
 
 function ReviewStep({ state }: { state: ProfileBuilderState }) {
-  const plan = useMemo(
-    () =>
-      buildCreatePlan(state.form, {
-        generation: state.models,
-        transcription: state.voiceModels,
-        image: state.imageModels,
-      }),
-    [state.form, state.models, state.voiceModels, state.imageModels],
-  );
+  const plan = useMemo(() => buildCreatePlan(state.form), [state.form]);
   return (
     <div className="profile-builder-review">
       <p className="profile-builder-field-meta">
         Creating this profile makes these changes. Nothing runs until you start a session under it.
       </p>
       <ul className="profile-builder-plan" aria-label="Planned changes">
-        {plan.map((change) => (
+        {plan.map((change, index) => (
           <li
-            key={`${change.target}-${change.detail}`}
+            key={`${change.target}-${index}`}
             className="profile-builder-plan-row"
             data-risk={change.risk}
           >
@@ -1223,8 +637,8 @@ function ReviewStep({ state }: { state: ProfileBuilderState }) {
 }
 
 function RiskBadge({ risk }: { risk: ChangeRisk }) {
-  const label = risk === "caution" ? "Review" : "Safe";
-  const tone = risk === "caution" ? "warning" : "info";
+  const label = risk === "danger" ? "High" : risk === "caution" ? "Review" : "Safe";
+  const tone = risk === "danger" ? "destructive" : risk === "caution" ? "warning" : "info";
   return (
     <span className="profile-builder-risk" data-tone={tone}>
       {label}
@@ -1242,8 +656,8 @@ function CreatedPanel({ state }: { state: ProfileBuilderState }) {
       <h3 className="profile-builder-created-title">Profile created</h3>
       <p className="profile-builder-created-detail">
         {state.create.message ?? `Created "${slug}".`}{" "}
-        {state.create.activated
-          ? "It is now active for new sessions."
+        {state.create.testSessionStarted
+          ? "A test session is running under it."
           : "Start a session under it to use it."}
       </p>
       <button type="button" className="profile-builder-create" onClick={state.reset}>
@@ -1259,12 +673,13 @@ function CreatedPanel({ state }: { state: ProfileBuilderState }) {
 
 function EmptyState({ title, description }: { title: string; description: string }) {
   return (
-    <EmptyStateSurface
-      className="empty-state-compact"
-      icon={<IconRobot2 size={22} />}
-      title={title}
-      description={description}
-    />
+    <div className="settings-card profile-builder-empty" role="status">
+      <span className="profile-builder-empty-icon" aria-hidden>
+        <IconRobot2 size={22} />
+      </span>
+      <p className="profile-builder-empty-title">{title}</p>
+      <p className="profile-builder-empty-description">{description}</p>
+    </div>
   );
 }
 

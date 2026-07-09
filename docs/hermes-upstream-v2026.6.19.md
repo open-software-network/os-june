@@ -61,7 +61,7 @@ No required app code migration was found for the existing June agent, skills, me
 - Expose Automation Blueprints by deciding how they fit with June's Routines editor instead of routing users to raw cron fields.
 - Expose image editing by wiring existing file/image attachments into the upstream `image_generate` edit inputs.
 - Expose background subagent watch handles by adding UI for pending work, completion events, and reopened sessions.
-- Decide whether upstream dashboard profile builder and Skills Hub browsing should remain hidden behind June-native settings or become first-class June surfaces. (Resolved for profiles in JUN-145/JUN-210: profiles are a first-class June-native settings surface — list, switch, delete, create — with new sessions following the active profile; see ADR 0014. Skills Hub browsing remains open.)
+- Decide whether upstream dashboard profile builder and Skills Hub browsing should remain hidden behind June-native settings or become first-class June surfaces.
 
 ## Compatibility matrix
 

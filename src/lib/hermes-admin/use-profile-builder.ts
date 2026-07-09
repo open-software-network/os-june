@@ -3,7 +3,7 @@
  * It owns the wizard's input loading (existing profiles, the generation model
  * catalog, installed skills, MCP servers, the MCP catalog), the create
  * orchestration (`POST /api/profiles` then optional SOUL write then optional
- * activation), and the success/failure-with-rollback messaging.
+ * test session), and the success/failure-with-rollback messaging.
  *
  * Everything user-facing and rule-based lives in the framework-free
  * {@link ProfileBuilderController}, so back/next/validation, the model
@@ -18,24 +18,13 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { setActiveHermesProfileName } from "../active-hermes-profile";
-import { imageModelCatalog } from "../image-models";
-import {
-  hermesBridgeStatus,
-  listVeniceModels,
-  providerModelSettings,
-  setProfileModelOverrides,
-  type HermesBridgeStatus,
-  type ProviderModelSettingsDto,
-  type VeniceModelDto,
-} from "../tauri";
+import { hermesBridgeStatus, listVeniceModels, type HermesBridgeStatus } from "../tauri";
 import { AdminStateCache, type AdminNotification } from "./cache";
 import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import {
   buildCreatePayload,
-  buildProfileModelOverrides,
   canAdvance,
   canCreateProfile,
   emptyProfileForm,
@@ -72,11 +61,6 @@ export type ProfileBuilderEngine = {
   loadModels: LoadProfileBuilderModels;
 };
 
-export type ProfileBuilderEffectiveModelSettings = Pick<
-  ProviderModelSettingsDto,
-  "transcriptionProvider" | "transcriptionModel" | "imageModel"
->;
-
 export type ProfileBuilderStatus = "unavailable" | "loading" | "ready" | "error";
 
 /** Where the create flow is. `creating` runs the create + soul + session calls;
@@ -91,8 +75,8 @@ export type CreateState = {
   error?: string;
   /** The created profile's slug, set on success. */
   createdSlug?: string;
-  /** True once the created profile was made active. */
-  activated?: boolean;
+  /** True once a test session was started for the created profile. */
+  testSessionStarted?: boolean;
 };
 
 /** Everything the Profile Builder component renders, plus the actions it
@@ -111,9 +95,6 @@ export type ProfileBuilderState = {
   /** Loaded inputs for the steps. */
   existingProfiles: readonly HermesProfileSummary[];
   models: readonly ProfileBuilderModel[];
-  voiceModels: readonly VeniceModelDto[];
-  imageModels: readonly VeniceModelDto[];
-  effectiveModelSettings?: ProfileBuilderEffectiveModelSettings;
   skills: readonly HermesSkillInfo[];
   mcpServers: readonly HermesMcpServerInfo[];
   mcpCatalog: readonly HermesMcpCatalogEntry[];
@@ -129,9 +110,9 @@ export type ProfileBuilderState = {
   update: (patch: Partial<ProfileBuilderForm>) => void;
   reset: () => void;
   refresh: () => void;
-  /** Runs the create orchestration. `makeActive` opts into making the new
-   * profile active after a successful create. */
-  createProfile: (options?: { makeActive?: boolean }) => void;
+  /** Runs the create orchestration. `startTestSession` opts into starting a
+   * session under the new profile after a successful create. */
+  createProfile: (options?: { startTestSession?: boolean }) => void;
   dismissNotification: (id: string) => void;
 };
 
@@ -148,11 +129,6 @@ export class ProfileBuilderController {
   private form: ProfileBuilderForm = emptyProfileForm();
   private existingProfiles: readonly HermesProfileSummary[] = [];
   private models: readonly ProfileBuilderModel[] = [];
-  private voiceModels: readonly VeniceModelDto[] = [];
-  private imageModels: readonly VeniceModelDto[] = [];
-  private effectiveModelSettings?: ProfileBuilderEffectiveModelSettings;
-  private modelStepInputsLoading = false;
-  private modelStepInputsLoaded = false;
   private skills: readonly HermesSkillInfo[] = [];
   private mcpServers: readonly HermesMcpServerInfo[] = [];
   private mcpCatalog: readonly HermesMcpCatalogEntry[] = [];
@@ -287,7 +263,6 @@ export class ProfileBuilderController {
   setStep(step: ProfileBuilderStep): void {
     this.step = step;
     this.recompute();
-    if (step === "model") void this.ensureModelStepInputs();
   }
 
   update(patch: Partial<ProfileBuilderForm>): void {
@@ -304,39 +279,11 @@ export class ProfileBuilderController {
     this.recompute();
   }
 
-  private async ensureModelStepInputs(): Promise<void> {
-    if (this.modelStepInputsLoaded || this.modelStepInputsLoading) return;
-    this.modelStepInputsLoading = true;
-    this.recompute();
-    try {
-      const [settings, voice, image] = await Promise.all([
-        providerModelSettings(),
-        listVeniceModels("transcription"),
-        Promise.resolve({ models: imageModelCatalog() }),
-      ]);
-      if (this.disposed) return;
-      this.effectiveModelSettings = {
-        transcriptionProvider: settings.settings.transcriptionProvider,
-        transcriptionModel: settings.settings.transcriptionModel,
-        imageModel: settings.settings.imageModel,
-      };
-      this.voiceModels = voice.models;
-      this.imageModels = image.models;
-      this.modelStepInputsLoaded = true;
-    } catch {
-      // Keep the wizard usable. Empty catalogs still allow the text model gate
-      // to work, and default labels fall back to ids when settings are present.
-    } finally {
-      this.modelStepInputsLoading = false;
-      if (!this.disposed) this.recompute();
-    }
-  }
-
   /**
    * Runs the create orchestration:
    *   1. POST /api/profiles (create the isolated profile)
    *   2. PUT /api/profiles/{slug}/soul when a custom SOUL was written
-   *   3. POST /api/profiles/active when activation is asked
+   *   3. POST /api/profiles/active + /open-terminal when a test session is asked
    *
    * On a step-1 failure nothing was created, so the message is a plain failure.
    * On a step-2/3 failure the profile DID get created, so the message says the
@@ -344,7 +291,7 @@ export class ProfileBuilderController {
    * it from the profile's settings, rather than implying a clean rollback that
    * did not happen.
    */
-  async createProfile(options: { makeActive?: boolean } = {}): Promise<void> {
+  async createProfile(options: { startTestSession?: boolean } = {}): Promise<void> {
     if (this.create.phase === "creating") return;
     if (!canCreateProfile(this.form, this.context())) {
       this.create = {
@@ -396,43 +343,22 @@ export class ProfileBuilderController {
       }
     }
 
-    const overrides = buildProfileModelOverrides(this.form);
-    if (overrides) {
-      this.create = { phase: "creating", message: "Saving model overrides..." };
+    // Step 3: optional test session. Same post-create semantics on failure.
+    let testSessionStarted = false;
+    if (options.startTestSession) {
+      this.create = { phase: "creating", message: "Starting test session..." };
       this.recompute();
       try {
-        await setProfileModelOverrides(slug, overrides);
+        await this.engine.client.profiles.startTestSession(slug);
+        testSessionStarted = true;
       } catch (error) {
         if (this.disposed) return;
-        const adminError = HermesAdminError.from("set_profile_model_overrides", error);
+        const adminError = HermesAdminError.from(`POST /api/profiles/${slug}/open-terminal`, error);
         this.create = {
           phase: "created",
           createdSlug: slug,
-          activated: false,
-          message: `Created "${slug}". Model overrides were not saved: ${adminError.safeMessage}`,
-        };
-        this.recompute();
-        return;
-      }
-    }
-
-    // Step 3: optional activation. Same post-create semantics on failure.
-    let activated = false;
-    if (options.makeActive) {
-      this.create = { phase: "creating", message: "Making profile active..." };
-      this.recompute();
-      try {
-        await this.engine.client.profiles.activate(slug);
-        setActiveHermesProfileName(slug);
-        activated = true;
-      } catch (error) {
-        if (this.disposed) return;
-        const adminError = HermesAdminError.from("POST /api/profiles/active", error);
-        this.create = {
-          phase: "created",
-          createdSlug: slug,
-          activated: false,
-          message: `Created "${slug}". Could not make it active: ${adminError.safeMessage}`,
+          testSessionStarted: false,
+          message: `Created "${slug}". The test session did not start: ${adminError.safeMessage}`,
         };
         this.recompute();
         return;
@@ -443,7 +369,7 @@ export class ProfileBuilderController {
     this.create = {
       phase: "created",
       createdSlug: slug,
-      activated,
+      testSessionStarted,
       message: `Created "${slug}".`,
     };
     this.recompute();
@@ -464,9 +390,6 @@ export class ProfileBuilderController {
       form: this.form,
       existingProfiles: this.existingProfiles,
       models: this.models,
-      voiceModels: this.voiceModels,
-      imageModels: this.imageModels,
-      effectiveModelSettings: this.effectiveModelSettings,
       skills: this.skills,
       mcpServers: this.mcpServers,
       mcpCatalog: this.mcpCatalog,
@@ -514,7 +437,7 @@ export class ProfileBuilderController {
   private readonly refreshAction = (): void => {
     void this.load();
   };
-  private readonly createProfileAction = (options?: { makeActive?: boolean }): void => {
+  private readonly createProfileAction = (options?: { startTestSession?: boolean }): void => {
     void this.createProfile(options);
   };
   private readonly dismissNotificationAction = (id: string): void => {
@@ -561,8 +484,6 @@ const UNAVAILABLE_STATE: ProfileBuilderState = Object.freeze({
   form: emptyProfileForm(),
   existingProfiles: [],
   models: [],
-  voiceModels: [],
-  imageModels: [],
   skills: [],
   mcpServers: [],
   mcpCatalog: [],
@@ -609,6 +530,10 @@ export function useProfileBuilderEngine(
     () => (bridge ? adminTargetForMode(bridge, mode, profile) : undefined),
     [bridge, mode, profile],
   );
+  const identity = target
+    ? `${target.mode}:${target.profile}:${target.baseUrl}:${target.token}`
+    : null;
+
   return useMemo(() => {
     if (!target) return null;
     const client = createHermesAdminClient(target, {
@@ -623,7 +548,8 @@ export function useProfileBuilderEngine(
       lifecycle,
       loadModels: loadGenerationModels,
     };
-  }, [target]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by identity
+  }, [identity]);
 }
 
 /** The all-in-one production hook: fetch bridge status, derive the engine for

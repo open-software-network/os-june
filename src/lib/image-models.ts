@@ -213,7 +213,3 @@ export const IMAGE_MODELS: VeniceModelDto[] = [
     privacy: "anonymized",
   }),
 ];
-
-export function imageModelCatalog(): VeniceModelDto[] {
-  return IMAGE_MODELS;
-}

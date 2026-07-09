@@ -33,7 +33,6 @@ import {
   SkillInstallReviewDialog,
   type SkillInstallReviewDecision,
 } from "./SkillInstallReviewDialog";
-import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 /** Sentinel for the "all sources" filter chip. */
 const ALL_SOURCES = "__all__";
@@ -56,40 +55,9 @@ type SkillsHubSectionProps = {
  * kept in the detail drawer's advanced section for debugging.
  */
 export function SkillsHubSection({ mode = "sandboxed" }: SkillsHubSectionProps) {
-  const activeProfile = useConfirmedSettingsProfile(mode);
-  if (activeProfile.pending) {
-    return <SkillsHubView state={PENDING_SKILLS_HUB_STATE} mode={mode} />;
-  }
-  return <SkillsHubSectionReady mode={mode} profile={activeProfile.name} />;
-}
-
-function SkillsHubSectionReady({
-  mode,
-  profile,
-}: SkillsHubSectionProps & { mode: HermesAdminMode; profile: string }) {
-  const state = useSkillsHub(mode, profile);
+  const state = useSkillsHub(mode);
   return <SkillsHubView state={state} mode={mode} />;
 }
-
-const PENDING_SKILLS_HUB_STATE: SkillsHubState = {
-  status: "searching",
-  query: "",
-  results: [],
-  retryable: false,
-  installs: new Map(),
-  lifecycle: {
-    state: "clean",
-    label: "Up to date",
-    detail: "No pending changes.",
-    canRestart: false,
-  },
-  notifications: [],
-  search: () => {},
-  refresh: () => {},
-  install: () => {},
-  clearInstall: () => {},
-  dismissNotification: () => {},
-};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed

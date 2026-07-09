@@ -22,7 +22,6 @@ import {
 } from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
-import { setActiveHermesProfileName } from "../lib/active-hermes-profile";
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
 import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-activity-store";
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
@@ -36,7 +35,6 @@ const HERO_GREETING = new RegExp(
 );
 
 const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
   cancelAgentTask: vi.fn(),
   createAgentTask: vi.fn(),
   editImage: vi.fn(),
@@ -97,7 +95,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/tauri", () => ({
   // The pending skill-writes tray loads through the Rust bridge via this named
   // `invoke`. A quiet stub keeps these workspace tests off that path.
-  invoke: mocks.invoke,
+  invoke: vi.fn(async () => []),
   cancelAgentTask: mocks.cancelAgentTask,
   createAgentTask: mocks.createAgentTask,
   editImage: mocks.editImage,
@@ -345,8 +343,6 @@ describe("AgentWorkspace", () => {
     for (const id of ["session-1", "session-2", "runtime-session-1", "runtime-session-2"]) {
       pendingActionStore.resolveSession(id);
     }
-    setActiveHermesProfileName("default");
-    mocks.invoke.mockResolvedValue({ active: "default", current: "default" });
     window.sessionStorage.clear();
     window.localStorage.clear();
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
@@ -6204,48 +6200,6 @@ describe("AgentWorkspace", () => {
     });
   });
 
-  it("threads the active Hermes profile into fresh session creation", async () => {
-    const connection = {
-      baseUrl: "http://127.0.0.1:61234",
-      wsUrl: "ws://127.0.0.1:61234",
-      token: "token",
-      port: 61234,
-      command: "hermes",
-      hermesHome: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes",
-      providerProxyPort: 61235,
-      pid: 42,
-      sandboxed: true,
-      fullMode: false,
-    };
-    mocks.hermesBridgeStatus.mockResolvedValue({
-      running: true,
-      connection,
-      connections: [connection],
-    });
-    mocks.invoke.mockResolvedValue({ active: "research", current: "default" });
-
-    render(<AgentWorkspace initialSession={existingSession} />);
-
-    expect(await screen.findByText("Existing session")).toBeInTheDocument();
-
-    window.dispatchEvent(
-      new CustomEvent(AGENT_NEW_SESSION_EVENT, {
-        detail: { prompt: "draft a research brief" },
-      }),
-    );
-
-    await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-        title: "Summarize Current Page",
-        cols: 96,
-        // No `model`: the composer's model is June's GLOBAL generation
-        // selection, and sending it as the per-session override would bypass
-        // the profile's own configured text model (the point of profiles).
-        profile: "research",
-      }),
-    );
-  });
-
   it("keeps an optimistic Hermes session visible while the persisted list lags", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
@@ -8031,43 +7985,6 @@ describe("AgentWorkspace", () => {
     expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
       expect.stringMatching(/^generated-image-\d+\.png$/),
       expect.any(Uint8Array),
-    );
-  });
-
-  it("uses the active profile image model for the /image slash command", async () => {
-    mockGlmCapabilities(["functionCalling", "supportsVision"]);
-    mocks.providerModelSettings.mockResolvedValue({
-      settings: {
-        transcriptionProvider: "venice",
-        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5-2",
-        imageModel: "global-image-model",
-        imageSafeMode: false,
-        imageSafeModePromptDismissed: false,
-      },
-      effectiveSettings: {
-        transcriptionProvider: "venice",
-        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5-2",
-        imageModel: "active-profile-image-model",
-        imageSafeMode: false,
-        imageSafeModePromptDismissed: false,
-      },
-    });
-    const user = userEvent.setup();
-    render(<AgentWorkspace />);
-    expect(await screen.findByText("Existing session")).toBeInTheDocument();
-    mockImageGenerationSuccess();
-
-    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
-    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
-
-    await screen.findByRole("img", { name: "a red bicycle" });
-    expect(mocks.generateImage).toHaveBeenCalledWith(
-      "a red bicycle",
-      "active-profile-image-model",
-      expect.any(String),
-      false,
     );
   });
 

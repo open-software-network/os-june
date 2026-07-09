@@ -1,10 +1,9 @@
 import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ProfileBuilderController,
   buildCreatePayload,
   buildCreatePlan,
-  buildProfileModelOverrides,
   canAdvance,
   canCreateProfile,
   emptyProfileForm,
@@ -20,27 +19,7 @@ import {
   type ProfileBuilderState,
 } from "../lib/hermes-admin";
 import { ProfileBuilderView } from "../components/settings/ProfileBuilderSection";
-import {
-  getActiveHermesProfileName,
-  resetActiveHermesProfileForTests,
-} from "../lib/active-hermes-profile";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
-
-const mocks = vi.hoisted(() => ({
-  setProfileModelOverrides: vi.fn(),
-  deleteProfileModelOverrides: vi.fn(),
-  providerModelSettings: vi.fn(),
-  listVeniceModels: vi.fn(),
-  hermesBridgeStatus: vi.fn(),
-}));
-
-vi.mock("../lib/tauri", () => ({
-  setProfileModelOverrides: mocks.setProfileModelOverrides,
-  deleteProfileModelOverrides: mocks.deleteProfileModelOverrides,
-  providerModelSettings: mocks.providerModelSettings,
-  listVeniceModels: mocks.listVeniceModels,
-  hermesBridgeStatus: mocks.hermesBridgeStatus,
-}));
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -59,26 +38,6 @@ const NO_TOOL_MODEL: ProfileBuilderModel = {
   name: "E2EE Model",
   capabilities: ["e2ee"],
 };
-
-const VOICE_MODEL = {
-  provider: "venice",
-  id: "voice-fast",
-  name: "Voice Fast",
-  modelType: "transcription",
-  traits: [],
-  capabilities: [],
-};
-
-const IMAGE_MODEL = {
-  provider: "venice",
-  id: "image-private",
-  name: "Image Private",
-  modelType: "image",
-  traits: [],
-  capabilities: [],
-};
-
-const GLOBAL_IMAGE_MODEL = "venice-sd35";
 
 function ctx(overrides: Partial<ProfileBuilderContext> = {}): ProfileBuilderContext {
   return {
@@ -169,13 +128,19 @@ describe("profile builder — wizard state back/next/validation", () => {
     expect(canAdvance("identity", named, ctx())).toBe(true);
   });
 
-  it("does not block the optional steps (skills/mcps)", () => {
+  it("does not block the optional steps (toolsets/skills/mcps)", () => {
     const form = validForm();
+    expect(canAdvance("toolsets", form, ctx())).toBe(true);
     expect(canAdvance("skills", form, ctx())).toBe(true);
     expect(canAdvance("mcps", form, ctx())).toBe(true);
   });
 
-  it("warns (does not block) on missing specialized SOUL", () => {
+  it("warns (does not block) on Full mode and missing specialized SOUL", () => {
+    const full = validForm({ sandbox: "unrestricted" });
+    const fullValidation = validateStep("toolsets", full, ctx());
+    expect(fullValidation.error).toBeUndefined();
+    expect(fullValidation.warnings.length).toBeGreaterThan(0);
+
     const specialized = validForm({ identity: "specialized", soul: "" });
     const idValidation = validateStep("identity", specialized, ctx());
     expect(idValidation.error).toBeUndefined();
@@ -217,10 +182,11 @@ describe("profile builder — model tool-calling gate", () => {
 // ---------------------------------------------------------------------------
 
 describe("profile builder — create plan + payload", () => {
-  it("does not include a sandbox policy row in the plan", () => {
-    const plan = buildCreatePlan(validForm());
-    expect(plan.some((change) => /sandbox|full mode/i.test(change.target))).toBe(false);
-    expect(plan.some((change) => /sandbox|full mode/i.test(change.detail))).toBe(false);
+  it("labels Full mode as a high-risk change in the plan", () => {
+    const plan = buildCreatePlan(validForm({ sandbox: "unrestricted" }));
+    const danger = plan.find((change) => change.risk === "danger");
+    expect(danger).toBeDefined();
+    expect(danger?.detail).toMatch(/full mode/i);
   });
 
   it("includes a SOUL change only when a SOUL was written", () => {
@@ -240,16 +206,6 @@ describe("profile builder — create plan + payload", () => {
     expect(payload.hub_skills).toEqual(["foo"]);
   });
 
-  it("strips June internal MCP servers from the create payload", () => {
-    const payload = buildCreatePayload(
-      validForm({
-        mcpServers: ["linear", "june_context"],
-        mcpCatalogInstalls: ["june_web", "github"],
-      }),
-    );
-    expect(payload.mcp_servers).toEqual([{ name: "linear" }, { name: "github" }]);
-  });
-
   it("sets no_skills when bundled skills are dropped", () => {
     const payload = buildCreatePayload(validForm({ keepBundledSkills: false }));
     expect(payload.no_skills).toBe(true);
@@ -261,53 +217,6 @@ describe("profile builder — create plan + payload", () => {
     expect(payload).not.toHaveProperty("soul");
     expect(payload).not.toHaveProperty("content");
   });
-
-  it("does not build profile model overrides for default slots", () => {
-    expect(buildProfileModelOverrides(validForm())).toBeNull();
-  });
-
-  it("builds profile model overrides only for explicit voice and image picks", () => {
-    expect(
-      buildProfileModelOverrides(
-        validForm({
-          voiceProvider: "venice",
-          voiceModel: "voice-fast",
-          imageModel: "image-private",
-        }),
-      ),
-    ).toEqual({
-      transcriptionProvider: "venice",
-      transcriptionModel: "voice-fast",
-      imageModel: "image-private",
-    });
-  });
-
-  it("adds voice and image override rows to the review plan", () => {
-    const plan = buildCreatePlan(
-      validForm({
-        voiceProvider: "venice",
-        voiceModel: "voice-fast",
-        imageModel: "image-private",
-      }),
-      {
-        transcription: [VOICE_MODEL],
-        image: [IMAGE_MODEL],
-      },
-    );
-    expect(plan.some((change) => change.detail === "Voice model: Voice Fast.")).toBe(true);
-    expect(plan.some((change) => change.detail === "Image model: Image Private.")).toBe(true);
-  });
-
-  it("does not list June internal MCP servers in the review count", () => {
-    const plan = buildCreatePlan(
-      validForm({ mcpServers: ["linear", "june_context"], mcpCatalogInstalls: ["june_web"] }),
-    );
-    expect(
-      plan.some((change) => change.detail === "June's built-in tools are always included."),
-    ).toBe(true);
-    expect(plan.some((change) => change.detail.startsWith("Attaches 1 MCP server"))).toBe(true);
-    expect(plan.some((change) => change.detail.startsWith("Attaches 3 MCP server"))).toBe(false);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -315,82 +224,31 @@ describe("profile builder — create plan + payload", () => {
 // ---------------------------------------------------------------------------
 
 describe("profile builder — create success/failure + rollback", () => {
-  beforeEach(() => {
-    mocks.setProfileModelOverrides.mockResolvedValue(undefined);
-    resetActiveHermesProfileForTests();
-    mocks.providerModelSettings.mockResolvedValue({
-      settings: {
-        transcriptionProvider: "venice",
-        transcriptionModel: "global-voice",
-        imageModel: GLOBAL_IMAGE_MODEL,
-      },
-      effectiveSettings: {
-        transcriptionProvider: "venice",
-        transcriptionModel: "active-profile-voice",
-        imageModel: "active-profile-image",
-      },
-    });
-    mocks.listVeniceModels.mockImplementation(async (mode) => ({
-      mode,
-      modelType: mode === "transcription" ? "transcription" : "image",
-      selectedModel: mode === "transcription" ? "global-voice" : GLOBAL_IMAGE_MODEL,
-      models: mode === "transcription" ? [VOICE_MODEL] : [],
-    }));
-  });
-
-  it("creates a profile, writes its SOUL, makes it active, and feeds the app store", async () => {
+  it("creates a profile, writes its SOUL, and starts a test session", async () => {
     const engine = makeBuilderEngine();
     const controller = new ProfileBuilderController(engine);
     await controller.load();
     await flush();
 
     controller.update(validForm({ soul: "Be terse." }));
-    await controller.createProfile({ makeActive: true });
+    await controller.createProfile({ startTestSession: true });
 
     const snapshot = controller.getSnapshot();
     expect(snapshot.create.phase).toBe("created");
     expect(snapshot.create.createdSlug).toBe("research-assistant");
-    expect(snapshot.create.activated).toBe(true);
-    expect(snapshot.create.message).toBe('Created "research-assistant".');
+    expect(snapshot.create.testSessionStarted).toBe(true);
 
-    // The profile exists and is now the sticky active profile.
+    // The profile and a session now exist on the server.
     const profiles = await engine.client.profiles.list();
     expect(profiles.some((p) => p.name === "research-assistant")).toBe(true);
-    expect(await engine.client.profiles.active()).toMatchObject({ active: "research-assistant" });
-    expect(getActiveHermesProfileName()).toBe("research-assistant");
+    const sessions = await engine.client.profiles.sessions();
+    expect(sessions.some((s) => s.profile === "research-assistant")).toBe(true);
 
     // The SOUL was written via a separate PUT, not the create body.
     const soulPut = engine.server.requestLog.find(
       (entry) => entry.method === "PUT" && entry.path === "/api/profiles/research-assistant/soul",
     );
     expect(soulPut?.body).toMatchObject({ content: "Be terse." });
-
-    controller.dispose();
-    resetActiveHermesProfileForTests();
-  });
-
-  it("keeps the profile and reports partial success when activation fails", async () => {
-    const engine = makeBuilderEngine({
-      profileActivateNotOk: true,
-    });
-    const controller = new ProfileBuilderController(engine);
-    await controller.load();
-    await flush();
-
-    controller.update(validForm());
-    await controller.createProfile({ makeActive: true });
-
-    const snapshot = controller.getSnapshot();
-    expect(snapshot.create.phase).toBe("created");
-    expect(snapshot.create.createdSlug).toBe("research-assistant");
-    expect(snapshot.create.activated).toBe(false);
-    expect(snapshot.create.message).toMatch(
-      /Created "research-assistant"\. Could not make it active:/,
-    );
-    expect(getActiveHermesProfileName()).toBe("default");
-
-    const profiles = await engine.client.profiles.list();
-    expect(profiles.some((p) => p.name === "research-assistant")).toBe(true);
 
     controller.dispose();
   });
@@ -467,84 +325,6 @@ describe("profile builder — create success/failure + rollback", () => {
 
     controller.dispose();
   });
-
-  it("writes explicit model overrides after the profile is created", async () => {
-    const engine = makeBuilderEngine();
-    const controller = new ProfileBuilderController(engine);
-    await controller.load();
-    await flush();
-
-    controller.update(
-      validForm({
-        voiceProvider: "venice",
-        voiceModel: "voice-fast",
-        imageModel: "image-private",
-      }),
-    );
-    await controller.createProfile();
-
-    expect(mocks.setProfileModelOverrides).toHaveBeenCalledWith("research-assistant", {
-      transcriptionProvider: "venice",
-      transcriptionModel: "voice-fast",
-      imageModel: "image-private",
-    });
-
-    controller.dispose();
-  });
-
-  it("loads image choices from the frontend catalog when the backend image catalog is empty", async () => {
-    const engine = makeBuilderEngine();
-    const controller = new ProfileBuilderController(engine);
-    await controller.load();
-    await flush();
-
-    controller.setStep("model");
-    await flush();
-
-    const snapshot = controller.getSnapshot();
-    expect(snapshot.imageModels.length).toBeGreaterThan(0);
-    expect(snapshot.imageModels.some((model) => model.id === GLOBAL_IMAGE_MODEL)).toBe(true);
-
-    controller.dispose();
-  });
-
-  it("uses global model settings for June's default placeholders", async () => {
-    const engine = makeBuilderEngine();
-    const controller = new ProfileBuilderController(engine);
-    await controller.load();
-    await flush();
-
-    controller.setStep("model");
-    await flush();
-
-    expect(controller.getSnapshot().effectiveModelSettings).toMatchObject({
-      transcriptionModel: "global-voice",
-      imageModel: GLOBAL_IMAGE_MODEL,
-    });
-
-    controller.dispose();
-  });
-
-  it("keeps the profile and reports partial success when override save fails", async () => {
-    mocks.setProfileModelOverrides.mockRejectedValueOnce(new Error("disk full"));
-    const engine = makeBuilderEngine();
-    const controller = new ProfileBuilderController(engine);
-    await controller.load();
-    await flush();
-
-    controller.update(validForm({ imageModel: "image-private" }));
-    await controller.createProfile();
-
-    const snapshot = controller.getSnapshot();
-    expect(snapshot.create.phase).toBe("created");
-    expect(snapshot.create.createdSlug).toBe("research-assistant");
-    expect(snapshot.create.message).toMatch(/model overrides were not saved/i);
-
-    const profiles = await engine.client.profiles.list();
-    expect(profiles.some((p) => p.name === "research-assistant")).toBe(true);
-
-    controller.dispose();
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -561,13 +341,6 @@ function stubState(overrides: Partial<ProfileBuilderState> = {}): ProfileBuilder
     form: validForm({ model: "e2ee-model" }),
     existingProfiles: [],
     models: [TOOL_MODEL, NO_TOOL_MODEL],
-    voiceModels: [VOICE_MODEL],
-    imageModels: [IMAGE_MODEL],
-    effectiveModelSettings: {
-      transcriptionProvider: "venice",
-      transcriptionModel: "voice-fast",
-      imageModel: "image-private",
-    },
     skills: [],
     mcpServers: [],
     mcpCatalog: [],
@@ -605,32 +378,14 @@ describe("profile builder — view", () => {
           create: {
             phase: "created",
             createdSlug: "research-assistant",
-            activated: true,
+            testSessionStarted: true,
             message: 'Created "research-assistant".',
           },
         })}
       />,
     );
     expect(screen.getByText("Profile created")).toBeInTheDocument();
-    expect(screen.getByText(/it is now active for new sessions/i)).toBeInTheDocument();
-  });
-
-  it("hides June internal MCP servers in the MCP step", () => {
-    render(
-      <ProfileBuilderView
-        state={stubState({
-          step: "mcps",
-          form: validForm(),
-          mcpServers: [
-            { name: "june_context", enabled: true, transport: "http", auth: "unknown", raw: {} },
-            { name: "linear", enabled: true, transport: "http", auth: "unknown", raw: {} },
-          ],
-        })}
-      />,
-    );
-    expect(screen.getByText("linear")).toBeInTheDocument();
-    expect(screen.queryByText("june_context")).not.toBeInTheDocument();
-    expect(screen.getByText("June's built-in tools are always included.")).toBeInTheDocument();
+    expect(screen.getByText(/a test session is running under it/i)).toBeInTheDocument();
   });
 
   it("renders the empty state when Hermes is not running", () => {

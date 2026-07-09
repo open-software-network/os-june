@@ -8,7 +8,6 @@
 use crate::domain::types::AppError;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
-    collections::BTreeMap,
     fs,
     path::PathBuf,
     sync::{Mutex, OnceLock},
@@ -33,12 +32,10 @@ pub use PROVIDER_OPENAI as OPENAI_PROVIDER;
 pub use PROVIDER_VENICE as VENICE_PROVIDER;
 
 static MODEL_SETTINGS: OnceLock<Mutex<ProviderModelSettings>> = OnceLock::new();
-static HERMES_HOME_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static VENICE_VERIFY_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 pub struct ProviderSettingsState {
     path: PathBuf,
-    hermes_home: PathBuf,
     settings: Mutex<ProviderModelSettings>,
 }
 
@@ -82,8 +79,6 @@ pub struct ProviderModelSettings {
     /// carry an incidental `false` the user never picked.
     #[serde(default)]
     pub image_safe_mode_set_by_user: bool,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub profile_overrides: BTreeMap<String, ProfileModelOverrides>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -93,17 +88,6 @@ pub struct LocalGenerationSettings {
     pub model_id: String,
     #[serde(default)]
     pub api_key: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ProfileModelOverrides {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transcription_provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transcription_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_model: Option<String>,
 }
 
 /// The client-facing view of provider settings. The Venice API key is never
@@ -148,40 +132,6 @@ impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelSettingsResponse {
     pub settings: ProviderModelSettingsDto,
-    pub effective_settings: ProviderModelSettingsDto,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ProfileModelOverridesDto {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transcription_provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transcription_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_model: Option<String>,
-}
-
-impl From<&ProfileModelOverrides> for ProfileModelOverridesDto {
-    fn from(overrides: &ProfileModelOverrides) -> Self {
-        Self {
-            transcription_provider: overrides.transcription_provider.clone(),
-            transcription_model: overrides.transcription_model.clone(),
-            image_model: overrides.image_model.clone(),
-        }
-    }
-}
-
-impl From<ProfileModelOverridesDto> for ProfileModelOverrides {
-    fn from(overrides: ProfileModelOverridesDto) -> Self {
-        Self {
-            transcription_provider: normalize_optional_model_field(
-                overrides.transcription_provider,
-            ),
-            transcription_model: normalize_optional_model_field(overrides.transcription_model),
-            image_model: normalize_optional_model_field(overrides.image_model),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -309,7 +259,7 @@ fn pricing_with_display(pricing: Option<serde_json::Value>, display: &str) -> se
 }
 
 pub fn configured_transcription_provider() -> String {
-    effective_current_settings().transcription_provider
+    current_settings().transcription_provider
 }
 
 pub fn provider_configured() -> bool {
@@ -317,7 +267,7 @@ pub fn provider_configured() -> bool {
 }
 
 pub fn transcription_model() -> String {
-    effective_current_settings().transcription_model
+    current_settings().transcription_model
 }
 
 pub fn generation_model() -> String {
@@ -333,7 +283,7 @@ pub fn local_generation_settings() -> LocalGenerationSettings {
 }
 
 pub fn image_model() -> String {
-    effective_current_settings().image_model
+    current_settings().image_model
 }
 
 pub fn venice_api_key() -> Option<String> {
@@ -415,73 +365,9 @@ pub fn provider_model_settings(
         .settings
         .lock()
         .map_err(|_| AppError::new("provider_settings_unavailable", "Settings lock failed."))?;
-    let effective_settings = effective_settings_for_hermes_home(&settings, &state.hermes_home);
     Ok(ProviderModelSettingsResponse {
         settings: ProviderModelSettingsDto::from(&*settings),
-        effective_settings: ProviderModelSettingsDto::from(&effective_settings),
     })
-}
-
-#[tauri::command]
-pub fn profile_model_overrides(
-    state: State<'_, ProviderSettingsState>,
-    profile: String,
-) -> Result<Option<ProfileModelOverridesDto>, AppError> {
-    let profile = validate_profile_override_name(&profile)?;
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|_| AppError::new("provider_settings_unavailable", "Settings lock failed."))?;
-    Ok(settings
-        .profile_overrides
-        .get(profile)
-        .map(ProfileModelOverridesDto::from))
-}
-
-#[tauri::command]
-pub fn set_profile_model_overrides(
-    state: State<'_, ProviderSettingsState>,
-    profile: String,
-    overrides: ProfileModelOverridesDto,
-) -> Result<(), AppError> {
-    set_profile_model_overrides_impl(&state, &profile, overrides)
-}
-
-fn set_profile_model_overrides_impl(
-    state: &ProviderSettingsState,
-    profile: &str,
-    overrides: ProfileModelOverridesDto,
-) -> Result<(), AppError> {
-    let profile = validate_profile_override_name(profile)?.to_string();
-    update_settings_result(state, |settings| {
-        let overrides = ProfileModelOverrides::from(overrides);
-        if profile_overrides_empty(&overrides) {
-            settings.profile_overrides.remove(&profile);
-        } else {
-            settings.profile_overrides.insert(profile, overrides);
-        }
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[tauri::command]
-pub fn delete_profile_model_overrides(
-    state: State<'_, ProviderSettingsState>,
-    profile: String,
-) -> Result<(), AppError> {
-    delete_profile_model_overrides_impl(&state, &profile)
-}
-
-fn delete_profile_model_overrides_impl(
-    state: &ProviderSettingsState,
-    profile: &str,
-) -> Result<(), AppError> {
-    let profile = validate_profile_override_name(profile)?.to_string();
-    update_settings(state, |settings| {
-        settings.profile_overrides.remove(&profile);
-    })?;
-    Ok(())
 }
 
 #[tauri::command]
@@ -888,13 +774,10 @@ pub async fn list_venice_models(
 pub fn setup(app: &mut tauri::App) {
     let path = provider_settings_path(app.handle())
         .unwrap_or_else(|| PathBuf::from("provider-settings.json"));
-    let hermes_home = provider_hermes_home(app.handle()).unwrap_or_else(|| PathBuf::from("hermes"));
     let settings = load_settings_from_disk(app.handle());
     replace_current_settings(settings.clone());
-    replace_hermes_home(Some(hermes_home.clone()));
     app.manage(ProviderSettingsState {
         path,
-        hermes_home,
         settings: Mutex::new(settings),
     });
 }
@@ -910,33 +793,13 @@ fn current_settings() -> ProviderModelSettings {
         .unwrap_or_else(|_| default_settings())
 }
 
-fn effective_current_settings() -> ProviderModelSettings {
-    let settings = current_settings();
-    hermes_home_store()
-        .lock()
-        .ok()
-        .and_then(|home| home.clone())
-        .map(|hermes_home| effective_settings_for_hermes_home(&settings, &hermes_home))
-        .unwrap_or(settings)
-}
-
 fn settings_store() -> &'static Mutex<ProviderModelSettings> {
     MODEL_SETTINGS.get_or_init(|| Mutex::new(default_settings()))
-}
-
-fn hermes_home_store() -> &'static Mutex<Option<PathBuf>> {
-    HERMES_HOME_DIR.get_or_init(|| Mutex::new(None))
 }
 
 fn replace_current_settings(settings: ProviderModelSettings) {
     if let Ok(mut current) = settings_store().lock() {
         *current = settings;
-    }
-}
-
-fn replace_hermes_home(path: Option<PathBuf>) {
-    if let Ok(mut current) = hermes_home_store().lock() {
-        *current = path;
     }
 }
 
@@ -969,7 +832,6 @@ fn default_settings() -> ProviderModelSettings {
         image_safe_mode: true,
         image_safe_mode_prompt_dismissed: false,
         image_safe_mode_set_by_user: false,
-        profile_overrides: BTreeMap::new(),
     }
 }
 
@@ -1002,15 +864,6 @@ fn provider_settings_path(app: &AppHandle) -> Option<PathBuf> {
         .app_config_dir()
         .ok()
         .map(|directory| directory.join("provider-settings.json"))
-}
-
-fn provider_hermes_home(app: &AppHandle) -> Option<PathBuf> {
-    crate::app_paths::app_data_dir(app)
-        .ok()
-        .map(|directory| directory.join("hermes"))
-        .inspect(|path| {
-            let _ = fs::create_dir_all(path);
-        })
 }
 
 fn load_settings_from_disk(app: &AppHandle) -> ProviderModelSettings {
@@ -1078,27 +931,7 @@ fn sanitize_settings(
         image_safe_mode,
         image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
         image_safe_mode_set_by_user: settings.image_safe_mode_set_by_user,
-        profile_overrides: sanitize_profile_overrides(settings.profile_overrides),
     }
-}
-
-fn sanitize_profile_overrides(
-    overrides: BTreeMap<String, ProfileModelOverrides>,
-) -> BTreeMap<String, ProfileModelOverrides> {
-    overrides
-        .into_iter()
-        .filter_map(|(profile, overrides)| {
-            let profile = validate_profile_override_name(&profile).ok()?.to_string();
-            let overrides = ProfileModelOverrides {
-                transcription_provider: normalize_optional_model_field(
-                    overrides.transcription_provider,
-                ),
-                transcription_model: normalize_optional_model_field(overrides.transcription_model),
-                image_model: normalize_optional_model_field(overrides.image_model),
-            };
-            (!profile_overrides_empty(&overrides)).then_some((profile, overrides))
-        })
-        .collect()
 }
 
 fn normalize_api_key_option(value: Option<String>) -> Option<String> {
@@ -1188,90 +1021,6 @@ fn non_empty_or(value: String, fallback: &str) -> String {
     } else {
         value.to_string()
     }
-}
-
-fn normalize_optional_model_field(value: Option<String>) -> Option<String> {
-    value
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn profile_overrides_empty(overrides: &ProfileModelOverrides) -> bool {
-    overrides.transcription_provider.is_none()
-        && overrides.transcription_model.is_none()
-        && overrides.image_model.is_none()
-}
-
-fn active_profile_for_hermes_home(hermes_home: &std::path::Path) -> String {
-    fs::read_to_string(hermes_home.join("active_profile"))
-        .ok()
-        .map(|profile| profile.trim().to_string())
-        .filter(|profile| !profile.is_empty())
-        .unwrap_or_else(|| "default".to_string())
-}
-
-fn effective_settings_for_hermes_home(
-    settings: &ProviderModelSettings,
-    hermes_home: &std::path::Path,
-) -> ProviderModelSettings {
-    let active_profile = active_profile_for_hermes_home(hermes_home);
-    effective_settings_for_profile(settings, &active_profile)
-}
-
-fn effective_settings_for_profile(
-    settings: &ProviderModelSettings,
-    profile: &str,
-) -> ProviderModelSettings {
-    let mut effective = settings.clone();
-    let profile = profile.trim();
-    if profile.is_empty() || profile == "default" {
-        return effective;
-    }
-    let Some(overrides) = settings.profile_overrides.get(profile) else {
-        return effective;
-    };
-    if let Some(provider) = overrides.transcription_provider.as_deref() {
-        effective.transcription_provider = provider.to_string();
-    }
-    if let Some(model) = overrides.transcription_model.as_deref() {
-        effective.transcription_model = model.to_string();
-    }
-    if let Some(model) = overrides.image_model.as_deref() {
-        effective.image_model = model.to_string();
-    }
-    effective
-}
-
-fn validate_profile_override_name(profile: &str) -> Result<&str, AppError> {
-    let profile = profile.trim();
-    if profile == "default" {
-        return Err(AppError::new(
-            "profile_model_overrides_default_profile",
-            "The default profile uses global model settings.",
-        ));
-    }
-    if !is_safe_profile_name(profile) {
-        return Err(AppError::new(
-            "profile_model_overrides_invalid_profile",
-            "Invalid Hermes profile.",
-        ));
-    }
-    Ok(profile)
-}
-
-fn is_safe_profile_name(name: &str) -> bool {
-    if name.is_empty() || name.len() > 64 {
-        return false;
-    }
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !first.is_ascii_alphanumeric() {
-        return false;
-    }
-    name.chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
 fn update_settings(
@@ -1468,34 +1217,6 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(settings.image_model, DEFAULT_IMAGE_MODEL);
-    }
-
-    #[test]
-    fn provider_settings_deserialize_pre_profile_overrides_fixture() {
-        let fixture = r#"{
-          "transcriptionProvider": "venice",
-          "generationProvider": "venice",
-          "transcriptionModel": "nvidia/parakeet-tdt-0.6b-v3",
-          "generationModel": "zai-org-glm-5-2",
-          "remoteGenerationModel": "zai-org-glm-5-2",
-          "imageModel": "venice-sd35",
-          "localGeneration": {
-            "baseUrl": "",
-            "modelId": "",
-            "apiKey": ""
-          },
-          "imageSafeMode": true,
-          "imageSafeModePromptDismissed": false,
-          "imageSafeModeSetByUser": true
-        }"#;
-
-        let settings: ProviderModelSettings = serde_json::from_str(fixture).unwrap();
-        assert!(settings.profile_overrides.is_empty());
-
-        let round_tripped = serde_json::to_string(&settings).unwrap();
-        let reparsed: ProviderModelSettings = serde_json::from_str(&round_tripped).unwrap();
-        assert_eq!(reparsed, settings);
-        assert!(!round_tripped.contains("profileOverrides"));
     }
 
     #[test]
@@ -1741,185 +1462,11 @@ mod tests {
         ));
         ProviderSettingsState {
             path: dir.join("provider-settings.json"),
-            hermes_home: dir.join("hermes"),
             settings: Mutex::new(default_settings()),
         }
     }
 
     static NEXT_TEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-    #[test]
-    fn active_profile_defaults_for_missing_empty_and_unreadable_file() {
-        let state = test_state();
-
-        assert_eq!(
-            active_profile_for_hermes_home(&state.hermes_home),
-            "default"
-        );
-
-        fs::create_dir_all(&state.hermes_home).unwrap();
-        fs::write(state.hermes_home.join("active_profile"), "   \n").unwrap();
-        assert_eq!(
-            active_profile_for_hermes_home(&state.hermes_home),
-            "default"
-        );
-
-        fs::remove_file(state.hermes_home.join("active_profile")).unwrap();
-        fs::create_dir(state.hermes_home.join("active_profile")).unwrap();
-        assert_eq!(
-            active_profile_for_hermes_home(&state.hermes_home),
-            "default"
-        );
-    }
-
-    #[test]
-    fn profile_overrides_resolve_fallbacks_and_partial_overrides() {
-        let state = test_state();
-        fs::create_dir_all(&state.hermes_home).unwrap();
-        fs::write(state.hermes_home.join("active_profile"), "writing\n").unwrap();
-
-        let mut settings = default_settings();
-        settings.transcription_provider = PROVIDER_VENICE.to_string();
-        settings.transcription_model = "global-asr".to_string();
-        settings.image_model = "global-image".to_string();
-        settings.profile_overrides.insert(
-            "writing".to_string(),
-            ProfileModelOverrides {
-                transcription_provider: Some(PROVIDER_OPENAI.to_string()),
-                transcription_model: Some("gpt-4o-transcribe".to_string()),
-                image_model: None,
-            },
-        );
-
-        let effective = effective_settings_for_hermes_home(&settings, &state.hermes_home);
-        assert_eq!(effective.transcription_provider, PROVIDER_OPENAI);
-        assert_eq!(effective.transcription_model, "gpt-4o-transcribe");
-        assert_eq!(effective.image_model, "global-image");
-
-        fs::write(state.hermes_home.join("active_profile"), "unknown\n").unwrap();
-        let effective = effective_settings_for_hermes_home(&settings, &state.hermes_home);
-        assert_eq!(effective.transcription_provider, PROVIDER_VENICE);
-        assert_eq!(effective.transcription_model, "global-asr");
-        assert_eq!(effective.image_model, "global-image");
-
-        fs::remove_file(state.hermes_home.join("active_profile")).unwrap();
-        let effective = effective_settings_for_hermes_home(&settings, &state.hermes_home);
-        assert_eq!(effective.transcription_model, "global-asr");
-    }
-
-    #[test]
-    fn profile_overrides_skip_default_profile() {
-        let mut settings = default_settings();
-        settings.transcription_model = "global-asr".to_string();
-        settings.profile_overrides.insert(
-            "default".to_string(),
-            ProfileModelOverrides {
-                transcription_provider: Some(PROVIDER_OPENAI.to_string()),
-                transcription_model: Some("profile-asr".to_string()),
-                image_model: Some("profile-image".to_string()),
-            },
-        );
-
-        let effective = effective_settings_for_profile(&settings, "default");
-        assert_eq!(effective.transcription_provider, PROVIDER_VENICE);
-        assert_eq!(effective.transcription_model, "global-asr");
-        assert_eq!(effective.image_model, DEFAULT_IMAGE_MODEL);
-    }
-
-    #[test]
-    fn profile_override_commands_write_validate_and_delete() {
-        let state = test_state();
-
-        set_profile_model_overrides_impl(
-            &state,
-            "research",
-            ProfileModelOverridesDto {
-                transcription_provider: Some(format!(" {PROVIDER_OPENAI} ")),
-                transcription_model: Some(" gpt-4o-transcribe ".to_string()),
-                image_model: Some(" profile-image ".to_string()),
-            },
-        )
-        .unwrap();
-
-        let saved: ProviderModelSettings =
-            serde_json::from_str(&fs::read_to_string(&state.path).unwrap()).unwrap();
-        assert_eq!(
-            saved
-                .profile_overrides
-                .get("research")
-                .and_then(|overrides| overrides.transcription_provider.as_deref()),
-            Some(PROVIDER_OPENAI)
-        );
-        assert_eq!(
-            saved
-                .profile_overrides
-                .get("research")
-                .and_then(|overrides| overrides.transcription_model.as_deref()),
-            Some("gpt-4o-transcribe")
-        );
-
-        set_profile_model_overrides_impl(
-            &state,
-            "research",
-            ProfileModelOverridesDto {
-                transcription_provider: None,
-                transcription_model: Some("whisper-1".to_string()),
-                image_model: None,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            state
-                .settings
-                .lock()
-                .unwrap()
-                .profile_overrides
-                .get("research")
-                .and_then(|overrides| overrides.transcription_provider.as_deref()),
-            None
-        );
-        assert_eq!(
-            state
-                .settings
-                .lock()
-                .unwrap()
-                .profile_overrides
-                .get("research")
-                .and_then(|overrides| overrides.transcription_model.as_deref()),
-            Some("whisper-1")
-        );
-
-        delete_profile_model_overrides_impl(&state, "research").unwrap();
-        assert!(!state
-            .settings
-            .lock()
-            .unwrap()
-            .profile_overrides
-            .contains_key("research"));
-
-        let error =
-            set_profile_model_overrides_impl(&state, "--flag", ProfileModelOverridesDto::default())
-                .unwrap_err();
-        assert_eq!(error.code, "profile_model_overrides_invalid_profile");
-    }
-
-    #[test]
-    fn profile_override_commands_reject_default() {
-        let state = test_state();
-
-        let error = set_profile_model_overrides_impl(
-            &state,
-            "default",
-            ProfileModelOverridesDto {
-                transcription_provider: Some(PROVIDER_OPENAI.to_string()),
-                transcription_model: None,
-                image_model: None,
-            },
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, "profile_model_overrides_default_profile");
-    }
 
     #[test]
     fn set_image_safe_mode_true_resets_dismissed_prompt() {

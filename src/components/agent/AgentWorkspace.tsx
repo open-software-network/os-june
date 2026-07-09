@@ -149,10 +149,6 @@ import {
   titleFromPrompt,
 } from "../../lib/hermes-adapter";
 import {
-  getActiveHermesProfileName,
-  refreshActiveHermesProfile,
-} from "../../lib/active-hermes-profile";
-import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_GALLERY_EVENT,
   AGENT_NEW_SESSION_EVENT,
@@ -3447,9 +3443,6 @@ export function AgentWorkspace({
         const status = await hermesBridgeStatus();
         if (cancelled) return;
         setBridge(status);
-        if (status.running) {
-          void refreshActiveHermesProfile({ status });
-        }
       } catch (err) {
         if (!cancelled) setError(describeHermesError(err), reportableAgentErrorOptions(err));
       }
@@ -3904,8 +3897,7 @@ export function AgentWorkspace({
     try {
       const settingsResponse = await providerModelSettings();
       settings = settingsResponse.settings;
-      pinnedModel =
-        settingsResponse.effectiveSettings?.imageModel || settings.imageModel || undefined;
+      pinnedModel = settings.imageModel || undefined;
       pinnedSafeMode = settings.imageSafeMode;
     } catch {
       // Non-fatal: generation proceeds with server-resolved settings.
@@ -5152,39 +5144,14 @@ export function AgentWorkspace({
           targetSessionId ? sessionUnrestricted(targetSessionId) : fullModeDraftRef.current,
         ),
         titlePromise ?? Promise.resolve(undefined),
-        // Re-read the sticky active profile for every brand-new session so an
-        // out-of-band switch (Hermes CLI, upstream dashboard) is honored
-        // without a workspace remount. Runs in parallel with gateway setup
-        // (no added wall-clock) and never throws; the store keeps the
-        // last-known value on failure. Both runtimes share one Hermes home,
-        // so the value is mode-independent.
-        targetSessionId
-          ? Promise.resolve()
-          : refreshActiveHermesProfile({
-              mode: fullModeDraftRef.current ? "unrestricted" : "sandboxed",
-            }),
       ]);
       const nextCreated = targetSessionId
         ? undefined
-        : await nextGateway.request<HermesRuntimeSessionResponse>(
-            "session.create",
-            (() => {
-              const activeProfile = getActiveHermesProfileName();
-              const underProfile = activeProfile !== "default";
-              return {
-                title: nextSessionTitle ?? fallbackSessionTitle,
-                cols: 96,
-                // The composer's model IS June's global generation selection
-                // (there is no separate per-chat pick), and session.create
-                // treats `model` as a per-session override. Under a named
-                // profile the override would silently bypass the profile's own
-                // configured text model - the point of profiles - so it is
-                // omitted and the profile's model applies.
-                ...(targetSessionModelId && !underProfile ? { model: targetSessionModelId } : {}),
-                ...(underProfile ? { profile: activeProfile } : {}),
-              };
-            })(),
-          );
+        : await nextGateway.request<HermesRuntimeSessionResponse>("session.create", {
+            title: nextSessionTitle ?? fallbackSessionTitle,
+            cols: 96,
+            ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+          });
       const nextStoredSessionId =
         targetSessionId ?? nextCreated?.stored_session_id ?? nextCreated?.session_id;
       if (!nextStoredSessionId) {
@@ -5600,7 +5567,6 @@ export function AgentWorkspace({
     try {
       const status = await startHermesBridge(undefined, fullMode);
       setBridge(status);
-      await refreshActiveHermesProfile({ status, mode: fullMode ? "unrestricted" : "sandboxed" });
       return status;
     } catch (err) {
       const message = messageFromError(err);

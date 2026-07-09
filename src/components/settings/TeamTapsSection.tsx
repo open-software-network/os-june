@@ -26,7 +26,6 @@ import {
 } from "../../lib/hermes-admin";
 import type { HermesSkillTapDto } from "../../lib/tauri";
 import { AdminNotifications } from "./AdminNotifications";
-import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 type TeamTapsSectionProps = {
   /** The write-access mode whose runtime this page targets. Defaults to the safe
@@ -54,66 +53,9 @@ export function TeamTapsSection({
   mode = "sandboxed",
   onConfigureGithubToken,
 }: TeamTapsSectionProps) {
-  const activeProfile = useConfirmedSettingsProfile(mode);
-  if (activeProfile.pending) {
-    return (
-      <TeamTapsView
-        state={PENDING_SKILL_TAPS_STATE}
-        mode={mode}
-        onConfigureGithubToken={onConfigureGithubToken}
-      />
-    );
-  }
-  return (
-    <TeamTapsSectionReady
-      mode={mode}
-      profile={activeProfile.name}
-      onConfigureGithubToken={onConfigureGithubToken}
-    />
-  );
-}
-
-function TeamTapsSectionReady({
-  mode,
-  profile,
-  onConfigureGithubToken,
-}: TeamTapsSectionProps & { mode: HermesAdminMode; profile: string }) {
-  const state = useSkillTaps(mode, profile);
+  const state = useSkillTaps(mode);
   return <TeamTapsView state={state} mode={mode} onConfigureGithubToken={onConfigureGithubToken} />;
 }
-
-const PENDING_SKILL_TAPS_STATE: SkillTapsState = {
-  status: "loading",
-  taps: [],
-  pending: new Set(),
-  retryable: false,
-  needsGithubToken: false,
-  search: {
-    status: "idle",
-    query: "",
-    results: [],
-    retryable: false,
-  },
-  installs: new Map(),
-  lifecycle: {
-    state: "clean",
-    label: "Up to date",
-    detail: "No pending changes.",
-    canRestart: false,
-  },
-  notifications: [],
-  refresh: () => {},
-  addTap: async () => {},
-  removeTap: async () => {},
-  searchTap: () => {},
-  refreshSearch: () => {},
-  clearSearch: () => {},
-  installSkill: () => {},
-  clearInstall: () => {},
-  validateRepo: () => null,
-  validatePath: () => null,
-  dismissNotification: () => {},
-};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed

@@ -22,7 +22,6 @@ import {
   type ToolsetsState,
 } from "../../lib/hermes-admin";
 import { AdminNotifications } from "./AdminNotifications";
-import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 type ToolsetsSectionProps = {
   /** The write-access mode whose runtime this page inspects. Defaults to the
@@ -46,36 +45,9 @@ type ToolsetsSectionProps = {
  * can drive it with a stubbed state (no Tauri, no network).
  */
 export function ToolsetsSection({ mode = "sandboxed" }: ToolsetsSectionProps) {
-  const activeProfile = useConfirmedSettingsProfile(mode);
-  if (activeProfile.pending) {
-    return <ToolsetsView state={PENDING_TOOLSETS_STATE} mode={mode} />;
-  }
-  return <ToolsetsSectionReady mode={mode} profile={activeProfile.name} />;
-}
-
-function ToolsetsSectionReady({
-  mode,
-  profile,
-}: ToolsetsSectionProps & { mode: HermesAdminMode; profile: string }) {
-  const state = useToolsets(mode, profile);
+  const state = useToolsets(mode);
   return <ToolsetsView state={state} mode={mode} />;
 }
-
-const PENDING_TOOLSETS_STATE: ToolsetsState = {
-  status: "loading",
-  toolsets: [],
-  skills: [],
-  retryable: false,
-  lifecycle: {
-    state: "clean",
-    label: "Up to date",
-    detail: "No pending changes.",
-    canRestart: false,
-  },
-  notifications: [],
-  refresh: () => {},
-  dismissNotification: () => {},
-};
 
 export function ToolsetsView({
   state,

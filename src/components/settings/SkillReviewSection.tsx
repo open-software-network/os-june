@@ -26,7 +26,6 @@ import {
 } from "../../lib/hermes-admin";
 import { Switch } from "../ui/Switch";
 import { AdminNotifications } from "./AdminNotifications";
-import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 type SkillReviewSectionProps = {
   /** The write-access mode whose runtime this page targets. Defaults to the
@@ -47,42 +46,9 @@ type SkillReviewSectionProps = {
  * local expand state.
  */
 export function SkillReviewSection({ mode = "sandboxed" }: SkillReviewSectionProps) {
-  const activeProfile = useConfirmedSettingsProfile(mode);
-  if (activeProfile.pending) {
-    return <SkillReviewView state={PENDING_SKILL_REVIEW_STATE} mode={mode} />;
-  }
-  return <SkillReviewSectionReady mode={mode} profile={activeProfile.name} />;
-}
-
-function SkillReviewSectionReady({
-  mode,
-  profile,
-}: SkillReviewSectionProps & { mode: HermesAdminMode; profile: string }) {
-  const state = useSkillReview(mode, profile);
+  const state = useSkillReview(mode);
   return <SkillReviewView state={state} mode={mode} />;
 }
-
-const PENDING_SKILL_REVIEW_STATE: SkillReviewState = {
-  status: "loading",
-  writes: [],
-  gatePending: false,
-  pending: new Set(),
-  retryable: false,
-  lifecycle: {
-    state: "clean",
-    label: "Up to date",
-    detail: "No pending changes.",
-    canRestart: false,
-  },
-  notifications: [],
-  refresh: () => {},
-  approve: () => {},
-  reject: () => {},
-  approveAll: () => {},
-  rejectAll: () => {},
-  setGate: () => {},
-  dismissNotification: () => {},
-};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed

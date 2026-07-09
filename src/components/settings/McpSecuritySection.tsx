@@ -6,14 +6,12 @@ import {
   exposurePolicyOptions,
   securityLabel,
   useMcpSecurity,
-  DEFAULT_MCP_EXPOSURE_POLICY,
   type HermesAdminMode,
   type McpExposurePolicy,
   type McpSecurityLabelCode,
   type McpSecurityState,
 } from "../../lib/hermes-admin";
 import { AdminNotifications } from "./AdminNotifications";
-import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 type McpSecuritySectionProps = {
   /** The write-access mode whose runtime this page targets. Defaults to the safe
@@ -47,37 +45,9 @@ const EXPLAINED_LABELS: readonly McpSecurityLabelCode[] = [
  * is honest: a config change applies next session.
  */
 export function McpSecuritySection({ mode = "sandboxed" }: McpSecuritySectionProps) {
-  const activeProfile = useConfirmedSettingsProfile(mode);
-  if (activeProfile.pending) {
-    return <McpSecurityView state={PENDING_MCP_SECURITY_STATE} mode={mode} />;
-  }
-  return <McpSecuritySectionReady mode={mode} profile={activeProfile.name} />;
-}
-
-function McpSecuritySectionReady({
-  mode,
-  profile,
-}: McpSecuritySectionProps & { mode: HermesAdminMode; profile: string }) {
-  const state = useMcpSecurity(mode, profile);
+  const state = useMcpSecurity(mode);
   return <McpSecurityView state={state} mode={mode} />;
 }
-
-const PENDING_MCP_SECURITY_STATE: McpSecurityState = {
-  status: "loading",
-  policy: DEFAULT_MCP_EXPOSURE_POLICY,
-  busy: false,
-  retryable: false,
-  lifecycle: {
-    state: "clean",
-    label: "Up to date",
-    detail: "No pending changes.",
-    canRestart: false,
-  },
-  notifications: [],
-  refresh: () => {},
-  setPolicy: () => {},
-  dismissNotification: () => {},
-};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed

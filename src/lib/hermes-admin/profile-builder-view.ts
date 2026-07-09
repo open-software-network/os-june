@@ -7,8 +7,8 @@
  *
  * The builder talks to Hermes through the existing admin REST surface only:
  * `POST /api/profiles` (create), `PUT /api/profiles/{name}/soul` (custom SOUL),
- * and `POST /api/profiles/active` when the new profile should become active. It
- * reuses the already-landed data sources for its step inputs (the model catalog, installed
+ * `POST /api/profiles/active` + `/open-terminal` (test session). It reuses the
+ * already-landed data sources for its step inputs (the model catalog, installed
  * skills, the Skills Hub, MCP servers and the MCP catalog) rather than inventing
  * its own. Profile creation is a documented endpoint, so June never copies
  * directories by hand — no Tauri bridge command is added.
@@ -20,7 +20,6 @@
  */
 
 import type { HermesCreateProfilePayload } from "./client";
-import { isInternalMcpServerName, userManagedMcpServers } from "./mcp-servers-view";
 import type {
   HermesMcpCatalogEntry,
   HermesMcpServerInfo,
@@ -39,16 +38,15 @@ export type ProfileBuilderModel = {
   capabilities: string[];
 };
 
-export type ProfileModelSlot = "voice" | "image";
-
-export type ProfileBuilderModelCatalog = {
-  generation: readonly ProfileBuilderModel[];
-  transcription: readonly ProfileBuilderModel[];
-  image: readonly ProfileBuilderModel[];
-};
-
 /** The ordered wizard steps. */
-export const PROFILE_BUILDER_STEPS = ["identity", "model", "skills", "mcps", "review"] as const;
+export const PROFILE_BUILDER_STEPS = [
+  "identity",
+  "model",
+  "toolsets",
+  "skills",
+  "mcps",
+  "review",
+] as const;
 
 export type ProfileBuilderStep = (typeof PROFILE_BUILDER_STEPS)[number];
 
@@ -62,6 +60,10 @@ export const STEP_META: Readonly<Record<ProfileBuilderStep, { title: string; hin
     model: {
       title: "Model",
       hint: "Pick the generation model. It must support tool calling.",
+    },
+    toolsets: {
+      title: "Toolsets",
+      hint: "Choose the sandbox policy for this profile.",
     },
     skills: {
       title: "Skills",
@@ -82,6 +84,10 @@ export const STEP_META: Readonly<Record<ProfileBuilderStep, { title: string; hin
  * are added. */
 export type ProfileIdentityKind = "june-default" | "specialized";
 
+/** How the profile treats local subprocesses, stdio MCP servers, scripts, and
+ * external directories. June's safe default is sandboxed. */
+export type ProfileSandboxPolicy = "sandboxed" | "unrestricted";
+
 /** The mutable wizard state. */
 export type ProfileBuilderForm = {
   /** Profile name/slug. The slug is derived from this. */
@@ -94,12 +100,7 @@ export type ProfileBuilderForm = {
   provider: string;
   /** Model id of the chosen model, empty until picked. */
   model: string;
-  /** Explicit per-profile transcription model override. Empty keeps June's default. */
-  voiceModel: string;
-  /** Provider for the explicit transcription override. Empty keeps June's default. */
-  voiceProvider: string;
-  /** Explicit per-profile image model override. Empty keeps June's default. */
-  imageModel: string;
+  sandbox: ProfileSandboxPolicy;
   /** Keep June's bundled skills (clones them from default). */
   keepBundledSkills: boolean;
   /** Bundled skill names to keep when `keepBundledSkills` is true and the user
@@ -113,8 +114,8 @@ export type ProfileBuilderForm = {
   mcpCatalogInstalls: string[];
 };
 
-/** The fresh form a new wizard starts from. June default identity and bundled
- * skills kept: the safe, June-correct starting point. */
+/** The fresh form a new wizard starts from. June default identity, sandboxed,
+ * bundled skills kept — the safe, June-correct starting point. */
 export function emptyProfileForm(): ProfileBuilderForm {
   return {
     name: "",
@@ -123,9 +124,7 @@ export function emptyProfileForm(): ProfileBuilderForm {
     identity: "june-default",
     provider: "",
     model: "",
-    voiceModel: "",
-    voiceProvider: "",
-    imageModel: "",
+    sandbox: "sandboxed",
     keepBundledSkills: true,
     keepSkills: [],
     hubSkills: [],
@@ -266,10 +265,24 @@ export function validateStep(
       }
       return { error: undefined, warnings };
     }
+    case "toolsets": {
+      if (form.sandbox === "unrestricted") {
+        warnings.push(
+          "Full mode lets this profile run local subprocesses and scripts without the sandbox. Use it only for trusted work.",
+        );
+      }
+      return { error: undefined, warnings };
+    }
     case "skills":
       return { error: undefined, warnings };
-    case "mcps":
+    case "mcps": {
+      if (form.sandbox === "sandboxed" && form.mcpCatalogInstalls.length > 0) {
+        warnings.push(
+          "Some MCP servers run local subprocesses. In sandboxed mode they stay jailed. Switch to Full mode only if a server needs broader access.",
+        );
+      }
       return { error: undefined, warnings };
+    }
     case "review":
       // Review re-runs the gating steps so a late edit cannot slip a bad model
       // or name through.
@@ -322,9 +335,9 @@ export function previousStep(step: ProfileBuilderStep): ProfileBuilderStep {
 // Create plan (the review step's "what will change" with risk labels)
 // ---------------------------------------------------------------------------
 
-/** How risky a planned change is. `info` is benign, `caution` writes config,
- * secrets, or installs external code. */
-export type ChangeRisk = "info" | "caution";
+/** How risky a planned change is. `info` is benign, `caution` writes config or
+ * secrets, `danger` weakens the sandbox or runs external code. */
+export type ChangeRisk = "info" | "caution" | "danger";
 
 /** One planned file/config change, shown on the review step. */
 export type PlannedChange = {
@@ -336,54 +349,12 @@ export type PlannedChange = {
   risk: ChangeRisk;
 };
 
-export type ProfileModelOverrides = {
-  transcriptionProvider?: string;
-  transcriptionModel?: string;
-  imageModel?: string;
-};
-
-export function buildProfileModelOverrides(form: ProfileBuilderForm): ProfileModelOverrides | null {
-  const overrides: ProfileModelOverrides = {};
-  if (form.voiceModel) {
-    overrides.transcriptionProvider = form.voiceProvider || "venice";
-    overrides.transcriptionModel = form.voiceModel;
-  }
-  if (form.imageModel) {
-    overrides.imageModel = form.imageModel;
-  }
-  return Object.keys(overrides).length > 0 ? overrides : null;
-}
-
-export function resetProfileModelSlot(
-  form: ProfileBuilderForm,
-  slot: ProfileModelSlot,
-): ProfileBuilderForm {
-  if (slot === "voice") return { ...form, voiceProvider: "", voiceModel: "" };
-  return { ...form, imageModel: "" };
-}
-
-export function selectedProfileModelOverride(
-  form: ProfileBuilderForm,
-  slot: ProfileModelSlot,
-  catalog: readonly ProfileBuilderModel[],
-): ProfileBuilderModel | undefined {
-  const id = slot === "voice" ? form.voiceModel : form.imageModel;
-  const provider = slot === "voice" ? form.voiceProvider : undefined;
-  if (!id) return undefined;
-  return catalog.find(
-    (model) => model.id === id && (slot !== "voice" || !provider || model.provider === provider),
-  );
-}
-
 /** Builds the review step's plan: exactly what files/config June will create or
  * change, each with a risk label. The targets are descriptive (June does not
  * literally write these files itself — Hermes does via the create endpoint), but
  * they make the blast radius explicit, satisfying the spec's "show exactly what
  * will be created or changed". */
-export function buildCreatePlan(
-  form: ProfileBuilderForm,
-  catalogs?: Partial<ProfileBuilderModelCatalog>,
-): PlannedChange[] {
+export function buildCreatePlan(form: ProfileBuilderForm): PlannedChange[] {
   const slug = slugifyProfileName(form.name) || "<profile>";
   const root = `~/.hermes/profiles/${slug}`;
   const changes: PlannedChange[] = [];
@@ -407,24 +378,6 @@ export function buildCreatePlan(
     changes.push({
       target: `${root}/SOUL.md`,
       detail: "Custom instructions you wrote for this profile.",
-      risk: "caution",
-    });
-  }
-
-  const voiceOverride = selectedProfileModelOverride(form, "voice", catalogs?.transcription ?? []);
-  if (form.voiceModel) {
-    changes.push({
-      target: "June profile model overrides",
-      detail: `Voice model: ${voiceOverride?.name ?? form.voiceModel}.`,
-      risk: "caution",
-    });
-  }
-
-  const imageOverride = selectedProfileModelOverride(form, "image", catalogs?.image ?? []);
-  if (form.imageModel) {
-    changes.push({
-      target: "June profile model overrides",
-      detail: `Image model: ${imageOverride?.name ?? form.imageModel}.`,
       risk: "caution",
     });
   }
@@ -455,23 +408,22 @@ export function buildCreatePlan(
   }
 
   if (form.mcpServers.length > 0 || form.mcpCatalogInstalls.length > 0) {
-    const total =
-      form.mcpServers.filter((name) => !isInternalMcpServerName(name)).length +
-      form.mcpCatalogInstalls.filter((name) => !isInternalMcpServerName(name)).length;
-    if (total > 0) {
-      changes.push({
-        target: `${root}/config.yaml (mcp)`,
-        detail: `Attaches ${total} MCP server(s). MCP servers may run local subprocesses and need a gateway restart to expose their tools.`,
-        risk: "caution",
-      });
-    }
+    const total = form.mcpServers.length + form.mcpCatalogInstalls.length;
+    changes.push({
+      target: `${root}/config.yaml (mcp)`,
+      detail: `Attaches ${total} MCP server(s). MCP servers may run local subprocesses and need a gateway restart to expose their tools.`,
+      risk: "caution",
+    });
   }
 
-  changes.push({
-    target: `${root}/config.yaml (mcp)`,
-    detail: "June's built-in tools are always included.",
-    risk: "info",
-  });
+  if (form.sandbox === "unrestricted") {
+    changes.push({
+      target: `${root}/config.yaml (sandbox)`,
+      detail:
+        "Runs this profile in Full mode: local subprocesses, scripts, and external directories are not sandboxed.",
+      risk: "danger",
+    });
+  }
 
   return changes;
 }
@@ -502,9 +454,10 @@ export function buildCreatePayload(form: ProfileBuilderForm): HermesCreateProfil
     payload.keep_skills = [...form.keepSkills];
   }
   if (form.hubSkills.length > 0) payload.hub_skills = [...form.hubSkills];
-  const mcpServers = [...form.mcpServers, ...form.mcpCatalogInstalls]
-    .filter((name) => !isInternalMcpServerName(name))
-    .map((name) => ({ name }));
+  const mcpServers = [
+    ...form.mcpServers.map((name) => ({ name })),
+    ...form.mcpCatalogInstalls.map((name) => ({ name })),
+  ];
   if (mcpServers.length > 0) payload.mcp_servers = mcpServers;
   return payload;
 }
@@ -519,11 +472,12 @@ export function bundledSkillOptions(skills: readonly HermesSkillInfo[]): HermesS
   return skills.filter((skill) => skill.source === "bundled");
 }
 
-/** The MCP servers that can be attached, excluding June-owned internal tools. */
+/** The MCP servers that can be attached — every server in the inventory by
+ * name. */
 export function attachableMcpServers(
   servers: readonly HermesMcpServerInfo[],
 ): HermesMcpServerInfo[] {
-  return userManagedMcpServers(servers);
+  return [...servers];
 }
 
 /** The catalog entries that can be installed during create (not already
