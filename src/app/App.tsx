@@ -87,6 +87,7 @@ import {
 } from "../lib/tauri";
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
 import { isMacLikePlatform, isPrimaryShortcut } from "../lib/platform";
+import { mergeSourceReadiness } from "../lib/source-readiness";
 import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_GALLERY_EVENT,
@@ -2433,7 +2434,7 @@ export function App() {
       try {
         setCheckingSourceReadiness(true);
         const readiness = await checkRecordingSourceReadiness(requestedSourceMode);
-        setSourceReadiness(readiness);
+        setSourceReadiness((previous) => mergeSourceReadiness(previous, readiness));
 
         const micSource = readiness.sources.find((source) => source.source === "microphone");
         if (!micSource?.ready) {

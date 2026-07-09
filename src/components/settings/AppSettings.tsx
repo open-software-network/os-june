@@ -472,8 +472,8 @@ export function AppSettings({
   );
   const systemState = systemReadiness?.permissionState;
   const systemDenied = systemState === "denied" || systemState === "restricted";
-  // A readiness payload that omits the system source means the backend could
-  // not offer it; an absent payload only means the probe has not answered yet.
+  // A readiness payload that omits the system source cannot offer it; an
+  // absent payload only means the probe has not answered yet.
   const systemUnavailable =
     !macLikePlatform || (!!sourceReadiness && !systemReadiness) || systemState === "unsupported";
 

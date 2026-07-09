@@ -1490,19 +1490,21 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
         );
     }
 
-    assemble_recording_source_readiness(microphone, Some(system), source_mode)
+    assemble_recording_source_readiness(microphone, system, source_mode)
 }
 
+/// Readiness describes the machine, not the request: the system source is
+/// always reported so callers can explain why it is unavailable. Only
+/// `required` follows the requested mode, keeping the `start_recording` gate
+/// from blocking a microphone-only take on a Mac that cannot capture system
+/// audio at all.
 fn assemble_recording_source_readiness(
     microphone: SourceReadinessDto,
-    system: Option<SourceReadinessDto>,
+    mut system: SourceReadinessDto,
     source_mode: RecordingSourceMode,
 ) -> RecordingSourceReadinessDto {
-    let mut sources = vec![microphone];
-    if let Some(mut system) = system {
-        system.required = source_mode == RecordingSourceMode::MicrophonePlusSystem;
-        sources.push(system);
-    }
+    system.required = source_mode == RecordingSourceMode::MicrophonePlusSystem;
+    let sources = vec![microphone, system];
     let ready = sources
         .iter()
         .all(|source| !source.required || source.ready);
@@ -2258,7 +2260,7 @@ mod tests {
     fn microphone_only_readiness_still_reports_the_system_source() {
         let readiness = assemble_recording_source_readiness(
             microphone_readiness(),
-            Some(unsupported_system_readiness()),
+            unsupported_system_readiness(),
             RecordingSourceMode::MicrophoneOnly,
         );
         let system = readiness
@@ -2275,7 +2277,7 @@ mod tests {
     fn microphone_only_readiness_stays_ready_when_system_is_unsupported() {
         let readiness = assemble_recording_source_readiness(
             microphone_readiness(),
-            Some(unsupported_system_readiness()),
+            unsupported_system_readiness(),
             RecordingSourceMode::MicrophoneOnly,
         );
 
@@ -2286,7 +2288,7 @@ mod tests {
     fn microphone_plus_system_keeps_the_system_source_required() {
         let readiness = assemble_recording_source_readiness(
             microphone_readiness(),
-            Some(unsupported_system_readiness()),
+            unsupported_system_readiness(),
             RecordingSourceMode::MicrophonePlusSystem,
         );
         let system = readiness
