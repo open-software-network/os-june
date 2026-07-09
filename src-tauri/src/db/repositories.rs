@@ -1440,7 +1440,12 @@ impl Repositories {
         .await?;
         self.set_note_status(note_id, ProcessingStatus::Recording, None)
             .await?;
-        self.add_checkpoint(session_id, "start", None).await
+        if let Err(error) = self.add_checkpoint(session_id, "start", None).await {
+            eprintln!(
+                "failed to persist start checkpoint for recording session {session_id}: {error}"
+            );
+        }
+        Ok(())
     }
 
     pub async fn recording_session_source_mode(

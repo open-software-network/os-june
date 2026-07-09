@@ -99,18 +99,37 @@ impl SystemAudioCapture {
                 "System audio worker is missing.",
             )),
         };
-        if let Err(error) = worker_result.and_then(|result| result) {
-            return SystemAudioStopResult::Failed(error.into());
+        let stop_error = worker_result.and_then(|result| result).err();
+        let finalization_error =
+            finalize_partial_system_audio(&self.partial_path, &self.final_path)
+                .err()
+                .map(|error| AppError::new("audio_finalization_failed", error.to_string()));
+        match (stop_error, finalization_error) {
+            (Some(error), Some(finalization_error)) => SystemAudioStopResult::Failed(
+                AppError::new(
+                    error.code,
+                    format!(
+                        "{} System audio file finalization also failed: {}",
+                        error.message, finalization_error.message
+                    ),
+                )
+                .into(),
+            ),
+            (Some(error), None) => SystemAudioStopResult::Failed(error.into()),
+            (None, Some(error)) => SystemAudioStopResult::Failed(error.into()),
+            (None, None) => SystemAudioStopResult::Stopped(self.final_path),
         }
-        if self.partial_path.exists() {
-            if let Err(error) = std::fs::rename(&self.partial_path, &self.final_path) {
-                return SystemAudioStopResult::Failed(
-                    AppError::new("audio_finalization_failed", error.to_string()).into(),
-                );
-            }
-        }
-        SystemAudioStopResult::Stopped(self.final_path)
     }
+}
+
+fn finalize_partial_system_audio(
+    partial_path: &PathBuf,
+    final_path: &PathBuf,
+) -> std::io::Result<()> {
+    if partial_path.exists() {
+        std::fs::rename(partial_path, final_path)?;
+    }
+    Ok(())
 }
 
 pub fn system_audio_readiness() -> SourceReadinessDto {
@@ -224,6 +243,7 @@ enum MixSampleFormat {
     PcmUnsigned8,
     PcmSigned16,
     PcmSigned24,
+    PcmSigned24In32,
     PcmSigned32,
     Float32,
 }
@@ -539,6 +559,10 @@ fn sample_to_f32(sample: &[u8], sample_format: MixSampleFormat) -> f32 {
             let sign = if sample[2] & 0x80 == 0 { 0x00 } else { 0xff };
             i32::from_le_bytes([sample[0], sample[1], sample[2], sign]) as f32 / 8_388_608.0
         }
+        MixSampleFormat::PcmSigned24In32 => {
+            let sign = if sample[2] & 0x80 == 0 { 0x00 } else { 0xff };
+            i32::from_le_bytes([sample[0], sample[1], sample[2], sign]) as f32 / 8_388_608.0
+        }
         MixSampleFormat::PcmSigned16 => {
             i16::from_le_bytes([sample[0], sample[1]]) as f32 / i16::MAX as f32
         }
@@ -583,9 +607,21 @@ fn mix_sample_format_extensible(
         return Ok(MixSampleFormat::Float32);
     }
     if sub_format == ksdataformat_subtype_pcm() {
-        return pcm_sample_format(valid_bits_per_sample.max(bits_per_sample));
+        return extensible_pcm_sample_format(valid_bits_per_sample, bits_per_sample);
     }
     Err(unusable_format_error())
+}
+
+#[cfg(target_os = "windows")]
+fn extensible_pcm_sample_format(
+    valid_bits_per_sample: u16,
+    bits_per_sample: u16,
+) -> Result<MixSampleFormat, AppError> {
+    match (valid_bits_per_sample, bits_per_sample) {
+        (24, 32) => Ok(MixSampleFormat::PcmSigned24In32),
+        (0, bits) => pcm_sample_format(bits),
+        (valid, _) => pcm_sample_format(valid),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -679,6 +715,11 @@ mod tests {
         );
         assert!(
             (sample_to_f32(&i32::MAX.to_le_bytes(), MixSampleFormat::PcmSigned32) - 1.0).abs()
+                < 0.0001
+        );
+        assert!(
+            (sample_to_f32(&[0xff, 0xff, 0x7f, 0x00], MixSampleFormat::PcmSigned24In32) - 1.0)
+                .abs()
                 < 0.0001
         );
     }

@@ -41,6 +41,7 @@ pub use unsupported::{
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 mod unsupported {
+    use super::SystemAudioStopResult;
     use crate::domain::types::{AppError, AudioLevelDto, RecordingSource, SourceReadinessDto};
     use std::{path::PathBuf, time::Duration};
 
