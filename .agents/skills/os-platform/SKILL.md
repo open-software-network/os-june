@@ -17,11 +17,11 @@ python3 scripts/os_platform.py issues list open-software --q "wallet" --limit 10
 python3 scripts/os_platform.py issues list open-software --assignee me --status todo,in_progress
 python3 scripts/os_platform.py issues search open-software "wallet bug" --status todo
 python3 scripts/os_platform.py issues show open-software 123
-python3 scripts/os_platform.py issues create open-software --title "Fix wallet sync" --body "Issue details" --type bug --priority high
+python3 scripts/os_platform.py issues create open-software --title "Fix wallet sync" --body "Issue details" --type bug --priority urgent --idempotency-key issue-wallet-sync
 python3 scripts/os_platform.py issues assign open-software 123
 python3 scripts/os_platform.py issues status open-software 123 in_review
 python3 scripts/os_platform.py issues take open-software 123 --yes
-python3 scripts/os_platform.py comments add open-software 123 --body "Opened PR #456."
+python3 scripts/os_platform.py comments add open-software 123 --body "Opened PR #456." --idempotency-key issue-123-pr-comment
 ```
 
 Configuration:
@@ -45,11 +45,11 @@ Use the user prompt first, then `os-platform.json`, then ask the user for missin
 - Issue lists, filters, or work queues: use `issues list <org>` with the narrowest filters.
 - Issue searches by rough user phrasing: use `issues search <org> "<query>"` with narrow filters when useful.
 - A specific Issue/Bounty by number: use `issues show <org> <number>`.
-- Creating an Issue for new work: use `issues create <org> --title <title> --body <body>` with `--type` and `--priority` when known.
-- Assigning yourself after taking ownership: use `issues assign <org> <number>`; `--to me` is accepted but optional.
+- Creating an Issue for new work: use `issues create <org> --title <title> --body <body>` with `--type` and `--priority` when known. Known examples include types `feature`, `bug`, and `other`, and priorities `low`, `med`, `high`, and `urgent`; these are examples, not exhaustive enums, and the platform validates them.
+- Assigning yourself after taking ownership: use `issues assign <org> <number>`; `--to me` is accepted but optional. The command refuses to replace another assignee unless `--force` is passed deliberately.
 - Keeping an owned Issue current: use `issues status <org> <number> <status>` with `todo`, `in_progress`, `in_review`, `completed`, or `cancelled`.
 - Taking a todo Issue: after the user confirms they want to work on it, use `issues take <org> <number>`; use `--yes` only when confirmation already happened in chat or another trusted workflow.
-- Adding an Issue comment: use `comments add <org> <number> --body <body>`.
+- Adding an Issue comment: use `comments add <org> <number> --body <body>`; use the optional `--idempotency-key <key>` when a stable key is available before the first attempt.
 - Reading Issue submissions, activity, or comments: use the scoped command with `<org>` and `<issue-number>`.
 - Contributors: use `contributors list <org>` or `contributors show <org> <user-handle>`.
 
@@ -120,10 +120,11 @@ Common flags:
 
 Other writes:
 
-- `issues create` creates an Org-scoped Issue with a required title and body plus optional type and priority.
-- `issues assign` resolves the authenticated user through `GET /v1/users/me`, then assigns that user.
+- `issues create` creates an Org-scoped Issue with a required title and body plus optional type and priority. The metadata values pass through to platform validation; documented values are known examples, not exhaustive enums.
+- `issues assign` fetches the Issue and resolves the authenticated user before assigning. It is a no-op when already self-assigned, refuses another current assignee, and accepts `--force` for a deliberate replacement.
 - `issues status` accepts only `todo`, `in_progress`, `in_review`, `completed`, or `cancelled`.
 - `comments add` adds a Markdown comment to an Issue.
+- `issues create` and `comments add` accept `--idempotency-key <key>` and send it as the `Idempotency-Key` header. The script never generates a key.
 
 `scripts/install.sh` installs this skill into a local agent skills directory. It defaults to `~/.codex/skills`, supports `--dest`, `--source`, `--repo`, `--ref`, `--path`, and `--force`, and never stores credentials.
 
@@ -145,6 +146,7 @@ Other writes:
 ## Safety
 
 - Run write commands only when the user or a trusted workflow has established the intended platform mutation. Verify each write with a read before any fan-out.
+- The script does not retry writes internally. Re-running `issues create` or `comments add` after a timeout or other ambiguous failure can duplicate the write. A caller-provided idempotency key may prevent that only if the platform honors `Idempotency-Key`; platform support is unverified, so read before retrying instead of assuming the key was enforced.
 - Issue body edits remain append-only: fetch the full current body first, append, and never overwrite existing content. The script does not expose body editing.
 - Do not print or persist `OS_PLATFORM_API_KEY`.
 - Do not infer private data from missing public data. A 404 on private/member-only resources can mean hidden, missing, or inaccessible.

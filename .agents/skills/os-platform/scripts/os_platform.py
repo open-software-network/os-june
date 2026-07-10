@@ -238,12 +238,14 @@ def build_json_request(
     url: str,
     api_key: str,
     body: Mapping[str, Any] | None = None,
+    extra_headers: Mapping[str, str] | None = None,
 ) -> urllib.request.Request:
     headers = {
         "Accept": "application/json",
         "User-Agent": USER_AGENT,
         "Authorization": f"Bearer {api_key}",
     }
+    headers.update(extra_headers or {})
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -259,10 +261,11 @@ def request_json(
     api_key: str,
     query: Mapping[str, Any] | None = None,
     body: Mapping[str, Any] | None = None,
+    headers: Mapping[str, str] | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Any:
     url = build_url(base_url, path, query)
-    req = build_json_request(method, url, api_key, body)
+    req = build_json_request(method, url, api_key, body, headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
@@ -568,8 +571,14 @@ def leaf_parser(subparsers: argparse._SubParsersAction, name: str, **kwargs: Any
 def add_issue_filters(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", help="CSV of project handles/public ids, or none.")
     parser.add_argument("--status", help="CSV statuses: todo,in_progress,in_review,completed,cancelled.")
-    parser.add_argument("--type", help="CSV issue types: feature,bug,improvement,design,docs,refactor,other.")
-    parser.add_argument("--priority", help="CSV priorities: none,low,med,high,urgent.")
+    parser.add_argument(
+        "--type",
+        help="CSV issue types; known examples include feature,bug,improvement,design,docs,refactor,other.",
+    )
+    parser.add_argument(
+        "--priority",
+        help="CSV priorities; known examples include none,low,med,high,urgent.",
+    )
     parser.add_argument("--assignee", help="CSV user refs, me/@me for yourself, or none.")
     parser.add_argument("--creator", help="CSV user refs, or me/@me for yourself.")
     parser.add_argument("--labels", help="CSV label slugs.")
@@ -661,17 +670,47 @@ def current_user_request() -> tuple[str, str, dict[str, Any]]:
 def issue_has_assignee(issue: Mapping[str, Any]) -> bool:
     if issue.get("assignee_user_id"):
         return True
-    assignee = issue.get("assignee")
-    return assignee is not None
+    return issue.get("assignee") is not None or issue.get("assignee_user") is not None
 
 
-def current_user_public_id(
+def identity_values(value: Any) -> set[str]:
+    if isinstance(value, Mapping):
+        values = [value.get(key) for key in ("public_id", "id", "user_id", "handle", "username")]
+    else:
+        values = [value]
+    return {str(item).strip().lower() for item in values if item is not None and str(item).strip()}
+
+
+def issue_assignee_identities(issue: Mapping[str, Any]) -> set[str]:
+    identities = identity_values(issue.get("assignee_user_id"))
+    identities.update(identity_values(issue.get("assignee")))
+    identities.update(identity_values(issue.get("assignee_user")))
+    return identities
+
+
+def issue_assignee_label(issue: Mapping[str, Any]) -> str:
+    for field in ("assignee", "assignee_user"):
+        assignee = issue.get(field)
+        if isinstance(assignee, Mapping):
+            for key in ("handle", "display_name", "name", "public_id", "id", "user_id"):
+                value = assignee.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+        elif assignee is not None and str(assignee).strip():
+            return str(assignee).strip()
+    value = issue.get("assignee_user_id")
+    if value is not None and str(value).strip():
+        return str(value).strip()
+    return "an unknown assignee"
+
+
+def current_user(
     *,
     base_url: str,
     api_key: str,
     timeout: int,
     request: Any = request_json,
-) -> str:
+) -> Mapping[str, Any]:
     method, path, query = current_user_request()
     payload = request(
         method,
@@ -684,6 +723,22 @@ def current_user_public_id(
     user = unwrap_envelope(payload)
     if not isinstance(user, Mapping):
         raise OsPlatformError("current user response did not contain an object")
+    return user
+
+
+def current_user_public_id(
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    request: Any = request_json,
+) -> str:
+    user = current_user(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        request=request,
+    )
     public_id = user.get("public_id")
     if not isinstance(public_id, str) or not public_id.strip():
         raise OsPlatformError("current user response did not contain public_id")
@@ -697,14 +752,41 @@ def assign_issue_to_current_user(
     base_url: str,
     api_key: str,
     timeout: int,
+    force: bool = False,
     request: Any = request_json,
 ) -> Any:
-    user_id = current_user_public_id(
+    get_method, get_path, get_query = issue_get_request(org, number)
+    issue_payload = request(
+        get_method,
+        get_path,
+        base_url=base_url,
+        api_key=api_key,
+        query=get_query,
+        timeout=timeout,
+    )
+    issue = unwrap_envelope(issue_payload)
+    if not isinstance(issue, Mapping):
+        raise OsPlatformError("issue response did not contain an object")
+
+    user = current_user(
         base_url=base_url,
         api_key=api_key,
         timeout=timeout,
         request=request,
     )
+    user_id = user.get("public_id")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise OsPlatformError("current user response did not contain public_id")
+
+    if issue_has_assignee(issue):
+        if issue_assignee_identities(issue) & identity_values(user):
+            return issue
+        if not force:
+            raise OsPlatformError(
+                f"issue is already assigned to {issue_assignee_label(issue)}; "
+                "refusing to replace the assignee without --force"
+            )
+
     method, path, query, body = issue_update_request(org, number, {"assignee_user_id": user_id})
     payload = request(
         method,
@@ -724,6 +806,7 @@ def send_write_request(
     base_url: str,
     api_key: str,
     timeout: int,
+    headers: Mapping[str, str] | None = None,
     request: Any = request_json,
 ) -> Any:
     method, path, query, body = request_spec
@@ -735,6 +818,7 @@ def send_write_request(
         query=query,
         timeout=timeout,
         body=body,
+        headers=headers,
     )
     return unwrap_envelope(payload)
 
@@ -899,11 +983,13 @@ def build_parser() -> argparse.ArgumentParser:
     issues_create.add_argument("org", nargs="?")
     issues_create.add_argument("--title", required=True)
     issues_create.add_argument("--body", required=True)
-    issues_create.add_argument("--type", choices=["feature", "bug", "other"])
-    issues_create.add_argument("--priority", choices=["low", "med", "high"])
+    issues_create.add_argument("--type", help="Issue type passed through to the platform.")
+    issues_create.add_argument("--priority", help="Priority passed through to the platform.")
+    issues_create.add_argument("--idempotency-key", help="Optional Idempotency-Key header value.")
     issues_assign = leaf_parser(issues_sub, "assign", help="Assign an Issue to the current user.")
     issues_assign.add_argument("refs", nargs="*", metavar="ref")
     issues_assign.add_argument("--to", choices=["me"], default="me")
+    issues_assign.add_argument("--force", action="store_true", help="Replace another current assignee.")
     issues_status = leaf_parser(issues_sub, "status", help="Set an Issue's status.")
     issues_status.add_argument("refs", nargs="*", metavar="ref")
     issues_status.add_argument("status", choices=ISSUE_STATUSES)
@@ -936,6 +1022,7 @@ def build_parser() -> argparse.ArgumentParser:
     comments_add = leaf_parser(comments_sub, "add", help="Add a comment to an Issue.")
     comments_add.add_argument("refs", nargs="*", metavar="ref")
     comments_add.add_argument("--body", required=True)
+    comments_add.add_argument("--idempotency-key", help="Optional Idempotency-Key header value.")
 
     contributors = subparsers.add_parser("contributors", help="Contributor reads.")
     contributors_sub = contributors.add_subparsers(dest="action", required=True)
@@ -980,11 +1067,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.resource == "issues" and args.action == "create":
+            headers = None
+            if args.idempotency_key is not None:
+                headers = {"Idempotency-Key": require_text(args.idempotency_key, "idempotency key")}
             data = send_write_request(
                 issue_create_request(args.org, args.title, args.body, args.type, args.priority),
                 base_url=base_url,
                 api_key=api_key,
                 timeout=args.timeout,
+                headers=headers,
             )
             print_payload(data, args)
             return 0
@@ -996,6 +1087,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 base_url=base_url,
                 api_key=api_key,
                 timeout=args.timeout,
+                force=args.force,
             )
             print_payload(data, args)
             return 0
@@ -1011,11 +1103,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.resource == "comments" and args.action == "add":
+            headers = None
+            if args.idempotency_key is not None:
+                headers = {"Idempotency-Key": require_text(args.idempotency_key, "idempotency key")}
             data = send_write_request(
                 comment_create_request(args.org, args.number, args.body),
                 base_url=base_url,
                 api_key=api_key,
                 timeout=args.timeout,
+                headers=headers,
             )
             print_payload(data, args)
             return 0
