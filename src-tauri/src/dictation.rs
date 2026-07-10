@@ -654,7 +654,12 @@ impl DictationShortcutInput {
             ));
         }
 
-        if windows && !self.modifiers.command && !self.modifiers.control && !self.modifiers.option && !self.modifiers.shift {
+        if windows
+            && !self.modifiers.command
+            && !self.modifiers.control
+            && !self.modifiers.option
+            && !self.modifiers.shift
+        {
             return Err(AppError::new(
                 "dictation_shortcut_modifier_required",
                 "Shortcut must include at least one modifier key (Ctrl, Alt, Shift, Win).",

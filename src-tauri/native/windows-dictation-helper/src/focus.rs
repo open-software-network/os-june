@@ -83,10 +83,10 @@ fn is_process_restricted(pid: u32) -> bool {
 
 pub fn send_ctrl_v() -> Result<()> {
     let mut inputs = [
-        keyboard_input(VK_CONTROL as u16, 0),
-        keyboard_input(VK_V as u16, 0),
-        keyboard_input(VK_V as u16, KEYEVENTF_KEYUP),
-        keyboard_input(VK_CONTROL as u16, KEYEVENTF_KEYUP),
+        keyboard_input(VK_CONTROL, 0),
+        keyboard_input(VK_V, 0),
+        keyboard_input(VK_V, KEYEVENTF_KEYUP),
+        keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
     ];
     let sent = unsafe {
         SendInput(
