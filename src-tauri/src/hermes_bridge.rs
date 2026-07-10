@@ -83,6 +83,8 @@ const JUNE_CONTEXT_MCP_SERVER_NAME: &str = "june_context";
 const JUNE_CONTEXT_MCP_DIR_NAME: &str = "hermes-mcp";
 const JUNE_CONTEXT_MCP_SCRIPT_NAME: &str = "june_context_mcp.py";
 const JUNE_CONTEXT_MCP_SCRIPT: &str = include_str!("hermes/june_context_mcp.py");
+const JUNE_CONTEXT_MCP_TOKEN_ENV: &str = "JUNE_CONTEXT_MUTATION_TOKEN";
+const JUNE_CONTEXT_MCP_BASE_URL_ENV: &str = "JUNE_CONTEXT_PROXY_BASE_URL";
 const JUNE_WEB_MCP_SERVER_NAME: &str = "june_web";
 const JUNE_WEB_MCP_SCRIPT_NAME: &str = "june_web_mcp.py";
 const JUNE_WEB_MCP_SCRIPT: &str = include_str!("hermes/june_web_mcp.py");
@@ -159,9 +161,14 @@ You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertain
 /// discovered through the `june_context` MCP server configured below; this
 /// prompt note teaches the model when to spend tool calls on that local data.
 const JUNE_SOUL_CONTEXT_MD: &str = r#"
-June context tools: you have access to a local `june_context` MCP toolset for searching the user's June meeting notes, saved note transcripts, and dictation history. Use it when the user asks about prior meetings, calls, recordings, notes, decisions, follow-ups, or dictated text. Query it on demand instead of assuming you already know those entries, and summarize only what the retrieved results support.
+June context tools: you have access to a local `june_context` MCP toolset for searching the user's June meeting notes, saved note transcripts, dictation history, Persona dossiers, Commitments, and meeting history. Use it when the user asks about prior meetings, calls, recordings, people, relationships, decisions, follow-ups, promises, or dictated text. Query it on demand instead of assuming you already know those entries, and summarize only what the retrieved results support. Full Persona dossiers are local and fetched only when needed. Only mutate a dossier or Commitment when the user asks you to change it or the current task explicitly requires that change.
 Messages may reference a specific note as `@note:<id>`, usually followed by the note title in quotes. When you see such a reference, call the `june_context` tool `get_meeting_note` with that id to load the note before answering, and rely on what it returns. Ask for the transcript with `include_transcript` only when the note content is not enough. If the tool reports the note was not found, say so instead of guessing.
+When the user asks for meeting prep, resolve the named people with `list_people`, inspect their Persona and recent notes, then call `create_prep_brief_request`. Prep is metered: never create it proactively or before the user accepts an in-app prep offer. The result is a normal editable note, not a popup.
 "#;
+const JUNE_SOUL_ROSTER_START: &str = "<!-- june-persona-roster:start -->";
+const JUNE_SOUL_ROSTER_END: &str = "<!-- june-persona-roster:end -->";
+static JUNE_SOUL_WRITE_LOCK: Mutex<()> = Mutex::new(());
+static PERSONA_ROSTER_REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Appended to `SOUL.md` for every runtime. This calibrates June's first-turn
 /// behavior around the existing Hermes clarify capability: ask only when the
@@ -384,6 +391,7 @@ struct SharedProviderProxy {
     port: u16,
     token: String,
     recorder_token: String,
+    context_token: String,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -394,6 +402,9 @@ struct ProviderProxyState {
     /// `june_recorder` MCP: microphone control must not be reachable with the
     /// general provider token every model call carries.
     recorder_token: String,
+    /// Persona writes have a third capability scoped only to the context MCP.
+    /// It cannot call models or control the recorder.
+    context_token: String,
     image_sources: ImageSourceCapabilities,
     videos_dir: PathBuf,
     video_generation_enabled: bool,
@@ -1002,7 +1013,12 @@ async fn start_hermes_bridge_inner(
         .unwrap_or(default_cwd);
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
     let provider_proxy = ensure_provider_proxy(app, bridge, &hermes_home).await?;
-    let june_context_mcp = sync_june_context_mcp(app, &command)?;
+    let june_context_mcp = sync_june_context_mcp(
+        app,
+        &command,
+        provider_proxy.port,
+        &provider_proxy.context_token,
+    )?;
     let june_web_mcp = sync_june_web_mcp(app, &command)?;
     let june_image_mcp = sync_june_image_mcp(app, &hermes_home, &command)?;
     let video_generation_enabled = crate::feature_flags::VIDEO_GENERATION_ENABLED;
@@ -1057,6 +1073,12 @@ async fn start_hermes_bridge_inner(
         agent_cli_access,
         video_generation_enabled,
     )?;
+    if let Err(error) = refresh_persona_roster(app).await {
+        tracing::warn!(
+            error_code = error.code,
+            "failed to refresh Persona roster in June SOUL"
+        );
+    }
     if sandboxed {
         eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
     } else if full_mode {
@@ -1181,11 +1203,13 @@ async fn ensure_provider_proxy(
                 port: proxy.port,
                 token: proxy.token.clone(),
                 recorder_token: proxy.recorder_token.clone(),
+                context_token: proxy.context_token.clone(),
             });
         }
     }
     let token = random_token();
     let recorder_token = random_token();
+    let context_token = random_token();
     let app_data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     let image_sources = ImageSourceCapabilities {
@@ -1196,6 +1220,7 @@ async fn ensure_provider_proxy(
     let started = start_june_provider_proxy(
         token.clone(),
         recorder_token.clone(),
+        context_token.clone(),
         image_sources,
         videos_dir,
         crate::feature_flags::VIDEO_GENERATION_ENABLED,
@@ -1213,12 +1238,14 @@ async fn ensure_provider_proxy(
         port: started.port,
         token: token.clone(),
         recorder_token: recorder_token.clone(),
+        context_token: context_token.clone(),
         shutdown: Some(started.shutdown),
     });
     Ok(SharedProviderProxyInfo {
         port: started.port,
         token,
         recorder_token,
+        context_token,
     })
 }
 
@@ -1226,6 +1253,7 @@ struct SharedProviderProxyInfo {
     port: u16,
     token: String,
     recorder_token: String,
+    context_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1233,6 +1261,8 @@ struct JuneContextMcpConfig {
     command: String,
     script_path: PathBuf,
     database_path: PathBuf,
+    proxy_base_url: String,
+    mutation_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -6505,6 +6535,8 @@ const CRON_SANDBOXED_TOOLSETS: &[&str] = &[
 fn sync_june_context_mcp(
     app: &AppHandle,
     hermes_command: &str,
+    provider_proxy_port: u16,
+    mutation_token: &str,
 ) -> Result<JuneContextMcpConfig, AppError> {
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
@@ -6522,6 +6554,8 @@ fn sync_june_context_mcp(
         command: hermes_python_command(hermes_command),
         script_path,
         database_path: paths.database_path,
+        proxy_base_url: format!("http://127.0.0.1:{provider_proxy_port}"),
+        mutation_token: mutation_token.to_string(),
     })
 }
 
@@ -6983,13 +7017,19 @@ fn render_context_mcp_entry(config: &JuneContextMcpConfig) -> String {
       - {database_path}
     env:
       PYTHONUNBUFFERED: "1"
-    timeout: 30
+      {base_url_env}: {base_url}
+      {token_env}: {mutation_token}
+    timeout: 180
     connect_timeout: 10
 "#,
         server_name = JUNE_CONTEXT_MCP_SERVER_NAME,
         command = yaml_string(&config.command),
         script_path = yaml_string(&config.script_path.to_string_lossy()),
         database_path = yaml_string(&config.database_path.to_string_lossy()),
+        base_url_env = JUNE_CONTEXT_MCP_BASE_URL_ENV,
+        base_url = yaml_string(&config.proxy_base_url),
+        token_env = JUNE_CONTEXT_MCP_TOKEN_ENV,
+        mutation_token = yaml_string(&config.mutation_token),
     )
 }
 
@@ -7223,7 +7263,7 @@ fn sync_june_soul(
     } else {
         ""
     };
-    let soul = if sandbox_available {
+    let core = if sandbox_available {
         let cli_section = if agent_cli_access {
             JUNE_SOUL_CLI_ALLOWED_MD
         } else {
@@ -7235,8 +7275,116 @@ fn sync_june_soul(
     } else {
         format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}")
     };
-    std::fs::write(hermes_home.join("SOUL.md"), soul)
+    let soul_path = hermes_home.join("SOUL.md");
+    let _guard = JUNE_SOUL_WRITE_LOCK
+        .lock()
+        .map_err(|_| AppError::new("hermes_bridge_soul_failed", "June SOUL write lock failed."))?;
+    let roster = fs::read_to_string(&soul_path)
+        .ok()
+        .and_then(|existing| extract_persona_roster(&existing))
+        .unwrap_or_default();
+    let soul = format!("{core}{}", render_persona_roster_section(&roster));
+    atomic_replace_file(&soul_path, soul.as_bytes())
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
+}
+
+fn render_persona_roster_section(roster: &str) -> String {
+    let roster = roster.trim();
+    if roster.is_empty() {
+        format!("\n{JUNE_SOUL_ROSTER_START}\nKnown people: none yet.\n{JUNE_SOUL_ROSTER_END}\n")
+    } else {
+        format!(
+            "\n{JUNE_SOUL_ROSTER_START}\nKnown people (active Persona roster; fetch dossiers on demand):\n{roster}\n{JUNE_SOUL_ROSTER_END}\n"
+        )
+    }
+}
+
+fn extract_persona_roster(soul: &str) -> Option<String> {
+    let start = soul.find(JUNE_SOUL_ROSTER_START)? + JUNE_SOUL_ROSTER_START.len();
+    let end = soul[start..].find(JUNE_SOUL_ROSTER_END)? + start;
+    let body = soul[start..end].trim();
+    let body = body
+        .strip_prefix("Known people (active Persona roster; fetch dossiers on demand):")
+        .unwrap_or(body)
+        .trim();
+    if body == "Known people: none yet." {
+        Some(String::new())
+    } else {
+        Some(body.to_string())
+    }
+}
+
+/// Refreshes only the managed roster section. Both Hermes modes share this
+/// file, so a single atomic replacement updates future turns without a
+/// restart and without exposing full dossiers as standing context.
+pub(crate) async fn refresh_persona_roster(app: &AppHandle) -> Result<(), AppError> {
+    // Serialize the snapshot query, SOUL read, and atomic replacement as one
+    // read-modify-write operation so a slower stale refresh cannot land last.
+    let _refresh_guard = PERSONA_ROSTER_REFRESH_LOCK.lock().await;
+    let repositories = crate::commands::repositories(app).await?;
+    let roster = repositories.persona_roster_text().await?;
+    let hermes_home = resolve_june_hermes_home(app)?;
+    let soul_path = hermes_home.join("SOUL.md");
+    let _guard = JUNE_SOUL_WRITE_LOCK
+        .lock()
+        .map_err(|_| AppError::new("hermes_bridge_soul_failed", "June SOUL write lock failed."))?;
+    let Ok(existing) = fs::read_to_string(&soul_path) else {
+        return Ok(());
+    };
+    let replacement = render_persona_roster_section(&roster);
+    let next = if let Some(start) = existing.find(JUNE_SOUL_ROSTER_START) {
+        let end = existing[start..]
+            .find(JUNE_SOUL_ROSTER_END)
+            .map(|offset| start + offset + JUNE_SOUL_ROSTER_END.len())
+            .ok_or_else(|| {
+                AppError::new(
+                    "hermes_bridge_soul_failed",
+                    "June Persona roster marker is incomplete.",
+                )
+            })?;
+        format!(
+            "{}{}{}",
+            &existing[..start],
+            replacement.trim_start(),
+            &existing[end..]
+        )
+    } else {
+        format!("{existing}{replacement}")
+    };
+    atomic_replace_file(&soul_path, next.as_bytes())
+        .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
+}
+
+fn atomic_replace_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "managed file has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let temp_path = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("june"),
+        random_token()
+    ));
+    let result = (|| -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        #[cfg(windows)]
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        fs::rename(&temp_path, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 struct FilesystemRootCandidate {
@@ -7414,6 +7562,7 @@ fn yaml_string(value: &str) -> String {
 async fn start_june_provider_proxy(
     token: String,
     recorder_token: String,
+    context_token: String,
     image_sources: ImageSourceCapabilities,
     videos_dir: PathBuf,
     video_generation_enabled: bool,
@@ -7437,6 +7586,7 @@ async fn start_june_provider_proxy(
         Arc::new(ProviderProxyState {
             token,
             recorder_token,
+            context_token,
             image_sources,
             videos_dir,
             video_generation_enabled,
@@ -7500,8 +7650,12 @@ async fn handle_june_provider_connection(
             return Ok(());
         }
     };
-    let required_token =
-        provider_proxy_required_token(&request.path, &state.token, &state.recorder_token);
+    let required_token = provider_proxy_required_token(
+        &request.path,
+        &state.token,
+        &state.recorder_token,
+        &state.context_token,
+    );
     if !provider_proxy_authorized(&request, required_token) {
         write_json_response(
             &mut stream,
@@ -7659,6 +7813,11 @@ async fn handle_june_provider_connection(
             }
             forward_video_status(&mut stream, path, &state.videos_dir).await?;
         }
+        ("POST", "/v1/context/mutate") => {
+            let body = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            handle_context_mutation(&mut stream, state, &body).await?;
+        }
         ("POST", "/v1/recorder/start") => {
             let body = serde_json::from_slice::<serde_json::Value>(&request.body)
                 .unwrap_or_else(|_| serde_json::json!({}));
@@ -7690,6 +7849,280 @@ async fn write_not_found_response(stream: &mut tokio::net::TcpStream) -> io::Res
         serde_json::json!({ "error": { "message": "Not found" } }),
     )
     .await
+}
+
+async fn handle_context_mutation(
+    stream: &mut tokio::net::TcpStream,
+    state: Arc<ProviderProxyState>,
+    body: &serde_json::Value,
+) -> io::Result<()> {
+    match execute_context_mutation(&state, body).await {
+        Ok(result) => write_json_response(stream, 200, result).await,
+        Err(error) => {
+            write_json_response(
+                stream,
+                400,
+                serde_json::json!({
+                    "error": { "code": error.code, "message": error.message }
+                }),
+            )
+            .await
+        }
+    }
+}
+
+async fn execute_context_mutation(
+    state: &ProviderProxyState,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, AppError> {
+    let app = state.app.as_ref().ok_or_else(|| {
+        AppError::new(
+            "persona_mutation_unavailable",
+            "June's Persona mutation adapter is unavailable.",
+        )
+    })?;
+    let tool = context_required_string(body, "tool")?;
+    let arguments = body
+        .get("arguments")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            AppError::new(
+                "persona_mutation_invalid",
+                "Persona tool arguments must be an object.",
+            )
+        })?;
+    let repositories = crate::commands::repositories(app).await?;
+    let result = match tool.as_str() {
+        "update_persona_dossier" => {
+            let persona_id = context_required_map_string(arguments, "persona_id")?;
+            let affected_note_ids = repositories.persona_affected_note_ids(&persona_id).await?;
+            let dossier = context_required_map_string_allow_empty(arguments, "dossier")?;
+            let current = repositories.get_persona(&persona_id).await?;
+            let updated = repositories
+                .update_persona(
+                    &persona_id,
+                    &current.name,
+                    current.relationship.as_deref(),
+                    &dossier,
+                )
+                .await?;
+            emit_persona_context_changed(app, Some(persona_id), &affected_note_ids);
+            serde_json::json!({ "persona": updated })
+        }
+        "create_commitment" => {
+            let persona_id = context_required_map_string(arguments, "persona_id")?;
+            let direction = context_commitment_direction(&context_required_map_string(
+                arguments,
+                "direction",
+            )?)?;
+            let text = context_required_map_string(arguments, "text")?;
+            let due = context_optional_map_string(arguments, "due")?;
+            let source_note_id = context_optional_map_string(arguments, "source_note_id")?;
+            let commitment = repositories
+                .create_persona_commitment(
+                    &persona_id,
+                    direction,
+                    &text,
+                    due.as_deref(),
+                    source_note_id.as_deref(),
+                )
+                .await?;
+            emit_persona_context_changed(app, Some(persona_id), &[]);
+            serde_json::json!({ "commitment": commitment })
+        }
+        "update_commitment" => {
+            let commitment_id = context_required_map_string(arguments, "commitment_id")?;
+            let mut existing = None;
+            for persona in repositories.list_personas("all", None).await? {
+                let detail = repositories.get_persona(&persona.id).await?;
+                if let Some(commitment) = detail
+                    .commitments
+                    .into_iter()
+                    .find(|candidate| candidate.id == commitment_id)
+                {
+                    existing = Some(commitment);
+                    break;
+                }
+            }
+            let existing = existing.ok_or_else(|| {
+                AppError::new(
+                    "persona_commitment_not_found",
+                    "This Commitment no longer exists.",
+                )
+            })?;
+            let direction = match context_optional_map_string(arguments, "direction")? {
+                Some(value) => context_commitment_direction(&value)?,
+                None => existing.direction.clone(),
+            };
+            let text = context_optional_map_string(arguments, "text")?
+                .unwrap_or_else(|| existing.text.clone());
+            let due = if arguments.contains_key("due") {
+                context_optional_map_string(arguments, "due")?
+            } else {
+                existing.due_value.clone()
+            };
+            let status = context_optional_map_string(arguments, "status")?
+                .unwrap_or_else(|| existing.status.clone());
+            let commitment = repositories
+                .update_persona_commitment(
+                    &commitment_id,
+                    direction,
+                    &text,
+                    due.as_deref(),
+                    &status,
+                )
+                .await?;
+            emit_persona_context_changed(app, Some(commitment.persona_id.clone()), &[]);
+            serde_json::json!({ "commitment": commitment })
+        }
+        "create_prep_brief_request" => {
+            let persona_ids = context_string_array(arguments, "persona_ids", 12)?;
+            let note =
+                crate::persona_memory::create_prep_brief(&repositories, &persona_ids).await?;
+            let _ = app.emit(
+                "june://notes-changed",
+                serde_json::json!({ "noteId": note.id }),
+            );
+            serde_json::json!({
+                "noteId": note.id,
+                "title": note.title,
+                "reference": format!("@note:{} (\"{}\")", note.id, note.title.replace('"', "")),
+            })
+        }
+        _ => {
+            return Err(AppError::new(
+                "persona_mutation_invalid",
+                "This Persona mutation tool is not supported.",
+            ))
+        }
+    };
+    let _ = refresh_persona_roster(app).await;
+    Ok(result)
+}
+
+fn emit_persona_context_changed(
+    app: &AppHandle,
+    persona_id: Option<String>,
+    affected_note_ids: &[String],
+) {
+    let _ = app.emit(
+        "june://personas-changed",
+        serde_json::json!({
+            "personaId": persona_id,
+            "affectedNoteIds": affected_note_ids,
+        }),
+    );
+}
+
+fn context_required_string(value: &serde_json::Value, field: &str) -> Result<String, AppError> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| AppError::new("persona_mutation_invalid", format!("{field} is required.")))
+}
+
+fn context_required_map_string(
+    values: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<String, AppError> {
+    let value = context_required_map_string_allow_empty(values, field)?;
+    if value.is_empty() {
+        Err(AppError::new(
+            "persona_mutation_invalid",
+            format!("{field} is required."),
+        ))
+    } else {
+        Ok(value)
+    }
+}
+
+fn context_required_map_string_allow_empty(
+    values: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<String, AppError> {
+    values
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(str::to_string)
+        .ok_or_else(|| AppError::new("persona_mutation_invalid", format!("{field} must be text.")))
+}
+
+fn context_optional_map_string(
+    values: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<Option<String>, AppError> {
+    let Some(value) = values.get(field) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .map(Some)
+        .ok_or_else(|| {
+            AppError::new(
+                "persona_mutation_invalid",
+                format!("{field} must be text or null."),
+            )
+        })
+}
+
+fn context_commitment_direction(
+    value: &str,
+) -> Result<crate::domain::types::PersonaCommitmentDirection, AppError> {
+    match value {
+        "personaOwesUser" => Ok(crate::domain::types::PersonaCommitmentDirection::PersonaOwesUser),
+        "userOwesPersona" => Ok(crate::domain::types::PersonaCommitmentDirection::UserOwesPersona),
+        _ => Err(AppError::new(
+            "persona_mutation_invalid",
+            "Commitment direction must be personaOwesUser or userOwesPersona.",
+        )),
+    }
+}
+
+fn context_string_array(
+    values: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    max_items: usize,
+) -> Result<Vec<String>, AppError> {
+    let items = values
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            AppError::new(
+                "persona_mutation_invalid",
+                format!("{field} must be an array."),
+            )
+        })?;
+    if items.is_empty() || items.len() > max_items {
+        return Err(AppError::new(
+            "persona_mutation_invalid",
+            format!("{field} must contain 1 to {max_items} items."),
+        ));
+    }
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    AppError::new(
+                        "persona_mutation_invalid",
+                        format!("Every {field} item must be text."),
+                    )
+                })
+        })
+        .collect()
 }
 
 async fn handle_recorder_action(
@@ -8060,16 +8493,19 @@ fn provider_models_body(model: String, context_tokens: Option<i64>) -> serde_jso
     serde_json::json!({ "object": "list", "data": [entry] })
 }
 
-/// Recorder mutations require the recorder-scoped secret; every other route
-/// keeps the general provider token. Distinct secrets, so neither authorizes
-/// the other's surface.
+/// Recorder and Persona mutations each require their own scoped secret; model
+/// and media routes keep the general provider token. None of the three
+/// capabilities authorizes another surface.
 fn provider_proxy_required_token<'a>(
     path: &str,
     provider_token: &'a str,
     recorder_token: &'a str,
+    context_token: &'a str,
 ) -> &'a str {
     if path.starts_with("/v1/recorder/") {
         recorder_token
+    } else if path.starts_with("/v1/context/") {
+        context_token
     } else {
         provider_token
     }
@@ -9345,6 +9781,7 @@ mod tests {
         let state = Arc::new(ProviderProxyState {
             token: "proxy-token".to_string(),
             recorder_token: "recorder-token".to_string(),
+            context_token: "context-token".to_string(),
             image_sources: ImageSourceCapabilities {
                 images_dir: home.path().join("images"),
                 secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
@@ -9773,6 +10210,8 @@ mod tests {
             command: "/tmp/hermes/venv/bin/python".to_string(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_context_mcp.py"),
             database_path: PathBuf::from("/tmp/june/notes.sqlite3"),
+            proxy_base_url: "http://127.0.0.1:43123".to_string(),
+            mutation_token: "context-mutation-token".to_string(),
         }
     }
 
@@ -9824,7 +10263,7 @@ mod tests {
     }
 
     #[test]
-    fn recorder_routes_require_the_recorder_scoped_token_and_vice_versa() {
+    fn provider_recorder_and_context_routes_require_distinct_tokens() {
         // The general provider token every model call carries must never
         // authorize microphone control, and the recorder secret must not
         // open the provider surface.
@@ -9834,10 +10273,19 @@ mod tests {
             "/v1/recorder/status",
         ] {
             assert_eq!(
-                provider_proxy_required_token(path, "provider-tok", "recorder-tok"),
+                provider_proxy_required_token(path, "provider-tok", "recorder-tok", "context-tok",),
                 "recorder-tok"
             );
         }
+        assert_eq!(
+            provider_proxy_required_token(
+                "/v1/context/mutate",
+                "provider-tok",
+                "recorder-tok",
+                "context-tok",
+            ),
+            "context-tok"
+        );
         for path in [
             "/v1/models",
             "/v1/chat/completions",
@@ -9845,17 +10293,32 @@ mod tests {
             "/v1/recorder",
         ] {
             assert_eq!(
-                provider_proxy_required_token(path, "provider-tok", "recorder-tok"),
+                provider_proxy_required_token(path, "provider-tok", "recorder-tok", "context-tok",),
                 "provider-tok"
             );
         }
 
         let provider_bearer = request_with_authorization("Bearer provider-tok");
         let recorder_bearer = request_with_authorization("Bearer recorder-tok");
-        let recorder_required =
-            provider_proxy_required_token("/v1/recorder/start", "provider-tok", "recorder-tok");
-        let provider_required =
-            provider_proxy_required_token("/v1/models", "provider-tok", "recorder-tok");
+        let context_bearer = request_with_authorization("Bearer context-tok");
+        let recorder_required = provider_proxy_required_token(
+            "/v1/recorder/start",
+            "provider-tok",
+            "recorder-tok",
+            "context-tok",
+        );
+        let provider_required = provider_proxy_required_token(
+            "/v1/models",
+            "provider-tok",
+            "recorder-tok",
+            "context-tok",
+        );
+        let context_required = provider_proxy_required_token(
+            "/v1/context/mutate",
+            "provider-tok",
+            "recorder-tok",
+            "context-tok",
+        );
         assert!(!provider_proxy_authorized(
             &provider_bearer,
             recorder_required
@@ -9871,6 +10334,23 @@ mod tests {
         assert!(provider_proxy_authorized(
             &provider_bearer,
             provider_required
+        ));
+        assert!(provider_proxy_authorized(&context_bearer, context_required));
+        assert!(!provider_proxy_authorized(
+            &provider_bearer,
+            context_required
+        ));
+        assert!(!provider_proxy_authorized(
+            &recorder_bearer,
+            context_required
+        ));
+        assert!(!provider_proxy_authorized(
+            &context_bearer,
+            provider_required
+        ));
+        assert!(!provider_proxy_authorized(
+            &context_bearer,
+            recorder_required
         ));
     }
 
@@ -10933,13 +11413,15 @@ mcp_servers:
             },
         );
 
-        // All four built-in servers live under one mcp_servers map.
+        // All built-in servers live under one mcp_servers map.
         assert!(config.contains("mcp_servers:\n  june_context:\n"));
         assert!(config.contains("  june_web:\n"));
         assert!(config.contains("  june_recorder:\n"));
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_context_mcp.py\"\n"));
         assert!(config.contains("      - \"/tmp/june/notes.sqlite3\"\n"));
+        assert!(config.contains("      JUNE_CONTEXT_PROXY_BASE_URL: \"http://127.0.0.1:43123\"\n"));
+        assert!(config.contains("      JUNE_CONTEXT_MUTATION_TOKEN: \"context-mutation-token\"\n"));
         // The web server gets the loopback proxy URL as an arg and the proxy
         // token via env, never as a direct credential the MCP must hold.
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_web_mcp.py\"\n"));
@@ -11459,6 +11941,20 @@ mcp_servers:
         assert!(soul.contains("@note:<id>"));
         assert!(soul.contains("get_meeting_note"));
         assert!(soul.contains("include_transcript"));
+        assert!(soul.contains("Persona dossiers"));
+        assert!(soul.contains("create_prep_brief_request"));
+        assert!(soul.contains(JUNE_SOUL_ROSTER_START));
+        assert!(soul.contains("Known people: none yet."));
+    }
+
+    #[test]
+    fn persona_roster_section_is_compact_and_round_trips() {
+        let roster = "James - Manager\nJun - Product lead";
+        let section = render_persona_roster_section(roster);
+
+        assert_eq!(extract_persona_roster(&section).as_deref(), Some(roster));
+        assert!(section.contains("fetch dossiers on demand"));
+        assert!(!section.contains("Commitments"));
     }
 
     #[test]

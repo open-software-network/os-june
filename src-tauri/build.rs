@@ -20,7 +20,42 @@ fn main() {
     build_system_audio_helper();
     build_dictation_helper();
     ensure_bundled_hermes_dir();
+    ensure_bundled_persona_models_dir();
     tauri_build::build();
+}
+
+/// Keep Tauri's Persona model resource mapping valid for ordinary cargo
+/// checks. Release scripts replace this placeholder with the two pinned ONNX
+/// assets before packaging; dev builds may also use the spike cache fallback.
+fn ensure_bundled_persona_models_dir() {
+    println!("cargo:rerun-if-changed=../.tauri-personas/personas/PIN");
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    let Some(models_dir) = manifest_dir
+        .parent()
+        .map(|repo_dir| repo_dir.join(".tauri-personas").join("personas"))
+    else {
+        return;
+    };
+    if models_dir.join("segmentation.onnx").is_file() && models_dir.join("embedding.onnx").is_file()
+    {
+        return;
+    }
+    if let Err(error) = std::fs::create_dir_all(&models_dir) {
+        println!(
+            "cargo:warning=could not create Persona model placeholder {}: {error}",
+            models_dir.display()
+        );
+        return;
+    }
+    let note = "No bundled Persona recognition models in this build. Release packaging runs scripts/bundle-persona-models.sh before compiling.\n";
+    if let Err(error) = std::fs::write(models_dir.join("PLACEHOLDER.md"), note) {
+        println!(
+            "cargo:warning=could not write Persona model placeholder {}: {error}",
+            models_dir.display()
+        );
+    }
 }
 
 /// `tauri_build::build()` validates every `bundle.resources` source path at

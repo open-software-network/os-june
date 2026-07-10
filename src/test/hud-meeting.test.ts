@@ -161,6 +161,50 @@ describe("meeting detection HUD", () => {
     vi.useRealTimers();
   });
 
+  it("offers prep only for a persisted recurring-person match and defers generation", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    const payload = {
+      detectionEpisodeId: "episode-1",
+      appLabels: ["Zoom"],
+      expectedPeople: [{ id: "persona-1", name: "James", relationship: "Manager" }],
+    };
+
+    await emit("meeting-detection-event", {
+      type: "meeting_detected",
+      payload: { detectionEpisodeId: "episode-1", activeProcessCount: 1, appLabels: ["Zoom"] },
+    });
+    await emit("meeting-detection-event", { type: "meeting_prep_offered", payload });
+
+    expect(hudElement().dataset.prepOffered).toBe("true");
+    document.querySelector<HTMLButtonElement>("#hud-meeting-prep")?.click();
+    await Promise.resolve();
+    expect(mocks.emit).toHaveBeenCalledWith("june://meeting-prep-request", payload);
+    expect(mocks.invoke).not.toHaveBeenCalledWith("create_persona_prep_brief", expect.anything());
+    await vi.advanceTimersByTimeAsync(220);
+    expect(mocks.hide).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
+  it("ignores a delayed prep offer after its detection episode clears", async () => {
+    await loadHud();
+    const payload = {
+      detectionEpisodeId: "episode-stale",
+      appLabels: ["Zoom"],
+      expectedPeople: [{ id: "persona-1", name: "James", relationship: "Manager" }],
+    };
+    await emit("meeting-detection-event", {
+      type: "meeting_detected",
+      payload: { detectionEpisodeId: "episode-stale", activeProcessCount: 1 },
+    });
+    await emit("meeting-detection-event", { type: "meeting_cleared" });
+
+    await emit("meeting-detection-event", { type: "meeting_prep_offered", payload });
+
+    expect(hudElement().dataset.prepOffered).toBeUndefined();
+    expect(hudElement().dataset.state).toBe("idle");
+  });
+
   it("dismisses the prompt and stays quiet until the meeting clears", async () => {
     vi.useFakeTimers();
     await loadHud();
@@ -765,6 +809,7 @@ function hudMarkup() {
         <span class="hud-meeting-start-icon" aria-hidden="true"></span>
         Record
       </button>
+      <button id="hud-meeting-prep" class="hud-meeting-prep" type="button">Prep</button>
       <button id="hud-meeting-dismiss" class="hud-meeting-dismiss" type="button" aria-label="Dismiss meeting prompt"></button>
       <button id="hud-stop" class="hud-stop" type="button" aria-label="Stop dictation">
         <span class="hud-stop-glyph" aria-hidden="true"></span>

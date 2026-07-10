@@ -26,6 +26,7 @@ import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsL
 import type { ReportCategory } from "../components/agent/composer/reportCategory";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
+import { PeopleWorkspace } from "../components/people/PeopleWorkspace";
 import { RoutinesView } from "../components/routines/RoutinesView";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
 import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToProjectDialog";
@@ -46,6 +47,7 @@ import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconProjects } from "central-icons/IconProjects";
+import { IconPeople } from "central-icons/IconPeople";
 import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
@@ -53,9 +55,12 @@ import { Dialog } from "../components/ui/Dialog";
 import { Toaster } from "../components/ui/Toaster";
 import {
   assignNoteToFolder,
+  assignTranscriptPersona,
   assignSessionToFolder,
   bootstrapApp,
   checkRecordingSourceReadiness,
+  confirmPersonaSuggestion,
+  createPersonaPrepBrief,
   createFolder,
   createNote,
   deleteFolder,
@@ -68,6 +73,7 @@ import {
   getNote,
   LIVE_TRANSCRIPT_EVENT,
   listNotes,
+  listPersonas,
   listSessionFolders,
   openPrivacySettings,
   osAccountsLogout,
@@ -79,8 +85,10 @@ import {
   resolveAgentRecorderRequest,
   resumeRecording,
   retryProcessing,
+  rejectPersonaAttribution,
   startRecording,
   updateNote,
+  unassignTranscriptPersona,
   agentHudHide,
   agentHudShow,
   type LiveTranscriptEventDto,
@@ -88,7 +96,12 @@ import {
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
 import { isMacLikePlatform, isPrimaryShortcut } from "../lib/platform";
 import { mergeSourceReadiness } from "../lib/source-readiness";
-import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
+import {
+  AGENT_RECORDER_REQUEST_EVENT,
+  MEETING_PREP_REQUEST_EVENT,
+  MEETING_START_TRANSCRIPTION_EVENT,
+  PERSONAS_CHANGED_EVENT,
+} from "../lib/events";
 import {
   AGENT_GALLERY_EVENT,
   AGENT_OPEN_EVENT,
@@ -104,6 +117,7 @@ import { errorCode, messageFromError } from "../lib/errors";
 import { parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
+import { useScrollFade } from "../lib/use-scroll-fade";
 import {
   RECORDING_INACTIVITY_RESPONSE_MS,
   RECORDING_INACTIVITY_SNOOZE_MS,
@@ -137,6 +151,7 @@ import type {
   RecordingStatusDto,
   AccountStatus,
   HermesSessionInfo,
+  PersonaSummaryDto,
 } from "../lib/tauri";
 import type {
   NoteListItemDto,
@@ -214,6 +229,16 @@ type RecordingInactivityPrompt = {
   expiresAt: number;
 };
 
+type PersonaPrepOffer = {
+  detectionEpisodeId: string;
+  appLabels?: string[];
+  expectedPeople: Array<{
+    id: string;
+    name: string;
+    relationship?: string;
+  }>;
+};
+
 type AgentRecorderRequestPayload = {
   requestId?: unknown;
   action?: unknown;
@@ -245,6 +270,7 @@ function tabMeta(
   notes: NoteListItemDto[],
   folders: FolderDto[],
   sessions: HermesSessionInfo[],
+  personas: PersonaSummaryDto[],
   settingsSectionLabel?: string,
 ): { title: string; icon: ReactNode } {
   switch (nav.view) {
@@ -260,6 +286,15 @@ function tabMeta(
       return {
         title: folder?.name?.trim() || "Projects",
         icon: <IconProjects size={TAB_ICON_SIZE} />,
+      };
+    }
+    case "people": {
+      const persona = nav.personaId
+        ? personas.find((candidate) => candidate.id === nav.personaId)
+        : undefined;
+      return {
+        title: persona?.name?.trim() || "People",
+        icon: <IconPeople size={TAB_ICON_SIZE} />,
       };
     }
     case "agent": {
@@ -344,6 +379,18 @@ export function App() {
   // project (folder) surfaces; the menu-bar refs below stay the source for
   // native menu state.
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [personas, setPersonas] = useState<PersonaSummaryDto[]>([]);
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string>();
+  const [personaPrepOffer, setPersonaPrepOffer] = useState<PersonaPrepOffer>();
+  const [personaPrepSelection, setPersonaPrepSelection] = useState<string[]>([]);
+  const [personaPrepCreating, setPersonaPrepCreating] = useState(false);
+  const personaPrepPeopleRef = useRef<HTMLFieldSetElement>(null);
+  const personaPrepPeopleFade = useScrollFade(personaPrepPeopleRef);
+  useEffect(() => {
+    if (!personaPrepOffer) return;
+    const renderedPeople = personaPrepPeopleRef.current?.querySelectorAll("input").length ?? 0;
+    if (renderedPeople === personas.length) personaPrepPeopleFade.update();
+  }, [personaPrepOffer, personas, personaPrepPeopleFade.update]);
   const [activeAgentSessionId, setActiveAgentSessionId] = useState<string>();
   const [activeAgentSessionSeed, setActiveAgentSessionSeed] = useState<HermesSessionInfo>();
   const setActiveAgentSession = useCallback((session: HermesSessionInfo | undefined) => {
@@ -397,6 +444,10 @@ export function App() {
   // note shows the same back-arrow + breadcrumb chrome folders use. Cleared
   // whenever a note is opened from anywhere else (e.g. the sidebar list).
   const [originAllNotes, setOriginAllNotes] = useState(false);
+  const [originPersonaId, setOriginPersonaId] = useState<string>();
+  const [peopleReturnTarget, setPeopleReturnTarget] = useState<
+    { noteId: string; label: string } | undefined
+  >();
   const [folderReturnTarget, setFolderReturnTarget] = useState<
     { noteId: string; label: string } | undefined
   >();
@@ -656,6 +707,14 @@ export function App() {
   }, []);
   const selectedNote = state.selectedNote;
   const selectedNoteId = selectedNote?.id;
+  const refreshPersonas = useCallback(async () => {
+    const next = await listPersonas({ filter: "all" });
+    setPersonas(next);
+    setSelectedPersonaId((current) =>
+      current && next.some((persona) => persona.id === current) ? current : undefined,
+    );
+    return next;
+  }, []);
   // The contextual Ask June panel next to the open note. Scoped to one note:
   // it only renders while a note is the active view, and closes whenever the
   // open note changes (below) so it never flies out onto a different or
@@ -686,6 +745,9 @@ export function App() {
   const originFolder = originFolderId
     ? state.folders.find((folder) => folder.id === originFolderId)
     : undefined;
+  const originPersona = originPersonaId
+    ? personas.find((persona) => persona.id === originPersonaId)
+    : undefined;
   const agentOriginFolder =
     agentOrigin?.kind === "project"
       ? state.folders.find((folder) => folder.id === agentOrigin.folderId)
@@ -702,7 +764,9 @@ export function App() {
   const recoverableNoteIds = useMemo(() => new Set(recoveriesByNote.keys()), [recoveriesByNote]);
   const selectedRecovery = selectedNote ? recoveriesByNote.get(selectedNote.id) : undefined;
   const noteDetailScrollerActive = activeView === "meetings" && !!selectedNote;
-  const detailScrollerActive = activeView === "folders" && !!state.selectedFolderId;
+  const detailScrollerActive =
+    (activeView === "folders" && !!state.selectedFolderId) ||
+    (activeView === "people" && !!selectedPersonaId);
   // A settings drill-in (e.g. a skill detail) that pins its own frosted
   // breadcrumb bar at the top of the panel and scrolls its content beneath —
   // the same pinned-bar mechanic as opening a meeting note from a folder. When
@@ -720,7 +784,9 @@ export function App() {
       noteId: activeView === "meetings" ? selectedNoteId : undefined,
       originFolderId: activeView === "meetings" ? originFolderId : undefined,
       originAllNotes: activeView === "meetings" ? originAllNotes : undefined,
+      originPersonaId: activeView === "meetings" ? originPersonaId : undefined,
       folderId: activeView === "folders" ? state.selectedFolderId : undefined,
+      personaId: activeView === "people" ? selectedPersonaId : undefined,
       agentSessionId: activeView === "agent" ? activeAgentSessionId : undefined,
       agentSessionTitle:
         activeView === "agent" ? agentSessionTabTitle(activeAgentSessionSeed) : undefined,
@@ -731,7 +797,9 @@ export function App() {
       selectedNoteId,
       originFolderId,
       originAllNotes,
+      originPersonaId,
       state.selectedFolderId,
+      selectedPersonaId,
       activeAgentSessionId,
       activeAgentSessionSeed?.preview,
       activeAgentSessionSeed?.title,
@@ -786,10 +854,13 @@ export function App() {
       setAgentOrigin(nav.view === "agent" ? nav.agentOrigin : undefined);
       setOriginFolderId(nav.view === "meetings" ? nav.originFolderId : undefined);
       setOriginAllNotes(nav.view === "meetings" ? !!nav.originAllNotes : false);
+      setOriginPersonaId(nav.view === "meetings" ? nav.originPersonaId : undefined);
+      setSelectedPersonaId(nav.view === "people" ? nav.personaId : undefined);
       // The "back to <note>" breadcrumb target isn't part of a tab's snapshot,
       // so clear it on every restore — otherwise it leaks from the tab that set
       // it into whatever tab we switch to.
       setFolderReturnTarget(undefined);
+      setPeopleReturnTarget(undefined);
       if (nav.view === "folders") {
         dispatch({ type: "folderSelected", folderId: nav.folderId });
       }
@@ -1057,10 +1128,11 @@ export function App() {
           state.notes,
           state.folders,
           agentSessions,
+          personas,
           tab.id === activeTabId ? settingsSectionLabel : undefined,
         ),
       })),
-    [tabs, state.notes, state.folders, agentSessions, activeTabId, settingsSectionLabel],
+    [tabs, state.notes, state.folders, agentSessions, personas, activeTabId, settingsSectionLabel],
   );
 
   function handleRecovery(sessionId: string, action: "validate" | "discard") {
@@ -1401,6 +1473,72 @@ export function App() {
       });
     return () => {
       cancelled = true;
+    };
+  }, [appBlocked, bootstrapped]);
+
+  useEffect(() => {
+    if (appBlocked || !bootstrapped) return;
+    let cancelled = false;
+    void refreshPersonas().catch((err: unknown) => {
+      if (!cancelled) setError(messageFromError(err));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [appBlocked, bootstrapped, refreshPersonas]);
+
+  useEffect(() => {
+    if (appBlocked || !bootstrapped) return;
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen<{ affectedNoteIds?: string[] }>(PERSONAS_CHANGED_EVENT, (event) => {
+      void refreshPersonas().catch(() => undefined);
+      if (selectedNoteId && event.payload.affectedNoteIds?.includes(selectedNoteId)) {
+        void getNote(selectedNoteId)
+          .then((note) => dispatch({ type: "noteUpdated", note }))
+          .catch(() => undefined);
+      }
+    })
+      .then((cleanup) => {
+        if (aborted) cleanup();
+        else unlisten = cleanup;
+      })
+      .catch(() => {
+        // Persona invalidation is native-only; browser previews refresh locally.
+      });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, [appBlocked, bootstrapped, refreshPersonas, selectedNoteId]);
+
+  useEffect(() => {
+    if (appBlocked || !bootstrapped) return;
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen<{ noteId?: string }>("june://notes-changed", (event) => {
+      void listNotes()
+        .then((response) => dispatch({ type: "notesLoaded", notes: response.items }))
+        .catch(() => undefined);
+      if (event.payload.noteId) {
+        void getNote(event.payload.noteId)
+          .then((note) => {
+            dispatch({ type: "noteLoaded", note });
+            setActiveView("meetings");
+          })
+          .catch(() => undefined);
+      }
+    })
+      .then((cleanup) => {
+        if (aborted) cleanup();
+        else unlisten = cleanup;
+      })
+      .catch(() => {
+        // Agent-created notes are announced only by the native bridge.
+      });
+    return () => {
+      aborted = true;
+      unlisten?.();
     };
   }, [appBlocked, bootstrapped]);
 
@@ -2068,6 +2206,7 @@ export function App() {
     }
     setActiveView("meetings");
     setFolderReturnTarget(undefined);
+    setPeopleReturnTarget(undefined);
   }
 
   async function handleCreateFolder(name: string, description?: string) {
@@ -2298,7 +2437,9 @@ export function App() {
       dispatch({ type: "noteLoaded", note });
       setOriginFolderId(undefined);
       setOriginAllNotes(false);
+      setOriginPersonaId(undefined);
       setFolderReturnTarget(undefined);
+      setPeopleReturnTarget(undefined);
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -2312,7 +2453,9 @@ export function App() {
       dispatch({ type: "noteLoaded", note });
       setOriginFolderId(undefined);
       setOriginAllNotes(true);
+      setOriginPersonaId(undefined);
       setFolderReturnTarget(undefined);
+      setPeopleReturnTarget(undefined);
       setActiveView("meetings");
     } catch (err) {
       setError(messageFromError(err));
@@ -2326,7 +2469,9 @@ export function App() {
     }
     setOriginFolderId(undefined);
     setOriginAllNotes(false);
+    setOriginPersonaId(undefined);
     setFolderReturnTarget(undefined);
+    setPeopleReturnTarget(undefined);
   }
 
   async function handleDeleteNote(noteId: string) {
@@ -2379,10 +2524,69 @@ export function App() {
       dispatch({ type: "noteLoaded", note });
       setOriginFolderId(folderId);
       setOriginAllNotes(false);
+      setOriginPersonaId(undefined);
       setFolderReturnTarget(undefined);
+      setPeopleReturnTarget(undefined);
       setActiveView("meetings");
     } catch (err) {
       setError(messageFromError(err));
+    }
+  }
+
+  async function handleSelectNoteFromPersona(noteId: string, personaId: string) {
+    try {
+      const note = await getNote(noteId);
+      dispatch({ type: "noteLoaded", note });
+      setOriginFolderId(undefined);
+      setOriginAllNotes(false);
+      setOriginPersonaId(personaId);
+      setFolderReturnTarget(undefined);
+      setPeopleReturnTarget(undefined);
+      setActiveView("meetings");
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  async function handlePrepareForPersona(personaId: string) {
+    try {
+      const note = await createPersonaPrepBrief({ personaIds: [personaId] });
+      dispatch({ type: "noteLoaded", note });
+      const response = await listNotes();
+      dispatch({ type: "notesLoaded", notes: response.items });
+      setOriginFolderId(undefined);
+      setOriginAllNotes(false);
+      setOriginPersonaId(personaId);
+      setFolderReturnTarget(undefined);
+      setPeopleReturnTarget(undefined);
+      setActiveView("meetings");
+    } catch (err) {
+      setError(messageFromError(err));
+      throw err;
+    }
+  }
+
+  async function handleCreateDetectedPrepBrief() {
+    if (!personaPrepOffer || personaPrepSelection.length === 0 || personaPrepCreating) return;
+    setPersonaPrepCreating(true);
+    try {
+      const note = await createPersonaPrepBrief({
+        personaIds: personaPrepSelection,
+        detectionEpisodeId: personaPrepOffer.detectionEpisodeId,
+      });
+      dispatch({ type: "noteLoaded", note });
+      const response = await listNotes();
+      dispatch({ type: "notesLoaded", notes: response.items });
+      setOriginFolderId(undefined);
+      setOriginAllNotes(false);
+      setOriginPersonaId(personaPrepSelection.length === 1 ? personaPrepSelection[0] : undefined);
+      setPersonaPrepOffer(undefined);
+      setPersonaPrepSelection([]);
+      setActiveView("meetings");
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setPersonaPrepCreating(false);
     }
   }
 
@@ -2403,6 +2607,76 @@ export function App() {
       dispatch({ type: "noteUpdated", note });
     } catch (err) {
       setError(messageFromError(err));
+    }
+  }
+
+  async function handleAssignTranscriptPersona(
+    transcriptId: string,
+    name: string,
+    relationship?: string,
+    personaId?: string,
+    isSelf?: boolean,
+  ) {
+    if (!selectedNote) return;
+    try {
+      const note = await assignTranscriptPersona({
+        noteId: selectedNote.id,
+        transcriptId,
+        name,
+        relationship,
+        personaId,
+        isSelf,
+      });
+      dispatch({ type: "noteUpdated", note });
+      void refreshPersonas().catch(() => undefined);
+    } catch (err) {
+      setError(messageFromError(err));
+      throw err;
+    }
+  }
+
+  async function handleUnassignTranscriptPersona(transcriptId: string) {
+    if (!selectedNote) return;
+    try {
+      const note = await unassignTranscriptPersona({
+        noteId: selectedNote.id,
+        transcriptId,
+      });
+      dispatch({ type: "noteUpdated", note });
+      void refreshPersonas().catch(() => undefined);
+    } catch (err) {
+      setError(messageFromError(err));
+      throw err;
+    }
+  }
+
+  async function handleConfirmPersonaSuggestion(transcriptId: string) {
+    if (!selectedNote) return;
+    try {
+      const note = await confirmPersonaSuggestion({
+        noteId: selectedNote.id,
+        transcriptId,
+      });
+      dispatch({ type: "noteUpdated", note });
+      void refreshPersonas().catch(() => undefined);
+    } catch (err) {
+      setError(messageFromError(err));
+      throw err;
+    }
+  }
+
+  async function handleRejectPersonaAttribution(transcriptId: string) {
+    if (!selectedNote) return;
+    try {
+      const note = await rejectPersonaAttribution({
+        noteId: selectedNote.id,
+        transcriptId,
+      });
+      dispatch({ type: "noteUpdated", note });
+      void refreshPersonas().catch(() => undefined);
+    } catch (err) {
+      setError(messageFromError(err));
+      throw err;
     }
   }
 
@@ -2621,6 +2895,32 @@ export function App() {
       unlisten?.();
     };
   }, [appBlocked, bootstrapped, handleStartMeetingDetectedRecording]);
+
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen<PersonaPrepOffer>(MEETING_PREP_REQUEST_EVENT, (event) => {
+      if (appBlocked || !bootstrapped || !event.payload.expectedPeople?.length) return;
+      setPersonaPrepOffer(event.payload);
+      setPersonaPrepSelection(event.payload.expectedPeople.map((person) => person.id));
+      void refreshPersonas().catch(() => undefined);
+      const main = getCurrentWindow();
+      void main.show();
+      void main.unminimize();
+      void main.setFocus();
+    })
+      .then((cleanup) => {
+        if (aborted) cleanup();
+        else unlisten = cleanup;
+      })
+      .catch(() => {
+        // Prep offers are emitted only by the native meeting detector.
+      });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, [appBlocked, bootstrapped, refreshPersonas]);
 
   // The handler closes over frequently-changing state, but the Tauri listener
   // must register exactly once: re-subscribing tears the listener down and
@@ -3057,9 +3357,14 @@ export function App() {
             setFolderReturnTarget(undefined);
             dispatch({ type: "folderSelected", folderId: undefined });
           }
+          if (view === "people") {
+            setSelectedPersonaId(undefined);
+            setPeopleReturnTarget(undefined);
+          }
           if (view !== "meetings" && view !== "notes") {
             setOriginFolderId(undefined);
             setOriginAllNotes(false);
+            setOriginPersonaId(undefined);
             setFolderReturnTarget(undefined);
           }
         }}
@@ -3328,6 +3633,23 @@ export function App() {
                     void handleRemoveSessionFromFolder(sessionId, folderId)
                   }
                 />
+              ) : activeView === "people" ? (
+                <PeopleWorkspace
+                  selectedPersonaId={selectedPersonaId}
+                  onSelectPersona={setSelectedPersonaId}
+                  onOpenNote={(noteId, personaId) =>
+                    void handleSelectNoteFromPersona(noteId, personaId)
+                  }
+                  onPrepare={handlePrepareForPersona}
+                  returnTarget={
+                    peopleReturnTarget
+                      ? {
+                          label: `Back to ${peopleReturnTarget.label}`,
+                          onBack: () => void handleReturnToNote(peopleReturnTarget.noteId),
+                        }
+                      : undefined
+                  }
+                />
               ) : activeView === "notes" || activeView === "all-notes" ? (
                 <NotesList
                   ref={notesListRef}
@@ -3464,6 +3786,37 @@ export function App() {
                       ]}
                       actions={noteToolbarActions}
                     />
+                  ) : originPersona ? (
+                    <BreadcrumbBar
+                      backLabel={`Back to ${originPersona.name}`}
+                      onBack={() => {
+                        setSelectedPersonaId(originPersona.id);
+                        setActiveView("people");
+                        setOriginPersonaId(undefined);
+                      }}
+                      items={[
+                        {
+                          label: "People",
+                          onClick: () => {
+                            setSelectedPersonaId(undefined);
+                            setActiveView("people");
+                            setOriginPersonaId(undefined);
+                          },
+                        },
+                        {
+                          label: originPersona.name,
+                          onClick: () => {
+                            setSelectedPersonaId(originPersona.id);
+                            setActiveView("people");
+                            setOriginPersonaId(undefined);
+                          },
+                        },
+                        {
+                          label: selectedNote.title.trim() || "New note",
+                        },
+                      ]}
+                      actions={noteToolbarActions}
+                    />
                   ) : originAllNotes ? (
                     <BreadcrumbBar
                       backLabel="Back to meeting notes"
@@ -3534,6 +3887,18 @@ export function App() {
                           activeTab,
                         }).then((note) => dispatch({ type: "noteUpdated", note }))
                       }
+                      onAssignTranscriptPersona={handleAssignTranscriptPersona}
+                      onUnassignTranscriptPersona={handleUnassignTranscriptPersona}
+                      onConfirmPersonaSuggestion={handleConfirmPersonaSuggestion}
+                      onRejectPersonaAttribution={handleRejectPersonaAttribution}
+                      onNavigateToPersona={(personaId) => {
+                        setSelectedPersonaId(personaId);
+                        setPeopleReturnTarget({
+                          noteId: selectedNote.id,
+                          label: selectedNote.title.trim() || "New note",
+                        });
+                        setActiveView("people");
+                      }}
                       onStartRecording={() => void handleStartRecording()}
                       onPauseRecording={(sessionId) => void handlePauseRecording(sessionId)}
                       onResumeRecording={(sessionId) => void handleResumeRecording(sessionId)}
@@ -3644,6 +4009,72 @@ export function App() {
           destructive
         />
       </div>
+      <Dialog
+        open={personaPrepOffer !== undefined}
+        onClose={() => {
+          if (personaPrepCreating) return;
+          setPersonaPrepOffer(undefined);
+          setPersonaPrepSelection([]);
+        }}
+        title="Prepare for this meeting?"
+        description={`June recognized a recurring ${
+          personaPrepOffer?.appLabels?.join(", ") || "meeting app"
+        } pattern. Check who you expect before creating a metered prep note.`}
+        width={460}
+        footer={
+          <>
+            <button
+              type="button"
+              className="primary-action"
+              disabled={personaPrepCreating}
+              onClick={() => {
+                setPersonaPrepOffer(undefined);
+                setPersonaPrepSelection([]);
+              }}
+            >
+              Not now
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              disabled={personaPrepCreating || personaPrepSelection.length === 0}
+              onClick={() => void handleCreateDetectedPrepBrief()}
+            >
+              {personaPrepCreating ? "Creating prep..." : "Create prep note"}
+            </button>
+          </>
+        }
+      >
+        <fieldset
+          ref={personaPrepPeopleRef}
+          className="persona-prep-people scroll-fade-mask"
+          {...personaPrepPeopleFade.props}
+        >
+          <legend>Expected people</legend>
+          {personas
+            .filter((persona) => !persona.archivedAt && !persona.isSelf)
+            .map((persona) => (
+              <label key={persona.id}>
+                <input
+                  type="checkbox"
+                  checked={personaPrepSelection.includes(persona.id)}
+                  disabled={personaPrepCreating}
+                  onChange={(event) =>
+                    setPersonaPrepSelection((current) =>
+                      event.currentTarget.checked
+                        ? [...new Set([...current, persona.id])]
+                        : current.filter((id) => id !== persona.id),
+                    )
+                  }
+                />
+                <span>
+                  <strong>{persona.name}</strong>
+                  {persona.relationship ? <small>{persona.relationship}</small> : null}
+                </span>
+              </label>
+            ))}
+        </fieldset>
+      </Dialog>
       <Dialog
         open={recordingInactivityPrompt !== null}
         onClose={handleKeepRecordingAfterInactivityPrompt}

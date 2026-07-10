@@ -292,6 +292,9 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: ./scripts/bundle-hermes-runtime.sh
 
+      - name: Bundle Persona recognition models
+        run: ./scripts/bundle-persona-models.sh
+
       - name: Build and sign rc app artifacts
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
@@ -305,6 +308,7 @@ jobs:
           OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
           JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          SHERPA_ONNX_ARCHIVE_DIR: ${{ github.workspace }}/.tauri-personas/native
         with:
           args: --bundles app,dmg --target universal-apple-darwin
           # The DMG is notarized after the build, so don't let tauri-action

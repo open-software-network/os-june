@@ -14,8 +14,11 @@ export type TabNav = {
   noteId?: string;
   originFolderId?: string;
   originAllNotes?: boolean;
+  originPersonaId?: string;
   // view === "folders"
   folderId?: string;
+  // view === "people"
+  personaId?: string;
   // view === "agent"
   agentSessionId?: string;
   agentSessionTitle?: string;
@@ -79,10 +82,13 @@ export function navEquals(a: TabNav, b: TabNav): boolean {
       return (
         a.noteId === b.noteId &&
         a.originFolderId === b.originFolderId &&
-        !!a.originAllNotes === !!b.originAllNotes
+        !!a.originAllNotes === !!b.originAllNotes &&
+        a.originPersonaId === b.originPersonaId
       );
     case "folders":
       return a.folderId === b.folderId;
+    case "people":
+      return a.personaId === b.personaId;
     case "agent":
       return (
         a.agentSessionId === b.agentSessionId && agentOriginEquals(a.agentOrigin, b.agentOrigin)

@@ -202,6 +202,9 @@
    * so the column doesn't feel marooned in whitespace on big monitors. */
   --content-max: 760px;
 
+  /* Bounded selectable roster inside compact confirmation dialogs. */
+  --dialog-roster-max-h: 320px;
+
   /* Agent settings editor sizing. Keeps the skill Markdown editor large
    * enough for real editing while preserving bounded settings cards. */
   --settings-agent-card-min-h: 640px;

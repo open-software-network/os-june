@@ -1,0 +1,20 @@
+Third-party notices for June Persona recognition
+
+sherpa-onnx runtime
+Version: 1.13.4
+Project: https://github.com/k2-fsa/sherpa-onnx
+License: Apache License 2.0
+
+Speaker segmentation model
+Upstream: pyannote/segmentation-3.0
+Distribution: sherpa-onnx-pyannote-segmentation-3-0
+License: MIT (the complete license is bundled as LICENSE-segmentation-mit.txt)
+
+Speaker embedding model
+Upstream: pyannote/wespeaker-voxceleb-resnet34-LM
+Distribution: wespeaker_en_voxceleb_resnet34_LM.onnx
+License: Creative Commons Attribution 4.0 International
+License text: https://creativecommons.org/licenses/by/4.0/legalcode.txt
+
+The two ONNX files are used only on-device. June never uploads audio,
+Voiceprints, cluster embeddings, or recognition decisions.

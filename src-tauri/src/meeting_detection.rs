@@ -1,11 +1,47 @@
+use chrono::{Datelike, Local, Timelike};
 use serde::Serialize;
-use std::{collections::BTreeSet, thread, time::Duration};
+use std::{
+    collections::BTreeSet,
+    sync::{Mutex, OnceLock},
+    thread,
+    time::Duration,
+};
 use tauri::{AppHandle, Emitter};
+use uuid::Uuid;
 
 const CLEAR_AFTER_INACTIVE_POLLS: u8 = 2;
 const HEARTBEAT_EVERY_ACTIVE_POLLS: u8 = 5;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MEETING_DETECTION_EVENT_NAME: &str = "meeting-detection-event";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActiveMeetingDetection {
+    pub episode_id: String,
+    pub active_process_count: usize,
+    pub bundle_ids: Vec<String>,
+    pub app_labels: Vec<String>,
+    pub local_weekday: i64,
+    pub time_bucket: i64,
+}
+
+static ACTIVE_MEETING_DETECTION: OnceLock<Mutex<Option<ActiveMeetingDetection>>> = OnceLock::new();
+
+pub(crate) fn current_detection_context() -> Option<ActiveMeetingDetection> {
+    ACTIVE_MEETING_DETECTION
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|value| value.clone())
+}
+
+fn set_detection_context(value: Option<ActiveMeetingDetection>) {
+    if let Ok(mut current) = ACTIVE_MEETING_DETECTION
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+    {
+        *current = value;
+    }
+}
 
 struct AllowedMicApp {
     bundle_prefix: &'static str,
@@ -194,13 +230,16 @@ fn spawn_monitor(app: AppHandle) {
     thread::spawn(move || {
         let mut state = MeetingDetectionState::default();
         let mut warned_after_probe_error = false;
+        let mut episode: Option<ActiveMeetingDetection> = None;
 
         loop {
             thread::sleep(POLL_INTERVAL);
 
             if !crate::os_accounts::cached_signed_in() {
                 if let Some(event) = state.update(false, false, false) {
-                    emit_detection_event(&app, event, &[]);
+                    emit_detection_event(&app, event, episode.as_ref());
+                    episode = None;
+                    set_detection_context(None);
                 }
                 continue;
             }
@@ -222,7 +261,21 @@ fn spawn_monitor(app: AppHandle) {
                 active_allowed_external_processes(&active_processes, &owned_pids(&app));
             let capture_active = crate::audio::capture::is_capture_active();
             if let Some(event) = state.update(true, !allowed_processes.is_empty(), capture_active) {
-                emit_detection_event(&app, event, &allowed_processes);
+                if event == MeetingDetectionEvent::Detected {
+                    let context = new_detection_context(&allowed_processes);
+                    set_detection_context(Some(context.clone()));
+                    episode = Some(context);
+                }
+                emit_detection_event(&app, event, episode.as_ref());
+                if event == MeetingDetectionEvent::Detected {
+                    if let Some(context) = episode.clone() {
+                        schedule_persona_prep_offer(app.clone(), context);
+                    }
+                }
+                if event == MeetingDetectionEvent::Cleared {
+                    episode = None;
+                    set_detection_context(None);
+                }
             }
         }
     });
@@ -240,6 +293,8 @@ fn owned_pids(app: &AppHandle) -> BTreeSet<u32> {
 #[serde(rename_all = "camelCase")]
 struct MeetingDetectionPayload {
     active_process_count: usize,
+    detection_episode_id: Option<String>,
+    bundle_ids: Vec<String>,
     /// Friendly names of the apps holding the microphone ("Zoom", "Chrome"),
     /// deduped in detection order. The HUD shows these under the prompt title.
     app_labels: Vec<String>,
@@ -252,6 +307,30 @@ struct MeetingDetectionEnvelope {
     payload: MeetingDetectionPayload,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PrepOfferPerson {
+    id: String,
+    name: String,
+    relationship: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PrepOfferPayload {
+    detection_episode_id: String,
+    bundle_ids: Vec<String>,
+    app_labels: Vec<String>,
+    expected_people: Vec<PrepOfferPerson>,
+}
+
+#[derive(Debug, Serialize)]
+struct PrepOfferEnvelope {
+    #[serde(rename = "type")]
+    event_type: &'static str,
+    payload: PrepOfferPayload,
+}
+
 pub(crate) fn deduped_app_labels(processes: &[MicrophoneInputProcess]) -> Vec<String> {
     let mut labels: Vec<String> = Vec::new();
     for process in processes {
@@ -262,10 +341,32 @@ pub(crate) fn deduped_app_labels(processes: &[MicrophoneInputProcess]) -> Vec<St
     labels
 }
 
+fn new_detection_context(processes: &[MicrophoneInputProcess]) -> ActiveMeetingDetection {
+    let now = Local::now();
+    let bundle_ids = processes
+        .iter()
+        .map(|process| {
+            allowed_mic_app(&process.bundle_id)
+                .map(|app| app.bundle_prefix.to_string())
+                .unwrap_or_else(|| process.bundle_id.clone())
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    ActiveMeetingDetection {
+        episode_id: Uuid::new_v4().to_string(),
+        active_process_count: processes.len(),
+        bundle_ids,
+        app_labels: deduped_app_labels(processes),
+        local_weekday: i64::from(now.weekday().num_days_from_monday()),
+        time_bucket: i64::from(now.hour() * 2 + now.minute() / 30),
+    }
+}
+
 fn emit_detection_event(
     app: &AppHandle,
     event: MeetingDetectionEvent,
-    allowed_processes: &[MicrophoneInputProcess],
+    context: Option<&ActiveMeetingDetection>,
 ) {
     let event_type = match event {
         MeetingDetectionEvent::Detected => {
@@ -284,8 +385,14 @@ fn emit_detection_event(
     let payload = MeetingDetectionEnvelope {
         event_type,
         payload: MeetingDetectionPayload {
-            active_process_count: allowed_processes.len(),
-            app_labels: deduped_app_labels(allowed_processes),
+            active_process_count: context.map_or(0, |value| value.active_process_count),
+            detection_episode_id: context.map(|value| value.episode_id.clone()),
+            bundle_ids: context
+                .map(|value| value.bundle_ids.clone())
+                .unwrap_or_default(),
+            app_labels: context
+                .map(|value| value.app_labels.clone())
+                .unwrap_or_default(),
         },
     };
     match serde_json::to_string(&payload) {
@@ -296,6 +403,101 @@ fn emit_detection_event(
             tracing::warn!(%error, "failed to encode meeting detection event");
         }
     }
+}
+
+fn schedule_persona_prep_offer(app: AppHandle, context: ActiveMeetingDetection) {
+    tauri::async_runtime::spawn(async move {
+        let repositories = match crate::commands::repositories(&app).await {
+            Ok(repositories) => repositories,
+            Err(error) => {
+                tracing::warn!(
+                    error_code = error.code,
+                    "failed to open Persona store for meeting prep offer"
+                );
+                return;
+            }
+        };
+        let bundle_key = match serde_json::to_string(&context.bundle_ids) {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::warn!(%error, "failed to encode detected meeting apps");
+                return;
+            }
+        };
+        let persona_ids = match repositories
+            .recurring_persona_candidates(&bundle_key, context.local_weekday, context.time_bucket)
+            .await
+        {
+            Ok(ids) if !ids.is_empty() => ids,
+            Ok(_) => return,
+            Err(error) => {
+                tracing::warn!(%error, "failed to infer recurring meeting people");
+                return;
+            }
+        };
+        if !prep_episode_is_active(&context.episode_id) {
+            return;
+        }
+        match repositories
+            .record_prep_offer(&context.episode_id, &bundle_key, &persona_ids)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(error) => {
+                tracing::warn!(%error, "failed to persist Persona prep offer");
+                return;
+            }
+        }
+        let mut expected_people = Vec::new();
+        for persona_id in persona_ids {
+            match repositories.get_persona(&persona_id).await {
+                Ok(persona) if persona.archived_at.is_none() => {
+                    expected_people.push(PrepOfferPerson {
+                        id: persona.id,
+                        name: persona.name,
+                        relationship: persona.relationship,
+                    });
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        error_code = error.code,
+                        "failed to load recurring Persona for prep offer"
+                    );
+                }
+            }
+        }
+        if expected_people.is_empty() {
+            return;
+        }
+        if !prep_episode_is_active(&context.episode_id) {
+            return;
+        }
+        let envelope = PrepOfferEnvelope {
+            event_type: "meeting_prep_offered",
+            payload: PrepOfferPayload {
+                detection_episode_id: context.episode_id.clone(),
+                bundle_ids: context.bundle_ids,
+                app_labels: context.app_labels,
+                expected_people,
+            },
+        };
+        match serde_json::to_string(&envelope) {
+            Ok(payload) => {
+                if !prep_episode_is_active(&context.episode_id) {
+                    return;
+                }
+                let _ = app.emit(MEETING_DETECTION_EVENT_NAME, payload);
+            }
+            Err(error) => tracing::warn!(%error, "failed to encode Persona prep offer"),
+        }
+    });
+}
+
+fn prep_episode_is_active(episode_id: &str) -> bool {
+    !crate::audio::capture::is_capture_active()
+        && current_detection_context().is_some_and(|context| context.episode_id == episode_id)
 }
 
 #[cfg(target_os = "macos")]
@@ -913,5 +1115,23 @@ mod tests {
             state.update(true, true, true),
             Some(MeetingDetectionEvent::Cleared)
         );
+    }
+
+    #[test]
+    fn detection_context_freezes_canonical_app_identity_for_the_episode() {
+        let context = new_detection_context(&[
+            input_process(10, "us.zoom.xos"),
+            input_process(11, "com.google.Chrome"),
+            input_process(12, "us.zoom.xos.helper"),
+        ]);
+
+        assert!(Uuid::parse_str(&context.episode_id).is_ok());
+        assert_eq!(
+            context.bundle_ids,
+            vec!["com.google.Chrome".to_string(), "us.zoom.xos".to_string()]
+        );
+        assert_eq!(context.app_labels, vec!["Zoom", "Chrome"]);
+        assert!((0..=6).contains(&context.local_weekday));
+        assert!((0..=47).contains(&context.time_bucket));
     }
 }

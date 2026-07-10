@@ -113,6 +113,7 @@ export type SidebarView =
   | "all-notes"
   | "settings"
   | "folders"
+  | "people"
   | "dictation"
   | "routines"
   | "agent"
@@ -621,6 +622,13 @@ export function Sidebar({
         icon: <IconProjects size={15} />,
         searchText: normalizeCommandQuery("projects folders go to"),
         action: () => onChangeView("folders"),
+      },
+      {
+        id: "quick:people",
+        label: "Go to People",
+        icon: <IconPeople size={15} />,
+        searchText: normalizeCommandQuery("people personas relationships go to"),
+        action: () => onChangeView("people"),
       },
       {
         id: "quick:dictation",
@@ -1156,6 +1164,18 @@ export function Sidebar({
                 <IconProjects size={15} />
               </span>
               <span className="sidebar-nav-label">Projects</span>
+            </button>
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              data-active={activeView === "people"}
+              aria-current={activeView === "people" ? "page" : undefined}
+              onClick={() => onChangeView("people")}
+            >
+              <span className="sidebar-nav-icon">
+                <IconPeople size={15} />
+              </span>
+              <span className="sidebar-nav-label">People</span>
             </button>
             <button
               type="button"

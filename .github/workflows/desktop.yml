@@ -275,7 +275,13 @@ jobs:
         shell: pwsh
         run: ./scripts/bundle-hermes-runtime-windows.ps1
 
+      - name: Bundle Persona recognition models
+        shell: pwsh
+        run: ./scripts/bundle-persona-models.ps1
+
       - name: Tauri Windows bundle
+        env:
+          SHERPA_ONNX_ARCHIVE_DIR: ${{ github.workspace }}/.tauri-personas/native
         run: node scripts/tauri-build.mjs --debug --no-sign
 
       - name: Verify Windows bundle

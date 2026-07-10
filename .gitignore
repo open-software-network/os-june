@@ -28,6 +28,8 @@ keys/
 .tmp/
 coverage
 .tauri-hermes/
+.tauri-personas/
+.persona-spike/
 
 # Scratch verification captures (screenshots etc.). Root-anchored so committed
 # proof under docs/verification/ is unaffected.

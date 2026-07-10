@@ -191,6 +191,10 @@ jobs:
         shell: pwsh
         run: ./scripts/bundle-hermes-runtime-windows.ps1
 
+      - name: Bundle Persona recognition models
+        shell: pwsh
+        run: ./scripts/bundle-persona-models.ps1
+
       - name: Sign bundled Hermes runtime
         shell: pwsh
         env:
@@ -221,6 +225,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
+          SHERPA_ONNX_ARCHIVE_DIR: ${{ github.workspace }}/.tauri-personas/native
         run: pnpm tauri:build
 
       - name: Verify Windows signatures and payload

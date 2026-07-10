@@ -84,12 +84,16 @@ pub struct NoteDto {
     pub transcript_coverage: Option<TranscriptCoverageDto>,
     #[serde(default)]
     pub source_transcripts: Vec<TranscriptDto>,
+    #[serde(default)]
+    pub participants: Vec<ParticipantDto>,
     pub recording: Option<RecordingSessionDto>,
     pub audio: Option<AudioArtifactDto>,
     #[serde(default)]
     pub audio_sources: Vec<AudioArtifactDto>,
     pub active_tab: Option<String>,
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona_recognition_warning: Option<String>,
     /// Recordings queued behind the one currently processing for this note
     /// (0 when nothing extra is waiting). Populated from the in-memory
     /// processing queue at the command layer, not persisted.
@@ -349,6 +353,299 @@ pub struct TranscriptDto {
     pub last_error: Option<String>,
     #[serde(default)]
     pub recorded_silence: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<PersonaDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<PersonaAttributionDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaDto {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PersonaCommitmentDirection {
+    PersonaOwesUser,
+    UserOwesPersona,
+}
+
+impl PersonaCommitmentDirection {
+    pub fn as_db(&self) -> &'static str {
+        match self {
+            Self::PersonaOwesUser => "owed_to_user",
+            Self::UserOwesPersona => "owed_by_user",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Self {
+        match value {
+            "owed_by_user" => Self::UserOwesPersona,
+            _ => Self::PersonaOwesUser,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaSummaryDto {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship: Option<String>,
+    pub is_self: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    pub voiceprint_count: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaCommitmentDto {
+    pub id: String,
+    pub persona_id: String,
+    pub direction: PersonaCommitmentDirection,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_value: Option<String>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_note_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaNoteHistoryDto {
+    pub note_id: String,
+    pub title: String,
+    pub preview: String,
+    pub provenance: String,
+    pub first_confirmed_at: String,
+    pub last_seen_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaDossierJobDto {
+    pub id: String,
+    pub generation_result_id: String,
+    pub persona_id: String,
+    pub idempotency_key: String,
+    pub status: String,
+    pub attempt_count: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaDetailDto {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship: Option<String>,
+    pub is_self: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    pub voiceprint_count: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub dossier: String,
+    pub dossier_revision: i64,
+    pub commitments: Vec<PersonaCommitmentDto>,
+    pub meetings: Vec<PersonaNoteHistoryDto>,
+    pub dossier_jobs: Vec<PersonaDossierJobDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaDeletionReceipt {
+    pub deletion_batch_id: String,
+    pub affected_note_ids: Vec<String>,
+    pub affected_transcript_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaMutationReceipt {
+    pub affected_note_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaAttributionDto {
+    pub cluster_id: String,
+    pub speaker_label: String,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persona: Option<PersonaDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<PersonaDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParticipantDto {
+    pub persona: PersonaDto,
+    pub provenance: String,
+    pub first_confirmed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssignTranscriptPersonaRequest {
+    pub note_id: String,
+    pub transcript_id: String,
+    #[serde(default)]
+    pub persona_id: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub relationship: Option<String>,
+    #[serde(default)]
+    pub is_self: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPersonasRequest {
+    #[serde(default)]
+    pub filter: Option<String>,
+    #[serde(default)]
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPersonasResponse {
+    pub items: Vec<PersonaSummaryDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPersonaRequest {
+    pub persona_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePersonaRequest {
+    pub persona_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub relationship: Option<String>,
+    pub dossier: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaIdRequest {
+    pub persona_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrubDeletedPersonaRequest {
+    pub deletion_batch_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePersonaCommitmentRequest {
+    pub persona_id: String,
+    pub direction: PersonaCommitmentDirection,
+    pub text: String,
+    #[serde(default)]
+    pub due_value: Option<String>,
+    #[serde(default)]
+    pub source_note_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePersonaCommitmentRequest {
+    pub commitment_id: String,
+    pub direction: PersonaCommitmentDirection,
+    pub text: String,
+    #[serde(default)]
+    pub due_value: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletePersonaCommitmentRequest {
+    pub commitment_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryPersonaDossierJobRequest {
+    pub job_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewPersonaClusterAudioRequest {
+    pub cluster_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaClusterAudioPreviewDto {
+    pub data_url: String,
+    pub duration_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePersonaPrepBriefRequest {
+    pub persona_ids: Vec<String>,
+    #[serde(default)]
+    pub detection_episode_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnassignTranscriptPersonaRequest {
+    pub note_id: String,
+    pub transcript_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmPersonaSuggestionRequest {
+    pub note_id: String,
+    pub transcript_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RejectPersonaAttributionRequest {
+    pub note_id: String,
+    pub transcript_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

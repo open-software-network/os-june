@@ -142,6 +142,8 @@ cd "$ROOT_DIR"
 # (python, extension .so) get the Developer ID + hardened runtime signature
 # notarization requires.
 ./scripts/bundle-hermes-runtime.sh
+./scripts/bundle-persona-models.sh
+export SHERPA_ONNX_ARCHIVE_DIR="$PWD/.tauri-personas/native"
 pnpm tauri build --bundles dmg "$@"
 
 shopt -s nullglob

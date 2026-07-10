@@ -20,11 +20,13 @@ fn note(overrides: impl FnOnce(&mut NoteDto)) -> NoteDto {
         transcript: None,
         transcript_coverage: None,
         source_transcripts: Vec::new(),
+        participants: Vec::new(),
         recording: None,
         audio: None,
         audio_sources: Vec::new(),
         active_tab: Some("notes".to_string()),
         last_error: None,
+        persona_recognition_warning: None,
         queued_recordings: 0,
     };
     overrides(&mut note);

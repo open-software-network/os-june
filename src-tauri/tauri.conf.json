@@ -128,6 +128,7 @@
     ],
     "resources": {
       "../.tauri-hermes/hermes": "native/hermes",
+      "../.tauri-personas/personas": "native/personas",
       "resources/hermes-skills": "native/hermes-skills"
     }
   }

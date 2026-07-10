@@ -1,6 +1,10 @@
 use os_june_lib::{
-    db::{migrations::run_migrations, repositories::Repositories},
+    db::{
+        migrations::run_migrations,
+        repositories::{PersonaClusterRecord, Repositories},
+    },
     domain::types::{ProcessingStatus, RecordingSourceMode},
+    personas::PERSONA_MODEL_ID,
 };
 use sqlx_sqlite::SqlitePoolOptions;
 
@@ -708,6 +712,476 @@ async fn get_note_returns_only_timed_source_transcript_rows() {
 
     assert_eq!(loaded.source_transcripts.len(), 1);
     assert_eq!(loaded.source_transcripts[0].text, "Timed source transcript");
+}
+
+#[tokio::test]
+async fn transcript_persona_assignment_round_trips_and_can_be_removed() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    let audio_id = create_session_audio(&repos, &note.id, "session-persona").await;
+    let transcript = repos
+        .create_source_transcript(
+            &note.id,
+            "session-persona",
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "The person speaking is Jun.",
+            Some("en".into()),
+            "venice",
+            Some(1_000),
+            Some(2_000),
+            Some(0),
+        )
+        .await
+        .expect("source transcript");
+
+    let assigned = repos
+        .assign_transcript_persona(&note.id, &transcript.id, "Jun", Some("Product lead"))
+        .await
+        .expect("assign persona");
+    let persona = assigned.source_transcripts[0]
+        .persona
+        .as_ref()
+        .expect("persona should be returned with the turn");
+    assert_eq!(persona.name, "Jun");
+    assert_eq!(persona.relationship.as_deref(), Some("Product lead"));
+
+    let removed = repos
+        .unassign_transcript_persona(&note.id, &transcript.id)
+        .await
+        .expect("remove persona assignment");
+    assert!(removed.source_transcripts[0].persona.is_none());
+}
+
+#[tokio::test]
+async fn transcript_persona_assignment_keeps_same_name_relationships_distinct() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    let audio_id = create_session_audio(&repos, &note.id, "session-persona-duplicates").await;
+    let first = repos
+        .create_source_transcript(
+            &note.id,
+            "session-persona-duplicates",
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "First Jun",
+            Some("en".into()),
+            "venice",
+            Some(1_000),
+            Some(2_000),
+            Some(0),
+        )
+        .await
+        .expect("first transcript");
+    let second = repos
+        .create_source_transcript(
+            &note.id,
+            "session-persona-duplicates",
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "Second Jun",
+            Some("en".into()),
+            "venice",
+            Some(2_000),
+            Some(3_000),
+            Some(1),
+        )
+        .await
+        .expect("second transcript");
+
+    let _first_assigned = repos
+        .assign_transcript_persona(&note.id, &first.id, "Jun", Some("Product lead"))
+        .await
+        .expect("first assignment");
+    let assigned = repos
+        .assign_transcript_persona(&note.id, &second.id, "Jun", Some("Customer"))
+        .await
+        .expect("second assignment");
+
+    let relationships = assigned
+        .source_transcripts
+        .iter()
+        .filter_map(|transcript| transcript.persona.as_ref())
+        .map(|persona| persona.relationship.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(relationships, vec![Some("Product lead"), Some("Customer")]);
+}
+
+#[tokio::test]
+async fn reassigning_a_legacy_turn_removes_the_unused_previous_participant() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    let audio_id = create_session_audio(&repos, &note.id, "session-persona-reassign").await;
+    let transcript = repos
+        .create_source_transcript(
+            &note.id,
+            "session-persona-reassign",
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "Reassigned speaker",
+            Some("en".into()),
+            "venice",
+            Some(1_000),
+            Some(2_000),
+            Some(0),
+        )
+        .await
+        .expect("transcript");
+
+    repos
+        .assign_transcript_persona(&note.id, &transcript.id, "First", None)
+        .await
+        .expect("first assignment");
+    let reassigned = repos
+        .assign_transcript_persona(&note.id, &transcript.id, "Second", None)
+        .await
+        .expect("second assignment");
+
+    assert_eq!(reassigned.participants.len(), 1);
+    assert_eq!(reassigned.participants[0].persona.name, "Second");
+}
+
+#[tokio::test]
+async fn tagging_a_cluster_enrolls_a_voiceprint_and_assigns_every_cluster_turn() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    let session_id = "session-cluster-tag";
+    let audio_id = create_session_audio(&repos, &note.id, session_id).await;
+    let first = repos
+        .create_source_transcript(
+            &note.id,
+            session_id,
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "First cluster turn",
+            Some("en".into()),
+            "venice",
+            Some(1_000),
+            Some(2_000),
+            Some(0),
+        )
+        .await
+        .expect("first transcript");
+    repos
+        .create_source_transcript(
+            &note.id,
+            session_id,
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "Second cluster turn",
+            Some("en".into()),
+            "venice",
+            Some(2_000),
+            Some(3_000),
+            Some(1),
+        )
+        .await
+        .expect("second transcript");
+    repos
+        .persist_persona_recognition(
+            &note.id,
+            session_id,
+            &[PersonaClusterRecord {
+                id: "cluster-1".to_string(),
+                recording_session_id: session_id.to_string(),
+                note_id: note.id.clone(),
+                source: "system".to_string(),
+                speaker_index: 0,
+                anonymous_label: "Speaker 00".to_string(),
+                model_id: PERSONA_MODEL_ID.to_string(),
+                embedding: vec![0, 0, 128, 63],
+                spans_json: "[[1000,3000]]".to_string(),
+                state: "anonymous".to_string(),
+                persona_id: None,
+                confidence: None,
+            }],
+        )
+        .await
+        .expect("persist clusters");
+
+    let tagged = repos
+        .assign_transcript_persona(&note.id, &first.id, "Jun", Some("Product lead"))
+        .await
+        .expect("tag cluster");
+
+    assert_eq!(tagged.participants.len(), 1);
+    assert!(tagged.source_transcripts.iter().all(|transcript| transcript
+        .persona
+        .as_ref()
+        .map(|persona| persona.name.as_str())
+        == Some("Jun")));
+    assert!(tagged.source_transcripts.iter().all(|transcript| transcript
+        .attribution
+        .as_ref()
+        .map(|value| value.state.as_str())
+        == Some("tagged")));
+    let voiceprints = repos
+        .persona_voiceprints_for_source("system", PERSONA_MODEL_ID, "future-session")
+        .await
+        .expect("voiceprints");
+    assert_eq!(voiceprints.len(), 1);
+    assert_eq!(voiceprints[0].kind, "positive");
+}
+
+#[tokio::test]
+async fn confirming_a_first_cross_meeting_suggestion_trusts_future_matches() {
+    let repos = repos().await;
+    let enrollment_note = repos.create_note(None).await.expect("enrollment note");
+    let enrollment_audio =
+        create_session_audio(&repos, &enrollment_note.id, "enrollment-session").await;
+    let enrollment_transcript = repos
+        .create_source_transcript(
+            &enrollment_note.id,
+            "enrollment-session",
+            &enrollment_audio,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "Enrollment",
+            Some("en".into()),
+            "venice",
+            Some(0),
+            Some(1_000),
+            Some(0),
+        )
+        .await
+        .expect("enrollment transcript");
+    repos
+        .persist_persona_recognition(
+            &enrollment_note.id,
+            "enrollment-session",
+            &[PersonaClusterRecord {
+                id: "enrollment-cluster".to_string(),
+                recording_session_id: "enrollment-session".to_string(),
+                note_id: enrollment_note.id.clone(),
+                source: "system".to_string(),
+                speaker_index: 0,
+                anonymous_label: "Speaker 00".to_string(),
+                model_id: PERSONA_MODEL_ID.to_string(),
+                embedding: vec![0, 0, 128, 63],
+                spans_json: "[[0,1000]]".to_string(),
+                state: "anonymous".to_string(),
+                persona_id: None,
+                confidence: None,
+            }],
+        )
+        .await
+        .expect("enrollment cluster");
+    let enrolled = repos
+        .assign_transcript_persona(
+            &enrollment_note.id,
+            &enrollment_transcript.id,
+            "Jun",
+            Some("Product lead"),
+        )
+        .await
+        .expect("enroll Persona");
+    let persona_id = enrolled.participants[0].persona.id.clone();
+
+    let note = repos.create_note(None).await.expect("next note");
+    let session_id = "next-session";
+    let audio_id = create_session_audio(&repos, &note.id, session_id).await;
+    let transcript = repos
+        .create_source_transcript(
+            &note.id,
+            session_id,
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "Recognized later",
+            Some("en".into()),
+            "venice",
+            Some(0),
+            Some(1_000),
+            Some(0),
+        )
+        .await
+        .expect("future transcript");
+    repos
+        .persist_persona_recognition(
+            &note.id,
+            session_id,
+            &[PersonaClusterRecord {
+                id: "future-cluster".to_string(),
+                recording_session_id: session_id.to_string(),
+                note_id: note.id.clone(),
+                source: "system".to_string(),
+                speaker_index: 0,
+                anonymous_label: "Speaker 00".to_string(),
+                model_id: PERSONA_MODEL_ID.to_string(),
+                embedding: vec![0, 0, 128, 63],
+                spans_json: "[[0,1000]]".to_string(),
+                state: "suggested".to_string(),
+                persona_id: Some(persona_id.clone()),
+                confidence: Some(0.95),
+            }],
+        )
+        .await
+        .expect("suggestion");
+    let suggested = repos.get_note(&note.id).await.expect("suggested note");
+    assert!(suggested.participants.is_empty());
+    assert_eq!(
+        suggested.source_transcripts[0]
+            .attribution
+            .as_ref()
+            .and_then(|value| value.candidate.as_ref())
+            .map(|persona| persona.id.as_str()),
+        Some(persona_id.as_str())
+    );
+
+    let confirmed = repos
+        .confirm_persona_suggestion(&note.id, &transcript.id)
+        .await
+        .expect("confirm suggestion");
+    assert_eq!(confirmed.participants[0].persona.id, persona_id);
+    assert_eq!(
+        confirmed.source_transcripts[0]
+            .attribution
+            .as_ref()
+            .map(|value| value.state.as_str()),
+        Some("confirmed")
+    );
+    let voiceprints = repos
+        .persona_voiceprints_for_source("system", PERSONA_MODEL_ID, "third-session")
+        .await
+        .expect("confirmed voiceprints");
+    assert!(voiceprints
+        .iter()
+        .all(|voiceprint| voiceprint.recognition_confirmed));
+}
+
+#[tokio::test]
+async fn automatic_attribution_persists_and_rejection_enrolls_negative_feedback() {
+    let repos = repos().await;
+    let enrollment_note = repos.create_note(None).await.expect("enrollment note");
+    let enrollment_session = "automatic-enrollment-session";
+    let enrollment_audio =
+        create_session_audio(&repos, &enrollment_note.id, enrollment_session).await;
+    let enrollment_transcript = repos
+        .create_source_transcript(
+            &enrollment_note.id,
+            enrollment_session,
+            &enrollment_audio,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "Enrollment",
+            Some("en".into()),
+            "venice",
+            Some(0),
+            Some(1_000),
+            Some(0),
+        )
+        .await
+        .expect("enrollment transcript");
+    repos
+        .persist_persona_recognition(
+            &enrollment_note.id,
+            enrollment_session,
+            &[PersonaClusterRecord {
+                id: "automatic-enrollment-cluster".to_string(),
+                recording_session_id: enrollment_session.to_string(),
+                note_id: enrollment_note.id.clone(),
+                source: "system".to_string(),
+                speaker_index: 0,
+                anonymous_label: "Speaker 00".to_string(),
+                model_id: PERSONA_MODEL_ID.to_string(),
+                embedding: vec![0, 0, 128, 63],
+                spans_json: "[[0,1000]]".to_string(),
+                state: "anonymous".to_string(),
+                persona_id: None,
+                confidence: None,
+            }],
+        )
+        .await
+        .expect("enrollment cluster");
+    let enrolled = repos
+        .assign_transcript_persona(
+            &enrollment_note.id,
+            &enrollment_transcript.id,
+            "Jun",
+            Some("Product lead"),
+        )
+        .await
+        .expect("enroll Persona");
+    let persona_id = enrolled.participants[0].persona.id.clone();
+
+    let note = repos.create_note(None).await.expect("recognized note");
+    let session_id = "automatic-recognition-session";
+    let audio_id = create_session_audio(&repos, &note.id, session_id).await;
+    let transcript = repos
+        .create_source_transcript(
+            &note.id,
+            session_id,
+            &audio_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "Recognized automatically",
+            Some("en".into()),
+            "venice",
+            Some(0),
+            Some(1_000),
+            Some(0),
+        )
+        .await
+        .expect("recognized transcript");
+    repos
+        .persist_persona_recognition(
+            &note.id,
+            session_id,
+            &[PersonaClusterRecord {
+                id: "automatic-recognition-cluster".to_string(),
+                recording_session_id: session_id.to_string(),
+                note_id: note.id.clone(),
+                source: "system".to_string(),
+                speaker_index: 0,
+                anonymous_label: "Speaker 00".to_string(),
+                model_id: PERSONA_MODEL_ID.to_string(),
+                embedding: vec![0, 0, 128, 63],
+                spans_json: "[[0,1000]]".to_string(),
+                state: "automatic".to_string(),
+                persona_id: Some(persona_id.clone()),
+                confidence: Some(0.96),
+            }],
+        )
+        .await
+        .expect("automatic attribution");
+
+    let automatic = repos.get_note(&note.id).await.expect("automatic note");
+    assert_eq!(automatic.participants[0].provenance, "automatic");
+    assert_eq!(automatic.participants[0].persona.id, persona_id);
+    assert_eq!(
+        automatic.source_transcripts[0]
+            .attribution
+            .as_ref()
+            .map(|value| value.state.as_str()),
+        Some("automatic")
+    );
+
+    let rejected = repos
+        .reject_persona_attribution(&note.id, &transcript.id)
+        .await
+        .expect("reject attribution");
+    assert!(rejected.participants.is_empty());
+    assert!(rejected.source_transcripts[0].persona.is_none());
+    assert_eq!(
+        rejected.source_transcripts[0]
+            .attribution
+            .as_ref()
+            .map(|value| value.state.as_str()),
+        Some("anonymous")
+    );
+    let voiceprints = repos
+        .persona_voiceprints_for_source("system", PERSONA_MODEL_ID, "later-session")
+        .await
+        .expect("feedback voiceprints");
+    assert!(voiceprints
+        .iter()
+        .any(|voiceprint| voiceprint.persona_id == persona_id && voiceprint.kind == "negative"));
 }
 
 #[tokio::test]

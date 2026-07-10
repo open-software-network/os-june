@@ -12,6 +12,10 @@ use crate::{
         generate_note_from_transcript, transcribe_saved_audio, GenerationRequest,
         TranscriptionProviderResult, TranscriptionRequest,
     },
+    personas::{
+        discover_model_paths, recognize_sources, recognized_clusters_from_records,
+        split_turns_by_clusters, PersonaRecognitionResult, RecognitionSource, PERSONA_MODEL_ID,
+    },
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -140,6 +144,44 @@ pub fn labeled_transcript_from_sources(sources: &[SourceTranscriptInput]) -> Str
                 _ => "Microphone",
             };
             format!("{label}: {}", source.text.trim())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn labeled_transcript_from_rows(transcripts: &[TranscriptDto]) -> String {
+    let mut transcripts = transcripts
+        .iter()
+        .filter(|transcript| transcript.status == "succeeded" && !transcript.text.trim().is_empty())
+        .collect::<Vec<_>>();
+    transcripts.sort_by(|left, right| {
+        left.turn_index
+            .unwrap_or(i64::MAX)
+            .cmp(&right.turn_index.unwrap_or(i64::MAX))
+            .then_with(|| {
+                left.start_ms
+                    .unwrap_or(i64::MAX)
+                    .cmp(&right.start_ms.unwrap_or(i64::MAX))
+            })
+    });
+    transcripts
+        .into_iter()
+        .map(|transcript| {
+            let label = transcript
+                .persona
+                .as_ref()
+                .map(|persona| persona.name.as_str())
+                .or_else(|| {
+                    transcript
+                        .attribution
+                        .as_ref()
+                        .map(|attribution| attribution.speaker_label.as_str())
+                })
+                .unwrap_or(match transcript.source.as_deref() {
+                    Some("system") => "System",
+                    _ => "Microphone",
+                });
+            format!("{label}: {}", transcript.text.trim())
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -280,6 +322,32 @@ pub async fn process_saved_audio(
     manual_notes: Option<String>,
     recorded_silence: bool,
 ) -> Result<NoteDto, AppError> {
+    // Persona recognition is defined over detected turns on every saved lane.
+    // Keep the established single-pass microphone path when the feature is
+    // disabled, but route eligible recordings through the turn pipeline so a
+    // microphone-only note is diarized and can distinguish the owner from an
+    // in-room guest just like a two-lane meeting.
+    if crate::feature_flags::persona_recognition_enabled()
+        && repos.persona_recognition_eligible(session_id).await?
+    {
+        return process_saved_source_audio(
+            repos,
+            note_id,
+            session_id,
+            RecordingSourceMode::MicrophoneOnly,
+            vec![(
+                audio_artifact_id.to_string(),
+                "microphone".to_string(),
+                audio_path,
+                recorded_silence,
+            )],
+            title,
+            existing_generated_note,
+            manual_notes,
+        )
+        .await;
+    }
+
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
@@ -407,6 +475,7 @@ pub async fn process_saved_audio(
             generated.content,
         )
         .await?;
+    crate::persona_memory::schedule_dossier_updates(repos.clone(), generation_result_id.clone());
     Ok(note)
 }
 
@@ -510,6 +579,129 @@ pub async fn process_saved_source_audio(
             ),
         )
         .await?;
+
+    let mut persona_recognition: Option<PersonaRecognitionResult> = None;
+    let mut turns = turns;
+    if crate::feature_flags::persona_recognition_enabled()
+        && repos.persona_recognition_eligible(session_id).await?
+    {
+        let existing_clusters =
+            recognized_clusters_from_records(repos.persona_clusters_for_session(session_id).await?);
+        if !existing_clusters.is_empty() {
+            turns = split_turns_by_clusters(turns, &existing_clusters);
+            repos.set_persona_recognition_warning(note_id, None).await?;
+        } else if let Some(models) = discover_model_paths() {
+            let mut voiceprints = repos
+                .persona_voiceprints_for_source("system", PERSONA_MODEL_ID, session_id)
+                .await?;
+            voiceprints.extend(
+                repos
+                    .persona_voiceprints_for_source("microphone", PERSONA_MODEL_ID, session_id)
+                    .await?,
+            );
+            let recognition_sources = sources
+                .iter()
+                .map(
+                    |(_artifact_id, source, path, _recorded_silence)| RecognitionSource {
+                        source: source.clone(),
+                        path: path.clone(),
+                    },
+                )
+                .collect::<Vec<_>>();
+            let recognition_note_id = note_id.to_string();
+            let recognition_session_id = session_id.to_string();
+            let recognition_started = Instant::now();
+            match tokio::task::spawn_blocking(move || {
+                recognize_sources(
+                    &recognition_note_id,
+                    &recognition_session_id,
+                    &recognition_sources,
+                    &voiceprints,
+                    &models,
+                )
+            })
+            .await
+            {
+                Ok(Ok(result)) => {
+                    turns = split_turns_by_clusters(turns, &result.clusters);
+                    repos.set_persona_recognition_warning(note_id, None).await?;
+                    repos
+                        .add_checkpoint(
+                            session_id,
+                            "persona_recognition",
+                            Some(
+                                serde_json::json!({
+                                    "durationMs": elapsed_ms(recognition_started),
+                                    "status": "succeeded",
+                                    "clusterCount": result.clusters.len(),
+                                    "turnCount": turns.len(),
+                                    "modelId": PERSONA_MODEL_ID,
+                                })
+                                .to_string(),
+                            ),
+                        )
+                        .await?;
+                    persona_recognition = Some(result);
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(session_id, %error, "local Persona recognition failed");
+                    repos
+                        .set_persona_recognition_warning(
+                            note_id,
+                            Some("Speaker recognition failed. Retry processing to try again."),
+                        )
+                        .await?;
+                    repos
+                        .add_checkpoint(
+                            session_id,
+                            "persona_recognition",
+                            Some(
+                                serde_json::json!({
+                                    "durationMs": elapsed_ms(recognition_started),
+                                    "status": "failed",
+                                    "error": error.to_string(),
+                                })
+                                .to_string(),
+                            ),
+                        )
+                        .await?;
+                }
+                Err(error) => {
+                    tracing::warn!(session_id, %error, "local Persona recognition task failed");
+                    repos
+                        .set_persona_recognition_warning(
+                            note_id,
+                            Some("Speaker recognition failed. Retry processing to try again."),
+                        )
+                        .await?;
+                }
+            }
+        } else {
+            repos
+                .set_persona_recognition_warning(
+                    note_id,
+                    Some(
+                        "Speaker recognition is unavailable because its local models are missing.",
+                    ),
+                )
+                .await?;
+            repos
+                .add_checkpoint(
+                    session_id,
+                    "persona_recognition",
+                    Some(
+                        serde_json::json!({
+                            "status": "unavailable",
+                            "error": "bundled Persona models were not found",
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await?;
+        }
+    } else {
+        repos.set_persona_recognition_warning(note_id, None).await?;
+    }
 
     let segment_dir = session_temp_dir("os-june-turns", session_id);
     let _ = std::fs::remove_dir_all(&segment_dir);
@@ -708,6 +900,16 @@ pub async fn process_saved_source_audio(
             .await?;
     }
 
+    if let Some(recognition) = persona_recognition {
+        let cluster_records = recognition
+            .clusters
+            .into_iter()
+            .map(|cluster| cluster.record)
+            .collect::<Vec<_>>();
+        repos
+            .persist_persona_recognition(note_id, session_id, &cluster_records)
+            .await?;
+    }
     let persisted_transcripts = repos
         .successful_source_turn_transcripts_for_session(session_id)
         .await?;
@@ -773,7 +975,7 @@ pub async fn process_saved_source_audio(
             failure_message,
         ));
     }
-    let labeled_transcript = labeled_transcript_from_sources(&valid_sources);
+    let labeled_transcript = labeled_transcript_from_rows(&persisted_transcripts);
     repos
         .set_note_status(note_id, ProcessingStatus::Generating, None)
         .await?;
@@ -850,6 +1052,7 @@ pub async fn process_saved_source_audio(
             generated.content,
         )
         .await?;
+    crate::persona_memory::schedule_dossier_updates(repos.clone(), generation_result_id.clone());
     repos
         .add_checkpoint(
             session_id,
@@ -3919,7 +4122,48 @@ mod tests {
             status: "succeeded".to_string(),
             last_error: None,
             recorded_silence: false,
+            persona: None,
+            attribution: None,
         }
+    }
+
+    #[test]
+    fn generation_transcript_prefers_confirmed_personas_and_keeps_suggestions_anonymous() {
+        use crate::domain::types::{PersonaAttributionDto, PersonaDto};
+
+        let persona = PersonaDto {
+            id: "jun".to_string(),
+            name: "Jun".to_string(),
+            relationship: Some("Product lead".to_string()),
+            created_at: "2026-07-10T00:00:00Z".to_string(),
+            updated_at: "2026-07-10T00:00:00Z".to_string(),
+        };
+        let mut confirmed = test_transcript("system", 0, 0, 1_000);
+        confirmed.text = "Confirmed words".to_string();
+        confirmed.persona = Some(persona.clone());
+        confirmed.attribution = Some(PersonaAttributionDto {
+            cluster_id: "cluster-confirmed".to_string(),
+            speaker_label: "Speaker 00".to_string(),
+            state: "confirmed".to_string(),
+            persona: Some(persona.clone()),
+            candidate: None,
+            confidence: Some(0.95),
+        });
+        let mut suggested = test_transcript("system", 1, 1_000, 2_000);
+        suggested.text = "Suggested words".to_string();
+        suggested.attribution = Some(PersonaAttributionDto {
+            cluster_id: "cluster-suggested".to_string(),
+            speaker_label: "Speaker 04".to_string(),
+            state: "suggested".to_string(),
+            persona: None,
+            candidate: Some(persona),
+            confidence: Some(0.88),
+        });
+
+        assert_eq!(
+            labeled_transcript_from_rows(&[confirmed, suggested]),
+            "Jun: Confirmed words\nSpeaker 04: Suggested words"
+        );
     }
 
     fn failed_candidate(source: &str, warning: &str, turn_index: i64) -> FailedTranscriptCandidate {

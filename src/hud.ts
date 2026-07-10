@@ -18,7 +18,7 @@ import {
   withWaveLayers,
 } from "./lib/audio-meter";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "./lib/agent-events";
-import { MEETING_START_TRANSCRIPTION_EVENT } from "./lib/events";
+import { MEETING_PREP_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "./lib/events";
 import { isOnboardingComplete, subscribeToOnboardingComplete } from "./lib/onboarding";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { subscribeBrand } from "./lib/brand";
@@ -59,6 +59,7 @@ const errorIcon = document.querySelector<HTMLElement>(".hud-error-icon");
 const errorLayer = document.querySelector<HTMLElement>(".hud-error-layer");
 const stopButton = document.querySelector<HTMLButtonElement>("#hud-stop");
 const meetingStartButton = document.querySelector<HTMLButtonElement>("#hud-meeting-start");
+const meetingPrepButton = document.querySelector<HTMLButtonElement>("#hud-meeting-prep");
 const meetingAppLabel = document.querySelector<HTMLElement>("#hud-meeting-app");
 const meetingDismissButton = document.querySelector<HTMLButtonElement>("#hud-meeting-dismiss");
 const statusText = document.querySelector<HTMLElement>("#hud-status");
@@ -100,6 +101,8 @@ let brailleTimer: number | undefined;
 let brailleFrame = 0;
 let meetingPromptSuppressed = false;
 let pendingMeetingPrompt: DictationHudEvent | undefined;
+let currentPrepOffer: DictationHudEvent | undefined;
+let activeMeetingEpisodeId: string | undefined;
 let hideRequestId = 0;
 let showRequestId = 0;
 let showQueue: Promise<void> = Promise.resolve();
@@ -987,6 +990,30 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
   if (!meetingEvent) return;
 
   if (meetingEvent.type === "meeting_detected") {
+    const episodeId = meetingEvent.payload?.detectionEpisodeId;
+    if (typeof episodeId === "string" && episodeId.trim()) {
+      activeMeetingEpisodeId = episodeId;
+    }
+    if (!isOnboardingComplete()) {
+      pendingMeetingPrompt = meetingEvent;
+      hideBlankWindowIfNeeded();
+      return;
+    }
+    pendingMeetingPrompt = undefined;
+    await showMeetingPrompt(meetingEvent);
+    return;
+  }
+
+  if (meetingEvent.type === "meeting_prep_offered") {
+    const episodeId = meetingEvent.payload?.detectionEpisodeId;
+    if (
+      typeof episodeId !== "string" ||
+      !episodeId.trim() ||
+      episodeId !== activeMeetingEpisodeId
+    ) {
+      return;
+    }
+    currentPrepOffer = meetingEvent;
     if (!isOnboardingComplete()) {
       pendingMeetingPrompt = meetingEvent;
       hideBlankWindowIfNeeded();
@@ -998,7 +1025,10 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
   }
 
   if (meetingEvent.type === "meeting_cleared") {
+    activeMeetingEpisodeId = undefined;
     pendingMeetingPrompt = undefined;
+    currentPrepOffer = undefined;
+    if (hud) delete hud.dataset.prepOffered;
     meetingPromptSuppressed = false;
     clearMeetingPromptTimer();
     if (hud?.dataset.state === "meeting") {
@@ -1023,6 +1053,14 @@ async function showMeetingPrompt(meetingEvent: DictationHudEvent) {
   // for it. Heartbeats refresh it (the mic can move between apps).
   if (meetingAppLabel) {
     meetingAppLabel.textContent = meetingAppLine(meetingEvent.payload?.appLabels);
+  }
+  const offerEpisode = currentPrepOffer?.payload?.detectionEpisodeId;
+  const eventEpisode = meetingEvent.payload?.detectionEpisodeId;
+  if (offerEpisode && eventEpisode && offerEpisode !== eventEpisode) {
+    currentPrepOffer = undefined;
+  }
+  if (hud) {
+    hud.dataset.prepOffered = currentPrepOffer ? "true" : "false";
   }
   const transition = setHud("meeting", "Meeting detected");
   await showHud(showOptionsForTransition(transition));
@@ -1131,6 +1169,24 @@ meetingStartButton?.addEventListener("click", async (event) => {
   }
   void hideHud().finally(() => {
     meetingStartButton.disabled = false;
+  });
+});
+
+meetingPrepButton?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  if (hud?.dataset.state !== "meeting" || !currentPrepOffer?.payload) return;
+
+  meetingPromptSuppressed = true;
+  clearMeetingPromptTimer();
+  meetingPrepButton.disabled = true;
+  try {
+    await emit(MEETING_PREP_REQUEST_EVENT, currentPrepOffer.payload);
+  } catch {
+    // The main window owns prep errors and all metered work.
+  }
+  void hideHud().finally(() => {
+    meetingPrepButton.disabled = false;
   });
 });
 

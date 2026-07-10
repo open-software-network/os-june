@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
-"""Read-only MCP server exposing June notes and dictation context.
+"""MCP server exposing June notes, people, commitments, and prep context.
 
 The June app writes this script into the managed Hermes home and registers it
-as the built-in `june_context` MCP server. It intentionally depends only on the
-Python standard library so it can run inside the Hermes runtime venv without
-extra packaging.
+as the built-in `june_context` MCP server. Reads use SQLite's read-only mode;
+writes cross a dedicated token-scoped loopback adapter owned by the app. The
+script intentionally depends only on the Python standard library.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 
 PROTOCOL_VERSION = "2025-03-26"
-SERVER_INFO = {"name": "june-context", "version": "0.2.0"}
+SERVER_INFO = {"name": "june-context", "version": "0.3.0"}
 MAX_LIMIT = 20
 DEFAULT_LIMIT = 8
 SNIPPET_CHARS = 900
@@ -88,9 +91,15 @@ TRANSCRIPT_TEXT_SUBQUERIES = f"""
 """
 
 LABELED_TURN_TEXT_SQL = f"""
-    SELECT t.source, t.start_ms, t.end_ms, t.text
+    SELECT t.source, t.start_ms, t.end_ms, t.text,
+           COALESCE(p.name, pha.frozen_name, pc.anonymous_label) AS speaker_name
     FROM transcripts t
     LEFT JOIN recording_sessions rs ON rs.id = t.recording_session_id
+    LEFT JOIN transcript_persona_assignments tpa ON tpa.transcript_id = t.id
+    LEFT JOIN personas p ON p.id = tpa.persona_id
+    LEFT JOIN persona_historical_attributions pha ON pha.transcript_id = t.id
+    LEFT JOIN transcript_persona_attributions tpat ON tpat.transcript_id = t.id
+    LEFT JOIN persona_clusters pc ON pc.id = tpat.persona_cluster_id
     WHERE t.note_id = ?
 {TURN_TEXT_FILTER_SQL}
 {TURN_TEXT_ORDER_SQL}
@@ -114,7 +123,9 @@ def labeled_transcript_from_turn_rows(rows: list[sqlite3.Row]) -> str:
         text = row["text"] or ""
         if not text.strip():
             continue
-        label = "System" if row["source"] == "system" else "Microphone"
+        label = row["speaker_name"] or (
+            "System" if row["source"] == "system" else "Microphone"
+        )
         turn_time = format_turn_time(row["start_ms"], row["end_ms"])
         meta = f"{label} {turn_time}" if turn_time else label
         blocks.append(f"{meta}\n{text}")
@@ -202,6 +213,144 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["note_id"],
+        },
+    },
+    {
+        "name": "list_people",
+        "description": "List or search June's local Persona roster.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "include_archived": {"type": "boolean", "default": False},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_LIMIT,
+                    "default": DEFAULT_LIMIT,
+                },
+            },
+        },
+    },
+    {
+        "name": "get_persona",
+        "description": (
+            "Fetch one Persona's relationship, dossier, open Commitments, and "
+            "recent confirmed meetings."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"persona_id": {"type": "string"}},
+            "required": ["persona_id"],
+        },
+    },
+    {
+        "name": "list_commitments",
+        "description": "List Commitments, optionally filtered by Persona and status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "persona_id": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": ["open", "done", "dropped", "all"],
+                    "default": "open",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_LIMIT,
+                    "default": DEFAULT_LIMIT,
+                },
+            },
+        },
+    },
+    {
+        "name": "find_notes_with_persona",
+        "description": "Find confirmed meeting notes involving one Persona.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "persona_id": {"type": "string"},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_LIMIT,
+                    "default": DEFAULT_LIMIT,
+                },
+            },
+            "required": ["persona_id"],
+        },
+    },
+    {
+        "name": "update_persona_dossier",
+        "description": "Replace a Persona's editable dossier prose.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "persona_id": {"type": "string"},
+                "dossier": {"type": "string"},
+            },
+            "required": ["persona_id", "dossier"],
+        },
+    },
+    {
+        "name": "create_commitment",
+        "description": "Create a structured Commitment for a Persona.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "persona_id": {"type": "string"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["personaOwesUser", "userOwesPersona"],
+                },
+                "text": {"type": "string"},
+                "due": {"type": "string"},
+                "source_note_id": {"type": "string"},
+            },
+            "required": ["persona_id", "direction", "text"],
+        },
+    },
+    {
+        "name": "update_commitment",
+        "description": "Edit, complete, reopen, or drop an existing Commitment.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "commitment_id": {"type": "string"},
+                "direction": {
+                    "type": "string",
+                    "enum": ["personaOwesUser", "userOwesPersona"],
+                },
+                "text": {"type": "string"},
+                "due": {"type": ["string", "null"]},
+                "status": {
+                    "type": "string",
+                    "enum": ["open", "done", "dropped"],
+                },
+            },
+            "required": ["commitment_id"],
+        },
+    },
+    {
+        "name": "create_prep_brief_request",
+        "description": (
+            "Create a normal editable June note that prepares the user for a "
+            "meeting with the selected people. This is metered and must only "
+            "run after the user asks for or accepts prep."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "persona_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 12,
+                }
+            },
+            "required": ["persona_ids"],
         },
     },
 ]
@@ -294,6 +443,21 @@ def call_tool(db_path: Path, request_id: Any, params: dict[str, Any]) -> dict[st
             result = search_dictation_history(db_path, arguments)
         elif name == "get_meeting_note":
             result = get_meeting_note(db_path, arguments)
+        elif name == "list_people":
+            result = list_people(db_path, arguments)
+        elif name == "get_persona":
+            result = get_persona(db_path, arguments)
+        elif name == "list_commitments":
+            result = list_commitments(db_path, arguments)
+        elif name == "find_notes_with_persona":
+            result = find_notes_with_persona(db_path, arguments)
+        elif name in {
+            "update_persona_dossier",
+            "create_commitment",
+            "update_commitment",
+            "create_prep_brief_request",
+        }:
+            result = mutate_context(name, arguments)
         else:
             return error_response(request_id, -32602, f"Unknown tool: {name}")
     except Exception as exc:
@@ -470,6 +634,237 @@ def get_meeting_note(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]
         result["transcript"] = transcript
         result["transcriptTruncated"] = transcript_truncated
     return result
+
+
+def list_people(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]:
+    query_text = str(arguments.get("query") or "").strip()
+    include_archived = bool(arguments.get("include_archived"))
+    limit = bounded_limit(arguments.get("limit"))
+    if not db_path.exists():
+        return {"query": query_text, "count": 0, "items": []}
+
+    clauses = ["(? OR p.archived_at IS NULL)"]
+    params: list[Any] = [include_archived]
+    if query_text:
+        needle = f"%{query_text.lower()}%"
+        clauses.append(
+            "(lower(p.name) LIKE ? OR lower(coalesce(p.relationship, '')) LIKE ?)"
+        )
+        params.extend([needle, needle])
+    params.append(limit)
+    sql = f"""
+        SELECT p.id, p.name, p.relationship, p.archived_at, p.is_self,
+               MAX(np.updated_at) AS last_seen_at
+        FROM personas p
+        LEFT JOIN note_participants np ON np.persona_id = p.id
+        WHERE {' AND '.join(clauses)}
+        GROUP BY p.id
+        ORDER BY p.name COLLATE NOCASE ASC, p.created_at ASC
+        LIMIT ?
+    """
+    with connect_readonly(db_path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    items = [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "relationship": row["relationship"],
+            "archived": row["archived_at"] is not None,
+            "isSelf": bool(row["is_self"]),
+            "lastSeenAt": row["last_seen_at"],
+        }
+        for row in rows
+    ]
+    return {"query": query_text, "count": len(items), "items": items}
+
+
+def get_persona(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]:
+    persona_id = required_argument(arguments, "persona_id")
+    if not db_path.exists():
+        return {"personaId": persona_id, "found": False}
+    with connect_readonly(db_path) as conn:
+        persona = conn.execute(
+            """
+            SELECT id, name, relationship, dossier, dossier_revision,
+                   archived_at, is_self, created_at, updated_at
+            FROM personas WHERE id = ? LIMIT 1
+            """,
+            [persona_id],
+        ).fetchone()
+        if persona is None:
+            return {"personaId": persona_id, "found": False}
+        commitments = conn.execute(
+            """
+            SELECT pc.id, pc.direction, pc.text, pc.due_value, pc.status,
+                   pc.source_note_id, n.title AS source_note_title,
+                   pc.created_at, pc.updated_at
+            FROM persona_commitments pc
+            LEFT JOIN notes n ON n.id = pc.source_note_id
+            WHERE pc.persona_id = ? AND pc.status = 'open'
+            ORDER BY pc.created_at DESC
+            """,
+            [persona_id],
+        ).fetchall()
+        meetings = conn.execute(
+            """
+            SELECT n.id, n.title, np.provenance, np.first_confirmed_at,
+                   np.updated_at AS last_seen_at
+            FROM note_participants np
+            INNER JOIN notes n ON n.id = np.note_id
+            WHERE np.persona_id = ?
+            ORDER BY np.updated_at DESC, n.id DESC
+            LIMIT ?
+            """,
+            [persona_id, DEFAULT_LIMIT],
+        ).fetchall()
+    return {
+        "personaId": persona["id"],
+        "found": True,
+        "name": persona["name"],
+        "relationship": persona["relationship"],
+        "dossier": persona["dossier"],
+        "dossierRevision": persona["dossier_revision"],
+        "archived": persona["archived_at"] is not None,
+        "isSelf": bool(persona["is_self"]),
+        "commitments": [commitment_result(row) for row in commitments],
+        "meetings": [
+            {
+                "noteId": row["id"],
+                "title": row["title"] or "Untitled note",
+                "provenance": row["provenance"],
+                "firstConfirmedAt": row["first_confirmed_at"],
+                "lastSeenAt": row["last_seen_at"],
+            }
+            for row in meetings
+        ],
+    }
+
+
+def list_commitments(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]:
+    persona_id = str(arguments.get("persona_id") or "").strip()
+    status = str(arguments.get("status") or "open").strip()
+    if status not in {"open", "done", "dropped", "all"}:
+        raise ValueError("status must be open, done, dropped, or all")
+    limit = bounded_limit(arguments.get("limit"))
+    clauses: list[str] = []
+    params: list[Any] = []
+    if persona_id:
+        clauses.append("pc.persona_id = ?")
+        params.append(persona_id)
+    if status != "all":
+        clauses.append("pc.status = ?")
+        params.append(status)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    params.append(limit)
+    with connect_readonly(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT pc.id, pc.persona_id, p.name AS persona_name, pc.direction,
+                   pc.text, pc.due_value, pc.status, pc.source_note_id,
+                   n.title AS source_note_title, pc.created_at, pc.updated_at
+            FROM persona_commitments pc
+            INNER JOIN personas p ON p.id = pc.persona_id
+            LEFT JOIN notes n ON n.id = pc.source_note_id
+            {where}
+            ORDER BY CASE pc.status WHEN 'open' THEN 0 ELSE 1 END,
+                     pc.updated_at DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return {
+        "count": len(rows),
+        "items": [
+            {**commitment_result(row), "personaName": row["persona_name"]}
+            for row in rows
+        ],
+    }
+
+
+def find_notes_with_persona(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]:
+    persona_id = required_argument(arguments, "persona_id")
+    limit = bounded_limit(arguments.get("limit"))
+    with connect_readonly(db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT n.id, n.title, {APP_VISIBLE_NOTE_BODY_SQL} AS note_body,
+                   np.provenance, np.first_confirmed_at, np.updated_at
+            FROM note_participants np
+            INNER JOIN notes n ON n.id = np.note_id
+            WHERE np.persona_id = ?
+            ORDER BY np.updated_at DESC, n.id DESC
+            LIMIT ?
+            """,
+            [persona_id, limit],
+        ).fetchall()
+    return {
+        "personaId": persona_id,
+        "count": len(rows),
+        "items": [
+            {
+                "noteId": row["id"],
+                "title": row["title"] or "Untitled note",
+                "noteSnippet": snippet(row["note_body"] or "", ""),
+                "provenance": row["provenance"],
+                "firstConfirmedAt": row["first_confirmed_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        ],
+    }
+
+
+def commitment_result(row: sqlite3.Row) -> dict[str, Any]:
+    direction = (
+        "userOwesPersona" if row["direction"] == "owed_by_user" else "personaOwesUser"
+    )
+    result = {
+        "id": row["id"],
+        "direction": direction,
+        "text": row["text"],
+        "due": row["due_value"],
+        "status": row["status"],
+        "sourceNoteId": row["source_note_id"],
+        "sourceNoteTitle": row["source_note_title"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+    if "persona_id" in row.keys():
+        result["personaId"] = row["persona_id"]
+    return result
+
+
+def required_argument(arguments: dict[str, Any], name: str) -> str:
+    value = str(arguments.get(name) or "").strip()
+    if not value:
+        raise ValueError(f"{name} is required")
+    return value
+
+
+def mutate_context(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    base_url = os.environ.get("JUNE_CONTEXT_PROXY_BASE_URL", "").rstrip("/")
+    token = os.environ.get("JUNE_CONTEXT_MUTATION_TOKEN", "")
+    if not base_url.startswith("http://127.0.0.1:") or not token:
+        raise RuntimeError("June's Persona mutation adapter is unavailable")
+    body = json.dumps({"tool": tool_name, "arguments": arguments}).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base_url}/v1/context/mutate",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response_value:
+            payload = json.loads(response_value.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")
+        raise RuntimeError(f"June rejected the Persona change: {detail}") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError("June returned an invalid Persona mutation response")
+    return payload
 
 
 def search_dictation_history(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]:

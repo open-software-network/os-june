@@ -138,7 +138,103 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     )
     .await?;
     ensure_column(_pool, "p3a_counters", "reported_at", "TEXT").await?;
+    for statement in include_str!("../../migrations/011_persona_assignments.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    ensure_column(_pool, "personas", "recognition_confirmed_at", "TEXT").await?;
+    ensure_column(_pool, "personas", "dossier", "TEXT NOT NULL DEFAULT ''").await?;
+    ensure_column(
+        _pool,
+        "personas",
+        "dossier_revision",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    ensure_column(
+        _pool,
+        "personas",
+        "is_self",
+        "INTEGER NOT NULL DEFAULT 0 CHECK(is_self IN (0, 1))",
+    )
+    .await?;
+    ensure_column(_pool, "personas", "archived_at", "TEXT").await?;
+    for statement in include_str!("../../migrations/012_persona_memory.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    ensure_column(_pool, "recording_sessions", "detected_episode_id", "TEXT").await?;
+    ensure_column(
+        _pool,
+        "recording_sessions",
+        "detected_bundle_ids_json",
+        "TEXT",
+    )
+    .await?;
+    ensure_column(
+        _pool,
+        "recording_sessions",
+        "detected_local_weekday",
+        "INTEGER",
+    )
+    .await?;
+    ensure_column(
+        _pool,
+        "recording_sessions",
+        "detected_time_bucket",
+        "INTEGER",
+    )
+    .await?;
+    query(
+        "CREATE INDEX IF NOT EXISTS idx_recording_sessions_detection_pattern
+         ON recording_sessions(detected_bundle_ids_json, detected_local_weekday, detected_time_bucket)",
+    )
+    .execute(_pool)
+    .await?;
+    for statement in include_str!("../../migrations/013_persona_prep_detection.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    if !table_sql_contains(_pool, "persona_prep_offers", "'running'").await? {
+        for statement in
+            include_str!("../../migrations/014_persona_prep_offer_running.sql").split(';')
+        {
+            let statement = statement.trim();
+            if !statement.is_empty() {
+                query(statement).execute(_pool).await?;
+            }
+        }
+    }
+    ensure_column(_pool, "notes", "persona_recognition_warning", "TEXT").await?;
+    ensure_column(
+        _pool,
+        "recording_sessions",
+        "persona_recognition_eligible",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
     Ok(())
+}
+
+async fn table_sql_contains(
+    pool: &SqlitePool,
+    table: &str,
+    needle: &str,
+) -> Result<bool, sqlx::error::Error> {
+    use sqlx::row::Row;
+    let row = query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .bind(table)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row
+        .and_then(|row| row.get::<Option<String>, _>("sql"))
+        .is_some_and(|sql| sql.contains(needle)))
 }
 
 async fn index_exists(pool: &SqlitePool, index: &str) -> Result<bool, sqlx::error::Error> {

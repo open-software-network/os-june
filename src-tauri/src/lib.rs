@@ -15,6 +15,8 @@ pub mod meeting_hud;
 pub mod menu_bar;
 pub mod os_accounts;
 pub mod p3a;
+pub mod persona_memory;
+pub mod personas;
 pub mod providers;
 pub mod theme_icon;
 pub mod updates;
@@ -143,6 +145,23 @@ pub fn run() {
             commands::list_notes,
             commands::get_note,
             commands::update_note,
+            commands::assign_transcript_persona,
+            commands::unassign_transcript_persona,
+            commands::confirm_persona_suggestion,
+            commands::reject_persona_attribution,
+            commands::list_personas,
+            commands::get_persona,
+            commands::update_persona,
+            commands::archive_persona,
+            commands::restore_persona,
+            commands::delete_persona,
+            commands::scrub_deleted_persona_from_notes,
+            commands::create_persona_commitment,
+            commands::update_persona_commitment,
+            commands::delete_persona_commitment,
+            commands::retry_persona_dossier_job,
+            commands::preview_persona_cluster_audio,
+            commands::create_persona_prep_brief,
             commands::delete_note,
             commands::delete_notes,
             commands::create_folder,
@@ -304,6 +323,7 @@ pub fn run() {
             agent_hud::setup(app);
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
+            resume_persona_dossier_updates_on_app_start(app);
             hermes_bridge::start_on_app_start(app);
             meeting_hud::setup(app);
             os_accounts::setup_deep_link(app);
@@ -520,6 +540,19 @@ fn repair_agent_task_statuses_on_app_start(app: &tauri::App) {
             }
             Err(error) => eprintln!(
                 "failed to open repositories for agent task status repair: {}",
+                error.message
+            ),
+        }
+    });
+}
+
+fn resume_persona_dossier_updates_on_app_start(app: &tauri::App) {
+    let app = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        match commands::repositories(&app).await {
+            Ok(repos) => persona_memory::resume_dossier_updates_after_restart(repos),
+            Err(error) => eprintln!(
+                "failed to open repositories for Persona dossier resume: {}",
                 error.message
             ),
         }

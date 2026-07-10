@@ -23,24 +23,34 @@ use crate::{
         types::{
             AgentMessageRole, AgentTaskDto, AgentTaskListResponse, AgentTaskRequest,
             AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError,
-            AssignNoteToFolderRequest, AssignSessionToFolderRequest, BootstrapResponse,
-            CheckRecordingSourceReadinessRequest, CreateAgentTaskRequest,
-            CreateDictionaryEntryRequest, CreateFolderRequest, CreateNoteRequest,
+            AssignNoteToFolderRequest, AssignSessionToFolderRequest,
+            AssignTranscriptPersonaRequest, BootstrapResponse,
+            CheckRecordingSourceReadinessRequest, ConfirmPersonaSuggestionRequest,
+            CreateAgentTaskRequest, CreateDictionaryEntryRequest, CreateFolderRequest,
+            CreateNoteRequest, CreatePersonaCommitmentRequest, CreatePersonaPrepBriefRequest,
             DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
-            DeleteNotesRequest, DictionaryEntryDto, ExplainAgentApprovalRequest,
-            ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
-            GetNoteRequest, ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse,
-            NoteDto, OpenPrivacySettingsRequest, ProcessingStatus, RecordingSessionDto,
+            DeleteNotesRequest, DeletePersonaCommitmentRequest, DictionaryEntryDto,
+            ExplainAgentApprovalRequest, ExplainAgentApprovalResponse, FinishRecordingResponse,
+            GetAgentTaskRequest, GetNoteRequest, GetPersonaRequest, ListNotesRequest,
+            ListNotesResponse, ListPersonasRequest, ListPersonasResponse,
+            MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest,
+            PersonaClusterAudioPreviewDto, PersonaCommitmentDto, PersonaDeletionReceipt,
+            PersonaDetailDto, PersonaDossierJobDto, PersonaIdRequest, PersonaMutationReceipt,
+            PreviewPersonaClusterAudioRequest, ProcessingStatus, RecordingSessionDto,
             RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
-            RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
+            RejectPersonaAttributionRequest, RemoveNoteFromFolderRequest,
+            RemoveSessionFromFolderRequest, RenameFolderRequest, RetryPersonaDossierJobRequest,
             RetryProcessingRequest, SaveAgentAssistantMessageRequest,
-            SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
-            SessionRequest, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
-            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
-            SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
+            SaveAgentHermesSessionRequest, ScrubDeletedPersonaRequest, SendAgentMessageRequest,
+            SessionFolderDto, SessionRequest, SourceReadinessDto, StartRecordingRequest,
+            SubmitIssueReportRequest, SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
+            SuggestAgentSessionTitleResponse, UnassignTranscriptPersonaRequest,
+            UpdateDictionaryEntryRequest, UpdateNoteRequest, UpdatePersonaCommitmentRequest,
+            UpdatePersonaRequest,
         },
     },
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::query::query;
@@ -48,13 +58,14 @@ use sqlx::row::Row;
 use sqlx_sqlite::SqlitePool;
 use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::HashSet;
+use std::io::Cursor;
 use std::str::FromStr;
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tokio::{sync::OnceCell, time::sleep};
 
 #[tauri::command]
@@ -131,6 +142,419 @@ pub async fn update_note(app: AppHandle, request: UpdateNoteRequest) -> Result<N
             request.active_tab,
         )
         .await?)
+}
+
+#[tauri::command]
+pub async fn assign_transcript_persona(
+    app: AppHandle,
+    request: AssignTranscriptPersonaRequest,
+) -> Result<NoteDto, AppError> {
+    let repos = repositories(&app).await?;
+    let note = repos
+        .assign_transcript_persona_with_options(
+            &request.note_id,
+            &request.transcript_id,
+            request.persona_id.as_deref(),
+            &request.name,
+            request.relationship.as_deref(),
+            request.is_self,
+        )
+        .await?;
+    let persona_id = note
+        .source_transcripts
+        .iter()
+        .find(|transcript| transcript.id == request.transcript_id)
+        .and_then(|transcript| transcript.persona.as_ref())
+        .map(|persona| persona.id.clone());
+    resume_dossier_updates_after_trust(&repos, &request.note_id).await;
+    refresh_persona_roster_best_effort(&app).await;
+    emit_personas_changed(&app, persona_id, vec![request.note_id]);
+    Ok(note)
+}
+
+const PERSONAS_CHANGED_EVENT: &str = "june://personas-changed";
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersonasChangedPayload {
+    persona_id: Option<String>,
+    affected_note_ids: Vec<String>,
+}
+
+fn emit_personas_changed(
+    app: &AppHandle,
+    persona_id: Option<String>,
+    affected_note_ids: Vec<String>,
+) {
+    let _ = app.emit(
+        PERSONAS_CHANGED_EVENT,
+        PersonasChangedPayload {
+            persona_id,
+            affected_note_ids,
+        },
+    );
+}
+
+async fn refresh_persona_roster_best_effort(app: &AppHandle) {
+    if let Err(error) = crate::hermes_bridge::refresh_persona_roster(app).await {
+        tracing::warn!(error_code = error.code, "failed to refresh Persona roster");
+    }
+}
+
+async fn resume_dossier_updates_after_trust(repos: &Repositories, note_id: &str) {
+    match repos.enqueue_dossier_jobs_for_note(note_id).await {
+        Ok(inserted) if inserted > 0 => {
+            crate::persona_memory::resume_dossier_updates(repos.clone());
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(%error, note_id, "failed to enqueue Persona dossier jobs after confirmation");
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn list_personas(
+    app: AppHandle,
+    request: ListPersonasRequest,
+) -> Result<ListPersonasResponse, AppError> {
+    let items = repositories(&app)
+        .await?
+        .list_personas(
+            request.filter.as_deref().unwrap_or("active"),
+            request.query.as_deref(),
+        )
+        .await?;
+    Ok(ListPersonasResponse { items })
+}
+
+#[tauri::command]
+pub async fn get_persona(
+    app: AppHandle,
+    request: GetPersonaRequest,
+) -> Result<PersonaDetailDto, AppError> {
+    repositories(&app)
+        .await?
+        .get_persona(&request.persona_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn update_persona(
+    app: AppHandle,
+    request: UpdatePersonaRequest,
+) -> Result<PersonaDetailDto, AppError> {
+    let repos = repositories(&app).await?;
+    let affected_note_ids = repos.persona_affected_note_ids(&request.persona_id).await?;
+    let detail = repos
+        .update_persona(
+            &request.persona_id,
+            &request.name,
+            request.relationship.as_deref(),
+            &request.dossier,
+        )
+        .await?;
+    refresh_persona_roster_best_effort(&app).await;
+    emit_personas_changed(&app, Some(request.persona_id), affected_note_ids);
+    Ok(detail)
+}
+
+#[tauri::command]
+pub async fn archive_persona(
+    app: AppHandle,
+    request: PersonaIdRequest,
+) -> Result<PersonaDetailDto, AppError> {
+    let repos = repositories(&app).await?;
+    let affected_note_ids = repos.persona_affected_note_ids(&request.persona_id).await?;
+    let detail = repos.archive_persona(&request.persona_id).await?;
+    refresh_persona_roster_best_effort(&app).await;
+    emit_personas_changed(&app, Some(request.persona_id), affected_note_ids);
+    Ok(detail)
+}
+
+#[tauri::command]
+pub async fn restore_persona(
+    app: AppHandle,
+    request: PersonaIdRequest,
+) -> Result<PersonaDetailDto, AppError> {
+    let repos = repositories(&app).await?;
+    let affected_note_ids = repos.persona_affected_note_ids(&request.persona_id).await?;
+    let detail = repos.restore_persona(&request.persona_id).await?;
+    refresh_persona_roster_best_effort(&app).await;
+    emit_personas_changed(&app, Some(request.persona_id), affected_note_ids);
+    Ok(detail)
+}
+
+#[tauri::command]
+pub async fn delete_persona(
+    app: AppHandle,
+    request: PersonaIdRequest,
+) -> Result<PersonaDeletionReceipt, AppError> {
+    let receipt = repositories(&app)
+        .await?
+        .delete_persona(&request.persona_id)
+        .await?;
+    refresh_persona_roster_best_effort(&app).await;
+    emit_personas_changed(&app, None, receipt.affected_note_ids.clone());
+    Ok(receipt)
+}
+
+#[tauri::command]
+pub async fn scrub_deleted_persona_from_notes(
+    app: AppHandle,
+    request: ScrubDeletedPersonaRequest,
+) -> Result<PersonaMutationReceipt, AppError> {
+    let receipt = repositories(&app)
+        .await?
+        .scrub_deleted_persona_from_notes(&request.deletion_batch_id)
+        .await?;
+    emit_personas_changed(&app, None, receipt.affected_note_ids.clone());
+    Ok(receipt)
+}
+
+#[tauri::command]
+pub async fn create_persona_commitment(
+    app: AppHandle,
+    request: CreatePersonaCommitmentRequest,
+) -> Result<PersonaCommitmentDto, AppError> {
+    let commitment = repositories(&app)
+        .await?
+        .create_persona_commitment(
+            &request.persona_id,
+            request.direction,
+            &request.text,
+            request.due_value.as_deref(),
+            request.source_note_id.as_deref(),
+        )
+        .await?;
+    emit_personas_changed(&app, Some(request.persona_id), Vec::new());
+    Ok(commitment)
+}
+
+#[tauri::command]
+pub async fn update_persona_commitment(
+    app: AppHandle,
+    request: UpdatePersonaCommitmentRequest,
+) -> Result<PersonaCommitmentDto, AppError> {
+    let commitment = repositories(&app)
+        .await?
+        .update_persona_commitment(
+            &request.commitment_id,
+            request.direction,
+            &request.text,
+            request.due_value.as_deref(),
+            &request.status,
+        )
+        .await?;
+    emit_personas_changed(&app, Some(commitment.persona_id.clone()), Vec::new());
+    Ok(commitment)
+}
+
+#[tauri::command]
+pub async fn delete_persona_commitment(
+    app: AppHandle,
+    request: DeletePersonaCommitmentRequest,
+) -> Result<(), AppError> {
+    repositories(&app)
+        .await?
+        .delete_persona_commitment(&request.commitment_id)
+        .await?;
+    emit_personas_changed(&app, None, Vec::new());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn retry_persona_dossier_job(
+    app: AppHandle,
+    request: RetryPersonaDossierJobRequest,
+) -> Result<PersonaDossierJobDto, AppError> {
+    let repos = repositories(&app).await?;
+    let job = repos.retry_persona_dossier_job(&request.job_id).await?;
+    crate::persona_memory::resume_dossier_updates(repos);
+    emit_personas_changed(&app, Some(job.persona_id.clone()), Vec::new());
+    Ok(job)
+}
+
+#[tauri::command]
+pub async fn preview_persona_cluster_audio(
+    app: AppHandle,
+    request: PreviewPersonaClusterAudioRequest,
+) -> Result<PersonaClusterAudioPreviewDto, AppError> {
+    const MAX_PREVIEW_MS: i64 = 20_000;
+    let source = repositories(&app)
+        .await?
+        .persona_cluster_preview_source(&request.cluster_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::new(
+                "persona_cluster_preview_not_found",
+                "This speaker preview is no longer available.",
+            )
+        })?;
+    let path = app_paths(&app)?
+        .contained_recording_file(&source.audio_path)
+        .map_err(|error| AppError::new("persona_cluster_preview_denied", error.to_string()))?;
+    let spans = serde_json::from_str::<Vec<(i64, i64)>>(&source.spans_json)
+        .map_err(|error| AppError::new("persona_cluster_preview_invalid", error.to_string()))?;
+    let mut reader = hound::WavReader::open(path)
+        .map_err(|error| AppError::new("persona_cluster_preview_failed", error.to_string()))?;
+    let spec = reader.spec();
+    if spec.sample_format != hound::SampleFormat::Int || spec.bits_per_sample != 16 {
+        return Err(AppError::new(
+            "persona_cluster_preview_invalid",
+            "Only 16-bit PCM speaker previews are supported.",
+        ));
+    }
+    let channels = usize::from(spec.channels.max(1));
+    let sample_rate = i64::from(spec.sample_rate.max(1));
+    let max_frames = (MAX_PREVIEW_MS * sample_rate / 1_000) as usize;
+    let mut selected_frames = 0_usize;
+    let mut wav = Vec::new();
+    {
+        let cursor = Cursor::new(&mut wav);
+        let mut writer = hound::WavWriter::new(cursor, spec)
+            .map_err(|error| AppError::new("persona_cluster_preview_failed", error.to_string()))?;
+        for (start_ms, end_ms) in spans {
+            if selected_frames >= max_frames {
+                break;
+            }
+            let start_frame = ((start_ms.max(0) * sample_rate) / 1_000) as usize;
+            let end_frame = ((end_ms.max(start_ms) * sample_rate) / 1_000) as usize;
+            let frames = end_frame
+                .saturating_sub(start_frame)
+                .min(max_frames - selected_frames);
+            let start_frame = u32::try_from(start_frame).map_err(|error| {
+                AppError::new("persona_cluster_preview_invalid", error.to_string())
+            })?;
+            reader.seek(start_frame).map_err(|error| {
+                AppError::new("persona_cluster_preview_failed", error.to_string())
+            })?;
+            let mut written_samples = 0_usize;
+            for sample in reader
+                .samples::<i16>()
+                .take(frames.saturating_mul(channels))
+            {
+                writer.write_sample(sample.unwrap_or(0)).map_err(|error| {
+                    AppError::new("persona_cluster_preview_failed", error.to_string())
+                })?;
+                written_samples += 1;
+            }
+            selected_frames += written_samples / channels;
+        }
+        writer
+            .finalize()
+            .map_err(|error| AppError::new("persona_cluster_preview_failed", error.to_string()))?;
+    }
+    if selected_frames == 0 {
+        return Err(AppError::new(
+            "persona_cluster_preview_empty",
+            "This speaker cluster does not contain playable audio.",
+        ));
+    }
+    Ok(PersonaClusterAudioPreviewDto {
+        data_url: format!("data:audio/wav;base64,{}", BASE64_STANDARD.encode(wav)),
+        duration_ms: selected_frames as i64 * 1_000 / sample_rate,
+    })
+}
+
+#[tauri::command]
+pub async fn create_persona_prep_brief(
+    app: AppHandle,
+    request: CreatePersonaPrepBriefRequest,
+) -> Result<NoteDto, AppError> {
+    let repos = repositories(&app).await?;
+    let Some(episode_id) = request
+        .detection_episode_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return crate::persona_memory::create_prep_brief(&repos, &request.persona_ids).await;
+    };
+
+    if !repos.claim_prep_offer(episode_id).await? {
+        if let Some(note_id) = repos.accepted_prep_note_id(episode_id).await? {
+            return Ok(repos.get_note(&note_id).await?);
+        }
+        return Err(AppError::new(
+            "persona_prep_offer_busy",
+            "This prep offer is already being prepared or is no longer available.",
+        ));
+    }
+
+    let request_id = crate::persona_memory::persona_operation_request_id(&format!(
+        "persona-prep:v1:{episode_id}"
+    ));
+    let draft = match crate::persona_memory::generate_prep_brief_draft(
+        &repos,
+        &request.persona_ids,
+        Some(&request_id),
+    )
+    .await
+    {
+        Ok(draft) => draft,
+        Err(error) => {
+            let _ = repos.release_prep_offer(episode_id).await;
+            return Err(error);
+        }
+    };
+    match repos
+        .complete_prep_offer_with_note(episode_id, &draft.title, &draft.content)
+        .await
+    {
+        Ok(note) => Ok(note),
+        Err(error) => {
+            let _ = repos.release_prep_offer(episode_id).await;
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn unassign_transcript_persona(
+    app: AppHandle,
+    request: UnassignTranscriptPersonaRequest,
+) -> Result<NoteDto, AppError> {
+    let note = repositories(&app)
+        .await?
+        .unassign_transcript_persona(&request.note_id, &request.transcript_id)
+        .await?;
+    emit_personas_changed(&app, None, vec![request.note_id]);
+    Ok(note)
+}
+
+#[tauri::command]
+pub async fn confirm_persona_suggestion(
+    app: AppHandle,
+    request: ConfirmPersonaSuggestionRequest,
+) -> Result<NoteDto, AppError> {
+    let repos = repositories(&app).await?;
+    let note = repos
+        .confirm_persona_suggestion(&request.note_id, &request.transcript_id)
+        .await?;
+    let persona_id = note
+        .source_transcripts
+        .iter()
+        .find(|transcript| transcript.id == request.transcript_id)
+        .and_then(|transcript| transcript.persona.as_ref())
+        .map(|persona| persona.id.clone());
+    resume_dossier_updates_after_trust(&repos, &request.note_id).await;
+    refresh_persona_roster_best_effort(&app).await;
+    emit_personas_changed(&app, persona_id, vec![request.note_id]);
+    Ok(note)
+}
+
+#[tauri::command]
+pub async fn reject_persona_attribution(
+    app: AppHandle,
+    request: RejectPersonaAttributionRequest,
+) -> Result<NoteDto, AppError> {
+    let note = repositories(&app)
+        .await?
+        .reject_persona_attribution(&request.note_id, &request.transcript_id)
+        .await?;
+    emit_personas_changed(&app, None, vec![request.note_id]);
+    Ok(note)
 }
 
 #[tauri::command]
@@ -915,6 +1339,7 @@ pub async fn start_recording(
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
     let note = repos.get_note(&request.note_id).await?;
+    let detection_context = crate::meeting_detection::current_detection_context();
     let source_mode = request.source_mode.unwrap_or_default();
     // Readiness probing and capture startup both wait on the system-audio
     // helper (up to tens of seconds); run them off the async runtime.
@@ -969,6 +1394,24 @@ pub async fn start_recording(
             started.device_label.clone(),
         )
         .await?;
+    if let Some(context) = detection_context {
+        let mut bundle_ids = context.bundle_ids;
+        bundle_ids.sort();
+        bundle_ids.dedup();
+        let bundle_ids_json = serde_json::to_string(&bundle_ids).unwrap_or_else(|_| "[]".into());
+        if let Err(error) = repos
+            .attach_detection_context(
+                &started.session_id,
+                &context.episode_id,
+                &bundle_ids_json,
+                context.local_weekday,
+                context.time_bucket,
+            )
+            .await
+        {
+            eprintln!("failed to attach meeting detection context: {error}");
+        }
+    }
     for source in &started.sources {
         repos
             .create_pending_source_artifact(

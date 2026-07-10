@@ -10,17 +10,20 @@ import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import { Switch } from "../ui/Switch";
-import type {
-  FolderDto,
-  LiveTranscriptEventDto,
-  NoteDto,
-  RecordingSourceMode,
-  RecordingSourceReadinessDto,
-  RecordingStatusDto,
-  RecoverableRecordingDto,
-  TranscriptDto,
+import {
+  listPersonas,
+  previewPersonaClusterAudio,
+  type FolderDto,
+  type LiveTranscriptEventDto,
+  type NoteDto,
+  type PersonaSummaryDto,
+  type RecordingSourceMode,
+  type RecordingSourceReadinessDto,
+  type RecordingStatusDto,
+  type RecoverableRecordingDto,
+  type TranscriptDto,
 } from "../../lib/tauri";
 import { DotSpinner } from "../DotSpinner";
 import { InlineNotice } from "../ui/InlineNotice";
@@ -65,6 +68,17 @@ type NoteEditorProps = {
   onCreateAndAssignFolder: (name: string) => void;
   onNavigateToFolder?: (folderId: string) => void;
   onTabChange: (tab: "notes" | "transcription") => void;
+  onAssignTranscriptPersona?: (
+    transcriptId: string,
+    name: string,
+    relationship?: string,
+    personaId?: string,
+    isSelf?: boolean,
+  ) => void | Promise<void>;
+  onUnassignTranscriptPersona?: (transcriptId: string) => void | Promise<void>;
+  onConfirmPersonaSuggestion?: (transcriptId: string) => void | Promise<void>;
+  onRejectPersonaAttribution?: (transcriptId: string) => void | Promise<void>;
+  onNavigateToPersona?: (personaId: string) => void;
 };
 
 const TABS = [
@@ -144,6 +158,11 @@ export function NoteEditor({
   onCreateAndAssignFolder,
   onNavigateToFolder,
   onTabChange,
+  onAssignTranscriptPersona,
+  onUnassignTranscriptPersona,
+  onConfirmPersonaSuggestion,
+  onRejectPersonaAttribution,
+  onNavigateToPersona,
 }: NoteEditorProps) {
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
@@ -163,6 +182,7 @@ export function NoteEditor({
   const recordingForNote = recordingStatus;
   const recordingActive = Boolean(recordingForNote);
   const [optionsOpen, setOptionsOpen] = useState(false);
+  const [personaRetrying, setPersonaRetrying] = useState(false);
   const [consentReminderVisible, setConsentReminderVisible] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   // The source filter is ephemeral view state — reset it when navigating
@@ -188,6 +208,14 @@ export function NoteEditor({
     if (!hasBothSources || sourceFilter === "all") return transcriptTurns;
     return transcriptTurns.filter((turn) => sourceKey(turn.source) === sourceFilter);
   }, [transcriptTurns, hasBothSources, sourceFilter]);
+  const firstVisibleTurnByCluster = useMemo(() => {
+    const first = new Map<string, string>();
+    for (const turn of visibleTurns) {
+      const clusterId = turn.attribution?.clusterId;
+      if (clusterId && !first.has(clusterId)) first.set(clusterId, turn.id);
+    }
+    return first;
+  }, [visibleTurns]);
   const systemOn = sourceMode === "microphonePlusSystem";
   const systemAvailability = systemAudioAvailability(sourceReadiness);
   const systemUnsupported = systemAvailability === "unsupported";
@@ -365,6 +393,26 @@ export function NoteEditor({
                 />
               </div>
             ) : null}
+            {note.participants?.length ? (
+              <ul className="transcript-participants" aria-label="Participants">
+                {note.participants.map((participant) => (
+                  <li key={participant.persona.id}>
+                    <button
+                      type="button"
+                      onClick={() => onNavigateToPersona?.(participant.persona.id)}
+                      disabled={!onNavigateToPersona}
+                      aria-label={`Open ${participant.persona.name}${
+                        participant.persona.relationship
+                          ? `, ${participant.persona.relationship}`
+                          : ""
+                      }`}
+                    >
+                      {participant.persona.name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
             {showLivePreviewWaiting ? (
               <div className="transcript-processing" role="status" aria-live="polite">
                 <DotSpinner className="transcript-processing-spinner" />
@@ -384,6 +432,27 @@ export function NoteEditor({
             {silentSourceNotice ? (
               <p className="transcript-coverage-notice">{silentSourceNotice}</p>
             ) : null}
+            {note.personaRecognitionWarning ? (
+              <InlineNotice
+                tone="warning"
+                body={note.personaRecognitionWarning}
+                actions={
+                  <button
+                    type="button"
+                    className="primary-action"
+                    disabled={personaRetrying}
+                    onClick={() => {
+                      setPersonaRetrying(true);
+                      void Promise.resolve(onRetry())
+                        .catch(() => undefined)
+                        .finally(() => setPersonaRetrying(false));
+                    }}
+                  >
+                    {personaRetrying ? "Retrying..." : "Retry speaker recognition"}
+                  </button>
+                }
+              />
+            ) : null}
             {visibleTurns.length ? (
               <div className="source-transcripts">
                 {visibleTurns.map((transcript) => (
@@ -391,6 +460,20 @@ export function NoteEditor({
                     key={transcript.id}
                     transcript={transcript}
                     preview={transcript.preview}
+                    onAssignPersona={onAssignTranscriptPersona}
+                    onUnassignPersona={onUnassignTranscriptPersona}
+                    onConfirmSuggestion={onConfirmPersonaSuggestion}
+                    onRejectAttribution={onRejectPersonaAttribution}
+                    showPersonaActions={
+                      !transcript.attribution?.clusterId ||
+                      firstVisibleTurnByCluster.get(transcript.attribution.clusterId) ===
+                        transcript.id
+                    }
+                    personaActionTargetId={
+                      transcript.attribution?.clusterId
+                        ? firstVisibleTurnByCluster.get(transcript.attribution.clusterId)
+                        : undefined
+                    }
                   />
                 ))}
               </div>
@@ -870,9 +953,14 @@ function turnsToText(turns: RenderedTranscriptTurn[]): string {
   return turns
     .filter((turn) => turn.text.trim())
     .map((turn) => {
-      const meta = formatTurnTime(turn.startMs, turn.endMs)
-        ? `${sourceLabel(turn.source)} ${formatTurnTime(turn.startMs, turn.endMs)}`
+      const identityName =
+        turn.persona?.name ?? turn.attribution?.persona?.name ?? turn.attribution?.speakerLabel;
+      const identity = identityName
+        ? `${identityName} (${sourceLabel(turn.source)})`
         : sourceLabel(turn.source);
+      const meta = formatTurnTime(turn.startMs, turn.endMs)
+        ? `${identity} ${formatTurnTime(turn.startMs, turn.endMs)}`
+        : identity;
       return `${meta}\n${turn.text}`;
     })
     .join("\n\n");
@@ -968,16 +1056,55 @@ function compareOptionalNumber(left?: number, right?: number) {
 function TranscriptTurn({
   transcript,
   preview = false,
+  onAssignPersona,
+  onUnassignPersona,
+  onConfirmSuggestion,
+  onRejectAttribution,
+  showPersonaActions = true,
+  personaActionTargetId,
 }: {
   transcript: RenderedTranscriptTurn;
   preview?: boolean;
+  onAssignPersona?: (
+    transcriptId: string,
+    name: string,
+    relationship?: string,
+    personaId?: string,
+    isSelf?: boolean,
+  ) => void | Promise<void>;
+  onUnassignPersona?: (transcriptId: string) => void | Promise<void>;
+  onConfirmSuggestion?: (transcriptId: string) => void | Promise<void>;
+  onRejectAttribution?: (transcriptId: string) => void | Promise<void>;
+  showPersonaActions?: boolean;
+  personaActionTargetId?: string;
 }) {
   const textRef = useRef<HTMLParagraphElement>(null);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [clamped, setClamped] = useState(false);
+  const [personaEditorOpen, setPersonaEditorOpen] = useState(false);
+  const [personaName, setPersonaName] = useState(
+    transcript.persona?.name ?? transcript.attribution?.persona?.name ?? "",
+  );
+  const [relationship, setRelationship] = useState(
+    transcript.persona?.relationship ?? transcript.attribution?.persona?.relationship ?? "",
+  );
+  const [personaSaving, setPersonaSaving] = useState(false);
+  const [personaOptions, setPersonaOptions] = useState<PersonaSummaryDto[]>([]);
+  const [personaOptionsLoading, setPersonaOptionsLoading] = useState(false);
+  const [personaQuery, setPersonaQuery] = useState("");
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string>();
+  const [personaIsSelf, setPersonaIsSelf] = useState(false);
+  const [previewAudio, setPreviewAudio] = useState<string>();
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string>();
 
   const isSystem = transcript.source === "system";
+  const attribution = transcript.attribution;
+  const resolvedPersona = transcript.persona ?? attribution?.persona;
+  const displayIdentity =
+    resolvedPersona?.name ??
+    (isSystem || attribution?.state !== "anonymous" ? attribution?.speakerLabel : undefined);
   const turnTime = formatTurnTime(transcript.startMs, transcript.endMs);
   const hasText = transcript.text.trim().length > 0;
   // Every turn is copyable — a turn where nothing was said still carries
@@ -1019,15 +1146,138 @@ function TranscriptTurn({
     }
   }
 
+  async function openPersonaEditor() {
+    setPersonaName(resolvedPersona?.name ?? "");
+    setRelationship(resolvedPersona?.relationship ?? "");
+    setSelectedPersonaId(resolvedPersona?.id);
+    setPersonaIsSelf(false);
+    setPersonaQuery("");
+    setPersonaEditorOpen(true);
+    setPersonaOptionsLoading(true);
+    try {
+      setPersonaOptions(await listPersonas({ filter: "active" }));
+    } catch {
+      setPersonaOptions([]);
+    } finally {
+      setPersonaOptionsLoading(false);
+    }
+  }
+
+  async function handlePersonaSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const selected = personaOptions.find((persona) => persona.id === selectedPersonaId);
+    const name = selected?.name ?? personaName.trim();
+    if (!name || !onAssignPersona) return;
+    setPersonaSaving(true);
+    try {
+      const nextRelationship = selected?.relationship ?? (relationship.trim() || undefined);
+      if (selected?.id) {
+        await onAssignPersona(transcript.id, name, nextRelationship, selected.id);
+      } else if (personaIsSelf) {
+        await onAssignPersona(transcript.id, name, nextRelationship, undefined, true);
+      } else {
+        await onAssignPersona(transcript.id, name, nextRelationship);
+      }
+      setPersonaEditorOpen(false);
+    } catch {
+      // The parent surfaces the storage error; keep the editor open so the
+      // user can retry without losing the entered Persona details.
+    } finally {
+      setPersonaSaving(false);
+    }
+  }
+
+  async function handlePersonaRemove() {
+    if (!onUnassignPersona) return;
+    setPersonaSaving(true);
+    try {
+      await onUnassignPersona(transcript.id);
+      setPersonaEditorOpen(false);
+    } catch {
+      // The parent surfaces the storage error; keep the editor open for retry.
+    } finally {
+      setPersonaSaving(false);
+    }
+  }
+
+  async function handleSuggestionConfirm() {
+    if (!onConfirmSuggestion) return;
+    setPersonaSaving(true);
+    try {
+      await onConfirmSuggestion(transcript.id);
+    } catch {
+      // The parent surfaces the storage error.
+    } finally {
+      setPersonaSaving(false);
+    }
+  }
+
+  async function handleAttributionReject() {
+    if (!onRejectAttribution) return;
+    setPersonaSaving(true);
+    try {
+      await onRejectAttribution(transcript.id);
+    } catch {
+      // The parent surfaces the storage error.
+    } finally {
+      setPersonaSaving(false);
+    }
+  }
+
+  async function handleVoicePreview() {
+    if (!attribution?.clusterId || previewLoading) return;
+    if (previewAudio) {
+      setPreviewAudio(undefined);
+      setPreviewError(undefined);
+      return;
+    }
+    setPreviewLoading(true);
+    setPreviewError(undefined);
+    try {
+      const result = await previewPersonaClusterAudio(attribution.clusterId);
+      setPreviewAudio(result.dataUrl);
+    } catch {
+      setPreviewError("Voice preview is unavailable for this speaker.");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
+  const visiblePersonaOptions = personaOptions.filter((persona) => {
+    if (isSystem && persona.isSelf) return false;
+    const query = personaQuery.trim().toLocaleLowerCase();
+    if (!query) return true;
+    return `${persona.name} ${persona.relationship ?? ""}`.toLocaleLowerCase().includes(query);
+  });
+
+  function focusPrimaryPersonaAction() {
+    if (!personaActionTargetId) return;
+    const target = document.getElementById(`transcript-persona-${personaActionTargetId}`);
+    target?.scrollIntoView?.({ block: "nearest" });
+    const action = target?.querySelector<HTMLButtonElement>("[data-persona-primary-action]");
+    action?.focus();
+    action?.click();
+  }
+
   return (
-    <article className="transcript-turn" data-source={isSystem ? "system" : "microphone"}>
+    <article
+      id={showPersonaActions && attribution ? `transcript-persona-${transcript.id}` : undefined}
+      className="transcript-turn"
+      data-source={isSystem ? "system" : "microphone"}
+    >
       <span className="transcript-turn-icon" aria-hidden>
         {isSystem ? <IconVolumeFull size={14} /> : <IconMicrophoneLine size={14} />}
       </span>
       <div className="transcript-turn-body">
         <div className="transcript-turn-meta">
+          {displayIdentity ? (
+            <span className="transcript-turn-persona">{displayIdentity}</span>
+          ) : null}
           <span className="transcript-turn-source">{sourceLabel(transcript.source)}</span>
           {turnTime ? <time>{turnTime}</time> : null}
+          {attribution?.state === "automatic" ? (
+            <span className="transcript-turn-auto">Auto</span>
+          ) : null}
           {preview ? <span className="transcript-turn-preview">Live preview</span> : null}
         </div>
         {hasText ? (
@@ -1045,19 +1295,213 @@ function TranscriptTurn({
           </button>
         ) : null}
         {errorMessage ? <p className="source-transcript-error">{errorMessage}</p> : null}
+        {!preview && attribution && showPersonaActions ? (
+          <div className="transcript-turn-voice-preview">
+            <button
+              type="button"
+              className="transcript-turn-persona-button"
+              onClick={() => void handleVoicePreview()}
+              disabled={previewLoading}
+            >
+              {previewLoading
+                ? "Preparing preview..."
+                : previewAudio
+                  ? "Hide voice preview"
+                  : "Preview voice"}
+            </button>
+            {previewAudio ? (
+              // biome-ignore lint/a11y/useMediaCaption: The adjacent transcript is the caption for this exact voice excerpt.
+              <audio controls preload="metadata" src={previewAudio} />
+            ) : null}
+            {previewError ? <span role="alert">{previewError}</span> : null}
+          </div>
+        ) : null}
+        {!preview &&
+        showPersonaActions &&
+        attribution?.state === "suggested" &&
+        attribution.candidate &&
+        !personaEditorOpen ? (
+          <div className="transcript-turn-persona-suggestion">
+            <span>Is this {attribution.candidate.name}?</span>
+            <button
+              type="button"
+              onClick={() => void handleSuggestionConfirm()}
+              disabled={personaSaving || !onConfirmSuggestion}
+            >
+              Yes
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleAttributionReject()}
+              disabled={personaSaving || !onRejectAttribution}
+            >
+              No
+            </button>
+            <button
+              type="button"
+              data-persona-primary-action
+              onClick={() => void openPersonaEditor()}
+            >
+              Choose someone else
+            </button>
+          </div>
+        ) : null}
+        {!preview && showPersonaActions && attribution?.state === "automatic" && resolvedPersona ? (
+          <button
+            type="button"
+            className="transcript-turn-persona-button"
+            onClick={() => void handleAttributionReject()}
+            disabled={personaSaving || !onRejectAttribution}
+          >
+            Not {resolvedPersona.name}
+          </button>
+        ) : null}
+        {!preview &&
+        showPersonaActions &&
+        onAssignPersona &&
+        (attribution?.state !== "suggested" || personaEditorOpen) ? (
+          personaEditorOpen ? (
+            <form className="transcript-turn-persona-editor" onSubmit={handlePersonaSubmit}>
+              {personaOptionsLoading ? (
+                <span role="status">Loading people...</span>
+              ) : personaOptions.length ? (
+                <fieldset className="transcript-turn-persona-picker">
+                  <legend>Choose a person</legend>
+                  <input
+                    type="search"
+                    value={personaQuery}
+                    onChange={(event) => setPersonaQuery(event.currentTarget.value)}
+                    placeholder="Search people"
+                    aria-label="Search people"
+                    disabled={personaSaving}
+                  />
+                  <div className="transcript-turn-persona-options">
+                    {visiblePersonaOptions.map((persona) => (
+                      <button
+                        type="button"
+                        key={persona.id}
+                        data-selected={selectedPersonaId === persona.id || undefined}
+                        aria-pressed={selectedPersonaId === persona.id}
+                        onClick={() => {
+                          setSelectedPersonaId(persona.id);
+                          setPersonaName(persona.name);
+                          setRelationship(persona.relationship ?? "");
+                          setPersonaIsSelf(false);
+                        }}
+                      >
+                        <span>{persona.name}</span>
+                        {persona.relationship ? <small>{persona.relationship}</small> : null}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      data-selected={!selectedPersonaId || undefined}
+                      aria-pressed={!selectedPersonaId}
+                      onClick={() => {
+                        setSelectedPersonaId(undefined);
+                        setPersonaName("");
+                        setRelationship("");
+                        setPersonaIsSelf(false);
+                      }}
+                    >
+                      Create a new person
+                    </button>
+                  </div>
+                </fieldset>
+              ) : null}
+              <label>
+                Persona name
+                <input
+                  value={personaName}
+                  onChange={(event) => setPersonaName(event.currentTarget.value)}
+                  placeholder="Name"
+                  disabled={personaSaving || !!selectedPersonaId}
+                />
+              </label>
+              <label>
+                Relationship (optional)
+                <input
+                  value={relationship}
+                  onChange={(event) => setRelationship(event.currentTarget.value)}
+                  placeholder="How you know them"
+                  disabled={personaSaving || !!selectedPersonaId}
+                />
+              </label>
+              {!isSystem && !selectedPersonaId ? (
+                <label>
+                  <span>This is my voice</span>
+                  <input
+                    type="checkbox"
+                    checked={personaIsSelf}
+                    onChange={(event) => setPersonaIsSelf(event.currentTarget.checked)}
+                    disabled={personaSaving}
+                  />
+                </label>
+              ) : null}
+              <div className="transcript-turn-persona-actions">
+                <button
+                  type="submit"
+                  disabled={personaSaving || (!selectedPersonaId && !personaName.trim())}
+                >
+                  {personaSaving ? "Saving..." : "Save persona"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPersonaEditorOpen(false)}
+                  disabled={personaSaving}
+                >
+                  Cancel
+                </button>
+                {resolvedPersona && attribution?.state !== "automatic" && onUnassignPersona ? (
+                  <button
+                    type="button"
+                    onClick={() => void handlePersonaRemove()}
+                    disabled={personaSaving}
+                  >
+                    Remove persona
+                  </button>
+                ) : null}
+              </div>
+            </form>
+          ) : (
+            <button
+              type="button"
+              className="transcript-turn-persona-button"
+              data-persona-primary-action
+              onClick={() => void openPersonaEditor()}
+            >
+              {resolvedPersona
+                ? "Change persona"
+                : attribution?.state === "anonymous"
+                  ? "Tag this voice?"
+                  : "Assign persona"}
+            </button>
+          )
+        ) : null}
+        {!preview && attribution && !showPersonaActions ? (
+          <button
+            type="button"
+            className="transcript-turn-persona-button"
+            onClick={focusPrimaryPersonaAction}
+          >
+            Voice options
+          </button>
+        ) : null}
       </div>
-      {canCopy ? (
-        <button
-          type="button"
-          className="transcript-turn-copy"
-          data-copied={copied || undefined}
-          aria-label={copied ? "Copied" : "Copy turn"}
-          title={copied ? "Copied" : "Copy"}
-          onClick={() => void handleCopy()}
-        >
-          {copied ? <IconCheckmark1 size={14} /> : <IconClipboard size={14} />}
-        </button>
-      ) : null}
+      <div className="transcript-turn-actions">
+        {canCopy ? (
+          <button
+            type="button"
+            className="transcript-turn-copy"
+            data-copied={copied || undefined}
+            aria-label={copied ? "Copied" : "Copy turn"}
+            title={copied ? "Copied" : "Copy"}
+            onClick={() => void handleCopy()}
+          >
+            {copied ? <IconCheckmark1 size={14} /> : <IconClipboard size={14} />}
+          </button>
+        ) : null}
+      </div>
     </article>
   );
 }

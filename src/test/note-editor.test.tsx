@@ -270,6 +270,250 @@ describe("NoteEditor", () => {
     expect(screen.getByText("Microphone response")).toBeInTheDocument();
   });
 
+  it("offers a retry when local speaker recognition fails", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn().mockResolvedValue(undefined);
+    render(
+      <NoteEditor
+        {...props}
+        onRetry={onRetry}
+        note={note({
+          activeTab: "transcription",
+          personaRecognitionWarning: "Speaker recognition failed.",
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry speaker recognition" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("assigns a Persona from a transcription turn", async () => {
+    const user = userEvent.setup();
+    const onAssignTranscriptPersona = vi.fn().mockResolvedValue(undefined);
+    render(
+      <NoteEditor
+        {...props}
+        onAssignTranscriptPersona={onAssignTranscriptPersona}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "turn-1",
+              text: "Please review the roadmap.",
+              source: "system",
+              startMs: 1_000,
+              endMs: 2_500,
+              turnIndex: 0,
+              status: "succeeded",
+            },
+          ],
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Assign persona" }));
+    await user.type(screen.getByLabelText("Persona name"), "Jun");
+    await user.type(screen.getByLabelText("Relationship (optional)"), "Product lead");
+    await user.click(screen.getByRole("button", { name: "Save persona" }));
+
+    expect(onAssignTranscriptPersona).toHaveBeenCalledWith("turn-1", "Jun", "Product lead");
+  });
+
+  it("enrolls an anonymous Microphone cluster as the user's own voice", async () => {
+    const user = userEvent.setup();
+    const onAssignTranscriptPersona = vi.fn().mockResolvedValue(undefined);
+    render(
+      <NoteEditor
+        {...props}
+        onAssignTranscriptPersona={onAssignTranscriptPersona}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "turn-self",
+              text: "My update.",
+              source: "microphone",
+              startMs: 1_000,
+              endMs: 2_500,
+              turnIndex: 0,
+              status: "succeeded",
+              attribution: {
+                clusterId: "cluster-self",
+                speakerLabel: "Speaker 00",
+                state: "anonymous",
+              },
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.queryByText("Speaker 00")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Microphone", { selector: ".transcript-turn-source" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Tag this voice?" }));
+    await user.type(screen.getByLabelText("Persona name"), "Me");
+    await user.click(screen.getByRole("checkbox", { name: "This is my voice" }));
+    await user.click(screen.getByRole("button", { name: "Save persona" }));
+
+    expect(onAssignTranscriptPersona).toHaveBeenCalledWith(
+      "turn-self",
+      "Me",
+      undefined,
+      undefined,
+      true,
+    );
+  });
+
+  it("opens the first turn's Persona action from another turn in the cluster", async () => {
+    const user = userEvent.setup();
+    const attribution = {
+      clusterId: "cluster-shared",
+      speakerLabel: "Speaker 00",
+      state: "anonymous" as const,
+    };
+    render(
+      <NoteEditor
+        {...props}
+        onAssignTranscriptPersona={vi.fn()}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "turn-1",
+              text: "First fragment",
+              source: "system",
+              startMs: 1_000,
+              endMs: 2_000,
+              turnIndex: 0,
+              status: "succeeded",
+              attribution,
+            },
+            {
+              id: "turn-2",
+              text: "Second fragment",
+              source: "system",
+              startMs: 3_000,
+              endMs: 4_000,
+              turnIndex: 1,
+              status: "succeeded",
+              attribution,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getAllByRole("button", { name: "Tag this voice?" })).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Voice options" }));
+    expect(screen.getByLabelText("Persona name")).toBeInTheDocument();
+  });
+
+  it("confirms the first cross-meeting Persona suggestion", async () => {
+    const user = userEvent.setup();
+    const onConfirmPersonaSuggestion = vi.fn().mockResolvedValue(undefined);
+    render(
+      <NoteEditor
+        {...props}
+        onConfirmPersonaSuggestion={onConfirmPersonaSuggestion}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "turn-suggested",
+              text: "The roadmap is ready.",
+              source: "system",
+              startMs: 1_000,
+              endMs: 2_500,
+              turnIndex: 0,
+              status: "succeeded",
+              attribution: {
+                clusterId: "cluster-1",
+                speakerLabel: "Speaker 00",
+                state: "suggested",
+                candidate: {
+                  id: "persona-jun",
+                  name: "Jun",
+                  relationship: "Product lead",
+                  createdAt: "2026-07-10T00:00:00Z",
+                  updatedAt: "2026-07-10T00:00:00Z",
+                },
+                confidence: 0.95,
+              },
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Speaker 00")).toBeInTheDocument();
+    expect(screen.getByText("Is this Jun?")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Yes" }));
+    expect(onConfirmPersonaSuggestion).toHaveBeenCalledWith("turn-suggested");
+  });
+
+  it("marks trusted automatic Persona recognition and offers correction", async () => {
+    const user = userEvent.setup();
+    const onRejectPersonaAttribution = vi.fn().mockResolvedValue(undefined);
+    render(
+      <NoteEditor
+        {...props}
+        onRejectPersonaAttribution={onRejectPersonaAttribution}
+        note={note({
+          activeTab: "transcription",
+          participants: [
+            {
+              persona: {
+                id: "persona-jun",
+                name: "Jun",
+                createdAt: "2026-07-10T00:00:00Z",
+                updatedAt: "2026-07-10T00:00:00Z",
+              },
+              provenance: "automatic",
+              firstConfirmedAt: "2026-07-10T00:00:00Z",
+            },
+          ],
+          sourceTranscripts: [
+            {
+              id: "turn-automatic",
+              text: "The roadmap is ready.",
+              source: "system",
+              startMs: 1_000,
+              endMs: 2_500,
+              turnIndex: 0,
+              status: "succeeded",
+              persona: {
+                id: "persona-jun",
+                name: "Jun",
+                createdAt: "2026-07-10T00:00:00Z",
+                updatedAt: "2026-07-10T00:00:00Z",
+              },
+              attribution: {
+                clusterId: "cluster-1",
+                speakerLabel: "Speaker 00",
+                state: "automatic",
+                persona: {
+                  id: "persona-jun",
+                  name: "Jun",
+                  createdAt: "2026-07-10T00:00:00Z",
+                  updatedAt: "2026-07-10T00:00:00Z",
+                },
+                confidence: 0.95,
+              },
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getAllByText("Jun").length).toBeGreaterThan(0);
+    expect(screen.getByText("Auto")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Not Jun" }));
+    expect(onRejectPersonaAttribution).toHaveBeenCalledWith("turn-automatic");
+  });
+
   it("shows live transcript preview turns while recording", () => {
     render(
       <NoteEditor

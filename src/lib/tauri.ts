@@ -60,6 +60,8 @@ export type TranscriptDto = {
   status: "pending" | "running" | "succeeded" | "failed";
   lastError?: string;
   recordedSilence?: boolean;
+  persona?: PersonaDto;
+  attribution?: PersonaAttributionDto;
 };
 
 export const LIVE_TRANSCRIPT_EVENT = "live-transcript-event";
@@ -363,13 +365,104 @@ export type NoteDto = NoteListItemDto & {
   transcript?: TranscriptDto;
   transcriptCoverage?: TranscriptCoverageDto;
   sourceTranscripts?: TranscriptDto[];
+  participants?: ParticipantDto[];
   recording?: RecordingSessionDto;
   audio?: AudioArtifactDto;
   audioSources?: AudioArtifactDto[];
   activeTab?: "notes" | "transcription";
   lastError?: string;
+  personaRecognitionWarning?: string;
   /** Recordings queued behind the one currently processing (0 when none). */
   queuedRecordings?: number;
+};
+
+export type PersonaDto = {
+  id: string;
+  name: string;
+  relationship?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PersonaSummaryDto = PersonaDto & {
+  archivedAt?: string;
+  isSelf: boolean;
+  voiceprintCount: number;
+  lastSeenAt?: string;
+};
+
+export type PersonaCommitmentDto = {
+  id: string;
+  personaId: string;
+  direction: "personaOwesUser" | "userOwesPersona";
+  text: string;
+  dueValue?: string;
+  status: "open" | "done" | "dropped";
+  sourceNoteId?: string;
+  sourceNoteTitle?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PersonaNoteHistoryDto = {
+  noteId: string;
+  title: string;
+  preview: string;
+  provenance: "tagged" | "confirmed" | "automatic";
+  firstConfirmedAt: string;
+  lastSeenAt: string;
+};
+
+export type PersonaDossierJobDto = {
+  id: string;
+  generationResultId: string;
+  personaId: string;
+  idempotencyKey: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  attemptCount: number;
+  lastError?: string;
+  leaseExpiresAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+};
+
+export type PersonaDetailDto = PersonaSummaryDto & {
+  dossier: string;
+  dossierRevision: number;
+  commitments: PersonaCommitmentDto[];
+  meetings: PersonaNoteHistoryDto[];
+  dossierJobs: PersonaDossierJobDto[];
+};
+
+export type PersonaDeletionReceipt = {
+  deletionBatchId: string;
+  affectedTranscriptCount: number;
+  affectedNoteIds: string[];
+};
+
+export type PersonaMutationResult = {
+  affectedNoteIds: string[];
+};
+
+export type PersonaClusterAudioPreviewDto = {
+  dataUrl: string;
+  durationMs: number;
+};
+
+export type PersonaAttributionDto = {
+  clusterId: string;
+  speakerLabel: string;
+  state: "anonymous" | "suggested" | "tagged" | "confirmed" | "automatic" | "frozen";
+  persona?: PersonaDto;
+  candidate?: PersonaDto;
+  confidence?: number;
+};
+
+export type ParticipantDto = {
+  persona: PersonaDto;
+  provenance: "tagged" | "confirmed" | "automatic";
+  firstConfirmedAt: string;
 };
 
 export type TranscriptCoverageDto = {
@@ -1461,6 +1554,118 @@ export async function updateNote(input: {
   activeTab?: "notes" | "transcription";
 }) {
   return invoke<NoteDto>("update_note", { request: input });
+}
+
+export async function assignTranscriptPersona(input: {
+  noteId: string;
+  transcriptId: string;
+  name: string;
+  relationship?: string;
+  personaId?: string;
+  isSelf?: boolean;
+}) {
+  return invoke<NoteDto>("assign_transcript_persona", { request: input });
+}
+
+export async function unassignTranscriptPersona(input: { noteId: string; transcriptId: string }) {
+  return invoke<NoteDto>("unassign_transcript_persona", { request: input });
+}
+
+export async function confirmPersonaSuggestion(input: { noteId: string; transcriptId: string }) {
+  return invoke<NoteDto>("confirm_persona_suggestion", { request: input });
+}
+
+export async function rejectPersonaAttribution(input: { noteId: string; transcriptId: string }) {
+  return invoke<NoteDto>("reject_persona_attribution", { request: input });
+}
+
+export async function listPersonas(
+  input: { filter?: "active" | "archived" | "all"; query?: string } = {},
+) {
+  const response = await invoke<{ items: PersonaSummaryDto[] }>("list_personas", {
+    request: input,
+  });
+  return response.items;
+}
+
+export async function getPersona(personaId: string) {
+  return invoke<PersonaDetailDto>("get_persona", { request: { personaId } });
+}
+
+export async function updatePersona(input: {
+  personaId: string;
+  name: string;
+  relationship?: string;
+  dossier: string;
+}) {
+  return invoke<PersonaDetailDto>("update_persona", { request: input });
+}
+
+export async function archivePersona(personaId: string) {
+  return invoke<PersonaDetailDto>("archive_persona", { request: { personaId } });
+}
+
+export async function restorePersona(personaId: string) {
+  return invoke<PersonaDetailDto>("restore_persona", { request: { personaId } });
+}
+
+export async function deletePersona(personaId: string) {
+  return invoke<PersonaDeletionReceipt>("delete_persona", { request: { personaId } });
+}
+
+export async function scrubDeletedPersonaFromNotes(deletionBatchId: string) {
+  return invoke<PersonaMutationResult>("scrub_deleted_persona_from_notes", {
+    request: { deletionBatchId },
+  });
+}
+
+export async function createPersonaCommitment(input: {
+  personaId: string;
+  direction: PersonaCommitmentDto["direction"];
+  text: string;
+  due?: string;
+  sourceNoteId?: string;
+}) {
+  const { due, ...request } = input;
+  return invoke<PersonaCommitmentDto>("create_persona_commitment", {
+    request: { ...request, dueValue: due },
+  });
+}
+
+export async function updatePersonaCommitment(input: {
+  commitmentId: string;
+  direction: PersonaCommitmentDto["direction"];
+  text: string;
+  due?: string;
+  status: PersonaCommitmentDto["status"];
+}) {
+  const { due, ...request } = input;
+  return invoke<PersonaCommitmentDto>("update_persona_commitment", {
+    request: { ...request, dueValue: due },
+  });
+}
+
+export async function deletePersonaCommitment(commitmentId: string) {
+  return invoke<void>("delete_persona_commitment", {
+    request: { commitmentId },
+  });
+}
+
+export async function retryPersonaDossierJob(jobId: string) {
+  return invoke<PersonaDossierJobDto>("retry_persona_dossier_job", { request: { jobId } });
+}
+
+export async function previewPersonaClusterAudio(clusterId: string) {
+  return invoke<PersonaClusterAudioPreviewDto>("preview_persona_cluster_audio", {
+    request: { clusterId },
+  });
+}
+
+export async function createPersonaPrepBrief(input: {
+  personaIds: string[];
+  detectionEpisodeId?: string;
+}) {
+  return invoke<NoteDto>("create_persona_prep_brief", { request: input });
 }
 
 export async function checkRecordingSourceReadiness(sourceMode: RecordingSourceMode) {

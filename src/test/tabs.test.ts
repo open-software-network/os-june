@@ -35,6 +35,13 @@ describe("tab navigation snapshots", () => {
         originFolderId: "f1",
       }),
     ).toBe(false);
+    expect(
+      navEquals(base, {
+        view: "meetings",
+        noteId: "n1",
+        originPersonaId: "p1",
+      }),
+    ).toBe(false);
     // Absent vs. explicitly-false origin is the same tab.
     expect(
       navEquals(base, {
@@ -89,6 +96,13 @@ describe("tab navigation snapshots", () => {
     expect(navEquals({ view: "folders" }, { view: "folders", folderId: "f1" })).toBe(false);
     expect(
       navEquals({ view: "folders", folderId: "f1" }, { view: "folders", folderId: "f1" }),
+    ).toBe(true);
+  });
+
+  it("distinguishes people by Persona id", () => {
+    expect(navEquals({ view: "people" }, { view: "people", personaId: "p1" })).toBe(false);
+    expect(
+      navEquals({ view: "people", personaId: "p1" }, { view: "people", personaId: "p1" }),
     ).toBe(true);
   });
 });

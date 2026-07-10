@@ -75,14 +75,16 @@ _Avoid_: channel (that is the WAV interleave sense), track.
 **Turn**:
 A detected active interval on one source (`source`, `start_ms`, `end_ms`,
 `turn_index`) used to order the transcript as a back-and-forth conversation.
-Detection is energy-based (RMS windows + noise floor), never diarization.
-_Avoid_: segment (that is a live-preview chunk), utterance, speaker (no
-speaker identity is inferred).
+Detection is energy-based (RMS windows + noise floor), never diarization —
+identity, when present, is assigned to turns afterwards by **persona
+recognition** (see Personas), never inferred at detection time.
+_Avoid_: segment (that is a live-preview chunk), utterance, speaker (identity
+comes from persona recognition in post-processing, never from detection).
 
 **Speaker bleed (echo)**:
 System audio re-captured by the microphone after playing through the
-loudspeakers — "speaker" is the device, never a person; no speaker identity
-is inferred. Echo rejection trims bleed spans out of Microphone turns on
+loudspeakers — "speaker" is the device, never a person; echo rejection infers
+no identity. Echo rejection trims bleed spans out of Microphone turns on
 signal evidence (lag-aligned similarity, cancellation depth, level
 dominance); the speech stays attributed to the System source, and no
 downstream step may reintroduce trimmed audio.
@@ -136,6 +138,81 @@ cleanup) can outlast the user's attention: the frontmost app at paste time is
 often no longer the one they dictated into.
 _Avoid_: foreground app, frontmost app (both name a live value, not the pin);
 focus target.
+
+### Personas
+
+**Persona**:
+A person June knows: identity (name, voiceprints), relationship to the user in
+plain language, and a dossier. One persona = one human = one dossier, however
+many hats the relationship line holds.
+_Avoid_: contact, speaker profile, attendee (that is a per-note role, see
+Participant).
+
+**Voiceprint**:
+A stored voice embedding linking recorded speech to a persona; a persona may
+hold several (voices vary by device and day) plus negative examples from
+corrections. Biometric data: never leaves the device.
+_Avoid_: voice sample (that is audio, not the embedding), fingerprint.
+
+**Voiceprint registry**:
+The local-only index that matches Voiceprints to personas for recognition.
+It contains several positive Voiceprints per persona plus negative examples
+from corrections; it is distinct from the Persona store that holds
+relationships and dossiers.
+_Avoid_: voice registry, persona registry.
+
+**Persona recognition**:
+Matching diarized speech against voiceprints to name who spoke, in
+post-processing on saved audio. Three confidence bands: auto-name, suggestion,
+anonymous ("Speaker N"). The first cross-meeting match of any persona is always
+a suggestion. Recognition assigns identity to turns; it never alters turn
+detection.
+_Avoid_: identification (unqualified), diarization (that is the
+cluster-splitting step, one input to recognition).
+
+**Tagging**:
+The user naming a speaker cluster in a finished note. Tagging is enrollment:
+the cluster's embedding becomes the persona's voiceprint. There is no separate
+enrollment ceremony.
+_Avoid_: enrollment (as a distinct user-facing step).
+
+**Dossier**:
+A persona's living memory, maintained by June's agent as prose plus exactly
+one structured type: **Commitments**. Fed only by auto-band or user-confirmed
+speech, never by unconfirmed suggestions.
+_Avoid_: profile, CRM record, contact card.
+
+**Commitment**:
+A structured dossier item with a lifecycle (open → done/dropped): who owes
+whom, what, due, status, source note. The only structured dossier type; adding
+a second is schema creep toward a CRM.
+_Avoid_: action item (that is a note artifact, not a persona-scoped record),
+task.
+
+**Participant**:
+A persona linked to a note, from confirmed recognition or manual tagging. The
+note stays the meeting record — there is deliberately still no Meeting entity;
+"meetings with X" is a query over notes by participant.
+_Avoid_: meeting object, attendee list (as a standalone entity).
+
+**Roster**:
+The compact persona index (name + one-line relationship each) injected into
+the standing context for June's agent. Everything deeper is fetched through
+persona tools on demand.
+_Avoid_: injecting dossiers wholesale.
+
+**Prep brief**:
+A note June's agent writes before an expected meeting: last time, open
+commitments, suggested asks shaped by relationship. Triggered manually or by
+meeting detection; a brief is a note, not a popup and not a meeting entity.
+_Avoid_: meeting agenda (June does not own the agenda).
+
+**Archive (persona)**:
+The lifecycle state for people who won't attend future meetings: excluded from
+recognition and the roster, dossier and history kept. Distinct from delete,
+which severs everything forward-looking (past notes keep the name frozen
+unless the user explicitly scrubs).
+_Avoid_: soft delete, deactivate.
 
 ### Agent runtime (Hermes)
 

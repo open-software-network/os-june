@@ -25,6 +25,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0013](adr/0013-stream-inference-responses-through-june-api.md) — inference responses stream through June API (SSE pass-through + keep-alive heartbeats); charges settle after the stream ends
 - [adr/0014](adr/0014-pinned-dictation-paste-target.md) — the dictation paste target is pinned when the recording stops, never re-resolved at paste time
 - [adr/0015](adr/0015-video-generation-tools.md) — video generation: `/video` fast path + LLM tools, async job + poll, quote-priced, via Venice
+- [adr/0016](adr/0016-local-persona-recognition.md) — local persona recognition over diarized saved audio, both lanes, post-processing only (supersedes ADR-0005's speaker-identity scope line)
 
 ## Enforceable rules (spec/)
 
@@ -62,6 +63,8 @@ Per-repo config the engineering skills read before acting (see the
 - [hermes-gateway-gotchas.md](hermes-gateway-gotchas.md) — integration gotchas: restart discipline, config contract, MCP OAuth, event types, upstream tool-schema quirks
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
 - [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
+- [personas-design.md](personas-design.md) — PRD: personas — tag a voice once, auto-recognize across meetings, dossiers, prep briefs (see ADR-0016)
+- [personas-implementation-plan.md](personas-implementation-plan.md) — production delivery plan, local schema and contracts, phase gates, and verification matrix for the Personas PRD
 - [telemetry.md](telemetry.md) — public overview of June telemetry, current behavior, and policies
 - [telemetry-p3a-prd.md](telemetry-p3a-prd.md) — June P3A: opt-in, privacy-preserving product telemetry
 - [telemetry-p3a-implementation-plan.md](telemetry-p3a-implementation-plan.md) — implementation plan for June P3A phases

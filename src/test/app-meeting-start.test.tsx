@@ -1,7 +1,12 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
-import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
+import {
+  AGENT_RECORDER_REQUEST_EVENT,
+  MEETING_PREP_REQUEST_EVENT,
+  MEETING_START_TRANSCRIPTION_EVENT,
+} from "../lib/events";
 import type { AccountStatus, BootstrapResponse, NoteDto, RecordingSessionDto } from "../lib/tauri";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
@@ -15,12 +20,14 @@ const mocks = vi.hoisted(() => ({
   getCurrentWindow: vi.fn(),
   bootstrapApp: vi.fn(),
   createNote: vi.fn(),
+  createPersonaPrepBrief: vi.fn(),
   createFolder: vi.fn(),
   deleteFolder: vi.fn(),
   renameFolder: vi.fn(),
   assignNoteToFolder: vi.fn(),
   removeNoteFromFolder: vi.fn(),
   listNotes: vi.fn(),
+  listPersonas: vi.fn(),
   getNote: vi.fn(),
   deleteNote: vi.fn(),
   updateNote: vi.fn(),
@@ -65,6 +72,7 @@ vi.mock("../lib/tauri", () => ({
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
+  createPersonaPrepBrief: mocks.createPersonaPrepBrief,
   createFolder: mocks.createFolder,
   deleteFolder: mocks.deleteFolder,
   renameFolder: mocks.renameFolder,
@@ -74,6 +82,7 @@ vi.mock("../lib/tauri", () => ({
   removeSessionFromFolder: vi.fn(async () => undefined),
   removeNoteFromFolder: mocks.removeNoteFromFolder,
   listNotes: mocks.listNotes,
+  listPersonas: mocks.listPersonas,
   getNote: mocks.getNote,
   deleteNote: mocks.deleteNote,
   updateNote: mocks.updateNote,
@@ -181,6 +190,26 @@ describe("meeting start transcription event", () => {
       startDragging: vi.fn().mockResolvedValue(undefined),
     });
     mocks.bootstrapApp.mockResolvedValue(payload);
+    mocks.listPersonas.mockResolvedValue([
+      {
+        id: "persona-jun",
+        name: "Jun",
+        relationship: "Product lead",
+        isSelf: false,
+        voiceprintCount: 2,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "persona-sam",
+        name: "Sam",
+        relationship: "Designer",
+        isSelf: false,
+        voiceprintCount: 1,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
     mocks.getNote.mockResolvedValue(first);
     mocks.checkRecordingSourceReadiness.mockResolvedValue({
       sourceMode: "microphonePlusSystem",
@@ -286,6 +315,42 @@ describe("meeting start transcription event", () => {
     });
 
     await waitFor(() => expect(screen.getByLabelText("Note title")).toHaveValue("New meeting"));
+  });
+
+  it("waits for confirmation before creating a metered detected prep note", async () => {
+    const user = userEvent.setup();
+    const prep = note({ id: "prep-1", title: "Prep for Jun, Sam" });
+    mocks.createPersonaPrepBrief.mockResolvedValue(prep);
+    mocks.listNotes.mockResolvedValue({ items: [note(), prep] });
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has(MEETING_PREP_REQUEST_EVENT)).toBe(true));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    const payload = {
+      detectionEpisodeId: "episode-1",
+      bundleIds: ["us.zoom.xos"],
+      appLabels: ["Zoom"],
+      expectedPeople: [{ id: "persona-jun", name: "Jun", relationship: "Product lead" }],
+    };
+    await waitFor(async () => {
+      if (!screen.queryByText("Expected people")) {
+        await act(async () => {
+          await mocks.listeners.get(MEETING_PREP_REQUEST_EVENT)?.({ payload });
+        });
+      }
+      expect(screen.getByText("Expected people")).toBeInTheDocument();
+    });
+
+    expect(mocks.createPersonaPrepBrief).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("checkbox", { name: /Sam/ }));
+    await user.click(screen.getByRole("button", { name: "Create prep note" }));
+
+    await waitFor(() =>
+      expect(mocks.createPersonaPrepBrief).toHaveBeenCalledWith({
+        personaIds: ["persona-jun", "persona-sam"],
+        detectionEpisodeId: "episode-1",
+      }),
+    );
   });
 
   it("cleans up Tauri listeners that resolve after unmount", async () => {
