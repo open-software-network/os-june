@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultNav, navEquals, type TabNav } from "../app/tabs/tabs";
+import { defaultNav, navEquals, reorderTabs, type Tab, type TabNav } from "../app/tabs/tabs";
 
 describe("tab navigation snapshots", () => {
   it("a fresh tab lands on the agent hero (a new chat)", () => {
@@ -90,5 +90,41 @@ describe("tab navigation snapshots", () => {
     expect(
       navEquals({ view: "folders", folderId: "f1" }, { view: "folders", folderId: "f1" }),
     ).toBe(true);
+  });
+});
+
+describe("reorderTabs", () => {
+  const tab = (id: string): Tab => ({ id, nav: defaultNav() });
+  const ids = (tabs: Tab[]) => tabs.map((t) => t.id);
+
+  it("applies the new visible order", () => {
+    const tabs = [tab("a"), tab("b"), tab("c")];
+    expect(ids(reorderTabs(tabs, ["b", "c", "a"]))).toEqual(["b", "c", "a"]);
+  });
+
+  it("keeps overflowed (non-visible) tabs in their relative order after the strip", () => {
+    // a, b, d are on the strip; c and e sit in the overflow popover. The dropped
+    // strip order [d, b, a] leads, then c and e follow in their existing order.
+    const tabs = [tab("a"), tab("b"), tab("c"), tab("d"), tab("e")];
+    expect(ids(reorderTabs(tabs, ["d", "b", "a"]))).toEqual(["d", "b", "a", "c", "e"]);
+  });
+
+  it("preserves the dropped order when the active tab was pinned from overflow", () => {
+    // Full order a..e with active e pinned onto the strip by layout: strip shows
+    // [a, b, e]. Dragging e to the front must commit exactly that strip order —
+    // slot-index reassignment used to scatter it to [e, a, c, d, b], which
+    // re-layout then rendered as [e, a, c].
+    const tabs = [tab("a"), tab("b"), tab("c"), tab("d"), tab("e")];
+    expect(ids(reorderTabs(tabs, ["e", "a", "b"]))).toEqual(["e", "a", "b", "c", "d"]);
+  });
+
+  it("returns the same array when the order is unchanged", () => {
+    const tabs = [tab("a"), tab("b")];
+    expect(reorderTabs(tabs, ["a", "b"])).toBe(tabs);
+  });
+
+  it("ignores ids that no longer exist", () => {
+    const tabs = [tab("a"), tab("b")];
+    expect(ids(reorderTabs(tabs, ["b", "gone", "a"]))).toEqual(["b", "a"]);
   });
 });

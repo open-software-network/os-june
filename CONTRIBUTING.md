@@ -50,6 +50,17 @@ make verify
 Or individually: `pnpm check`, `pnpm typecheck`, `pnpm test`,
 `pnpm test:rust`, `pnpm test:june-api`.
 
+Frontend typecheck/tests and `src-tauri/` macOS Rust checks are local by default
+on PRs to avoid paying for repeated hosted runners while a branch is still
+changing. After pushing a clean branch, run the path-aware local signoff:
+
+```sh
+make local-ci
+```
+
+See [docs/local-ci-signoff.md](docs/local-ci-signoff.md) for setup, the
+`run-frontend-ci` / `run-macos-ci` escape hatches, and maintainer ruleset notes.
+
 Rules that fail review if violated (full list in [spec/index.md](spec/index.md)):
 
 - Sentence case for all UI labels.

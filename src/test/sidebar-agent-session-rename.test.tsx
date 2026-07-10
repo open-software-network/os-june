@@ -7,6 +7,7 @@ import {
 } from "../components/agent/AgentWorkspace";
 import { Sidebar } from "../components/sidebar/Sidebar";
 import type { HermesSessionInfo, NoteListItemDto } from "../lib/tauri";
+import { DATE_FORMAT_CHANGED_EVENT, setStoredDateFormat } from "../lib/date-format";
 
 vi.mock("../lib/hermes-adapter", () => ({
   deleteHermesSession: vi.fn(),
@@ -74,6 +75,7 @@ describe("Sidebar agent session rename", () => {
 
     await user.click(await screen.findByRole("button", { name: "Actions for Recent session" }));
     await user.click(screen.getByRole("menuitem", { name: "Rename session" }));
+    expect(screen.getByRole("dialog", { name: "Rename session" })).toBeInTheDocument();
     const input = screen.getByRole("textbox", { name: "Session name" });
 
     await user.clear(input);
@@ -116,6 +118,23 @@ describe("Sidebar agent session rename", () => {
     await user.type(screen.getByRole("textbox", { name: "Session name" }), "{Escape}");
 
     expect(onRenameAgentSession).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Rename session" })).not.toBeInTheDocument();
     expect(screen.getByText("Pinned session")).toBeInTheDocument();
+  });
+
+  it("updates older session dates when the date format preference changes", async () => {
+    renderSidebar();
+
+    act(() => setStoredDateFormat("day-first"));
+    expect(await screen.findAllByText("4 Jun")).toHaveLength(2);
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(DATE_FORMAT_CHANGED_EVENT, {
+          detail: { preference: "invalid" },
+        }),
+      );
+    });
+    expect(await screen.findAllByText("Jun 4")).toHaveLength(2);
   });
 });

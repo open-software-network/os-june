@@ -22,6 +22,8 @@ pub enum ActionSlug {
     ImageGenerate,
     NoteGenerate,
     NoteTranscribe,
+    VideoAnimate,
+    VideoGenerate,
     WebFetch,
     WebSearch,
 }
@@ -36,6 +38,8 @@ impl ActionSlug {
             Self::ImageGenerate => "image_generate",
             Self::NoteGenerate => "note_generate",
             Self::NoteTranscribe => "note_transcribe",
+            Self::VideoAnimate => "video_animate",
+            Self::VideoGenerate => "video_generate",
             Self::WebFetch => "web_fetch",
             Self::WebSearch => "web_search",
         }
@@ -294,6 +298,101 @@ pub struct GeneratedImage {
     pub provider: String,
 }
 
+/// What a text-to-video generation needs: a prompt, the model, Venice's
+/// duration/resolution/aspect-ratio/audio knobs, and an optional negative
+/// prompt. Deliberately carries no user id or caller key, so the provider sees
+/// only the inference inputs and June's configured upstream key. Video is an
+/// async job: this queues the job and returns a Venice queue handle, not the
+/// bytes.
+#[derive(Clone, Debug)]
+pub struct VideoGenerationRequest {
+    pub prompt: String,
+    pub model: ModelId,
+    /// Venice `duration` string enum ("1s".."30s", "1 gen", "Auto").
+    pub duration: String,
+    /// Venice `resolution` string enum ("256p".."2160p", "4k", ...). `None`
+    /// leaves it to Venice's per-model default.
+    pub resolution: Option<String>,
+    /// Venice `aspect_ratio` string enum ("1:1", "16:9", ...).
+    pub aspect_ratio: Option<String>,
+    pub audio: Option<bool>,
+    pub negative_prompt: Option<String>,
+}
+
+/// What an image-to-video (animate) job needs: the source image bytes (base64,
+/// no `data:` prefix) plus its mime, a prompt, the model, and the same Venice
+/// knobs as generation. Image-to-video is a SEPARATE Venice model catalog from
+/// text-to-video (default `default_video_animate_model`), so it has its own
+/// domain type mirroring `ImageEditRequest`.
+#[derive(Clone, Debug)]
+pub struct VideoAnimationRequest {
+    pub image_base64: String,
+    pub mime_type: String,
+    pub prompt: String,
+    pub model: ModelId,
+    pub duration: String,
+    pub resolution: Option<String>,
+    pub aspect_ratio: Option<String>,
+    pub audio: Option<bool>,
+    pub negative_prompt: Option<String>,
+}
+
+/// The free Venice price oracle input: everything that shapes a video quote.
+/// Carries no prompt and no credentials — the quote is June's own pricing
+/// basis, always run against June's configured Venice key.
+#[derive(Clone, Debug)]
+pub struct VideoQuoteRequest {
+    pub model: ModelId,
+    pub duration: String,
+    pub resolution: Option<String>,
+    pub aspect_ratio: Option<String>,
+    pub audio: Option<bool>,
+}
+
+/// A queued Venice video job: June's handle onto the async lifecycle. The
+/// `download_url` is present only for VPS-backed models (a 24h pre-signed mp4
+/// URL); otherwise the bytes come from `retrieve`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VideoQueued {
+    pub venice_queue_id: String,
+    pub download_url: Option<String>,
+}
+
+/// The outcome of a single Venice `retrieve` poll, discriminated by the
+/// response `Content-Type` (application/json vs video/mp4).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VideoRetrieved {
+    /// Still running. Venice reports timing estimates in milliseconds.
+    Processing {
+        average_execution_ms: u64,
+        execution_ms: u64,
+    },
+    /// COMPLETED, non-VPS: the raw `video/mp4` bytes came back inline.
+    CompletedBytes { bytes: Vec<u8>, mime_type: String },
+    /// COMPLETED, VPS-backed: the retrieve returned JSON without bytes; the
+    /// mp4 lives at a pre-signed URL. The URL may be empty here when Venice's
+    /// retrieve response omits it — the service falls back to the `download_url`
+    /// captured at queue time.
+    CompletedUrl { download_url: String },
+}
+
+/// A generated video handed back from the service to the API boundary. Never
+/// stored in the registry: `bytes` (when present) are fetched from Venice on
+/// the completing poll and streamed straight to the HTTP response, so nothing
+/// byte-sized is pinned in memory. `bytes` is `#[serde(skip)]` — the status
+/// handler streams them as `video/mp4` rather than base64-through-JSON.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedVideo {
+    #[serde(skip)]
+    pub bytes: Option<Vec<u8>>,
+    pub download_url: Option<String>,
+    pub mime_type: String,
+    pub model: String,
+    pub provider: String,
+    pub size_bytes: Option<u64>,
+}
+
 /// Which upstream engine Venice should run a web search against. Brave is the
 /// default and runs under zero data retention; Google is anonymized and
 /// proxied through Venice so the query is not associated with an identity.
@@ -477,6 +576,21 @@ pub trait ImageGenerator: Send + Sync {
 #[async_trait]
 pub trait ImageEditor: Send + Sync {
     async fn edit(&self, request: ImageEditRequest) -> Result<GeneratedImage, DomainError>;
+}
+
+/// Venice's asynchronous, dynamically priced video API. Quoting is free and is
+/// June's price oracle; queueing starts an async job; retrieving polls it. The
+/// provider does inference/transport only — billing (quote -> credits ->
+/// authorize -> charge-once) lives in `VideoService`.
+#[async_trait]
+pub trait VideoProvider: Send + Sync {
+    async fn quote(&self, request: VideoQuoteRequest) -> Result<f64, DomainError>;
+    async fn queue(&self, request: VideoGenerationRequest) -> Result<VideoQueued, DomainError>;
+    async fn queue_animation(
+        &self,
+        request: VideoAnimationRequest,
+    ) -> Result<VideoQueued, DomainError>;
+    async fn retrieve(&self, model: &str, queue_id: &str) -> Result<VideoRetrieved, DomainError>;
 }
 
 #[async_trait]

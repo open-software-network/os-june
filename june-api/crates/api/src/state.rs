@@ -1,7 +1,7 @@
 use june_domain::TokenVerifier;
 use june_services::{
     AgentChatService, DictateService, ImageService, IssueReportService, NoteGenerateService,
-    NoteTranscribeService, P3aReportService, PricingTable, WebAugmentService,
+    NoteTranscribeService, P3aReportService, PricingTable, VideoService, WebAugmentService,
 };
 use std::sync::Arc;
 
@@ -22,6 +22,9 @@ struct ApiStateInner {
     // held as a service like the other billed surfaces rather than the bare
     // provider.
     image: Arc<ImageService>,
+    // Video generation is metered as an async job (authorize -> quote -> queue,
+    // then charge on the completing poll), held as a service like image.
+    video: Arc<VideoService>,
     issue_reports: Arc<IssueReportService>,
     p3a_reports: Arc<P3aReportService>,
     limits: ApiLimits,
@@ -56,6 +59,7 @@ pub struct ApiStateParams {
     pub dictate: Arc<DictateService>,
     pub web: Arc<WebAugmentService>,
     pub image: Arc<ImageService>,
+    pub video: Arc<VideoService>,
     pub issue_reports: Arc<IssueReportService>,
     pub p3a_reports: Arc<P3aReportService>,
     pub limits: ApiLimits,
@@ -74,6 +78,7 @@ impl ApiState {
                 dictate: params.dictate,
                 web: params.web,
                 image: params.image,
+                video: params.video,
                 issue_reports: params.issue_reports,
                 p3a_reports: params.p3a_reports,
                 limits: params.limits,
@@ -112,6 +117,10 @@ impl ApiState {
 
     pub(crate) fn image(&self) -> &ImageService {
         &self.inner.image
+    }
+
+    pub(crate) fn video(&self) -> &VideoService {
+        &self.inner.video
     }
 
     pub(crate) fn issue_reports(&self) -> &IssueReportService {

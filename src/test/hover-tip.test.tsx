@@ -82,6 +82,98 @@ describe("HoverTip", () => {
     }
   });
 
+  it("lets keyboard users tab from an interactive anchor into the portaled tip", () => {
+    render(
+      <HoverTip
+        tip={
+          <div>
+            Details
+            <button type="button">Show more</button>
+          </div>
+        }
+        interactive
+      >
+        <button type="button">Change model</button>
+      </HoverTip>,
+    );
+
+    const anchorButton = screen.getByRole("button", { name: "Change model" });
+    fireEvent.focus(anchorButton);
+    const tooltip = screen.getByRole("tooltip");
+
+    fireEvent.keyDown(anchorButton, { key: "Tab" });
+
+    expect(screen.getByRole("button", { name: "Show more" })).toHaveFocus();
+    expect(tooltip).toHaveAttribute("data-state", "open");
+  });
+
+  it("remeasures interactive tips when portaled content resizes", () => {
+    window.innerHeight = 240;
+    window.innerWidth = 1000;
+    let tooltipHeight = 40;
+    let resizeCallback: ResizeObserverCallback | undefined;
+    const originalResizeObserver = globalThis.ResizeObserver;
+    const rectSpy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.getAttribute("role") === "tooltip") {
+          return {
+            top: 0,
+            left: 0,
+            right: 120,
+            bottom: tooltipHeight,
+            width: 120,
+            height: tooltipHeight,
+          } as DOMRect;
+        }
+        return { top: 100, left: 100, right: 132, bottom: 116, width: 32, height: 16 } as DOMRect;
+      });
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 1;
+    });
+    const cancelRafSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+    globalThis.ResizeObserver = class {
+      constructor(callback: ResizeObserverCallback) {
+        resizeCallback = callback;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
+    try {
+      render(
+        <HoverTip
+          tip={
+            <div>
+              Description
+              <button type="button">Show more</button>
+            </div>
+          }
+          interactive
+        >
+          <button type="button">Change model</button>
+        </HoverTip>,
+      );
+
+      fireEvent.focus(screen.getByRole("button", { name: "Change model" }));
+      const tooltip = screen.getByRole("tooltip");
+      expect(tooltip.style.top).toBe("122px");
+
+      tooltipHeight = 180;
+      act(() => {
+        resizeCallback?.([], {} as ResizeObserver);
+      });
+
+      expect(tooltip.style.top).toBe("52px");
+    } finally {
+      globalThis.ResizeObserver = originalResizeObserver;
+      rectSpy.mockRestore();
+      rafSpy.mockRestore();
+      cancelRafSpy.mockRestore();
+    }
+  });
+
   it("keeps a compact tip below the anchor near the viewport bottom when it fits", () => {
     // jsdom has no layout, so feed the geometry the measure pass reads: a short
     // anchor low in a tall-enough viewport, and a one-line tip that fits below.

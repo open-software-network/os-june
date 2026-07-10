@@ -25,6 +25,15 @@ describe("toolActivityLabel", () => {
     expect(toolActivityLabel("write_file", { path: "src/App.tsx" })).toBe("Editing files");
   });
 
+  it("labels the june_video MCP tools as video work, not a raw tool name", () => {
+    // Regression: `mcp__june_video__generate_video` used to humanize to the ugly
+    // "Mcp june video generate video".
+    expect(toolActivityLabel("mcp__june_video__generate_video")).toBe("Working with video");
+    expect(toolActivityLabel("june_video.generate_video")).toBe("Working with video");
+    // animate_image is image-to-video — video work, not "Working with images".
+    expect(toolActivityLabel("june_video.animate_image")).toBe("Working with video");
+  });
+
   it("keeps an understandable fallback for unknown tools", () => {
     expect(humanizeToolName("custom_deploy_tool")).toBe("Custom deploy tool");
     expect(toolActivityLabel("custom_deploy_tool")).toBe("Custom deploy tool");

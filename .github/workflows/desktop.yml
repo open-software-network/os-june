@@ -3,6 +3,7 @@ name: desktop
 on:
   workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - ".github/workflows/desktop.yml"
       - "hud.html"
@@ -45,7 +46,10 @@ jobs:
   frontend:
     name: Frontend lint and tests
     needs: changes
-    if: needs.changes.outputs.frontend == 'true'
+    if: >-
+      needs.changes.outputs.frontend == 'true' &&
+      (github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'run-frontend-ci'))
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -74,6 +78,9 @@ jobs:
   # Biome enforces JS/TS/JSON/CSS formatting + linting for src/ and scripts/.
   # `pnpm check` fails on formatting drift, lint errors, and banned imports
   # (the icons-central-only spec bans lucide via noRestrictedImports).
+  # Keep it in hosted PR CI because it is cheap and catches style drift before
+  # review. The slower frontend typecheck + Vitest job is local signoff by
+  # default; add `run-frontend-ci` to force the hosted job.
   biome:
     name: Biome check
     needs: changes
@@ -151,9 +158,11 @@ jobs:
           fi
 
   # rustfmt needs no compilation and none of the macOS-only system deps, so it
-  # runs on cheap Linux for fast feedback. Clippy and tests stay on macOS (see
-  # the `rust` job) because src-tauri gates real code behind
-  # `#[cfg(target_os = "macos")]` that a Linux lint pass would silently skip.
+  # runs on cheap Linux for fast feedback. PR clippy/tests for src-tauri are
+  # handled by local gh-signoff (`make signoff-rust-macos`) to avoid paying for
+  # repeated macOS runner minutes while an agent or developer is still iterating.
+  # The full macOS job still runs after merge to main and can be forced on a PR
+  # by adding the `run-macos-ci` label.
   rust-fmt:
     name: Tauri Rust format
     needs: changes
@@ -173,7 +182,10 @@ jobs:
   rust:
     name: Tauri Rust clippy and tests
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: >-
+      needs.changes.outputs.rust == 'true' &&
+      (github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'run-macos-ci'))
     runs-on: blacksmith-6vcpu-macos-15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

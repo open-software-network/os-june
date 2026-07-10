@@ -2831,7 +2831,7 @@ input:focus-visible,
 .agent-tool-icon-minimize {
   opacity: 0;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 15px;
+  font-size: var(--fs-lg);
   line-height: 1;
 }
 
@@ -3107,6 +3107,48 @@ input:focus-visible,
 .agent-generated-image-download:focus-visible {
   background: var(--muted);
   color: var(--foreground);
+}
+
+.agent-generated-video {
+  max-width: min(100%, 520px);
+  margin-block: var(--sp-2);
+}
+
+.agent-generated-video-placeholder {
+  display: grid;
+  place-items: center;
+  gap: var(--sp-2);
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.agent-generated-video-progress {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-generated-video-frame {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  overflow: hidden;
+}
+
+.agent-generated-video-frame video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--background);
+  object-fit: contain;
 }
 
 /* Artifact viewer ----------------------------------------------------
@@ -5543,6 +5585,16 @@ input:focus-visible,
   background: var(--secondary);
 }
 
+/* While a safe-polygon hover traversal is in flight the popover carries
+   data-hover-bridging: only the active row (the one whose card is open) may
+   read as highlighted, so a row the pointer merely crosses on its diagonal
+   path to the card does not also light up. Higher specificity than the :hover
+   rule above so it wins regardless of source order in this flat stylesheet. */
+.agent-composer-model-popover[data-hover-bridging]
+.agent-composer-model-row:hover:not([data-active="true"]) {
+  background: transparent;
+}
+
 .agent-composer-model-row[aria-selected="true"] {
   color: var(--foreground);
 }
@@ -5575,16 +5627,48 @@ input:focus-visible,
 .agent-composer-model-row-check,
 .agent-composer-model-row-chevron {
   flex: 0 0 auto;
-  margin-left: auto;
 }
 
 .agent-composer-model-row-check {
   width: 16px;
+  margin-left: auto;
   color: var(--foreground);
 }
 
 .agent-composer-model-row-chevron {
+  margin-left: auto;
   color: var(--muted-foreground);
+}
+
+/* Trailing private marker: a compact mode icon in the same clay-tinted family
+ * as .agent-safety-badge. It claims the auto gap on private rows; if the row is
+ * also selected, the selected checkmark sits immediately to its left. */
+.model-row-privacy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--brand) 14%, transparent);
+  color: var(--warm-strong);
+  line-height: 0;
+}
+
+/* Center the glyph on whole pixels: a 14px icon in the 20px box leaves a 3px
+ * ring on every side (an odd 13px icon rounded to 3.5px and read off-center). */
+.model-row-privacy svg {
+  display: block;
+  color: var(--warm-strong);
+}
+
+/* When the selected checkmark precedes the private marker, the check already
+ * claimed the auto gap, so the icon just trails it and stays flush right. */
+.agent-composer-model-row-check ~ .model-row-privacy {
+  margin-left: 0;
 }
 
 /* Sits below the suggested rows with the same breathing room, so its hover
@@ -5593,10 +5677,10 @@ input:focus-visible,
   margin-top: var(--sp-1);
 }
 
-/* Second layer: a side panel hanging off the root menu — the hover detail
- * card for a suggested model, or the searchable full catalog. The bottom
- * anchor here is the panel's; the detail card gets repositioned to its
- * hovered row from JS (see the flyout measure effect). */
+/* Second layer: the searchable full-catalog panel hanging off the root menu,
+ * anchored to the panel's bottom edge. (The suggested-model detail card renders
+ * as a body-portaled .agent-composer-model-hovercard so the note-chat panel
+ * can't clip or cover it — see the model pickers.) */
 .agent-composer-model-flyout {
   position: absolute;
   bottom: -1px;
@@ -5647,14 +5731,34 @@ input:focus-visible,
 }
 
 .agent-composer-model-detail .agent-composer-model-surface {
-  gap: var(--sp-1);
-  width: 232px;
+  gap: var(--sp-2);
+  width: 248px;
   padding: var(--sp-3);
+}
+
+.agent-composer-model-detail-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.agent-composer-model-detail-content[data-animate-change="true"] {
+  animation: agent-composer-model-detail-content-in var(--t-fast) var(--ease-out);
+}
+
+@keyframes agent-composer-model-detail-content-in {
+  from {
+    opacity: 0.72;
+    filter: blur(4px);
+    transform: translateY(1px);
+  }
 }
 
 .agent-composer-model-detail-name {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--sp-2);
   margin: 0;
   font-size: var(--fs-md);
@@ -5662,63 +5766,184 @@ input:focus-visible,
 }
 
 .agent-composer-model-detail-name > span:first-child {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-composer-model-detail-name .model-trait-icon {
+/* The privacy chip uses the themed (brand-tinted clay) pill so it reads as the
+ * same family as the trailing row marker. Pin it so it never shrinks against a
+ * long model name. */
+.agent-composer-model-detail-name .agent-safety-badge {
   flex: 0 0 auto;
-  font-weight: 400;
 }
 
-.agent-composer-model-detail-values {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+/* ============================================================================
+ * Scroll fades (design system)
+ *
+ * A scroller melts its clipped edge when content is hidden above or below the
+ * viewport. Driven by the `useScrollFade` hook, which sets `data-fade-top` /
+ * `data-fade-bottom` only on the edge(s) with hidden content (so a fade never
+ * shows when everything fits). Two flavors, one contract:
+ *
+ *  - `.scroll-fade`      — contained overlays: `::before`/`::after` gradients
+ *    pinned to the wrapper's edges. WKWebView-safe for popovers (a mask on the
+ *    scroller rides the scrolled content in WebKit and bleeds past the bounds).
+ *    Put the class + data attributes on a non-scrolling wrapper; the scroller
+ *    is its child. Tunables: `--scroll-fade-size`, `--scroll-fade-color`,
+ *    `--scroll-fade-inset-right`.
+ *  - `.scroll-fade-mask` — mask-image gradient on the scroller itself. Reveals
+ *    the real content at the edge (clean in light + dark) for large panel
+ *    scrollers. Put the class + data attributes on the scroller. Tunable:
+ *    `--scroll-fade-size`.
+ * ============================================================================ */
+.scroll-fade {
+  position: relative;
+}
+
+.scroll-fade::before,
+.scroll-fade::after {
+  content: "";
+  position: absolute;
+  right: var(--scroll-fade-inset-right, 0);
+  left: 0;
+  z-index: 1;
+  height: var(--scroll-fade-size, 24px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.scroll-fade::before {
+  top: 0;
+  background: linear-gradient(to bottom, var(--scroll-fade-color, var(--popover)), transparent);
+}
+
+.scroll-fade::after {
+  bottom: 0;
+  background: linear-gradient(to top, var(--scroll-fade-color, var(--popover)), transparent);
+}
+
+.scroll-fade[data-fade-top]::before,
+.scroll-fade[data-fade-bottom]::after {
+  opacity: 1;
+}
+
+.scroll-fade-mask[data-fade-top][data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--scroll-fade-size, 28px),
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--scroll-fade-size, 28px),
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+}
+
+.scroll-fade-mask[data-fade-top]:not([data-fade-bottom]) {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
+}
+
+.scroll-fade-mask:not([data-fade-top])[data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+}
+
+/* The card always shows the full description (no "Show more" toggle): a capped,
+ * scrollable box so the card can never grow after it opens, which keeps the
+ * open-time viewport clamp correct and the expansion keyboard-neutral. It rides
+ * the shared `.scroll-fade` primitive with a tighter fade sized for the short
+ * box. */
+.agent-composer-model-detail-desc-wrap {
+  --scroll-fade-size: 14px;
+  overflow: hidden;
+  contain: paint;
 }
 
 .agent-composer-model-detail-desc {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
   margin: 0;
-  overflow: hidden;
+  max-height: 104px;
+  overflow-y: auto;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  line-height: 1.4;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
 }
 
-/* When the description is clamped it's wrapped in a HoverTip; the wrapper span
- * must stretch so the clamped text keeps the card's full width (an inline span
- * would shrink-wrap and throw off the two-line measurement). */
-.agent-composer-model-detail-desc-tip {
-  display: block;
+/* The card's spec table: pricing and context as label/value rows, set on a
+ * subtle inset panel (rather than a divider) so it reads as its own group.
+ * Muted labels on the left, values hugging the right edge. */
+.agent-composer-model-detail-specs {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.agent-composer-model-detail-specs dt {
+  color: var(--muted-foreground);
+}
+
+.agent-composer-model-detail-specs dd {
+  margin: 0;
+  color: var(--popover-foreground);
+  text-align: right;
 }
 
 /* The catalog rows' hover card — same body as the suggested-model detail
  * card, but fixed-positioned beside the hovered row (set from JS) so it can
  * escape the panel's clipping and tracks the pointer like Codex's item
- * tooltips. Interactive so the pointer can reach its (clamped) description and
- * its hover tip; a close debounce keeps it alive across the gap from the row. */
+ * tooltips. Interactive so the pointer can move onto and read the card; a
+ * close debounce keeps it alive across the gap from the row. */
 .agent-composer-model-hovercard {
   position: fixed;
-  z-index: 3;
+  /* Portaled to document.body, so it must clear every panel it can open over —
+   * notably the note-chat panel (z-index 6) and its resize handle (z-index 71).
+   * Shares the top transient layer with .hover-tip (also z-index 140). */
+  z-index: 140;
   display: block;
   pointer-events: auto;
   color: var(--popover-foreground);
-  /* Keep the hover card above the panel so the panel shadow/fade cannot wash
-   * over the card. Clip only the side facing the panel; the other three sides
-   * keep the same elevation, and the clipped side cannot bleed back into the
-   * panel. */
-  clip-path: inset(-48px 0 -48px -48px);
+  transition:
+    top var(--t-med) var(--ease-spring),
+    right var(--t-med) var(--ease-spring),
+    left var(--t-med) var(--ease-spring);
   animation: agent-composer-model-flyout-left var(--t-med) var(--ease-out);
 }
 
 .agent-composer-model-hovercard[data-side="right"] {
-  clip-path: inset(-48px -48px -48px 0);
   animation-name: agent-composer-model-flyout-right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-composer-model-hovercard {
+    transition: none;
+  }
+
+  .agent-composer-model-detail-content[data-animate-change="true"] {
+    animation: none;
+  }
 }
 
 .agent-composer-model-all-panel {
@@ -5726,40 +5951,36 @@ input:focus-visible,
 }
 
 .agent-composer-model-all-panel .agent-composer-model-surface {
-  /* Tight: rows fade out right under the search field, no blank band. */
-  gap: var(--sp-2);
+  /* Tight: the search and filter rows sit flush; the filter's full-bleed
+   * hairline (below) does the separating, not whitespace. */
+  gap: 0;
   width: min(280px, calc(100vw - 48px));
   max-height: inherit;
   padding: var(--sp-1);
 }
 
 .agent-composer-model-search {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
+  display: flex;
   align-items: center;
-  gap: var(--sp-2);
   flex: 0 0 auto;
-  height: var(--control-lg);
-  /* Inset the field from the popover edges so the focus ring has breathing
-   * room (sp-2 margin clears the 4px ring off the edge), and keep the
-   * icon+placeholder gutter aligned with the row names below (row content
-   * starts at the row's own sp-2 padding). */
-  margin: var(--sp-1) var(--sp-2) 0;
-  padding: 0 calc(var(--sp-2) - 2px);
-  border-radius: var(--r-md);
-  background: var(--card);
+  height: var(--control-md);
+  /* Bare inline input, matching the command prompt: no icon, no boxed
+   * container — sp-2 padding lines the caret up with the rows below. */
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
   color: var(--muted-foreground);
-  box-shadow: inset 0 0 0 1px var(--popover-border);
-  transition:
-    box-shadow var(--t-fast) var(--ease-out),
-    background-color var(--t-fast) var(--ease-out);
 }
 
+/* The input suppresses the default outline, so the row itself must carry a
+ * visible focus state for keyboard users: the same quiet wash the app's menus
+ * use for their active row, rather than boxing the field back in. The outline
+ * is transparent in normal themes but forced-colors mode repaints outline
+ * colors, so high-contrast users still get a drawn ring where the background
+ * wash would be flattened away. */
 .agent-composer-model-search:focus-within {
-  background: var(--popover);
-  box-shadow:
-    0 0 0 1px var(--ring),
-    0 0 0 4px var(--focus-ring);
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
 }
 
 .agent-composer-model-search input {
@@ -5776,18 +5997,44 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-/* The list's scroll viewport plus its edge fades. The wrap exists so the
- * overlays can sit at top: 0 / bottom: 0 of the exact scroll area — no
- * hand-computed offsets to drift out of place. */
+/* The "Private" catalog filter: a quiet label + switch row between the search
+ * input and the list, on the rows' own padding so everything lines up. The
+ * barely-there hairline under it splits the search + filter block from the
+ * model list (Cursor-style). */
+.agent-composer-model-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  min-height: var(--control-md);
+  /* Bleed past the surface padding so the hairline runs the panel's full
+   * width; the widened padding keeps the label on the shared content gutter. */
+  margin: 0 calc(-1 * var(--sp-1));
+  padding: 0 calc(var(--sp-1) + var(--sp-2));
+  border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
+  color: var(--popover-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.3;
+}
+
+/* Catalog list scroller. Fades come from the shared `.scroll-fade` primitive
+ * (contained overlays, WKWebView-safe for this popover); only the fade size is
+ * tuned here so rows melt into the popover surface at the boundary. */
 .agent-composer-model-list-wrap {
-  position: relative;
+  --scroll-fade-size: 16px;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
   contain: paint;
-  --scroll-fade-size: 16px;
+}
+
+/* In the all-models panel the surface stacks with no gap (the filter hairline
+ * separates instead), so the list carries its own breathing room. */
+.agent-composer-model-all-panel .agent-composer-model-list-wrap {
+  margin-top: var(--sp-1);
 }
 
 .agent-composer-model-list {
@@ -7065,7 +7312,9 @@ input:focus-visible,
 .sidebar-brand {
   display: inline-flex;
   align-items: center;
-  height: 14px;
+  /* Matches .sidebar-brand-mark: the wordmark scales with the text-size
+   * preference, so its wrapper must grow with it. */
+  height: calc(14px * var(--font-scale));
   color: var(--foreground);
   text-decoration: none;
   flex: 0 1 auto;
@@ -7157,7 +7406,9 @@ input:focus-visible,
  * accent. Replaces the old light/dark <img> swap. */
 .sidebar-brand-mark {
   display: block;
-  height: 14px;
+  /* The wordmark is brand *text*, so it rides the text-size preference like
+   * the nav labels beside it — unlike glyph icons, which stay fixed chrome. */
+  height: calc(14px * var(--font-scale));
   width: auto;
   color: var(--foreground);
 }
@@ -7329,14 +7580,14 @@ input:focus-visible,
 
 .command-prompt-search {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-2);
   height: 44px;
-  padding: 0 14px;
-  /* Barely-there hairline: half the strength of --border-subtle, just enough
-   * to seat the search row without drawing a visible divider. */
-  border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
+  /* Bare input, Linear-style: no icon, no divider — the results' top
+   * scroll-fade melts rows out underneath this row instead. 17px lines the
+   * caret up with the group titles below (8px results + 9px title padding). */
+  padding: 0 17px;
   color: var(--muted-foreground);
 }
 
@@ -7391,7 +7642,13 @@ input:focus-visible,
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px;
+  /* Top edge tucks the first group up under the search row (the group title's
+   * own 5px top padding provides the rest of the gap). */
+  padding: 2px 8px 8px;
+  /* Opt out of the global standard scrollbar props so the app's quiet 4px
+   * hover-reveal webkit scrollbar engages here (same move as .agent-scroll). */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 .command-prompt-group + .command-prompt-group {
@@ -7401,7 +7658,7 @@ input:focus-visible,
 .command-prompt-group-title {
   padding: 5px 9px 7px;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
 }
 
@@ -8057,10 +8314,7 @@ input:focus-visible,
 .agent-session-time {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  /* Ticking value: the sidebar re-renders on a 60s clock so this relative time
-   * advances (5m to 10m to 1h). Tabular figures keep the width stable across
-   * ticks per the spec/no-tabular-numerals.md live-value exception. */
-  font-variant-numeric: tabular-nums;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -8295,6 +8549,9 @@ input:focus-visible,
  * where even icon-width tabs overflow. */
 .tab-strip {
   --tab-strip-shadow-pad: 4px;
+  /* Width the active tab holds at the compact (tight/icon) sizes so its label
+   * stays readable. Keep in sync with ACTIVE_COMPACT_TAB in TabBar.tsx. */
+  --tab-active-compact-w: 160px;
 
   display: flex;
   align-items: center;
@@ -8320,11 +8577,12 @@ input:focus-visible,
  * tabs are the same pill, just lighter; the active one is solid white with a
  * lift. */
 .tab {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   height: calc(var(--titlebar-h) - var(--sp-2));
-  padding: 0 var(--sp-1) 0 var(--sp-2);
+  padding: 0 var(--sp-2);
   flex: 1 1 0;
   min-width: 40px;
   max-width: min(25%, 240px);
@@ -8336,6 +8594,8 @@ input:focus-visible,
   cursor: default;
   user-select: none;
   -webkit-app-region: no-drag;
+  /* Width changes (the active pill moving between tabs at compact sizes)
+   * deliberately snap — only drag-reorder animates, via transform. */
   transition:
     background-color var(--t-fast) var(--ease-out),
     box-shadow var(--t-fast) var(--ease-out),
@@ -8355,23 +8615,19 @@ input:focus-visible,
   box-shadow: var(--shadow-sm), var(--shadow-inset);
 }
 
-/* As the strip tightens (data-size is set from the measured tab width in
- * TabBar): first the close button goes when the label is squeezed... */
-.tab-strip[data-size="tight"] .tab-close,
-.tab-strip[data-size="icon"] .tab-close {
-  display: none;
+/* Drag-reorder: while a tab is being dragged, displaced neighbors slide aside
+ * (transform is set from TabBar's pointer math)... */
+.tab-strip[data-dragging] .tab {
+  transition: transform 160ms var(--ease-out);
 }
 
-/* ...then the label goes too and we resort to a centered icon, Linear-style —
- * nothing else, so a packed strip stays clean. */
-.tab-strip[data-size="icon"] .tab-label {
-  display: none;
-}
-
-.tab-strip[data-size="icon"] .tab {
-  justify-content: center;
-  gap: 0;
-  padding-inline: 0;
+/* ...while the grabbed tab itself tracks the pointer transition-free, lifted
+ * solid above the row so it reads as picked up. */
+.tab-strip[data-dragging] .tab[data-drag-source] {
+  z-index: 1;
+  background: var(--card);
+  box-shadow: var(--shadow-md), var(--shadow-inset);
+  transition: none;
 }
 
 .tab-icon {
@@ -8381,21 +8637,37 @@ input:focus-visible,
   opacity: 0.65;
 }
 
+/* The label runs the tab's full width and fades out at its right edge instead
+ * of ellipsizing — the close button floats above that faded tail, so squeezed
+ * tabs keep every pixel of title. The fade completes 14px in — the close
+ * button's left edge — so text never collides with the x. */
 .tab-label {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 38px),
+    transparent calc(100% - 14px)
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 38px), transparent calc(100% - 14px));
 }
 
+/* Overlaid on the tab's right edge, above the label's faded tail, so showing
+ * it never squeezes the title. Centered with auto margins, NOT a translateY
+ * transform: flex tabs sit at fractional widths, and a transform makes the
+ * hover fade-in rasterize on its own snapped layer — the x visibly shifts
+ * half a pixel while the opacity transition runs. */
 .tab-close {
+  position: absolute;
+  right: var(--sp-1);
+  inset-block: 0;
+  margin-block: auto;
   display: inline-grid;
   place-items: center;
-  flex: 0 0 auto;
   width: 16px;
   height: 16px;
-  margin-left: 1px;
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
@@ -8419,6 +8691,34 @@ input:focus-visible,
 .tab-close:hover {
   background: color-mix(in oklch, var(--foreground) 10%, transparent);
   color: var(--foreground);
+}
+
+/* As the strip tightens (data-size is set from the measured tab width in
+ * TabBar), inactive tabs shed their label and close and resort to a centered
+ * icon, Linear-style — nothing else, so a packed strip stays clean. The active
+ * tab keeps its wide pill (below) so the current document stays named. */
+.tab-strip[data-size="icon"] .tab:not([data-active]) .tab-close {
+  display: none;
+}
+
+.tab-strip[data-size="icon"] .tab:not([data-active]) .tab-label {
+  display: none;
+}
+
+.tab-strip[data-size="icon"] .tab:not([data-active]) {
+  justify-content: center;
+  gap: 0;
+  padding-inline: 0;
+}
+
+/* At both compact sizes the active tab holds a fixed readable width (TabBar
+ * budgets for it when deciding what folds into overflow) instead of the shared
+ * sliver, keeping the current document prominent. It may still shrink on an
+ * extremely narrow window — better than clipping. */
+.tab-strip[data-size="tight"] .tab[data-active],
+.tab-strip[data-size="icon"] .tab[data-active] {
+  flex: 0 1 var(--tab-active-compact-w);
+  max-width: none;
 }
 
 .tab-new {
@@ -8608,6 +8908,23 @@ input:focus-visible,
   padding: 0 var(--sp-8) var(--sp-5);
 }
 
+.main-panel-body[data-active-view="settings"] {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+  padding-bottom: calc(var(--sp-5) + 96px);
+}
+
+.main-panel-body[data-active-view="settings"]::-webkit-scrollbar {
+  width: var(--scrollbar-w);
+  background: transparent;
+}
+
+.main-panel-body[data-active-view="settings"]::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  background-clip: padding-box;
+}
+
 /* Top + bottom fades for the main card. Top is short (28px) since no
  * sticky header sits there; bottom is taller (96px) so content dissolves
  * cleanly behind the record button. Same scroll-timeline trick as the
@@ -8634,6 +8951,7 @@ input:focus-visible,
   bottom: 0;
   height: 96px;
   background: linear-gradient(to bottom, transparent, var(--card) 78%);
+  opacity: 0;
   /* Soften any static opacity flip (e.g. leaving the agent view, where the
    * :has() rule below holds the dissolve at 0) so the veil never pops in a
    * single frame over content. Matches the warm wash's 280ms fade. Lives
@@ -10933,6 +11251,10 @@ input:focus-visible,
   letter-spacing: 0;
 }
 
+.settings-group-heading + .settings-group-description {
+  margin-top: calc(-1 * var(--sp-1));
+}
+
 /* The platforms group heading carries a quiet muted count beside it (the count
  * that used to live on the in-list h3). */
 .agent-messaging-heading {
@@ -11513,12 +11835,13 @@ input:focus-visible,
  * the external-dir summary hover), not a full-bleed edge-to-edge band. Content
  * stays left-aligned; the bottom border is dropped so the rounded fill reads as
  * a single rectangle. */
-.settings-rows .settings-more-options-trigger,
 .settings-more-options-trigger {
-  width: auto;
-  /* Top inset so the rounded hover fill has clear separation from the row/border
-   * directly above it. */
-  margin: var(--sp-3) calc(var(--sp-3) * -1) 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-6);
+  width: 100%;
+  margin: 0;
   padding: var(--sp-3);
   border: 0;
   border-radius: var(--r-md);
@@ -11528,6 +11851,33 @@ input:focus-visible,
   cursor: pointer;
   color: inherit;
   transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.settings-more-options-row {
+  width: auto;
+  margin: var(--sp-2) calc(var(--sp-3) * -1);
+}
+
+/* When "More options" is collapsed it sits last in the card, so its sp-2 bottom
+ * margin stacks on the card's own bottom padding and reads as a dead gap. Drop
+ * it there; when expanded the options panel follows, so the row isn't last. */
+.settings-more-options-row:last-child {
+  margin-block-end: 0;
+}
+
+.settings-row-divider {
+  height: 1px;
+  margin: 0;
+  background: var(--border-subtle);
+}
+
+.settings-row:has(+ .settings-row-divider) {
+  border-bottom: 0;
+}
+
+.settings-more-options-panel {
+  display: flex;
+  flex-direction: column;
 }
 
 .settings-more-options-trigger:hover {
@@ -15945,18 +16295,21 @@ input:focus-visible,
 .model-summary-hovercard {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  width: 232px;
+  gap: var(--sp-2);
+  width: 248px;
   max-width: 100%;
 }
 
 /* Hover callout card (HoverTip) — the Venice-style explainer behind privacy
  * pills. Body-portaled at a fixed position, so it must sit above dialogs
- * (backdrop is z-index 112). data-side="top" anchors the card's bottom edge
- * to the coordinate instead of its top. */
+ * (backdrop is z-index 112) and above the model picker popover (130), which
+ * hosts a privacy-ghost tip inside its own rows. As the topmost transient
+ * layer the tip clears every overlay it can be triggered from over.
+ * data-side="top" anchors the card's bottom edge to the coordinate instead of
+ * its top. */
 .hover-tip {
   position: fixed;
-  z-index: 120;
+  z-index: 140;
   padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
@@ -15973,6 +16326,10 @@ input:focus-visible,
    * box width to hug the widest line, so the box edges match the text edges. */
   text-wrap: balance;
   pointer-events: none;
+}
+
+.hover-tip[data-interactive="true"] {
+  pointer-events: auto;
 }
 
 /* First frame: rendered hidden so its content width can be measured before the
@@ -16348,6 +16705,7 @@ input:focus-visible,
  * inset 2px from the card edge and the content alike. */
 .agent-scroll::-webkit-scrollbar,
 .note-detail-scroll::-webkit-scrollbar,
+.command-prompt-results::-webkit-scrollbar,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar {
   width: var(--scrollbar-w);
   background: transparent;
@@ -16355,6 +16713,7 @@ input:focus-visible,
 
 .agent-scroll::-webkit-scrollbar-thumb,
 .note-detail-scroll::-webkit-scrollbar-thumb,
+.command-prompt-results::-webkit-scrollbar-thumb,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   background: transparent;
@@ -16363,6 +16722,7 @@ input:focus-visible,
 
 .agent-scroll[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
 .note-detail-scroll[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
+.command-prompt-results[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
 .main-panel-body[data-detail-scroller="true"][data-scrollbar-active="true"]::-webkit-scrollbar-thumb {
   background: color-mix(
     in oklch,
@@ -16374,6 +16734,7 @@ input:focus-visible,
 
 .agent-scroll::-webkit-scrollbar-thumb:hover,
 .note-detail-scroll::-webkit-scrollbar-thumb:hover,
+.command-prompt-results::-webkit-scrollbar-thumb:hover,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb:hover {
   background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
   background-clip: padding-box;
@@ -18591,27 +18952,6 @@ input:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.folder-note-title-input {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  border-radius: var(--r-xs);
-  padding: 0 var(--sp-1);
-  outline: 0;
-  background: var(--surface-subtle);
-  color: var(--foreground);
-  font-family: var(--font-sans);
-  font-size: var(--fs-md);
-  font-weight: 400;
-  line-height: 1.2;
-}
-
-.folder-note-title-input:focus,
-.folder-note-title-input:focus-visible {
-  outline: none;
-  box-shadow: none;
 }
 
 .folder-note-subtitle {
