@@ -6192,10 +6192,11 @@ input:focus-visible,
 }
 
 .agent-composer-attachments {
+  --attachment-tile-size: calc(var(--sp-12) + var(--sp-1));
   display: flex;
   flex-wrap: wrap;
-  /* Center-align so image tiles (44px) and file chips (~24px) share a baseline
-     in a mixed row instead of stretching to the tallest. */
+  /* Every attachment shares one visual height; images use the whole square,
+     while documents use that height for an icon well plus metadata. */
   align-items: center;
   gap: var(--sp-1);
   padding: var(--sp-1) var(--sp-1) 0;
@@ -6257,38 +6258,54 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  max-width: 220px;
-  padding: 2px 2px 2px var(--sp-2);
-  border-radius: var(--r-sm);
+  max-width: min(calc(var(--sp-12) * 7), 100%);
+  height: var(--attachment-tile-size);
+  padding: var(--sp-1);
+  border-radius: var(--r-lg);
   background: var(--surface-subtle);
   color: var(--foreground);
   font-size: var(--fs-sm);
 }
 
-/* When the chip leads with an image thumb, drop the text-oriented left
- * padding so the thumb sits flush at 2px on all sides, like the button. */
-.agent-attachment-chip:has(> img) {
-  padding-left: 2px;
-}
-
-.agent-attachment-chip > img {
+.agent-attachment-file-icon {
+  display: inline-grid;
+  place-items: center;
   flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--r-xs);
-  object-fit: cover;
-  /* Hairline just inside the thumb so light image edges don't melt into the
-   * chip. Mixed from --foreground so it flips with the theme. */
-  outline: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent);
-  outline-offset: -1px;
-}
-
-.agent-attachment-chip > svg {
-  flex: 0 0 auto;
+  width: calc(var(--attachment-tile-size) - var(--sp-1) * 2);
+  height: calc(var(--attachment-tile-size) - var(--sp-1) * 2);
+  border-radius: var(--r-md);
+  background: var(--background);
   color: var(--muted-foreground);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.agent-attachment-file-details {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-px);
 }
 
 .agent-attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-attachment-file-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1;
+}
+
+.agent-attachment-file-type {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6320,9 +6337,6 @@ input:focus-visible,
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  /* The same square as the image thumb, so it sits flush with the chip's 2px
-   * padding on all three sides — at 18px it floated 3px off the top/bottom
-   * but only 2px off the right edge, reading as off-center. */
   width: 20px;
   height: 20px;
   /* The app never resets UA button padding globally — WebKit's default
@@ -6331,8 +6345,7 @@ input:focus-visible,
    * right and 0.5px high of true center. */
   padding: 0;
   border: 0;
-  /* Concentric with the chip: r-sm (6px) minus the 2px padding. */
-  border-radius: var(--r-xs);
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
   transition:
@@ -6366,14 +6379,18 @@ input:focus-visible,
 .agent-attachment-chip[data-kind="image"] {
   position: relative;
   max-width: none;
+  height: var(--attachment-tile-size);
   padding: 0;
   background: transparent;
 }
 
 .agent-attachment-chip[data-kind="image"] > img {
-  width: 44px;
-  height: 44px;
+  width: var(--attachment-tile-size);
+  height: var(--attachment-tile-size);
   border-radius: var(--r-md);
+  object-fit: cover;
+  outline: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent);
+  outline-offset: -1px;
 }
 
 .agent-attachment-chip[data-kind="image"] .agent-attachment-name,

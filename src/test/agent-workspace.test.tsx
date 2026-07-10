@@ -8387,6 +8387,8 @@ describe("AgentWorkspace", () => {
     });
 
     expect(await screen.findByText("notes.txt")).toBeInTheDocument();
+    expect(screen.getByText("TXT")).toBeInTheDocument();
+    expect(document.querySelector(".agent-attachment-file-icon")).not.toBeNull();
     expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
       "notes.txt",
       expect.any(Uint8Array),

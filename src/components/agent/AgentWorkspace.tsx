@@ -8493,9 +8493,8 @@ export function AgentWorkspace({
                 <span
                   key={attachment.id}
                   className="agent-attachment-chip"
-                  // Images render as a bare rounded thumbnail (no filename), so a
-                  // steer with an attached image stays readable; other files keep
-                  // the icon + name chip, where the name is the only handle.
+                  // Images render as bare rounded thumbnails. Other files use a
+                  // document card at the same height, with a type icon and label.
                   data-kind={attachment.previewDataUrl ? "image" : "file"}
                   data-attach-status={attachment.attach.status}
                   title={attachment.attach.error ?? attachment.name}
@@ -8503,10 +8502,32 @@ export function AgentWorkspace({
                   {attachment.previewDataUrl ? (
                     <img src={attachment.previewDataUrl} alt="" aria-hidden="true" />
                   ) : (
-                    <FileTypeIcon name={attachment.name} size={14} />
+                    <>
+                      <span className="agent-attachment-file-icon" aria-hidden="true">
+                        <FileTypeIcon name={attachment.name} size={18} />
+                      </span>
+                      <span className="agent-attachment-file-details">
+                        <span className="agent-attachment-name">{attachment.name}</span>
+                        <span className="agent-attachment-file-meta">
+                          <span className="agent-attachment-file-type">
+                            {attachmentFileTypeLabel(attachment.name)}
+                          </span>
+                          {attachmentStatusLabel(attachment.attach) ? (
+                            <span
+                              className="agent-attachment-status"
+                              data-attach-status={attachment.attach.status}
+                            >
+                              {attachmentStatusLabel(attachment.attach)}
+                            </span>
+                          ) : null}
+                        </span>
+                      </span>
+                    </>
                   )}
-                  <span className="agent-attachment-name">{attachment.name}</span>
-                  {attachmentStatusLabel(attachment.attach) ? (
+                  {attachment.previewDataUrl ? (
+                    <span className="agent-attachment-name">{attachment.name}</span>
+                  ) : null}
+                  {attachment.previewDataUrl && attachmentStatusLabel(attachment.attach) ? (
                     <span
                       className="agent-attachment-status"
                       data-attach-status={attachment.attach.status}
@@ -13773,6 +13794,13 @@ function attachmentStatusLabel(state: HermesAttachmentState): string {
     default:
       return "";
   }
+}
+
+function attachmentFileTypeLabel(name: string): string {
+  const filename = name.split(/[\\/]/).pop() ?? name;
+  const extensionIndex = filename.lastIndexOf(".");
+  if (extensionIndex <= 0 || extensionIndex === filename.length - 1) return "File";
+  return filename.slice(extensionIndex + 1).toUpperCase();
 }
 
 function commandTokensForResolutions(
