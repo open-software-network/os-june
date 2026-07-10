@@ -355,6 +355,20 @@ fn cancel_capture(state: &mut HotkeyThreadState, event_sink: &EventSink) {
 }
 
 fn register_shortcuts(state: &mut HotkeyThreadState, event_sink: &EventSink) {
+    register_shortcuts_with(state, event_sink, |id, modifiers, vk| {
+        if unsafe { RegisterHotKey(std::ptr::null_mut(), id, modifiers, vk) } != 0 {
+            Ok(())
+        } else {
+            Err(unsafe { GetLastError() })
+        }
+    });
+}
+
+fn register_shortcuts_with(
+    state: &mut HotkeyThreadState,
+    event_sink: &EventSink,
+    mut register: impl FnMut(i32, u32, u32) -> Result<(), u32>,
+) {
     unregister_all(state);
     let mut all_registered = state.shortcuts.len() == 2;
     for kind in [ShortcutKind::PushToTalk, ShortcutKind::Toggle] {
@@ -393,25 +407,26 @@ fn register_shortcuts(state: &mut HotkeyThreadState, event_sink: &EventSink) {
         }
         let id = hotkey_id(kind);
         let modifiers = modifiers_to_win32(shortcut.modifiers) | MOD_NOREPEAT;
-        if unsafe { RegisterHotKey(std::ptr::null_mut(), id, modifiers, vk) } != 0 {
-            state.registered.insert(id);
-        } else {
-            all_registered = false;
-            let error = unsafe { GetLastError() };
-            event_sink(HotkeyEvent::RegistrationFailed {
-                kind,
-                shortcut: shortcut.label.clone(),
-                code: format!("register_hotkey_{}", error),
-                message: format!(
-                    "Windows could not register {}. It may already be used by another app.",
-                    shortcut.label
-                ),
-            });
+        match register(id, modifiers, vk) {
+            Ok(()) => {
+                state.registered.insert(id);
+            }
+            Err(error) => {
+                all_registered = false;
+                event_sink(HotkeyEvent::RegistrationFailed {
+                    kind,
+                    shortcut: shortcut.label.clone(),
+                    code: format!("register_hotkey_{}", error),
+                    message: format!(
+                        "Windows could not register {}. It may already be used by another app.",
+                        shortcut.label
+                    ),
+                });
+            }
         }
     }
 
     if !all_registered {
-        unregister_all(state);
         return;
     }
 
@@ -776,6 +791,60 @@ mod tests {
         for code in ["KeyD", "Digit4", "Space", "ArrowDown", "Quote", "F8"] {
             let vk = virtual_key_for_code(code).expect("supported key");
             assert_eq!(code_for_virtual_key(vk), Some(code));
+        }
+    }
+
+    #[test]
+    fn partial_registration_keeps_the_successful_shortcut_armed() {
+        let mut state = HotkeyThreadState::default();
+        state.shortcuts.insert(
+            ShortcutKind::PushToTalk,
+            shortcut(ShortcutKind::PushToTalk, "KeyD", "Ctrl+Alt+D"),
+        );
+        state.shortcuts.insert(
+            ShortcutKind::Toggle,
+            shortcut(ShortcutKind::Toggle, "KeyT", "Ctrl+Alt+T"),
+        );
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        let event_sink: EventSink = Arc::new(move |event| {
+            captured_events.lock().expect("event lock").push(event);
+        });
+
+        register_shortcuts_with(&mut state, &event_sink, |id, _, _| {
+            if id == HOTKEY_PUSH_TO_TALK {
+                Ok(())
+            } else {
+                Err(1409)
+            }
+        });
+
+        assert_eq!(state.registered, HashSet::from([HOTKEY_PUSH_TO_TALK]));
+        let events = events.lock().expect("event lock");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            HotkeyEvent::RegistrationFailed {
+                kind: ShortcutKind::Toggle,
+                ..
+            }
+        )));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, HotkeyEvent::Ready { .. })));
+    }
+
+    fn shortcut(kind: ShortcutKind, code: &str, label: &str) -> ShortcutCommand {
+        ShortcutCommand {
+            key_code: virtual_key_for_code(code).expect("supported shortcut"),
+            code: code.to_string(),
+            label: label.to_string(),
+            kind,
+            press_count: 1,
+            modifiers: ShortcutModifiers {
+                control: true,
+                option: true,
+                ..ShortcutModifiers::default()
+            },
         }
     }
 }
