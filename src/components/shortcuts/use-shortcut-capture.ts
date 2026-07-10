@@ -69,7 +69,7 @@ export function useShortcutCapture({
       setCapturing(false);
       setError(messageFromError(caught));
     }
-  }, []);
+  }, [kind]);
 
   useEffect(() => {
     if (!capturing) return;
