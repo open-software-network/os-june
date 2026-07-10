@@ -18,6 +18,8 @@ use std::{
 };
 
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(700);
+const CLIPBOARD_RESTORE_RETRY_DELAY: Duration = Duration::from_millis(100);
+const CLIPBOARD_RESTORE_RETRY_WINDOW: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 struct EventWriter {
@@ -47,6 +49,7 @@ struct MicTest {
 
 struct DelayedClipboardRestore {
     deadline: std::time::Instant,
+    expires_at: std::time::Instant,
     text: String,
     backup: clipboard::ClipboardBackup,
 }
@@ -348,17 +351,26 @@ impl HelperApp {
         }
         self.writer.emit(simple_event("paste_completed"));
         if let Some(backup) = previous_clipboard {
+            let now = std::time::Instant::now();
             self.delayed_clipboard_restore = Some(DelayedClipboardRestore {
-                deadline: std::time::Instant::now() + CLIPBOARD_RESTORE_DELAY,
+                deadline: now + CLIPBOARD_RESTORE_DELAY,
+                expires_at: now + CLIPBOARD_RESTORE_RETRY_WINDOW,
                 text,
                 backup,
             });
         }
     }
 
-    fn finish_clipboard_restore(&mut self, _force: bool) {
-        if let Some(restore) = self.delayed_clipboard_restore.take() {
-            let _ = clipboard::restore_clipboard_if_unchanged(&restore.text, restore.backup);
+    fn finish_clipboard_restore(&mut self, force: bool) {
+        let Some(mut restore) = self.delayed_clipboard_restore.take() else {
+            return;
+        };
+        if clipboard::restore_clipboard_if_unchanged(&restore.text, &restore.backup).is_err()
+            && !force
+            && std::time::Instant::now() < restore.expires_at
+        {
+            restore.deadline = std::time::Instant::now() + CLIPBOARD_RESTORE_RETRY_DELAY;
+            self.delayed_clipboard_restore = Some(restore);
         }
     }
 
