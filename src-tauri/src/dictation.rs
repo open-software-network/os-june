@@ -2531,6 +2531,9 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     match classify_dictation_auth(&crate::os_accounts::access_token().await) {
         DictationAuthGate::Proceed => {}
         DictationAuthGate::Unavailable(error) => {
+            // OS Accounts is temporarily unreachable. Keep the finalized WAV
+            // so a retry can reuse the intact capture instead of discarding
+            // user speech because of a transient network or service failure.
             emit_dictation_event_value(&app, app_error_event(error));
             return;
         }

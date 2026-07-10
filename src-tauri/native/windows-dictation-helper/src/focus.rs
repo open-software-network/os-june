@@ -71,8 +71,9 @@ fn is_process_restricted(pid: u32) -> bool {
         )
     };
     if handle.is_null() {
-        let err = std::io::Error::last_os_error();
-        if err.kind() == std::io::ErrorKind::PermissionDenied {
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) {
             return true;
         }
     } else {

@@ -51,7 +51,7 @@ pub fn replace_text(text: &str) -> Result<Option<ClipboardBackup>> {
     })
 }
 
-pub fn restore_clipboard_if_unchanged(expected: &str, backup: ClipboardBackup) -> Result<()> {
+pub fn restore_clipboard_if_unchanged(expected: &str, backup: &ClipboardBackup) -> Result<()> {
     with_open_clipboard(|| {
         if read_open_clipboard_text()?.as_deref() != Some(expected) {
             return Ok(());
