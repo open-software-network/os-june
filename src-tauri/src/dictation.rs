@@ -341,6 +341,13 @@ impl DictationShortcutSetting {
     }
 
     fn normalized_or_default(mut self, kind: DictationShortcutKind) -> Self {
+        if cfg!(target_os = "windows")
+            && (self.press_count != 1
+                || self.modifiers.function
+                || is_modifier_only_input(&self.code, &self.modifiers))
+        {
+            return default_shortcut_for_kind(kind);
+        }
         if self.is_bare_fn() {
             return DictationShortcutSetting::bare_fn();
         }
@@ -592,6 +599,13 @@ impl DictationCommand {
 
 impl DictationShortcutInput {
     fn into_setting(self) -> Result<DictationShortcutSetting, AppError> {
+        self.into_setting_for_platform(cfg!(target_os = "windows"))
+    }
+
+    fn into_setting_for_platform(
+        self,
+        windows: bool,
+    ) -> Result<DictationShortcutSetting, AppError> {
         if self.code.trim().is_empty() || self.label.trim().is_empty() {
             return Err(AppError::new(
                 "dictation_shortcut_incomplete",
@@ -599,15 +613,23 @@ impl DictationShortcutInput {
             ));
         }
 
+        let requested_press_count = self.press_count.unwrap_or(1);
+
+        if windows && requested_press_count != 1 {
+            return Err(AppError::new(
+                "dictation_shortcut_unsupported",
+                "Double-press shortcuts are not supported on Windows.",
+            ));
+        }
         let press_count = 1;
 
         if is_bare_fn_input(&self.code, &self.modifiers) {
-            #[cfg(target_os = "windows")]
-            return Err(AppError::new(
-                "dictation_shortcut_unsupported",
-                "The Fn key is not supported for Windows dictation shortcuts.",
-            ));
-            #[cfg(not(target_os = "windows"))]
+            if windows {
+                return Err(AppError::new(
+                    "dictation_shortcut_unsupported",
+                    "The Fn key is not supported for Windows dictation shortcuts.",
+                ));
+            }
             return Ok(DictationShortcutSetting {
                 press_count,
                 label: "Fn".to_string(),
@@ -616,7 +638,20 @@ impl DictationShortcutInput {
         }
 
         if is_modifier_only_input(&self.code, &self.modifiers) {
+            if windows {
+                return Err(AppError::new(
+                    "dictation_shortcut_unsupported",
+                    "Modifier-only shortcuts are not supported on Windows.",
+                ));
+            }
             return Ok(DictationShortcutSetting::modifier_only(self.modifiers));
+        }
+
+        if windows && self.modifiers.function {
+            return Err(AppError::new(
+                "dictation_shortcut_unsupported",
+                "The Fn key is not supported for Windows dictation shortcuts.",
+            ));
         }
 
         let key_code = key_code_for_code(&self.code).ok_or_else(|| {
@@ -813,7 +848,7 @@ pub fn set_dictation_shortcut(
     app: AppHandle,
     state: State<'_, DictationSettingsState>,
     helper_state: State<'_, HelperState>,
-    hotkey_status: State<'_, HotkeyStatus>,
+    _hotkey_status: State<'_, HotkeyStatus>,
     kind: DictationShortcutKind,
     shortcut: DictationShortcutInput,
 ) -> Result<DictationSettings, AppError> {
@@ -832,7 +867,8 @@ pub fn set_dictation_shortcut(
     };
 
     if current_shortcut == &shortcut {
-        set_hotkey_status(&hotkey_status, hotkey_ready_event(&current_settings));
+        #[cfg(target_os = "macos")]
+        set_hotkey_status(&_hotkey_status, hotkey_ready_event(&current_settings));
         apply_shortcut_settings(&helper_state, &current_settings)?;
         return Ok(current_settings);
     }
@@ -844,7 +880,8 @@ pub fn set_dictation_shortcut(
     reset_shortcut_activation(&app);
     apply_shortcut_settings(&helper_state, &settings)?;
 
-    set_hotkey_status(&hotkey_status, hotkey_ready_event(&settings));
+    #[cfg(target_os = "macos")]
+    set_hotkey_status(&_hotkey_status, hotkey_ready_event(&settings));
     Ok(settings)
 }
 
@@ -2376,11 +2413,14 @@ fn reapply_helper_settings(app: &AppHandle) {
     };
     let _ = apply_microphone_setting(&helper_state, &settings.microphone);
     let _ = apply_shortcut_settings(&helper_state, &settings);
-    let event = hotkey_ready_event(&settings);
-    if let Some(status) = app.try_state::<HotkeyStatus>() {
-        set_hotkey_status(&status, event.clone());
+    #[cfg(target_os = "macos")]
+    {
+        let event = hotkey_ready_event(&settings);
+        if let Some(status) = app.try_state::<HotkeyStatus>() {
+            set_hotkey_status(&status, event.clone());
+        }
+        emit_dictation_event_value(app, event);
     }
-    emit_dictation_event_value(app, event);
 }
 
 fn emit_helper_unavailable(app: &AppHandle, reason: &str, message: &str) {
@@ -2397,6 +2437,15 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         .as_ref()
         .and_then(|event| event.get("type"))
         .and_then(serde_json::Value::as_str);
+
+    if matches!(
+        event_type,
+        Some("hotkey_trigger_ready" | "hotkey_trigger_unavailable")
+    ) {
+        if let (Some(status), Some(event)) = (app.try_state::<HotkeyStatus>(), event.as_ref()) {
+            set_hotkey_status(&status, event.clone());
+        }
+    }
 
     handle_shortcut_key_event(app, event_type, event.as_ref());
     if matches!(
@@ -3791,9 +3840,20 @@ fn hotkey_ready_event(settings: &DictationSettings) -> serde_json::Value {
     })
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 fn initial_hotkey_event(settings: &DictationSettings) -> serde_json::Value {
     hotkey_ready_event(settings)
+}
+
+#[cfg(target_os = "windows")]
+fn initial_hotkey_event(_settings: &DictationSettings) -> serde_json::Value {
+    serde_json::json!({
+        "type": "hotkey_trigger_unavailable",
+        "payload": {
+            "reason": "registering",
+            "message": "Windows is registering dictation shortcuts.",
+        },
+    })
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -3878,6 +3938,17 @@ pub fn key_code_for_code(code: &str) -> Option<u32> {
         "Backspace" => 0x33,
         "Escape" => 0x35,
         "F1" => 0x7a,
+        "F2" => 0x78,
+        "F3" => 0x63,
+        "F4" => 0x76,
+        "F5" => 0x60,
+        "F6" => 0x61,
+        "F7" => 0x62,
+        "F8" => 0x64,
+        "F9" => 0x65,
+        "F10" => 0x6d,
+        "F11" => 0x67,
+        "F12" => 0x6f,
         "ArrowLeft" => 0x7b,
         "ArrowRight" => 0x7c,
         "ArrowDown" => 0x7d,
@@ -4255,6 +4326,95 @@ mod tests {
         assert_eq!(shortcut.key_code, 0x11);
         assert_eq!(shortcut.code, "KeyT");
         assert!(shortcut.modifiers.control);
+        assert_eq!(shortcut.press_count, 1);
+    }
+
+    #[test]
+    fn windows_shortcut_input_rejects_bare_fn() {
+        let err = DictationShortcutInput {
+            code: "Fn".to_string(),
+            modifiers: DictationShortcutModifiers {
+                function: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Fn".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting_for_platform(true)
+        .expect_err("Windows must reject bare Fn");
+
+        assert_eq!(err.code, "dictation_shortcut_unsupported");
+    }
+
+    #[test]
+    fn windows_shortcut_input_rejects_modifier_only_combo() {
+        let err = DictationShortcutInput {
+            code: "Modifiers".to_string(),
+            modifiers: DictationShortcutModifiers {
+                control: true,
+                option: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Ctrl+Alt".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting_for_platform(true)
+        .expect_err("Windows must reject modifier-only shortcuts");
+
+        assert_eq!(err.code, "dictation_shortcut_unsupported");
+    }
+
+    #[test]
+    fn windows_shortcut_input_rejects_fn_chord() {
+        let err = DictationShortcutInput {
+            code: "KeyD".to_string(),
+            modifiers: DictationShortcutModifiers {
+                control: true,
+                function: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Ctrl+Fn+D".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting_for_platform(true)
+        .expect_err("Windows must reject Fn chords");
+
+        assert_eq!(err.code, "dictation_shortcut_unsupported");
+    }
+
+    #[test]
+    fn windows_shortcut_input_rejects_double_press() {
+        let err = DictationShortcutInput {
+            code: "KeyD".to_string(),
+            modifiers: DictationShortcutModifiers {
+                control: true,
+                option: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Ctrl+Alt+D".to_string(),
+            press_count: Some(2),
+        }
+        .into_setting_for_platform(true)
+        .expect_err("Windows must reject double-press shortcuts");
+
+        assert_eq!(err.code, "dictation_shortcut_unsupported");
+    }
+
+    #[test]
+    fn windows_shortcut_input_accepts_supported_chord() {
+        let shortcut = DictationShortcutInput {
+            code: "F12".to_string(),
+            modifiers: DictationShortcutModifiers {
+                command: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Win+F12".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting_for_platform(true)
+        .expect("Windows should accept a supported modifier plus key chord");
+
+        assert_eq!(shortcut.code, "F12");
         assert_eq!(shortcut.press_count, 1);
     }
 
