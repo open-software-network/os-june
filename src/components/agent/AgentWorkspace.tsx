@@ -5835,6 +5835,25 @@ export function AgentWorkspace({
   ): Promise<string | undefined> {
     const displayContent = options?.displayContent ?? content;
     const titleContent = options?.titleContent ?? displayContent;
+    let attachmentOnlyTitle: string | undefined;
+    if (!titleContent.trim() && options?.attachments?.length) {
+      const firstName = options.attachments[0].name.trim();
+      const extensionIndex = firstName.lastIndexOf(".");
+      const firstDisplayName = (
+        extensionIndex > 0 ? firstName.slice(0, extensionIndex) : firstName
+      ).trim();
+      const title =
+        options.attachments.length === 1
+          ? firstDisplayName
+          : `${firstDisplayName} +${options.attachments.length - 1} more`;
+      // Array.from splits on Unicode code points, so the cap cannot cut an
+      // emoji or surrogate pair in half the way String.slice would.
+      attachmentOnlyTitle = Array.from(title.replace(/\s+/g, " "))
+        .slice(0, AGENT_TITLE_MAX_CHARS)
+        .join("")
+        .replace(/[–—]/g, "-")
+        .replace(/^([a-z])/, (match) => match.toUpperCase());
+    }
     const targetSessionId = explicitSession?.id
       ? explicitSession.id
       : newSessionModeRef.current
@@ -5911,12 +5930,21 @@ export function AgentWorkspace({
     const titlePromise =
       targetSessionId || options?.issueReport
         ? undefined
-        : agentSessionTitleForPrompt(titleContent).then((suggestion) => suggestion.title);
-    const fallbackSessionTitle = options?.issueReport
-      ? "Issue report"
-      : explicitSession?.title?.trim() ||
+        : attachmentOnlyTitle
+          ? Promise.resolve(attachmentOnlyTitle)
+          : agentSessionTitleForPrompt(titleContent).then((suggestion) => suggestion.title);
+    const listedTargetSession = targetSessionId
+      ? hermesSessionItemsRef.current.find((session) => session.id === targetSessionId)
+      : undefined;
+    const fallbackSessionTitle = targetSessionId
+      ? explicitSession?.title?.trim() ||
         explicitSession?.preview?.trim() ||
-        titleFromPrompt(titleContent);
+        listedTargetSession?.title?.trim() ||
+        listedTargetSession?.preview?.trim() ||
+        titleFromPrompt(titleContent)
+      : options?.issueReport
+        ? "Issue report"
+        : attachmentOnlyTitle || titleFromPrompt(titleContent);
     const optimisticSession =
       targetSessionId || options?.skipPrompt
         ? undefined
@@ -5986,7 +6014,7 @@ export function AgentWorkspace({
     const ensureStoredHermesSession = () =>
       ensureHermesBridgeSession({
         sessionId: storedSessionId,
-        title: sessionDisplayTitle,
+        ...(!targetSessionId ? { title: sessionDisplayTitle } : {}),
         ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
       });
     if (optimisticSession) {
@@ -9461,6 +9489,8 @@ function AgentSessionBar({
     </div>
   );
 }
+
+const AGENT_TITLE_MAX_CHARS = 48;
 
 async function agentSessionTitleForPrompt(prompt: string, response?: string) {
   try {

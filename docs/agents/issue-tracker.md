@@ -21,27 +21,34 @@ Defaults (org `june`, limit 20) come from `os-platform.json` at the repo root.
   `python3 scripts/os_platform.py issues take june <number>`
   — confirm with the user before passing `--yes`.
 
-## Write conventions (direct API)
+## Write conventions
 
-Writes beyond `issues take` go straight to the platform API
-(`https://app.opensoftware.co/api`, `Authorization: Bearer $OS_PLATFORM_API_KEY`),
-following the precedent set by `os-task-prep/scripts/enrich_issue.py`.
+The `os-platform` script owns routine workflow writes. Run it from
+`.agents/skills/os-platform/` and verify each write with a read before any
+fan-out:
 
-Documented endpoints (safe to use):
+- **Create an issue**:
+  `python3 scripts/os_platform.py issues create june --title "..." --body "..."`
+  (optional: `--type feature|bug|other`, `--priority low|med|high`).
+- **Assign yourself**:
+  `python3 scripts/os_platform.py issues assign june <number>`.
+- **Change status**:
+  `python3 scripts/os_platform.py issues status june <number> <status>` where
+  status is `todo|in_progress|in_review|completed|cancelled`.
+- **Add a comment**:
+  `python3 scripts/os_platform.py comments add june <number> --body "..."`.
 
-- **Update an issue** (body, assignee):
-  `PATCH /v1/orgs/june/bounties/{number}` with e.g.
-  `{"body_markdown": "..."}` or `{"assignee_user_id": "usr_xxx"}`.
-  Body edits are **append-only** — fetch the current body first, append, never
-  overwrite. Prefer `enrich_issue.py` for diagnosis notes.
-- **Change status**: `POST /v1/orgs/june/bounties/{number}/status` with
-  `{"status": "todo|in_progress|in_review|completed|cancelled"}`.
+`issues take` remains the confirmed shortcut that assigns an unassigned todo
+Issue to the authenticated user and moves it to `in_progress`.
 
-Undocumented mutations (issue create, comment create, label set): probe on a
-single Issue first, verify the result with a GET, then proceed. If the
-endpoint 404s/405s or the write doesn't stick, fall back to drafting the
-content for the user to apply in the platform UI. Confirm any fan-out
-mutation on one Issue before applying it to many — this is a shared
+Issue body edits are still **append-only** and are not exposed by
+`os_platform.py`: fetch the full current body first, append, and never
+overwrite. The direct endpoint remains
+`PATCH /v1/orgs/june/bounties/{number}` with the combined body as
+`{"body_markdown": "..."}`. Prefer `os-task-prep/scripts/enrich_issue.py` for
+diagnosis notes. Other mutations not owned by the script, such as body or
+label updates, keep the direct API probe-then-verify discipline. Confirm any
+fan-out mutation on one Issue before applying it to many — this is a shared
 production tracker.
 
 ## Language
@@ -52,8 +59,8 @@ User-facing product language says **Issue** (internal API paths say
 
 ## When a skill says "publish to the issue tracker"
 
-Create the Issue via the API (probe-then-verify, above); fall back to
-drafting it for the user if creation isn't supported.
+Create the Issue with `python3 scripts/os_platform.py issues create ...`, then
+verify it with `issues show`.
 
 ## When a skill says "fetch the relevant ticket"
 

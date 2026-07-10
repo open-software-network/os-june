@@ -74,6 +74,7 @@ const mocks = vi.hoisted(() => ({
   startHermesBridge: vi.fn(),
   submitIssueReport: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
+  titleFromPrompt: vi.fn((prompt: string) => prompt.trim() || "Untitled session"),
   explainAgentApproval: vi.fn(),
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
@@ -168,7 +169,7 @@ vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
   listHermesSessions: mocks.listHermesSessions,
   sessionTimestamp: (session: { last_active?: string; started_at?: string }) =>
     session.last_active ?? session.started_at ?? "",
-  titleFromPrompt: (prompt: string) => prompt.trim() || "Untitled session",
+  titleFromPrompt: mocks.titleFromPrompt,
 }));
 
 vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
@@ -3176,6 +3177,295 @@ describe("AgentWorkspace", () => {
         JSON.stringify({ "session-exchange": "exchange" }),
       ),
     );
+  });
+
+  it("keeps the persisted first-exchange title after a follow-up and restart", async () => {
+    const user = userEvent.setup();
+    const rawTitle = "I need you to inspect the flaky tests";
+    let persistedTitle = rawTitle;
+    mocks.listHermesSessions.mockImplementation(async () => [
+      {
+        id: "session-follow-up-restart",
+        title: persistedTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "inspect the flaky tests",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "I traced the failure to stale timers and updated the regression test.",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+    mocks.suggestAgentSessionTitle.mockResolvedValue({ title: "Flaky Timer Fix" });
+    mocks.ensureHermesBridgeSession.mockImplementation(
+      async (input: { sessionId: string; title?: string }) => {
+        if (input.title) persistedTitle = input.title;
+        return {};
+      },
+    );
+
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Flaky Timer Fix")).toBeInTheDocument();
+    await waitFor(() => expect(persistedTitle).toBe("Flaky Timer Fix"));
+    await waitFor(() =>
+      expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBe(
+        JSON.stringify({ "session-follow-up-restart": "exchange" }),
+      ),
+    );
+
+    await user.type(screen.getByRole("textbox"), "Does this also fail in CI?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Does this also fail in CI?",
+      }),
+    );
+
+    first.unmount();
+    resetAgentSessionContinuity();
+    mocks.gatewayEventHandlers.clear();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Flaky Timer Fix")).toBeInTheDocument();
+    expect(screen.queryByText("Does this also fail in CI?")).toBeNull();
+  });
+
+  it("does not write a follow-up title while the first-exchange title is pending", async () => {
+    const user = userEvent.setup();
+    const rawTitle = "I need you to inspect the flaky tests";
+    let persistedTitle = rawTitle;
+    let resolveTitleSuggestion: ((value: { title: string }) => void) | undefined;
+    mocks.listHermesSessions.mockImplementation(async () => [
+      {
+        id: "session-follow-up-pending-title",
+        title: persistedTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "inspect the flaky tests",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "I traced the failure to stale timers and updated the regression test.",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+    mocks.suggestAgentSessionTitle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTitleSuggestion = resolve;
+        }),
+    );
+    mocks.ensureHermesBridgeSession.mockImplementation(
+      async (input: { sessionId: string; title?: string }) => {
+        if (input.title) persistedTitle = input.title;
+        return {};
+      },
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(rawTitle)).toBeInTheDocument();
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1));
+    const titleDerivationsBeforeFollowUp = mocks.titleFromPrompt.mock.calls.length;
+
+    await user.type(screen.getByRole("textbox"), "Does this also fail in CI?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Does this also fail in CI?",
+      }),
+    );
+
+    expect(persistedTitle).toBe(rawTitle);
+    expect(mocks.titleFromPrompt).toHaveBeenCalledTimes(titleDerivationsBeforeFollowUp);
+
+    await act(async () => {
+      resolveTitleSuggestion?.({ title: "Flaky Timer Fix" });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(persistedTitle).toBe("Flaky Timer Fix"));
+    expect(await screen.findByText("Flaky Timer Fix")).toBeInTheDocument();
+  });
+
+  it("keeps a manual title after a follow-up and restart", async () => {
+    const user = userEvent.setup();
+    let persistedTitle = "Flaky Timer Fix";
+    window.localStorage.setItem(
+      "june.agent.manuallyTitledSessions",
+      JSON.stringify({ "session-manual-follow-up": "exchange" }),
+    );
+    mocks.listHermesSessions.mockImplementation(async () => [
+      {
+        id: "session-manual-follow-up",
+        title: persistedTitle,
+        preview: "inspect the flaky tests",
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "inspect the flaky tests",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "I traced the failure to stale timers and updated the regression test.",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+    mocks.ensureHermesBridgeSession.mockImplementation(
+      async (input: { sessionId: string; title?: string }) => {
+        if (input.title) persistedTitle = input.title;
+        return {};
+      },
+    );
+
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Flaky Timer Fix")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Session name" });
+    await user.clear(input);
+    await user.type(input, "Manual CI investigation{Enter}");
+    await waitFor(() => expect(persistedTitle).toBe("Manual CI investigation"));
+    expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBe(
+      JSON.stringify({ "session-manual-follow-up": "manual" }),
+    );
+    const titleDerivationsBeforeFollowUp = mocks.titleFromPrompt.mock.calls.length;
+
+    await user.type(screen.getByRole("textbox"), "Check the Windows runner too");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Check the Windows runner too",
+      }),
+    );
+
+    expect(persistedTitle).toBe("Manual CI investigation");
+    expect(mocks.titleFromPrompt).toHaveBeenCalledTimes(titleDerivationsBeforeFollowUp);
+
+    first.unmount();
+    resetAgentSessionContinuity();
+    mocks.gatewayEventHandlers.clear();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Manual CI investigation")).toBeInTheDocument();
+  });
+
+  it("uses the preview as the display title for a titleless existing-session follow-up", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    const preview = "Investigate the desktop release failure";
+    const titlelessSession = {
+      id: "session-preview-fallback",
+      title: "",
+      preview,
+      last_active: "2026-06-04T12:00:00Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([titlelessSession]);
+    const user = userEvent.setup();
+
+    try {
+      render(<AgentWorkspace initialSession={titlelessSession} />);
+
+      await user.type(
+        await screen.findByRole("textbox", { name: "Message June" }),
+        "Check the signing step too",
+      );
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "Check the signing step too",
+        }),
+      );
+      expect(statusDetails).toContainEqual(
+        expect.objectContaining({
+          sessionId: "session-preview-fallback",
+          status: "running",
+          title: preview,
+        }),
+      );
+      expect(statusDetails).not.toContainEqual(
+        expect.objectContaining({
+          sessionId: "session-preview-fallback",
+          title: "Untitled session",
+        }),
+      );
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    }
+  });
+
+  it("uses the prompt as the display title for a cold-start follow-up", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    mocks.listHermesSessions.mockResolvedValue([]);
+    const user = userEvent.setup();
+    const prompt = "Check the signing step too";
+
+    try {
+      render(<AgentWorkspace initialSessionId="session-cold-start" />);
+
+      await user.type(await screen.findByRole("textbox", { name: "Message June" }), prompt);
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: prompt,
+        }),
+      );
+      expect(mocks.titleFromPrompt).toHaveBeenCalledWith(prompt);
+      expect(statusDetails).toContainEqual(
+        expect.objectContaining({
+          sessionId: "session-cold-start",
+          status: "running",
+          title: prompt,
+        }),
+      );
+      expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-cold-start",
+          title: expect.any(String),
+        }),
+      );
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    }
   });
 
   it("skips the durable exchange marker when title persistence fails", async () => {
@@ -7339,6 +7629,56 @@ describe("AgentWorkspace", () => {
     expect(mocks.importHermesBridgeFile).toHaveBeenCalledWith(
       "/Users/alex/Library/Application Support/CleanShot/media/screenshot.png",
     );
+  });
+
+  it.each([
+    {
+      name: "titles an attachments-only new session from the attachment name",
+      path: "/Users/alex/Desktop/quarterly—planning.PDF",
+      title: "Quarterly-planning",
+    },
+    {
+      name: "caps an attachments-only session title derived from a long filename",
+      path: "/Users/alex/Desktop/this-is-a-very-long-attachment-name-that-exceeds-the-forty-eight-character-title-limit.pdf",
+      title: "This-is-a-very-long-attachment-name-that-exceeds",
+    },
+    {
+      name: "collapses filename whitespace in an attachments-only session title",
+      path: "/Users/alex/Desktop/quarterly\n\tplanning\t notes.PDF",
+      title: "Quarterly planning notes",
+    },
+  ])("$name", async ({ path, title }) => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [path],
+      },
+    });
+
+    const startButton = screen.getByRole("button", { name: "Start session" });
+    await waitFor(() => expect(startButton).not.toBeDisabled());
+    await user.click(startButton);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "session.create",
+        expect.objectContaining({ title }),
+      ),
+    );
+    expect(mocks.suggestAgentSessionTitle).not.toHaveBeenCalled();
+    expect(await screen.findByText(title)).toBeInTheDocument();
+    expect(screen.queryByText("Untitled session")).toBeNull();
   });
 
   it("imports typed file paths from the /file slash command", async () => {

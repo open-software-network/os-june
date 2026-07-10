@@ -1979,10 +1979,24 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         return None;
     }
     if title.chars().count() > AGENT_TITLE_MAX_CHARS {
-        title = title.chars().take(AGENT_TITLE_MAX_CHARS).collect();
-        title = title.trim_end().to_string();
+        let truncated: String = title.chars().take(AGENT_TITLE_MAX_CHARS).collect();
+        let boundary = if title
+            .chars()
+            .nth(AGENT_TITLE_MAX_CHARS)
+            .is_some_and(char::is_whitespace)
+        {
+            Some(truncated.len())
+        } else {
+            truncated.rfind(char::is_whitespace)
+        };
+        let boundary = boundary.unwrap_or(truncated.len());
+        title = truncated[..boundary]
+            .trim_end()
+            .trim_end_matches(|ch: char| ch.is_ascii_punctuation() || matches!(ch, '–' | '—' | '…'))
+            .trim_end()
+            .to_string();
     }
-    Some(title)
+    (!title.is_empty()).then_some(title)
 }
 
 async fn post_json<T, B>(path: &str, body: &B, send_venice_api_key: bool) -> Result<T, AppError>
@@ -2769,7 +2783,22 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
                 "Create a quarterly planning briefing with follow-up action items",
             )
             .as_deref(),
-            Some("Create a quarterly planning briefing with follow")
+            Some("Create a quarterly planning briefing with")
+        );
+        assert_eq!(
+            clean_agent_session_title(
+                "Create a quarterly planning briefing, extraordinary follow-up actions",
+            )
+            .as_deref(),
+            Some("Create a quarterly planning briefing")
+        );
+        assert_eq!(
+            clean_agent_session_title(&"a".repeat(AGENT_TITLE_MAX_CHARS + 1)),
+            Some("a".repeat(AGENT_TITLE_MAX_CHARS))
+        );
+        assert_eq!(
+            clean_agent_session_title(&"界".repeat(AGENT_TITLE_MAX_CHARS + 1)),
+            Some("界".repeat(AGENT_TITLE_MAX_CHARS))
         );
         assert_eq!(clean_agent_session_title("   "), None);
     }
