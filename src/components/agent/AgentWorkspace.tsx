@@ -7624,9 +7624,6 @@ export function AgentWorkspace({
           {item.attachments.slice(0, 1).map((attachment) => (
             <AgentAttachmentTile key={attachment.id} attachment={attachment} />
           ))}
-          {item.attachments.length > 1 ? (
-            <span className="agent-follow-up-attachment-count">+{item.attachments.length - 1}</span>
-          ) : null}
         </div>
         <div className="agent-follow-up-copy">
           <span className="agent-follow-up-text">{item.prepared.typedMessage || "Attachment"}</span>
@@ -7635,6 +7632,9 @@ export function AgentWorkspace({
           </span>
           {item.error ? <span className="agent-follow-up-announcement">{item.error}</span> : null}
         </div>
+        {item.attachments.length > 1 ? (
+          <span className="agent-follow-up-attachment-count">+{item.attachments.length - 1}</span>
+        ) : null}
         {item.status === "sending" ? null : (
           <div className="agent-follow-up-actions">
             {item.status === "failed" && firstInQueue ? (

@@ -5709,6 +5709,10 @@ input:focus-visible,
    steers and locally waiting attachment messages use the same row anatomy;
    their quiet status copy carries the delivery distinction. */
 .agent-steer-queue {
+  /* One fixed-width leading slot shared by every line: the count pill in the
+     header, the steer arrow, and the attachment tile all occupy this rail, so
+     the text that follows them lands on a single left edge. */
+  --follow-up-rail: 24px;
   pointer-events: auto;
   width: 100%;
   max-width: min(var(--chat-max), var(--content-max));
@@ -5724,23 +5728,26 @@ input:focus-visible,
     0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
 }
 
-/* The whole header toggles the list; hover is a quiet color shift only. */
+/* The whole header toggles the list; hover matches the row treatment below. */
 .agent-steer-queue-header {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
   min-height: var(--control-md);
-  padding: var(--sp-1) var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
   border: 0;
   border-radius: var(--r-lg);
   background: transparent;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
-  transition: color var(--t-fast) var(--ease-out);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
 }
 
 .agent-steer-queue-header:hover {
+  background: var(--secondary);
   color: var(--foreground);
 }
 
@@ -5748,6 +5755,8 @@ input:focus-visible,
    LATER in this flat stylesheet and silently wins the tie. Brand wash for a
    touch of the active theme. */
 .status-pill.agent-steer-queue-count {
+  justify-content: center;
+  min-width: var(--follow-up-rail);
   background: color-mix(in oklch, var(--brand) 12%, transparent);
   color: var(--warm-strong);
 }
@@ -5792,7 +5801,7 @@ input:focus-visible,
   gap: var(--sp-2);
   flex-shrink: 0;
   min-height: var(--control-lg);
-  padding: var(--sp-1) var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
   border-radius: var(--r-lg);
   background: transparent;
   color: var(--foreground);
@@ -5807,34 +5816,24 @@ input:focus-visible,
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
+  width: var(--follow-up-rail);
   color: var(--muted-foreground);
 }
 
 .agent-follow-up-attachments {
   display: flex;
-  flex: 0 1 auto;
-  gap: var(--sp-1);
-  min-width: 0;
-  max-width: 45%;
-  overflow: hidden;
-}
-
-.agent-follow-up-attachments .agent-attachment-chip {
-  --attachment-tile-size: var(--control-xl);
-}
-
-.agent-follow-up-attachment-count {
-  display: inline-grid;
-  place-items: center;
   flex: 0 0 auto;
-  min-width: var(--control-md);
-  height: var(--control-md);
-  padding: 0 var(--sp-1);
+}
+
+/* Overflow count for a multi-attachment message: a quiet pill at the row's
+   end so the leading rail stays a single tile and the text stays aligned. */
+.agent-follow-up-attachment-count {
+  flex: 0 0 auto;
+  padding: 1px var(--sp-2);
   border-radius: var(--r-pill);
   background: var(--secondary);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
 }
 
 .agent-follow-up-copy {
@@ -5894,8 +5893,7 @@ input:focus-visible,
   color: var(--muted-foreground);
   transition:
     background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out),
-    scale var(--t-fast) var(--ease-out);
+    color var(--t-fast) var(--ease-out);
 }
 
 .agent-follow-up-actions button::after {
@@ -5907,10 +5905,6 @@ input:focus-visible,
 .agent-follow-up-actions button:hover:not(:disabled) {
   background: color-mix(in oklch, var(--muted-foreground) 16%, transparent);
   color: var(--foreground);
-}
-
-.agent-follow-up-actions button:active:not(:disabled) {
-  scale: 0.96;
 }
 
 .agent-follow-up-actions button:disabled {
@@ -6706,8 +6700,7 @@ input:focus-visible,
   color: var(--muted-foreground);
   transition:
     background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out),
-    scale var(--t-fast) var(--ease-out);
+    color var(--t-fast) var(--ease-out);
 }
 
 /* The visible square is small; quietly widen the hit target around it
@@ -6722,10 +6715,6 @@ input:focus-visible,
 .agent-attachment-chip button:hover {
   background: color-mix(in oklch, var(--muted-foreground) 16%, transparent);
   color: var(--foreground);
-}
-
-.agent-attachment-chip button:active {
-  scale: 0.96;
 }
 
 /* Image attachments read as a bare rounded thumbnail — no chip chrome, no
@@ -6815,6 +6804,29 @@ input:focus-visible,
   .agent-attachment-chip[data-kind="image"] button {
     transition: none;
   }
+}
+
+/* Inside an "Up next" row the chip collapses to the shared leading rail: a
+   bare square tile (image thumb or file-type well) whose width matches the
+   header's count pill and the steer arrow slot, so every row's text starts on
+   the same left edge. The row copy carries the message; the filename stays on
+   the chip's title. Placed after the chip's dark-theme rules — this flat
+   stylesheet resolves equal-specificity ties by order. */
+.agent-follow-up-attachments .agent-attachment-chip {
+  --attachment-tile-size: var(--follow-up-rail);
+  max-width: none;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.agent-follow-up-attachments .agent-attachment-file-icon {
+  width: var(--attachment-tile-size);
+  height: var(--attachment-tile-size);
+}
+
+.agent-follow-up-attachments .agent-attachment-file-details {
+  display: none;
 }
 
 .agent-composer-box:focus-within {
