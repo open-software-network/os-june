@@ -654,6 +654,13 @@ impl DictationShortcutInput {
             ));
         }
 
+        if windows && !self.modifiers.command && !self.modifiers.control && !self.modifiers.option && !self.modifiers.shift {
+            return Err(AppError::new(
+                "dictation_shortcut_modifier_required",
+                "Shortcut must include at least one modifier key (Ctrl, Alt, Shift, Win).",
+            ));
+        }
+
         let key_code = key_code_for_code(&self.code).ok_or_else(|| {
             AppError::new(
                 "dictation_shortcut_unsupported",
@@ -2520,7 +2527,6 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         DictationAuthGate::Proceed => {}
         DictationAuthGate::Unavailable(error) => {
             emit_dictation_event_value(&app, app_error_event(error));
-            let _ = std::fs::remove_file(&audio_path);
             return;
         }
         DictationAuthGate::SignedOut => {
