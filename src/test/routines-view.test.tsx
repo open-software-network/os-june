@@ -14,12 +14,23 @@ const mocks = vi.hoisted(() => ({
   createRoutine: vi.fn<() => Promise<RoutineJob>>(),
   updateRoutine: vi.fn<() => Promise<RoutineJob>>(),
   triggerRoutine: vi.fn(),
+  routineDetailOnRunNow: undefined as (() => Promise<void>) | undefined,
 }));
 
 vi.mock("../lib/hermes-routines", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/hermes-routines")>()),
   ...mocks,
 }));
+
+vi.mock("../components/routines/RoutineDetail", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../components/routines/RoutineDetail")>();
+  const OriginalRoutineDetail = original.RoutineDetail;
+  const RoutineDetail: typeof OriginalRoutineDetail = (props) => {
+    mocks.routineDetailOnRunNow = props.onRunNow;
+    return <OriginalRoutineDetail {...props} />;
+  };
+  return { ...original, RoutineDetail };
+});
 
 const adapterMocks = vi.hoisted(() => ({
   listScheduledRunSessions:
@@ -102,6 +113,7 @@ async function openDetail(name: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.routineDetailOnRunNow = undefined;
   mocks.pauseRoutine.mockResolvedValue({});
   mocks.resumeRoutine.mockResolvedValue({});
   mocks.removeRoutine.mockResolvedValue({});
@@ -538,6 +550,15 @@ describe("RoutinesView detail", () => {
     const detailRunNow = screen.getByRole("button", { name: "Run now" });
     expect(detailRunNow).toBeDisabled();
     expect(detailRunNow).toHaveAttribute("title", "Add credits before running a routine.");
+
+    // Invoke the captured child callback directly to prove the handler itself
+    // enforces the funding guard before reaching Hermes.
+    await act(async () => {
+      if (!mocks.routineDetailOnRunNow) {
+        throw new Error("Routine detail did not expose its Run now handler.");
+      }
+      await mocks.routineDetailOnRunNow();
+    });
     expect(mocks.triggerRoutine).not.toHaveBeenCalled();
   });
 

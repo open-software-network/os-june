@@ -5306,6 +5306,31 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(prompt),
     );
+    expect(window.sessionStorage.getItem("june:agent:new-session-draft")).toContain(prompt);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+  });
+
+  it("preserves a blocked dictated prompt as a draft", async () => {
+    const prompt = "Summarize the launch plan";
+
+    render(
+      <AgentWorkspace creditActionsDisabledReason="Add credits to send messages or generate images and videos." />,
+    );
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: { prompt },
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(prompt),
+    );
+    expect(window.sessionStorage.getItem("june:agent:new-session-draft")).toContain(prompt);
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
   });
