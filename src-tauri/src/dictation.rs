@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+use crate::audio::turns::normalize_wav_for_transcription;
 use crate::domain::{
     processing::{build_dictionary_context, merge_transcription_context},
     types::{AppError, ListDictationHistoryResponse},
@@ -2563,6 +2565,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
             return;
         }
         DictationAuthGate::SignedOut => {
+            remove_windows_dictation_audio(&recording.audio_path);
             let state = app.state::<HelperState>();
             let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
             notify_dictation_not_signed_in(&app);
@@ -2573,6 +2576,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     let provider = match dictation_transcription_provider(configured_transcription_provider()) {
         Ok(provider) => provider,
         Err(error) => {
+            remove_windows_dictation_audio(&recording.audio_path);
             let state = app.state::<HelperState>();
             let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
             emit_dictation_event_value(&app, app_error_event(error));
@@ -2590,14 +2594,28 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         dictionary_context.as_deref(),
         Some(dictation_transcription_context(style).as_str()),
     );
+    let transcription_audio = match prepare_dictation_audio(&recording.audio_path, &utterance_id) {
+        Ok(path) => path,
+        Err(error) => {
+            remove_windows_dictation_audio(&recording.audio_path);
+            let state = app.state::<HelperState>();
+            let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
+            emit_dictation_event_value(&app, app_error_event(error));
+            return;
+        }
+    };
     let result = dictate_transcribe(DictateTranscribeRequest {
-        audio_path: recording.audio_path,
+        audio_path: transcription_audio.clone(),
         context: transcription_context,
         language,
         session_id: session_id.clone(),
         utterance_id: utterance_id.clone(),
     })
     .await;
+    if transcription_audio != recording.audio_path {
+        let _ = fs::remove_file(&transcription_audio);
+    }
+    remove_windows_dictation_audio(&recording.audio_path);
     let result = maybe_cleanup_dictation_result(
         &app,
         &provider,
@@ -2628,6 +2646,31 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     }
     let _ = std::fs::remove_file(&audio_path);
 }
+
+fn prepare_dictation_audio(
+    input_path: &std::path::Path,
+    utterance_id: &str,
+) -> Result<PathBuf, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        let output_path =
+            std::env::temp_dir().join(format!("os-june-dictation-{utterance_id}-normalized.wav"));
+        return normalize_wav_for_transcription(input_path, &output_path);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = utterance_id;
+        Ok(input_path.to_path_buf())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn remove_windows_dictation_audio(path: &std::path::Path) {
+    let _ = fs::remove_file(path);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn remove_windows_dictation_audio(_path: &std::path::Path) {}
 
 fn dictation_session_id() -> String {
     use std::sync::OnceLock;
@@ -5249,6 +5292,31 @@ mod tests {
         assert!(!helper_command_resets_shortcut_activation(
             &serde_json::json!({ "type": "start_shortcut_capture" })
         ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn dictation_audio_is_normalized_for_transcription() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let input = directory.path().join("captured.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&input, spec).expect("create captured wav");
+        for sample in [500_i16, 500, -500, -500] {
+            writer.write_sample(sample).expect("write sample");
+        }
+        writer.finalize().expect("finalize captured wav");
+
+        let prepared = prepare_dictation_audio(&input, "test-utterance").expect("normalize wav");
+        let reader = hound::WavReader::open(&prepared).expect("open normalized wav");
+        assert_ne!(prepared, input);
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.spec().sample_rate, 16_000);
+        let _ = fs::remove_file(prepared);
     }
 
     #[test]

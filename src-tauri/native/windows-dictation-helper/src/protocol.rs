@@ -13,7 +13,7 @@ pub struct CommandEnvelope {
     #[serde(default)]
     pub kind: Option<ShortcutKind>,
     #[serde(default)]
-    pub shortcut: Option<ShortcutCommand>,
+    pub shortcut: Option<Value>,
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
@@ -59,6 +59,39 @@ pub struct ShortcutModifiers {
 
 fn default_press_count() -> u8 {
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toggle_command_accepts_legacy_shortcut_label() {
+        let command: CommandEnvelope =
+            serde_json::from_str(r#"{"type":"toggle_listening","shortcut":"Ctrl+Alt+T"}"#)
+                .expect("toggle command parses");
+
+        assert_eq!(command.command_type, "toggle_listening");
+        assert_eq!(
+            command.shortcut,
+            Some(Value::String("Ctrl+Alt+T".to_string()))
+        );
+    }
+
+    #[test]
+    fn set_shortcut_keeps_structured_payload() {
+        let command: CommandEnvelope = serde_json::from_str(
+            r#"{"type":"set_shortcut","shortcut":{"keyCode":32,"code":"KeyU","label":"Ctrl+U","kind":"push_to_talk","pressCount":1,"modifiers":{"control":true}}}"#,
+        )
+        .expect("set shortcut command parses");
+        let shortcut =
+            serde_json::from_value::<ShortcutCommand>(command.shortcut.expect("shortcut payload"))
+                .expect("structured shortcut parses");
+
+        assert_eq!(shortcut.kind, ShortcutKind::PushToTalk);
+        assert_eq!(shortcut.code, "KeyU");
+        assert!(shortcut.modifiers.control);
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

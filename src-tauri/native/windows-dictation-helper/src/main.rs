@@ -169,8 +169,16 @@ impl HelperApp {
             }
             "set_shortcut" => {
                 if let Some(shortcut) = command.shortcut {
-                    if let Some(hotkeys) = &self.hotkeys {
-                        hotkeys.set_shortcut(shortcut);
+                    match serde_json::from_value(shortcut) {
+                        Ok(shortcut) => {
+                            if let Some(hotkeys) = &self.hotkeys {
+                                hotkeys.set_shortcut(shortcut);
+                            }
+                        }
+                        Err(error) => self.writer.emit(error_event(
+                            "shortcut_invalid",
+                            format!("Invalid Windows dictation shortcut: {error}"),
+                        )),
                     }
                 }
             }
