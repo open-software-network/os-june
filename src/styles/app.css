@@ -4934,112 +4934,140 @@ input:focus-visible,
   gap: var(--sp-1);
 }
 
-/* Steer cards — injected instructions tacked to the top of the composer while
-   June works, in the same region as attachment chips. Each is the live handle
-   on an in-flight steer: hover reveals edit (reopen in the composer) and remove
-   (cancel a still-pending one). Sending is automatic, so there is no send
-   action. */
-.agent-steer-cards {
+/* Steer queue — the queued/steering instructions as their own elevated card
+   ABOVE the composer box (not a region inside it). All rows show by default;
+   the header collapses the list to itself and stays put ("Queued" + count,
+   constant copy in both states). Each row is the live handle on an in-flight
+   steer: full-row hover reveals edit (reopen in the composer) and remove
+   (cancel). Sending is automatic, so there is no send action. */
+.agent-steer-queue {
+  pointer-events: auto;
+  width: 100%;
+  max-width: min(var(--chat-max), var(--content-max));
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-1);
+  /* The composer box's surface recipe — solid card with the hairline ring
+     folded into the shadow — so the queue reads at the same elevation. */
+  border: 1px solid transparent;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+}
+
+/* The whole header toggles the list; hover is a quiet color shift only. */
+.agent-steer-queue-header {
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: var(--control-md);
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.agent-steer-queue-header:hover {
+  color: var(--foreground);
+}
+
+/* Double class so this outranks .status-pill's grey base, which is defined
+   LATER in this flat stylesheet and silently wins the tie. Brand wash for a
+   touch of the active theme. */
+.status-pill.agent-steer-queue-count {
+  background: color-mix(in oklch, var(--brand) 12%, transparent);
+  color: var(--warm-strong);
+}
+
+/* Open, the chevron points down (fold the list away); collapsed it turns up,
+   toward where the queue reopens. */
+.agent-steer-queue-chevron {
+  margin-left: auto;
+  transition: rotate var(--t-med) var(--ease-out);
+}
+
+.agent-steer-queue-chevron[data-expanded="false"] {
+  rotate: 180deg;
+}
+
+/* Non-scrolling fade host for the capped list below (spec/scroll-fade.md):
+   the shared `.scroll-fade` overlays paint here while the child scrolls. */
+.agent-steer-cards-scroll {
+  --scroll-fade-color: var(--card);
+  --scroll-fade-size: 20px;
 }
 
 .agent-steer-cards-list {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-}
-
-/* Expanded, a long turn's worth of steers scrolls inside a bounded height
-   rather than shoving the editor down the screen; collapsed the list only ever
-   holds a card or two, so it never needs the cap. */
-.agent-steer-cards-list[data-scroll="true"] {
-  max-height: 168px;
+  max-height: min(320px, 35vh);
   overflow-y: auto;
+  /* Joins the detail-scroller scrollbar family (the ::-webkit lane + the
+     scroll-driven thumb from attachScrollThumbFade): the opt-out lets the
+     ::-webkit rules engage, and the thumb paints only WHILE SCROLLING (a
+     hover-revealed thumb flashed over the rows). No reserved gutter — the
+     lane appears only once a stack actually scrolls. */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
-/* "Show N earlier" / "Show fewer" toggle above a collapsed stack — a quiet
-   text button, never louder than the cards it gates. */
-.agent-steer-cards-more {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  align-self: flex-start;
-  min-height: var(--control-sm);
-  padding: var(--sp-1) var(--sp-2);
-  border: 0;
-  border-radius: var(--r-md);
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  transition:
-    color var(--t-fast) var(--ease-out),
-    background-color var(--t-fast) var(--ease-out);
-}
-
-.agent-steer-cards-more:hover {
-  color: var(--foreground);
-  background: var(--surface-subtle);
-}
-
-.agent-steer-cards-more-chevron {
-  transition: rotate var(--t-fast) var(--ease-out);
-}
-
-.agent-steer-cards-more-chevron[data-expanded="true"] {
-  rotate: 180deg;
-}
-
+/* Bare rows on the card surface; the hover wash is the row's only chrome. */
 .agent-steer-card {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   gap: var(--sp-2);
   min-height: var(--control-lg);
   padding: var(--sp-1) var(--sp-2);
+  /* The row renders at content + sp-1 padding, so the action buttons'
+     vertical inset IS the sp-1 padding — the right inset matches it exactly
+     to keep them concentric with the row's end. */
+  padding-right: var(--sp-1);
   border-radius: var(--r-lg);
-  background: var(--secondary);
+  background: transparent;
   color: var(--foreground);
   font-size: var(--fs-lg);
 }
 
-.agent-steer-card-icon {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 auto;
-  /* Diminished well below the text so the instruction is the focus — the glyph
-     just tags the row as a steer, it doesn't compete for the eye. */
-  color: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+.agent-steer-card[data-hovered] {
+  background: var(--secondary);
 }
 
-/* Long steers wrap to two lines then ellipsize (rather than a single truncated
-   line) so more of the instruction is legible at rest; the full text stays
-   reachable via the card's title tooltip and Edit. */
+/* One line, ellipsized — compact rows; the full text lives in the row's
+   title tooltip and comes back via Edit. */
 .agent-steer-card-text {
   flex: 1 1 auto;
   min-width: 0;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
   overflow: hidden;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* Revealed on hover/focus like the queued-message row it's modeled on, so a
-   resting card stays quiet. */
+/* Revealed on row hover/focus, so a resting row stays quiet. Hiding is
+   INSTANT (no transition here): a fade-out tail meant every row streaming
+   under the pointer during a scroll showed a lingering ghost of its actions —
+   several at once mid-scroll. */
 .agent-steer-card-actions {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
   flex: 0 0 auto;
   opacity: 0;
-  transition: opacity var(--t-fast) var(--ease-out);
 }
 
-.agent-steer-card:hover .agent-steer-card-actions,
-.agent-steer-card:focus-within .agent-steer-card-actions {
+/* data-hovered (a JS-tracked single node), not CSS :hover — WebKit doesn't
+   re-evaluate :hover when rows reflow under a stationary pointer, which left
+   stale hovers around. :focus-visible (not :focus-within, which a mouse click
+   pins) keeps keyboard reveal. The fade applies on reveal only. */
+.agent-steer-card[data-hovered] .agent-steer-card-actions,
+.agent-steer-card:has(:focus-visible) .agent-steer-card-actions {
   opacity: 1;
+  transition: opacity var(--t-fast) var(--ease-out);
 }
 
 .agent-steer-card-actions button {
@@ -5065,8 +5093,8 @@ input:focus-visible,
 
 @media (prefers-reduced-motion: reduce) {
   .agent-steer-card-actions,
-  .agent-steer-cards-more,
-  .agent-steer-cards-more-chevron {
+  .agent-steer-queue-header,
+  .agent-steer-queue-chevron {
     transition: none;
   }
 }
@@ -5675,20 +5703,24 @@ input:focus-visible,
   outline-color: var(--destructive);
 }
 
+/* The remove control set into the thumb's corner: a small squircle in the
+   house ghost-button voice (muted glyph warming to foreground on hover, no
+   ring or border — the solid themed surface is all the separation it needs
+   over the image, in both modes). */
 .agent-attachment-chip[data-kind="image"] button {
   position: absolute;
   top: 3px;
   right: 3px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--r-sm);
   background: var(--background);
-  color: var(--foreground);
-  box-shadow: 0 0 0 1px var(--border);
+  color: var(--muted-foreground);
   opacity: 0;
   transition:
     opacity var(--t-fast) var(--ease-out),
-    scale var(--t-fast) var(--ease-out);
+    color var(--t-fast) var(--ease-out);
 }
 
 .agent-attachment-chip[data-kind="image"]:hover button,
@@ -5697,7 +5729,6 @@ input:focus-visible,
 }
 
 .agent-attachment-chip[data-kind="image"] button:hover {
-  background: var(--background);
   color: var(--foreground);
 }
 
@@ -6316,9 +6347,11 @@ input:focus-visible,
 }
 
 /* Send is the primary action in the brand terracotta (the logo mark color);
- * dictation stays a ghost. The arrow holds its slot but settles in as the user
- * types — lifting up, sharpening, and scaling to full — so the send has its own
- * entrance motion, not just a color change (see the data-active resting state). */
+ * dictation stays a ghost. The arrow is always in its slot — it just goes
+ * quiet while there's nothing to send, and lights up as the user types.
+ * Deliberately NO entrance motion on this button: an arrow nudge on the first
+ * keystroke read as jank, and the box-level version misaligned the disabled
+ * state. The steer-send's slide is the only send motion. */
 .agent-composer-send {
   display: inline-grid;
   place-items: center;
@@ -6332,10 +6365,7 @@ input:focus-visible,
   color: var(--on-solid);
   transition:
     background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out),
-    filter var(--t-med) var(--ease-out),
-    scale var(--t-med) var(--ease-spring),
-    translate var(--t-slow) var(--ease-spring);
+    color var(--t-fast) var(--ease-out);
   animation: agent-composer-action-in var(--t-fast) var(--ease-out);
 }
 
@@ -6347,15 +6377,6 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--muted-foreground);
   cursor: default;
-}
-
-/* Resting (nothing to send): the arrow sits a hair low, soft, and scaled back,
-   so the first keystroke lifts + sharpens it into place. Scoped away from the
-   steer-send, which runs its own blur-in slide out from behind Stop. */
-.agent-composer-send:not(.agent-composer-send-steer):not([data-active="true"]) {
-  filter: blur(4px);
-  scale: 0.86;
-  translate: 0 2px;
 }
 
 /* Send and stop trade the same slot; the incoming control scales up out of
@@ -6372,50 +6393,13 @@ input:focus-visible,
   .agent-composer-stop {
     animation: none;
   }
-
-  /* Drop the resting lift/blur/scale — the arrow just goes quiet, no motion. */
-  .agent-composer-send:not(.agent-composer-send-steer):not([data-active="true"]) {
-    filter: none;
-    scale: 1;
-    translate: 0 0;
-  }
 }
 
-/* Steer-send — while June works, stop holds the corner and this second send
-   sits directly beside it (both are plain flex children of the actions row, no
-   wrapper: a nested flex box inflated the row height and left dead space at the
-   composer's bottom edge). It reveals by BLURRING in, never by scaling its own
-   width. Hidden, a negative margin tucks it back over the stop button so it
-   takes no space and stop keeps the corner; revealing slides it out from behind
-   stop as it sharpens. */
-.agent-composer-send-steer {
-  margin-left: calc(-1 * (var(--control-lg) + var(--sp-1)));
-  opacity: 0;
-  filter: blur(6px);
-  pointer-events: none;
-  animation: none;
-  /* Slide + blur together: the position (margin) rides a slower spring so the
-     glide is the last thing to settle and clearly reads as a slide, while
-     opacity/blur resolve a beat sooner so the button is already visible mid-
-     travel — the blur is part of the motion, not a substitute for it. */
-  transition:
-    margin-left var(--t-slow) var(--ease-spring),
-    opacity var(--t-med) var(--ease-out),
-    filter var(--t-med) var(--ease-out);
-}
-
-.agent-composer-send-steer[data-visible="true"] {
-  margin-left: 0;
-  opacity: 1;
-  filter: blur(0);
-  pointer-events: auto;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .agent-composer-send-steer {
-    transition: none;
-  }
-}
+/* The steer-send needs no CSS of its own: while June works, stop and send
+   TRADE the one corner slot on the draft state (typed = send, empty = stop),
+   the same keyed scale-swap every send/stop trade uses. A two-button
+   choreography (send sliding in beside stop) kept fighting the right-anchored
+   row's geometry; one slot is simpler and matches the app's motion language. */
 
 /* "Responding" affordance pinned to the bottom of the timeline while the agent
  * is working — the dot spinner next to a shimmering label. */
@@ -16157,6 +16141,7 @@ input:focus-visible,
  * and transparent borders clip the painted pill back to the usual 4px,
  * inset 2px from the card edge and the content alike. */
 .agent-scroll::-webkit-scrollbar,
+.agent-steer-cards-list::-webkit-scrollbar,
 .note-detail-scroll::-webkit-scrollbar,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar {
   width: var(--scrollbar-w);
@@ -16164,6 +16149,7 @@ input:focus-visible,
 }
 
 .agent-scroll::-webkit-scrollbar-thumb,
+.agent-steer-cards-list::-webkit-scrollbar-thumb,
 .note-detail-scroll::-webkit-scrollbar-thumb,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
@@ -16172,6 +16158,7 @@ input:focus-visible,
 }
 
 .agent-scroll[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
+.agent-steer-cards-list[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
 .note-detail-scroll[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
 .main-panel-body[data-detail-scroller="true"][data-scrollbar-active="true"]::-webkit-scrollbar-thumb {
   background: color-mix(
@@ -16183,6 +16170,7 @@ input:focus-visible,
 }
 
 .agent-scroll::-webkit-scrollbar-thumb:hover,
+.agent-steer-cards-list::-webkit-scrollbar-thumb:hover,
 .note-detail-scroll::-webkit-scrollbar-thumb:hover,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb:hover {
   background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
