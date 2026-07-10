@@ -448,7 +448,7 @@ impl Debug for OsAccountsConfig {
             .field("app_api_key", &REDACTED)
             .field(
                 "p3a_ingest_token",
-                if self.p3a_ingest_token.is_empty() {
+                if self.p3a_ingest_token.trim().is_empty() {
                     &"<unset>"
                 } else {
                     &REDACTED
