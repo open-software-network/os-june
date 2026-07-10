@@ -357,6 +357,28 @@ describe("TabBar", () => {
     expect(screen.getByRole("menuitem", { name: "Close other tabs" })).toBeInTheDocument();
   });
 
+  it("keeps hover-only overflow close controls out of the tab order", () => {
+    const restoreWidth = mockStripWidth(360);
+    try {
+      const manyTabs = Array.from({ length: 6 }, (_, index) => ({
+        id: `tab-${index + 1}`,
+        title: `Tab ${index + 1}`,
+        icon: <span aria-hidden />,
+      }));
+      const { container } = renderTabBar({ tabs: manyTabs, activeTabId: "tab-1" });
+
+      fireEvent.click(screen.getByRole("button", { name: "Show all 6 tabs" }));
+
+      const overflowCloses = container.querySelectorAll<HTMLButtonElement>(".tab-overflow-close");
+      expect(overflowCloses).toHaveLength(6);
+      for (const close of overflowCloses) {
+        expect(close).toHaveAttribute("tabindex", "-1");
+      }
+    } finally {
+      restoreWidth();
+    }
+  });
+
   it("freezes adaptive layout while the sidebar is being resized", () => {
     let observerCallback: ResizeObserverCallback | undefined;
     const OriginalResizeObserver = globalThis.ResizeObserver;
