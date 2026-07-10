@@ -9062,7 +9062,9 @@ export function AgentWorkspace({
               >
                 Up next
                 {steerQueueOpen ? null : (
-                  <span className="agent-steer-queue-count">{selectedFollowUpCount}</span>
+                  <span className="status-pill agent-steer-queue-count">
+                    {selectedFollowUpCount}
+                  </span>
                 )}
               </button>
               <button

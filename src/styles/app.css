@@ -5738,7 +5738,6 @@ input:focus-visible,
   align-items: center;
   justify-content: space-between;
   min-height: var(--control-md);
-  padding-right: var(--sp-1);
 }
 
 .agent-steer-queue-trigger {
@@ -5779,11 +5778,8 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-/* Collapsed-only count: a bare gray numeral after the label, one shade
-   quieter so the word keeps the hierarchy. */
-.agent-steer-queue-count {
-  color: color-mix(in oklch, var(--muted-foreground) 60%, transparent);
-}
+/* Collapsed-only count after the label: the house badge in its default gray
+   voice (.status-pill, defined later in this stylesheet). */
 
 /* Open, the chevron points down (fold the list away); collapsed it turns up,
    toward where the queue reopens. */
@@ -6840,10 +6836,17 @@ input:focus-visible,
 }
 
 /* Rail file tiles sit on a white card instead of the gray well - gray on
-   the row's gray hover wash went muddy. The icon rides the card directly. */
+   the row's gray hover wash went muddy. Surface and hairline are the
+   composer chip's exact recipe so the two read as one family. The icon
+   rides the card directly. */
 .agent-follow-up-attachments .agent-attachment-chip[data-kind="file"] {
+  background: oklch(100% 0 none);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+}
+
+[data-theme="dark"] .agent-follow-up-attachments .agent-attachment-chip[data-kind="file"] {
   background: var(--card);
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%);
 }
 
 .agent-follow-up-attachments .agent-attachment-chip[data-kind="file"] .agent-attachment-file-icon {
