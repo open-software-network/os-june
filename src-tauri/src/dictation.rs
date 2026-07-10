@@ -2544,12 +2544,8 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     match classify_dictation_auth(&crate::os_accounts::access_token().await) {
         DictationAuthGate::Proceed => {}
         DictationAuthGate::Unavailable(error) => {
-            // OS Accounts is momentarily unreachable (e.g. an upstream 5xx
-            // during a post-update restart). The recording is intact and the
-            // user is still signed in, so keep the audio (do NOT discard) and
-            // surface a retriable error instead of a misleading sign-in prompt.
-            // The helper drops the leftover file on the next start_listening.
             emit_dictation_event_value(&app, app_error_event(error));
+            let _ = std::fs::remove_file(&audio_path);
             return;
         }
         DictationAuthGate::SignedOut => {
