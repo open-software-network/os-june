@@ -1036,6 +1036,38 @@ describe("MoveNoteToFolderDialog", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("keeps the dialog open when assignment fails after creating the project", async () => {
+    const user = userEvent.setup();
+    const created: FolderDto = {
+      id: "folder-new",
+      name: "Roadmap",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const onCreateFolder = vi.fn().mockResolvedValue(created);
+    const onSetFolder = vi.fn().mockRejectedValue(new Error("db locked"));
+    const onClose = vi.fn();
+    const onMoved = vi.fn();
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={onClose}
+        notes={[notes[1]]}
+        folders={[]}
+        onSetFolder={onSetFolder}
+        onCreateFolder={onCreateFolder}
+        onMoved={onMoved}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search or create project"), "Roadmap");
+    await user.click(screen.getByRole("button", { name: "Create “Roadmap”" }));
+
+    expect(onSetFolder).toHaveBeenCalledWith("note-1", "folder-new");
+    expect(onMoved).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("keeps the dialog open when project creation fails", async () => {
     const user = userEvent.setup();
     const onCreateFolder = vi.fn().mockResolvedValue(undefined);

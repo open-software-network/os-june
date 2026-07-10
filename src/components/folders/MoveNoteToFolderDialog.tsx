@@ -82,11 +82,15 @@ export function MoveNoteToFolderDialog({
       for (const note of notes) {
         await onSetFolder(note.id, selectedId);
       }
-      onMoved?.();
-      onClose();
+    } catch {
+      // The caller surfaced the error; keep the dialog open so a partial
+      // move is visible and the user can retry.
+      return;
     } finally {
       setSubmitting(false);
     }
+    onMoved?.();
+    onClose();
   }
 
   async function handleCreateAndAssign() {
@@ -100,11 +104,16 @@ export function MoveNoteToFolderDialog({
       for (const note of notes) {
         await onSetFolder(note.id, folder.id);
       }
-      onMoved?.();
-      onClose();
+    } catch {
+      // Assignment failed after the project was created: the caller surfaced
+      // the error, and the dialog stays open with the new project listed so
+      // the user can retry instead of silently losing notes.
+      return;
     } finally {
       setSubmitting(false);
     }
+    onMoved?.();
+    onClose();
   }
 
   const title = isSingle

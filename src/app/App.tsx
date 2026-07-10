@@ -3687,7 +3687,7 @@ export function App() {
             : []
         }
         folders={state.folders}
-        onSetFolder={(noteId, folderId) => handleSetNoteFolder(noteId, folderId)}
+        onSetFolder={(noteId, folderId) => handleSetNoteFolder(noteId, folderId, { rethrow: true })}
         onCreateFolder={(name) => handleCreateFolder(name)}
         onMoved={() => notesListRef.current?.resetSelection()}
       />
@@ -3703,7 +3703,9 @@ export function App() {
         }
         sessionFolderIds={sessionFolders}
         folders={state.folders}
-        onSetFolder={(sessionId, folderId) => handleSetSessionFolder(sessionId, folderId)}
+        onSetFolder={(sessionId, folderId) =>
+          handleSetSessionFolder(sessionId, folderId, { rethrow: true })
+        }
         onCreateFolder={(name) => handleCreateFolder(name)}
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
       />
