@@ -1,13 +1,15 @@
 import type { AccountStatus } from "./tauri";
+import { errorCode } from "./errors";
 
 // Single source of truth for Max upgrade confirm and status copy. The plan
 // change returns before payment is confirmed and the credit grant lands, so
 // only the grant poll may advance the copy from waiting to active.
 export const MAX_UPGRADE_CONFIRM_TITLE = "Upgrade to Max?";
 export const MAX_UPGRADE_CONFIRM_BODY =
-  "Max is $100 per month. Your saved card will be charged a prorated amount for the rest of this billing cycle.";
+  "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.";
 export const MAX_UPGRADE_CONFIRM_LABEL = "Upgrade now";
 export const MAX_UPGRADE_BUSY_LABEL = "Upgrading...";
+export const MAX_UPGRADE_BROWSER_STATUS = "Waiting for you to confirm in the browser";
 export const MAX_UPGRADE_WAITING_STATUS = "Upgrade started. Waiting for payment confirmation.";
 export const MAX_UPGRADE_READY_STATUS = "Max is active.";
 export const MAX_UPGRADE_SLOW_STATUS =
@@ -20,7 +22,7 @@ export const MAX_GRANT_POLL_TIMEOUT_MS = 30_000;
 type MutableMaxGrantWait = {
   readonly accountId: string | undefined;
   readonly baselineCredits: number;
-  phase: "waiting" | "slow";
+  phase: "browser" | "waiting" | "slow";
 };
 
 export type MaxGrantWait = Readonly<MutableMaxGrantWait>;
@@ -33,8 +35,9 @@ let activeMaxGrantWait: MutableMaxGrantWait | undefined;
 export function beginMaxGrantWait(
   baselineCredits: number,
   accountId: string | undefined,
+  phase: "browser" | "waiting" = "waiting",
 ): MaxGrantWait {
-  activeMaxGrantWait = { accountId, baselineCredits, phase: "waiting" };
+  activeMaxGrantWait = { accountId, baselineCredits, phase };
   return activeMaxGrantWait;
 }
 
@@ -52,6 +55,23 @@ export function isMaxGrantWaitCurrent(wait: MaxGrantWait): boolean {
 
 export function markMaxGrantWaitSlow(wait: MaxGrantWait): void {
   if (activeMaxGrantWait === wait) activeMaxGrantWait.phase = "slow";
+}
+
+export function markMaxGrantWaitWaiting(wait: MaxGrantWait): void {
+  if (activeMaxGrantWait === wait) activeMaxGrantWait.phase = "waiting";
+}
+
+/** Whether a hosted upgrade-session failure means this OS Accounts deploy
+ * cannot provide the browser flow, so June should use the compatible PATCH
+ * transport in the same confirmed user action. */
+export function isHostedMaxUpgradeFallbackError(error: unknown): boolean {
+  return new Set([
+    "upgrade_session_unavailable",
+    "plan_not_enabled",
+    "network_error",
+    "auth_refresh_unavailable",
+    "empty_response",
+  ]).has(errorCode(error) ?? "");
 }
 
 export function clearMaxGrantWait(wait?: MaxGrantWait): void {
@@ -76,9 +96,9 @@ export type MaxGrantPollOptions = {
   timeoutMs?: number;
 };
 
-/** Polls `refresh` until the Max grant lands or the timeout passes. The plan
- * change PATCH resolves before the webhook grants the new credits, so
- * surfaces poll briefly instead of parking on a stale credit balance. Resolves true
+/** Polls `refresh` until the Max grant lands or the timeout passes. The upgrade
+ * transport resolves before the webhook grants the new credits, so surfaces
+ * poll briefly instead of parking on a stale credit balance. Resolves true
  * once the grant is visible (the last `refresh` has already pushed the fresh
  * snapshot to the caller's state), false on timeout.
  *

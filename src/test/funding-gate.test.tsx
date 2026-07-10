@@ -9,12 +9,14 @@ const mocks = vi.hoisted(() => ({
   osAccountsChangePlan: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
   osAccountsUpgrade: vi.fn(),
+  osAccountsUpgradeSession: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
   osAccountsChangePlan: mocks.osAccountsChangePlan,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
+  osAccountsUpgradeSession: mocks.osAccountsUpgradeSession,
 }));
 
 const baseAccount: AccountStatus = {
@@ -38,6 +40,7 @@ describe("FundingGate", () => {
     mocks.osAccountsChangePlan.mockResolvedValue({ subscribed: true, plan: "max" });
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
+    mocks.osAccountsUpgradeSession.mockResolvedValue(undefined);
   });
 
   it("asks users with no credits to upgrade, not add credits", async () => {
@@ -131,7 +134,7 @@ describe("FundingGate", () => {
   });
 
   const MAX_CONFIRM_BODY =
-    "Max is $100 per month. Your saved card will be charged a prorated amount for the rest of this billing cycle.";
+    "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.";
 
   function renderDepletedProGate(onRefresh = vi.fn(async () => baseAccount)) {
     render(
@@ -148,7 +151,7 @@ describe("FundingGate", () => {
     return onRefresh;
   }
 
-  it("offers a depleted Pro subscriber exactly one path: upgrade to Max in place", async () => {
+  it("opens a hosted upgrade session and starts the grant poll after confirmation", async () => {
     const user = userEvent.setup();
     const onRefresh = renderDepletedProGate();
 
@@ -165,20 +168,41 @@ describe("FundingGate", () => {
     // The CTA opens the charge confirm; no plan change starts until confirmed.
     await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
     expect(await screen.findByText(MAX_CONFIRM_BODY)).toBeInTheDocument();
+    expect(mocks.osAccountsUpgradeSession).not.toHaveBeenCalled();
     expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Upgrade now" }));
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
-    expect(
-      await screen.findByText("Upgrade started. Waiting for payment confirmation."),
-    ).toBeInTheDocument();
+    expect(await screen.findAllByText("Waiting for you to confirm in the browser")).toHaveLength(2);
     // A successful PATCH is not proof that the credit grant landed.
     expect(screen.queryByText("Max is active.")).toBeNull();
     expect(screen.queryByText("Top up credits")).toBeNull();
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+  });
+
+  it("falls back to PATCH when hosted upgrade is unavailable", async () => {
+    const user = userEvent.setup();
+    const onRefresh = renderDepletedProGate();
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
+      code: "plan_not_enabled",
+      message: "That plan is not available yet.",
+    });
+
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
+
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    expect(
+      await screen.findByText("Upgrade started. Waiting for payment confirmation."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Max is active.")).toBeNull();
     await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
   });
 
@@ -191,6 +215,7 @@ describe("FundingGate", () => {
     await user.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+    expect(mocks.osAccountsUpgradeSession).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
     expect(screen.queryByText(MAX_CONFIRM_BODY)).toBeNull();
     // Back on the prompt, ready to try again.
@@ -199,6 +224,10 @@ describe("FundingGate", () => {
 
   it("keeps the confirm open showing the failure when the plan change fails", async () => {
     const user = userEvent.setup();
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
+      code: "network_error",
+      message: "Could not reach OS Accounts.",
+    });
     mocks.osAccountsChangePlan.mockRejectedValueOnce({
       code: "network_error",
       message: "Could not reach OS Accounts.",
@@ -242,14 +271,15 @@ describe("FundingGate", () => {
     await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
     await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
 
-    expect(
-      await screen.findByText("Upgrade started. Waiting for payment confirmation."),
-    ).toBeInTheDocument();
+    expect(await screen.findAllByText("Waiting for you to confirm in the browser")).toHaveLength(2);
     expect(screen.queryByText("Max is active.")).toBeNull();
 
     view.rerender(
       <FundingGate account={optimisticMaxAccount} onRefresh={onRefresh} onSignOut={vi.fn()} />,
     );
+    expect(
+      await screen.findByText("Upgrade started. Waiting for payment confirmation."),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Max is active.")).toBeNull();
 
     view.rerender(
@@ -258,7 +288,8 @@ describe("FundingGate", () => {
     resolveGrantRefresh?.(grantedMaxAccount);
 
     expect(await screen.findByText("Max is active.")).toBeInTheDocument();
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
   });
 
@@ -286,6 +317,11 @@ describe("FundingGate", () => {
         fireEvent.click(screen.getByRole("button", { name: "Upgrade now" }));
         await Promise.resolve();
       });
+      expect(screen.getAllByText("Waiting for you to confirm in the browser")).toHaveLength(2);
+
+      view.rerender(
+        <FundingGate account={optimisticMaxAccount} onRefresh={onRefresh} onSignOut={vi.fn()} />,
+      );
       expect(
         screen.getByText("Upgrade started. Waiting for payment confirmation."),
       ).toBeInTheDocument();

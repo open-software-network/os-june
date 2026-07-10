@@ -1,12 +1,20 @@
 import { depletedBalanceAction, type DepletedBalanceAction } from "./account-gate";
 import { errorCode, isTopUpRequiresMaxError } from "./errors";
-import { osAccountsChangePlan, osAccountsOpenPortal, osAccountsUpgrade } from "./tauri";
+import { isHostedMaxUpgradeFallbackError } from "./max-upgrade";
+import {
+  osAccountsChangePlan,
+  osAccountsOpenPortal,
+  osAccountsUpgrade,
+  osAccountsUpgradeSession,
+} from "./tauri";
 import type { AccountStatus } from "./tauri";
 
 /** How the resolved action ended:
  * - `changed_plan`: the existing subscription now matches the requested plan
  *   (changed in place, or the server reported `already_on_plan` for a stale
  *   snapshot); refresh until the associated credit grant lands.
+ * - `opened_upgrade_session`: the browser opened for a hosted existing-plan
+ *   upgrade; poll through confirmation until the associated grant lands.
  * - `opened_browser`: checkout or the portal opened; the window focus-refresh
  *   reconciles the balance later.
  * - `upgrade_required`: the backend gated a top-up behind Max, meaning the
@@ -18,6 +26,7 @@ import type { AccountStatus } from "./tauri";
  *   active subscription server-side; refresh to show the subscribe path. */
 export type DepletedBalanceOutcome =
   | "changed_plan"
+  | "opened_upgrade_session"
   | "opened_browser"
   | "upgrade_required"
   | "subscribe_required";
@@ -37,9 +46,16 @@ export async function runDepletedBalanceAction(
   upgradePlan: "max" = "max",
 ): Promise<DepletedBalanceOutcome> {
   if (action === "upgrade_to_max") {
+    let hosted = false;
     try {
-      await osAccountsChangePlan(upgradePlan);
-      return "changed_plan";
+      try {
+        await osAccountsUpgradeSession(upgradePlan);
+        hosted = true;
+      } catch (err) {
+        if (!isHostedMaxUpgradeFallbackError(err)) throw err;
+        await osAccountsChangePlan(upgradePlan);
+      }
+      return hosted ? "opened_upgrade_session" : "changed_plan";
     } catch (err) {
       const code = errorCode(err);
       if (code === "already_on_plan") return "changed_plan";

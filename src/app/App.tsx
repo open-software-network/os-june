@@ -159,6 +159,7 @@ import {
 } from "../lib/account-gate";
 import { runDepletedBalanceAction } from "../lib/billing-actions";
 import {
+  MAX_UPGRADE_BROWSER_STATUS,
   MAX_UPGRADE_BUSY_LABEL,
   MAX_UPGRADE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_LABEL,
@@ -172,6 +173,7 @@ import {
   clearMaxGrantWait,
   isMaxGrantWaitCurrent,
   markMaxGrantWaitSlow,
+  markMaxGrantWaitWaiting,
   maxGrantLanded,
   pollForMaxGrant,
 } from "../lib/max-upgrade";
@@ -590,13 +592,15 @@ export function App() {
       return;
     }
     const baselineCredits = account.balance?.credits ?? 0;
+    let hosted = false;
     try {
       const outcome = await runDepletedBalanceAction(
         account,
         maxUpgradePrompt.action,
         maxUpgradePrompt.plan,
       );
-      if (outcome !== "changed_plan") {
+      hosted = outcome === "opened_upgrade_session";
+      if (!hosted && outcome !== "changed_plan") {
         // The server no longer sees an active subscription. Refresh and let
         // the depleted-balance surface render the correct subscribe action.
         void refreshAccount();
@@ -607,12 +611,16 @@ export function App() {
       setMaxUpgradeError(messageFromError(err));
       throw err;
     }
-    // The PATCH only starts the upgrade. Payment confirmation and the credit
-    // grant arrive asynchronously, so stay neutral while the account refresh
-    // poll waits for the credits change.
-    const grantWait = beginMaxGrantWait(baselineCredits, account.user?.id);
+    // Hosted confirmation and the credit grant arrive asynchronously. The
+    // fallback PATCH skips only the browser-confirmation phase; both paths
+    // stay neutral until the account refresh poll observes landed credits.
+    const grantWait = beginMaxGrantWait(
+      baselineCredits,
+      account.user?.id,
+      hosted ? "browser" : "waiting",
+    );
     appMaxGrantWaitRef.current = grantWait;
-    showBillingNotice(MAX_UPGRADE_WAITING_STATUS);
+    showBillingNotice(hosted ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS);
     void pollForMaxGrant(refreshAccount, baselineCredits).then((landed) => {
       if (!isMaxGrantWaitCurrent(grantWait)) return;
       if (landed) {
@@ -634,6 +642,10 @@ export function App() {
       window.clearTimeout(billingNoticeTimerRef.current);
       setBillingNotice(null);
       return;
+    }
+    if (grantWait?.phase === "browser" && account.subscription?.plan === "max") {
+      markMaxGrantWaitWaiting(grantWait);
+      showBillingNotice(MAX_UPGRADE_WAITING_STATUS);
     }
     if (!grantWait || !maxGrantLanded(account, grantWait.baselineCredits)) return;
     clearMaxGrantWait(grantWait);

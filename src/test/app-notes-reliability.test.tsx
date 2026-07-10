@@ -54,6 +54,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
   osAccountsUpgrade: vi.fn(),
+  osAccountsUpgradeSession: vi.fn(),
   osAccountsChangePlan: vi.fn(),
   agentHudShow: vi.fn(),
   agentHudHide: vi.fn(),
@@ -113,6 +114,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
+  osAccountsUpgradeSession: mocks.osAccountsUpgradeSession,
   osAccountsChangePlan: mocks.osAccountsChangePlan,
   agentHudShow: mocks.agentHudShow,
   agentHudHide: mocks.agentHudHide,
@@ -296,6 +298,7 @@ describe("notes recording reliability", () => {
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
+    mocks.osAccountsUpgradeSession.mockResolvedValue(undefined);
     mocks.osAccountsChangePlan.mockResolvedValue({
       subscribed: true,
       status: "active",
@@ -959,7 +962,7 @@ describe("notes recording reliability", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Upgrade to Max" }));
     expect(
       await screen.findByText(
-        "Max is $100 per month. Your saved card will be charged a prorated amount for the rest of this billing cycle.",
+        "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.",
       ),
     ).toBeInTheDocument();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
@@ -974,11 +977,12 @@ describe("notes recording reliability", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: "Upgrade now" }));
 
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledTimes(1);
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
     expect(
-      await screen.findByText("Upgrade started. Waiting for payment confirmation."),
+      await screen.findByText("Waiting for you to confirm in the browser"),
     ).toBeInTheDocument();
     expect(screen.queryByText("Max is active.")).toBeNull();
 
@@ -1024,7 +1028,7 @@ describe("notes recording reliability", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Upgrade to Max" }));
     expect(
       await screen.findByText(
-        "Max is $100 per month. Your saved card will be charged a prorated amount for the rest of this billing cycle.",
+        "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.",
       ),
     ).toBeInTheDocument();
 
@@ -1044,11 +1048,12 @@ describe("notes recording reliability", () => {
     await waitFor(() =>
       expect(
         screen.queryByText(
-          "Max is $100 per month. Your saved card will be charged a prorated amount for the rest of this billing cycle.",
+          "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.",
         ),
       ).toBeNull(),
     );
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+    expect(mocks.osAccountsUpgradeSession).not.toHaveBeenCalled();
     expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
   });
 });

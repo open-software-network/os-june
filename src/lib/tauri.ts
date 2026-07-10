@@ -1639,11 +1639,16 @@ export async function osAccountsUpgrade(plan?: SubscriptionPlan) {
   return invoke<void>("os_accounts_upgrade", { plan });
 }
 
+/** Opens a hosted billing-portal session for an existing subscriber to review
+ * and confirm a prorated plan upgrade. */
+export async function osAccountsUpgradeSession(plan: SubscriptionPlan) {
+  return invoke<void>("os_accounts_upgrade_session", { plan });
+}
+
 /** Changes the plan on the caller's existing subscription in place (Pro to
- * Max). OS Accounts prorates the charge and grants the new plan's credits
- * immediately, so there is no browser round-trip; the resolved subscription
- * reflects the new plan. Callers should refresh account status afterwards to
- * pick up the freshly granted balance. */
+ * Max). This is the compatibility fallback for deployments without hosted
+ * upgrade sessions. Credits still arrive only through the invoice webhook, so
+ * callers poll account status until the grant lands. */
 export async function osAccountsChangePlan(plan: SubscriptionPlan) {
   return invoke<AccountSubscription>("os_accounts_change_plan", { plan });
 }

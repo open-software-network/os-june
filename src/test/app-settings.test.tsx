@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsLogout: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
   osAccountsUpgrade: vi.fn(),
+  osAccountsUpgradeSession: vi.fn(),
   osAccountsChangePlan: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
@@ -102,6 +103,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
+  osAccountsUpgradeSession: mocks.osAccountsUpgradeSession,
   osAccountsChangePlan: mocks.osAccountsChangePlan,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
@@ -453,6 +455,7 @@ describe("AppSettings", () => {
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
+    mocks.osAccountsUpgradeSession.mockResolvedValue(undefined);
     mocks.osAccountsChangePlan.mockResolvedValue({
       subscribed: true,
       plan: "max",
@@ -971,7 +974,7 @@ describe("AppSettings", () => {
   }
 
   const MAX_CONFIRM_BODY =
-    "Max is $100 per month. Your saved card will be charged a prorated amount for the rest of this billing cycle.";
+    "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.";
 
   it("inherits a pending Max grant from another surface without claiming Max", async () => {
     const user = userEvent.setup();
@@ -1057,6 +1060,7 @@ describe("AppSettings", () => {
 
     // The CTA opens the charge confirm; no plan change has started yet.
     expect(await screen.findByText(MAX_CONFIRM_BODY)).toBeInTheDocument();
+    expect(mocks.osAccountsUpgradeSession).not.toHaveBeenCalled();
     expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
 
@@ -1066,7 +1070,7 @@ describe("AppSettings", () => {
     expect(screen.queryByText(MAX_CONFIRM_BODY)).toBeNull();
   });
 
-  it("lets a Pro subscriber start an in-place Max upgrade after confirming", async () => {
+  it("lets a Pro subscriber open a hosted Max upgrade after confirming", async () => {
     const user = userEvent.setup();
     renderProBillingSettings();
 
@@ -1074,9 +1078,31 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
     await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
 
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledTimes(1);
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText("Waiting for you to confirm in the browser"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Max is active.")).toBeNull();
+  });
+
+  it("falls back to PATCH when the hosted Max upgrade route is missing", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
+      code: "upgrade_session_unavailable",
+      message: "Upgrade sessions are not available yet.",
+    });
+    renderProBillingSettings();
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
+
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
     expect(
       await screen.findByText("Upgrade started. Waiting for payment confirmation."),
     ).toBeInTheDocument();
@@ -1086,7 +1112,7 @@ describe("AppSettings", () => {
   it("shows a pending confirm state and blocks double-fires while the change runs", async () => {
     const user = userEvent.setup();
     let resolveChange: ((value: unknown) => void) | undefined;
-    mocks.osAccountsChangePlan.mockImplementation(
+    mocks.osAccountsUpgradeSession.mockImplementation(
       () =>
         new Promise((resolve) => {
           resolveChange = resolve;
@@ -1099,12 +1125,13 @@ describe("AppSettings", () => {
     const confirm = await screen.findByRole("button", { name: "Upgrade now" });
     await user.click(confirm);
 
-    // Busy feedback while the PATCH is in flight, disabled against a second
-    // charge.
+    // Busy feedback while the hosted session is in flight, disabled against a
+    // second request.
     const busy = await screen.findByRole("button", { name: "Upgrading..." });
     expect(busy).toBeDisabled();
     fireEvent.click(busy);
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
 
     resolveChange?.({ subscribed: true, plan: "max", status: "active" });
@@ -1113,6 +1140,10 @@ describe("AppSettings", () => {
 
   it("keeps the confirm open showing the failure when the plan change fails", async () => {
     const user = userEvent.setup();
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
+      code: "network_error",
+      message: "Could not reach OS Accounts.",
+    });
     mocks.osAccountsChangePlan.mockRejectedValueOnce({
       code: "network_error",
       message: "Could not reach OS Accounts.",
@@ -1159,11 +1190,11 @@ describe("AppSettings", () => {
     await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
 
     expect(
-      await screen.findByText("Upgrade started. Waiting for payment confirmation."),
+      await screen.findByText("Waiting for you to confirm in the browser"),
     ).toBeInTheDocument();
     expect(screen.queryByText("Max is active.")).toBeNull();
 
-    // The PATCH response can optimistically mirror the Max plan. That alone
+    // The subscription can show Max before its invoice-backed grant. That alone
     // must not advance the status while the credit balance is unchanged.
     rerenderAccount?.(optimisticMaxAccount);
     await waitFor(() => expect(onAccountRefresh).toHaveBeenCalledTimes(1));
@@ -1178,7 +1209,8 @@ describe("AppSettings", () => {
 
     expect(await screen.findByText("Max is active.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Max plan" })).toBeInTheDocument();
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
   });
 

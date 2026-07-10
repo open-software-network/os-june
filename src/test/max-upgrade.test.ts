@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  MAX_UPGRADE_BROWSER_STATUS,
   MAX_UPGRADE_BUSY_LABEL,
   MAX_UPGRADE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_LABEL,
@@ -10,6 +11,7 @@ import {
   beginMaxGrantWait,
   clearMaxGrantWait,
   currentMaxGrantWait,
+  isHostedMaxUpgradeFallbackError,
   markMaxGrantWaitSlow,
   maxGrantWaitForAccount,
   maxGrantLanded,
@@ -30,17 +32,39 @@ function account(plan: string, credits: number): AccountStatus {
 }
 
 describe("Max upgrade copy", () => {
-  it("describes the prorated card charge without announcing Max before the grant", () => {
-    expect(MAX_UPGRADE_CONFIRM_BODY).toContain("saved card");
-    expect(MAX_UPGRADE_CONFIRM_BODY).toContain("prorated amount");
+  it("describes the secure browser confirmation without announcing Max before the grant", () => {
+    expect(MAX_UPGRADE_CONFIRM_BODY).toContain("secure Stripe page");
+    expect(MAX_UPGRADE_CONFIRM_BODY).toContain("review and confirm the prorated charge");
     expect(MAX_UPGRADE_CONFIRM_LABEL).toBe("Upgrade now");
     expect(MAX_UPGRADE_BUSY_LABEL).toBe("Upgrading...");
+    expect(MAX_UPGRADE_BROWSER_STATUS).toBe("Waiting for you to confirm in the browser");
     expect(MAX_UPGRADE_WAITING_STATUS).toBe("Upgrade started. Waiting for payment confirmation.");
     expect(MAX_UPGRADE_WAITING_STATUS).not.toContain("Max is active");
     expect(MAX_UPGRADE_SLOW_STATUS).not.toContain("Max is active");
     expect(MAX_UPGRADE_SLOW_STATUS).toContain("Payment not confirmed yet");
     expect(MAX_UPGRADE_PORTAL_LABEL).toBe("Open billing");
     expect(MAX_UPGRADE_READY_STATUS).toBe("Max is active.");
+  });
+});
+
+describe("hosted Max upgrade fallback", () => {
+  it.each([
+    "upgrade_session_unavailable",
+    "plan_not_enabled",
+    "network_error",
+    "auth_refresh_unavailable",
+    "empty_response",
+  ])("falls back for %s", (code) => {
+    expect(isHostedMaxUpgradeFallbackError({ code })).toBe(true);
+  });
+
+  it.each([
+    "already_on_plan",
+    "subscription_required",
+    "unknown_plan",
+    "browser_open_failed",
+  ])("does not fall back for %s", (code) => {
+    expect(isHostedMaxUpgradeFallbackError({ code })).toBe(false);
   });
 });
 

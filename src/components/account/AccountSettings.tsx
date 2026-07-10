@@ -4,6 +4,7 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { hasLiveSubscription } from "../../lib/account-gate";
 import { errorCode } from "../../lib/errors";
 import {
+  MAX_UPGRADE_BROWSER_STATUS,
   MAX_UPGRADE_BUSY_LABEL,
   MAX_UPGRADE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_LABEL,
@@ -14,8 +15,10 @@ import {
   type MaxGrantWait,
   beginMaxGrantWait,
   clearMaxGrantWait,
+  isHostedMaxUpgradeFallbackError,
   isMaxGrantWaitCurrent,
   markMaxGrantWaitSlow,
+  markMaxGrantWaitWaiting,
   maxGrantLanded,
   maxGrantWaitForAccount,
   pollForMaxGrant,
@@ -32,6 +35,7 @@ import {
   osAccountsLogout,
   osAccountsOpenPortal,
   osAccountsUpgrade,
+  osAccountsUpgradeSession,
 } from "../../lib/tauri";
 import type { AccountStatus, SubscriptionPlan } from "../../lib/tauri";
 
@@ -186,6 +190,7 @@ export function BillingSettingsSection({
   );
   const [billingStatus, setBillingStatus] = useState<string | undefined>(() => {
     if (!maxGrantWait) return undefined;
+    if (maxGrantWait.phase === "browser") return MAX_UPGRADE_BROWSER_STATUS;
     return maxGrantWait.phase === "slow" ? MAX_UPGRADE_SLOW_STATUS : MAX_UPGRADE_WAITING_STATUS;
   });
   const [spins, setSpins] = useState(0);
@@ -204,13 +209,20 @@ export function BillingSettingsSection({
     }
   }
 
-  // In-place upgrade for a paid subscriber (currently Pro -> Max), run from
-  // the confirm dialog only. The PATCH can optimistically mirror the plan
-  // before payment is confirmed; only the credit grant poll announces Max.
+  // Hosted upgrade for a paid subscriber (currently Pro -> Max), run from the
+  // confirm dialog only. Older OS Accounts deployments fall back to PATCH in
+  // the same action. Only the credit grant poll announces Max.
   async function handleChangePlan(plan: SubscriptionPlan) {
     const baselineCredits = account.balance?.credits ?? 0;
+    let hosted = false;
     try {
-      await osAccountsChangePlan(plan);
+      try {
+        await osAccountsUpgradeSession(plan);
+        hosted = true;
+      } catch (error) {
+        if (!isHostedMaxUpgradeFallbackError(error)) throw error;
+        await osAccountsChangePlan(plan);
+      }
     } catch (error) {
       const code = errorCode(error);
       if (code === "already_on_plan") {
@@ -227,9 +239,13 @@ export function BillingSettingsSection({
         throw error;
       }
     }
-    const grantWait = beginMaxGrantWait(baselineCredits, account.user?.id);
+    const grantWait = beginMaxGrantWait(
+      baselineCredits,
+      account.user?.id,
+      hosted ? "browser" : "waiting",
+    );
     setMaxGrantWait(grantWait);
-    setBillingStatus(MAX_UPGRADE_WAITING_STATUS);
+    setBillingStatus(hosted ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS);
     void pollForMaxGrant(onRefresh, baselineCredits).then((landed) => {
       // Ignore a stale poll from an earlier attempt or one superseded by a
       // manual refresh that already observed the grant.
@@ -252,6 +268,10 @@ export function BillingSettingsSection({
       setMaxGrantWait(undefined);
       setBillingStatus(undefined);
       return;
+    }
+    if (maxGrantWait.phase === "browser" && account.subscription?.plan === "max") {
+      markMaxGrantWaitWaiting(maxGrantWait);
+      setBillingStatus(MAX_UPGRADE_WAITING_STATUS);
     }
     if (!maxGrantLanded(account, maxGrantWait.baselineCredits)) return;
     clearMaxGrantWait(maxGrantWait);
@@ -279,6 +299,9 @@ export function BillingSettingsSection({
           clearMaxGrantWait(grantWait);
           setMaxGrantWait(undefined);
           setBillingStatus(MAX_UPGRADE_READY_STATUS);
+        } else if (grantWait.phase === "browser" && next?.subscription?.plan === "max") {
+          markMaxGrantWaitWaiting(grantWait);
+          setBillingStatus(MAX_UPGRADE_WAITING_STATUS);
         }
         return;
       }

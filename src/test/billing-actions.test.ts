@@ -7,12 +7,14 @@ const mocks = vi.hoisted(() => ({
   osAccountsChangePlan: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
   osAccountsUpgrade: vi.fn(),
+  osAccountsUpgradeSession: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
   osAccountsChangePlan: mocks.osAccountsChangePlan,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
+  osAccountsUpgradeSession: mocks.osAccountsUpgradeSession,
 }));
 
 function account(overrides: Partial<AccountStatus> = {}): AccountStatus {
@@ -30,6 +32,7 @@ describe("runDepletedBalanceAction", () => {
     mocks.osAccountsChangePlan.mockResolvedValue({ subscribed: true, plan: "max" });
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
+    mocks.osAccountsUpgradeSession.mockResolvedValue(undefined);
   });
 
   it("subscribes an unsubscribed (Free) user through checkout", async () => {
@@ -44,15 +47,35 @@ describe("runDepletedBalanceAction", () => {
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
   });
 
-  it("upgrades a Pro subscriber in place to Max", async () => {
+  it("opens a hosted Max upgrade session without changing the plan directly", async () => {
+    const outcome = await runDepletedBalanceAction(
+      account({ subscription: { subscribed: true, status: "active", plan: "pro" } }),
+    );
+
+    expect(outcome).toBe("opened_upgrade_session");
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "upgrade_session_unavailable",
+    "plan_not_enabled",
+    "network_error",
+  ])("falls back to the plan-change endpoint when hosted upgrade fails with %s", async (code) => {
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({ code, message: "unavailable" });
+
     const outcome = await runDepletedBalanceAction(
       account({ subscription: { subscribed: true, status: "active", plan: "pro" } }),
     );
 
     expect(outcome).toBe("changed_plan");
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledOnce();
     expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
-    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
-    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
   });
 
   it("dispatches an explicit Max confirmation without reclassifying it", async () => {
@@ -65,9 +88,10 @@ describe("runDepletedBalanceAction", () => {
       "max",
     );
 
-    expect(outcome).toBe("changed_plan");
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledOnce();
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    expect(outcome).toBe("opened_upgrade_session");
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
   });
@@ -117,7 +141,7 @@ describe("runDepletedBalanceAction", () => {
   });
 
   it("treats already_on_plan as a completed change from a stale snapshot", async () => {
-    mocks.osAccountsChangePlan.mockRejectedValueOnce({
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
       code: "already_on_plan",
       message: "You are already on this plan.",
     });
@@ -132,7 +156,7 @@ describe("runDepletedBalanceAction", () => {
   });
 
   it("returns to the subscribe prompt when the plan change needs a subscription", async () => {
-    mocks.osAccountsChangePlan.mockRejectedValueOnce({
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
       code: "subscription_required",
       message: "You need an active subscription to change plans.",
     });
@@ -154,7 +178,11 @@ describe("runDepletedBalanceAction", () => {
     ).rejects.toMatchObject({ code: "network_error" });
     expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
 
-    // Plan-change failures do not fall back to checkout.
+    // A hosted 501 falls back to PATCH, whose failure is still surfaced.
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
+      code: "plan_not_enabled",
+      message: "That plan is not available yet.",
+    });
     mocks.osAccountsChangePlan.mockRejectedValueOnce({
       code: "plan_not_enabled",
       message: "That plan is not available yet.",
@@ -165,6 +193,7 @@ describe("runDepletedBalanceAction", () => {
       ),
     ).rejects.toMatchObject({ code: "plan_not_enabled" });
     expect(mocks.osAccountsUpgrade).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledOnce();
   });
 });
 
