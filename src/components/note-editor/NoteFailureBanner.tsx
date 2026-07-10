@@ -1,6 +1,8 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { useState } from "react";
 import { isInsufficientCreditsMessage } from "../../lib/errors";
+import { TierMiniCard } from "../account/FundingNotice";
+import type { FundingTier } from "../account/FundingNotice";
 
 export type FailureKind = "balance_low" | "generic";
 
@@ -11,6 +13,10 @@ type Props = {
   onTopUp: () => void;
   topUpLabel?: string;
   retryBlockedReason?: string;
+  /** The user's current plan; balance failures lead with its tier card so
+   * the banner reads as "your card declined", matching the other credits
+   * surfaces. */
+  tier?: FundingTier;
 };
 
 // String match (see isInsufficientCreditsMessage) is intentional and a known
@@ -65,6 +71,7 @@ export function NoteFailureBanner({
   onTopUp,
   topUpLabel = "Upgrade",
   retryBlockedReason,
+  tier,
 }: Props) {
   const kind = classifyFailure(errorMessage);
   const isBalanceIssue = kind === "balance_low";
@@ -94,6 +101,7 @@ export function NoteFailureBanner({
 
   return (
     <aside className="note-failure-banner" role="alert" data-kind={kind}>
+      {isBalanceIssue && tier ? <TierMiniCard tier={tier} /> : null}
       <p className="note-failure-message">
         {isBalanceIssue
           ? audioPreserved

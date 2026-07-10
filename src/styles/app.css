@@ -4865,6 +4865,239 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
+/* Out-of-credits notice (FundingNotice) --------------------------------
+ * The persistent funding surface: one compact row docked above the chat
+ * composers and reused inside the sidebar chip's popover. Never dismissible;
+ * enforcement lives on the gated actions, this row explains the state and
+ * offers the one way out. Nothing in the row goes above body size — the tier
+ * card and the CTA's fill carry the emphasis. Same surface recipe as the
+ * composer box below it (card, ring-in-shadow, --shadow-md) so the pair
+ * reads as one floating unit, and the hero width cap matches the hero box. */
+.funding-notice {
+  pointer-events: auto;
+  display: flex;
+  flex-wrap: wrap;
+  /* First-line anchoring: the badge and the CTA pin to the first text line
+   * (top-right) instead of floating vertically centered when the body wraps
+   * to two lines. Single-line rows look identical to centered because the
+   * body's margin-top centers its one line inside the control-height zone. */
+  align-items: flex-start;
+  gap: var(--sp-2) var(--sp-3);
+  width: 100%;
+  max-width: min(var(--chat-max), var(--content-max));
+  margin: 0 auto var(--sp-3);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  /* Ring-in-shadow like the composer box: the transparent border only holds
+   * the layout box (see --composer-ring). */
+  --funding-notice-ring: 0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  border: 1px solid transparent;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  box-shadow: var(--shadow-md), var(--funding-notice-ring);
+  animation: funding-notice-settle var(--t-med) var(--ease-out) both;
+}
+
+/* The hero composer deliberately caps at 640px (an invitation, not a reading
+ * column); the notice above it tracks the same cap so their edges align. */
+.agent-composer[data-hero="true"] .funding-notice {
+  max-width: 640px;
+}
+
+@keyframes funding-notice-settle {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .funding-notice {
+    animation: none;
+  }
+}
+
+.funding-notice-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  /* Same height as the CTA so the badge centers on the first-line zone and
+   * stays there when the body wraps. */
+  height: var(--control-md);
+  color: var(--muted-foreground);
+}
+
+/* Tier mini card — the OS Accounts portal's engraved-metal tier badge at
+ * glyph scale (bank-card proportions). Layered CSS metal: brushed
+ * anisotropic lines over a tier-toned wash, cast-grain noise, and the tier
+ * name engraved via text-shadow relief. The palettes are the portal's own
+ * absolute oklch values — the card is a physical object, not a themed
+ * surface, so it reads identically in light and dark. */
+.funding-tier-card {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 24px;
+  flex: 0 0 auto;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background:
+    repeating-linear-gradient(
+      100deg,
+      transparent 0 2px,
+      color-mix(in oklch, var(--tier-ink) 9%, transparent) 2px 3px
+    ),
+    linear-gradient(160deg, var(--tier-hi) 0%, var(--tier-base) 46%, var(--tier-lo) 100%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklch, white 40%, transparent),
+    inset 0 0 0 1px color-mix(in oklch, var(--tier-ink) 14%, transparent),
+    inset 0 -1px 0 color-mix(in oklch, var(--tier-ink) 24%, transparent),
+    0 1px 2px oklch(0% 0 none / 8%);
+  color: var(--tier-mark);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.01em;
+  line-height: 1;
+  /* Engraved: a hairline of light catching the impression's lower edge. */
+  text-shadow: 0 1px 0 color-mix(in oklch, var(--tier-mark-relief) 60%, transparent);
+}
+
+/* Fine grain over the slab — reads as cast metal, kept faint so the brushed
+ * gradient still leads. */
+.funding-tier-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='96'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='96' height='96' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 96px 96px;
+  mix-blend-mode: soft-light;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+/* A specular sheen drifting across the metal every few seconds — the static
+ * cousin of the portal card's pointer-tracked reflection. The sweep occupies
+ * a fraction of a long cycle so the card is at rest most of the time, and
+ * soft-light keeps it at the edge of perception on the light slabs. */
+.funding-tier-card::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 55%;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    color-mix(in oklch, white 60%, transparent) 50%,
+    transparent 100%
+  );
+  transform: translateX(-140%) skewX(-16deg);
+  mix-blend-mode: soft-light;
+  pointer-events: none;
+  animation: funding-tier-sheen 6.5s var(--ease-out) infinite;
+}
+
+@keyframes funding-tier-sheen {
+  0%,
+  62% {
+    transform: translateX(-140%) skewX(-16deg);
+  }
+  86%,
+  100% {
+    transform: translateX(320%) skewX(-16deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .funding-tier-card::after {
+    animation: none;
+    opacity: 0;
+  }
+}
+
+.funding-tier-card[data-tier="free"] {
+  --tier-hi: oklch(96% 0.002 84.59);
+  --tier-base: oklch(90% 0.003 84.59);
+  --tier-lo: oklch(83% 0.004 84.59);
+  --tier-ink: oklch(40% 0.004 84.59);
+  --tier-mark: oklch(66% 0.004 84.59);
+  --tier-mark-relief: oklch(98% 0.002 84.59);
+}
+
+.funding-tier-card[data-tier="pro"] {
+  --tier-hi: oklch(93% 0.005 250);
+  --tier-base: oklch(84% 0.007 250);
+  --tier-lo: oklch(73% 0.009 250);
+  --tier-ink: oklch(32% 0.012 250);
+  --tier-mark: oklch(38% 0.018 250);
+  --tier-mark-relief: oklch(97% 0.004 250);
+}
+
+.funding-tier-card[data-tier="max"] {
+  --tier-hi: oklch(46% 0.02 60);
+  --tier-base: oklch(31% 0.018 60);
+  --tier-lo: oklch(22% 0.015 60);
+  --tier-ink: oklch(10% 0.01 60);
+  --tier-mark: oklch(82% 0.07 75);
+  --tier-mark-relief: oklch(16% 0.012 60);
+}
+
+/* Waiting states swap the coin glyph for the dot spinner: neutral progress,
+ * not a caution accent. */
+.funding-notice-spinner {
+  color: var(--muted-foreground);
+}
+
+.funding-notice-body {
+  flex: 1;
+  min-width: 16ch;
+  /* Centers a single line inside the control-height zone the badge and CTA
+   * occupy; a wrapped second line grows downward from there. */
+  margin: calc((var(--control-md) - 1.5 * var(--fs-md)) / 2) 0 0;
+  /* A shade under full foreground: present, but not competing with the
+   * conversation. */
+  color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
+  /* One step below the conversation text (.agent-markdown at --fs-lg): the
+   * notice annotates the chat, it doesn't speak in it. */
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.funding-notice-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-left: auto;
+}
+
+.funding-notice-actions .btn {
+  white-space: nowrap;
+}
+
+/* Quiet second path ("Or go Max", reopen links) next to the filled CTA. */
+.funding-notice-actions .btn-ghost {
+  color: var(--muted-foreground);
+}
+
+.funding-notice-actions .btn-ghost:hover {
+  color: var(--foreground);
+}
+
+/* A failed portal launch drops to its own full-width line under the row. */
+.funding-notice-error {
+  flex-basis: 100%;
+  margin: 0;
+  padding: 0 var(--sp-2) var(--sp-1);
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+}
+
 /* Feature 06: the steer input shown above the composer box while June works.
  * Centered on the same chat measure as the notice/box so it reads as part of
  * the composer column, and quiet enough not to compete with the Stop control
@@ -7806,6 +8039,146 @@ input:focus-visible,
   display: none;
 }
 
+/* Out-of-credits chip (FundingChip) — ambient presence for the funding state
+ * on views with no composer in sight. Same card anatomy as the sidebar's
+ * "Relaunch to update" row (leading visual, title + hint, chevron) so the
+ * footer's attention cards read as one family; clicking it expands the card
+ * in place to reveal the same FundingNotice. The wrap owns the card chrome
+ * so the header row and the reveal share one surface. */
+.funding-chip-wrap {
+  position: relative;
+  overflow: hidden;
+  /* Same hairline as .update-relaunch-card: --popover-border at 10% washes
+   * out on a pure-white card over the sidebar. */
+  border: 1px solid color-mix(in oklch, var(--foreground) 15%, transparent);
+  border-radius: var(--r-md);
+  background: var(--card);
+  transition: box-shadow var(--t-slow) var(--ease-spring);
+}
+
+.funding-chip-wrap:hover {
+  box-shadow: var(--shadow-sm);
+}
+
+.funding-chip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+}
+
+.funding-chip:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--focus-ring);
+}
+
+.funding-chip-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Up chevron at rest (the card expands to reveal more), flipping down once
+ * open. */
+.funding-chip-arrow {
+  justify-self: end;
+  color: var(--muted-foreground);
+  transition: transform var(--t-slow) var(--ease-spring);
+}
+
+.funding-chip-wrap[data-expanded] .funding-chip-arrow {
+  transform: rotate(180deg);
+}
+
+/* In-place reveal: animatable intrinsic height via grid-template-rows
+ * 0fr -> 1fr. The inner stays mounted while collapsed so both directions
+ * animate; visibility flips after the collapse finishes (and `inert` on the
+ * container keeps hidden content out of focus order and readers). */
+.funding-chip-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--t-slow) var(--ease-spring);
+}
+
+.funding-chip-wrap[data-expanded] .funding-chip-reveal {
+  grid-template-rows: 1fr;
+}
+
+.funding-chip-reveal-inner {
+  overflow: hidden;
+  min-height: 0;
+  visibility: hidden;
+  transition: visibility 0s var(--t-slow);
+}
+
+.funding-chip-wrap[data-expanded] .funding-chip-reveal-inner {
+  visibility: visible;
+  transition: visibility 0s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .funding-chip-reveal,
+  .funding-chip-reveal-inner,
+  .funding-chip-arrow {
+    transition: none;
+  }
+}
+
+/* Inside the reveal the notice is body content of the chip's own card: no
+ * chrome, no entrance animation, and no second tier card — the header row
+ * already shows it. */
+.funding-chip-reveal .funding-notice {
+  margin: 0;
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  animation: none;
+}
+
+.funding-chip-reveal .funding-notice-icon {
+  display: none;
+}
+
+/* Reveal typography: the chip's title row above already carries the
+ * emphasis, so the body drops to support color; no first-line margin here —
+ * the icon slot is hidden and the actions sit on their own row below. */
+.funding-chip-reveal .funding-notice-body {
+  margin-top: 0;
+  color: var(--muted-foreground);
+}
+
+/* Actions own their row in the narrow column: full width, buttons splitting
+ * the space evenly (one CTA fills it, a pair splits 50/50). */
+.funding-chip-reveal .funding-notice-actions {
+  display: flex;
+  flex: 1 1 100%;
+  margin-left: 0;
+}
+
+.funding-chip-reveal .funding-notice-actions .btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.sidebar[data-collapsed="true"] .funding-chip-wrap {
+  display: none;
+}
+
 /* Sidebar identity — the user's name doubles as the settings entry point.
  * Clicking it opens a small popover above the footer. */
 .sidebar-identity-wrap {
@@ -10251,6 +10624,16 @@ input:focus-visible,
   width: 100%;
 }
 
+/* The out-of-credits notice in the editor footer sits on its own row above
+ * the record pill and matches the note reading column (.note-editor's
+ * --content-max), not the full footer span — the same surface it presents
+ * above the chat composers, aligned to the text it interrupts. */
+.editor-footer .funding-notice {
+  flex: 0 0 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+}
+
 /* Blur + fade + slide reveal. Row resolves out of a soft blur as the
  * height opens, then crisps up — feels seamless rather than snapping
  * into focus. Filter duration runs long past the opacity so the focus
@@ -10872,6 +11255,12 @@ input:focus-visible,
   display: inline;
 }
 
+/* The stopped-turn card leads with the tier mini card, which is taller than
+ * the base icon slot's one-text-line height. */
+.agent-credits-notice .inline-notice-icon {
+  height: auto;
+}
+
 /* The context-overflow notice (JUN-169) carries a longer sentence than the
  * credits card, so it needs the same inline flow: warning glyph + text
  * wrapping like a paragraph instead of the base flex layout dropping the whole
@@ -10984,6 +11373,9 @@ input:focus-visible,
 }
 
 .note-failure-message {
+  /* Fills the row so the leading tier card (balance failures) hugs left and
+   * the actions stay pinned right. */
+  flex: 1;
   margin: 0;
   min-width: 0;
   color: var(--muted-foreground);
@@ -20771,8 +21163,8 @@ input:focus-visible,
   text-underline-offset: 2px;
 }
 
-/* Wider welcome-card variant for onboarding steps and funding prompts that
-   need more room than the sign-in gate. */
+/* Wider welcome-card variant for onboarding steps that need more room than
+   the sign-in gate. */
 .wide-card {
   width: min(100%, 360px);
 }
@@ -20853,114 +21245,6 @@ input:focus-visible,
   width: 100%;
   max-width: 320px;
   margin-inline: auto;
-}
-
-.funding-hint {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--muted-foreground);
-  text-align: center;
-}
-
-.funding-gate-link {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--foreground);
-  font: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-/* Funding keeps its checkout logic and copy in one component while these
- * presentation modifiers place that same content inside the shared dialog or
- * the app shell's persistent credit banner. */
-.funding-gate-dialog {
-  position: static;
-  inset: auto;
-  display: block;
-  padding: 0;
-  background: transparent;
-}
-
-.funding-gate-dialog .welcome-card {
-  width: 100%;
-}
-
-.funding-gate-dialog .welcome-mark {
-  display: none;
-}
-
-.funding-gate-dialog .welcome-title {
-  font-size: var(--fs-2xl);
-}
-
-.funding-gate-banner {
-  position: relative;
-  inset: auto;
-  display: block;
-  flex: none;
-  padding: 0;
-  background: transparent;
-}
-
-.funding-gate-banner-notice {
-  flex: none;
-}
-
-.funding-gate-banner-notice .inline-notice-message {
-  display: none;
-}
-
-.funding-gate-banner-notice .inline-notice-actions {
-  width: 100%;
-}
-
-.funding-gate-banner .welcome-card {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: var(--sp-4);
-  width: 100%;
-  padding: 0;
-}
-
-.funding-gate-banner .welcome-mark,
-.funding-gate-banner .welcome-title,
-.funding-gate-banner .welcome-terms,
-.funding-gate-banner .funding-hint {
-  display: none;
-}
-
-.funding-gate-banner .welcome-subtitle {
-  flex: 1;
-  min-width: 0;
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-  text-align: left;
-}
-
-.funding-gate-banner .welcome-providers {
-  flex: none;
-  margin: 0;
-}
-
-.funding-gate-banner .welcome-providers .primary-action {
-  width: auto;
-  height: var(--control-md);
-  padding-inline: var(--sp-3);
-  font-size: var(--fs-sm);
-}
-
-.funding-gate-banner .welcome-auth-progress {
-  height: var(--control-md);
-}
-
-.funding-gate-banner .welcome-status {
-  padding: var(--sp-2) var(--sp-3);
-  font-size: var(--fs-xs);
-  text-align: left;
 }
 
 /* Onboarding wizard ---------------------------------------------------

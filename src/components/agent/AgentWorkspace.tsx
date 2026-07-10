@@ -74,6 +74,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { BackButton } from "../ui/BackButton";
+import { TierMiniCard } from "../account/FundingNotice";
+import type { FundingTier } from "../account/FundingNotice";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
@@ -1584,6 +1586,13 @@ type AgentWorkspaceProps = {
   onTopUp?: () => void | Promise<void>;
   topUpLabel?: string;
   creditActionsDisabledReason?: string;
+  /** The persistent out-of-credits notice, pre-wired by App. When present it
+   * replaces the plain composer-notice paragraph; the disabled reason keeps
+   * gating actions and tooltips. */
+  fundingNotice?: ReactNode;
+  /** The user's current plan; the in-transcript stopped-turn credits card
+   * leads with its tier card. */
+  fundingTier?: FundingTier;
   testOnlySlashCommandEntriesRef?: {
     current: {
       runImageSlashCommand: (argument: string, commandText: string) => Promise<void>;
@@ -2082,6 +2091,8 @@ export function AgentWorkspace({
   onTopUp,
   topUpLabel = "Upgrade",
   creditActionsDisabledReason,
+  fundingNotice,
+  fundingTier,
   testOnlySlashCommandEntriesRef,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
@@ -8237,11 +8248,12 @@ export function AgentWorkspace({
         {heroMode ? null : (
           <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
         )}
-        {creditActionsDisabledReason ? (
-          <p className="agent-composer-notice" role="status">
-            {creditActionsDisabledReason}
-          </p>
-        ) : null}
+        {fundingNotice ??
+          (creditActionsDisabledReason ? (
+            <p className="agent-composer-notice" role="status">
+              {creditActionsDisabledReason}
+            </p>
+          ) : null)}
         <AnimatePresence>
           {galleryErrors ? (
             // Dev gallery only: the busy nudge is a toast in real use (see
@@ -8730,6 +8742,7 @@ export function AgentWorkspace({
     <AgentResponseGallery
       sections={gallerySections}
       errors={galleryErrors}
+      fundingTier={fundingTier}
       onClose={() => setGalleryDesired(false)}
     />
   ) : !newSessionMode && selectedHermesSessionId ? (
@@ -8806,6 +8819,7 @@ export function AgentWorkspace({
           }
           onTopUp={handleTopUp}
           topUpLabel={topUpLabel}
+          fundingTier={fundingTier}
           onClarify={(part, answer) =>
             void respondToClarify(
               selectedHermesSessionId,
@@ -8903,6 +8917,7 @@ export function AgentWorkspace({
             creditActionsDisabledReason={creditActionsDisabledReason}
             onTopUp={handleTopUp}
             topUpLabel={topUpLabel}
+            fundingTier={fundingTier}
             onApproval={(part, choice) => {
               const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
               if (!sessionId) return;
@@ -10516,10 +10531,12 @@ const galleryNoop = () => {};
 function AgentResponseGallery({
   sections,
   errors,
+  fundingTier,
   onClose,
 }: {
   sections: AgentChatGallerySection[];
   errors?: boolean;
+  fundingTier?: FundingTier;
   onClose: () => void;
 }) {
   const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
@@ -10573,6 +10590,7 @@ function AgentResponseGallery({
               onDownloadArtifact={galleryNoop}
               onThinkingOpenChange={setThinkingOpen}
               onTopUp={galleryNoop}
+              fundingTier={fundingTier}
             />
           ))}
         </section>
@@ -10605,6 +10623,7 @@ function AgentChatTurnRow({
   onThinkingOpenChange,
   onTopUp,
   topUpLabel,
+  fundingTier,
   onBranch,
   branchingMessageId,
   turn,
@@ -10639,6 +10658,7 @@ function AgentChatTurnRow({
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
   topUpLabel?: string;
+  fundingTier?: FundingTier;
   /** Fork the conversation from this turn into a new session (feature 07).
    * Optional: only Hermes-session rows pass it — task rows and the dev gallery
    * omit it, so the action is absent there. */
@@ -10912,6 +10932,7 @@ function AgentChatTurnRow({
                 key={`${turn.id}:notice:${index}`}
                 onTopUp={onTopUp}
                 topUpLabel={topUpLabel}
+                tier={fundingTier}
               />
             )
           ) : part.type === "steering" ? (
@@ -11207,20 +11228,24 @@ function visibleAgentWorkspaceError(
 // The raw billing failure ("Error: Error code: 402 - …") never reaches the
 // transcript — the chat runtime folds it into a notice part, and this card is
 // how the user learns the turn stopped and what to do about it. No title —
-// icon + one sentence + the action, Claude-style.
+// the user's own (depleted) tier card + one sentence + the action, matching
+// the FundingNotice family; the warning triangle is the fallback when the
+// caller has no account snapshot.
 function CreditsNoticePart({
   onTopUp,
   topUpLabel = "Upgrade",
+  tier,
 }: {
   onTopUp?: () => void;
   topUpLabel?: string;
+  tier?: FundingTier;
 }) {
   return (
     <InlineNotice
       className="agent-credits-notice"
       tone="destructive"
       role="alert"
-      icon={<IconExclamationTriangle size={14} aria-hidden />}
+      icon={tier ? <TierMiniCard tier={tier} /> : <IconExclamationTriangle size={14} aria-hidden />}
       body="June stopped because your balance ran out."
       actions={
         onTopUp ? (

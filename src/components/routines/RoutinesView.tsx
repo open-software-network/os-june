@@ -291,6 +291,10 @@ export function RoutinesView({
   }
 
   function submitDescribe() {
+    // Describing a routine runs a Hermes session, so it's metered like every
+    // other composer; the guard backs the disabled send button (Enter still
+    // submits the form).
+    if (creditActionsDisabledReason) return;
     const description = describeDraft.trim();
     if (!description) return;
     setDescribeDraft("");
@@ -347,6 +351,7 @@ export function RoutinesView({
     <DescribeBar
       draft={describeDraft}
       unrestricted={describeUnrestricted}
+      disabledReason={creditActionsDisabledReason}
       onDraftChange={setDescribeDraft}
       onUnrestrictedChange={setDescribeUnrestricted}
       onSubmit={submitDescribe}
@@ -795,12 +800,16 @@ const DEJUNE_MODE_OPTIONS = [
 function DescribeBar({
   draft,
   unrestricted,
+  disabledReason,
   onDraftChange,
   onUnrestrictedChange,
   onSubmit,
 }: {
   draft: string;
   unrestricted: boolean;
+  /** Set while funding blocks metered actions: send disables with this as
+   * its tooltip (the draft itself stays editable, like the chat composers). */
+  disabledReason?: string;
   onDraftChange: (draft: string) => void;
   onUnrestrictedChange: (unrestricted: boolean) => void;
   onSubmit: () => void;
@@ -875,8 +884,9 @@ function DescribeBar({
               <button
                 type="submit"
                 className="agent-composer-send"
-                disabled={!draft.trim()}
+                disabled={!draft.trim() || Boolean(disabledReason)}
                 aria-label="Ask June to set it up"
+                title={disabledReason}
               >
                 <IconArrowUp size={16} />
               </button>

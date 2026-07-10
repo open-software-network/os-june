@@ -10,7 +10,9 @@ import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import type { ReactNode } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { FundingTier } from "../account/FundingNotice";
 import { Switch } from "../ui/Switch";
 import type {
   FolderDto,
@@ -44,6 +46,11 @@ type NoteEditorProps = {
   recordingDisabled?: boolean;
   recordingBlockedReason?: string;
   retryBlockedReason?: string;
+  /** The persistent out-of-credits notice, pre-wired by App. When present it
+   * replaces the plain record-blocked InlineNotice in the editor footer. */
+  fundingNotice?: ReactNode;
+  /** The user's current plan, for the failed-note banner's tier card. */
+  fundingTier?: FundingTier;
   recoveryBlockedReason?: string;
   liveTranscript?: LiveTranscriptEventDto[];
   sourceMode: RecordingSourceMode;
@@ -126,6 +133,8 @@ export function NoteEditor({
   recordingDisabled = false,
   recordingBlockedReason,
   retryBlockedReason,
+  fundingNotice,
+  fundingTier,
   recoveryBlockedReason,
   liveTranscript = [],
   sourceMode,
@@ -254,7 +263,9 @@ export function NoteEditor({
   const processingStatus = processingStageStatus(note.processingStatus);
   const processingLock = processingStatus !== null;
   const recordButtonDisabled = recordingDisabled || Boolean(recordingBlockedReason);
-  const recordOptionsDisabled = processingLock || recordButtonDisabled;
+  // A funding block disables the record button but not the options chevron:
+  // choosing sources is free, so that setting stays reachable while gated.
+  const recordOptionsDisabled = processingLock || recordingDisabled;
   // When generation finishes for the note you're looking at, reveal the fresh
   // notes with a top-down wipe instead of letting the text snap in. Only fires
   // on the live processing -> ready edge for this same note — never when
@@ -354,6 +365,7 @@ export function NoteEditor({
             onTopUp={onTopUp}
             topUpLabel={topUpLabel}
             retryBlockedReason={retryBlockedReason}
+            tier={fundingTier}
           />
         ) : null}
         {activeTab === "transcription" ? (
@@ -447,18 +459,21 @@ export function NoteEditor({
       </section>
 
       <div className="editor-footer">
-        {recordingBlockedReason && !recordingForNote ? (
-          <InlineNotice
-            className="record-funding-blocked"
-            aria-label="Recording needs credits"
-            body={recordingBlockedReason}
-            actions={
-              <button type="button" className="primary-action" onClick={onTopUp}>
-                {topUpLabel ?? "Upgrade"}
-              </button>
-            }
-          />
-        ) : null}
+        {!recordingForNote
+          ? (fundingNotice ??
+            (recordingBlockedReason ? (
+              <InlineNotice
+                className="record-funding-blocked"
+                aria-label="Recording needs credits"
+                body={recordingBlockedReason}
+                actions={
+                  <button type="button" className="primary-action" onClick={onTopUp}>
+                    {topUpLabel ?? "Upgrade"}
+                  </button>
+                }
+              />
+            ) : null))
+          : null}
         {micDenied && !recordingForNote ? (
           <InlineNotice
             className="record-mic-blocked"

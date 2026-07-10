@@ -430,7 +430,7 @@ describe("App shortcuts", () => {
     expect(await screen.findByRole("heading", { name: "Welcome to June" })).toBeInTheDocument();
   });
 
-  it("keeps notes, session history, and sign out available after the funding gate is dismissed", async () => {
+  it("keeps notes, session history, and sign out available while funding is required", async () => {
     const user = userEvent.setup();
     mocks.osAccountsStatus.mockResolvedValue({
       signedIn: true,
@@ -442,8 +442,9 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
-    await user.click(await screen.findByRole("button", { name: "Not now" }));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    // No modal ever blocks the shell; the state lives in the sidebar chip.
+    expect(await screen.findByRole("button", { name: "Out of credits" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Meeting notes" }));
     expect(await screen.findByRole("heading", { name: /Meeting notes/ })).toBeInTheDocument();
@@ -451,7 +452,6 @@ describe("App shortcuts", () => {
 
     await user.click(screen.getByRole("button", { name: "Sessions" }));
     expect(await screen.findByRole("heading", { name: "Sessions" })).toBeInTheDocument();
-    expect(screen.queryByRole("dialog", { name: "Credits needed" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "alex@example.com, account menu" }));
     await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
@@ -459,8 +459,7 @@ describe("App shortcuts", () => {
     expect(await screen.findByRole("heading", { name: "Welcome to June" })).toBeInTheDocument();
   });
 
-  it("shows the funding dialog again after an app remount", async () => {
-    const user = userEvent.setup();
+  it("docks a persistent, non-dismissible notice above the composer while funding is required", async () => {
     mocks.osAccountsStatus.mockResolvedValue({
       signedIn: true,
       configured: true,
@@ -469,17 +468,54 @@ describe("App shortcuts", () => {
       subscription: { subscribed: false },
     });
 
-    const firstLaunch = render(<App />);
-    await user.click(await screen.findByRole("button", { name: "Not now" }));
-    expect(screen.queryByRole("dialog", { name: "Credits needed" })).not.toBeInTheDocument();
-
-    firstLaunch.unmount();
     render(<App />);
 
-    expect(await screen.findByRole("dialog", { name: "Credits needed" })).toBeInTheDocument();
+    // The copy renders on the composer notice and inside the sidebar chip's
+    // (collapsed) reveal.
+    expect(
+      (await screen.findAllByText("Your starter credits are used up. Upgrade to keep using June."))
+        .length,
+    ).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "Upgrade to Pro" }).length).toBeGreaterThan(0);
+    // The notice is not a dialog and offers no dismissal.
+    expect(screen.queryByRole("dialog", { name: "Credits needed" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Not now" })).not.toBeInTheDocument();
   });
 
-  it("blocks paid composer and recording actions after the funding gate is dismissed", async () => {
+  it("drives the out-of-credits surfaces from the __fundingDemo console hook", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    const demo = await waitFor(() => {
+      const hook = (window as { __fundingDemo?: (branch?: string) => string }).__fundingDemo;
+      expect(hook).toBeTypeOf("function");
+      return hook as (branch?: string) => string;
+    });
+
+    // Funded account: no funding surfaces anywhere.
+    expect(screen.queryByRole("button", { name: "Out of credits" })).toBeNull();
+
+    await act(async () => {
+      demo("pro");
+    });
+    expect(
+      (
+        await screen.findAllByText(
+          "You have used your Pro credits for this cycle. Max has 5x the monthly usage.",
+        )
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Out of credits" })).toBeInTheDocument();
+
+    await act(async () => {
+      demo("off");
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Out of credits" })).toBeNull(),
+    );
+  });
+
+  it("blocks paid composer and recording actions while funding is required", async () => {
     const user = userEvent.setup();
     const failedNote = note({
       processingStatus: "failed",
@@ -511,15 +547,14 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
-    await user.click(await screen.findByRole("button", { name: "Not now" }));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
     const composer = await screen.findByRole("textbox", { name: "Message June" });
     await user.type(composer, "Summarize my notes");
     expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
     expect(
-      screen.getByText("Add credits to send messages or generate images and videos."),
-    ).toBeInTheDocument();
+      screen.getAllByText("Your starter credits are used up. Upgrade to keep using June.").length,
+    ).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Dictate" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Dictate" })).toHaveAttribute(
       "title",
@@ -532,9 +567,11 @@ describe("App shortcuts", () => {
     await user.click(await screen.findByText("First note"));
 
     expect(await screen.findByRole("button", { name: "Recording needs credits" })).toBeDisabled();
+    // The editor footer docks the same funding notice the composers use
+    // (plus the copy inside the sidebar chip's collapsed reveal).
     expect(
-      screen.getByText("Add credits before starting a recording. You can still browse and edit."),
-    ).toBeInTheDocument();
+      screen.getAllByText("Your starter credits are used up. Upgrade to keep using June.").length,
+    ).toBeGreaterThan(1);
     expect(screen.getByRole("button", { name: /Retry/i })).toBeDisabled();
     expect(screen.getByText(/Add credits before retrying note generation\./)).toBeInTheDocument();
     expect(mocks.startRecording).not.toHaveBeenCalled();
@@ -554,7 +591,6 @@ describe("App shortcuts", () => {
   });
 
   it("preserves a dictated agent prompt without dispatching it while funding is required", async () => {
-    const user = userEvent.setup();
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
       connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
@@ -573,7 +609,6 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
-    await user.click(await screen.findByRole("button", { name: "Not now" }));
     await waitFor(() => expect(mocks.listeners.has("dictation-event")).toBe(true));
 
     await act(async () => {
@@ -621,8 +656,7 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
-    await user.click(await screen.findByRole("button", { name: "Not now" }));
-    await user.click(screen.getByRole("button", { name: "Meeting notes" }));
+    await user.click(await screen.findByRole("button", { name: "Meeting notes" }));
     await user.click(await screen.findByText("First note"));
 
     const recoveryPrompt = await screen.findByLabelText("Recoverable recording");

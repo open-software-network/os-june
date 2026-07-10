@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutinesView } from "../components/routines/RoutinesView";
@@ -560,6 +560,26 @@ describe("RoutinesView detail", () => {
       await mocks.routineDetailOnRunNow();
     });
     expect(mocks.triggerRoutine).not.toHaveBeenCalled();
+  });
+
+  it("blocks describing a routine while credits are depleted", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    const onCreateRoutine = vi.fn();
+    renderView({
+      onCreateRoutine,
+      creditActionsDisabledReason: "Add credits before running a routine.",
+    });
+
+    const draft = await screen.findByRole("textbox", { name: "Describe a routine" });
+    await userEvent.type(draft, "Summarize my mornings");
+
+    const send = screen.getByRole("button", { name: "Ask June to set it up" });
+    expect(send).toBeDisabled();
+    expect(send).toHaveAttribute("title", "Add credits before running a routine.");
+
+    // Enter-to-submit goes through the same handler-level guard.
+    fireEvent.submit(draft.closest("form") as HTMLFormElement);
+    expect(onCreateRoutine).not.toHaveBeenCalled();
   });
 
   it("shows this routine's runs and opens one on click", async () => {

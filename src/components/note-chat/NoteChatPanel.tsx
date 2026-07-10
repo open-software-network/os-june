@@ -141,6 +141,7 @@ export function NoteChatPanel({
   chat,
   recordingActive,
   creditActionsDisabledReason,
+  fundingNotice,
   onClose,
   onOpenInAgent,
 }: {
@@ -153,6 +154,10 @@ export function NoteChatPanel({
    * never lands in the note); this only tunes the tooltip to say so. */
   recordingActive?: boolean;
   creditActionsDisabledReason?: string;
+  /** The persistent out-of-credits notice, pre-wired by App. When present it
+   * replaces the plain composer-notice paragraph; the disabled reason keeps
+   * gating actions and tooltips. */
+  fundingNotice?: ReactNode;
   onClose: () => void;
   onOpenInAgent: (sessionId: string | undefined) => void;
 }) {
@@ -461,11 +466,12 @@ export function NoteChatPanel({
           ) : null}
         </div>
         <footer className="note-chat-composer">
-          {creditActionsDisabledReason ? (
-            <p className="agent-composer-notice" role="status">
-              {creditActionsDisabledReason}
-            </p>
-          ) : null}
+          {fundingNotice ??
+            (creditActionsDisabledReason ? (
+              <p className="agent-composer-notice" role="status">
+                {creditActionsDisabledReason}
+              </p>
+            ) : null)}
           {/* The actual chatbox: the agent composer's box/attach/toolbar/model/
            * send classes, wired to the panel's session. */}
           <div className="agent-composer-box">

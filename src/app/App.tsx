@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { AccountGate, JuneMark } from "../components/account/AccountGate";
-import { FundingGateBanner, FundingGateDialog } from "../components/account/FundingGate";
+import { FundingChip, FundingNotice, fundingTierOf } from "../components/account/FundingNotice";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
   AGENT_DELETE_SESSION_EVENT,
@@ -560,12 +560,38 @@ export function App() {
     !account.signedIn &&
     (accountLoading || !!accountError || !account.configured);
   const signInRequired = !devAccountsUnconfigured && shouldBlockOnSignIn(account);
-  const fundingRequired =
-    !devAccountsUnconfigured && !signInRequired && shouldBlockOnFunding(account);
-  const [fundingGateDismissed, setFundingGateDismissed] = useState(false);
+  // Dev console driver (window.__fundingDemo) that parks the out-of-credits
+  // surfaces (composer notice, sidebar chip) on a synthetic account snapshot
+  // so every funding branch can be inspected without a depleted account. The
+  // override bypasses the sign-in/unconfigured guards on purpose: the browser
+  // sandbox is rarely signed in, and the demo exists precisely there.
+  const [fundingDemoAccount, setFundingDemoAccountState] = useState<AccountStatus | null>(null);
+  const fundingDemoRef = useRef<AccountStatus | null>(null);
+  const setFundingDemoAccount = useCallback((next: AccountStatus | null) => {
+    fundingDemoRef.current = next;
+    setFundingDemoAccountState(next);
+  }, []);
   useEffect(() => {
-    if (!fundingRequired) setFundingGateDismissed(false);
-  }, [fundingRequired]);
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/funding-demo").then(({ registerFundingDemo }) => {
+      if (cancelled) return;
+      ({ dispose } = registerFundingDemo({ setOverride: setFundingDemoAccount }));
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [setFundingDemoAccount]);
+  const fundingAccount = fundingDemoAccount ?? account;
+  const refreshFundingAccount = useCallback(async () => {
+    if (fundingDemoRef.current) return fundingDemoRef.current;
+    return refreshAccount();
+  }, [refreshAccount]);
+  const fundingRequired = fundingDemoAccount
+    ? shouldBlockOnFunding(fundingDemoAccount)
+    : !devAccountsUnconfigured && !signInRequired && shouldBlockOnFunding(account);
   const topUpLabel = depletedBalanceActionLabel(account);
   // Confirm gate for the Pro -> Max upgrade reached from depleted-balance
   // surfaces (note failure banner, agent workspace notice). The change
@@ -3112,19 +3138,24 @@ export function App() {
         onOpenRecording={() => (pillIsDemo ? undefined : void handleOpenRecordingNote())}
         collapsed={sidebarCollapsed}
         footerAccessory={
-          <UpdateHub
-            readyUpdate={readyUpdate}
-            status={updateStatus}
-            preparing={preparingUpdate}
-            relaunching={relaunchingUpdate}
-            progress={updateProgress}
-            onDismissStatus={() => {
-              if (preparingUpdate) updateProgressHiddenRef.current = true;
-              setUpdateStatus(null);
-              if (!preparingUpdate) setUpdateProgress(null);
-            }}
-            onRelaunch={handleRelaunchUpdate}
-          />
+          <>
+            <UpdateHub
+              readyUpdate={readyUpdate}
+              status={updateStatus}
+              preparing={preparingUpdate}
+              relaunching={relaunchingUpdate}
+              progress={updateProgress}
+              onDismissStatus={() => {
+                if (preparingUpdate) updateProgressHiddenRef.current = true;
+                setUpdateStatus(null);
+                if (!preparingUpdate) setUpdateProgress(null);
+              }}
+              onRelaunch={handleRelaunchUpdate}
+            />
+            {fundingRequired ? (
+              <FundingChip account={fundingAccount} onRefresh={refreshFundingAccount} />
+            ) : null}
+          </>
         }
       />
       <div
@@ -3172,13 +3203,6 @@ export function App() {
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
         <section className="main-panel">
-          {fundingRequired && fundingGateDismissed ? (
-            <FundingGateBanner
-              account={account}
-              onRefresh={refreshAccount}
-              onSignOut={() => void handleSignOut()}
-            />
-          ) : null}
           {accessibilityBlocked && !accessibilityBannerDismissed ? (
             <PermissionBanner
               onDismiss={() => setAccessibilityBannerDismissed(true)}
@@ -3278,6 +3302,12 @@ export function App() {
                   creditActionsDisabledReason={
                     fundingRequired ? COMPOSER_FUNDING_DISABLED_REASON : undefined
                   }
+                  fundingNotice={
+                    fundingRequired ? (
+                      <FundingNotice account={fundingAccount} onRefresh={refreshFundingAccount} />
+                    ) : undefined
+                  }
+                  fundingTier={fundingTierOf(fundingAccount)}
                   topUpLabel={topUpLabel}
                   onTopUp={handleTopUp}
                   origin={
@@ -3535,6 +3565,15 @@ export function App() {
                       recordingBlockedReason={
                         fundingRequired ? RECORDING_FUNDING_DISABLED_REASON : undefined
                       }
+                      fundingNotice={
+                        fundingRequired ? (
+                          <FundingNotice
+                            account={fundingAccount}
+                            onRefresh={refreshFundingAccount}
+                          />
+                        ) : undefined
+                      }
+                      fundingTier={fundingTierOf(fundingAccount)}
                       retryBlockedReason={
                         fundingRequired ? NOTE_RETRY_FUNDING_DISABLED_REASON : undefined
                       }
@@ -3661,6 +3700,11 @@ export function App() {
             creditActionsDisabledReason={
               fundingRequired ? COMPOSER_FUNDING_DISABLED_REASON : undefined
             }
+            fundingNotice={
+              fundingRequired ? (
+                <FundingNotice account={fundingAccount} onRefresh={refreshFundingAccount} />
+              ) : undefined
+            }
             onClose={() => setNoteChatOpen(false)}
             onOpenInAgent={(sessionId) => {
               setNoteChatOpen(false);
@@ -3684,14 +3728,6 @@ export function App() {
           destructive
         />
       </div>
-      {fundingRequired && !fundingGateDismissed ? (
-        <FundingGateDialog
-          account={account}
-          onRefresh={refreshAccount}
-          onSignOut={() => void handleSignOut()}
-          onDismiss={() => setFundingGateDismissed(true)}
-        />
-      ) : null}
       <Dialog
         open={recordingInactivityPrompt !== null}
         onClose={handleKeepRecordingAfterInactivityPrompt}
