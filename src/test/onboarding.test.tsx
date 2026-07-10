@@ -36,7 +36,19 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
-  dictationCapabilities: vi.fn().mockResolvedValue({ capabilities: { available: true, platform: "macos", shortcuts: true, paste: true, microphoneSelection: true, accessibilityPermission: true, systemAudio: true } }),
+  dictationCapabilities: vi
+    .fn()
+    .mockResolvedValue({
+      capabilities: {
+        available: true,
+        platform: "macos",
+        shortcuts: true,
+        paste: true,
+        microphoneSelection: true,
+        accessibilityPermission: true,
+        systemAudio: true,
+      },
+    }),
   dictationSettings: mocks.dictationSettings,
   dictationHelperCommand: mocks.dictationHelperCommand,
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
@@ -441,6 +453,7 @@ describe("OnboardingFlow", () => {
     await user.click(screen.getByRole("button", { name: "Change key" }));
     expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
       type: "start_shortcut_capture",
+      kind: "push_to_talk",
       pressCount: 1,
     });
     await screen.findByText(/Press shortcut/);
@@ -540,7 +553,9 @@ describe("OnboardingFlow", () => {
       await screen.findByRole("heading", { name: "Welcome to June" });
       expect(screen.getByText("Speak instead of type")).toBeInTheDocument();
       expect(
-        screen.getByText("June turns your voice into polished writing in any app on your computer."),
+        screen.getByText(
+          "June turns your voice into polished writing in any app on your computer.",
+        ),
       ).toBeInTheDocument();
       expect(screen.getByText("Effortlessly capture meetings")).toBeInTheDocument();
       expect(screen.getByText("Chat and work with June")).toBeInTheDocument();
@@ -630,6 +645,42 @@ describe("OnboardingFlow", () => {
         type: "request_microphone_permission",
       }),
     );
+  });
+
+  it("shows no-device guidance on Windows without opening privacy settings", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    try {
+      await renderFlow();
+      emitDictationEvent?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: {
+            microphone: "unavailable",
+            microphoneDeviceAvailable: false,
+            microphoneReason: "no_input_device",
+            accessibility: "granted",
+          },
+        }),
+      });
+
+      expect(
+        await screen.findByText(
+          "No microphone found. Connect one, choose it in Windows sound settings, then try again.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+
+      await userEvent.click(screen.getByRole("button", { name: "Allow microphone access" }));
+      expect(mocks.openPrivacySettings).not.toHaveBeenCalled();
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "get_permission_status",
+      });
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("only requires microphone access on Windows", async () => {

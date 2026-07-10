@@ -60,12 +60,41 @@ pub fn list_microphones() -> Result<(Vec<MicrophoneDevice>, Option<MicrophoneDev
     Ok((devices, default))
 }
 
-pub fn microphone_permission_status() -> &'static str {
+#[derive(Clone, Copy, Debug)]
+pub struct MicrophoneStatus {
+    pub status: &'static str,
+    pub device_available: bool,
+    pub reason: &'static str,
+}
+
+pub fn microphone_permission_status() -> MicrophoneStatus {
     let host = cpal::default_host();
-    if host.default_input_device().is_some() {
-        "granted"
-    } else {
-        "denied"
+    let has_input_device = host
+        .input_devices()
+        .map(|mut devices| devices.next().is_some())
+        .unwrap_or(false);
+    let Some(default_device) = host.default_input_device() else {
+        return MicrophoneStatus {
+            status: "unavailable",
+            device_available: has_input_device,
+            reason: if has_input_device {
+                "no_default_device"
+            } else {
+                "no_input_device"
+            },
+        };
+    };
+    match default_device.default_input_config() {
+        Ok(_) => MicrophoneStatus {
+            status: "granted",
+            device_available: true,
+            reason: "ready",
+        },
+        Err(_) => MicrophoneStatus {
+            status: "denied",
+            device_available: true,
+            reason: "device_access_failed",
+        },
     }
 }
 

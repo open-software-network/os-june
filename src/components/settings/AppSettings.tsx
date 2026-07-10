@@ -2603,6 +2603,8 @@ function permissionStatus(state?: string): PermissionStatusView {
       return { label: "Needs access", tone: "attention" };
     case "not_determined":
       return { label: "Not requested", tone: "attention" };
+    case "unavailable":
+      return { label: "No microphone found", tone: "attention" };
     case "unsupported":
       return { label: "Unsupported", tone: "unsupported" };
     case "unknown":
