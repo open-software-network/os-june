@@ -331,8 +331,10 @@ describe("TabBar", () => {
   it("offers a close control when only one tab is open", () => {
     const onlyTab = { id: "tab-1", title: "New session", icon: <span aria-hidden /> };
     const { props } = renderTabBar({ tabs: [onlyTab] });
+    const close = screen.getByRole("button", { name: "Close New session" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Close New session" }));
+    expect(close).toHaveAttribute("tabindex", "-1");
+    fireEvent.click(close);
 
     expect(props.onClose).toHaveBeenCalledWith("tab-1");
   });

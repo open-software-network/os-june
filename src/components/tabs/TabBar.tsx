@@ -497,6 +497,7 @@ export function TabBar({
         <button
           type="button"
           className="tab-close"
+          tabIndex={-1}
           aria-label={`Close ${tab.title}`}
           onClick={(event) => {
             event.stopPropagation();
