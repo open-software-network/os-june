@@ -148,6 +148,44 @@ describe("TabBar", () => {
     expect(props.onDragRegionPointerDown).not.toHaveBeenCalled();
   });
 
+  it("omits the close-other-tabs menu item when only one tab is open", () => {
+    renderTabBar({ tabs: [tabs[0]], activeTabId: "tab-1" });
+
+    fireEvent.contextMenu(screen.getByRole("tab", { name: "New session" }));
+
+    expect(screen.getByRole("menuitem", { name: "Close tab" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Close other tabs" })).not.toBeInTheDocument();
+  });
+
+  it("omits the close-other-tabs menu item when only one tab fits on the strip", () => {
+    const restoreWidth = mockStripWidth(70);
+    try {
+      renderTabBar();
+
+      expect(screen.getByRole("button", { name: "Show all 2 tabs" })).toBeInTheDocument();
+      fireEvent.contextMenu(screen.getByRole("tab", { name: "New session" }));
+
+      expect(screen.getByRole("menuitem", { name: "Close tab" })).toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: "Close other tabs" })).not.toBeInTheDocument();
+    } finally {
+      restoreWidth();
+    }
+  });
+
+  it("keeps the close-other-tabs menu item active when multiple tabs are open", () => {
+    const restoreWidth = mockStripWidth(360);
+    try {
+      const { props } = renderTabBar();
+
+      fireEvent.contextMenu(screen.getByRole("tab", { name: "New session" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Close other tabs" }));
+
+      expect(props.onCloseOthers).toHaveBeenCalledWith("tab-1");
+    } finally {
+      restoreWidth();
+    }
+  });
+
   it("reorders tabs by dragging one past its neighbor", () => {
     const restoreWidth = mockStripWidth(800);
     vi.useFakeTimers();

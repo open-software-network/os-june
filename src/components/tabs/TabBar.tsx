@@ -253,6 +253,7 @@ export function TabBar({
     : inactiveTabWidth(visible.length, hidden.length > 0, available) < 64
       ? "icon"
       : "tight";
+  const showCloseOthers = visible.length > 1;
 
   // After a reorder commits, React re-renders the tabs in the order the drag
   // transforms were faking — drop the transforms in the same frame (before
@@ -637,17 +638,18 @@ export function TabBar({
           >
             Close tab
           </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={tabs.length <= 1}
-            onClick={() => {
-              onCloseOthers(menu.tabId);
-              setMenu(null);
-            }}
-          >
-            Close other tabs
-          </button>
+          {showCloseOthers ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onCloseOthers(menu.tabId);
+                setMenu(null);
+              }}
+            >
+              Close other tabs
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>
