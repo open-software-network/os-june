@@ -1517,6 +1517,116 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Up next")).toBeNull();
   });
 
+  it("does not auto-send a failed queued follow-up after the turn completes", async () => {
+    let queuedAttempts = 0;
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { text?: string }) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit" && params?.text?.includes("review the brief next")) {
+        queuedAttempts += 1;
+        return Promise.reject(new Error("gateway unavailable"));
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+    await user.type(composer, "review the brief next");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+
+    // First completion drains the queue; the delivery fails, so the row flips
+    // to a retry affordance.
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    expect(await screen.findByRole("button", { name: "Retry queued message" })).toBeInTheDocument();
+    await waitFor(() => expect(queuedAttempts).toBe(1));
+
+    // A fresh turn re-arms the session and completes cleanly. Automatic
+    // advancement must stop at the failed head rather than silently resending
+    // it.
+    await user.type(composer, "keep going");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "keep going",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)));
+
+    expect(queuedAttempts).toBe(1);
+    expect(screen.getByRole("button", { name: "Retry queued message" })).toBeInTheDocument();
+    expect(screen.getByText("review the brief next")).toBeInTheDocument();
+  });
+
+  it("surfaces an error when queued follow-up preparation fails", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+    // No skill is registered, so the slash command cannot resolve and
+    // preparation rejects before anything is enqueued.
+    await user.type(composer, "/nonexistent review the brief next");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+
+    expect(await screen.findByText("Could not find skill /nonexistent.")).toBeInTheDocument();
+    expect(screen.queryByText("Up next")).toBeNull();
+    const promptSubmits = mocks.gatewayRequest.mock.calls.filter(
+      ([method]) => method === "prompt.submit",
+    );
+    expect(promptSubmits).toHaveLength(1);
+    expect(composer).toHaveTextContent("review the brief next");
+    expect(screen.getByText("brief.pdf")).toBeInTheDocument();
+  });
+
   it("does not offer edit or remove after an image was attached but its message failed", async () => {
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
     mocks.gatewayRequest.mockImplementation((method: string, params?: { text?: string }) => {

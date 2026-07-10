@@ -5172,7 +5172,15 @@ export function AgentWorkspace({
         ? selectedHermesSessionId
         : undefined;
     if (attachmentQueueSessionId) {
-      const prepared = await prepareComposerSubmission(message, attachments);
+      let prepared: PreparedComposerSubmission;
+      try {
+        prepared = await prepareComposerSubmission(message, attachments);
+      } catch (err) {
+        // The draft and attachments are still in the composer - only the
+        // banner is needed for recovery, unlike the full submit path below.
+        setError(messageFromError(err));
+        return;
+      }
       const sizeWarning = oversizedComposerInputWarning({
         content: prepared.runtimeContent,
         inputSignature: composerInputSignature,
@@ -7481,6 +7489,11 @@ export function AgentWorkspace({
     const queued = queuedAttachmentFollowUpsRef.current[sessionId] ?? [];
     const item = itemId ? queued.find((candidate) => candidate.id === itemId) : queued[0];
     if (!item || item.status === "sending") return false;
+    // Automatic advancement (no itemId) stops at a failed head rather than
+    // resending it: the row's UI is an explicit Retry, and silently resending
+    // a message the user watched fail - possibly with an image already
+    // attached - is worse than holding the queue until they decide.
+    if (!itemId && item.status === "failed") return false;
     const session = hermesSessionItemsRef.current.find((candidate) => candidate.id === sessionId);
     if (!session) {
       updateQueuedAttachmentFollowUps(sessionId, (items) =>
