@@ -154,12 +154,6 @@ impl HelperApp {
             "get_permission_status"
             | "request_microphone_permission"
             | "request_accessibility_permission" => {
-                let microphone = audio::microphone_permission_status();
-                if command.command_type == "request_microphone_permission"
-                    && matches!(microphone.status, "denied" | "restricted")
-                {
-                    open_microphone_settings();
-                }
                 self.emit_permission_status();
             }
             "list_microphones" => self.emit_microphones(),
@@ -353,11 +347,13 @@ impl HelperApp {
             return;
         }
         self.writer.emit(simple_event("paste_completed"));
-        self.delayed_clipboard_restore = Some(DelayedClipboardRestore {
-            deadline: std::time::Instant::now() + CLIPBOARD_RESTORE_DELAY,
-            text,
-            backup: previous_clipboard,
-        });
+        if let Some(backup) = previous_clipboard {
+            self.delayed_clipboard_restore = Some(DelayedClipboardRestore {
+                deadline: std::time::Instant::now() + CLIPBOARD_RESTORE_DELAY,
+                text,
+                backup,
+            });
+        }
     }
 
     fn finish_clipboard_restore(&mut self, _force: bool) {
@@ -511,13 +507,6 @@ impl Drop for HelperApp {
             hotkeys.shutdown();
         }
     }
-}
-
-fn open_microphone_settings() {
-    let _com = ComApartment::init_sta();
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", "", "ms-settings:privacy-microphone"])
-        .spawn();
 }
 
 fn main() {

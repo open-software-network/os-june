@@ -16,21 +16,38 @@ const CLIPBOARD_RETRY_DELAY: Duration = Duration::from_millis(25);
 const CF_UNICODETEXT: u32 = 13;
 
 pub struct ClipboardBackup {
-    items: Vec<ClipboardBackupItem>,
+    original_text: String,
 }
 
-struct ClipboardBackupItem {
-    format: u32,
-    data: Vec<u8>,
-}
-
-pub fn replace_text(text: &str) -> Result<ClipboardBackup> {
+pub fn replace_text(text: &str) -> Result<Option<ClipboardBackup>> {
     with_open_clipboard(|| {
-        let items = backup_clipboard()?;
+        let mut format = 0;
+        let mut has_non_text = false;
+        loop {
+            format = unsafe { EnumClipboardFormats(format) };
+            if format == 0 {
+                break;
+            }
+            if format != CF_UNICODETEXT && format != 1 && format != 7 {
+                has_non_text = true;
+                break;
+            }
+        }
+        if has_non_text {
+            set_open_clipboard_text(text)?;
+            return Ok(None);
+        }
+
+        let original_text = match read_open_clipboard_text()? {
+            Some(t) => t,
+            None => {
+                set_open_clipboard_text(text)?;
+                return Ok(None);
+            }
+        };
+
         set_open_clipboard_text(text)?;
-        Ok(ClipboardBackup {
-            items,
-        })
+        Ok(Some(ClipboardBackup { original_text }))
     })
 }
 
@@ -39,7 +56,7 @@ pub fn restore_clipboard_if_unchanged(expected: &str, backup: ClipboardBackup) -
         if read_open_clipboard_text()?.as_deref() != Some(expected) {
             return Ok(());
         }
-        restore_clipboard(backup.items)
+        set_open_clipboard_text(&backup.original_text)
     })
 }
 
@@ -128,69 +145,3 @@ fn set_open_clipboard_text(text: &str) -> Result<()> {
     Ok(())
 }
 
-fn backup_clipboard() -> Result<Vec<ClipboardBackupItem>> {
-    let mut items = Vec::new();
-    let mut format = 0;
-    loop {
-        format = unsafe { EnumClipboardFormats(format) };
-        if format == 0 {
-            break;
-        }
-
-        let handle = unsafe { GetClipboardData(format) };
-        if handle.is_null() {
-            continue;
-        }
-
-        let size = unsafe { GlobalSize(handle as HANDLE) };
-        if size == 0 {
-            items.push(ClipboardBackupItem {
-                format,
-                data: Vec::new(),
-            });
-            continue;
-        }
-
-        let locked = unsafe { GlobalLock(handle as HANDLE) };
-        if locked.is_null() {
-            continue;
-        }
-
-        let mut data = vec![0u8; size];
-        unsafe {
-            std::ptr::copy_nonoverlapping(locked as *const u8, data.as_mut_ptr(), size);
-            GlobalUnlock(handle as HANDLE);
-        }
-
-        items.push(ClipboardBackupItem { format, data });
-    }
-    Ok(items)
-}
-
-fn restore_clipboard(items: Vec<ClipboardBackupItem>) -> Result<()> {
-    if unsafe { EmptyClipboard() } == 0 {
-        return Err(anyhow!("EmptyClipboard failed"));
-    }
-    for item in items {
-        if item.data.is_empty() {
-            continue;
-        }
-        unsafe {
-            let handle = GlobalAlloc(GMEM_MOVEABLE, item.data.len());
-            if handle.is_null() {
-                continue;
-            }
-            let locked = GlobalLock(handle);
-            if locked.is_null() {
-                GlobalFree(handle);
-                continue;
-            }
-            std::ptr::copy_nonoverlapping(item.data.as_ptr(), locked as *mut u8, item.data.len());
-            GlobalUnlock(handle);
-            if SetClipboardData(item.format, handle).is_null() {
-                GlobalFree(handle);
-            }
-        }
-    }
-    Ok(())
-}
