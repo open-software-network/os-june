@@ -1,0 +1,29 @@
+name: cargo release age
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src-tauri/Cargo.lock"
+      - "june-api/Cargo.lock"
+      - "scripts/check-cargo-release-age.py"
+      - "scripts/cargo-release-age-exclude.txt"
+      - ".github/workflows/cargo-release-age.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: New crate versions meet 7d cooldown
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Fetch base ref
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: git fetch --depth=1 origin "$BASE_REF"
+      - name: Check release age of new crate versions
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: python3 scripts/check-cargo-release-age.py --base "origin/$BASE_REF"
