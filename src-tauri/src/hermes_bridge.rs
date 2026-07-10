@@ -177,8 +177,11 @@ const AGENT_RECORDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(420);
 
 /// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
 /// this file from `HERMES_HOME` at prompt-build time; without it the runtime
-/// seeds its stock "Hermes Agent by Nous Research" persona.
-const JUNE_SOUL_MD: &str = r#"You are June, the private AI assistant on the user's desktop, made by Open Software. You run on the open-source Hermes agent framework, but your name and identity are June — when asked who or what you are, answer as June, not as Hermes or the underlying model.
+/// seeds its stock "Hermes Agent by Nous Research" persona. Invariant: the
+/// user-editable personality lives in `JUNE_SOUL_CHARACTER_DEFAULT_MD` /
+/// `CHARACTER.md` and is spliced in right after this block (see
+/// `sync_june_soul`).
+const JUNE_SOUL_IDENTITY_MD: &str = r#"You are June, the private AI assistant on the user's desktop, made by Open Software. You run on the open-source Hermes agent framework, but your name and identity are June — when asked who or what you are, answer as June, not as Hermes or the underlying model.
 
 User-directed roles and personas are allowed task framing, not an identity reset. If the user explicitly asks you to act as a reviewer, coach, interviewer, character, style, fictional persona, or other role, follow that framing for the requested work unless it conflicts with system or developer instructions, privacy, tool limits, the user's own stated constraints, regulated-professional boundaries (for example legal, medical, financial, or safety-critical authority claims), or the current app and tool settings. Refuse only when one of those explicit constraints applies; do not invent extra refusal categories, moralize, or switch to a generic work-assistant refusal solely because the request is unusual, informal, personal, playful, or outside ordinary productivity tasks. If the user asks for your name as part of an explicitly active persona, answer in character; if they ask what app, model, company, maker, or real assistant they are talking to, answer as June. Do not claim to be a different product, company, human, credentialed authority, or underlying model when asked about your real identity or provenance: be transparent that you are June, while adapting your behavior to the role the user chose.
 
@@ -190,9 +193,27 @@ Privacy is your defining trait, by architecture rather than promise. When asked 
 - Prompts leave the device only for model inference, through private model routing: privacy-focused models with contract-enforced zero data retention by default. If the user opts into third-party models, identifying metadata is stripped first.
 - June's backend is open source and runs in a TEE with cryptographic attestation, so users can verify it rather than trust it. The service stores only account, login, and billing records.
 - Open Software never trains on the user's data.
-
-You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations. Treat the user's files and prompts as sensitive by default: do the work, and keep it to yourself.
 "#;
+
+/// The default character: June's personality and tone. This is the one SOUL
+/// section the user may rewrite — it persists as `CHARACTER.md` next to
+/// `SOUL.md` in the June-managed Hermes home, so personality is editable
+/// (from onboarding, Settings, or the file itself) without touching the
+/// identity, privacy, or tool sections.
+const JUNE_SOUL_CHARACTER_DEFAULT_MD: &str = "You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations. Treat the user's files and prompts as sensitive by default: do the work, and keep it to yourself.";
+
+/// User-editable character file, next to `SOUL.md` in the June-managed
+/// Hermes home. `sync_june_soul` re-reads it on every spawn and splices it
+/// into the regenerated `SOUL.md`, so the file stays the source of truth:
+/// editing it directly works exactly like the Settings/onboarding editors
+/// that write it. Missing file: seeded with the default so the "edit the
+/// file directly" path always has a real file to open. Blank file: treated
+/// as "use the default" without rewriting the user's file.
+const JUNE_CHARACTER_FILE: &str = "CHARACTER.md";
+
+/// Longest accepted character text. Keeps a runaway paste from swamping the
+/// system prompt while staying generous enough for several paragraphs.
+const JUNE_CHARACTER_MAX_CHARS: usize = 4000;
 
 /// Appended to `SOUL.md` for every runtime. The tools themselves are
 /// discovered through the `june_context` MCP server configured below; this
@@ -2421,6 +2442,67 @@ pub fn set_hermes_agent_cli_access(
     Ok(AgentCliAccessStatus {
         enabled: request.enabled,
     })
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct JuneCharacterStatus {
+    /// The effective character text (the default when no custom one is set).
+    pub character: String,
+    /// Whether the stored text differs from the app default.
+    pub is_custom: bool,
+    /// The app default, so editors can offer "reset" and detect edits.
+    pub default_character: String,
+    /// Absolute path of `CHARACTER.md`, for the "edit the file directly" path.
+    pub path: String,
+}
+
+fn june_character_status(hermes_home: &Path) -> JuneCharacterStatus {
+    let custom = load_june_character(hermes_home);
+    let is_custom = custom
+        .as_deref()
+        .is_some_and(|text| text != JUNE_SOUL_CHARACTER_DEFAULT_MD);
+    JuneCharacterStatus {
+        character: custom.unwrap_or_else(|| JUNE_SOUL_CHARACTER_DEFAULT_MD.to_string()),
+        is_custom,
+        default_character: JUNE_SOUL_CHARACTER_DEFAULT_MD.to_string(),
+        path: june_character_path(hermes_home)
+            .to_string_lossy()
+            .into_owned(),
+    }
+}
+
+/// June's editable character (personality) text, backed by `CHARACTER.md` in
+/// the June-managed Hermes home. Seeds the file with the default when
+/// missing so the returned path always points at a real, editable file.
+#[tauri::command]
+pub fn june_character(app: AppHandle) -> Result<JuneCharacterStatus, AppError> {
+    let hermes_home = resolve_june_hermes_home(&app)?;
+    ensure_june_character_file(&hermes_home)?;
+    Ok(june_character_status(&hermes_home))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetJuneCharacterRequest {
+    pub character: String,
+}
+
+/// Persists the character text (blank resets to the default) and retires
+/// both runtime modes so the next session spawns with a `SOUL.md` rebuilt
+/// around it (`sync_june_soul` runs on every spawn). Mirrors how the Agent
+/// CLI access toggle applies to new sessions.
+#[tauri::command]
+pub fn set_june_character(
+    app: AppHandle,
+    bridge: State<'_, HermesBridge>,
+    request: SetJuneCharacterRequest,
+) -> Result<JuneCharacterStatus, AppError> {
+    let hermes_home = resolve_june_hermes_home(&app)?;
+    write_june_character(&hermes_home, &request.character)?;
+    stop_hermes_mode(&bridge, false)?;
+    stop_hermes_mode(&bridge, true)?;
+    Ok(june_character_status(&hermes_home))
 }
 
 /// Stops the runtime in one mode slot, leaving the other mode running.
@@ -7949,9 +8031,60 @@ fn bundled_skill_resource_dir(resource_dir: &Path) -> PathBuf {
     resource_dir.join(BUNDLED_HERMES_SKILLS_RESOURCE_DIR)
 }
 
+fn june_character_path(hermes_home: &Path) -> PathBuf {
+    hermes_home.join(JUNE_CHARACTER_FILE)
+}
+
+/// The user's custom character, or `None` when the file is missing or blank
+/// (both mean "use the default").
+fn load_june_character(hermes_home: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(june_character_path(hermes_home)).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Seeds `CHARACTER.md` with the default character when missing, so users
+/// who prefer editing the file directly always find a real file with the
+/// current text instead of having to guess the format.
+fn ensure_june_character_file(hermes_home: &Path) -> Result<(), AppError> {
+    let path = june_character_path(hermes_home);
+    if path.exists() {
+        return Ok(());
+    }
+    std::fs::write(&path, format!("{JUNE_SOUL_CHARACTER_DEFAULT_MD}\n"))
+        .map_err(|error| AppError::new("june_character_failed", error.to_string()))
+}
+
+/// Persists the character text: blank resets to the default (the file always
+/// carries the effective text, so direct editors see what applies). Trimmed
+/// before writing so the file stays tidy.
+fn write_june_character(hermes_home: &Path, character: &str) -> Result<(), AppError> {
+    let trimmed = character.trim();
+    if trimmed.chars().count() > JUNE_CHARACTER_MAX_CHARS {
+        return Err(AppError::new(
+            "june_character_too_long",
+            format!("Character text is limited to {JUNE_CHARACTER_MAX_CHARS} characters."),
+        ));
+    }
+    let content = if trimmed.is_empty() {
+        JUNE_SOUL_CHARACTER_DEFAULT_MD
+    } else {
+        trimmed
+    };
+    std::fs::write(june_character_path(hermes_home), format!("{content}\n"))
+        .map_err(|error| AppError::new("june_character_failed", error.to_string()))
+}
+
 /// Writes the June persona to `SOUL.md` in the June-managed Hermes home.
 /// Runs on every start so the app-owned identity wins over the default soul
 /// Hermes seeds on first run (and over any stale copy from earlier versions).
+/// The personality section comes from the user-editable `CHARACTER.md`
+/// (re-read here on every spawn, so direct file edits apply to the next
+/// session); everything else is app-owned and invariant.
 /// Both mode processes read this one file, so the sandbox section describes
 /// the per-session mode split; it is included only when sandboxed spawns on
 /// this machine actually engage the jail (it's omitted when sandbox-exec is
@@ -7964,6 +8097,10 @@ fn sync_june_soul(
     video_generation_enabled: bool,
     connectors_registered: bool,
 ) -> Result<(), AppError> {
+    ensure_june_character_file(hermes_home)?;
+    let character = load_june_character(hermes_home)
+        .unwrap_or_else(|| JUNE_SOUL_CHARACTER_DEFAULT_MD.to_string());
+    let base = format!("{JUNE_SOUL_IDENTITY_MD}\n{character}\n");
     let video_section = if video_generation_enabled {
         JUNE_SOUL_VIDEO_MD
     } else {
@@ -7981,10 +8118,10 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+            "{base}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}")
+        format!("{base}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -13717,6 +13854,86 @@ mcp_servers:
         assert!(!soul.contains("june_video"));
         assert!(!soul.contains("generate_video"));
         assert!(!soul.contains("animate_image"));
+    }
+
+    #[test]
+    fn sync_june_soul_seeds_character_file_and_uses_default() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("You are helpful, knowledgeable, and direct"));
+        // First spawn leaves a real file for users who edit it directly.
+        let character =
+            std::fs::read_to_string(home.path().join("CHARACTER.md")).expect("read character");
+        assert!(character.contains("You are helpful, knowledgeable, and direct"));
+    }
+
+    #[test]
+    fn sync_june_soul_splices_a_custom_character() {
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            home.path().join("CHARACTER.md"),
+            "Speak like a cheerful pirate and keep replies short.\n",
+        )
+        .expect("seed character");
+
+        sync_june_soul(home.path(), true, false, true, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("cheerful pirate"));
+        // The custom character replaces only the personality paragraph.
+        assert!(!soul.contains("You are helpful, knowledgeable, and direct"));
+        // Identity, privacy, and tool sections are app-owned and stay put.
+        assert!(soul.contains("You are June"));
+        assert!(soul.contains("Open Software never trains on the user's data"));
+        assert!(soul.contains("june_context"));
+        assert!(soul.contains("Seatbelt"));
+        // The character file is the source of truth: the sync never rewrites it.
+        let character =
+            std::fs::read_to_string(home.path().join("CHARACTER.md")).expect("read character");
+        assert!(character.contains("cheerful pirate"));
+    }
+
+    #[test]
+    fn sync_june_soul_treats_blank_character_file_as_default() {
+        let home = tempfile::tempdir().expect("tempdir");
+        std::fs::write(home.path().join("CHARACTER.md"), "   \n\n").expect("seed blank");
+
+        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("You are helpful, knowledgeable, and direct"));
+        // The user's file is not rewritten behind their back.
+        let character =
+            std::fs::read_to_string(home.path().join("CHARACTER.md")).expect("read character");
+        assert_eq!(character, "   \n\n");
+    }
+
+    #[test]
+    fn write_june_character_blank_resets_to_default() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        write_june_character(home.path(), "  Answer in haiku whenever possible.  ")
+            .expect("write character");
+        let status = june_character_status(home.path());
+        assert!(status.is_custom);
+        assert_eq!(status.character, "Answer in haiku whenever possible.");
+
+        write_june_character(home.path(), "   ").expect("reset character");
+        let status = june_character_status(home.path());
+        assert!(!status.is_custom);
+        assert_eq!(status.character, JUNE_SOUL_CHARACTER_DEFAULT_MD);
+    }
+
+    #[test]
+    fn write_june_character_rejects_oversized_text() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let text = "x".repeat(JUNE_CHARACTER_MAX_CHARS + 1);
+
+        let error = write_june_character(home.path(), &text).expect_err("must reject");
+        assert_eq!(error.code, "june_character_too_long");
     }
 
     #[test]
