@@ -614,8 +614,10 @@ describe("RoutinesView connector templates", () => {
         config: {},
       }),
     );
-    // Event-driven jobs never queue an immediate scheduler run.
-    expect(mocks.triggerRoutine).not.toHaveBeenCalled();
+    // Event template installs still fire an immediate first run (approval-gated),
+    // so value shows in the first session per the install contract; the one-off
+    // trigger leaves the routine paused for its event trigger to own later runs.
+    await waitFor(() => expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"));
   });
 
   it("reports a finished run to the backend crediting path with its id and end time", async () => {

@@ -337,12 +337,14 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
             accountId: input.triggerAccountId,
             config: triggerConfigFromDraft(eventTrigger),
           });
-        } else if (!eventTrigger) {
-          // The first run fires right away (still under the chosen trust
-          // mode, so actions wait for approval); best-effort, the schedule
-          // owns every later run.
-          await triggerRoutine(created.job_id).catch(() => {});
         }
+        // The first run fires right away (still under the chosen trust mode, so
+        // any actions wait for approval), so an install shows value in the first
+        // session instead of waiting for a future email or calendar event. This
+        // one-off trigger does not change the paused state, so an event routine
+        // keeps firing on its trigger for every later run; the schedule owns
+        // later runs for non-event routines. Best-effort.
+        await triggerRoutine(created.job_id).catch(() => {});
       }
       await loadRoutines();
       setCreateError(null);
