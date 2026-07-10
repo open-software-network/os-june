@@ -17,11 +17,13 @@ python3 scripts/os_platform.py issues list open-software --q "wallet" --limit 10
 python3 scripts/os_platform.py issues list open-software --assignee me --status todo,in_progress
 python3 scripts/os_platform.py issues search open-software "wallet bug" --status todo
 python3 scripts/os_platform.py issues show open-software 123
-python3 scripts/os_platform.py issues create open-software --title "Fix wallet sync" --body "Issue details" --type bug --priority urgent --idempotency-key issue-wallet-sync
+python3 scripts/os_platform.py issues create open-software --title "Fix wallet sync" --body "Issue details" --type bug --priority urgent
 python3 scripts/os_platform.py issues assign open-software 123
 python3 scripts/os_platform.py issues status open-software 123 in_review
 python3 scripts/os_platform.py issues take open-software 123 --yes
-python3 scripts/os_platform.py comments add open-software 123 --body "Opened PR #456." --idempotency-key issue-123-pr-comment
+python3 scripts/os_platform.py files upload ./evidence.mp4 --purpose attachment
+python3 scripts/os_platform.py issues attach open-software 123 --path ./evidence.mp4
+python3 scripts/os_platform.py comments add open-software 123 --body "Opened PR #456."
 ```
 
 Configuration:
@@ -36,7 +38,7 @@ Configuration:
 
 ## Routing Rules
 
-The script is deterministic. Read commands do not mutate platform state. Write commands create Issues, assign the authenticated user, update status, or add comments. `issues take` remains the confirmed shortcut that moves a `todo` Issue to `in_progress`; if the Issue has no assignee, it first assigns it to the authenticated API user. Do not rely on the script to decide user intent. Route the request before calling it, and verify writes with a read.
+The script is deterministic. Read commands do not mutate platform state. Write commands create Issues, assign the authenticated user, update status, add comments, upload files, or attach uploaded files. `issues take` remains the confirmed shortcut that moves a `todo` Issue to `in_progress`; if the Issue has no assignee, it first assigns it to the authenticated API user. Do not rely on the script to decide user intent. Route the request before calling it, and verify writes with a read.
 
 Use the user prompt first, then `os-platform.json`, then ask the user for missing required parameters. Do not guess an org, issue number, project, or contributor when the prompt and config do not provide one.
 
@@ -45,11 +47,13 @@ Use the user prompt first, then `os-platform.json`, then ask the user for missin
 - Issue lists, filters, or work queues: use `issues list <org>` with the narrowest filters.
 - Issue searches by rough user phrasing: use `issues search <org> "<query>"` with narrow filters when useful.
 - A specific Issue/Bounty by number: use `issues show <org> <number>`.
-- Creating an Issue for new work: use `issues create <org> --title <title> --body <body>` with `--type` and `--priority` when known. Known examples include types `feature`, `bug`, and `other`, and priorities `low`, `med`, `high`, and `urgent`; these are examples, not exhaustive enums, and the platform validates them.
-- Assigning yourself after taking ownership: use `issues assign <org> <number>`; `--to me` is accepted but optional. The command refuses to replace another assignee unless `--force` is passed deliberately.
-- Keeping an owned Issue current: use `issues status <org> <number> <status>` with `todo`, `in_progress`, `in_review`, `completed`, or `cancelled`.
+- Creating an Issue for new work: use `issues create <org> --title <title> --body <body>` with `--type` and `--priority` when known. Contract types are `feature`, `bug`, `improvement`, `design`, `docs`, `refactor`, and `other`; priorities are `none`, `low`, `med`, `high`, and `urgent`. The CLI passes both values through for platform validation.
+- Assigning yourself on an Issue you already own: use `issues assign <org> <number>`; `--to me` is accepted but optional. The command refuses to replace another assignee unless `--force` is passed deliberately, then re-reads the Issue to catch a concurrent assignment race.
+- Keeping an owned Issue current: use `issues status <org> <number> <status>` with `proposed`, `todo`, `in_progress`, `in_review`, `completed`, or `cancelled`. It refuses another user's Issue unless `--force` is deliberate; terminal `completed` and `cancelled` transitions require `--yes`.
 - Taking a todo Issue: after the user confirms they want to work on it, use `issues take <org> <number>`; use `--yes` only when confirmation already happened in chat or another trusted workflow.
-- Adding an Issue comment: use `comments add <org> <number> --body <body>`; use the optional `--idempotency-key <key>` when a stable key is available before the first attempt.
+- Uploading a file: use `files upload <path>` for a private attachment, add `--public` only when public download access is intended, and use `--purpose attachment|avatar` when the default `attachment` is not appropriate.
+- Attaching a file to an Issue: use `issues attach <org> <number> --file-id <fil_xxx>`, or `--path <path>` to upload it privately as an attachment first. The command preserves all existing attachments.
+- Adding an Issue comment: use `comments add <org> <number> --body <body>`.
 - Reading Issue submissions, activity, or comments: use the scoped command with `<org>` and `<issue-number>`.
 - Contributors: use `contributors list <org>` or `contributors show <org> <user-handle>`.
 
@@ -63,7 +67,9 @@ Use the platform as the source of truth for tracked work whenever it is availabl
 
 - For a pre-existing Issue, read it before starting, assign yourself when you take ownership, and move it to `in_progress`.
 - For an ad hoc request with no Issue, create one first, then assign yourself and move it to `in_progress`.
+- Route taking ownership through `issues take`; its `todo` check and confirmation discipline are authoritative. Use separate `issues assign` and `issues status` commands only for Issues you already own.
 - Keep the Issue current while work advances: use `in_review` when the PR opens, `completed` after it merges, and `cancelled` when the work is deliberately abandoned or will not be done.
+- Reference the Issue id in the PR, for example `JUN-123` or a `Closes JUN-123` line. The Org's GitHub `pr-links` webhook integration creates the platform PR link automatically; there is no CLI PR-link write command. If the integration does not link it, add the PR URL with `comments add`.
 - Add comments for durable progress or handoff context when useful. Do not replace or rewrite the Issue body to record progress.
 - Read the Issue after each write to verify the platform applied it. A write response alone is not durable evidence.
 
@@ -79,7 +85,7 @@ When the user asks about a specific issue, fetch the live issue first, then insp
 
 ## Available Script
 
-`scripts/os_platform.py` is an API helper for platform reads and controlled Issue workflow writes. It uses only Python standard library modules.
+`scripts/os_platform.py` is an API helper for platform reads and controlled Issue workflow writes. It uses only Python standard library modules; file uploads invoke `curl` for streaming multipart transfer.
 
 Core commands:
 
@@ -94,7 +100,9 @@ python3 scripts/os_platform.py issues show <org> <number>
 python3 scripts/os_platform.py issues create <org> --title <title> --body <body>
 python3 scripts/os_platform.py issues assign <org> <number>
 python3 scripts/os_platform.py issues status <org> <number> <status>
+python3 scripts/os_platform.py issues attach <org> <number> --file-id <fil_xxx>
 python3 scripts/os_platform.py issues take <org> <number>
+python3 scripts/os_platform.py files upload <path>
 python3 scripts/os_platform.py submissions list <org> <issue-number>
 python3 scripts/os_platform.py activity list <org> <issue-number>
 python3 scripts/os_platform.py comments list issue <org> <issue-number>
@@ -120,11 +128,12 @@ Common flags:
 
 Other writes:
 
-- `issues create` creates an Org-scoped Issue with a required title and body plus optional type and priority. The metadata values pass through to platform validation; documented values are known examples, not exhaustive enums.
-- `issues assign` fetches the Issue and resolves the authenticated user before assigning. It is a no-op when already self-assigned, refuses another current assignee, and accepts `--force` for a deliberate replacement.
-- `issues status` accepts only `todo`, `in_progress`, `in_review`, `completed`, or `cancelled`.
+- `issues create` creates an Org-scoped Issue with a required title and body plus optional contract type and priority values. The metadata flags remain pass-through values and do not use client-side choices.
+- `issues assign` fetches the Issue and resolves the authenticated user before assigning. `assignee_user_id` is the authoritative identity: a missing or empty value is unassigned, even if a sparse `assignee` display object exists. It is a no-op when already self-assigned, refuses another current assignee, and accepts `--force` for a deliberate replacement. After a PATCH, it re-reads and fails if another writer won the assignment race.
+- `issues status` fetches the Issue and authenticated user first, prints its external id, title, and current status, and accepts `proposed`, `todo`, `in_progress`, `in_review`, `completed`, or `cancelled`. It refuses another user's Issue unless `--force` is passed. `completed` and `cancelled` require `--yes`; without it, the command prints what would change and exits without writing.
+- `files upload` sends multipart `file`, `is_public`, and `purpose` fields to `POST /v1/files`; purpose is `attachment` or `avatar` and defaults to `attachment`.
+- `issues attach` reads the Issue's existing `files[].id` values and sends the complete list plus the new id as `file_ids` through the Issue PATCH. `--path` uploads first with private attachment defaults.
 - `comments add` adds a Markdown comment to an Issue.
-- `issues create` and `comments add` accept `--idempotency-key <key>` and send it as the `Idempotency-Key` header. The script never generates a key.
 
 `scripts/install.sh` installs this skill into a local agent skills directory. It defaults to `~/.codex/skills`, supports `--dest`, `--source`, `--repo`, `--ref`, `--path`, and `--force`, and never stores credentials.
 
@@ -146,7 +155,7 @@ Other writes:
 ## Safety
 
 - Run write commands only when the user or a trusted workflow has established the intended platform mutation. Verify each write with a read before any fan-out.
-- The script does not retry writes internally. Re-running `issues create` or `comments add` after a timeout or other ambiguous failure can duplicate the write. A caller-provided idempotency key may prevent that only if the platform honors `Idempotency-Key`; platform support is unverified, so read before retrying instead of assuming the key was enforced.
+- The script does not retry writes internally. The platform contract has no idempotency support, so re-running `issues create` or `comments add` after a timeout or other ambiguous failure can duplicate the write. Read before retrying.
 - Issue body edits remain append-only: fetch the full current body first, append, and never overwrite existing content. The script does not expose body editing.
 - Do not print or persist `OS_PLATFORM_API_KEY`.
 - Do not infer private data from missing public data. A 404 on private/member-only resources can mean hidden, missing, or inaccessible.
