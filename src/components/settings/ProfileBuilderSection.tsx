@@ -18,7 +18,6 @@ import {
   type RefObject,
 } from "react";
 import {
-  PROFILE_BUILDER_STEPS,
   STEP_META,
   attachableMcpServers,
   buildCreatePlan,
@@ -27,10 +26,8 @@ import {
   canCreateProfile,
   canRemoveProfile,
   describeProfile,
-  installableCatalogEntries,
   selectedModelToolSupport,
   slugifyProfileName,
-  stepIndex,
   useProfileBuilder,
   useProfileManager,
   validateProfileName,
@@ -68,9 +65,9 @@ type ProfileBuilderSectionProps = {
 };
 
 /**
- * June's native guided Profile Builder (spec 20). A five-step wizard that creates
- * an isolated Hermes profile with a name, models, skills, and MCP servers, then
- * optionally makes it active. It validates
+ * June's native guided Profile Builder (spec 20). A guided wizard that creates
+ * an isolated Hermes profile with a name, models, skills, and (when any are
+ * configured) MCP servers, then optionally makes it active. It validates
  * the model's tool-calling capability before allowing creation, shows exactly
  * what files/config will change (with risk labels) on the review step, and
  * surfaces success/failure with rollback messaging.
@@ -691,18 +688,18 @@ function Stepper({
     models: ProfileBuilderState["models"];
   };
 }) {
-  const currentIndex = stepIndex(current);
+  const currentIndex = state.steps.indexOf(current);
   return (
     <ol className="profile-builder-stepper" aria-label="Profile builder steps">
-      {PROFILE_BUILDER_STEPS.map((step, index) => {
+      {state.steps.map((step, index) => {
         const done = index < currentIndex;
         const active = step === current;
         // A step is reachable by click only when every prior step passes.
         const reachable =
           index <= currentIndex ||
-          PROFILE_BUILDER_STEPS.slice(0, index).every(
-            (prior) => validateStep(prior, state.form, context).error === undefined,
-          );
+          state.steps
+            .slice(0, index)
+            .every((prior) => validateStep(prior, state.form, context).error === undefined);
         return (
           <li
             key={step}
@@ -1199,7 +1196,6 @@ function McpStep({ state }: { state: ProfileBuilderState }) {
     () => attachableMcpServers(state.mcpServers),
     [state.mcpServers],
   );
-  const installable = installableCatalogEntries(state.mcpCatalog);
   return (
     <div className="profile-builder-fields">
       <span className="profile-builder-field-label">Attach MCP servers</span>
@@ -1230,32 +1226,6 @@ function McpStep({ state }: { state: ProfileBuilderState }) {
           })}
         </div>
       )}
-
-      {installable.length > 0 ? (
-        <>
-          <span className="profile-builder-field-label">Install from catalog</span>
-          <div className="profile-builder-mcp-list" role="group" aria-label="MCP catalog">
-            {installable.map((entry) => {
-              const checked = form.mcpCatalogInstalls.includes(entry.installName);
-              return (
-                <label key={entry.installName} className="profile-builder-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(event) => {
-                      const next = event.currentTarget.checked
-                        ? [...form.mcpCatalogInstalls, entry.installName]
-                        : form.mcpCatalogInstalls.filter((name) => name !== entry.installName);
-                      state.update({ mcpCatalogInstalls: next });
-                    }}
-                  />
-                  <span>{entry.name}</span>
-                </label>
-              );
-            })}
-          </div>
-        </>
-      ) : null}
     </div>
   );
 }

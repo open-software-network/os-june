@@ -1,7 +1,7 @@
 /**
  * The data + orchestration hook behind June's guided Profile Builder (spec 20).
  * It owns the wizard's input loading (existing profiles, the generation model
- * catalog, installed skills, MCP servers, the MCP catalog), the create
+ * catalog, installed skills, and configured MCP servers), the create
  * orchestration (`POST /api/profiles`, optional model overrides, then optional
  * activation), and the success/failure-with-rollback messaging.
  *
@@ -35,6 +35,7 @@ import { createHermesAdminClient, type HermesAdminClient } from "./client";
 import { HermesAdminError } from "./errors";
 import { GatewayLifecycle, type GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import {
+  attachableMcpServers,
   buildCreatePayload,
   buildProfileModelOverrides,
   canAdvance,
@@ -43,18 +44,14 @@ import {
   nextStep,
   previousStep,
   slugifyProfileName,
+  visibleSteps,
   type ProfileBuilderContext,
   type ProfileBuilderForm,
   type ProfileBuilderModel,
   type ProfileBuilderStep,
 } from "./profile-builder-view";
 import { createRustAdminFetch } from "./rust-transport";
-import type {
-  HermesMcpCatalogEntry,
-  HermesMcpServerInfo,
-  HermesProfileSummary,
-  HermesSkillInfo,
-} from "./schemas";
+import type { HermesMcpServerInfo, HermesProfileSummary, HermesSkillInfo } from "./schemas";
 import { adminTargetForMode, type HermesAdminMode, type HermesAdminTarget } from "./target";
 
 /** Loads the generation model catalog. Injected so tests drive the model gate
@@ -119,12 +116,13 @@ export type ProfileBuilderState = {
   effectiveModelSettings?: ProfileBuilderEffectiveModelSettings;
   skills: readonly HermesSkillInfo[];
   mcpServers: readonly HermesMcpServerInfo[];
-  mcpCatalog: readonly HermesMcpCatalogEntry[];
   /** True when one of the step-input loads is still in flight. */
   inputsLoading: boolean;
   create: CreateState;
   lifecycle: GatewayLifecycleSnapshot;
   notifications: readonly AdminNotification[];
+  /** The visible wizard steps (the MCP step is skipped when nothing to attach). */
+  steps: readonly ProfileBuilderStep[];
   // actions
   setStep: (step: ProfileBuilderStep) => void;
   goNext: () => void;
@@ -159,7 +157,6 @@ export class ProfileBuilderController {
   private modelStepInputsLoaded = false;
   private skills: readonly HermesSkillInfo[] = [];
   private mcpServers: readonly HermesMcpServerInfo[] = [];
-  private mcpCatalog: readonly HermesMcpCatalogEntry[] = [];
   private inputsLoading = true;
   private create: CreateState = { phase: "idle" };
   private notifications: readonly AdminNotification[] = [];
@@ -270,17 +267,19 @@ export class ProfileBuilderController {
 
   private async loadMcp(seq: number): Promise<void> {
     try {
-      const [servers, catalog] = await Promise.all([
-        this.engine.client.mcp.listServers(),
-        this.engine.client.mcp.catalog(),
-      ]);
+      const servers = await this.engine.client.mcp.listServers();
       if (this.disposed || seq !== this.loadSeq) return;
       this.mcpServers = servers;
-      this.mcpCatalog = catalog;
       this.recompute();
     } catch {
       // Leave MCP inputs empty; the MCP step shows nothing to attach.
     }
+  }
+
+  /** The visible steps for the current inputs; the MCP step drops out when
+   * there is nothing to attach. */
+  private orderedSteps(): readonly ProfileBuilderStep[] {
+    return visibleSteps(attachableMcpServers(this.mcpServers).length > 0);
   }
 
   /** The validation context the view layer reads. */
@@ -458,7 +457,7 @@ export class ProfileBuilderController {
       effectiveModelSettings: this.effectiveModelSettings,
       skills: this.skills,
       mcpServers: this.mcpServers,
-      mcpCatalog: this.mcpCatalog,
+      steps: this.orderedSteps(),
       inputsLoading: this.inputsLoading,
       create: this.create,
       lifecycle: this.lifecycleSnapshot,
@@ -488,11 +487,11 @@ export class ProfileBuilderController {
     // Advance only when the current step permits it; the view disables the
     // button, but the controller enforces the gate too.
     if (canAdvance(this.step, this.form, this.context())) {
-      this.setStep(nextStep(this.step));
+      this.setStep(nextStep(this.step, this.orderedSteps()));
     }
   };
   private readonly goBackAction = (): void => {
-    this.setStep(previousStep(this.step));
+    this.setStep(previousStep(this.step, this.orderedSteps()));
   };
   private readonly updateAction = (patch: Partial<ProfileBuilderForm>): void => {
     this.update(patch);
@@ -555,7 +554,7 @@ const UNAVAILABLE_STATE: ProfileBuilderState = Object.freeze({
   videoModels: [],
   skills: [],
   mcpServers: [],
-  mcpCatalog: [],
+  steps: visibleSteps(false),
   inputsLoading: false,
   create: { phase: "idle" },
   lifecycle: {

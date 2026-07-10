@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useMemo, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  PROFILE_BUILDER_STEPS,
   createHermesAdminClient,
   emptyProfileForm,
   nextStep,
@@ -55,7 +56,7 @@ function stubBuilder(overrides: Partial<ProfileBuilderState> = {}): ProfileBuild
     videoModels: [],
     skills: [],
     mcpServers: [],
-    mcpCatalog: [],
+    steps: PROFILE_BUILDER_STEPS,
     inputsLoading: false,
     create: { phase: "idle" },
     lifecycle: {

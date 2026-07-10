@@ -8,9 +8,9 @@
  * The builder talks to Hermes through the existing admin REST surface only:
  * `POST /api/profiles` (create) and `POST /api/profiles/active` when the new
  * profile should become active. It reuses the already-landed data sources for
- * its step inputs (the model catalog, installed skills, the Skills Hub, MCP
- * servers and the MCP catalog) rather than inventing its own. Profile creation
- * is a documented endpoint, so June never copies directories by hand.
+ * its step inputs (the model catalog, installed skills, the Skills Hub, and
+ * configured MCP servers) rather than inventing its own. Profile creation is a
+ * documented endpoint, so June never copies directories by hand.
  *
  * June presentation rule: every profile presents as June. A profile can choose
  * its own models, skills, and MCP servers, but it never changes what the agent
@@ -19,12 +19,7 @@
 
 import type { HermesCreateProfilePayload } from "./client";
 import { isInternalMcpServerName, userManagedMcpServers } from "./mcp-servers-view";
-import type {
-  HermesMcpCatalogEntry,
-  HermesMcpServerInfo,
-  HermesProfileSummary,
-  HermesSkillInfo,
-} from "./schemas";
+import type { HermesMcpServerInfo, HermesProfileSummary, HermesSkillInfo } from "./schemas";
 
 /** The model shape the builder needs from the catalog. A subset of
  * `VeniceModelDto` so this module stays decoupled from the Tauri DTO; the
@@ -102,8 +97,6 @@ export type ProfileBuilderForm = {
   hubSkills: string[];
   /** Existing MCP server names to attach. */
   mcpServers: string[];
-  /** MCP catalog install names to install at create time. */
-  mcpCatalogInstalls: string[];
 };
 
 /** The fresh form a new wizard starts from. June's default profile and bundled
@@ -122,7 +115,6 @@ export function emptyProfileForm(): ProfileBuilderForm {
     keepSkills: [],
     hubSkills: [],
     mcpServers: [],
-    mcpCatalogInstalls: [],
   };
 }
 
@@ -291,18 +283,35 @@ export function canCreateProfile(
 // Step navigation
 // ---------------------------------------------------------------------------
 
-export function stepIndex(step: ProfileBuilderStep): number {
-  return PROFILE_BUILDER_STEPS.indexOf(step);
+export function stepIndex(
+  step: ProfileBuilderStep,
+  steps: readonly ProfileBuilderStep[] = PROFILE_BUILDER_STEPS,
+): number {
+  return steps.indexOf(step);
 }
 
-export function nextStep(step: ProfileBuilderStep): ProfileBuilderStep {
-  const index = stepIndex(step);
-  return PROFILE_BUILDER_STEPS[Math.min(index + 1, PROFILE_BUILDER_STEPS.length - 1)];
+export function nextStep(
+  step: ProfileBuilderStep,
+  steps: readonly ProfileBuilderStep[] = PROFILE_BUILDER_STEPS,
+): ProfileBuilderStep {
+  const index = stepIndex(step, steps);
+  return steps[Math.min(index + 1, steps.length - 1)];
 }
 
-export function previousStep(step: ProfileBuilderStep): ProfileBuilderStep {
-  const index = stepIndex(step);
-  return PROFILE_BUILDER_STEPS[Math.max(index - 1, 0)];
+export function previousStep(
+  step: ProfileBuilderStep,
+  steps: readonly ProfileBuilderStep[] = PROFILE_BUILDER_STEPS,
+): ProfileBuilderStep {
+  const index = stepIndex(step, steps);
+  return steps[Math.max(index - 1, 0)];
+}
+
+/** The steps to show. The MCP step is skipped when there are no attachable
+ * (user-managed) MCP servers to pick from, since an empty step adds nothing. */
+export function visibleSteps(hasAttachableMcpServers: boolean): readonly ProfileBuilderStep[] {
+  return hasAttachableMcpServers
+    ? PROFILE_BUILDER_STEPS
+    : PROFILE_BUILDER_STEPS.filter((step) => step !== "mcps");
 }
 
 // ---------------------------------------------------------------------------
@@ -445,10 +454,8 @@ export function buildCreatePlan(
     });
   }
 
-  if (form.mcpServers.length > 0 || form.mcpCatalogInstalls.length > 0) {
-    const total =
-      form.mcpServers.filter((name) => !isInternalMcpServerName(name)).length +
-      form.mcpCatalogInstalls.filter((name) => !isInternalMcpServerName(name)).length;
+  if (form.mcpServers.length > 0) {
+    const total = form.mcpServers.filter((name) => !isInternalMcpServerName(name)).length;
     if (total > 0) {
       changes.push({
         target: `${root}/config.yaml (mcp)`,
@@ -488,7 +495,7 @@ export function buildCreatePayload(form: ProfileBuilderForm): HermesCreateProfil
     payload.keep_skills = [...form.keepSkills];
   }
   if (form.hubSkills.length > 0) payload.hub_skills = [...form.hubSkills];
-  const mcpServers = [...form.mcpServers, ...form.mcpCatalogInstalls]
+  const mcpServers = form.mcpServers
     .filter((name) => !isInternalMcpServerName(name))
     .map((name) => ({ name }));
   if (mcpServers.length > 0) payload.mcp_servers = mcpServers;
@@ -510,12 +517,4 @@ export function attachableMcpServers(
   servers: readonly HermesMcpServerInfo[],
 ): HermesMcpServerInfo[] {
   return userManagedMcpServers(servers);
-}
-
-/** The catalog entries that can be installed during create (not already
- * installed). */
-export function installableCatalogEntries(
-  catalog: readonly HermesMcpCatalogEntry[],
-): HermesMcpCatalogEntry[] {
-  return catalog.filter((entry) => !entry.installed && !isInternalMcpServerName(entry.installName));
 }

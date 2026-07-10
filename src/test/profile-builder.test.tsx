@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  PROFILE_BUILDER_STEPS,
   ProfileBuilderController,
   buildCreatePayload,
   buildCreatePlan,
@@ -8,12 +9,12 @@ import {
   canAdvance,
   canCreateProfile,
   emptyProfileForm,
-  installableCatalogEntries,
   nextStep,
   previousStep,
   slugifyProfileName,
   validateProfileName,
   validateStep,
+  visibleSteps,
   type ProfileBuilderContext,
   type ProfileBuilderEngine,
   type ProfileBuilderForm,
@@ -240,8 +241,7 @@ describe("profile builder — create plan + payload", () => {
   it("strips June internal MCP servers from the create payload", () => {
     const payload = buildCreatePayload(
       validForm({
-        mcpServers: ["linear", "june_context"],
-        mcpCatalogInstalls: ["june_web", "github"],
+        mcpServers: ["linear", "june_context", "github"],
       }),
     );
     expect(payload.mcp_servers).toEqual([{ name: "linear" }, { name: "github" }]);
@@ -294,35 +294,18 @@ describe("profile builder — create plan + payload", () => {
     expect(plan.some((change) => change.detail === "Video model: Grok Imagine.")).toBe(true);
   });
 
-  it("hides internal June servers from installable MCP catalog entries", () => {
-    const installable = installableCatalogEntries([
-      {
-        id: "june_video",
-        installName: "june_video",
-        name: "June video",
-        transport: "stdio",
-        auth: "none",
-        installed: false,
-        raw: {},
-      },
-      {
-        id: "github",
-        installName: "github",
-        name: "GitHub",
-        transport: "http",
-        auth: "none",
-        installed: false,
-        raw: {},
-      },
-    ]);
-
-    expect(installable.map((entry) => entry.installName)).toEqual(["github"]);
+  it("skips the MCP step when there are no attachable servers", () => {
+    expect(visibleSteps(false)).not.toContain("mcps");
+    expect(visibleSteps(false)).toEqual(["identity", "model", "skills", "review"]);
+    expect(visibleSteps(true)).toContain("mcps");
+    expect(visibleSteps(true)).toEqual(PROFILE_BUILDER_STEPS);
+    // Navigation skips the hidden MCP step end to end.
+    expect(nextStep("skills", visibleSteps(false))).toBe("review");
+    expect(previousStep("review", visibleSteps(false))).toBe("skills");
   });
 
   it("does not list June internal MCP servers in the review count", () => {
-    const plan = buildCreatePlan(
-      validForm({ mcpServers: ["linear", "june_context"], mcpCatalogInstalls: ["june_web"] }),
-    );
+    const plan = buildCreatePlan(validForm({ mcpServers: ["linear", "june_context"] }));
     expect(
       plan.some((change) => change.detail === "June's built-in tools are always included."),
     ).toBe(true);
@@ -574,7 +557,7 @@ function stubState(overrides: Partial<ProfileBuilderState> = {}): ProfileBuilder
     },
     skills: [],
     mcpServers: [],
-    mcpCatalog: [],
+    steps: PROFILE_BUILDER_STEPS,
     inputsLoading: false,
     create: { phase: "idle" },
     lifecycle: {
