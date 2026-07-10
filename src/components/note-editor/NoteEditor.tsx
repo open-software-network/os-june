@@ -28,6 +28,7 @@ import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
 import { isMacLikePlatform } from "../../lib/platform";
+import { useDismiss } from "../../lib/use-dismiss";
 import { systemAudioAvailability } from "../../lib/source-readiness";
 import {
   isInvalidJuneResponseMessage,
@@ -651,22 +652,12 @@ function FolderChip({
   const ref = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  useDismiss(ref, open, () => setOpen(false));
+
   useEffect(() => {
     if (!open) return;
     setQuery("");
-    function onClick(event: MouseEvent) {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
-    }
-    window.addEventListener("mousedown", onClick);
-    window.addEventListener("keydown", onKey);
     requestAnimationFrame(() => searchRef.current?.focus());
-    return () => {
-      window.removeEventListener("mousedown", onClick);
-      window.removeEventListener("keydown", onKey);
-    };
   }, [open]);
 
   const currentFolderId = folderIds[0];

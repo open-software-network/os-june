@@ -188,6 +188,9 @@ export function MoveNoteToFolderDialog({
             <span className="add-notes-check" aria-hidden />
           </button>
         ) : null}
+        {showCreate && candidates.length > 0 ? (
+          <div className="add-notes-divider" aria-hidden />
+        ) : null}
         {candidates.length > 0 ? (
           <ul className="add-notes-list" role="listbox">
             {candidates.map((folder) => {

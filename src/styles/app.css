@@ -51,6 +51,15 @@ button {
   cursor: pointer;
 }
 
+/* Search fields never show WebKit's native grey cancel bubble: clearing is
+ * Escape / select-all, matching the model picker and command prompt fields
+ * (which are bare text inputs and never had one). */
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
 button:focus-visible,
 input:focus-visible,
 [role="tab"]:focus-visible {
@@ -18081,12 +18090,6 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-.folders-search input::-webkit-search-cancel-button {
-  -webkit-appearance: none;
-  appearance: none;
-  display: none;
-}
-
 /* The magnifier reads a step lighter than the placeholder — it's decoration,
  * not content — and firms up while the field is in use. */
 .folders-search > svg {
@@ -19605,6 +19608,10 @@ input:focus-visible,
   top: calc(100% + var(--sp-2));
   right: 0;
   z-index: 60;
+  /* Absolutely positioned inside the small trigger wrapper, so shrink-to-fit
+   * would wrap the longest label ("Add existing meeting note") — size to the
+   * content instead. */
+  width: max-content;
   min-width: 178px;
   padding: var(--sp-1);
   border: 1px solid var(--popover-border);
@@ -19685,6 +19692,14 @@ input:focus-visible,
 
 .add-notes-search input::placeholder {
   color: var(--muted-foreground);
+}
+
+/* Hairline between the create row and the existing projects, mirroring the
+ * note editor's project chip popover (.move-to-folder-divider). */
+.add-notes-divider {
+  height: 1px;
+  margin: 2px var(--sp-1);
+  background: var(--border-subtle);
 }
 
 .add-notes-list {

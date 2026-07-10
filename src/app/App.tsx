@@ -3094,6 +3094,11 @@ export function App() {
           setActiveAgentSession(session);
           setActiveView("agent");
         }}
+        sessionFolderIds={sessionFolders}
+        onOpenSessionMoveDialog={(sessionId) => setMoveDialogSessionIds([sessionId])}
+        onRemoveSessionFromFolder={(sessionId, folderId) =>
+          void handleRemoveSessionFromFolder(sessionId, folderId)
+        }
         recoverableNoteIds={recoverableNoteIds}
         recordingStatus={sidebarRecorderStatus}
         recordingTitle={recordingNoteTitle}

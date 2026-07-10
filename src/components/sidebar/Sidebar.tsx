@@ -140,6 +140,11 @@ type SidebarProps = {
   /** stored session id (not the runtime session id). */
   onRenameAgentSession: (sessionId: string, title: string) => void;
   onSelectAgentSession: (session: HermesSessionInfo) => void;
+  /** Project membership per stored session id; drives the session menu's
+   * project items (optional so tests can skip the plumbing). */
+  sessionFolderIds?: Record<string, string[]>;
+  onOpenSessionMoveDialog?: (sessionId: string) => void;
+  onRemoveSessionFromFolder?: (sessionId: string, folderId: string) => void;
   recoverableNoteIds?: ReadonlySet<string>;
   recordingStatus?: RecordingStatusDto | null;
   recordingTitle?: string;
@@ -373,6 +378,9 @@ export function Sidebar({
   onNewAgentSession,
   onRenameAgentSession,
   onSelectAgentSession,
+  sessionFolderIds,
+  onOpenSessionMoveDialog,
+  onRemoveSessionFromFolder,
   recoverableNoteIds,
   recordingStatus,
   recordingTitle = "New note",
@@ -1348,8 +1356,17 @@ export function Sidebar({
           deleting={deletingAgentSessionIds.has(menuAgentSession.id)}
           right={menu.right}
           top={menu.top}
+          folderId={sessionFolderIds?.[menuAgentSession.id]?.[0]}
           onTogglePinned={() => togglePinnedAgentSession(menuAgentSession.id)}
           onRename={() => setRenamingAgentSessionId(menuAgentSession.id)}
+          onMoveToProject={
+            onOpenSessionMoveDialog ? () => onOpenSessionMoveDialog(menuAgentSession.id) : undefined
+          }
+          onRemoveFromProject={
+            onRemoveSessionFromFolder
+              ? (folderId) => onRemoveSessionFromFolder(menuAgentSession.id, folderId)
+              : undefined
+          }
           onDelete={() => {
             setAgentSessionDeleteError(null);
             setAgentSessionToDelete(menuAgentSession);
@@ -2185,8 +2202,11 @@ function AgentSessionContextMenu({
   deleting,
   right,
   top,
+  folderId,
   onTogglePinned,
   onRename,
+  onMoveToProject,
+  onRemoveFromProject,
   onDelete,
   onClose,
 }: {
@@ -2194,8 +2214,11 @@ function AgentSessionContextMenu({
   deleting: boolean;
   right: number;
   top: number;
+  folderId?: string;
   onTogglePinned: () => void;
   onRename: () => void;
+  onMoveToProject?: () => void;
+  onRemoveFromProject?: (folderId: string) => void;
   onDelete: () => void;
   onClose: () => void;
 }) {
@@ -2228,6 +2251,32 @@ function AgentSessionContextMenu({
         <IconPencil size={14} />
         Rename session
       </button>
+      {onMoveToProject ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onMoveToProject();
+            onClose();
+          }}
+        >
+          {folderId ? <IconMoveFolder size={14} /> : <IconFolderAddRight size={14} />}
+          {folderId ? "Change project" : "Add to project"}
+        </button>
+      ) : null}
+      {folderId && onRemoveFromProject ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onRemoveFromProject(folderId);
+            onClose();
+          }}
+        >
+          <IconFolderDelete size={14} />
+          Remove from project
+        </button>
+      ) : null}
       <div className="context-menu-separator" role="separator" />
       <button
         type="button"
