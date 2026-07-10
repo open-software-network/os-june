@@ -10,6 +10,7 @@ type Props = {
   onRetry: () => void | Promise<void>;
   onTopUp: () => void;
   topUpLabel?: string;
+  retryBlockedReason?: string;
 };
 
 // String match (see isInsufficientCreditsMessage) is intentional and a known
@@ -63,6 +64,7 @@ export function NoteFailureBanner({
   onRetry,
   onTopUp,
   topUpLabel = "Upgrade",
+  retryBlockedReason,
 }: Props) {
   const kind = classifyFailure(errorMessage);
   const isBalanceIssue = kind === "balance_low";
@@ -101,6 +103,7 @@ export function NoteFailureBanner({
         {!isBalanceIssue && audioPreserved
           ? " Your recording is saved locally, so you can retry."
           : null}
+        {retryBlockedReason ? ` ${retryBlockedReason}` : null}
       </p>
       <div className="note-failure-actions">
         {isBalanceIssue ? (
@@ -112,7 +115,7 @@ export function NoteFailureBanner({
           type="button"
           className="btn btn-ghost"
           onClick={() => void handleRetry()}
-          disabled={!audioPreserved || retrying}
+          disabled={!audioPreserved || retrying || Boolean(retryBlockedReason)}
           aria-busy={retrying || undefined}
         >
           <IconArrowRotateClockwise

@@ -8287,6 +8287,32 @@ describe("AgentWorkspace", () => {
     expect(storedVideoSlashTurnsForTest()).toEqual([]);
   });
 
+  it("disables a failed video generation retry when credit actions are blocked", async () => {
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
+    mocks.videoGenerate.mockResolvedValueOnce({ jobId: "video-job-failed" });
+    mocks.videoStatus.mockResolvedValueOnce({
+      status: "failed",
+      reason: "provider rejected the video",
+    });
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(await screen.findByRole("textbox"), "/video a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    expect(await screen.findByText("provider rejected the video")).toBeInTheDocument();
+
+    view.rerender(
+      <AgentWorkspace creditActionsDisabledReason="Add credits to use video generation." />,
+    );
+
+    expect(screen.getByRole("button", { name: "Try again" })).toBeDisabled();
+    expect(screen.getByText("Add credits to use video generation.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(mocks.videoGenerate).toHaveBeenCalledOnce();
+  });
+
   it("keeps the persisted /video pending turn when the submit poll budget expires", async () => {
     mockGlmCapabilities(["functionCalling"]);
     mockVideoSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
@@ -8541,6 +8567,27 @@ describe("AgentWorkspace", () => {
     expect(mocks.generateImage).toHaveBeenCalledTimes(2);
     expect(mocks.generateImage.mock.calls[1]?.[2]).toBe(firstRequestId);
     expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables a failed image generation retry when credit actions are blocked", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    mocks.generateImage.mockRejectedValueOnce(new Error("gateway timeout"));
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    expect(await screen.findByText("gateway timeout")).toBeInTheDocument();
+
+    view.rerender(
+      <AgentWorkspace creditActionsDisabledReason="Add credits to use image generation." />,
+    );
+
+    expect(screen.getByRole("button", { name: "Try again" })).toBeDisabled();
+    expect(screen.getByText("Add credits to use image generation.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(mocks.generateImage).toHaveBeenCalledOnce();
   });
 
   it("replays the pinned image shape when settings change before retry", async () => {

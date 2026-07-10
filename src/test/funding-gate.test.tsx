@@ -1,7 +1,12 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { FundingGate } from "../components/account/FundingGate";
+import {
+  FundingGate,
+  FundingGateBanner,
+  FundingGateDialog,
+} from "../components/account/FundingGate";
+import { Dialog } from "../components/ui/Dialog";
 import type { AccountStatus } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
@@ -36,6 +41,101 @@ describe("FundingGate", () => {
     mocks.osAccountsChangePlan.mockResolvedValue({ subscribed: true, plan: "max" });
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
+  });
+
+  it("presents the existing funding content in a dismissible dialog", async () => {
+    const user = userEvent.setup();
+    const onDismiss = vi.fn();
+    render(
+      <FundingGateDialog
+        account={baseAccount}
+        onRefresh={vi.fn(async () => baseAccount)}
+        onSignOut={vi.fn()}
+        onDismiss={onDismiss}
+      />,
+    );
+
+    expect(screen.getByRole("dialog", { name: "Credits needed" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Upgrade to continue" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+    expect(onDismiss).toHaveBeenCalledOnce();
+  });
+
+  it("dismisses the funding dialog with Escape", async () => {
+    const user = userEvent.setup();
+    const onDismiss = vi.fn();
+    render(
+      <FundingGateDialog
+        account={baseAccount}
+        onRefresh={vi.fn(async () => baseAccount)}
+        onSignOut={vi.fn()}
+        onDismiss={onDismiss}
+      />,
+    );
+
+    await user.keyboard("{Escape}");
+    expect(onDismiss).toHaveBeenCalledOnce();
+  });
+
+  it("lets Escape close the nested plan confirmation before the funding dialog", async () => {
+    const user = userEvent.setup();
+    const onDismiss = vi.fn();
+    render(
+      <FundingGateDialog
+        account={{
+          ...baseAccount,
+          balance: { credits: -1, usdMillis: -1 },
+          subscription: { subscribed: true, status: "active", plan: "pro" },
+        }}
+        onRefresh={vi.fn(async () => baseAccount)}
+        onSignOut={vi.fn()}
+        onDismiss={onDismiss}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    expect(screen.getAllByRole("dialog")).toHaveLength(2);
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.getAllByRole("dialog")).toHaveLength(1));
+    expect(screen.getByRole("dialog", { name: "Credits needed" })).toBeInTheDocument();
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it("dismisses independently when another app dialog is open", async () => {
+    const user = userEvent.setup();
+    const onDismiss = vi.fn();
+    render(
+      <>
+        <Dialog open onClose={vi.fn()} title="Other dialog">
+          <p>Other content</p>
+        </Dialog>
+        <FundingGateDialog
+          account={baseAccount}
+          onRefresh={vi.fn(async () => baseAccount)}
+          onSignOut={vi.fn()}
+          onDismiss={onDismiss}
+        />
+      </>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+    expect(onDismiss).toHaveBeenCalledOnce();
+  });
+
+  it("uses the same upgrade action in the persistent banner presentation", () => {
+    render(
+      <FundingGateBanner
+        account={baseAccount}
+        onRefresh={vi.fn(async () => baseAccount)}
+        onSignOut={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upgrade to Pro" })).toBeInTheDocument();
   });
 
   it("asks users with no credits to upgrade, not add credits", async () => {

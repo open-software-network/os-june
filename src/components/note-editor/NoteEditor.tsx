@@ -24,6 +24,7 @@ import type {
 } from "../../lib/tauri";
 import { DotSpinner } from "../DotSpinner";
 import { InlineNotice } from "../ui/InlineNotice";
+import { HoverTip } from "../ui/HoverTip";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
@@ -41,6 +42,8 @@ type NoteEditorProps = {
   folders: FolderDto[];
   recordingStatus?: RecordingStatusDto;
   recordingDisabled?: boolean;
+  recordingBlockedReason?: string;
+  retryBlockedReason?: string;
   liveTranscript?: LiveTranscriptEventDto[];
   sourceMode: RecordingSourceMode;
   sourceReadiness?: RecordingSourceReadinessDto;
@@ -120,6 +123,8 @@ export function NoteEditor({
   folders,
   recordingStatus,
   recordingDisabled = false,
+  recordingBlockedReason,
+  retryBlockedReason,
   liveTranscript = [],
   sourceMode,
   sourceReadiness,
@@ -246,8 +251,8 @@ export function NoteEditor({
   }, [consentReminderVisible]);
   const processingStatus = processingStageStatus(note.processingStatus);
   const processingLock = processingStatus !== null;
-  const recordButtonDisabled = recordingDisabled;
-  const recordOptionsDisabled = processingLock || recordingDisabled;
+  const recordButtonDisabled = recordingDisabled || Boolean(recordingBlockedReason);
+  const recordOptionsDisabled = processingLock || recordButtonDisabled;
   // When generation finishes for the note you're looking at, reveal the fresh
   // notes with a top-down wipe instead of letting the text snap in. Only fires
   // on the live processing -> ready edge for this same note — never when
@@ -345,6 +350,7 @@ export function NoteEditor({
             onRetry={onRetry}
             onTopUp={onTopUp}
             topUpLabel={topUpLabel}
+            retryBlockedReason={retryBlockedReason}
           />
         ) : null}
         {activeTab === "transcription" ? (
@@ -438,6 +444,18 @@ export function NoteEditor({
       </section>
 
       <div className="editor-footer">
+        {recordingBlockedReason && !recordingForNote ? (
+          <InlineNotice
+            className="record-funding-blocked"
+            aria-label="Recording needs credits"
+            body={recordingBlockedReason}
+            actions={
+              <button type="button" className="primary-action" onClick={onTopUp}>
+                {topUpLabel ?? "Upgrade"}
+              </button>
+            }
+          />
+        ) : null}
         {micDenied && !recordingForNote ? (
           <InlineNotice
             className="record-mic-blocked"
@@ -596,16 +614,34 @@ export function NoteEditor({
                       }}
                     >
                       <div className="record-idle">
-                        <button
-                          type="button"
-                          className="record-button"
-                          aria-label={recordingDisabled ? "Recording in progress" : "Record"}
-                          title={recordingDisabled ? "Recording in progress" : "Record"}
-                          disabled={recordButtonDisabled}
-                          onClick={onStartRecording}
-                        >
-                          <IconMicrophone size={20} />
-                        </button>
+                        {recordingBlockedReason ? (
+                          <HoverTip
+                            tip={recordingBlockedReason}
+                            className="record-button-tip"
+                            tabIndex={0}
+                          >
+                            <button
+                              type="button"
+                              className="record-button"
+                              aria-label="Recording needs credits"
+                              disabled={recordButtonDisabled}
+                              onClick={onStartRecording}
+                            >
+                              <IconMicrophone size={20} />
+                            </button>
+                          </HoverTip>
+                        ) : (
+                          <button
+                            type="button"
+                            className="record-button"
+                            aria-label={recordingDisabled ? "Recording in progress" : "Record"}
+                            title={recordingDisabled ? "Recording in progress" : "Record"}
+                            disabled={recordButtonDisabled}
+                            onClick={onStartRecording}
+                          >
+                            <IconMicrophone size={20} />
+                          </button>
+                        )}
                         {showRecordingOptions && !recordOptionsDisabled ? (
                           <button
                             type="button"

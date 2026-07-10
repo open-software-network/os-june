@@ -140,6 +140,7 @@ export function NoteChatPanel({
   note,
   chat,
   recordingActive,
+  creditActionsDisabledReason,
   onClose,
   onOpenInAgent,
 }: {
@@ -151,6 +152,7 @@ export function NoteChatPanel({
    * ducks the recording's mic while dictation listens (so a dictated question
    * never lands in the note); this only tunes the tooltip to say so. */
   recordingActive?: boolean;
+  creditActionsDisabledReason?: string;
   onClose: () => void;
   onOpenInAgent: (sessionId: string | undefined) => void;
 }) {
@@ -333,7 +335,7 @@ export function NoteChatPanel({
   }, [turns.length, lastTurnSize, working, fade.update]);
 
   async function handleSend(text: string) {
-    if (working || importing) return;
+    if (working || importing || creditActionsDisabledReason) return;
     setComposerError(null);
     const accepted = await submit(text, attachments);
     if (accepted) {
@@ -455,6 +457,11 @@ export function NoteChatPanel({
           ) : null}
         </div>
         <footer className="note-chat-composer">
+          {creditActionsDisabledReason ? (
+            <p className="agent-composer-notice" role="status">
+              {creditActionsDisabledReason}
+            </p>
+          ) : null}
           {/* The actual chatbox: the agent composer's box/attach/toolbar/model/
            * send classes, wired to the panel's session. */}
           <div className="agent-composer-box">
@@ -546,7 +553,11 @@ export function NoteChatPanel({
                     type="button"
                     className="agent-composer-send"
                     aria-label="Send message"
-                    disabled={importing || (draftEmpty && !attachments.length)}
+                    disabled={
+                      Boolean(creditActionsDisabledReason) ||
+                      importing ||
+                      (draftEmpty && !attachments.length)
+                    }
                     onClick={() => void handleSend(draftRef.current)}
                   >
                     <IconArrowUp size={18} />

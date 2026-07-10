@@ -11,6 +11,8 @@ import {
 import { osAccountsChangePlan, osAccountsOpenPortal, osAccountsUpgrade } from "../../lib/tauri";
 import type { AccountStatus, SubscriptionPlan } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { Dialog } from "../ui/Dialog";
+import { InlineNotice } from "../ui/InlineNotice";
 import { Spinner } from "../ui/Spinner";
 import { JuneMark } from "./AccountGate";
 
@@ -18,7 +20,15 @@ type Props = {
   account: AccountStatus;
   onRefresh: () => Promise<AccountStatus | undefined>;
   onSignOut: () => void;
+  presentation?: "page" | "dialog" | "banner";
+  onConfirmationOpenChange?: (open: boolean) => void;
 };
+
+type FundingGateDialogProps = Omit<Props, "presentation"> & {
+  onDismiss: () => void;
+};
+
+type FundingGateBannerProps = Omit<Props, "presentation" | "onConfirmationOpenChange">;
 
 const POLL_INTERVAL_MS = 10_000;
 
@@ -32,7 +42,13 @@ type GateCopy = {
   reopen?: string;
 };
 
-export function FundingGate({ account, onRefresh, onSignOut }: Props) {
+export function FundingGate({
+  account,
+  onRefresh,
+  onSignOut,
+  presentation = "page",
+  onConfirmationOpenChange,
+}: Props) {
   const [openedPortal, setOpenedPortal] = useState(false);
   const [checking, setChecking] = useState(false);
   // Upgrade to Max charges the saved card the moment it runs, so it only
@@ -115,6 +131,10 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
     return () => window.clearInterval(interval);
   }, [onRefresh]);
 
+  useEffect(() => {
+    onConfirmationOpenChange?.(confirmingUpgrade);
+  }, [confirmingUpgrade, onConfirmationOpenChange]);
+
   async function handleOpenPortal(plan: SubscriptionPlan = chosenPlan) {
     setPortalError(undefined);
     try {
@@ -172,7 +192,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   }
 
   return (
-    <div className="welcome-screen">
+    <div className={`welcome-screen funding-gate funding-gate-${presentation}`}>
       <div className="welcome-card wide-card">
         <span className="welcome-mark" aria-hidden>
           <JuneMark />
@@ -278,6 +298,49 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />
     </div>
+  );
+}
+
+/** Dialog presentation for the existing funding content. Billing and checkout
+ * behavior stays owned by FundingGate so this wrapper cannot drift from it. */
+export function FundingGateDialog({ onDismiss, ...props }: FundingGateDialogProps) {
+  const [confirmationOpen, setConfirmationOpen] = useState(false);
+
+  const dismissFundingDialog = () => {
+    // FundingGate owns one nested confirmation. Let Escape close that layer
+    // first without making unrelated dialogs affect this dialog's dismissal.
+    if (!confirmationOpen) onDismiss();
+  };
+
+  return (
+    <Dialog
+      open
+      onClose={dismissFundingDialog}
+      title="Credits needed"
+      footer={
+        <button type="button" className="primary-action" onClick={onDismiss}>
+          Not now
+        </button>
+      }
+    >
+      <FundingGate
+        {...props}
+        presentation="dialog"
+        onConfirmationOpenChange={setConfirmationOpen}
+      />
+    </Dialog>
+  );
+}
+
+/** Persistent shell presentation. InlineNotice owns the banner surface while
+ * FundingGate continues to own all billing copy and actions. */
+export function FundingGateBanner(props: FundingGateBannerProps) {
+  return (
+    <InlineNotice
+      className="funding-gate-banner-notice"
+      body={null}
+      actions={<FundingGate {...props} presentation="banner" />}
+    />
   );
 }
 

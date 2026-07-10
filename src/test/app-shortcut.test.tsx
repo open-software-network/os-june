@@ -430,6 +430,117 @@ describe("App shortcuts", () => {
     expect(await screen.findByRole("heading", { name: "Welcome to June" })).toBeInTheDocument();
   });
 
+  it("keeps notes, session history, and sign out available after the funding gate is dismissed", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsStatus.mockResolvedValue({
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
+      balance: { credits: 0, usdMillis: 0 },
+      subscription: { subscribed: false },
+    });
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Not now" }));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    await user.click(screen.getByRole("button", { name: "Meeting notes" }));
+    expect(await screen.findByRole("heading", { name: /Meeting notes/ })).toBeInTheDocument();
+    expect(screen.getByText("First note")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Sessions" }));
+    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Credits needed" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "alex@example.com, account menu" }));
+    await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    expect(mocks.osAccountsLogout).toHaveBeenCalledWith({ clearBrowserSession: true });
+    expect(await screen.findByRole("heading", { name: "Welcome to June" })).toBeInTheDocument();
+  });
+
+  it("shows the funding dialog again after an app remount", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsStatus.mockResolvedValue({
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
+      balance: { credits: 0, usdMillis: 0 },
+      subscription: { subscribed: false },
+    });
+
+    const firstLaunch = render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Not now" }));
+    expect(screen.queryByRole("dialog", { name: "Credits needed" })).not.toBeInTheDocument();
+
+    firstLaunch.unmount();
+    render(<App />);
+
+    expect(await screen.findByRole("dialog", { name: "Credits needed" })).toBeInTheDocument();
+  });
+
+  it("blocks paid composer and recording actions after the funding gate is dismissed", async () => {
+    const user = userEvent.setup();
+    const failedNote = note({
+      processingStatus: "failed",
+      lastError: "Network unreachable",
+      audio: {
+        id: "audio-1",
+        source: "microphone",
+        format: "wav",
+        durationMs: 1200,
+        sizeBytes: 2048,
+        checksum: "abc",
+        createdAt: now,
+      },
+    });
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [failedNote],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockResolvedValue(failedNote);
+    mocks.osAccountsStatus.mockResolvedValue({
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
+      balance: { credits: 0, usdMillis: 0 },
+      subscription: { subscribed: false },
+    });
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Not now" }));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Summarize my notes");
+    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+    expect(
+      screen.getByText("Add credits to send messages or generate images and videos."),
+    ).toBeInTheDocument();
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+    await user.click(screen.getByRole("button", { name: "Meeting notes" }));
+    await user.click(await screen.findByText("First note"));
+
+    expect(await screen.findByRole("button", { name: "Recording needs credits" })).toBeDisabled();
+    expect(
+      screen.getByText("Add credits before starting a recording. You can still browse and edit."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeDisabled();
+    expect(screen.getByText(/Add credits before retrying note generation\./)).toBeInTheDocument();
+    expect(mocks.startRecording).not.toHaveBeenCalled();
+    expect(mocks.retryProcessing).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({});
+    });
+    expect(mocks.startRecording).not.toHaveBeenCalled();
+  });
+
   it("starts a new session with Command-N", async () => {
     const onNewSession = vi.fn();
     window.addEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);

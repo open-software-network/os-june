@@ -10070,14 +10070,21 @@ input:focus-visible,
   display: flex;
   align-items: stretch;
   width: var(--record-idle-width);
-  height: 40px;
+  height: var(--record-idle-height);
   gap: 2px;
 }
 
 .record-idle .record-button {
-  flex: 0 0 48px;
-  width: 48px;
-  height: 40px;
+  flex: 0 0 var(--record-trigger-width);
+  width: var(--record-trigger-width);
+  height: var(--record-idle-height);
+}
+
+.record-button-tip {
+  display: inline-flex;
+  flex: 0 0 var(--record-trigger-width);
+  width: var(--record-trigger-width);
+  height: var(--record-idle-height);
 }
 
 .record-dock {
@@ -10238,7 +10245,8 @@ input:focus-visible,
  * of inline status surfaces. */
 /* Inline notice layout slot for the editor footer — forces the notice
  * onto its own row so the recorder shell (if rendered) sits below. */
-.record-mic-blocked {
+.record-mic-blocked,
+.record-funding-blocked {
   flex: 0 0 100%;
   width: 100%;
 }
@@ -10346,6 +10354,7 @@ input:focus-visible,
   --record-shell-padding: calc(var(--record-shell-inset) - var(--record-shell-border));
   --record-idle-width: 86px;
   --record-idle-height: 40px;
+  --record-trigger-width: calc(var(--record-idle-height) + var(--sp-2));
   position: relative;
   display: inline-flex;
   flex-direction: column;
@@ -20862,6 +20871,96 @@ input:focus-visible,
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
+}
+
+/* Funding keeps its checkout logic and copy in one component while these
+ * presentation modifiers place that same content inside the shared dialog or
+ * the app shell's persistent credit banner. */
+.funding-gate-dialog {
+  position: static;
+  inset: auto;
+  display: block;
+  padding: 0;
+  background: transparent;
+}
+
+.funding-gate-dialog .welcome-card {
+  width: 100%;
+}
+
+.funding-gate-dialog .welcome-mark {
+  display: none;
+}
+
+.funding-gate-dialog .welcome-title {
+  font-size: var(--fs-2xl);
+}
+
+.funding-gate-banner {
+  position: relative;
+  inset: auto;
+  display: block;
+  flex: none;
+  padding: 0;
+  background: transparent;
+}
+
+.funding-gate-banner-notice {
+  flex: none;
+}
+
+.funding-gate-banner-notice .inline-notice-message {
+  display: none;
+}
+
+.funding-gate-banner-notice .inline-notice-actions {
+  width: 100%;
+}
+
+.funding-gate-banner .welcome-card {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--sp-4);
+  width: 100%;
+  padding: 0;
+}
+
+.funding-gate-banner .welcome-mark,
+.funding-gate-banner .welcome-title,
+.funding-gate-banner .welcome-terms,
+.funding-gate-banner .funding-hint {
+  display: none;
+}
+
+.funding-gate-banner .welcome-subtitle {
+  flex: 1;
+  min-width: 0;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+
+.funding-gate-banner .welcome-providers {
+  flex: none;
+  margin: 0;
+}
+
+.funding-gate-banner .welcome-providers .primary-action {
+  width: auto;
+  height: var(--control-md);
+  padding-inline: var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.funding-gate-banner .welcome-auth-progress {
+  height: var(--control-md);
+}
+
+.funding-gate-banner .welcome-status {
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+  text-align: left;
 }
 
 /* Onboarding wizard ---------------------------------------------------

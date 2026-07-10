@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { AccountGate, JuneMark } from "../components/account/AccountGate";
-import { FundingGate } from "../components/account/FundingGate";
+import { FundingGateBanner, FundingGateDialog } from "../components/account/FundingGate";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
   AGENT_DELETE_SESSION_EVENT,
@@ -193,6 +193,11 @@ const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000
 const ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
+const COMPOSER_FUNDING_DISABLED_REASON =
+  "Add credits to send messages or generate images and videos.";
+const RECORDING_FUNDING_DISABLED_REASON =
+  "Add credits before starting a recording. You can still browse and edit.";
+const NOTE_RETRY_FUNDING_DISABLED_REASON = "Add credits before retrying note generation.";
 // Floor for the note card so the sidebar can't be dragged wide enough to
 // crush it into a sliver — it always keeps a usable width plus its gutters.
 const MAIN_PANEL_MIN_WIDTH = 420;
@@ -554,6 +559,10 @@ export function App() {
   const signInRequired = !devAccountsUnconfigured && shouldBlockOnSignIn(account);
   const fundingRequired =
     !devAccountsUnconfigured && !signInRequired && shouldBlockOnFunding(account);
+  const [fundingGateDismissed, setFundingGateDismissed] = useState(false);
+  useEffect(() => {
+    if (!fundingRequired) setFundingGateDismissed(false);
+  }, [fundingRequired]);
   const topUpLabel = depletedBalanceActionLabel(account);
   // Confirm gate for the Pro -> Max upgrade reached from depleted-balance
   // surfaces (note failure banner, agent workspace notice). The change
@@ -624,10 +633,10 @@ export function App() {
   // only blocks once the account snapshot positively reports no spendable
   // credits.
   const onboardingRequired = !accountLoading && !onboardingDone;
-  // Onboarding counts as blocked so bootstrap, update checks, and the eager
-  // permission probes hold off until the wizard finishes — the wizard owns
-  // the permission prompts while it's on screen.
-  const appBlocked = accountLoading || signInRequired || fundingRequired || onboardingRequired;
+  // Funding no longer blocks the shell or its read-only data. Onboarding still
+  // holds bootstrap, update checks, and eager permission probes because the
+  // wizard owns the permission prompts while it is on screen.
+  const appBlocked = accountLoading || signInRequired || onboardingRequired;
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
@@ -2414,6 +2423,10 @@ export function App() {
       noteId: string,
       options: { startAlreadyClaimed?: boolean; sourceMode?: RecordingSourceMode } = {},
     ): Promise<boolean> => {
+      if (fundingRequired) {
+        setError(RECORDING_FUNDING_DISABLED_REASON);
+        return false;
+      }
       const startAlreadyClaimed = options.startAlreadyClaimed ?? false;
       const requestedSourceMode = options.sourceMode ?? sourceMode;
       if (
@@ -2483,7 +2496,7 @@ export function App() {
         setCheckingSourceReadiness(false);
       }
     },
-    [setRecordingNote, sourceMode],
+    [fundingRequired, setRecordingNote, sourceMode],
   );
 
   const handleStartRecording = useCallback(async () => {
@@ -2492,6 +2505,10 @@ export function App() {
   }, [handleStartRecordingForNote, selectedNoteId]);
 
   const handleStartMeetingDetectedRecording = useCallback(async () => {
+    if (fundingRequired) {
+      setError(RECORDING_FUNDING_DISABLED_REASON);
+      return;
+    }
     if (recordingStartInFlightRef.current || recordingStatusRef.current) return;
     recordingStartInFlightRef.current = true;
     const previousNoteId = selectedNoteId;
@@ -2530,10 +2547,13 @@ export function App() {
         recordingStartInFlightRef.current = false;
       }
     }
-  }, [handleStartRecordingForNote, selectedNoteId]);
+  }, [fundingRequired, handleStartRecordingForNote, selectedNoteId]);
 
   const handleStartAgentRecording = useCallback(
     async (requestedSourceMode: RecordingSourceMode) => {
+      if (fundingRequired) {
+        throw new Error(RECORDING_FUNDING_DISABLED_REASON);
+      }
       if (recordingStartInFlightRef.current || recordingStatusRef.current) {
         throw new Error(
           `A recording is already running for note ${recordingNoteIdRef.current ?? "unknown"}.`,
@@ -2588,7 +2608,7 @@ export function App() {
         }
       }
     },
-    [handleStartRecordingForNote, selectedNoteId],
+    [fundingRequired, handleStartRecordingForNote, selectedNoteId],
   );
 
   // Click the floating global recorder pill to jump back to the note the
@@ -2959,24 +2979,6 @@ export function App() {
     );
   }
 
-  if (fundingRequired) {
-    return (
-      <main className="account-gate-shell">
-        <div
-          className="titlebar-drag"
-          aria-hidden
-          data-tauri-drag-region
-          onPointerDown={handleTitlebarPointerDown}
-        />
-        <FundingGate
-          account={account}
-          onRefresh={refreshAccount}
-          onSignOut={() => void handleSignOut()}
-        />
-      </main>
-    );
-  }
-
   // The in-note RecorderBar covers the recording while you're looking at its
   // note. Elsewhere, the sidebar header carries a tiny recording presence; the
   // floating pill is only the collapsed-sidebar fallback.
@@ -3163,6 +3165,13 @@ export function App() {
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
         <section className="main-panel">
+          {fundingRequired && fundingGateDismissed ? (
+            <FundingGateBanner
+              account={account}
+              onRefresh={refreshAccount}
+              onSignOut={() => void handleSignOut()}
+            />
+          ) : null}
           {accessibilityBlocked && !accessibilityBannerDismissed ? (
             <PermissionBanner
               onDismiss={() => setAccessibilityBannerDismissed(true)}
@@ -3256,6 +3265,9 @@ export function App() {
                   initialSession={activeAgentSessionSeed}
                   initialSessionId={activeAgentSessionId}
                   onSessionSelected={setActiveAgentSession}
+                  creditActionsDisabledReason={
+                    fundingRequired ? COMPOSER_FUNDING_DISABLED_REASON : undefined
+                  }
                   topUpLabel={topUpLabel}
                   onTopUp={handleTopUp}
                   origin={
@@ -3510,6 +3522,12 @@ export function App() {
                       recordingDisabled={Boolean(
                         state.recordingStatus && selectedNoteId !== recordingNoteId,
                       )}
+                      recordingBlockedReason={
+                        fundingRequired ? RECORDING_FUNDING_DISABLED_REASON : undefined
+                      }
+                      retryBlockedReason={
+                        fundingRequired ? NOTE_RETRY_FUNDING_DISABLED_REASON : undefined
+                      }
                       liveTranscript={
                         selectedNoteId === recordingNoteId ? liveTranscriptEvents : []
                       }
@@ -3542,6 +3560,10 @@ export function App() {
                       onFinishRecording={(sessionId) => void handleFinishRecording(sessionId)}
                       onRetry={async () => {
                         if (!selectedNote) return;
+                        if (fundingRequired) {
+                          setError(NOTE_RETRY_FUNDING_DISABLED_REASON);
+                          return;
+                        }
                         try {
                           const note = await retryProcessing(selectedNote.id);
                           dispatch({ type: "noteProcessingUpdated", note });
@@ -3623,6 +3645,9 @@ export function App() {
             note={{ id: selectedNote.id, title: selectedNote.title }}
             chat={noteChat}
             recordingActive={captureActive}
+            creditActionsDisabledReason={
+              fundingRequired ? COMPOSER_FUNDING_DISABLED_REASON : undefined
+            }
             onClose={() => setNoteChatOpen(false)}
             onOpenInAgent={(sessionId) => {
               setNoteChatOpen(false);
@@ -3646,6 +3671,14 @@ export function App() {
           destructive
         />
       </div>
+      {fundingRequired && !fundingGateDismissed ? (
+        <FundingGateDialog
+          account={account}
+          onRefresh={refreshAccount}
+          onSignOut={() => void handleSignOut()}
+          onDismiss={() => setFundingGateDismissed(true)}
+        />
+      ) : null}
       <Dialog
         open={recordingInactivityPrompt !== null}
         onClose={handleKeepRecordingAfterInactivityPrompt}

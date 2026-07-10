@@ -1583,6 +1583,7 @@ type AgentWorkspaceProps = {
   onSessionSelected?: (session: HermesSessionInfo | undefined) => void;
   onTopUp?: () => void | Promise<void>;
   topUpLabel?: string;
+  creditActionsDisabledReason?: string;
 };
 
 // Mid-run continuity across remounts. While June is working, a session has
@@ -2074,6 +2075,7 @@ export function AgentWorkspace({
   onSessionSelected,
   onTopUp,
   topUpLabel = "Upgrade",
+  creditActionsDisabledReason,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   // Read once per mount (lazy initializer): the continuity snapshot the
@@ -4146,6 +4148,10 @@ export function AgentWorkspace({
     assistantTurnId: string,
     part: Extract<AgentChatPart, { type: "image" }>,
   ) {
+    if (creditActionsDisabledReason) {
+      setError(creditActionsDisabledReason);
+      return;
+    }
     if (part.status !== "error" || !part.requestId) return;
     const now = new Date().toISOString();
     setError(null);
@@ -4649,6 +4655,10 @@ export function AgentWorkspace({
     assistantTurnId: string,
     part: Extract<AgentChatPart, { type: "video" }>,
   ) {
+    if (creditActionsDisabledReason) {
+      setError(creditActionsDisabledReason);
+      return;
+    }
     if (part.status !== "error" || !part.requestId) return;
     const now = new Date().toISOString();
     setError(null);
@@ -4888,6 +4898,7 @@ export function AgentWorkspace({
       (!message && !attachments.length) ||
       submitting ||
       importingFiles ||
+      creditActionsDisabledReason ||
       selectedHermesSessionIsProvisional ||
       imageSlashBlockedByModel
     )
@@ -8201,6 +8212,11 @@ export function AgentWorkspace({
         {heroMode ? null : (
           <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
         )}
+        {creditActionsDisabledReason ? (
+          <p className="agent-composer-notice" role="status">
+            {creditActionsDisabledReason}
+          </p>
+        ) : null}
         <AnimatePresence>
           {galleryErrors ? (
             // Dev gallery only: the busy nudge is a toast in real use (see
@@ -8489,6 +8505,7 @@ export function AgentWorkspace({
                   disabled={
                     submitting ||
                     importingFiles ||
+                    Boolean(creditActionsDisabledReason) ||
                     selectedHermesSessionIsProvisional ||
                     imageSlashBlockedByModel ||
                     (!draft.trim() && !attachments.length)
@@ -8751,6 +8768,7 @@ export function AgentWorkspace({
           onRetryVideo={(assistantTurnId, part) =>
             void retryVideoSlashTurn(selectedHermesSessionId, assistantTurnId, part)
           }
+          creditActionsDisabledReason={creditActionsDisabledReason}
           onApproval={(part, choice) =>
             void respondToApproval(
               selectedHermesSessionId,
@@ -8856,6 +8874,7 @@ export function AgentWorkspace({
             onThinkingOpenChange={setThinkingOpen}
             onDownloadArtifact={downloadArtifact}
             onOpenArtifact={openArtifact}
+            creditActionsDisabledReason={creditActionsDisabledReason}
             onTopUp={handleTopUp}
             topUpLabel={topUpLabel}
             onApproval={(part, choice) => {
@@ -10556,6 +10575,7 @@ function AgentChatTurnRow({
   onRetryImage,
   onDownloadVideo,
   onRetryVideo,
+  creditActionsDisabledReason,
   onThinkingOpenChange,
   onTopUp,
   topUpLabel,
@@ -10589,6 +10609,7 @@ function AgentChatTurnRow({
   onRetryImage?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "image" }>) => void;
   onDownloadVideo?: (part: Extract<AgentChatPart, { type: "video" }>) => void;
   onRetryVideo?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "video" }>) => void;
+  creditActionsDisabledReason?: string;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
   topUpLabel?: string;
@@ -10876,6 +10897,7 @@ function AgentChatTurnRow({
               onOpen={onOpenImage}
               onDownload={onDownloadImage}
               onRetry={onRetryImage ? () => onRetryImage(turn.id, part) : undefined}
+              retryDisabledReason={creditActionsDisabledReason}
             />
           ) : part.type === "video" ? (
             <AgentGeneratedVideo
@@ -10883,6 +10905,7 @@ function AgentChatTurnRow({
               part={part}
               onDownload={onDownloadVideo}
               onRetry={onRetryVideo ? () => onRetryVideo(turn.id, part) : undefined}
+              retryDisabledReason={creditActionsDisabledReason}
             />
           ) : null,
         )}
@@ -11228,11 +11251,13 @@ function AgentGeneratedImage({
   onOpen,
   onDownload,
   onRetry,
+  retryDisabledReason,
 }: {
   part: Extract<AgentChatPart, { type: "image" }>;
   onOpen?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
   onDownload?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
   onRetry?: () => void;
+  retryDisabledReason?: string;
 }) {
   const [pathPreviewDataUrl, setPathPreviewDataUrl] = useState<string | null>(null);
 
@@ -11271,9 +11296,17 @@ function AgentGeneratedImage({
           {part.error?.trim() || "Could not generate the image."}
         </p>
         {onRetry && part.requestId ? (
-          <button type="button" className="agent-generated-image-retry" onClick={onRetry}>
-            Try again
-          </button>
+          retryDisabledReason ? (
+            <HoverTip tip={retryDisabledReason} tabIndex={0}>
+              <button type="button" className="agent-generated-image-retry" disabled>
+                Try again
+              </button>
+            </HoverTip>
+          ) : (
+            <button type="button" className="agent-generated-image-retry" onClick={onRetry}>
+              Try again
+            </button>
+          )
         ) : null}
       </div>
     );
@@ -11328,10 +11361,12 @@ function AgentGeneratedVideo({
   part,
   onDownload,
   onRetry,
+  retryDisabledReason,
 }: {
   part: Extract<AgentChatPart, { type: "video" }>;
   onDownload?: (part: Extract<AgentChatPart, { type: "video" }>) => void;
   onRetry?: () => void;
+  retryDisabledReason?: string;
 }) {
   if (part.status === "running") {
     const progress = videoProgressLabel(part);
@@ -11351,9 +11386,17 @@ function AgentGeneratedVideo({
           {part.error?.trim() || "Could not generate the video."}
         </p>
         {onRetry && part.requestId ? (
-          <button type="button" className="agent-generated-image-retry" onClick={onRetry}>
-            Try again
-          </button>
+          retryDisabledReason ? (
+            <HoverTip tip={retryDisabledReason} tabIndex={0}>
+              <button type="button" className="agent-generated-image-retry" disabled>
+                Try again
+              </button>
+            </HoverTip>
+          ) : (
+            <button type="button" className="agent-generated-image-retry" onClick={onRetry}>
+              Try again
+            </button>
+          )
         ) : null}
       </div>
     );
