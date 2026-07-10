@@ -7656,9 +7656,7 @@ export function AgentWorkspace({
       >
         <div
           className="agent-follow-up-attachments"
-          data-stacked={
-            item.attachments.length > 2 ? "3" : item.attachments.length > 1 ? "2" : undefined
-          }
+          data-stacked={item.attachments.length > 1 || undefined}
         >
           {item.attachments.slice(0, 1).map((attachment) => (
             <AgentAttachmentTile key={attachment.id} attachment={attachment} />

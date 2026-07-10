@@ -5857,46 +5857,37 @@ input:focus-visible,
   flex: 0 0 auto;
 }
 
-/* A multi-attachment message reads as a notification-style deck: card edges
-   peek straight out from under the front tile, each one narrower - one edge
-   for a pair, two for three or more. No rotation: at 24px, straight parallel
-   edges stay crisp where tilted cards melt into a blob. Everything lives in
-   the row's own padding, so the rail and the text edge hold still; on row
-   hover the deck slides slightly apart to imply the rest. */
+/* A multi-attachment message reads as the reference pile: one full-size card
+   fanned to the LEFT behind the front tile, offset with a slight lean. A
+   single back card stays legible at rail size where a three-card fan turned
+   to mush, and its swing never leaves the row's left padding - so nothing
+   clips against the list and the text edge holds still. On row hover it
+   slides a little further apart to imply the rest. */
 .agent-follow-up-attachments[data-stacked] {
-  /* Own stacking context so the far edge's negative z stays inside the deck
-     instead of dropping behind the row's hover wash. */
+  /* Isolate the raised chip so it layers against its own fan rather than
+     escaping into the scroller's fade overlays. */
   z-index: 0;
 }
 
-.agent-follow-up-attachments[data-stacked]::before,
-.agent-follow-up-attachments[data-stacked="3"]::after {
+.agent-follow-up-attachments[data-stacked]::before {
   content: "";
   position: absolute;
-  height: 6px;
-  /* The front tile's radius; on a 2px visible sliver it clamps to a soft
-     matching arc. */
+  inset: 1px;
   border-radius: var(--r-md);
   background: var(--card);
-  box-shadow: 0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
-  transition: translate var(--t-med) var(--ease-out);
-}
-
-.agent-follow-up-attachments[data-stacked]::before {
-  inset: auto 2px -2px 2px;
-}
-
-.agent-follow-up-attachments[data-stacked="3"]::after {
-  z-index: -1;
-  inset: auto 4px -4px 4px;
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  translate: -3px 0;
+  rotate: -6deg;
+  transition:
+    translate var(--t-slow) var(--ease-spring),
+    rotate var(--t-slow) var(--ease-spring);
 }
 
 .agent-follow-up-row:hover .agent-follow-up-attachments[data-stacked]::before {
-  translate: 0 1px;
-}
-
-.agent-follow-up-row:hover .agent-follow-up-attachments[data-stacked="3"]::after {
-  translate: 0 2px;
+  translate: -5px 0;
+  rotate: -9deg;
 }
 
 .agent-follow-up-attachments[data-stacked] .agent-attachment-chip {
@@ -5925,8 +5916,7 @@ input:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-follow-up-attachments[data-stacked]::before,
-  .agent-follow-up-attachments[data-stacked="3"]::after {
+  .agent-follow-up-attachments[data-stacked]::before {
     transition: none;
   }
 }
@@ -6923,6 +6913,9 @@ input:focus-visible,
   --attachment-tile-size: var(--follow-up-rail);
   max-width: none;
   padding: 0;
+  /* The chip's r-lg base reads rounder than the image thumb beside it at
+     this size; every rail square shares the thumb's radius. */
+  border-radius: var(--r-md);
   background: transparent;
   box-shadow: none;
 }
