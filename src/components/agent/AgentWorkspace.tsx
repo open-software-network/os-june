@@ -9048,21 +9048,31 @@ export function AgentWorkspace({
           // but that transport distinction belongs in row status, not in two
           // competing queue cards.
           <section className="agent-steer-queue" aria-label="Up next">
-            <button
-              type="button"
-              className="agent-steer-queue-header"
-              aria-expanded={steerQueueOpen}
-              onClick={() => setSteerQueueOpen((open) => !open)}
-            >
-              <span className="status-pill agent-steer-queue-count">{selectedFollowUpCount}</span>
-              Up next
-              <IconChevronDownSmall
-                size={13}
-                className="agent-steer-queue-chevron"
-                data-expanded={steerQueueOpen}
-                aria-hidden
-              />
-            </button>
+            <div className="agent-steer-queue-header">
+              <button
+                type="button"
+                className="agent-steer-queue-trigger"
+                aria-expanded={steerQueueOpen}
+                onClick={() => setSteerQueueOpen((open) => !open)}
+              >
+                <span className="status-pill agent-steer-queue-count">{selectedFollowUpCount}</span>
+                Up next
+              </button>
+              <button
+                type="button"
+                className="agent-steer-queue-chevron-button"
+                aria-label={steerQueueOpen ? "Collapse up next" : "Expand up next"}
+                aria-expanded={steerQueueOpen}
+                onClick={() => setSteerQueueOpen((open) => !open)}
+              >
+                <IconChevronDownSmall
+                  size={13}
+                  className="agent-steer-queue-chevron"
+                  data-expanded={steerQueueOpen}
+                  aria-hidden
+                />
+              </button>
+            </div>
             {steerQueueOpen ? (
               <div className="agent-steer-cards-scroll scroll-fade" {...steerCardsFade.props}>
                 <div ref={steerCardsListRef} className="agent-steer-cards-list">

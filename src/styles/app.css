@@ -5728,13 +5728,22 @@ input:focus-visible,
     0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
 }
 
-/* A compact trigger, not a full-width bar: the button hugs the pill, label,
-   and chevron so the affordance stays subtle. Grid hands the count pill the
-   rows' leading-rail column, so the "Up next" label sits on the rows' text
-   edge without stretching the pill itself. */
+/* The header is an inert row holding two subtle triggers: the pill + label
+   at the left, the chevron at the card's right edge. Each hover wash hugs
+   its own button instead of barring the full width. */
 .agent-steer-queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--control-md);
+  padding-right: var(--sp-1);
+}
+
+/* Grid hands the count pill the rows' leading-rail column, so the "Up next"
+   label sits on the rows' text edge without stretching the pill itself. */
+.agent-steer-queue-trigger {
   display: inline-grid;
-  grid-template-columns: var(--follow-up-rail) auto auto;
+  grid-template-columns: var(--follow-up-rail) auto;
   align-items: center;
   gap: var(--sp-2);
   min-height: var(--control-md);
@@ -5750,7 +5759,23 @@ input:focus-visible,
     color var(--t-fast) var(--ease-out);
 }
 
-.agent-steer-queue-header:hover {
+.agent-steer-queue-chevron-button {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: var(--muted-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.agent-steer-queue-trigger:hover,
+.agent-steer-queue-chevron-button:hover {
   background: var(--secondary);
   color: var(--foreground);
 }
@@ -5836,7 +5861,7 @@ input:focus-visible,
    tile in front, blank cards in the composer's surface recipe tilted behind
    it - one card for a pair, two for three or more, each leaning a little
    further. Rotation keeps the peeks diagonal, so the rail and the text edge
-   hold still. */
+   hold still; on row hover the fan opens slightly to imply the rest. */
 .agent-follow-up-attachments[data-stacked] {
   /* Own stacking context so the far card's negative z stays inside the pile
      instead of dropping behind the row's hover wash. */
@@ -5848,27 +5873,63 @@ input:focus-visible,
   content: "";
   position: absolute;
   inset: 1px;
-  border-radius: var(--r-md);
+  /* Tighter corners than the front tile: at this scale matching radii melt
+     the rotated peeks into one lumpy silhouette. */
+  border-radius: var(--r-sm);
+  background: var(--card);
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  transition: rotate var(--t-med) var(--ease-out);
+}
+
+.agent-follow-up-attachments[data-stacked]::before {
+  rotate: -9deg;
+}
+
+.agent-follow-up-attachments[data-stacked="3"]::after {
+  z-index: -1;
+  rotate: -18deg;
+}
+
+.agent-follow-up-row:hover .agent-follow-up-attachments[data-stacked]::before {
+  rotate: -14deg;
+}
+
+.agent-follow-up-row:hover .agent-follow-up-attachments[data-stacked="3"]::after {
+  rotate: -26deg;
+}
+
+.agent-follow-up-attachments[data-stacked] .agent-attachment-chip {
+  position: relative;
+  z-index: 1;
+}
+
+/* The pile's front card: a file tile trades its inset gray well for the same
+   white card surface as the tilted cards behind it - a gray square on white
+   petals read as a blob, not a stack. Images already read as photos. */
+.agent-follow-up-attachments[data-stacked] .agent-attachment-chip[data-kind="file"] {
   background: var(--card);
   box-shadow:
     var(--shadow-sm),
     0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
 }
 
-.agent-follow-up-attachments[data-stacked]::before {
-  translate: -1px 0;
-  rotate: -10deg;
+.agent-follow-up-attachments[data-stacked]
+  .agent-attachment-chip[data-kind="file"]
+  .agent-attachment-file-icon {
+  background: transparent;
 }
 
-.agent-follow-up-attachments[data-stacked="3"]::after {
-  z-index: -1;
-  translate: -2px 0;
-  rotate: -20deg;
+.agent-follow-up-attachments[data-stacked] .agent-attachment-chip[data-kind="image"] {
+  box-shadow: var(--shadow-sm);
 }
 
-.agent-follow-up-attachments[data-stacked] .agent-attachment-chip {
-  position: relative;
-  z-index: 1;
+@media (prefers-reduced-motion: reduce) {
+  .agent-follow-up-attachments[data-stacked]::before,
+  .agent-follow-up-attachments[data-stacked="3"]::after {
+    transition: none;
+  }
 }
 
 .agent-follow-up-copy {
@@ -5970,7 +6031,8 @@ input:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-steer-queue-header,
+  .agent-steer-queue-trigger,
+  .agent-steer-queue-chevron-button,
   .agent-steer-queue-chevron {
     transition: none;
   }
