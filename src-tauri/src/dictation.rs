@@ -2603,70 +2603,137 @@ async fn cleanup_dictation_text(
     if text.is_empty() {
         return Ok(String::new());
     }
-    match tokio::time::timeout(
-        dictation_cleanup_timeout(text.len()),
-        cleanup_dictation_chunks(
-            text,
-            dictionary_context,
-            app_context,
-            style,
-            session_id,
-            utterance_id,
-        ),
+    let chunks = split_dictation_cleanup_chunks(text, DICTATION_CLEANUP_CHUNK_TARGET_BYTES);
+    if chunks.len() == 1 {
+        return match tokio::time::timeout(
+            dictation_cleanup_timeout(text.len()),
+            cleanup_dictation_call(
+                text,
+                dictionary_context,
+                app_context,
+                style,
+                session_id,
+                utterance_id,
+            ),
+        )
+        .await
+        {
+            Ok(result) => Ok(trim_cleaned_dictation(&result?)),
+            Err(_) => Err(AppError::new(
+                "dictation_cleanup_timeout",
+                "Dictation cleanup timed out.",
+            )),
+        };
+    }
+    cleanup_dictation_chunks(
+        &chunks,
+        dictionary_context,
+        app_context,
+        style,
+        session_id,
+        utterance_id,
     )
     .await
-    {
-        Ok(result) => result,
-        Err(_) => Err(AppError::new(
-            "dictation_cleanup_timeout",
-            "Dictation cleanup timed out.",
-        )),
-    }
 }
 
-/// Clean the transcript through `/v1/dictate/cleanup`, splitting long
-/// dictations into word-boundary chunks first. The cleanup model reliably
+/// Clean a long transcript through `/v1/dictate/cleanup` a word-boundary
+/// chunk at a time and rejoin the results. The cleanup model reliably
 /// punctuates short passages but degrades into an unpunctuated verbatim echo
-/// on long run-on speech (JUN-212), so long transcripts are cleaned a chunk at
-/// a time and rejoined. Each chunk gets its own utterance id suffix so the
-/// per-utterance idempotent metering treats it as its own unit of work.
+/// on long run-on speech (JUN-212). Each chunk gets its own utterance id
+/// suffix so metering treats it as its own unit of work.
+///
+/// The whole batch shares one scaled deadline, but hitting it never discards
+/// chunks that already cleaned up: the chunk that ran out of time and any
+/// chunks after it degrade to their raw text instead.
 async fn cleanup_dictation_chunks(
-    text: &str,
+    chunks: &[&str],
     dictionary_context: Option<&str>,
     app_context: Option<String>,
     style: DictationStyle,
     session_id: String,
     utterance_id: String,
 ) -> Result<String, AppError> {
-    let chunks = split_dictation_cleanup_chunks(text, DICTATION_CLEANUP_CHUNK_TARGET_BYTES);
-    if chunks.len() == 1 {
-        return cleanup_dictation_call(
-            text,
-            dictionary_context,
-            app_context,
-            style,
-            session_id,
-            utterance_id,
-        )
-        .await;
-    }
+    let total_bytes: usize = chunks.iter().map(|chunk| chunk.len()).sum();
+    let deadline = Instant::now() + dictation_cleanup_timeout(total_bytes);
     let chunk_count = chunks.len();
     let mut cleaned_chunks: Vec<String> = Vec::with_capacity(chunk_count);
+    let mut raw_chunks = 0usize;
     for (index, chunk) in chunks.iter().enumerate() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            raw_chunks += 1;
+            cleaned_chunks.push((*chunk).to_string());
+            continue;
+        }
         let chunk_utterance_id = format!("{utterance_id}-c{index}");
-        let cleaned = cleanup_dictation_chunk_with_retry(
-            chunk,
-            dictionary_context,
-            app_context.clone(),
-            style,
-            session_id.clone(),
-            chunk_utterance_id,
+        match tokio::time::timeout(
+            remaining,
+            cleanup_dictation_chunk_with_retry(
+                chunk,
+                dictionary_context,
+                app_context.clone(),
+                style,
+                session_id.clone(),
+                chunk_utterance_id,
+            ),
         )
-        .await?;
-        cleaned_chunks.push(cleaned);
+        .await
+        {
+            Ok(cleaned) => cleaned_chunks.push(trim_cleaned_dictation_chunk(&cleaned?)),
+            Err(_) => {
+                // Out of overall budget mid-chunk: keep this chunk raw and
+                // let the loop degrade the rest the same way, preserving
+                // every chunk that already cleaned up.
+                tracing::warn!(
+                    chunk_index = index,
+                    chunk_bytes = chunk.len(),
+                    "dictation cleanup chunk timed out; keeping raw chunk",
+                );
+                raw_chunks += 1;
+                cleaned_chunks.push((*chunk).to_string());
+            }
+        }
     }
-    tracing::info!(chunk_count, "dictation cleanup ran chunked");
-    Ok(cleaned_chunks.join(" "))
+    if raw_chunks > 0 {
+        tracing::warn!(
+            chunk_count,
+            raw_chunks,
+            "dictation cleanup ran out of time; some chunks pasted raw",
+        );
+    }
+    tracing::info!(chunk_count, raw_chunks, "dictation cleanup ran chunked");
+    Ok(join_cleaned_dictation_chunks(&cleaned_chunks))
+}
+
+/// Trim a single-call cleanup result (the historical behavior).
+fn trim_cleaned_dictation(cleaned: &str) -> String {
+    cleaned.trim().to_string()
+}
+
+/// Trim a cleaned chunk for joining: drop surrounding spaces but keep a
+/// trailing newline, so a line or paragraph break the model placed at a chunk
+/// boundary survives the join.
+fn trim_cleaned_dictation_chunk(cleaned: &str) -> String {
+    cleaned
+        .trim_start()
+        .trim_end_matches([' ', '\t'])
+        .to_string()
+}
+
+/// Join cleaned chunks with a single space, except after a chunk that ends in
+/// a line break, where inserting a space would indent the next line.
+fn join_cleaned_dictation_chunks(chunks: &[String]) -> String {
+    let mut joined = String::new();
+    for chunk in chunks {
+        if chunk.is_empty() {
+            continue;
+        }
+        if !joined.is_empty() && !joined.ends_with('\n') {
+            joined.push(' ');
+        }
+        joined.push_str(chunk);
+    }
+    joined
 }
 
 /// One chunk of a chunked cleanup. Transport errors abort the whole cleanup
@@ -2692,26 +2759,35 @@ async fn cleanup_dictation_chunk_with_retry(
         chunk_utterance_id.clone(),
     )
     .await;
+    // A distinct utterance id: the retry wants a fresh model completion, so
+    // it must not share the first attempt's idempotency identity.
+    let retry_utterance_id = format!("{chunk_utterance_id}r");
     match first {
         Ok(cleaned) if !cleaned_chunk_lacks_sentence_punctuation(chunk, &cleaned) => Ok(cleaned),
         Ok(unpunctuated) => {
-            // Same utterance id on purpose: this is a retry of the same
-            // logical unit of work, so metering replays idempotently.
             match cleanup_dictation_call(
                 chunk,
                 dictionary_context,
                 app_context,
                 style,
                 session_id,
-                chunk_utterance_id,
+                retry_utterance_id,
             )
             .await
             {
                 Ok(retried) if !cleaned_chunk_lacks_sentence_punctuation(chunk, &retried) => {
                     Ok(retried)
                 }
-                // Keep the first attempt: unpunctuated but still cleaned.
-                _ => Ok(unpunctuated),
+                // Keep the first attempt: unpunctuated but still cleaned
+                // (fillers stripped) beats both raw text and failing the
+                // whole dictation's cleanup over one stubborn chunk.
+                _ => {
+                    tracing::warn!(
+                        chunk_bytes = chunk.len(),
+                        "dictation cleanup chunk still unpunctuated after retry",
+                    );
+                    Ok(unpunctuated)
+                }
             }
         }
         Err(error)
@@ -2724,7 +2800,7 @@ async fn cleanup_dictation_chunk_with_retry(
                 app_context,
                 style,
                 session_id,
-                chunk_utterance_id,
+                retry_utterance_id,
             )
             .await
             {
@@ -2770,19 +2846,21 @@ async fn cleanup_dictation_call(
         utterance_id,
     })
     .await?;
-    let cleaned = cleaned.trim().to_string();
-    if cleaned.is_empty() {
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
         return Err(AppError::new(
             "provider_response_invalid",
             "Dictation cleanup response did not contain text output.",
         ));
     }
-    if looks_like_instruction_response(&cleaned) {
+    if looks_like_instruction_response(trimmed) {
         return Err(AppError::new(
             "dictation_cleanup_invalid",
             "Dictation cleanup returned an instruction response.",
         ));
     }
+    // Callers trim for their context: fully for a single-call cleanup,
+    // newline-preserving for chunks about to be joined.
     Ok(cleaned)
 }
 
@@ -5568,6 +5646,29 @@ mod tests {
             "add milk to the shopping list",
             "add milk to the shopping list"
         ));
+    }
+
+    #[test]
+    fn joining_cleaned_chunks_preserves_boundary_line_breaks() {
+        let chunks = vec![
+            "First topic wrapped up.\n\n".to_string(),
+            "Second topic starts here.".to_string(),
+            String::new(),
+            "And a closing thought.".to_string(),
+        ];
+        assert_eq!(
+            join_cleaned_dictation_chunks(&chunks),
+            "First topic wrapped up.\n\nSecond topic starts here. And a closing thought."
+        );
+    }
+
+    #[test]
+    fn chunk_trim_keeps_trailing_line_breaks_but_drops_spaces() {
+        assert_eq!(
+            trim_cleaned_dictation_chunk("  New paragraph next.\n\n \t"),
+            "New paragraph next.\n\n"
+        );
+        assert_eq!(trim_cleaned_dictation_chunk(" plain text "), "plain text");
     }
 
     #[test]
