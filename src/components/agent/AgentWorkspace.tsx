@@ -8712,11 +8712,7 @@ export function AgentWorkspace({
               >
                 <IconMicrophone size={18} />
               </button>
-              {selectedHermesSessionId &&
-              !selectedHermesSessionIsProvisional &&
-              (workingSessionIds.has(selectedHermesSessionId) ||
-                submitting ||
-                composerSteerDemo) ? (
+              {selectedHermesSessionId && composerInSteerState ? (
                 // June is working (or a follow-up is landing): the slot flips
                 // to stop the instant a message fires — no spinner in between.
                 // Typing a follow-up swaps stop for a steer-send in place (the
