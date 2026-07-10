@@ -54,6 +54,22 @@ describe("runDepletedBalanceAction", () => {
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
   });
 
+  it("dispatches an explicit Max confirmation without reclassifying it", async () => {
+    // App validates that the latest snapshot still supports this captured
+    // intent before dispatch. From that point, the helper must use the intent
+    // exactly instead of deriving a different checkout from the snapshot.
+    const outcome = await runDepletedBalanceAction(
+      account({ subscription: { subscribed: false } }),
+      "upgrade_to_max",
+      "max",
+    );
+
+    expect(outcome).toBe("opened_browser");
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
+  });
+
   it("opens the portal for a Max subscriber to top up", async () => {
     const outcome = await runDepletedBalanceAction(
       account({ subscription: { subscribed: true, status: "active", plan: "max" } }),

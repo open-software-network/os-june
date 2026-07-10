@@ -557,7 +557,10 @@ export function App() {
   // Confirm gate for the Pro -> Max checkout reached from depleted-balance
   // surfaces (note failure banner, agent workspace notice). June only opens
   // OS Accounts' hosted checkout here; it never grants or assumes Max.
-  const [maxUpgradePromptOpen, setMaxUpgradePromptOpen] = useState(false);
+  const [maxUpgradePrompt, setMaxUpgradePrompt] = useState<{
+    action: "upgrade_to_max";
+    plan: "max";
+  } | null>(null);
   const [maxUpgradeError, setMaxUpgradeError] = useState<string>();
   // Transient billing feedback shown beside the error banner. Success is only
   // announced after the focus-driven OS Accounts refresh reports Max.
@@ -571,8 +574,16 @@ export function App() {
     }
   }, []);
   const confirmMaxUpgrade = useCallback(async () => {
+    if (!maxUpgradePrompt || depletedBalanceAction(account) !== maxUpgradePrompt.action) {
+      setMaxUpgradePrompt(null);
+      return;
+    }
     try {
-      const outcome = await runDepletedBalanceAction(account);
+      const outcome = await runDepletedBalanceAction(
+        account,
+        maxUpgradePrompt.action,
+        maxUpgradePrompt.plan,
+      );
       if (outcome !== "opened_browser") {
         // A stale top-up gate cannot normally arise from this confirmed Pro
         // branch, but refresh rather than guessing if the snapshot changed.
@@ -587,7 +598,7 @@ export function App() {
     // Match the existing subscribe checkout round trip: opening the browser
     // only enters a waiting state. useAccountStatus refreshes on window focus.
     showBillingNotice(MAX_UPGRADE_WAITING_STATUS);
-  }, [account, refreshAccount, showBillingNotice]);
+  }, [account, maxUpgradePrompt, refreshAccount, showBillingNotice]);
 
   useEffect(() => {
     if (billingNotice !== MAX_UPGRADE_WAITING_STATUS || !isOnMaxPlan(account)) return;
@@ -602,9 +613,10 @@ export function App() {
     // Max path routes through an explicit confirmation before opening the
     // external browser. A stale top-up gate refreshes the account snapshot so
     // the surfaces re-render the right prompt without an automatic purchase.
-    if (depletedBalanceAction(account) === "upgrade_to_max") {
+    const action = depletedBalanceAction(account);
+    if (action === "upgrade_to_max") {
       setMaxUpgradeError(undefined);
-      setMaxUpgradePromptOpen(true);
+      setMaxUpgradePrompt({ action, plan: "max" });
       return;
     }
     runDepletedBalanceAction(account)
@@ -3705,8 +3717,8 @@ export function App() {
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
       />
       <ConfirmDialog
-        open={maxUpgradePromptOpen}
-        onClose={() => setMaxUpgradePromptOpen(false)}
+        open={maxUpgradePrompt !== null}
+        onClose={() => setMaxUpgradePrompt(null)}
         onConfirm={confirmMaxUpgrade}
         title={MAX_UPGRADE_CONFIRM_TITLE}
         description={maxUpgradeError ?? MAX_UPGRADE_CONFIRM_BODY}

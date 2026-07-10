@@ -1,4 +1,4 @@
-import { depletedBalanceAction } from "./account-gate";
+import { depletedBalanceAction, type DepletedBalanceAction } from "./account-gate";
 import { isTopUpRequiresMaxError } from "./errors";
 import { osAccountsOpenPortal, osAccountsUpgrade } from "./tauri";
 import type { AccountStatus } from "./tauri";
@@ -22,16 +22,18 @@ export type DepletedBalanceOutcome = "opened_browser" | "upgrade_required";
  * snapshot may establish that the plan changed after checkout. June also
  * never builds checkout UI: `osAccountsUpgrade` opens OS Accounts' hosted URL.
  * The existing subscribe and top-up branches remain checkout and portal
- * handoffs respectively. */
+ * handoffs respectively. A caller dispatching a confirmed intent passes its
+ * captured action and plan so this helper does not reclassify it. */
 export async function runDepletedBalanceAction(
   account: AccountStatus,
+  action: DepletedBalanceAction = depletedBalanceAction(account),
+  upgradePlan: "max" = "max",
 ): Promise<DepletedBalanceOutcome> {
-  const action = depletedBalanceAction(account);
   try {
     if (action === "top_up") {
       await osAccountsOpenPortal();
     } else if (action === "upgrade_to_max") {
-      await osAccountsUpgrade("max");
+      await osAccountsUpgrade(upgradePlan);
     } else {
       await osAccountsUpgrade();
     }

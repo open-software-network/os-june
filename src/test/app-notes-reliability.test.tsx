@@ -997,4 +997,64 @@ describe("notes recording reliability", () => {
     window.dispatchEvent(new Event("focus"));
     expect(await screen.findByText("Max is active.")).toBeInTheDocument();
   });
+
+  it("does not reroute a confirmed Max upgrade after the subscription lapses", async () => {
+    const failedNote = {
+      ...first,
+      processingStatus: "failed" as const,
+      lastError: "Your balance is too low. Upgrade to continue.",
+    };
+    const proAccount: AccountStatus = {
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_123", handle: "alex" },
+      balance: { credits: 10, usdMillis: 10 },
+      subscription: { subscribed: true, status: "active", plan: "pro" },
+    };
+    mocks.osAccountsStatus.mockResolvedValue(proAccount);
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [failedNote, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : failedNote,
+    );
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Upgrade to Max" }));
+    expect(
+      await screen.findByText(
+        "Max is $100 per month. Checkout opens in your browser so you can review and complete the upgrade.",
+      ),
+    ).toBeInTheDocument();
+
+    mocks.osAccountsStatus.mockResolvedValue({
+      ...proAccount,
+      subscription: { subscribed: false },
+    });
+    const callsBeforeRefresh = mocks.osAccountsStatus.mock.calls.length;
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() =>
+      expect(mocks.osAccountsStatus.mock.calls.length).toBeGreaterThan(callsBeforeRefresh),
+    );
+    expect(await screen.findByRole("button", { name: "Upgrade" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open checkout" }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Max is $100 per month. Checkout opens in your browser so you can review and complete the upgrade.",
+        ),
+      ).toBeNull(),
+    );
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+  });
 });
