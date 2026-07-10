@@ -1426,8 +1426,7 @@ fn attendees_with_self_response(
         .iter()
         .map(|attendee| {
             let mut attendee = attendee.clone();
-            let is_self =
-                attendee.get("self").and_then(serde_json::Value::as_bool) == Some(true);
+            let is_self = attendee.get("self").and_then(serde_json::Value::as_bool) == Some(true);
             if is_self {
                 if let Some(object) = attendee.as_object_mut() {
                     object.insert(
