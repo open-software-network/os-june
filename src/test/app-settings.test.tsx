@@ -10,6 +10,7 @@ import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { TELEMETRY_INFO_URL } from "../lib/p3a";
 
 const mocks = vi.hoisted(() => ({
+  dictationCapabilities: vi.fn(),
   dictationSettings: vi.fn(),
   dictationHotkeyStatus: vi.fn(),
   dictationHelperCommand: vi.fn(),
@@ -74,7 +75,7 @@ vi.mock("../app/build-info", () => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
-  dictationCapabilities: vi.fn().mockResolvedValue({ capabilities: { available: true, platform: "macos", shortcuts: true, paste: true, microphoneSelection: true, accessibilityPermission: true, systemAudio: true } }),
+  dictationCapabilities: mocks.dictationCapabilities,
   JUNE_COMMUNITY_URL: "https://t.me/osjune",
   dictationHotkeyStatus: mocks.dictationHotkeyStatus,
   dictationSettings: mocks.dictationSettings,
@@ -231,6 +232,17 @@ describe("AppSettings", () => {
     localStorage.clear();
     localState = { baseUrl: "", modelId: "", apiKey: "", enabled: false };
     mocks.eventHandler = undefined;
+    mocks.dictationCapabilities.mockResolvedValue({
+      capabilities: {
+        available: true,
+        platform: "macos",
+        shortcuts: true,
+        paste: true,
+        microphoneSelection: true,
+        accessibilityPermission: true,
+        systemAudio: true,
+      },
+    });
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
     mocks.dictationHotkeyStatus.mockResolvedValue({
       type: "hotkey_trigger_ready",
@@ -1503,6 +1515,17 @@ describe("AppSettings", () => {
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     );
+    mocks.dictationCapabilities.mockResolvedValue({
+      capabilities: {
+        available: true,
+        platform: "windows",
+        shortcuts: true,
+        paste: true,
+        microphoneSelection: true,
+        accessibilityPermission: false,
+        systemAudio: false,
+      },
+    });
     const onEnableMicrophone = vi.fn();
     const onEnableAccessibility = vi.fn();
     const onEnableSystemAudio = vi.fn();
@@ -1580,8 +1603,10 @@ describe("AppSettings", () => {
       ).not.toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
-      expect(screen.getByText("Dictation shortcuts unavailable")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+      expect(screen.getByText("Push to talk")).toBeInTheDocument();
+      expect(screen.getByText("Toggle dictation")).toBeInTheDocument();
+      expect(screen.queryByText("Dictation shortcuts unavailable")).not.toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Change" })).toHaveLength(2);
     } finally {
       restoreNavigator();
     }
@@ -1614,6 +1639,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "push_to_talk",
         pressCount: 1,
       }),
     );
@@ -1656,6 +1682,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "push_to_talk",
         pressCount: 1,
       }),
     );
@@ -1698,6 +1725,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "toggle",
         pressCount: 1,
       }),
     );
@@ -1763,6 +1791,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "push_to_talk",
         pressCount: 1,
       }),
     );
