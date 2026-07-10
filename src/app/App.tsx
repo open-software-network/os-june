@@ -2208,12 +2208,6 @@ export function App() {
     }
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
-    // The agent view resolves the conversation by this id, so switch straight
-    // in. Backfill the bridge session-list registration in the background (best
-    // effort) so the session also shows in the agent history sidebar even if
-    // the note chat's own registration hadn't landed yet — never blocks the
-    // handoff, so a slow or failed registration can't stall or dead-end it.
-    void ensureHermesBridgeSession({ sessionId }).catch(() => undefined);
     setActiveAgentSession({ id: sessionId, title: noteRef.title.trim() || undefined });
     setActiveView("agent");
   }

@@ -8,7 +8,6 @@ import {
 import { useNoteChat } from "../components/note-chat/useNoteChat";
 
 const mocks = vi.hoisted(() => ({
-  ensureHermesBridgeSession: vi.fn(),
   gatewayRequest: vi.fn(),
   hermesBridgeImageDataUrl: vi.fn(),
   hermesBridgeSessionMessages: vi.fn(),
@@ -17,7 +16,6 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
-  ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
   hermesBridgeImageDataUrl: mocks.hermesBridgeImageDataUrl,
   hermesBridgeSessionMessages: mocks.hermesBridgeSessionMessages,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
@@ -99,18 +97,8 @@ describe("note chat session map", () => {
     expect(noteChatSessionIdFor("note-1")).toBe("sess-a");
   });
 
-  it("keeps a manual stored-session title through reopen, model change, and registration retry", async () => {
+  it("switches models on a reopened note chat", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
-    let persistedTitle = "Manual launch blockers";
-    let registrationAttempt = 0;
-    mocks.ensureHermesBridgeSession.mockImplementation(
-      async (input: { sessionId: string; title?: string; model?: string }) => {
-        registrationAttempt += 1;
-        if (registrationAttempt === 1) throw new Error("registration unavailable");
-        if (input.title) persistedTitle = input.title;
-        return {};
-      },
-    );
 
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
 
@@ -131,10 +119,5 @@ describe("note chat session map", () => {
       session_id: "runtime-note-chat",
       command: "/model kimi-k2-6",
     });
-    expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledTimes(2);
-    expect(persistedTitle).toBe("Manual launch blockers");
-    for (const [input] of mocks.ensureHermesBridgeSession.mock.calls) {
-      expect(input).not.toHaveProperty("title");
-    }
   });
 });

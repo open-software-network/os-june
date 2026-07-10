@@ -3427,6 +3427,47 @@ describe("AgentWorkspace", () => {
     }
   });
 
+  it("uses the prompt as the display title for a cold-start follow-up", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    mocks.listHermesSessions.mockResolvedValue([]);
+    const user = userEvent.setup();
+    const prompt = "Check the signing step too";
+
+    try {
+      render(<AgentWorkspace initialSessionId="session-cold-start" />);
+
+      await user.type(await screen.findByRole("textbox", { name: "Message June" }), prompt);
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: prompt,
+        }),
+      );
+      expect(mocks.titleFromPrompt).toHaveBeenCalledWith(prompt);
+      expect(statusDetails).toContainEqual(
+        expect.objectContaining({
+          sessionId: "session-cold-start",
+          status: "running",
+          title: prompt,
+        }),
+      );
+      expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-cold-start",
+          title: expect.any(String),
+        }),
+      );
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    }
+  });
+
   it("skips the durable exchange marker when title persistence fails", async () => {
     const rawTitle = "I need you to inspect the flaky tests";
     mocks.listHermesSessions.mockResolvedValue([
@@ -7590,7 +7631,23 @@ describe("AgentWorkspace", () => {
     );
   });
 
-  it("titles an attachments-only new session from the attachment name", async () => {
+  it.each([
+    {
+      name: "titles an attachments-only new session from the attachment name",
+      path: "/Users/alex/Desktop/quarterly—planning.PDF",
+      title: "Quarterly-planning",
+    },
+    {
+      name: "caps an attachments-only session title derived from a long filename",
+      path: "/Users/alex/Desktop/this-is-a-very-long-attachment-name-that-exceeds-the-forty-eight-character-title-limit.pdf",
+      title: "This-is-a-very-long-attachment-name-that-exceeds",
+    },
+    {
+      name: "collapses filename whitespace in an attachments-only session title",
+      path: "/Users/alex/Desktop/quarterly\n\tplanning\t notes.PDF",
+      title: "Quarterly planning notes",
+    },
+  ])("$name", async ({ path, title }) => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
 
@@ -7605,21 +7662,22 @@ describe("AgentWorkspace", () => {
 
     mocks.eventHandlers.get("tauri://drag-drop")?.({
       payload: {
-        paths: ["/Users/alex/Desktop/quarterly—planning.PDF"],
+        paths: [path],
       },
     });
 
-    expect(await screen.findByText("quarterly—planning.PDF")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Start session" }));
+    const startButton = screen.getByRole("button", { name: "Start session" });
+    await waitFor(() => expect(startButton).not.toBeDisabled());
+    await user.click(startButton);
 
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith(
         "session.create",
-        expect.objectContaining({ title: "Quarterly-planning" }),
+        expect.objectContaining({ title }),
       ),
     );
     expect(mocks.suggestAgentSessionTitle).not.toHaveBeenCalled();
-    expect(await screen.findByText("Quarterly-planning")).toBeInTheDocument();
+    expect(await screen.findByText(title)).toBeInTheDocument();
     expect(screen.queryByText("Untitled session")).toBeNull();
   });
 

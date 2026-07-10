@@ -1868,7 +1868,7 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         } else {
             truncated.rfind(char::is_whitespace)
         };
-        let boundary = boundary?;
+        let boundary = boundary.unwrap_or(truncated.len());
         title = truncated[..boundary]
             .trim_end()
             .trim_end_matches(|ch: char| ch.is_ascii_punctuation() || matches!(ch, '–' | '—' | '…'))
@@ -2673,7 +2673,11 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         );
         assert_eq!(
             clean_agent_session_title(&"a".repeat(AGENT_TITLE_MAX_CHARS + 1)),
-            None
+            Some("a".repeat(AGENT_TITLE_MAX_CHARS))
+        );
+        assert_eq!(
+            clean_agent_session_title(&"界".repeat(AGENT_TITLE_MAX_CHARS + 1)),
+            Some("界".repeat(AGENT_TITLE_MAX_CHARS))
         );
         assert_eq!(clean_agent_session_title("   "), None);
     }

@@ -14,7 +14,6 @@ import {
   type HermesAttachmentState,
 } from "../../lib/hermes-image-attach";
 import {
-  ensureHermesBridgeSession,
   hermesBridgeImageDataUrl,
   hermesBridgeSessionMessages,
   hermesBridgeStatus,
@@ -186,12 +185,6 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   // double send (double-click, or Enter racing the send button) could both
   // pass the state-based check and each create a session / append a turn.
   const submittingRef = useRef(false);
-  // Whether this session is registered in the bridge's session LIST. The
-  // conversation itself always loads by session id (the agent view reads
-  // messages by id, and this ensure is best-effort — mirroring the workspace's
-  // own swallowed ensure), so registration only affects the history sidebar.
-  // Retried on later sends and backfilled at the open-in-agent handoff.
-  const bridgeEnsuredRef = useRef(false);
   const liveEventsRef = useRef<JuneHermesEvent[]>([]);
   const pendingUserTurnsRef = useRef<AgentChatTurn[]>([]);
   liveEventsRef.current = liveEvents;
@@ -205,7 +198,6 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     pendingModelIdRef.current = undefined;
     appliedModelIdRef.current = undefined;
     submittingRef.current = false;
-    bridgeEnsuredRef.current = false;
     setStoredSessionId(sessionId);
     setMessages([]);
     setLiveEvents([]);
@@ -332,8 +324,6 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           storedSessionIdRef.current = sessionId;
           setStoredSessionId(sessionId);
           rememberNoteChatSession(noteId, sessionId);
-          // Registration in the bridge list happens at the single ensure point
-          // below (which retries a swallowed attempt on later sends).
         }
         if (!runtimeSessionId) {
           const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
@@ -355,23 +345,6 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             model: modelId,
           });
           appliedModelIdRef.current = modelId;
-          bridgeEnsuredRef.current = await ensureHermesBridgeSession({
-            sessionId,
-            model: modelId,
-          })
-            .then(() => true)
-            .catch(() => bridgeEnsuredRef.current);
-        }
-        // Best-effort registration in the bridge's session list (for the
-        // history sidebar), retrying a swallowed earlier attempt. The chat and
-        // the open-in-agent handoff both work by session id regardless.
-        if (!bridgeEnsuredRef.current) {
-          bridgeEnsuredRef.current = await ensureHermesBridgeSession({
-            sessionId,
-            ...(appliedModelIdRef.current ? { model: appliedModelIdRef.current } : {}),
-          })
-            .then(() => true)
-            .catch(() => false);
         }
         // Images go to the model as first-class inputs before the prompt,
         // like the workspace's feature-19 flow. A failed attach throws so the

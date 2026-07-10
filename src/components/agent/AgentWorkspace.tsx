@@ -5846,7 +5846,9 @@ export function AgentWorkspace({
         options.attachments.length === 1
           ? firstDisplayName
           : `${firstDisplayName} +${options.attachments.length - 1} more`;
-      attachmentOnlyTitle = title
+      attachmentOnlyTitle = Array.from(title.replace(/\s+/g, " "))
+        .slice(0, AGENT_TITLE_MAX_CHARS)
+        .join("")
         .replace(/[–—]/g, "-")
         .replace(/^([a-z])/, (match) => match.toUpperCase());
     }
@@ -5937,7 +5939,7 @@ export function AgentWorkspace({
         explicitSession?.preview?.trim() ||
         listedTargetSession?.title?.trim() ||
         listedTargetSession?.preview?.trim() ||
-        "Untitled session"
+        titleFromPrompt(titleContent)
       : options?.issueReport
         ? "Issue report"
         : attachmentOnlyTitle || titleFromPrompt(titleContent);
@@ -9485,6 +9487,8 @@ function AgentSessionBar({
     </div>
   );
 }
+
+const AGENT_TITLE_MAX_CHARS = 48;
 
 async function agentSessionTitleForPrompt(prompt: string, response?: string) {
   try {
