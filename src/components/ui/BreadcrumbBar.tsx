@@ -3,6 +3,8 @@ import { BackButton } from "./BackButton";
 
 type BreadcrumbItem = {
   label: string;
+  /** Optional leading glyph (e.g. the project icon) for recognition. */
+  icon?: ReactNode;
   onClick?: () => void;
 };
 
@@ -32,12 +34,22 @@ export function BreadcrumbBar({ backLabel, onBack, items, actions }: Props) {
                 ) : null}
                 {item.onClick && !current ? (
                   <button type="button" className="detail-breadcrumb-link" onClick={item.onClick}>
+                    {item.icon ? (
+                      <span className="detail-breadcrumb-icon" aria-hidden>
+                        {item.icon}
+                      </span>
+                    ) : null}
                     {item.label}
                   </button>
                 ) : (
                   <span
                     className={current ? "detail-breadcrumb-current" : "detail-breadcrumb-label"}
                   >
+                    {item.icon ? (
+                      <span className="detail-breadcrumb-icon" aria-hidden>
+                        {item.icon}
+                      </span>
+                    ) : null}
                     {item.label}
                   </span>
                 )}

@@ -3277,6 +3277,12 @@ export function App() {
                   onSessionSelected={setActiveAgentSession}
                   topUpLabel={topUpLabel}
                   onTopUp={handleTopUp}
+                  sessionInProject={Boolean(activeAgentSessionFolder)}
+                  onMoveSessionToProject={(sessionId) => setMoveDialogSessionIds([sessionId])}
+                  onRemoveSessionFromProject={(sessionId) => {
+                    const folderId = sessionFolders[sessionId]?.[0];
+                    if (folderId) void handleRemoveSessionFromFolder(sessionId, folderId);
+                  }}
                   origin={
                     agentOriginFolder
                       ? {
@@ -3297,6 +3303,7 @@ export function App() {
                             },
                             {
                               label: agentOriginFolder.name,
+                              icon: <IconProjects size={13} />,
                               onClick: handleReturnToAgentOriginFolder,
                             },
                           ],
@@ -3322,6 +3329,7 @@ export function App() {
                               crumbs: [
                                 {
                                   label: activeAgentSessionFolder.name,
+                                  icon: <IconProjects size={13} />,
                                   onClick: () =>
                                     handleOpenSessionProject(activeAgentSessionFolder.id),
                                 },
@@ -3485,6 +3493,7 @@ export function App() {
                       items={[
                         {
                           label: originFolder.name,
+                          icon: <IconProjects size={13} />,
                           onClick: () => {
                             setActiveView("folders");
                             dispatch({

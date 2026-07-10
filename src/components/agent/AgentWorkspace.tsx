@@ -42,7 +42,10 @@ import { IconFiles } from "central-icons/IconFiles";
 import { IconFileSparkle } from "central-icons/IconFileSparkle";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconEmail1Sparkle } from "central-icons/IconEmail1Sparkle";
+import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
+import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconGauge } from "central-icons/IconGauge";
+import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
@@ -1573,7 +1576,7 @@ type HermesRuntimeSessionResponse = {
 export type AgentWorkspaceOrigin = {
   backLabel: string;
   onBack: () => void;
-  crumbs: { label: string; onClick: () => void }[];
+  crumbs: { label: string; icon?: ReactNode; onClick: () => void }[];
 };
 
 type AgentWorkspaceProps = {
@@ -1583,6 +1586,13 @@ type AgentWorkspaceProps = {
   onSessionSelected?: (session: HermesSessionInfo | undefined) => void;
   onTopUp?: () => void | Promise<void>;
   topUpLabel?: string;
+  /** Whether the active session is filed in a project — drives the session
+   * bar menu's project items (App owns the folder state). */
+  sessionInProject?: boolean;
+  /** Opens the move-to-project dialog for the given stored session id. */
+  onMoveSessionToProject?: (sessionId: string) => void;
+  /** Removes the given stored session id from its current project. */
+  onRemoveSessionFromProject?: (sessionId: string) => void;
 };
 
 // Mid-run continuity across remounts. While June is working, a session has
@@ -2074,6 +2084,9 @@ export function AgentWorkspace({
   onSessionSelected,
   onTopUp,
   topUpLabel = "Upgrade",
+  sessionInProject = false,
+  onMoveSessionToProject,
+  onRemoveSessionFromProject,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   // Read once per mount (lazy initializer): the continuity snapshot the
@@ -9015,6 +9028,23 @@ export function AgentWorkspace({
               ? (title) => renameHermesSession(selectedHermesSessionId, title)
               : undefined
           }
+          inProject={sessionInProject}
+          onMoveToProject={
+            onMoveSessionToProject &&
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
+              ? () => onMoveSessionToProject(selectedHermesSessionId)
+              : undefined
+          }
+          onRemoveFromProject={
+            onRemoveSessionFromProject &&
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
+              ? () => onRemoveSessionFromProject(selectedHermesSessionId)
+              : undefined
+          }
           onDelete={
             !newSessionMode && selectedHermesSessionId && !selectedHermesSessionIsProvisional
               ? () => void deleteSelectedHermesSession(selectedHermesSessionId)
@@ -9263,8 +9293,11 @@ function AgentSessionBar({
   title,
   artifactCount = 0,
   artifactsOpen = false,
+  inProject = false,
   onToggleArtifacts,
   onRename,
+  onMoveToProject,
+  onRemoveFromProject,
   onDelete,
   onShowUsage,
   onCompactContext,
@@ -9276,8 +9309,11 @@ function AgentSessionBar({
   title?: string;
   artifactCount?: number;
   artifactsOpen?: boolean;
+  inProject?: boolean;
   onToggleArtifacts?: () => void;
   onRename?: (title: string) => void;
+  onMoveToProject?: () => void;
+  onRemoveFromProject?: () => void;
   onDelete?: () => void;
   onShowUsage?: () => void;
   onCompactContext?: () => void;
@@ -9314,7 +9350,7 @@ function AgentSessionBar({
   }
 
   const hasMenu = Boolean(
-    onRename || onDelete || onShowUsage || onCompactContext || onOpenTuiDebug,
+    onRename || onMoveToProject || onDelete || onShowUsage || onCompactContext || onOpenTuiDebug,
   );
 
   return (
@@ -9331,6 +9367,11 @@ function AgentSessionBar({
                   </span>
                 ) : null}
                 <button type="button" className="detail-breadcrumb-link" onClick={crumb.onClick}>
+                  {crumb.icon ? (
+                    <span className="detail-breadcrumb-icon" aria-hidden>
+                      {crumb.icon}
+                    </span>
+                  ) : null}
                   {crumb.label}
                 </button>
               </li>
@@ -9446,6 +9487,32 @@ function AgentSessionBar({
                   >
                     <IconPencil size={14} />
                     Rename
+                  </button>
+                ) : null}
+                {onMoveToProject ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onMoveToProject();
+                    }}
+                  >
+                    {inProject ? <IconMoveFolder size={14} /> : <IconFolderAddRight size={14} />}
+                    {inProject ? "Change project" : "Add to project"}
+                  </button>
+                ) : null}
+                {inProject && onRemoveFromProject ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onRemoveFromProject();
+                    }}
+                  >
+                    <IconFolderDelete size={14} />
+                    Remove from project
                   </button>
                 ) : null}
                 {onDelete ? (

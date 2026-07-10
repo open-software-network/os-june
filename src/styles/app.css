@@ -16821,6 +16821,16 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+/* Leading glyph inside a crumb (the project icon): inline-flex keeps the svg
+ * on the text baseline box while the crumb itself stays an ellipsizing inline
+ * element; the small negative shift optically centers it against fs-md text. */
+.detail-breadcrumb-icon {
+  display: inline-flex;
+  flex: none;
+  margin-right: var(--sp-2);
+  vertical-align: -2px;
+}
+
 .detail-breadcrumb-current {
   color: var(--foreground);
   font-weight: 400;
