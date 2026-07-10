@@ -5835,6 +5835,21 @@ export function AgentWorkspace({
   ): Promise<string | undefined> {
     const displayContent = options?.displayContent ?? content;
     const titleContent = options?.titleContent ?? displayContent;
+    let attachmentOnlyTitle: string | undefined;
+    if (!titleContent.trim() && options?.attachments?.length) {
+      const firstName = options.attachments[0].name.trim();
+      const extensionIndex = firstName.lastIndexOf(".");
+      const firstDisplayName = (
+        extensionIndex > 0 ? firstName.slice(0, extensionIndex) : firstName
+      ).trim();
+      const title =
+        options.attachments.length === 1
+          ? firstDisplayName
+          : `${firstDisplayName} +${options.attachments.length - 1} more`;
+      attachmentOnlyTitle = title
+        .replace(/[–—]/g, "-")
+        .replace(/^([a-z])/, (match) => match.toUpperCase());
+    }
     const targetSessionId = explicitSession?.id
       ? explicitSession.id
       : newSessionModeRef.current
@@ -5911,7 +5926,9 @@ export function AgentWorkspace({
     const titlePromise =
       targetSessionId || options?.issueReport
         ? undefined
-        : agentSessionTitleForPrompt(titleContent).then((suggestion) => suggestion.title);
+        : attachmentOnlyTitle
+          ? Promise.resolve(attachmentOnlyTitle)
+          : agentSessionTitleForPrompt(titleContent).then((suggestion) => suggestion.title);
     const fallbackSessionTitle = targetSessionId
       ? explicitSession?.title?.trim() ||
         hermesSessionItemsRef.current
@@ -5920,7 +5937,7 @@ export function AgentWorkspace({
         "Untitled session"
       : options?.issueReport
         ? "Issue report"
-        : titleFromPrompt(titleContent);
+        : attachmentOnlyTitle || titleFromPrompt(titleContent);
     const optimisticSession =
       targetSessionId || options?.skipPrompt
         ? undefined

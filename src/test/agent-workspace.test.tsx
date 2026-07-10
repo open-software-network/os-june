@@ -7541,6 +7541,39 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("titles an attachments-only new session from the attachment name", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: ["/Users/alex/Desktop/quarterly—planning.PDF"],
+      },
+    });
+
+    expect(await screen.findByText("quarterly—planning.PDF")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "session.create",
+        expect.objectContaining({ title: "Quarterly-planning" }),
+      ),
+    );
+    expect(mocks.suggestAgentSessionTitle).not.toHaveBeenCalled();
+    expect(await screen.findByText("Quarterly-planning")).toBeInTheDocument();
+    expect(screen.queryByText("Untitled session")).toBeNull();
+  });
+
   it("imports typed file paths from the /file slash command", async () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
