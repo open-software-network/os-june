@@ -5857,13 +5857,14 @@ input:focus-visible,
   flex: 0 0 auto;
 }
 
-/* A multi-attachment message reads as a casual pile: the first attachment's
-   tile in front, blank cards in the composer's surface recipe tilted behind
-   it - one card for a pair, two for three or more, each leaning a little
-   further. Rotation keeps the peeks diagonal, so the rail and the text edge
-   hold still; on row hover the fan opens slightly to imply the rest. */
+/* A multi-attachment message reads as a notification-style deck: card edges
+   peek straight out from under the front tile, each one narrower - one edge
+   for a pair, two for three or more. No rotation: at 24px, straight parallel
+   edges stay crisp where tilted cards melt into a blob. Everything lives in
+   the row's own padding, so the rail and the text edge hold still; on row
+   hover the deck slides slightly apart to imply the rest. */
 .agent-follow-up-attachments[data-stacked] {
-  /* Own stacking context so the far card's negative z stays inside the pile
+  /* Own stacking context so the far edge's negative z stays inside the deck
      instead of dropping behind the row's hover wash. */
   z-index: 0;
 }
@@ -5872,32 +5873,30 @@ input:focus-visible,
 .agent-follow-up-attachments[data-stacked="3"]::after {
   content: "";
   position: absolute;
-  inset: 1px;
-  /* Tighter corners than the front tile: at this scale matching radii melt
-     the rotated peeks into one lumpy silhouette. */
-  border-radius: var(--r-sm);
+  height: 6px;
+  /* The front tile's radius; on a 2px visible sliver it clamps to a soft
+     matching arc. */
+  border-radius: var(--r-md);
   background: var(--card);
-  box-shadow:
-    var(--shadow-sm),
-    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
-  transition: rotate var(--t-med) var(--ease-out);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  transition: translate var(--t-med) var(--ease-out);
 }
 
 .agent-follow-up-attachments[data-stacked]::before {
-  rotate: -9deg;
+  inset: auto 2px -2px 2px;
 }
 
 .agent-follow-up-attachments[data-stacked="3"]::after {
   z-index: -1;
-  rotate: -18deg;
+  inset: auto 4px -4px 4px;
 }
 
 .agent-follow-up-row:hover .agent-follow-up-attachments[data-stacked]::before {
-  rotate: -14deg;
+  translate: 0 1px;
 }
 
 .agent-follow-up-row:hover .agent-follow-up-attachments[data-stacked="3"]::after {
-  rotate: -26deg;
+  translate: 0 2px;
 }
 
 .agent-follow-up-attachments[data-stacked] .agent-attachment-chip {
@@ -5905,9 +5904,9 @@ input:focus-visible,
   z-index: 1;
 }
 
-/* The pile's front card: a file tile trades its inset gray well for the same
-   white card surface as the tilted cards behind it - a gray square on white
-   petals read as a blob, not a stack. Images already read as photos. */
+/* The deck's front card: a file tile trades its inset gray well for the same
+   white card surface as the edges beneath it, so the whole deck reads as one
+   material. Images already read as photos. */
 .agent-follow-up-attachments[data-stacked] .agent-attachment-chip[data-kind="file"] {
   background: var(--card);
   box-shadow:
