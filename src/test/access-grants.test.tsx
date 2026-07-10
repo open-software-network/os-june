@@ -13,6 +13,12 @@ import {
   type AccessGrantsState,
 } from "../lib/hermes-admin";
 import type { AccessGrantRecord } from "../lib/access-grant-log";
+import {
+  forgetSessionMode,
+  rememberSessionMode,
+  subscribeSessionModes,
+  unrestrictedSessionIds,
+} from "../lib/agent-session-modes";
 import { AccessGrantsView } from "../components/settings/AccessGrantsSection";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
 
@@ -128,6 +134,24 @@ describe("access grants — labels and list math", () => {
   });
 });
 
+describe("access grants — session mode change notification", () => {
+  it("notifies subscribers when a session mode is remembered or forgotten", () => {
+    localStorage.clear();
+    const seen: string[][] = [];
+    const unsubscribe = subscribeSessionModes(() => {
+      seen.push(unrestrictedSessionIds());
+    });
+
+    rememberSessionMode("sess-1", true);
+    forgetSessionMode("sess-1");
+    unsubscribe();
+    rememberSessionMode("sess-2", true);
+
+    expect(seen).toEqual([["sess-1"], []]);
+    localStorage.clear();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Controller — config reads/writes through the fake Hermes server.
 // ---------------------------------------------------------------------------
@@ -169,6 +193,46 @@ describe("access grants — controller", () => {
     expect(snapshot.patterns).toEqual(["Recursive deletion (rm -rf)"]);
     expect(snapshot.lifecycle.state).toBe("changes-apply-next-session");
     expect(snapshot.notifications.at(-1)?.timing).toBe("next-session");
+    controller.dispose();
+  });
+
+  it("prunes the freshly read allowlist, preserving a grant added after load", async () => {
+    const { engine } = engineFor({ command_allowlist: ["Sudo", "Curl piped to shell"] });
+    const controller = new AccessGrantsController(engine);
+    await controller.load();
+
+    // Another session persists a new "Always approve" after this page loaded.
+    await engine.client.config.setValue("command_allowlist", [
+      "Sudo",
+      "Curl piped to shell",
+      "Force push (git push --force)",
+    ]);
+
+    await controller.revoke("Sudo");
+
+    // The revoke removed only its own pattern; the newer grant survived.
+    const after = await engine.client.config.get();
+    expect(readCommandAllowlist(after.config)).toEqual([
+      "Curl piped to shell",
+      "Force push (git push --force)",
+    ]);
+    controller.dispose();
+  });
+
+  it("a pattern already revoked elsewhere reloads without writing", async () => {
+    const { engine } = engineFor({ command_allowlist: ["Sudo"] });
+    const controller = new AccessGrantsController(engine);
+    await controller.load();
+
+    // Revoked from another window between load and click.
+    await engine.client.config.setValue("command_allowlist", []);
+
+    await controller.revoke("Sudo");
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.patterns).toEqual([]);
+    // No write of its own: the lifecycle stays clean.
+    expect(snapshot.lifecycle.state).toBe("clean");
     controller.dispose();
   });
 

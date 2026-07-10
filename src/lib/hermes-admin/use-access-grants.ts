@@ -166,18 +166,29 @@ export class AccessGrantsController {
     }
   }
 
-  /** Revokes one pattern: prunes the list and read-merge-writes it through
-   * `config.setValue`. New sessions no longer auto-allow matching commands; a
-   * matching request will prompt for approval again. */
+  /** Revokes one pattern: re-reads the LIVE allowlist, prunes the pattern from
+   * that fresh list, and writes it through `config.setValue`. Pruning the
+   * controller's last loaded snapshot instead would silently drop any grant
+   * another session persisted after this page loaded. New sessions no longer
+   * auto-allow matching commands; a matching request will prompt again. */
   async revoke(pattern: string): Promise<void> {
-    const next = removeAllowedCommand(this.patterns, pattern);
-    // A no-op revoke (pattern not present) writes nothing.
-    if (next.length === this.patterns.length) return;
+    // A no-op revoke (pattern not on screen) does nothing.
+    if (!this.patterns.includes(pattern)) return;
     if (this.busy) return;
     this.busy = true;
     this.error = undefined;
     this.recompute();
     try {
+      const current = await this.engine.client.config.get();
+      if (this.disposed) return;
+      const fresh = readCommandAllowlist(current.config);
+      const next = removeAllowedCommand(fresh, pattern);
+      if (next.length === fresh.length) {
+        // Already revoked elsewhere: nothing to write, just catch the page up.
+        this.busy = false;
+        await this.load();
+        return;
+      }
       const outcome = await this.engine.client.config.setValue(COMMAND_ALLOWLIST_PATH, next);
       if (this.disposed) return;
       this.engine.cache.afterMutation(outcome.mutation, "always allowed commands");
@@ -287,10 +298,19 @@ export function useAccessGrantsEngine(
   mode: HermesAdminMode,
   profile?: string,
 ): AccessGrantsEngine | null {
-  const target = useMemo(
-    () => (bridge ? adminTargetForMode(bridge, mode, profile) : undefined),
-    [bridge, mode, profile],
-  );
+  const target = useMemo(() => {
+    if (!bridge) return undefined;
+    // Both runtime processes share ONE `HERMES_HOME/config.yaml` (see
+    // hermes_bridge.rs: no per-process config override exists upstream), so an
+    // "Always approve" persisted from a Full-mode session lands in the same
+    // allowlist this page reads. Any running runtime can therefore serve the
+    // read and the revoke: prefer the requested mode, fall back to the other
+    // so grants stay visible and revocable when only one runtime is up.
+    const fallback: HermesAdminMode = mode === "sandboxed" ? "unrestricted" : "sandboxed";
+    return (
+      adminTargetForMode(bridge, mode, profile) ?? adminTargetForMode(bridge, fallback, profile)
+    );
+  }, [bridge, mode, profile]);
   const identity = target
     ? `${target.mode}:${target.profile}:${target.baseUrl}:${target.token}`
     : null;

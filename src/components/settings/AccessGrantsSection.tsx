@@ -1,9 +1,13 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { accessGrantLog, type AccessGrantLog } from "../../lib/access-grant-log";
-import { forgetSessionMode, unrestrictedSessionIds } from "../../lib/agent-session-modes";
+import {
+  forgetSessionMode,
+  subscribeSessionModes,
+  unrestrictedSessionIds,
+} from "../../lib/agent-session-modes";
 import {
   buildAllowedCommandRows,
   buildSessionGrantRows,
@@ -47,6 +51,12 @@ export function AccessGrantsSection({ mode = "sandboxed" }: AccessGrantsSectionP
   const state = useAccessGrants(mode);
   const log = useAccessGrantLog(accessGrantLog);
   const [unrestricted, setUnrestricted] = useState<string[]>(() => unrestrictedSessionIds());
+
+  // Track opt-ins/revokes made elsewhere in the app (e.g. the session bar)
+  // while this page stays mounted, so the list never goes stale.
+  useEffect(() => {
+    return subscribeSessionModes(() => setUnrestricted(unrestrictedSessionIds()));
+  }, []);
 
   const revokeUnrestricted = useCallback((sessionId: string) => {
     forgetSessionMode(sessionId);
