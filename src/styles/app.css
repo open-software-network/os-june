@@ -13230,6 +13230,74 @@ input:focus-visible,
   height: 14px;
 }
 
+/* Access grants (JUN-206): the settings page listing every grant the user has
+ * made to the agent (always-allowed commands, session approvals, full access
+ * sessions) with scope + duration pills and revoke actions. Reuses the settings
+ * chrome (.settings-card / .settings-row) and the shared .status-pill; tokens
+ * only. */
+.access-grants-group {
+  margin-top: var(--sp-8);
+}
+
+.access-grants-group:first-of-type {
+  margin-top: 0;
+}
+
+.access-grants-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.access-grants-group-header .settings-group-heading {
+  margin: 0;
+}
+
+.access-grants-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.access-grants-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.access-grant-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.access-grant-when {
+  margin-left: var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.access-grant-command {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.access-grants-inline-error {
+  margin: 0 0 var(--sp-3);
+}
+
+.access-grants + .settings-group,
+.access-grants .inline-notice {
+  margin-top: var(--sp-8);
+}
+
 /* Agent-managed skill write review queue (Hermes admin surface, spec 12). The
  * human-in-the-loop gate: a write-approval toggle card, the lifecycle banner,
  * and a list of pending writes with expandable diffs and approve/reject. Reuses

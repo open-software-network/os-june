@@ -100,6 +100,7 @@ import {
 import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
 import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
+import { AccessGrantsSection } from "./AccessGrantsSection";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { ExternalDirsSection } from "./ExternalDirsSection";
 import { InstalledSkillsSection } from "./InstalledSkillsSection";
@@ -265,6 +266,7 @@ export type SettingsTab =
   | "audio"
   | "models"
   | "agent"
+  | "access-grants"
   | "skills"
   | "external-dirs"
   | "skill-review"
@@ -290,6 +292,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "audio", label: "Audio" },
   { id: "models", label: "Models" },
   { id: "agent", label: "Agent" },
+  { id: "access-grants", label: "Access grants" },
   { id: "skills", label: "Installed skills" },
   { id: "external-dirs", label: "External skill directories" },
   { id: "skill-review", label: "Pending skill changes" },
@@ -2125,6 +2128,7 @@ export function AppSettings({
           />
         ) : null}
 
+        {activeTab === "access-grants" ? <AccessGrantsSection /> : null}
         {activeTab === "skills" ? <InstalledSkillsSection onOpenSkill={setOpenSkill} /> : null}
         {activeTab === "external-dirs" ? <ExternalDirsSection /> : null}
         {activeTab === "skill-review" ? <SkillReviewSection /> : null}

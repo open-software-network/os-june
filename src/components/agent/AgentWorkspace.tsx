@@ -204,6 +204,7 @@ import { normalizeSteerText, steeringLiveEvent } from "../../lib/hermes-session-
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
+import { accessGrantLog, approvalPatternKeys } from "../../lib/access-grant-log";
 import { hermesActivityStore, type AgentActivityRecord } from "../../lib/hermes-activity-store";
 import {
   hermesArtifactStore,
@@ -6617,6 +6618,30 @@ export function AgentWorkspace({
           payload: { request_id: requestId, choice },
         }),
       );
+      // JUN-206: the user just granted something — record what, with the
+      // scope/duration the choice implies, so the Access grants settings page
+      // can show it. Look the request's details up before resolving it away.
+      if (choice !== "deny") {
+        const pending = pendingActionStore.getRecords().find(
+          (record) =>
+            // The store keys some streams by the live-event key (task id)
+            // rather than the runtime session id — accept either, the same
+            // way the resolve below addresses the record by liveEventKey.
+            (record.sessionId === sessionId || record.sessionId === liveEventKey) &&
+            record.requestId === requestId &&
+            record.action.kind === "approval",
+        );
+        const action = pending?.action.kind === "approval" ? pending.action : undefined;
+        accessGrantLog.record({
+          sessionId,
+          requestId,
+          choice,
+          toolName: action?.toolName,
+          command: action?.command,
+          description: action?.description,
+          patternKeys: approvalPatternKeys(action?.payload),
+        });
+      }
       // Feature 04: the user just answered this approval — clear its global
       // "Needs you" row immediately (the response itself is the resolution).
       pendingActionStore.resolveRequest(liveEventKey, requestId);

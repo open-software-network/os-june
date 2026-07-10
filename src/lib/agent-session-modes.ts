@@ -58,3 +58,9 @@ export function rememberSessionMode(sessionId: string, unrestricted: boolean) {
 export function forgetSessionMode(sessionId: string) {
   rememberSessionMode(sessionId, false);
 }
+
+/** Every session currently recorded as Unrestricted, for the Access grants
+ * settings page. Insertion order (the order the grants were made). */
+export function unrestrictedSessionIds(): string[] {
+  return Object.keys(readStore());
+}

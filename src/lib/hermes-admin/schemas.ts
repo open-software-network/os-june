@@ -1434,6 +1434,38 @@ export function readExternalDirs(config: Record<string, unknown>): string[] {
   return out;
 }
 
+/** The dotted config path the permanent command-approval allowlist lives at in
+ * a profile's `config.yaml` (`command_allowlist`). This is where the runtime
+ * persists an "Always approve" answer to a dangerous-command approval, so it is
+ * the source of truth for app-wide, ongoing command grants. One constant for
+ * both the read and the write, so a typo can't read one key and write another. */
+export const COMMAND_ALLOWLIST_CONFIG_PATH = ["command_allowlist"] as const;
+
+/** Reads the permanently allowed command patterns out of a parsed config tree.
+ * `command_allowlist` is a list of human-readable pattern keys (the dangerous
+ * pattern descriptions, e.g. "Recursive deletion (rm -rf)"). Tolerates the key
+ * being absent, a bare string (single pattern), or a list; non-string entries
+ * are dropped. Returns the raw configured strings in declared order. */
+export function readCommandAllowlist(config: Record<string, unknown>): string[] {
+  let cursor: unknown = config;
+  for (const segment of COMMAND_ALLOWLIST_CONFIG_PATH) {
+    const record = asRecord(cursor);
+    if (!record) return [];
+    cursor = record[segment];
+  }
+  if (typeof cursor === "string") {
+    const single = cursor.trim();
+    return single.length > 0 ? [single] : [];
+  }
+  if (!Array.isArray(cursor)) return [];
+  const out: string[] = [];
+  for (const entry of cursor) {
+    const str = nonEmptyString(entry);
+    if (str) out.push(str);
+  }
+  return out;
+}
+
 // ----------------------------------------------------------------------------
 // Profiles (`GET /api/profiles`, `POST /api/profiles`, `GET /api/profiles/sessions`)
 // ----------------------------------------------------------------------------
