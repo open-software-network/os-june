@@ -79,6 +79,11 @@ export function PermissionsStep({
   // macOS < 14.2 (or a missing capture helper) can never grant; the row
   // explains itself and stays out of the Continue gate.
   const systemAudioUnsupported = systemAudioStatus === "unsupported";
+  // Granted, but the helper cannot capture until June restarts. Onboarding has
+  // nothing left to ask for, so the row explains itself and clears the gate
+  // too. It is not marked granted: the source does not work yet.
+  const systemAudioUnavailable = systemAudioStatus === "unavailable";
+  const systemAudioSettled = systemAudioGranted || systemAudioUnsupported || systemAudioUnavailable;
   const showPermissionRows = statuses.checked || showUnknownStatuses;
   const macLikePlatform = isMacLikePlatform();
 
@@ -169,9 +174,11 @@ export function PermissionsStep({
                   ? "Turned off in System Settings. Flip the toggle and June will notice."
                   : systemAudioUnsupported
                     ? "Needs macOS 14.2 or later."
-                    : systemAudioStatus === "probing"
-                      ? "Waiting for macOS. Approve the prompt when it appears."
-                      : "Hears your calls and meetings, only while you record."
+                    : systemAudioUnavailable
+                      ? "Allowed. Restart June to finish turning it on."
+                      : systemAudioStatus === "probing"
+                        ? "Waiting for macOS. Approve the prompt when it appears."
+                        : "Hears your calls and meetings, only while you record."
               }
               onAllow={
                 showPermissionRows
@@ -191,8 +198,7 @@ export function PermissionsStep({
         continueDisabled={
           !showPermissionRows ||
           !micGranted ||
-          (macLikePlatform &&
-            (!accessibilityGranted || !(systemAudioGranted || systemAudioUnsupported)))
+          (macLikePlatform && (!accessibilityGranted || !systemAudioSettled))
         }
         onSkip={onContinue}
       />

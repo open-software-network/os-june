@@ -161,6 +161,14 @@ adversarial, not verified:
    the same model family (codex CLI vs the Codex PR bot) have disjoint
    finding sets, so a battery that never changes lens converges early and
    falsely.
+   **Adversarial-only has one blind spot:** a fix that reverses a branch's
+   behavior leaves the comment, ADR, or spec above it describing the branch
+   it replaced, and no adversarial reviewer reads prose for truth. After any
+   fix commit that flips a behavior, re-read the prose you touched (a grep of
+   your own comments on the changed branch is enough) or re-run Standards.
+   In PR #676 this was the *entire* external-bot yield: Greptile and the
+   Codex bot each found the same two stale comments, both introduced by a fix
+   round that turned "post Cmd+V anyway" into "abort to the clipboard".
 4. Repeat until it returns `approve` / no material findings. Adversarial
    reviewers rarely return zero forever — findings that are hedged
    ("verify that..."), pre-existing parity, or restatements of documented

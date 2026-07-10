@@ -74,6 +74,7 @@ vi.mock("../lib/recording-sounds", () => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  primeGeneratedVideoDir: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
@@ -239,7 +240,7 @@ describe("notes recording reliability", () => {
       sourceMode: "microphonePlusSystem",
       sources: [
         { source: "microphone", ready: true },
-        { source: "system", ready: true },
+        { source: "system", ready: true, permissionState: "granted" },
       ],
     });
     mocks.startRecording.mockResolvedValue(recording());
@@ -549,7 +550,7 @@ describe("notes recording reliability", () => {
           ready: false,
           message: "Microphone is not ready.",
         },
-        { source: "system", ready: true },
+        { source: "system", ready: true, permissionState: "granted" },
       ],
     });
 

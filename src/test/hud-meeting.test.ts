@@ -324,6 +324,51 @@ describe("meeting detection HUD", () => {
     expect(hudShowCalls()).toBe(0);
   });
 
+  it("surfaces a long dictation notice", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+
+    await emit("dictation-event", { type: "finalizing_transcript" });
+
+    expect(hudElement().dataset.state).toBe("transcribing");
+    expect(document.querySelector("#hud-status")).toHaveTextContent("Transcribing");
+
+    await vi.advanceTimersByTimeAsync(6_000);
+
+    expect(hudElement().dataset.state).toBe("transcribing");
+    expect(document.querySelector("#hud-status")).toHaveTextContent("Still transcribing");
+  });
+
+  it("re-arms the long dictation notice on the next dictation's clock", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+
+    // A quick dictation: it leaves the notice window long before 6s.
+    await emit("dictation-event", { type: "finalizing_transcript" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await emit("dictation-event", {
+      type: "final_transcript",
+      payload: { text: "hi" },
+    });
+    expect(document.querySelector("#hud-status")).not.toHaveTextContent("Still transcribing");
+    await emit("dictation-event", { type: "paste_completed" });
+
+    // A second dictation starts 2s after the first armed its timer. If the
+    // first timer leaked, it fires 4s from here and mislabels this dictation
+    // as slow, and this dictation never arms a timer of its own.
+    await vi.advanceTimersByTimeAsync(1_000);
+    await emit("dictation-event", { type: "finalizing_transcript" });
+
+    await vi.advanceTimersByTimeAsync(4_500);
+    expect(hudElement().dataset.state).toBe("transcribing");
+    expect(document.querySelector("#hud-status")).toHaveTextContent("Transcribing");
+    expect(document.querySelector("#hud-status")).not.toHaveTextContent("Still transcribing");
+
+    // 6s after *this* dictation began, the notice appears.
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(document.querySelector("#hud-status")).toHaveTextContent("Still transcribing");
+  });
+
   it("silently dismisses the HUD when nothing was recorded", async () => {
     vi.useFakeTimers();
     await loadHud();

@@ -5,6 +5,7 @@ pub mod commands;
 pub mod db;
 pub mod dictation;
 pub mod domain;
+pub mod feature_flags;
 pub mod hermes_bridge;
 pub mod image_safety;
 pub mod june_api;
@@ -17,6 +18,7 @@ pub mod p3a;
 pub mod providers;
 pub mod theme_icon;
 pub mod updates;
+pub mod video_download_url;
 
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -219,6 +221,7 @@ pub fn run() {
             commands::reveal_path,
             commands::june_open_verify_page,
             commands::june_open_community_page,
+            commands::june_open_external_url,
             commands::start_recording,
             commands::pause_recording,
             commands::resume_recording,
@@ -263,6 +266,9 @@ pub fn run() {
             image_safety::image_prompt_may_be_explicit,
             providers::generate_image,
             providers::edit_image,
+            providers::video_generate,
+            providers::video_status,
+            providers::generated_video_dir,
             providers::save_local_generation_settings,
             providers::set_local_generation_enabled,
             providers::probe_local_generation_endpoint,
@@ -291,6 +297,7 @@ pub fn run() {
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             providers::setup(app);
+            setup_video_asset_scope(app);
             p3a::setup(app);
             updates::setup(app);
             dictation::setup(app);
@@ -315,6 +322,29 @@ pub fn run() {
             tauri::RunEvent::Reopen { .. } => show_main_window(app),
             _ => {}
         });
+}
+
+/// Registers the generated-video directory in the asset-protocol scope so the
+/// inline `<video>` player can load it. `app_data_dir` appends a `-dev` suffix
+/// in debug builds (dev/prod data isolation), but the static assetProtocol
+/// scope (`$APPDATA/hermes/videos`) resolves the config identifier *without*
+/// that suffix, so inline playback of a generated file is denied in dev even
+/// though download (an fs read, unscoped) works. Registering the resolved
+/// directory here matches the real write path in both dev and prod.
+fn setup_video_asset_scope(app: &mut tauri::App) {
+    let videos_dir = match crate::app_paths::app_data_dir(app.handle()) {
+        Ok(data_dir) => data_dir.join("hermes").join("videos"),
+        Err(error) => {
+            tracing::warn!(%error, "video asset scope: could not resolve app data dir");
+            return;
+        }
+    };
+    if let Err(error) = app
+        .asset_protocol_scope()
+        .allow_directory(&videos_dir, false)
+    {
+        tracing::warn!(%error, path = %videos_dir.display(), "video asset scope: allow_directory failed");
+    }
 }
 
 #[cfg(desktop)]

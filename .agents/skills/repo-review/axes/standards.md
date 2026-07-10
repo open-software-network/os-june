@@ -43,6 +43,15 @@ Walk the diff hunk by hunk and check each against every applicable source.
 Check every name the diff introduces against the CONTEXT.md glossary.
 Distinguish hard violations (a written rule is broken) from judgement calls
 (the rule's spirit is stretched); label each finding accordingly.
+
+The diff is also a source about itself: every comment, doc comment, ADR line,
+and identifier the diff leaves behind must describe the behavior it *ships*,
+not the behavior it replaced. Check the prose attached to any branch whose
+semantics the diff inverted, and any doc naming a symbol the diff deleted or
+moved. This is highest-yield on safety-critical branches, where a comment that
+states the opposite of the code invites a future edit to restore the bug
+(PR #676: a fix flipped a timeout branch from "post the keystroke anyway" to
+"abort", and both external bots found nothing else).
 </review_method>
 
 <finding_bar>

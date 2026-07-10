@@ -21,6 +21,23 @@ pub const PROVIDER_LOCAL: &str = "local";
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
 pub const DEFAULT_IMAGE_MODEL: &str = "venice-sd35";
+pub const DEFAULT_VIDEO_MODEL: &str = "wan-2.2-a14b-text-to-video";
+/// Currently curated text-to-video model ids (mirrors `VIDEO_MODELS` in
+/// `src/lib/video-models.ts` and the june-api `video_pricing` allowlist). A
+/// persisted `video_model` outside this set — for example the delisted Seedance
+/// default that older installs saved before it was pulled from Venice — is
+/// migrated to `DEFAULT_VIDEO_MODEL` on load so generation keeps working after
+/// an update. Keep in sync when the curated list changes.
+pub const KNOWN_VIDEO_MODELS: &[&str] = &[
+    DEFAULT_VIDEO_MODEL,
+    "grok-imagine-text-to-video-private",
+    "ltx-2-19b-full-text-to-video",
+];
+pub const DEFAULT_VIDEO_DURATION: &str = "5s";
+pub const DEFAULT_VIDEO_RESOLUTION: &str = "720p";
+/// Some models (for example wan-2.2-a14b) reject a queue request that omits
+/// `aspect_ratio`, so the fast path injects a default when the caller names none.
+pub const DEFAULT_VIDEO_ASPECT_RATIO: &str = "16:9";
 const VENICE_API_KEY_PREFIX: &str = "VENICE_INFERENCE_KEY_";
 const VENICE_API_BASE_URL: &str = "https://api.venice.ai/api/v1";
 const VENICE_API_KEY_VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -56,6 +73,8 @@ pub struct ProviderModelSettings {
     // generation existed still deserialize (they predate this field).
     #[serde(default = "default_image_model")]
     pub image_model: String,
+    #[serde(default = "default_video_model")]
+    pub video_model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub venice_api_key: Option<String>,
     #[serde(default)]
@@ -102,6 +121,7 @@ pub struct ProviderModelSettingsDto {
     pub generation_model: String,
     pub remote_generation_model: String,
     pub image_model: String,
+    pub video_model: String,
     pub venice_api_key_configured: bool,
     pub local_generation: LocalGenerationSettings,
     pub image_safe_mode: bool,
@@ -117,6 +137,7 @@ impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
             generation_model: settings.generation_model.clone(),
             remote_generation_model: settings.remote_generation_model.clone(),
             image_model: settings.image_model.clone(),
+            video_model: settings.video_model.clone(),
             venice_api_key_configured: settings
                 .venice_api_key
                 .as_deref()
@@ -286,6 +307,10 @@ pub fn image_model() -> String {
     current_settings().image_model
 }
 
+pub fn video_model() -> String {
+    current_settings().video_model
+}
+
 pub fn venice_api_key() -> Option<String> {
     current_settings().venice_api_key
 }
@@ -341,6 +366,43 @@ fn context_tokens_cache() -> &'static Mutex<Option<(String, i64)>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+/// Whether the configured generation model reports vision (image input) support
+/// in the backend catalog. Hermes' vision tools only take the native fast path
+/// (attach the image straight to the model's context) for providers they
+/// recognize OR when `model.supports_vision` is set in `config.yaml`; June's
+/// proxy is `provider: custom`, so that override is the only signal, and the
+/// spawn path resolves it here (see `render_hermes_config`). Returns `false`
+/// when the catalog is unreachable (offline, signed out) or the model reports no
+/// vision capability — the conservative default keeps the prior behavior, where
+/// Hermes falls back to its (unconfigured) auxiliary vision LLM.
+pub async fn generation_model_supports_vision() -> bool {
+    if generation_provider() == PROVIDER_LOCAL {
+        return false;
+    }
+    let model_id = generation_model();
+    let Ok(models) = crate::june_api::list_models(ModelMode::Generation.api_type()).await else {
+        return false;
+    };
+    models
+        .into_iter()
+        .find(|model| model.id == model_id)
+        .is_some_and(|model| capabilities_include_vision(&model.capabilities))
+}
+
+/// Mirrors the frontend `modelSupportsImageInput`: key off the authoritative
+/// `capabilities` list (never `traits`), matching the normalized `supportsVision`
+/// name so a rename to snake_case still resolves.
+fn capabilities_include_vision(capabilities: &[String]) -> bool {
+    capabilities.iter().any(|capability| {
+        let normalized: String = capability
+            .chars()
+            .filter(char::is_ascii_alphabetic)
+            .map(|ch| ch.to_ascii_lowercase())
+            .collect();
+        normalized.contains("supportsvision")
+    })
+}
+
 // Legacy name kept for callers we haven't migrated yet.
 pub fn venice_generation_model() -> String {
     generation_model()
@@ -391,6 +453,7 @@ pub fn set_venice_model(
             settings.remote_generation_model = model_id.to_string();
         }
         ModelMode::Image => settings.image_model = model_id.to_string(),
+        ModelMode::Video => settings.video_model = model_id.to_string(),
     })
 }
 
@@ -464,6 +527,30 @@ pub struct GenerateImageRequest {
     /// Absent falls back to the live saved setting.
     #[serde(default)]
     pub safe_mode: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateVideoRequest {
+    pub prompt: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub duration: Option<String>,
+    #[serde(default)]
+    pub resolution: Option<String>,
+    #[serde(default)]
+    pub aspect_ratio: Option<String>,
+    #[serde(default)]
+    pub audio: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoStatusRequest {
+    pub job_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -546,6 +633,119 @@ pub async fn edit_image(
         request_id,
     )
     .await
+}
+
+#[tauri::command]
+pub async fn video_generate(
+    request: GenerateVideoRequest,
+) -> Result<crate::june_api::VideoJobDto, AppError> {
+    video_generate_with_enabled(request, crate::feature_flags::VIDEO_GENERATION_ENABLED).await
+}
+
+async fn video_generate_with_enabled(
+    request: GenerateVideoRequest,
+    enabled: bool,
+) -> Result<crate::june_api::VideoJobDto, AppError> {
+    ensure_video_generation_enabled(enabled)?;
+    let prompt = request.prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err(AppError::new("video_prompt_required", "Enter a prompt."));
+    }
+    let model = request
+        .model
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .unwrap_or_else(video_model);
+    let request_id = request
+        .request_id
+        .map(|request_id| request_id.trim().to_string())
+        .filter(|request_id| !request_id.is_empty());
+    let duration = request
+        .duration
+        .map(|duration| duration.trim().to_string())
+        .filter(|duration| !duration.is_empty())
+        .unwrap_or_else(|| DEFAULT_VIDEO_DURATION.to_string());
+    let resolution = request
+        .resolution
+        .map(|resolution| resolution.trim().to_string())
+        .filter(|resolution| !resolution.is_empty())
+        .or_else(|| Some(DEFAULT_VIDEO_RESOLUTION.to_string()));
+    let aspect_ratio = request
+        .aspect_ratio
+        .map(|aspect_ratio| aspect_ratio.trim().to_string())
+        .filter(|aspect_ratio| !aspect_ratio.is_empty())
+        .or_else(|| Some(DEFAULT_VIDEO_ASPECT_RATIO.to_string()));
+    crate::june_api::video_generate(crate::june_api::VideoGenerateParams {
+        prompt,
+        model,
+        request_id,
+        duration,
+        resolution,
+        aspect_ratio,
+        audio: request.audio,
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn video_status(
+    app: AppHandle,
+    request: VideoStatusRequest,
+) -> Result<crate::june_api::VideoStatusDto, AppError> {
+    video_status_with_enabled(app, request, crate::feature_flags::VIDEO_GENERATION_ENABLED).await
+}
+
+/// Absolute path of the generated-videos directory. Lets the frontend resolve a
+/// bare `generated-video-*.mp4` filename (the agent frequently names a finished
+/// video by filename only when asked to show it again) to an asset-scoped path
+/// the webview can load. Mirrors the directory `june_api::write_video_bytes`
+/// and the `june_video` MCP write into.
+#[tauri::command]
+pub fn generated_video_dir(app: AppHandle) -> Result<String, AppError> {
+    let dir = crate::app_paths::app_data_dir(&app)
+        .map_err(|error| AppError::new("video_dir_failed", error.to_string()))?
+        .join("hermes")
+        .join("videos");
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+async fn video_status_with_enabled(
+    app: AppHandle,
+    request: VideoStatusRequest,
+    enabled: bool,
+) -> Result<crate::june_api::VideoStatusDto, AppError> {
+    let job_id = video_status_job_id_with_enabled(request, enabled)?;
+    crate::june_api::video_status(&app, job_id).await
+}
+
+fn video_status_job_id_with_enabled(
+    request: VideoStatusRequest,
+    enabled: bool,
+) -> Result<String, AppError> {
+    ensure_video_generation_enabled(enabled)?;
+    let job_id = request.job_id.trim().to_string();
+    if job_id.is_empty() {
+        return Err(AppError::new(
+            "video_job_required",
+            "Video job id is required.",
+        ));
+    }
+    Ok(job_id)
+}
+
+fn ensure_video_generation_enabled(enabled: bool) -> Result<(), AppError> {
+    if enabled {
+        Ok(())
+    } else {
+        Err(video_generation_disabled_error())
+    }
+}
+
+fn video_generation_disabled_error() -> AppError {
+    AppError::new(
+        "video_generation_disabled",
+        "Video generation is not available.",
+    )
 }
 
 #[tauri::command]
@@ -827,6 +1027,7 @@ fn default_settings() -> ProviderModelSettings {
         generation_model: DEFAULT_GENERATION_MODEL.to_string(),
         remote_generation_model: DEFAULT_GENERATION_MODEL.to_string(),
         image_model: DEFAULT_IMAGE_MODEL.to_string(),
+        video_model: DEFAULT_VIDEO_MODEL.to_string(),
         venice_api_key: None,
         local_generation: LocalGenerationSettings::default(),
         image_safe_mode: true,
@@ -853,6 +1054,10 @@ fn default_generation_model() -> String {
 
 fn default_image_model() -> String {
     DEFAULT_IMAGE_MODEL.to_string()
+}
+
+fn default_video_model() -> String {
+    DEFAULT_VIDEO_MODEL.to_string()
 }
 
 fn default_image_safe_mode() -> bool {
@@ -926,11 +1131,26 @@ fn sanitize_settings(
         generation_model,
         remote_generation_model,
         image_model: non_empty_or(settings.image_model, &defaults.image_model),
+        video_model: sanitize_video_model(settings.video_model, &defaults.video_model),
         venice_api_key: normalize_api_key_option(settings.venice_api_key),
         local_generation,
         image_safe_mode,
         image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
         image_safe_mode_set_by_user: settings.image_safe_mode_set_by_user,
+    }
+}
+
+/// Migrates a persisted video model that is no longer curated (for example the
+/// delisted Seedance default older installs saved) to the current default, so an
+/// updated install never carries a stale id that June API rejects as
+/// `model_not_priced`. A recognized selection is kept; empty falls back to the
+/// default like the other model fields.
+fn sanitize_video_model(persisted: String, default: &str) -> String {
+    let candidate = non_empty_or(persisted, default);
+    if KNOWN_VIDEO_MODELS.contains(&candidate.as_str()) {
+        candidate
+    } else {
+        default.to_string()
     }
 }
 
@@ -1125,6 +1345,7 @@ fn selected_model_for_mode(
         ModelMode::Transcription => settings.transcription_model.clone(),
         ModelMode::Generation => settings.generation_model.clone(),
         ModelMode::Image => settings.image_model.clone(),
+        ModelMode::Video => settings.video_model.clone(),
     })
 }
 
@@ -1134,6 +1355,7 @@ pub enum ModelMode {
     Transcription,
     Generation,
     Image,
+    Video,
 }
 
 impl<'de> Deserialize<'de> for ModelMode {
@@ -1152,6 +1374,7 @@ impl ModelMode {
             Self::Transcription => "asr",
             Self::Generation => "text",
             Self::Image => "image",
+            Self::Video => "video",
         }
     }
 
@@ -1160,6 +1383,7 @@ impl ModelMode {
             "transcription" | "dictation" | "asr" => Some(Self::Transcription),
             "generation" | "notes" | "text" => Some(Self::Generation),
             "image" | "images" => Some(Self::Image),
+            "video" | "videos" => Some(Self::Video),
             _ => None,
         }
     }
@@ -1168,6 +1392,20 @@ impl ModelMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capabilities_include_vision_matches_normalized_supports_vision() {
+        // Mirrors the frontend `modelSupportsImageInput`: normalize (lowercase,
+        // strip non-letters) then match `supportsvision`, so a rename to
+        // snake_case still resolves. Never keys off marketing `traits`.
+        assert!(capabilities_include_vision(&["supportsVision".to_string()]));
+        assert!(capabilities_include_vision(&[
+            "supportsTools".to_string(),
+            "supports_vision".to_string(),
+        ]));
+        assert!(!capabilities_include_vision(&["supportsTools".to_string()]));
+        assert!(!capabilities_include_vision(&[]));
+    }
 
     #[test]
     fn model_mode_deserializes_canonical_values() {
@@ -1202,8 +1440,34 @@ mod tests {
     }
 
     #[test]
-    fn model_mode_rejects_unknown_values() {
-        assert!(serde_json::from_value::<ModelMode>(serde_json::json!("video")).is_err());
+    fn model_mode_deserializes_video() {
+        assert_eq!(
+            serde_json::from_value::<ModelMode>(serde_json::json!("video")).unwrap(),
+            ModelMode::Video
+        );
+    }
+
+    #[test]
+    fn video_generation_guard_returns_disabled_error() {
+        let error = ensure_video_generation_enabled(false).unwrap_err();
+
+        assert_eq!(error.code, "video_generation_disabled");
+        assert_eq!(error.message, "Video generation is not available.");
+        assert!(ensure_video_generation_enabled(true).is_ok());
+    }
+
+    #[test]
+    fn video_status_returns_disabled_error_before_job_validation() {
+        let error = video_status_job_id_with_enabled(
+            VideoStatusRequest {
+                job_id: "job-123".to_string(),
+            },
+            false,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "video_generation_disabled");
+        assert_eq!(error.message, "Video generation is not available.");
     }
 
     #[test]
@@ -1328,6 +1592,32 @@ mod tests {
             sanitized.venice_api_key.as_deref(),
             Some("not-a-venice-inference-key")
         );
+    }
+
+    #[test]
+    fn sanitize_settings_migrates_delisted_video_model_to_default() {
+        // Older installs persisted the Seedance default while the video UI was
+        // flag-hidden; after it was delisted the stale id must not survive load.
+        let settings = ProviderModelSettings {
+            video_model: "seedance-2-0-fast-text-to-video".to_string(),
+            ..default_settings()
+        };
+        let sanitized = sanitize_settings(settings, &default_settings());
+        assert_eq!(sanitized.video_model, DEFAULT_VIDEO_MODEL);
+    }
+
+    #[test]
+    fn sanitize_settings_keeps_a_curated_video_model() {
+        // A non-default curated id must survive load unchanged — otherwise the
+        // allowlist would silently collapse every pick to the default.
+        let curated = "grok-imagine-text-to-video-private";
+        assert!(KNOWN_VIDEO_MODELS.contains(&curated));
+        let settings = ProviderModelSettings {
+            video_model: curated.to_string(),
+            ..default_settings()
+        };
+        let sanitized = sanitize_settings(settings, &default_settings());
+        assert_eq!(sanitized.video_model, curated);
     }
 
     #[test]
