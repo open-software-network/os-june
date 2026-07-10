@@ -36,3 +36,6 @@ coverage
 # Agent worktrees
 .claude/worktrees/
 .worktrees/
+
+# Ephemeral Phala CVM state (holds a per-run bearer token; mode 600)
+.ephemeral-june-api.json
