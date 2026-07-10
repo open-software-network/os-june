@@ -1954,8 +1954,8 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
 
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let manifest_dir = PathBuf::from(manifest_dir);
+        #[cfg(target_os = "macos")]
         if let Some(repo_dir) = manifest_dir.parent() {
-            #[cfg(target_os = "macos")]
             paths.push(
                 repo_dir
                     .join(".tauri-helper")
@@ -1964,14 +1964,14 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
                     .join("MacOS")
                     .join("june-dictation-helper"),
             );
-            #[cfg(target_os = "windows")]
-            paths.push(
-                manifest_dir
-                    .join("native")
-                    .join("bin")
-                    .join("june-dictation-helper.exe"),
-            );
         }
+        #[cfg(target_os = "windows")]
+        paths.push(
+            manifest_dir
+                .join("native")
+                .join("bin")
+                .join("june-dictation-helper.exe"),
+        );
     }
 
     if let Ok(exe_path) = std::env::current_exe() {
@@ -2461,8 +2461,8 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     let app_context = recording
         .target_bundle_id
         .as_deref()
-        .map(|bundle_id| is_email_app_bundle(bundle_id).then(|| APP_CONTEXT_EMAIL.to_string()))
-        .unwrap_or_else(frontmost_app_context);
+        .and_then(|bundle_id| is_email_app_bundle(bundle_id).then(|| APP_CONTEXT_EMAIL.to_string()))
+        .or_else(frontmost_app_context);
     // Backstop for the toggle-start path (where the start-time gate in
     // send_dictation_command can't tell start from stop) and for tokens that
     // expired between start and finish.
@@ -2580,7 +2580,7 @@ fn frontmost_app_context() -> Option<String> {
     is_email_app_bundle(&bundle_id).then(|| APP_CONTEXT_EMAIL.to_string())
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(target_os = "macos"))]
 fn frontmost_app_context() -> Option<String> {
     None
 }

@@ -52,7 +52,7 @@ impl HelperApp {
         let hotkey_writer = writer.clone();
         let hotkeys = HotkeyManager::start(Box::new(move |hotkey| {
             hotkey_writer.emit(event(
-                "hotkey_trigger",
+                "shortcut_key_down",
                 serde_json::json!({ "kind": hotkey.kind }),
             ));
         }));
@@ -71,7 +71,8 @@ impl HelperApp {
             "get_permission_status"
             | "request_microphone_permission"
             | "request_accessibility_permission" => {
-                if command.command_type == "request_microphone_permission" {
+                let microphone = audio::microphone_permission_status();
+                if command.command_type == "request_microphone_permission" && microphone != "granted" {
                     open_microphone_settings();
                 }
                 self.emit_permission_status();
@@ -124,7 +125,7 @@ impl HelperApp {
         self.writer.emit(event(
             "permission_status",
             serde_json::json!({
-                "microphone": "unknown",
+                "microphone": audio::microphone_permission_status(),
                 "accessibility": "granted",
             }),
         ));
