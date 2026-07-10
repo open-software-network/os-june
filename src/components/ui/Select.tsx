@@ -77,13 +77,12 @@ export function selectPopoverHorizontalStyle(
   rect: DOMRect,
   minimumWidth = POPOVER_MIN_WIDTH,
 ): CSSProperties {
-  const width = Math.min(
-    Math.max(rect.width, minimumWidth),
-    window.innerWidth - POPOVER_VIEWPORT_INSET * 2,
-  );
+  const viewportWidth = Math.max(0, window.innerWidth);
+  const maxViewportWidth = Math.max(0, viewportWidth - POPOVER_VIEWPORT_INSET * 2);
+  const width = Math.min(Math.max(rect.width, minimumWidth), maxViewportWidth);
   const left = Math.min(
     Math.max(rect.left, POPOVER_VIEWPORT_INSET),
-    window.innerWidth - width - POPOVER_VIEWPORT_INSET,
+    Math.max(POPOVER_VIEWPORT_INSET, viewportWidth - width - POPOVER_VIEWPORT_INSET),
   );
 
   return { left, width, minWidth: width, maxWidth: width };

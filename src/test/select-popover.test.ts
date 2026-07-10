@@ -31,4 +31,16 @@ describe("selectPopoverHorizontalStyle", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("never returns negative dimensions when the viewport is smaller than its insets", () => {
+    vi.stubGlobal("innerWidth", 20);
+
+    try {
+      const style = selectPopoverHorizontalStyle({ left: 0, width: 128 } as DOMRect);
+
+      expect(style).toMatchObject({ left: 12, width: 0, minWidth: 0, maxWidth: 0 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
