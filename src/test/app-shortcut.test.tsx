@@ -520,6 +520,11 @@ describe("App shortcuts", () => {
     expect(
       screen.getByText("Add credits to send messages or generate images and videos."),
     ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Dictate" })).toHaveAttribute(
+      "title",
+      "Add credits to send messages or generate images and videos.",
+    );
     fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
 
@@ -535,10 +540,104 @@ describe("App shortcuts", () => {
     expect(mocks.startRecording).not.toHaveBeenCalled();
     expect(mocks.retryProcessing).not.toHaveBeenCalled();
 
+    await user.click(screen.getByRole("button", { name: "Ask June" }));
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Dictate" })).toHaveAttribute(
+      "title",
+      "Add credits to send messages or generate images and videos.",
+    );
+
     await act(async () => {
       mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({});
     });
     expect(mocks.startRecording).not.toHaveBeenCalled();
+  });
+
+  it("preserves a dictated agent prompt without dispatching it while funding is required", async () => {
+    const user = userEvent.setup();
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
+    mocks.startHermesBridge.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
+    mocks.osAccountsStatus.mockResolvedValue({
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
+      balance: { credits: 0, usdMillis: 0 },
+      subscription: { subscribed: false },
+    });
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Not now" }));
+    await waitFor(() => expect(mocks.listeners.has("dictation-event")).toBe(true));
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "agent_session_prompt",
+          payload: { prompt: "Summarize the launch plan" },
+        }),
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+        "Summarize the launch plan",
+      ),
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+  });
+
+  it("keeps recoverable audio available while funding blocks recovery", async () => {
+    const user = userEvent.setup();
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [note()],
+      activeRecoveries: [
+        {
+          sessionId: "recovery-1",
+          noteId: "note-1",
+          startedAt: now,
+          partialPathPresent: true,
+          finalPathPresent: false,
+          bytesFound: 4096,
+        },
+      ],
+      providerConfigured: true,
+    });
+    mocks.osAccountsStatus.mockResolvedValue({
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
+      balance: { credits: 0, usdMillis: 0 },
+      subscription: { subscribed: false },
+    });
+
+    render(<App />);
+
+    await user.click(await screen.findByRole("button", { name: "Not now" }));
+    await user.click(screen.getByRole("button", { name: "Meeting notes" }));
+    await user.click(await screen.findByText("First note"));
+
+    const recoveryPrompt = await screen.findByLabelText("Recoverable recording");
+    const recover = within(recoveryPrompt).getByRole("button", { name: "Recover" });
+    expect(recover).toBeDisabled();
+    expect(within(recoveryPrompt).getByRole("button", { name: "Discard" })).toBeEnabled();
+    expect(
+      within(recoveryPrompt).getByText(
+        "Add credits before recovering this recording. Your saved audio will stay available.",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(recover);
+    expect(mocks.recoverRecording).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Recoverable recording")).toBeInTheDocument();
   });
 
   it("starts a new session with Command-N", async () => {

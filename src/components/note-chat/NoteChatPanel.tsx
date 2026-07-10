@@ -210,6 +210,10 @@ export function NoteChatPanel({
   // the same command the hotkey path sends. The helper records, shows the
   // HUD, and pastes the transcription into the focused field (the composer).
   async function startDictation() {
+    if (creditActionsDisabledReason) {
+      setComposerError(creditActionsDisabledReason);
+      return;
+    }
     composerRef.current?.focus();
     try {
       await dictationHelperCommand({ type: "toggle_listening", shortcut: "Dictation" });
@@ -530,10 +534,12 @@ export function NoteChatPanel({
                   className="agent-composer-mic"
                   aria-label="Dictate"
                   title={
-                    recordingActive
+                    creditActionsDisabledReason ??
+                    (recordingActive
                       ? "Dictate a question (kept out of the recording)"
-                      : "Start dictation"
+                      : "Start dictation")
                   }
+                  disabled={Boolean(creditActionsDisabledReason)}
                   onClick={() => void startDictation()}
                 >
                   <IconMicrophone size={18} />

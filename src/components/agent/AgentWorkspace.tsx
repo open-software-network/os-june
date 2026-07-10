@@ -4148,10 +4148,6 @@ export function AgentWorkspace({
     assistantTurnId: string,
     part: Extract<AgentChatPart, { type: "image" }>,
   ) {
-    if (creditActionsDisabledReason) {
-      setError(creditActionsDisabledReason);
-      return;
-    }
     if (part.status !== "error" || !part.requestId) return;
     const now = new Date().toISOString();
     setError(null);
@@ -4655,7 +4651,7 @@ export function AgentWorkspace({
     assistantTurnId: string,
     part: Extract<AgentChatPart, { type: "video" }>,
   ) {
-    if (creditActionsDisabledReason) {
+    if (creditActionsDisabledReason && !part.jobId) {
       setError(creditActionsDisabledReason);
       return;
     }
@@ -5288,6 +5284,10 @@ export function AgentWorkspace({
   // the same command the hotkey path sends. The helper records, shows the HUD,
   // and pastes the transcription into the focused field (the composer).
   async function startDictation() {
+    if (creditActionsDisabledReason) {
+      setError(creditActionsDisabledReason);
+      return;
+    }
     composerEditorRef.current?.focus();
     try {
       await dictationHelperCommand({
@@ -5844,6 +5844,9 @@ export function AgentWorkspace({
       skipPrompt?: boolean;
     },
   ): Promise<string | undefined> {
+    if (creditActionsDisabledReason && !options?.skipPrompt) {
+      throw new Error(creditActionsDisabledReason);
+    }
     const displayContent = options?.displayContent ?? content;
     const titleContent = options?.titleContent ?? displayContent;
     const targetSessionId = explicitSession?.id
@@ -8478,7 +8481,8 @@ export function AgentWorkspace({
                 type="button"
                 className="agent-composer-mic"
                 aria-label="Dictate"
-                title="Start dictation"
+                title={creditActionsDisabledReason ?? "Start dictation"}
+                disabled={Boolean(creditActionsDisabledReason)}
                 onClick={() => void startDictation()}
               >
                 <IconMicrophone size={18} />
@@ -10897,7 +10901,6 @@ function AgentChatTurnRow({
               onOpen={onOpenImage}
               onDownload={onDownloadImage}
               onRetry={onRetryImage ? () => onRetryImage(turn.id, part) : undefined}
-              retryDisabledReason={creditActionsDisabledReason}
             />
           ) : part.type === "video" ? (
             <AgentGeneratedVideo
@@ -10905,7 +10908,7 @@ function AgentChatTurnRow({
               part={part}
               onDownload={onDownloadVideo}
               onRetry={onRetryVideo ? () => onRetryVideo(turn.id, part) : undefined}
-              retryDisabledReason={creditActionsDisabledReason}
+              retryDisabledReason={part.jobId ? undefined : creditActionsDisabledReason}
             />
           ) : null,
         )}
@@ -11251,13 +11254,11 @@ function AgentGeneratedImage({
   onOpen,
   onDownload,
   onRetry,
-  retryDisabledReason,
 }: {
   part: Extract<AgentChatPart, { type: "image" }>;
   onOpen?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
   onDownload?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
   onRetry?: () => void;
-  retryDisabledReason?: string;
 }) {
   const [pathPreviewDataUrl, setPathPreviewDataUrl] = useState<string | null>(null);
 
@@ -11296,17 +11297,9 @@ function AgentGeneratedImage({
           {part.error?.trim() || "Could not generate the image."}
         </p>
         {onRetry && part.requestId ? (
-          retryDisabledReason ? (
-            <HoverTip tip={retryDisabledReason} tabIndex={0}>
-              <button type="button" className="agent-generated-image-retry" disabled>
-                Try again
-              </button>
-            </HoverTip>
-          ) : (
-            <button type="button" className="agent-generated-image-retry" onClick={onRetry}>
-              Try again
-            </button>
-          )
+          <button type="button" className="agent-generated-image-retry" onClick={onRetry}>
+            Try again
+          </button>
         ) : null}
       </div>
     );

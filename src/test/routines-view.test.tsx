@@ -65,12 +65,14 @@ function renderView(
   props: Partial<{
     onCreateRoutine: (prompt: string) => void;
     onOpenRun: (session: HermesSessionInfo) => void;
+    creditActionsDisabledReason: string;
   }> = {},
 ) {
   return render(
     <RoutinesView
       onCreateRoutine={props.onCreateRoutine ?? vi.fn()}
       onOpenRun={props.onOpenRun ?? vi.fn()}
+      creditActionsDisabledReason={props.creditActionsDisabledReason}
     />,
   );
 }
@@ -518,6 +520,25 @@ describe("RoutinesView detail", () => {
     await userEvent.click(screen.getByRole("button", { name: "Run now" }));
     await waitFor(() => expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"));
     expect(screen.getByRole("button", { name: "Queued" })).toBeDisabled();
+  });
+
+  it("disables run now with the funding explanation while credits are depleted", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView({ creditActionsDisabledReason: "Add credits before running a routine." });
+
+    const list = await screen.findByRole("list", { name: "Routines" });
+    await userEvent.click(
+      within(list).getByRole("button", { name: "Actions for Morning summary" }),
+    );
+    const listRunNow = screen.getByRole("menuitem", { name: "Run now" });
+    expect(listRunNow).toBeDisabled();
+    expect(listRunNow).toHaveAttribute("title", "Add credits before running a routine.");
+
+    await userEvent.click(within(list).getByText("Morning summary"));
+    const detailRunNow = screen.getByRole("button", { name: "Run now" });
+    expect(detailRunNow).toBeDisabled();
+    expect(detailRunNow).toHaveAttribute("title", "Add credits before running a routine.");
+    expect(mocks.triggerRoutine).not.toHaveBeenCalled();
   });
 
   it("shows this routine's runs and opens one on click", async () => {

@@ -55,6 +55,7 @@ type RoutinesViewProps = {
   onCreateRoutine: (prompt: string) => void;
   /** Opens a past run (a cron-sourced Hermes session) in the agent view. */
   onOpenRun: (session: HermesSessionInfo) => void;
+  creditActionsDisabledReason?: string;
 };
 
 type Page =
@@ -62,7 +63,11 @@ type Page =
   | { kind: "create"; template?: RoutineTemplate }
   | { kind: "detail"; jobId: string };
 
-export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) {
+export function RoutinesView({
+  onCreateRoutine,
+  onOpenRun,
+  creditActionsDisabledReason,
+}: RoutinesViewProps) {
   const [allRoutines, setRoutines] = useState<RoutineJob[]>([]);
   const [loadingState, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -217,6 +222,7 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
   }
 
   async function runNow(routine: RoutineJob) {
+    if (creditActionsDisabledReason) return;
     markBusy(routine.job_id, true);
     try {
       await triggerRoutine(routine.job_id);
@@ -392,6 +398,7 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
           onSave={(updates) => saveRoutine(detailRoutine.job_id, updates)}
           onToggleActive={() => void toggleActive(detailRoutine)}
           onRunNow={() => runNow(detailRoutine)}
+          runNowDisabledReason={creditActionsDisabledReason}
           onDelete={() => setPendingDelete(detailRoutine)}
           onOpenRun={onOpenRun}
           onRetryLoad={detailErrorRetryable ? retryDetailLoad : undefined}
@@ -481,6 +488,7 @@ export function RoutinesView({ onCreateRoutine, onOpenRun }: RoutinesViewProps) 
                   setErrorRetryable(false);
                 })
               }
+              runNowDisabledReason={creditActionsDisabledReason}
               onDelete={() => setPendingDelete(routine)}
             />
           ))}
@@ -575,12 +583,14 @@ function RoutineRow({
   busy,
   onOpen,
   onRunNow,
+  runNowDisabledReason,
   onDelete,
 }: {
   routine: RoutineJob;
   busy: boolean;
   onOpen: () => void;
   onRunNow: () => void;
+  runNowDisabledReason?: string;
   onDelete: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -678,7 +688,8 @@ function RoutineRow({
               <button
                 type="button"
                 role="menuitem"
-                disabled={busy || routine.state !== "scheduled"}
+                disabled={Boolean(runNowDisabledReason) || busy || routine.state !== "scheduled"}
+                title={runNowDisabledReason}
                 onClick={() => {
                   setMenuOpen(false);
                   onRunNow();

@@ -198,6 +198,9 @@ const COMPOSER_FUNDING_DISABLED_REASON =
 const RECORDING_FUNDING_DISABLED_REASON =
   "Add credits before starting a recording. You can still browse and edit.";
 const NOTE_RETRY_FUNDING_DISABLED_REASON = "Add credits before retrying note generation.";
+const RECOVERY_FUNDING_DISABLED_REASON =
+  "Add credits before recovering this recording. Your saved audio will stay available.";
+const ROUTINE_FUNDING_DISABLED_REASON = "Add credits before running a routine.";
 // Floor for the note card so the sidebar can't be dragged wide enough to
 // crush it into a sliver — it always keeps a usable width plus its gutters.
 const MAIN_PANEL_MIN_WIDTH = 420;
@@ -1067,6 +1070,10 @@ export function App() {
   );
 
   function handleRecovery(sessionId: string, action: "validate" | "discard") {
+    if (action === "validate" && fundingRequired) {
+      setError(RECOVERY_FUNDING_DISABLED_REASON);
+      return;
+    }
     const recoveryNoteId = state.activeRecoveries.find(
       (recovery) => recovery.sessionId === sessionId,
     )?.noteId;
@@ -3236,6 +3243,9 @@ export function App() {
                 />
               ) : activeView === "routines" ? (
                 <RoutinesView
+                  creditActionsDisabledReason={
+                    fundingRequired ? ROUTINE_FUNDING_DISABLED_REASON : undefined
+                  }
                   onCreateRoutine={(prompt) => {
                     // The agent workspace is unmounted while Routines is shown,
                     // so the pending marker alone is consumed on mount — no
@@ -3527,6 +3537,9 @@ export function App() {
                       }
                       retryBlockedReason={
                         fundingRequired ? NOTE_RETRY_FUNDING_DISABLED_REASON : undefined
+                      }
+                      recoveryBlockedReason={
+                        fundingRequired ? RECOVERY_FUNDING_DISABLED_REASON : undefined
                       }
                       liveTranscript={
                         selectedNoteId === recordingNoteId ? liveTranscriptEvents : []

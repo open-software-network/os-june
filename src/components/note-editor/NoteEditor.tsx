@@ -44,6 +44,7 @@ type NoteEditorProps = {
   recordingDisabled?: boolean;
   recordingBlockedReason?: string;
   retryBlockedReason?: string;
+  recoveryBlockedReason?: string;
   liveTranscript?: LiveTranscriptEventDto[];
   sourceMode: RecordingSourceMode;
   sourceReadiness?: RecordingSourceReadinessDto;
@@ -125,6 +126,7 @@ export function NoteEditor({
   recordingDisabled = false,
   recordingBlockedReason,
   retryBlockedReason,
+  recoveryBlockedReason,
   liveTranscript = [],
   sourceMode,
   sourceReadiness,
@@ -341,6 +343,7 @@ export function NoteEditor({
             onRecover={onRecoverRecording}
             onDiscard={onDiscardRecording}
             disabled={processingLock}
+            recoverBlockedReason={recoveryBlockedReason}
           />
         ) : null}
         {note.processingStatus === "failed" ? (
