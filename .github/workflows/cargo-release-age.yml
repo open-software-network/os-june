@@ -29,8 +29,11 @@ jobs:
       # so lockfiles must exist and match their manifests.
       - name: Verify lockfiles are in sync with manifests
         run: |
-          cargo metadata --locked --format-version 1 --manifest-path src-tauri/Cargo.toml > /dev/null
-          cargo metadata --locked --format-version 1 --manifest-path june-api/Cargo.toml > /dev/null
+          set -euo pipefail
+          git ls-files '*Cargo.lock' | while read -r lock; do
+            cargo metadata --locked --format-version 1 \
+              --manifest-path "$(dirname "$lock")/Cargo.toml" > /dev/null
+          done
       - name: Check release age of new crate versions
         env:
           BASE_REF: ${{ github.base_ref || 'main' }}

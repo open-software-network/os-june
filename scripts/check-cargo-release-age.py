@@ -2,8 +2,8 @@
 """Cargo release-age cooldown: refuse crate versions younger than 7 days.
 
 Cargo has no minimumReleaseAge equivalent (rust-lang/cargo#15973), so this
-script fills the gap for the two lockfiles in this repo. It diffs each
-Cargo.lock against a base ref and, for every crates.io package version that
+script fills the gap. It diffs every tracked Cargo.lock (discovered via git,
+current and base) against a base ref and, for every crates.io version that
 is new or bumped, queries crates.io for the publish date. Versions published
 less than --min-age-days ago fail the check (exit 1). Network or metadata
 errors fail closed after retries — a cooldown that silently passes is not a
@@ -25,7 +25,6 @@ import sys
 import time
 import urllib.request
 
-LOCKFILES = ["src-tauri/Cargo.lock", "june-api/Cargo.lock"]
 EXCLUDE_FILE = "scripts/cargo-release-age-exclude.txt"
 CRATES_IO_REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 USER_AGENT = "os-june-release-age-check (https://github.com/open-software-network/os-june)"
@@ -56,6 +55,29 @@ def base_lock(base, path):
         ["git", "show", f"{base}:{path}"], capture_output=True, text=True
     )
     return p.stdout if p.returncode == 0 else ""
+
+
+def discover_lockfiles(base):
+    """Every Cargo.lock tracked now or at the base ref.
+
+    Discovered dynamically so a new Rust tree cannot slip past a hardcoded
+    list, and unioned with the base so a deleted lockfile still fails closed.
+    """
+    current = subprocess.run(
+        ["git", "ls-files", "*Cargo.lock"], capture_output=True, text=True
+    ).stdout.splitlines()
+    at_base = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", base],
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    lockfiles = sorted(
+        {p for p in current if p}
+        | {p for p in at_base if p.endswith("Cargo.lock")}
+    )
+    if not lockfiles:
+        raise RuntimeError("no Cargo.lock files found in the repo or at base")
+    return lockfiles
 
 
 def load_exclusions():
@@ -98,11 +120,21 @@ def main():
     parser.add_argument("--min-age-days", type=int, default=7)
     args = parser.parse_args()
 
+    if (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", f"{args.base}^{{commit}}"],
+            capture_output=True,
+        ).returncode
+        != 0
+    ):
+        print(f"error: base ref {args.base!r} does not resolve", file=sys.stderr)
+        return 1
+
     excluded = load_exclusions()
     now = datetime.datetime.now(datetime.timezone.utc)
     cutoff = datetime.timedelta(days=args.min_age_days)
     new_packages = set()
-    for path in LOCKFILES:
+    for path in discover_lockfiles(args.base):
         try:
             current = parse_lock(open(path).read())
         except FileNotFoundError:

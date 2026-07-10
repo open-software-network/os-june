@@ -15,7 +15,7 @@ import sys
 
 PNPM_GUARDED = re.compile(r"^pnpm\s+(add|update|up|dlx)\b")
 # `pnpm install <pkg>` resolves a new package; a bare/flag-only install does not.
-PNPM_INSTALL_PKG = re.compile(r"^pnpm\s+(i|install)\s+[^-\s]")
+PNPM_INSTALL = re.compile(r"^pnpm\s+(i|install)\b(.*)$")
 CARGO_GUARDED = re.compile(r"^cargo\s+(add|install|update)\b")
 # npx / npm exec download and run registry code that never touches a lockfile.
 NPX_GUARDED = re.compile(r"^(npx|npm\s+exec)\b")
@@ -24,8 +24,18 @@ WRONG_PM = re.compile(r"^(bun|bunx|yarn)\s+(add|install|remove|update|upgrade|\S
 NPM_LOCAL_INSTALL = re.compile(r"^npm\s+(i|install|ci|add)\b(?!.*(\s-g\b|\s--global\b))")
 
 
+def pnpm_install_with_package(seg):
+    m = PNPM_INSTALL.match(seg)
+    if not m:
+        return False
+    # Any non-flag token means a package argument (a flag value like
+    # `--filter web` also matches — over-blocking is fine for a guardrail,
+    # and the sfw prefix is harmless on a plain restore).
+    return any(not tok.startswith("-") for tok in m.group(2).split())
+
+
 def check(command):
-    for raw in re.split(r"&&|\|\||;|\|", command):
+    for raw in re.split(r"&&|\|\||;|\||[\n\r]+", command):
         seg = re.sub(r"^(?:\w+=\S*\s+)+", "", raw.strip())
         if seg.startswith("sfw "):
             continue
@@ -36,7 +46,7 @@ def check(command):
             )
         if (
             PNPM_GUARDED.match(seg)
-            or PNPM_INSTALL_PKG.match(seg)
+            or pnpm_install_with_package(seg)
             or CARGO_GUARDED.match(seg)
             or NPX_GUARDED.match(seg)
         ):
