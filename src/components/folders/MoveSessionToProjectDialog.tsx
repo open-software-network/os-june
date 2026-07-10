@@ -1,6 +1,7 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
+import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { useEffect, useMemo, useState } from "react";
 import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
@@ -13,6 +14,13 @@ type Props = {
   sessionFolderIds: Record<string, string[]>;
   folders: FolderDto[];
   onSetFolder: (sessionId: string, folderId: string) => Promise<unknown> | void;
+  /**
+   * Creates a project from the search query so the session can be filed
+   * without leaving the dialog. Same creation path the Projects view uses;
+   * resolving to undefined means creation failed (the caller surfaces the
+   * error).
+   */
+  onCreateFolder?: (name: string) => Promise<FolderDto | undefined> | FolderDto | undefined;
   onMoved?: () => void;
 };
 
@@ -23,6 +31,7 @@ export function MoveSessionToProjectDialog({
   sessionFolderIds,
   folders,
   onSetFolder,
+  onCreateFolder,
   onMoved,
 }: Props) {
   const [query, setQuery] = useState("");
@@ -61,12 +70,38 @@ export function MoveSessionToProjectDialog({
     );
   }, [folders, currentFolderId, query]);
 
+  const trimmedQuery = query.trim();
+  // Mirrors the note editor's project chip: offer create only when the query
+  // would not duplicate an existing project name (case-insensitive).
+  const hasExactMatch = folders.some(
+    (folder) => folder.name.toLowerCase() === trimmedQuery.toLowerCase(),
+  );
+  const showCreate = Boolean(onCreateFolder) && trimmedQuery.length > 0 && !hasExactMatch;
+
   async function handleCommit() {
     if (sessions.length === 0 || !selectedId || submitting) return;
     setSubmitting(true);
     try {
       for (const session of sessions) {
         await onSetFolder(session.id, selectedId);
+      }
+      onMoved?.();
+      onClose();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleCreateAndAssign() {
+    if (sessions.length === 0 || !onCreateFolder || !showCreate || submitting) return;
+    setSubmitting(true);
+    try {
+      const folder = await onCreateFolder(trimmedQuery);
+      // Creation failures surface through the caller's error handling; keep
+      // the dialog open so the user can retry or pick an existing project.
+      if (!folder) return;
+      for (const session of sessions) {
+        await onSetFolder(session.id, folder.id);
       }
       onMoved?.();
       onClose();
@@ -119,12 +154,34 @@ export function MoveSessionToProjectDialog({
           <input
             type="search"
             name="move-session-search"
-            placeholder="Search projects"
+            placeholder={onCreateFolder ? "Search or create project" : "Search projects"}
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && showCreate) {
+                event.preventDefault();
+                void handleCreateAndAssign();
+              }
+            }}
             autoComplete="off"
           />
         </label>
+        {showCreate ? (
+          <button
+            type="button"
+            className="add-notes-row add-notes-create"
+            disabled={submitting}
+            onClick={() => void handleCreateAndAssign()}
+          >
+            <span className="add-notes-icon" aria-hidden>
+              <IconPlusMedium size={14} />
+            </span>
+            <span className="add-notes-body">
+              <span className="add-notes-title">Create “{trimmedQuery}”</span>
+            </span>
+            <span className="add-notes-check" aria-hidden />
+          </button>
+        ) : null}
         {candidates.length > 0 ? (
           <ul className="add-notes-list" role="listbox">
             {candidates.map((folder) => {
@@ -158,10 +215,12 @@ export function MoveSessionToProjectDialog({
               );
             })}
           </ul>
-        ) : (
+        ) : showCreate ? null : (
           <p className="add-notes-empty">
             {folders.length === 0
-              ? "No projects yet. Create one from the Projects view."
+              ? onCreateFolder
+                ? "No projects yet. Type a name to create one."
+                : "No projects yet. Create one from the Projects view."
               : query.trim()
                 ? "No projects match that search."
                 : "No other projects to move to."}

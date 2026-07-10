@@ -3688,6 +3688,7 @@ export function App() {
         }
         folders={state.folders}
         onSetFolder={(noteId, folderId) => handleSetNoteFolder(noteId, folderId)}
+        onCreateFolder={(name) => handleCreateFolder(name)}
         onMoved={() => notesListRef.current?.resetSelection()}
       />
       <MoveSessionToProjectDialog
@@ -3703,6 +3704,7 @@ export function App() {
         sessionFolderIds={sessionFolders}
         folders={state.folders}
         onSetFolder={(sessionId, folderId) => handleSetSessionFolder(sessionId, folderId)}
+        onCreateFolder={(name) => handleCreateFolder(name)}
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
       />
       <ConfirmDialog
