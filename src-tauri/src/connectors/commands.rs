@@ -50,7 +50,32 @@ pub async fn connectors_connect(
     request: ConnectorsConnectRequest,
 ) -> Result<ConnectorAccount, AppError> {
     let bundles = parse_bundles(&request.scopes)?;
-    begin_connect(&app, &flow, &bundles, request.login_hint.as_deref()).await
+    let account = begin_connect(&app, &flow, &bundles, request.login_hint.as_deref()).await?;
+
+    // Re-mint autonomous grants for routines that still declare autonomous
+    // trust. A prior disconnect deletes an account's grants but keeps the
+    // routine_trust rows and the jobs' auto toolsets, so reconnecting the same
+    // account must restore the grants or those routines stay autonomous in name
+    // only (their action servers never render). Single-account mode makes "the
+    // connected account" unambiguous. Best-effort and per routine: a re-mint
+    // failure must not fail the connect, and each grant is recreated with the
+    // token carried over when the tool set is unchanged, so this is a no-op for
+    // routines that already hold valid grants (a plain scope escalation).
+    let repos = crate::commands::repositories(&app).await?;
+    match repos.list_routine_trust_by_mode("autonomous").await {
+        Ok(records) => {
+            for record in records {
+                if let Err(error) = mint_autonomy_grants(&app, &repos, &record).await {
+                    tracing::warn!(error_code = %error.code, "re-mint autonomous grants on connect failed");
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error_code = %AppError::from(error).code, "autonomous routine lookup on connect failed");
+        }
+    }
+
+    Ok(account)
 }
 
 #[tauri::command]

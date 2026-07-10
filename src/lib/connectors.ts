@@ -220,12 +220,19 @@ export const TRUST_MODE_META: Readonly<Record<RoutineTrustMode, TrustModeMeta>> 
   },
   autonomous: {
     label: "Autonomous",
-    description: "Tools you grant run without asking. Unlocked after approved runs.",
+    description: "Tools you grant run without asking. Unlocked after a few runs under approval.",
     icon: IconBolt,
   },
 });
 
-/** Approval-mode runs required before autonomous unlocks (earned autonomy). */
+/**
+ * Runs completed under approval mode before autonomous unlocks (earned
+ * autonomy). The gate counts successful runs while the routine is in approval
+ * mode, not individually approved actions: the connector proxy is session
+ * blind (it gates on the grant token alone, with no run or job identity), so it
+ * cannot attribute a specific approval to a specific run. The copy below says
+ * "under approval" rather than "approved" to match what is actually counted.
+ */
 export const AUTONOMY_RUN_THRESHOLD = 3;
 
 export function canSelectAutonomous(runCount: number): boolean {
@@ -233,20 +240,20 @@ export function canSelectAutonomous(runCount: number): boolean {
 }
 
 /** Helper text under the trust picker while autonomy is still locked:
- * "Runs 2 more times with approvals to unlock autonomous". */
+ * "Runs 2 more times under approval to unlock autonomous". */
 export function autonomyUnlockHint(runCount: number): string {
   const remaining = Math.max(0, AUTONOMY_RUN_THRESHOLD - runCount);
   if (remaining === 0) return "Autonomous is unlocked for this routine.";
   const times = remaining === 1 ? "1 more time" : `${remaining} more times`;
-  return `Runs ${times} with approvals to unlock autonomous.`;
+  return `Runs ${times} under approval to unlock autonomous.`;
 }
 
-/** Progress label for the detail page: "Run 2 of 3 approvals before autonomy
- * unlocks". Clamped once the threshold is met. */
+/** Progress label for the detail page: "Run 2 of 3 under approval before
+ * autonomy unlocks". Clamped once the threshold is met. */
 export function autonomyProgressLabel(runCount: number): string {
   if (canSelectAutonomous(runCount)) return "Autonomy unlocked.";
   const next = Math.min(runCount + 1, AUTONOMY_RUN_THRESHOLD);
-  return `Run ${next} of ${AUTONOMY_RUN_THRESHOLD} approvals before autonomy unlocks.`;
+  return `Run ${next} of ${AUTONOMY_RUN_THRESHOLD} under approval before autonomy unlocks.`;
 }
 
 // ---------------------------------------------------------------------------

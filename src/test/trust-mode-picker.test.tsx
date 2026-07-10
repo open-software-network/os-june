@@ -50,9 +50,11 @@ describe("TrustModePicker", () => {
     renderPicker({ runCount: 1, onChange });
 
     expect(
-      screen.getByText(/Runs 2 more times with approvals to unlock autonomous/),
+      screen.getByText(/Runs 2 more times under approval to unlock autonomous/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Run 2 of 3 approvals before autonomy unlocks/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Run 2 of 3 under approval before autonomy unlocks/),
+    ).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Autonomous" }));
     expect(onChange).not.toHaveBeenCalled();

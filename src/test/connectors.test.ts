@@ -162,13 +162,13 @@ describe("earned autonomy", () => {
   });
 
   it("phrases the unlock hint by remaining runs", () => {
-    expect(autonomyUnlockHint(0)).toBe("Runs 3 more times with approvals to unlock autonomous.");
-    expect(autonomyUnlockHint(2)).toBe("Runs 1 more time with approvals to unlock autonomous.");
+    expect(autonomyUnlockHint(0)).toBe("Runs 3 more times under approval to unlock autonomous.");
+    expect(autonomyUnlockHint(2)).toBe("Runs 1 more time under approval to unlock autonomous.");
     expect(autonomyUnlockHint(3)).toBe("Autonomous is unlocked for this routine.");
   });
 
   it("shows approval progress toward autonomy", () => {
-    expect(autonomyProgressLabel(1)).toBe("Run 2 of 3 approvals before autonomy unlocks.");
+    expect(autonomyProgressLabel(1)).toBe("Run 2 of 3 under approval before autonomy unlocks.");
     expect(autonomyProgressLabel(3)).toBe("Autonomy unlocked.");
   });
 });

@@ -334,6 +334,26 @@ impl Repositories {
         Ok(row.map(routine_trust_from_row))
     }
 
+    /// Every routine currently in a given trust mode. Used to re-mint
+    /// autonomous grants after an account (re)connects: a disconnect deletes the
+    /// account's grants but keeps the `routine_trust` rows and the jobs' auto
+    /// toolsets, so without this the routines stay autonomous in name only (their
+    /// action servers never render again). Single-account mode makes "the
+    /// connected account" the unambiguous target for the re-mint.
+    pub async fn list_routine_trust_by_mode(
+        &self,
+        trust_mode: &str,
+    ) -> Result<Vec<RoutineTrustRecord>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, approval_since, updated_at
+             FROM routine_trust WHERE trust_mode = ?",
+        )
+        .bind(trust_mode)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(routine_trust_from_row).collect())
+    }
+
     /// Set the trust mode (and autonomous tool grants) for a routine,
     /// preserving its earned approval-run count.
     pub async fn routine_trust_set(
@@ -3710,6 +3730,46 @@ mod tests {
             record.autonomous_tools,
             scopes(&["gmail.create_draft", "gmail.modify_labels"])
         );
+    }
+
+    #[tokio::test]
+    async fn list_routine_trust_by_mode_returns_only_that_mode() {
+        let repos = test_repositories().await;
+        repos
+            .routine_trust_set("job-auto-1", "autonomous", &scopes(&["gmail.send_email"]))
+            .await
+            .expect("set autonomous 1");
+        repos
+            .routine_trust_set("job-auto-2", "autonomous", &scopes(&["gmail.create_draft"]))
+            .await
+            .expect("set autonomous 2");
+        repos
+            .routine_trust_set("job-approval", "approval", &[])
+            .await
+            .expect("set approval");
+        repos
+            .routine_trust_set("job-read", "read_only", &[])
+            .await
+            .expect("set read_only");
+
+        // Only autonomous rows come back: these are the routines a reconnect
+        // re-mints grants for.
+        let mut autonomous: Vec<String> = repos
+            .list_routine_trust_by_mode("autonomous")
+            .await
+            .expect("list autonomous")
+            .into_iter()
+            .map(|record| record.job_id)
+            .collect();
+        autonomous.sort();
+        assert_eq!(autonomous, vec!["job-auto-1", "job-auto-2"]);
+
+        let approval = repos
+            .list_routine_trust_by_mode("approval")
+            .await
+            .expect("list approval");
+        assert_eq!(approval.len(), 1);
+        assert_eq!(approval[0].job_id, "job-approval");
     }
 
     #[tokio::test]

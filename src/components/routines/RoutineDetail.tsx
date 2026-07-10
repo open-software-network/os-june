@@ -234,6 +234,10 @@ export function RoutineDetail({
     if (scheduleChanged) updates.schedule = scheduleFromDraft(draft);
     if (promptChanged) updates.prompt = prompt;
 
+    // The trust record before this save, so a failed cron-job update can roll
+    // the trust/grant change back and keep the two in sync.
+    const previousTrust = storedTrust;
+
     // Whether this save added or removed a per-job autonomy server, which only
     // enters the rendered config when the runtime restarts.
     let autoServersChanged = false;
@@ -320,7 +324,28 @@ export function RoutineDetail({
       }
     }
 
-    await onSave(updates);
+    try {
+      await onSave(updates);
+    } catch (err) {
+      // The cron job update failed after trust was already persisted and grants
+      // minted or deleted, so the routine's DB trust and the job's toolsets now
+      // disagree. Roll the trust change back to keep them consistent: otherwise
+      // a downgrade to read only would have deleted the grant while the job kept
+      // its autonomous toolsets, and gate_action parks (not denies) an orphaned
+      // grant, so an approval could still let that run act on Google.
+      if (trustChanged) {
+        await routineTrustSet({
+          jobId: routine.job_id,
+          trustMode: previousTrust?.trustMode ?? "read_only",
+          autonomousTools:
+            previousTrust?.trustMode === "autonomous" ? previousTrust.autonomousTools : undefined,
+        })
+          .then(setStoredTrust)
+          .catch(() => {});
+      }
+      toast.error(messageFromError(err));
+      return;
+    }
 
     // A new or removed per-job autonomy server only takes effect once the
     // runtime re-renders its config. Best-effort: it also registers on the
