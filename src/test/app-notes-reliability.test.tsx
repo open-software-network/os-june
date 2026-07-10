@@ -1052,6 +1052,9 @@ describe("notes recording reliability", () => {
         ),
       ).toBeNull(),
     );
+    // The dialog never closes silently: the confirmed intent evaporated, so
+    // the user is told why and pointed back at the surface's options.
+    expect(await screen.findByText("Your plan changed - pick an option again")).toBeInTheDocument();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgradeSession).not.toHaveBeenCalled();
     expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();

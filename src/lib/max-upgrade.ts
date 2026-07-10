@@ -7,6 +7,11 @@ import { errorCode } from "./errors";
 export const MAX_UPGRADE_CONFIRM_TITLE = "Upgrade to Max?";
 export const MAX_UPGRADE_CONFIRM_BODY =
   "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.";
+// The PATCH transport charges the saved card without a browser review, so it
+// carries its own consent copy: consenting to the hosted (Stripe review)
+// wording never authorizes an immediate charge.
+export const MAX_UPGRADE_CHARGE_CONFIRM_BODY =
+  "Max is $100 per month, charged to your saved card now. Your billing cycle restarts today.";
 export const MAX_UPGRADE_CONFIRM_LABEL = "Upgrade now";
 export const MAX_UPGRADE_BUSY_LABEL = "Upgrading...";
 export const MAX_UPGRADE_BROWSER_STATUS = "Waiting for you to confirm in the browser";
@@ -14,14 +19,27 @@ export const MAX_UPGRADE_WAITING_STATUS = "Upgrade started. Waiting for payment 
 export const MAX_UPGRADE_READY_STATUS = "Max is active.";
 export const MAX_UPGRADE_SLOW_STATUS =
   "Payment not confirmed yet. Check billing in your account portal.";
+// A hosted round trip that outlasts its poll window usually means the user is
+// still reviewing (or abandoned) the Stripe page, not that payment failed, so
+// this copy stays non-terminal and points at the retry.
+export const MAX_UPGRADE_HOSTED_SLOW_STATUS =
+  "Still waiting for payment confirmation. If you closed the Stripe page, you can try again.";
 export const MAX_UPGRADE_PORTAL_LABEL = "Open billing";
+export const MAX_UPGRADE_STALE_ACTION_NOTICE = "Your plan changed - pick an option again";
 
 export const MAX_GRANT_POLL_INTERVAL_MS = 2500;
+// The PATCH transport only waits on the credit-grant webhook; the hosted
+// transport also waits on the user reading and confirming the Stripe page,
+// which routinely takes minutes.
 export const MAX_GRANT_POLL_TIMEOUT_MS = 30_000;
+export const MAX_GRANT_HOSTED_POLL_TIMEOUT_MS = 300_000;
 
 type MutableMaxGrantWait = {
   readonly accountId: string | undefined;
   readonly baselineCredits: number;
+  /** Whether the upgrade went through the hosted browser flow; drives the
+   * slow-phase copy on every surface, including ones that inherit the wait. */
+  readonly hosted: boolean;
   phase: "browser" | "waiting" | "slow";
 };
 
@@ -37,7 +55,7 @@ export function beginMaxGrantWait(
   accountId: string | undefined,
   phase: "browser" | "waiting" = "waiting",
 ): MaxGrantWait {
-  activeMaxGrantWait = { accountId, baselineCredits, phase };
+  activeMaxGrantWait = { accountId, baselineCredits, hosted: phase === "browser", phase };
   return activeMaxGrantWait;
 }
 
@@ -61,21 +79,45 @@ export function markMaxGrantWaitWaiting(wait: MaxGrantWait): void {
   if (activeMaxGrantWait === wait) activeMaxGrantWait.phase = "waiting";
 }
 
-/** Whether a hosted upgrade-session failure means this OS Accounts deploy
- * cannot provide the browser flow, so June should use the compatible PATCH
- * transport in the same confirmed user action. */
+/** Whether a hosted upgrade-session failure is a DEFINITIVE capability
+ * signal: this OS Accounts deploy cannot provide the browser flow (the route
+ * is missing - the 404/405 shape mapped in os_accounts.rs - or the plan is
+ * not enabled there). Only these signals may offer the PATCH transport, and
+ * only behind a fresh charge-now confirm; the hosted dialog's consent (review
+ * on a Stripe page) never authorizes a saved-card charge. Transient failures
+ * (network, empty response, auth refresh) are ordinary retryable errors. */
 export function isHostedMaxUpgradeFallbackError(error: unknown): boolean {
-  return new Set([
-    "upgrade_session_unavailable",
-    "plan_not_enabled",
-    "network_error",
-    "auth_refresh_unavailable",
-    "empty_response",
-  ]).has(errorCode(error) ?? "");
+  return new Set(["upgrade_session_unavailable", "plan_not_enabled"]).has(errorCode(error) ?? "");
+}
+
+/** Slow-phase status for a grant wait; the hosted flow keeps non-terminal
+ * copy because the user may still be reviewing the Stripe page. */
+export function maxUpgradeSlowStatus(wait: MaxGrantWait): string {
+  return wait.hosted ? MAX_UPGRADE_HOSTED_SLOW_STATUS : MAX_UPGRADE_SLOW_STATUS;
 }
 
 export function clearMaxGrantWait(wait?: MaxGrantWait): void {
   if (wait === undefined || activeMaxGrantWait === wait) activeMaxGrantWait = undefined;
+}
+
+/** Whether a snapshot refreshed after an `already_on_plan` rejection still
+ * looks like a grant is pending, so a grant poll is worth starting. The plan
+ * not reading Max yet, or the credit balance sitting exactly where it stood
+ * at confirm time, means the server-side change has not propagated. Any
+ * credits movement (or a snapshot with no credits reading, which a poll could
+ * never see rise) means the account is live or long settled - the surface
+ * should re-derive from the refreshed snapshot instead of parking on a poll
+ * that cannot succeed. A failed refresh (undefined) counts as pending: the
+ * poll itself refreshes and can recover. */
+export function accountLooksPreGrant(
+  account: AccountStatus | undefined,
+  baselineCredits: number,
+): boolean {
+  if (account === undefined) return true;
+  if (account.subscription?.plan !== "max") return true;
+  const credits = account.balance?.credits;
+  if (typeof credits !== "number") return false;
+  return credits === baselineCredits;
 }
 
 /** Whether a refreshed snapshot shows the Max credit grant landed: the plan

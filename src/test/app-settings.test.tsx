@@ -1088,7 +1088,7 @@ describe("AppSettings", () => {
     expect(screen.queryByText("Max is active.")).toBeNull();
   });
 
-  it("falls back to PATCH when the hosted Max upgrade route is missing", async () => {
+  it("requires a second, charge-now confirm before falling back to PATCH", async () => {
     const user = userEvent.setup();
     mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
       code: "upgrade_session_unavailable",
@@ -1100,9 +1100,22 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
     await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
 
+    // The capability signal swaps the dialog to the charge-now copy without
+    // charging anything: hosted-copy consent never precedes a PATCH.
+    expect(
+      await screen.findByText(
+        "Max is $100 per month, charged to your saved card now. Your billing cycle restarts today.",
+      ),
+    ).toBeInTheDocument();
     expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Upgrade now" }));
+
     expect(mocks.osAccountsChangePlan).toHaveBeenCalledOnce();
     expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    // The consented PATCH retry never re-runs the hosted transport.
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
     expect(
       await screen.findByText("Upgrade started. Waiting for payment confirmation."),
     ).toBeInTheDocument();

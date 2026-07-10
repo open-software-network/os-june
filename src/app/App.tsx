@@ -157,24 +157,32 @@ import {
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
-import { runDepletedBalanceAction } from "../lib/billing-actions";
 import {
+  type DepletedBalanceOutcome,
+  type MaxUpgradeTransport,
+  runDepletedBalanceAction,
+} from "../lib/billing-actions";
+import {
+  MAX_GRANT_HOSTED_POLL_TIMEOUT_MS,
   MAX_UPGRADE_BROWSER_STATUS,
   MAX_UPGRADE_BUSY_LABEL,
+  MAX_UPGRADE_CHARGE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_LABEL,
   MAX_UPGRADE_CONFIRM_TITLE,
   MAX_UPGRADE_PORTAL_LABEL,
   MAX_UPGRADE_READY_STATUS,
-  MAX_UPGRADE_SLOW_STATUS,
+  MAX_UPGRADE_STALE_ACTION_NOTICE,
   MAX_UPGRADE_WAITING_STATUS,
   type MaxGrantWait,
+  accountLooksPreGrant,
   beginMaxGrantWait,
   clearMaxGrantWait,
   isMaxGrantWaitCurrent,
   markMaxGrantWaitSlow,
   markMaxGrantWaitWaiting,
   maxGrantLanded,
+  maxUpgradeSlowStatus,
   pollForMaxGrant,
 } from "../lib/max-upgrade";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
@@ -568,10 +576,13 @@ export function App() {
   // Confirm gate for the Pro -> Max plan change reached from depleted-balance
   // surfaces (note failure banner, agent workspace notice). Capture the action
   // at click time so a later account refresh cannot reroute confirmation to a
-  // different billing transport.
+  // different billing transport. `transport` flips to charge_now only after a
+  // hosted capability signal, swapping the dialog to the charge-now copy that
+  // the next confirm actually consents to.
   const [maxUpgradePrompt, setMaxUpgradePrompt] = useState<{
     action: "upgrade_to_max";
     plan: "max";
+    transport: MaxUpgradeTransport;
   } | null>(null);
   const [maxUpgradeError, setMaxUpgradeError] = useState<string>();
   // Transient billing feedback shown beside the error banner. Success is only
@@ -587,41 +598,65 @@ export function App() {
     }
   }, []);
   const confirmMaxUpgrade = useCallback(async () => {
-    if (!maxUpgradePrompt || depletedBalanceAction(account) !== maxUpgradePrompt.action) {
+    if (!maxUpgradePrompt) return;
+    if (depletedBalanceAction(account) !== maxUpgradePrompt.action) {
+      // The account reclassified between click and confirm (plan changed,
+      // subscription lapsed). Never dispatch the stale intent - and never
+      // just vanish: say why the dialog closed.
       setMaxUpgradePrompt(null);
+      showBillingNotice(MAX_UPGRADE_STALE_ACTION_NOTICE, 8000);
       return;
     }
     const baselineCredits = account.balance?.credits ?? 0;
-    let hosted = false;
+    let outcome: DepletedBalanceOutcome;
     try {
-      const outcome = await runDepletedBalanceAction(
+      outcome = await runDepletedBalanceAction(
         account,
         maxUpgradePrompt.action,
         maxUpgradePrompt.plan,
+        maxUpgradePrompt.transport,
       );
-      hosted = outcome === "opened_upgrade_session";
-      if (!hosted && outcome !== "changed_plan") {
-        // The server no longer sees an active subscription. Refresh and let
-        // the depleted-balance surface render the correct subscribe action.
-        void refreshAccount();
-        return;
-      }
     } catch (err) {
       // Keep the dialog open with the failure inside it, next to retry.
       setMaxUpgradeError(messageFromError(err));
       throw err;
     }
+    if (outcome === "charge_confirmation_required") {
+      // Definitive capability signal: nothing was charged. Swap the dialog to
+      // the charge-now copy and keep it open (ConfirmDialog stays up on a
+      // rejection) so the PATCH gets its own explicit confirm.
+      setMaxUpgradeError(undefined);
+      setMaxUpgradePrompt({ ...maxUpgradePrompt, transport: "charge_now" });
+      throw new Error("charge_confirmation_required");
+    }
+    if (outcome === "already_on_plan") {
+      // The server already has the plan. One refresh decides between a grant
+      // still landing (poll) and a long-settled Max account, where a poll
+      // could never succeed and the surface must re-derive its prompt.
+      const refreshed = await refreshAccount();
+      if (!accountLooksPreGrant(refreshed, baselineCredits)) return;
+    } else if (outcome !== "opened_upgrade_session" && outcome !== "changed_plan") {
+      // The server no longer sees an active subscription. Refresh and let
+      // the depleted-balance surface render the correct subscribe action.
+      void refreshAccount();
+      return;
+    }
     // Hosted confirmation and the credit grant arrive asynchronously. The
-    // fallback PATCH skips only the browser-confirmation phase; both paths
+    // consented PATCH skips only the browser-confirmation phase; both paths
     // stay neutral until the account refresh poll observes landed credits.
+    const hostedReview = outcome === "opened_upgrade_session";
     const grantWait = beginMaxGrantWait(
       baselineCredits,
       account.user?.id,
-      hosted ? "browser" : "waiting",
+      hostedReview ? "browser" : "waiting",
     );
     appMaxGrantWaitRef.current = grantWait;
-    showBillingNotice(hosted ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS);
-    void pollForMaxGrant(refreshAccount, baselineCredits).then((landed) => {
+    showBillingNotice(hostedReview ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS);
+    void pollForMaxGrant(
+      refreshAccount,
+      baselineCredits,
+      hostedReview ? { timeoutMs: MAX_GRANT_HOSTED_POLL_TIMEOUT_MS } : {},
+    ).then((landed) => {
       if (!isMaxGrantWaitCurrent(grantWait)) return;
       if (landed) {
         clearMaxGrantWait(grantWait);
@@ -629,7 +664,7 @@ export function App() {
         showBillingNotice(MAX_UPGRADE_READY_STATUS, 8000);
       } else {
         markMaxGrantWaitSlow(grantWait);
-        showBillingNotice(MAX_UPGRADE_SLOW_STATUS);
+        showBillingNotice(maxUpgradeSlowStatus(grantWait));
       }
     });
   }, [account, maxUpgradePrompt, refreshAccount, showBillingNotice]);
@@ -661,7 +696,7 @@ export function App() {
     const action = depletedBalanceAction(account);
     if (action === "upgrade_to_max") {
       setMaxUpgradeError(undefined);
-      setMaxUpgradePrompt({ action, plan: "max" });
+      setMaxUpgradePrompt({ action, plan: "max", transport: "hosted" });
       return;
     }
     runDepletedBalanceAction(account)
@@ -3777,7 +3812,12 @@ export function App() {
         onClose={() => setMaxUpgradePrompt(null)}
         onConfirm={confirmMaxUpgrade}
         title={MAX_UPGRADE_CONFIRM_TITLE}
-        description={maxUpgradeError ?? MAX_UPGRADE_CONFIRM_BODY}
+        description={
+          maxUpgradeError ??
+          (maxUpgradePrompt?.transport === "charge_now"
+            ? MAX_UPGRADE_CHARGE_CONFIRM_BODY
+            : MAX_UPGRADE_CONFIRM_BODY)
+        }
         confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />

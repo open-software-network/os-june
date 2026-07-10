@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { hasLiveSubscription, isOnMaxPlan } from "../../lib/account-gate";
 import { errorCode } from "../../lib/errors";
 import {
+  MAX_GRANT_HOSTED_POLL_TIMEOUT_MS,
   MAX_UPGRADE_BROWSER_STATUS,
   MAX_UPGRADE_BUSY_LABEL,
+  MAX_UPGRADE_CHARGE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_LABEL,
   MAX_UPGRADE_CONFIRM_TITLE,
@@ -12,6 +14,7 @@ import {
   MAX_UPGRADE_SLOW_STATUS,
   MAX_UPGRADE_WAITING_STATUS,
   type MaxGrantWait,
+  accountLooksPreGrant,
   beginMaxGrantWait,
   clearMaxGrantWait,
   isMaxGrantWaitCurrent,
@@ -19,6 +22,8 @@ import {
   markMaxGrantWaitSlow,
   markMaxGrantWaitWaiting,
   maxGrantLanded,
+  maxGrantWaitForAccount,
+  maxUpgradeSlowStatus,
   pollForMaxGrant,
 } from "../../lib/max-upgrade";
 import {
@@ -55,7 +60,16 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
   // The existing-subscription Max upgrade starts only from an explicit confirm dialog.
   const [confirmingUpgrade, setConfirmingUpgrade] = useState(false);
   const [confirmError, setConfirmError] = useState<string>();
-  const [maxGrantWait, setMaxGrantWait] = useState<MaxGrantWait>();
+  // Whether the confirm dialog has switched to the PATCH transport's
+  // charge-now copy after a hosted capability signal. The next confirm under
+  // that copy is what authorizes the saved-card charge.
+  const [chargeNowUpgrade, setChargeNowUpgrade] = useState(false);
+  // Adopt an upgrade wait started on another surface (Billing settings, a
+  // depleted-note banner) so this gate never offers a second purchase while
+  // one is in flight for the same account.
+  const [maxGrantWait, setMaxGrantWait] = useState<MaxGrantWait | undefined>(() =>
+    maxGrantWaitForAccount(account.user?.id),
+  );
   const [, setMaxGrantPhaseRevision] = useState(0);
   const awaitingBrowser = maxGrantWait?.phase === "browser";
   const awaitingGrant = maxGrantWait?.phase === "waiting";
@@ -94,9 +108,12 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
         }
       : grantNotConfirmed
         ? {
-            title: "Payment not confirmed",
-            subtitle: MAX_UPGRADE_SLOW_STATUS,
-            cta: "",
+            // Non-terminal: an outlasted poll window usually means the user
+            // is still on (or abandoned) the Stripe page. Retrying reopens a
+            // hosted session, which charges nothing until Stripe confirm.
+            title: "Waiting for payment confirmation",
+            subtitle: maxGrantWait ? maxUpgradeSlowStatus(maxGrantWait) : MAX_UPGRADE_SLOW_STATUS,
+            cta: "Upgrade to Max",
           }
         : billingRecovery
           ? {
@@ -164,42 +181,60 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
     }
   }
 
-  // Hosted Pro -> Max upgrade, run from the confirm dialog only. Older OS
-  // Accounts deployments fall back to PATCH in the same confirmed action.
-  // Either transport can expose Max before credits land, so the grant poll is
-  // the only authority for announcing Max.
+  // Hosted Pro -> Max upgrade, run from the confirm dialog only. When this
+  // OS Accounts deploy cannot host the browser flow, the dialog switches to
+  // the charge-now copy and the PATCH waits for one more explicit confirm -
+  // hosted-copy consent never authorizes a saved-card charge. Either
+  // transport can expose Max before credits land, so the grant poll is the
+  // only authority for announcing Max.
   async function handleUpgradeToMax() {
     const baselineCredits = account.balance?.credits ?? 0;
-    let hosted = false;
+    const chargeNow = chargeNowUpgrade;
+    let alreadyOnPlan = false;
     try {
-      try {
-        await osAccountsUpgradeSession("max");
-        hosted = true;
-      } catch (error) {
-        if (!isHostedMaxUpgradeFallbackError(error)) throw error;
+      if (chargeNow) {
         await osAccountsChangePlan("max");
+      } else {
+        await osAccountsUpgradeSession("max");
       }
     } catch (error) {
       const code = errorCode(error);
       if (code === "already_on_plan") {
-        // Continue into the grant poll. A stale local snapshot may still be
-        // waiting for the payment-backed credit balance update.
+        alreadyOnPlan = true;
       } else if (code === "subscription_required") {
         await onRefresh();
         return;
+      } else if (!chargeNow && isHostedMaxUpgradeFallbackError(error)) {
+        // Definitive capability signal: nothing was charged. Swap the dialog
+        // to the charge-now copy and keep it open for a fresh confirm.
+        setConfirmError(undefined);
+        setChargeNowUpgrade(true);
+        throw error;
       } else {
         setConfirmError(messageFromError(error));
         throw error;
       }
     }
+    if (alreadyOnPlan) {
+      // The server already has the plan. One refresh decides between a grant
+      // still landing (poll) and a long-settled Max account, where a poll
+      // could never succeed and the gate must re-derive its prompt instead.
+      const refreshed = await onRefresh();
+      if (!accountLooksPreGrant(refreshed, baselineCredits)) return;
+    }
+    const hostedReview = !chargeNow && !alreadyOnPlan;
     const grantWait = beginMaxGrantWait(
       baselineCredits,
       account.user?.id,
-      hosted ? "browser" : "waiting",
+      hostedReview ? "browser" : "waiting",
     );
     setMaxGrantWait(grantWait);
     setBillingStatus(undefined);
-    void pollForMaxGrant(onRefresh, baselineCredits).then((landed) => {
+    void pollForMaxGrant(
+      onRefresh,
+      baselineCredits,
+      hostedReview ? { timeoutMs: MAX_GRANT_HOSTED_POLL_TIMEOUT_MS } : {},
+    ).then((landed) => {
       if (!isMaxGrantWaitCurrent(grantWait)) return;
       if (landed) {
         clearMaxGrantWait(grantWait);
@@ -207,7 +242,7 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
       } else {
         markMaxGrantWaitSlow(grantWait);
       }
-      setBillingStatus(landed ? MAX_UPGRADE_READY_STATUS : MAX_UPGRADE_SLOW_STATUS);
+      setBillingStatus(landed ? MAX_UPGRADE_READY_STATUS : maxUpgradeSlowStatus(grantWait));
     });
   }
 
@@ -267,12 +302,13 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
                 {checking ? "Checking..." : "Check again"}
               </button>
             </div>
-          ) : grantNotConfirmed ? null : proUpgradeRequired ? (
+          ) : grantNotConfirmed || proUpgradeRequired ? (
             <button
               type="button"
               className="primary-action"
               onClick={() => {
                 setConfirmError(undefined);
+                setChargeNowUpgrade(false);
                 setConfirmingUpgrade(true);
               }}
             >
@@ -354,10 +390,16 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
       </div>
       <ConfirmDialog
         open={confirmingUpgrade}
-        onClose={() => setConfirmingUpgrade(false)}
+        onClose={() => {
+          setConfirmingUpgrade(false);
+          setChargeNowUpgrade(false);
+        }}
         onConfirm={handleUpgradeToMax}
         title={MAX_UPGRADE_CONFIRM_TITLE}
-        description={confirmError ?? MAX_UPGRADE_CONFIRM_BODY}
+        description={
+          confirmError ??
+          (chargeNowUpgrade ? MAX_UPGRADE_CHARGE_CONFIRM_BODY : MAX_UPGRADE_CONFIRM_BODY)
+        }
         confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />

@@ -4,15 +4,17 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { hasLiveSubscription } from "../../lib/account-gate";
 import { errorCode } from "../../lib/errors";
 import {
+  MAX_GRANT_HOSTED_POLL_TIMEOUT_MS,
   MAX_UPGRADE_BROWSER_STATUS,
   MAX_UPGRADE_BUSY_LABEL,
+  MAX_UPGRADE_CHARGE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_LABEL,
   MAX_UPGRADE_CONFIRM_TITLE,
   MAX_UPGRADE_READY_STATUS,
-  MAX_UPGRADE_SLOW_STATUS,
   MAX_UPGRADE_WAITING_STATUS,
   type MaxGrantWait,
+  accountLooksPreGrant,
   beginMaxGrantWait,
   clearMaxGrantWait,
   isHostedMaxUpgradeFallbackError,
@@ -21,6 +23,7 @@ import {
   markMaxGrantWaitWaiting,
   maxGrantLanded,
   maxGrantWaitForAccount,
+  maxUpgradeSlowStatus,
   pollForMaxGrant,
 } from "../../lib/max-upgrade";
 import {
@@ -191,13 +194,19 @@ export function BillingSettingsSection({
   const [billingStatus, setBillingStatus] = useState<string | undefined>(() => {
     if (!maxGrantWait) return undefined;
     if (maxGrantWait.phase === "browser") return MAX_UPGRADE_BROWSER_STATUS;
-    return maxGrantWait.phase === "slow" ? MAX_UPGRADE_SLOW_STATUS : MAX_UPGRADE_WAITING_STATUS;
+    return maxGrantWait.phase === "slow"
+      ? maxUpgradeSlowStatus(maxGrantWait)
+      : MAX_UPGRADE_WAITING_STATUS;
   });
   const [spins, setSpins] = useState(0);
   // The plan awaiting an explicit confirm. A plan change can charge the saved
   // card, so it never starts straight from the card CTA.
   const [planToConfirm, setPlanToConfirm] = useState<SubscriptionPlan | null>(null);
   const [confirmError, setConfirmError] = useState<string>();
+  // Whether the confirm dialog has switched to the PATCH transport's
+  // charge-now copy after a hosted capability signal. The next confirm under
+  // that copy is what authorizes the saved-card charge.
+  const [chargeNowUpgrade, setChargeNowUpgrade] = useState(false);
   const demoPlan = useForcedBillingPlan();
 
   async function handleUpgrade(plan: SubscriptionPlan) {
@@ -210,28 +219,34 @@ export function BillingSettingsSection({
   }
 
   // Hosted upgrade for a paid subscriber (currently Pro -> Max), run from the
-  // confirm dialog only. Older OS Accounts deployments fall back to PATCH in
-  // the same action. Only the credit grant poll announces Max.
+  // confirm dialog only. When this OS Accounts deploy cannot host the browser
+  // flow, the dialog switches to the charge-now copy and the PATCH waits for
+  // one more explicit confirm - hosted-copy consent never authorizes a
+  // saved-card charge. Only the credit grant poll announces Max.
   async function handleChangePlan(plan: SubscriptionPlan) {
     const baselineCredits = account.balance?.credits ?? 0;
-    let hosted = false;
+    const chargeNow = chargeNowUpgrade;
+    let alreadyOnPlan = false;
     try {
-      try {
-        await osAccountsUpgradeSession(plan);
-        hosted = true;
-      } catch (error) {
-        if (!isHostedMaxUpgradeFallbackError(error)) throw error;
+      if (chargeNow) {
         await osAccountsChangePlan(plan);
+      } else {
+        await osAccountsUpgradeSession(plan);
       }
     } catch (error) {
       const code = errorCode(error);
       if (code === "already_on_plan") {
-        // Continue into the grant poll. A stale local snapshot may still be
-        // waiting for the payment-backed credit balance update.
+        alreadyOnPlan = true;
       } else if (code === "subscription_required") {
         setBillingStatus(messageFromError(error));
         await onRefresh();
         return;
+      } else if (!chargeNow && isHostedMaxUpgradeFallbackError(error)) {
+        // Definitive capability signal: nothing was charged. Swap the dialog
+        // to the charge-now copy and keep it open for a fresh confirm.
+        setConfirmError(undefined);
+        setChargeNowUpgrade(true);
+        throw error;
       } else {
         // Keep the dialog open (ConfirmDialog swallows the rethrow but stays
         // up) and show the failure inside it, next to the retry affordance.
@@ -239,14 +254,29 @@ export function BillingSettingsSection({
         throw error;
       }
     }
+    if (alreadyOnPlan) {
+      // The server already has the plan. One refresh decides between a grant
+      // still landing (poll) and a long-settled Max account, where a poll
+      // could never succeed and the card must re-derive from the snapshot.
+      const refreshed = await onRefresh();
+      if (!accountLooksPreGrant(refreshed, baselineCredits)) {
+        setBillingStatus(undefined);
+        return;
+      }
+    }
+    const hostedReview = !chargeNow && !alreadyOnPlan;
     const grantWait = beginMaxGrantWait(
       baselineCredits,
       account.user?.id,
-      hosted ? "browser" : "waiting",
+      hostedReview ? "browser" : "waiting",
     );
     setMaxGrantWait(grantWait);
-    setBillingStatus(hosted ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS);
-    void pollForMaxGrant(onRefresh, baselineCredits).then((landed) => {
+    setBillingStatus(hostedReview ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS);
+    void pollForMaxGrant(
+      onRefresh,
+      baselineCredits,
+      hostedReview ? { timeoutMs: MAX_GRANT_HOSTED_POLL_TIMEOUT_MS } : {},
+    ).then((landed) => {
       // Ignore a stale poll from an earlier attempt or one superseded by a
       // manual refresh that already observed the grant.
       if (!isMaxGrantWaitCurrent(grantWait)) return;
@@ -256,7 +286,7 @@ export function BillingSettingsSection({
         setBillingStatus(MAX_UPGRADE_READY_STATUS);
       } else {
         markMaxGrantWaitSlow(grantWait);
-        setBillingStatus(MAX_UPGRADE_SLOW_STATUS);
+        setBillingStatus(maxUpgradeSlowStatus(grantWait));
       }
     });
   }
@@ -331,6 +361,7 @@ export function BillingSettingsSection({
     // Confirm first because the change may charge the saved card.
     onChangePlan: (plan: SubscriptionPlan) => {
       setConfirmError(undefined);
+      setChargeNowUpgrade(false);
       setPlanToConfirm(plan);
     },
     onManage: () => void handleManageSubscription(),
@@ -359,12 +390,18 @@ export function BillingSettingsSection({
       )}
       <ConfirmDialog
         open={planToConfirm !== null}
-        onClose={() => setPlanToConfirm(null)}
+        onClose={() => {
+          setPlanToConfirm(null);
+          setChargeNowUpgrade(false);
+        }}
         onConfirm={async () => {
           if (planToConfirm) await handleChangePlan(planToConfirm);
         }}
         title={MAX_UPGRADE_CONFIRM_TITLE}
-        description={confirmError ?? MAX_UPGRADE_CONFIRM_BODY}
+        description={
+          confirmError ??
+          (chargeNowUpgrade ? MAX_UPGRADE_CHARGE_CONFIRM_BODY : MAX_UPGRADE_CONFIRM_BODY)
+        }
         confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />

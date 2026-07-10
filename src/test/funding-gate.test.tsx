@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FundingGate } from "../components/account/FundingGate";
-import { clearMaxGrantWait } from "../lib/max-upgrade";
+import { beginMaxGrantWait, clearMaxGrantWait, currentMaxGrantWait } from "../lib/max-upgrade";
 import type { AccountStatus } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
@@ -185,9 +185,12 @@ describe("FundingGate", () => {
     await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
   });
 
-  it("falls back to PATCH when hosted upgrade is unavailable", async () => {
+  const CHARGE_NOW_BODY =
+    "Max is $100 per month, charged to your saved card now. Your billing cycle restarts today.";
+
+  it("requires a second, charge-now confirm before falling back to PATCH", async () => {
     const user = userEvent.setup();
-    const onRefresh = renderDepletedProGate();
+    renderDepletedProGate();
     mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
       code: "plan_not_enabled",
       message: "That plan is not available yet.",
@@ -196,14 +199,43 @@ describe("FundingGate", () => {
     await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
     await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
 
+    // The capability signal swaps the dialog to the charge-now copy without
+    // charging anything: hosted-copy consent never precedes a PATCH.
+    expect(await screen.findByText(CHARGE_NOW_BODY)).toBeInTheDocument();
     expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Upgrade now" }));
+
     expect(mocks.osAccountsChangePlan).toHaveBeenCalledOnce();
     expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    // The consented PATCH retry never re-runs the hosted transport.
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
     expect(
       await screen.findByText("Upgrade started. Waiting for payment confirmation."),
     ).toBeInTheDocument();
     expect(screen.queryByText("Max is active.")).toBeNull();
-    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+  });
+
+  it("cancelling the charge-now confirm resets the dialog to the hosted copy", async () => {
+    const user = userEvent.setup();
+    renderDepletedProGate();
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
+      code: "upgrade_session_unavailable",
+      message: "Upgrade sessions are not available yet.",
+    });
+
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
+    expect(await screen.findByText(CHARGE_NOW_BODY)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+
+    // Reopening starts from the hosted consent again.
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    expect(await screen.findByText(MAX_CONFIRM_BODY)).toBeInTheDocument();
+    expect(screen.queryByText(CHARGE_NOW_BODY)).toBeNull();
   });
 
   it("cancelling the upgrade confirm never changes the plan", async () => {
@@ -222,13 +254,9 @@ describe("FundingGate", () => {
     expect(screen.getByRole("button", { name: "Upgrade to Max" })).toBeInTheDocument();
   });
 
-  it("keeps the confirm open showing the failure when the plan change fails", async () => {
+  it("shows a transient hosted failure in the dialog without ever issuing a PATCH", async () => {
     const user = userEvent.setup();
     mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
-      code: "network_error",
-      message: "Could not reach OS Accounts.",
-    });
-    mocks.osAccountsChangePlan.mockRejectedValueOnce({
       code: "network_error",
       message: "Could not reach OS Accounts.",
     });
@@ -237,9 +265,87 @@ describe("FundingGate", () => {
     await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
     await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
 
+    // The dialog stays open as the retry affordance; a transient failure is
+    // not a capability signal and never authorizes the charge-now transport.
     expect(await screen.findByText("Could not reach OS Accounts.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Upgrade now" })).toBeEnabled();
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+
+    // Retrying goes back to the hosted transport.
+    await user.click(screen.getByRole("button", { name: "Upgrade now" }));
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledTimes(2);
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+  });
+
+  it("re-derives the gate instead of polling when already_on_plan reveals a settled Max account", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
+      code: "already_on_plan",
+      message: "You are already on this plan.",
+    });
+    // The refreshed snapshot is a long-settled Max account: the credit
+    // balance has moved well away from the stale baseline, so no grant tied
+    // to this confirm is coming and a poll could never succeed.
+    const settledMaxAccount: AccountStatus = {
+      ...baseAccount,
+      balance: { credits: -800, usdMillis: -800 },
+      subscription: { subscribed: true, status: "active", plan: "max" },
+    };
+    const onRefresh = renderDepletedProGate(vi.fn(async () => settledMaxAccount));
+
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
+
+    await waitFor(() => expect(screen.queryByText(MAX_CONFIRM_BODY)).toBeNull());
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(currentMaxGrantWait()).toBeUndefined();
+    expect(screen.queryByText("Upgrade started. Waiting for payment confirmation.")).toBeNull();
+    expect(screen.queryByText("Waiting for payment confirmation")).toBeNull();
+  });
+
+  it("starts the grant poll when already_on_plan still looks pre-grant after one refresh", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
+      code: "already_on_plan",
+      message: "You are already on this plan.",
+    });
+    // The refresh shows the plan flipped but credits sitting exactly at the
+    // baseline: the payment-backed grant webhook has not landed yet.
+    const optimisticMaxAccount: AccountStatus = {
+      ...baseAccount,
+      balance: { credits: -1, usdMillis: -1 },
+      subscription: { subscribed: true, status: "active", plan: "max" },
+    };
+    renderDepletedProGate(vi.fn(async () => optimisticMaxAccount));
+
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
+
+    expect(
+      await screen.findByText("Upgrade started. Waiting for payment confirmation."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Max is active.")).toBeNull();
+    expect(currentMaxGrantWait()).toMatchObject({
+      accountId: "usr_123",
+      baselineCredits: -1,
+      phase: "waiting",
+    });
+  });
+
+  it("suppresses a second purchase when an upgrade wait already exists for the account", () => {
+    // An upgrade begun on another surface (Billing settings, a depleted-note
+    // banner) must survive this gate mounting fresh.
+    beginMaxGrantWait(-1, "usr_123", "browser");
+    renderFundingGate({
+      ...baseAccount,
+      balance: { credits: -1, usdMillis: -1 },
+      subscription: { subscribed: true, status: "active", plan: "pro" },
+    });
+
+    expect(screen.getAllByText("Waiting for you to confirm in the browser")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Upgrade to Max" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Upgrade to Pro" })).toBeNull();
   });
 
   it("announces Max only after a refreshed account snapshot shows the grant", async () => {
@@ -293,7 +399,7 @@ describe("FundingGate", () => {
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
   });
 
-  it("shows billing recovery when payment is not confirmed before polling ends", async () => {
+  it("keeps a retry path when the hosted round trip outlasts its poll window", async () => {
     vi.useFakeTimers();
     const optimisticMaxAccount: AccountStatus = {
       ...baseAccount,
@@ -326,14 +432,33 @@ describe("FundingGate", () => {
         screen.getByText("Upgrade started. Waiting for payment confirmation."),
       ).toBeInTheDocument();
 
+      // The 30s webhook window does not apply to a hosted round trip: the
+      // user may still be reading the Stripe page.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(35_000);
       });
-
       expect(
-        screen.getByText("Payment not confirmed yet. Check billing in your account portal."),
+        screen.getByText("Upgrade started. Waiting for payment confirmation."),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/If you closed the Stripe page/)).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300_000);
+      });
+
+      // Non-terminal copy: the poll giving up is not a payment failure.
+      expect(
+        screen.getByText(
+          "Still waiting for payment confirmation. If you closed the Stripe page, you can try again.",
+        ),
       ).toBeInTheDocument();
       expect(screen.queryByText("Max is active.")).toBeNull();
+
+      // The retry CTA stays alongside billing: reopening a hosted session
+      // charges nothing until the Stripe confirm.
+      fireEvent.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+      expect(screen.getByText(MAX_CONFIRM_BODY)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
       fireEvent.click(screen.getByRole("button", { name: "Open billing" }));
       expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();

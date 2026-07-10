@@ -10,13 +10,19 @@ import {
 import type { AccountStatus } from "./tauri";
 
 /** How the resolved action ended:
- * - `changed_plan`: the existing subscription now matches the requested plan
- *   (changed in place, or the server reported `already_on_plan` for a stale
- *   snapshot); refresh until the associated credit grant lands.
+ * - `changed_plan`: the existing subscription was changed in place over the
+ *   PATCH transport; refresh until the associated credit grant lands.
  * - `opened_upgrade_session`: the browser opened for a hosted existing-plan
  *   upgrade; poll through confirmation until the associated grant lands.
  * - `opened_browser`: checkout or the portal opened; the window focus-refresh
  *   reconciles the balance later.
+ * - `charge_confirmation_required`: this OS Accounts deploy cannot host the
+ *   browser flow (a definitive capability signal). Nothing was charged; the
+ *   caller must gather a fresh confirm under the charge-now copy and dispatch
+ *   again with the `charge_now` transport before any PATCH happens.
+ * - `already_on_plan`: the server says the subscription already matches the
+ *   requested plan. The caller should refresh once and either poll for a
+ *   still-pending grant or re-derive its surface from the fresh snapshot.
  * - `upgrade_required`: the backend gated a top-up behind Max, meaning the
  *   local snapshot was stale (it said Max; the server disagrees). The caller
  *   should refresh the account snapshot so the depleted-balance surfaces
@@ -28,8 +34,15 @@ export type DepletedBalanceOutcome =
   | "changed_plan"
   | "opened_upgrade_session"
   | "opened_browser"
+  | "charge_confirmation_required"
+  | "already_on_plan"
   | "upgrade_required"
   | "subscribe_required";
+
+/** Which billed transport the user consented to: `hosted` opens the browser
+ * review (charges nothing directly), `charge_now` PATCHes the subscription
+ * and charges the saved card immediately. */
+export type MaxUpgradeTransport = "hosted" | "charge_now";
 
 /** Runs the one correct depleted-balance action for the account's tier:
  * - Max tops up (opens the account portal),
@@ -39,26 +52,33 @@ export type DepletedBalanceOutcome =
  * Stale-snapshot rejections resolve as outcomes rather than throwing, and
  * never trigger a different billed action. A caller dispatching a confirmed
  * intent passes its captured action and plan so this helper does not
- * reclassify it after an account refresh. */
+ * reclassify it after an account refresh. A charge may only happen under
+ * copy the user actually consented to: the default hosted transport never
+ * PATCHes; when the deploy cannot host the flow it resolves
+ * `charge_confirmation_required` so the caller can collect an explicit
+ * charge-now confirm and dispatch again with `transport: "charge_now"`. */
 export async function runDepletedBalanceAction(
   account: AccountStatus,
   action: DepletedBalanceAction = depletedBalanceAction(account),
   upgradePlan: "max" = "max",
+  transport: MaxUpgradeTransport = "hosted",
 ): Promise<DepletedBalanceOutcome> {
   if (action === "upgrade_to_max") {
-    let hosted = false;
     try {
+      if (transport === "charge_now") {
+        await osAccountsChangePlan(upgradePlan);
+        return "changed_plan";
+      }
       try {
         await osAccountsUpgradeSession(upgradePlan);
-        hosted = true;
+        return "opened_upgrade_session";
       } catch (err) {
         if (!isHostedMaxUpgradeFallbackError(err)) throw err;
-        await osAccountsChangePlan(upgradePlan);
+        return "charge_confirmation_required";
       }
-      return hosted ? "opened_upgrade_session" : "changed_plan";
     } catch (err) {
       const code = errorCode(err);
-      if (code === "already_on_plan") return "changed_plan";
+      if (code === "already_on_plan") return "already_on_plan";
       if (code === "subscription_required") return "subscribe_required";
       throw err;
     }
