@@ -50,7 +50,6 @@ import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { Dialog } from "../components/ui/Dialog";
-import { Toaster } from "../components/ui/Toaster";
 import {
   assignNoteToFolder,
   assignSessionToFolder,
@@ -3714,9 +3713,6 @@ export function App() {
         confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />
-      {/* Global toast host. Mounted once beside the dialogs; sonner portals its
-          own list to document.body, so placement in the tree is immaterial. */}
-      <Toaster />
     </main>
   );
 }
