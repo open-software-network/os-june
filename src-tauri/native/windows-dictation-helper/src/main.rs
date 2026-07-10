@@ -4,11 +4,10 @@ mod focus;
 mod hotkeys;
 mod permissions;
 mod protocol;
-mod shortcut_capture;
 
 use audio::Recorder;
 use focus::PinnedTarget;
-use hotkeys::HotkeyManager;
+use hotkeys::{HotkeyEvent, HotkeyManager};
 use permissions::ComApartment;
 use protocol::{error_event, event, simple_event, CommandEnvelope, ShortcutKind};
 use std::{
@@ -51,10 +50,65 @@ impl HelperApp {
     fn new(writer: EventWriter) -> Self {
         let hotkey_writer = writer.clone();
         let hotkeys = HotkeyManager::start(Box::new(move |hotkey| {
-            hotkey_writer.emit(event(
-                "shortcut_key_down",
-                serde_json::json!({ "kind": hotkey.kind }),
-            ));
+            let event = match hotkey {
+                HotkeyEvent::KeyDown { kind, shortcut } => event(
+                    "shortcut_key_down",
+                    serde_json::json!({ "kind": kind, "shortcut": shortcut }),
+                ),
+                HotkeyEvent::KeyUp { kind, shortcut } => event(
+                    "shortcut_key_up",
+                    serde_json::json!({ "kind": kind, "shortcut": shortcut }),
+                ),
+                HotkeyEvent::Ready {
+                    push_to_talk_shortcut,
+                    toggle_shortcut,
+                } => event(
+                    "hotkey_trigger_ready",
+                    serde_json::json!({
+                        "shortcut": push_to_talk_shortcut,
+                        "pushToTalkShortcut": push_to_talk_shortcut,
+                        "toggleShortcut": toggle_shortcut,
+                        "shortcuts": format!(
+                            "Push to talk: {push_to_talk_shortcut}; Toggle: {toggle_shortcut}"
+                        ),
+                    }),
+                ),
+                HotkeyEvent::RegistrationFailed {
+                    kind,
+                    shortcut,
+                    code,
+                    message,
+                } => event(
+                    "hotkey_trigger_unavailable",
+                    serde_json::json!({
+                        "kind": kind,
+                        "shortcut": shortcut,
+                        "code": code,
+                        "message": message,
+                    }),
+                ),
+                HotkeyEvent::CaptureStarted { kind } => event(
+                    "shortcut_capture_started",
+                    serde_json::json!({ "kind": kind }),
+                ),
+                HotkeyEvent::CaptureCancelled { kind } => event(
+                    "shortcut_capture_cancelled",
+                    serde_json::json!({ "kind": kind }),
+                ),
+                HotkeyEvent::CaptureError {
+                    kind,
+                    code,
+                    message,
+                } => event(
+                    "shortcut_capture_error",
+                    serde_json::json!({ "kind": kind, "code": code, "message": message }),
+                ),
+                HotkeyEvent::Captured { kind, shortcut } => event(
+                    "shortcut_captured",
+                    serde_json::json!({ "kind": kind, "shortcut": shortcut }),
+                ),
+            };
+            hotkey_writer.emit(event);
         }));
         Self {
             writer,
@@ -72,7 +126,9 @@ impl HelperApp {
             | "request_microphone_permission"
             | "request_accessibility_permission" => {
                 let microphone = audio::microphone_permission_status();
-                if command.command_type == "request_microphone_permission" && microphone != "granted" {
+                if command.command_type == "request_microphone_permission"
+                    && microphone != "granted"
+                {
                     open_microphone_settings();
                 }
                 self.emit_permission_status();
@@ -90,16 +146,23 @@ impl HelperApp {
             }
             "start_shortcut_capture" => {
                 let kind = command.kind.unwrap_or(ShortcutKind::Toggle);
-                self.writer.emit(event(
-                    "shortcut_captured",
-                    serde_json::json!({
-                        "kind": kind,
-                        "shortcut": shortcut_capture::default_shortcut(kind),
-                    }),
-                ));
+                if let Some(hotkeys) = &self.hotkeys {
+                    hotkeys.start_capture(kind);
+                } else {
+                    self.writer.emit(event(
+                        "shortcut_capture_error",
+                        serde_json::json!({
+                            "kind": kind,
+                            "code": "hotkey_monitor_unavailable",
+                            "message": "Windows shortcut monitoring is unavailable.",
+                        }),
+                    ));
+                }
             }
             "cancel_shortcut_capture" => {
-                self.writer.emit(simple_event("shortcut_capture_cancelled"))
+                if let Some(hotkeys) = &self.hotkeys {
+                    hotkeys.cancel_capture();
+                }
             }
             "start_listening" => self.start_listening(),
             "stop_and_paste" => self.stop_and_paste(),
@@ -241,7 +304,9 @@ impl HelperApp {
 
     fn discard_recording(&mut self) {
         if let Some(recorder) = self.recorder.take() {
-            let _ = recorder.stop();
+            if let Ok(summary) = recorder.stop() {
+                let _ = std::fs::remove_file(summary.path);
+            }
         }
         self.pinned_target = None;
         self.writer.emit(simple_event("recording_discarded"));
@@ -269,6 +334,11 @@ impl HelperApp {
 
 impl Drop for HelperApp {
     fn drop(&mut self) {
+        if let Some(recorder) = self.recorder.take() {
+            if let Ok(summary) = recorder.stop() {
+                let _ = std::fs::remove_file(summary.path);
+            }
+        }
         if let Some(hotkeys) = &self.hotkeys {
             hotkeys.shutdown();
         }
