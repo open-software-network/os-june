@@ -5470,9 +5470,8 @@ input:focus-visible,
 /* Steer queue — the queued/steering instructions as their own elevated card
    ABOVE the composer box (not a region inside it). All rows show by default;
    the header collapses the list to itself and stays put ("Queued" + count,
-   constant copy in both states). Each row represents a submitted steer;
-   full-row hover reveals revise (draft a later correction) and dismiss
-   (hide the row). Sending is automatic, so there is no send action. */
+   constant copy in both states). Each row is a read-only record of a submitted
+   steer because the protocol cannot recall or mutate it. */
 .agent-steer-queue {
   pointer-events: auto;
   width: 100%;
@@ -5554,25 +5553,20 @@ input:focus-visible,
   display: flex;
   align-items: center;
   flex-shrink: 0;
-  gap: var(--sp-2);
   min-height: var(--control-lg);
   padding: var(--sp-1) var(--sp-2);
-  /* The row renders at content + sp-1 padding, so the action buttons'
-     vertical inset IS the sp-1 padding — the right inset matches it exactly
-     to keep them concentric with the row's end. */
-  padding-right: var(--sp-1);
   border-radius: var(--r-lg);
   background: transparent;
   color: var(--foreground);
   font-size: var(--fs-lg);
 }
 
-.agent-steer-card[data-hovered] {
+.agent-steer-card:hover {
   background: var(--secondary);
 }
 
-/* One line, ellipsized — compact rows; the full text lives in the row's
-   title tooltip and comes back via Edit. */
+/* One line, ellipsized - compact rows; the full text lives in the row's
+   title tooltip. */
 .agent-steer-card-text {
   flex: 1 1 auto;
   min-width: 0;
@@ -5581,51 +5575,7 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-/* Revealed on row hover/focus, so a resting row stays quiet. Hiding is
-   INSTANT (no transition here): a fade-out tail meant every row streaming
-   under the pointer during a scroll showed a lingering ghost of its actions —
-   several at once mid-scroll. */
-.agent-steer-card-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-1);
-  flex: 0 0 auto;
-  opacity: 0;
-}
-
-/* data-hovered (a JS-tracked single node), not CSS :hover — WebKit doesn't
-   re-evaluate :hover when rows reflow under a stationary pointer, which left
-   stale hovers around. :focus-visible (not :focus-within, which a mouse click
-   pins) keeps keyboard reveal. The fade applies on reveal only. */
-.agent-steer-card[data-hovered] .agent-steer-card-actions,
-.agent-steer-card:has(:focus-visible) .agent-steer-card-actions {
-  opacity: 1;
-  transition: opacity var(--t-fast) var(--ease-out);
-}
-
-.agent-steer-card-actions button {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: var(--control-sm);
-  height: var(--control-sm);
-  padding: 0;
-  border: 0;
-  border-radius: var(--r-md);
-  background: transparent;
-  color: var(--muted-foreground);
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out);
-}
-
-.agent-steer-card-actions button:hover {
-  background: var(--surface-subtle);
-  color: var(--foreground);
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .agent-steer-card-actions,
   .agent-steer-queue-header,
   .agent-steer-queue-chevron {
     transition: none;

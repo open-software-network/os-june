@@ -994,7 +994,7 @@ describe("AgentWorkspace", () => {
     expect(screen.getByRole("button", { name: "Stop June" })).toBeEnabled();
   });
 
-  it("keeps delivery tracking when a submitted steer is revised or dismissed", async () => {
+  it("renders submitted steers as read-only while retaining delivery tracking", async () => {
     const user = userEvent.setup();
     render(<AgentWorkspace initialSession={existingSession} />);
 
@@ -1018,14 +1018,9 @@ describe("AgentWorkspace", () => {
       }),
     );
 
-    const submittedSteer = screen.getByTitle("focus on the API boundary");
-    fireEvent.pointerEnter(submittedSteer);
-    await user.click(screen.getByRole("button", { name: "Revise steer" }));
-    expect(submittedSteer).toBeInTheDocument();
-    expect(composer).toHaveTextContent("focus on the API boundary");
-
-    await user.click(screen.getByRole("button", { name: "Dismiss steer" }));
-    expect(screen.queryByTitle("focus on the API boundary")).toBeNull();
+    expect(screen.getByTitle("focus on the API boundary")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /revise steer/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /dismiss steer/i })).toBeNull();
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {

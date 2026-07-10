@@ -2322,10 +2322,9 @@ export function AgentWorkspace({
     Record<string, { text: string; accepted: boolean; toolDrained: boolean }[]>
   >({});
   // Steer cards: injected instructions tacked to the top of the composer while
-  // June works. They present instructions already submitted to Hermes, not a
-  // cancellable staging queue: revise creates a later correction, and dismiss
-  // only hides the row. The pending ref retains delivery tracking until the
-  // turn ends or is stopped.
+  // June works. They are a read-only presentation of instructions already
+  // submitted to Hermes, not a cancellable staging queue. The pending ref
+  // retains delivery tracking until the turn ends or is stopped.
   const [steerCardsBySessionId, setSteerCardsBySessionId] = useState<
     Record<string, { id: string; text: string }[]>
   >({});
@@ -2336,18 +2335,6 @@ export function AgentWorkspace({
   // Fade for the expanded stack's capped scroller (spec/scroll-fade.md).
   const steerCardsListRef = useRef<HTMLDivElement | null>(null);
   const steerCardsFade = useScrollFade(steerCardsListRef);
-  // Tracked hover for the card actions instead of CSS :hover — WebKit doesn't
-  // re-evaluate :hover when rows reflow under a stationary pointer (expand,
-  // removal), which left stale hovers showing. Imperative (a data attribute on
-  // the one hovered node) rather than state: hover churn re-rendering this
-  // whole component flashed visibly in WKWebView.
-  const hoveredSteerCardElRef = useRef<HTMLElement | null>(null);
-  const setHoveredSteerCard = useCallback((el: HTMLElement | null) => {
-    if (hoveredSteerCardElRef.current === el) return;
-    hoveredSteerCardElRef.current?.removeAttribute("data-hovered");
-    hoveredSteerCardElRef.current = el;
-    el?.setAttribute("data-hovered", "true");
-  }, []);
   const waitingSessionIdsRef = useRef<Set<string>>(waitingSessionIds);
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<Record<string, string>>(
     () => continuity?.runtimeSessionIds ?? {},
@@ -5018,7 +5005,7 @@ export function AgentWorkspace({
           steerEntry,
         ],
       };
-      // Tack the submitted instruction onto the composer as a revisable card.
+      // Tack the submitted instruction onto the composer as a read-only card.
       // This is the sole in-flight representation (steerActiveSession no longer
       // writes a transcript line); it clears when the turn drains or ends.
       setSteerCardsBySessionId((prev) => ({
@@ -7171,38 +7158,13 @@ export function AgentWorkspace({
   async function steerActiveSession(sessionId: string, text: string) {
     const instruction = normalizeSteerText(text);
     if (!instruction) return;
-    // The instruction is shown as a revisable steer card tacked to the composer
+    // The instruction is shown as a read-only steer card tacked to the composer
     // (see the submit path) rather than a transcript line.
     const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
     await createHermesMethods(gateway).steerSession({
       sessionId,
       text: instruction,
     });
-  }
-
-  // Hide one submitted steer from the queue surface. This deliberately does
-  // not alter pending delivery tracking: session.steer has no recall primitive,
-  // so claiming that dismissing a row cancels the instruction would be false.
-  function dismissSteerCard(sessionId: string, id: string) {
-    setSteerCardsBySessionId((prev) => {
-      const list = prev[sessionId];
-      if (!list) return prev;
-      const next = list.filter((card) => card.id !== id);
-      if (next.length === list.length) return prev;
-      const copy = { ...prev };
-      if (next.length) copy[sessionId] = next;
-      else delete copy[sessionId];
-      return copy;
-    });
-  }
-
-  // Reopen a submitted steer as the starting point for a correction. The
-  // original remains visible and tracked because Hermes may already have
-  // consumed it; submitting the revision appends a new instruction in honest
-  // delivery order.
-  function reviseSteerCard(text: string) {
-    composerEditorRef.current?.setContent(text, null);
-    composerEditorRef.current?.focus();
   }
 
   // Drop every steer card for a session - the turn ended (delivered or resent as
@@ -7216,44 +7178,13 @@ export function AgentWorkspace({
     });
   }
 
-  // One queued-steer row: bare text (the "Queued" header labels the section,
-  // so no per-row glyph), full-row hover reveals revise/dismiss. Hover is the
-  // tracked data attribute, not CSS :hover — WebKit doesn't re-evaluate
-  // :hover when rows reflow under a stationary pointer.
+  // One submitted-steer row: bare, read-only text. session.steer has no recall
+  // primitive, so edit/remove controls would falsely imply the instruction can
+  // still be changed after submission.
   function renderSteerCard(card: { id: string; text: string }) {
-    const sessionId = selectedHermesSessionId;
-    if (!sessionId) return null;
     return (
-      <div
-        key={card.id}
-        className="agent-steer-card"
-        title={card.text}
-        onPointerEnter={(event) => setHoveredSteerCard(event.currentTarget)}
-        onPointerLeave={(event) => {
-          if (hoveredSteerCardElRef.current === event.currentTarget) {
-            setHoveredSteerCard(null);
-          }
-        }}
-      >
+      <div key={card.id} className="agent-steer-card" title={card.text}>
         <span className="agent-steer-card-text">{card.text}</span>
-        <div className="agent-steer-card-actions">
-          <button
-            type="button"
-            aria-label="Revise steer"
-            title="Revise"
-            onClick={() => reviseSteerCard(card.text)}
-          >
-            <IconPencil size={13} />
-          </button>
-          <button
-            type="button"
-            aria-label="Dismiss steer"
-            title="Dismiss"
-            onClick={() => dismissSteerCard(sessionId, card.id)}
-          >
-            <IconCrossMedium size={13} />
-          </button>
-        </div>
       </div>
     );
   }
@@ -8518,15 +8449,7 @@ export function AgentWorkspace({
             </button>
             {steerQueueOpen ? (
               <div className="agent-steer-cards-scroll scroll-fade" {...steerCardsFade.props}>
-                <div
-                  ref={steerCardsListRef}
-                  className="agent-steer-cards-list"
-                  // Rows streaming under a stationary pointer during a scroll
-                  // rapid-fire enter/leave; clearing the hover for the scroll's
-                  // duration keeps action buttons from flickering across the
-                  // stack (the pointer must move again to re-hover).
-                  onScroll={() => setHoveredSteerCard(null)}
-                >
+                <div ref={steerCardsListRef} className="agent-steer-cards-list">
                   {selectedSteerCards.map((card) => renderSteerCard(card))}
                 </div>
               </div>
