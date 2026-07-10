@@ -1,6 +1,8 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { useState } from "react";
 import { isInsufficientCreditsMessage } from "../../lib/errors";
+import { TierMiniCard } from "../account/FundingNotice";
+import type { FundingTier } from "../account/FundingNotice";
 
 export type FailureKind = "balance_low" | "generic";
 
@@ -10,6 +12,11 @@ type Props = {
   onRetry: () => void | Promise<void>;
   onTopUp: () => void;
   topUpLabel?: string;
+  retryBlockedReason?: string;
+  /** The user's current plan; balance failures lead with its tier card so
+   * the banner reads as "your card declined", matching the other credits
+   * surfaces. */
+  tier?: FundingTier;
 };
 
 // String match (see isInsufficientCreditsMessage) is intentional and a known
@@ -63,6 +70,8 @@ export function NoteFailureBanner({
   onRetry,
   onTopUp,
   topUpLabel = "Upgrade",
+  retryBlockedReason,
+  tier,
 }: Props) {
   const kind = classifyFailure(errorMessage);
   const isBalanceIssue = kind === "balance_low";
@@ -92,6 +101,7 @@ export function NoteFailureBanner({
 
   return (
     <aside className="note-failure-banner" role="alert" data-kind={kind}>
+      {isBalanceIssue && tier ? <TierMiniCard tier={tier} /> : null}
       <p className="note-failure-message">
         {isBalanceIssue
           ? audioPreserved
@@ -101,6 +111,7 @@ export function NoteFailureBanner({
         {!isBalanceIssue && audioPreserved
           ? " Your recording is saved locally, so you can retry."
           : null}
+        {retryBlockedReason ? ` ${retryBlockedReason}` : null}
       </p>
       <div className="note-failure-actions">
         {isBalanceIssue ? (
@@ -112,7 +123,7 @@ export function NoteFailureBanner({
           type="button"
           className="btn btn-ghost"
           onClick={() => void handleRetry()}
-          disabled={!audioPreserved || retrying}
+          disabled={!audioPreserved || retrying || Boolean(retryBlockedReason)}
           aria-busy={retrying || undefined}
         >
           <IconArrowRotateClockwise

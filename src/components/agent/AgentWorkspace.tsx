@@ -76,6 +76,8 @@ import {
   useSyncExternalStore,
 } from "react";
 import { BackButton } from "../ui/BackButton";
+import { TierMiniCard } from "../account/FundingNotice";
+import type { FundingTier } from "../account/FundingNotice";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
@@ -304,7 +306,7 @@ import {
   REPORT_CATEGORIES,
   type ReportCategory,
 } from "./composer/reportCategory";
-import { ReportDialog } from "./ReportDialog";
+import { ReportDialog, type ReportDialogAttachment } from "./ReportDialog";
 import { hermesConnectionForMode } from "../../lib/hermes-connection";
 import {
   forgetSessionMode,
@@ -1563,6 +1565,7 @@ type TauriFileDropPayload = {
 type FileBytesImportOptions = {
   tooLargeMessage: string;
   readErrorMessage: (file: File) => string;
+  maxFiles?: number;
 };
 
 type HermesRuntimeSessionResponse = {
@@ -1591,6 +1594,20 @@ type AgentWorkspaceProps = {
   /** Opens the change-project dialog (which also owns removal) for the given
    * stored session id. */
   onMoveSessionToProject?: (sessionId: string) => void;
+  creditActionsDisabledReason?: string;
+  /** The persistent out-of-credits notice, pre-wired by App. When present it
+   * replaces the plain composer-notice paragraph; the disabled reason keeps
+   * gating actions and tooltips. */
+  fundingNotice?: ReactNode;
+  /** The user's current plan; the in-transcript stopped-turn credits card
+   * leads with its tier card. */
+  fundingTier?: FundingTier;
+  testOnlySlashCommandEntriesRef?: {
+    current: {
+      runImageSlashCommand: (argument: string, commandText: string) => Promise<void>;
+      runVideoSlashCommand: (argument: string, commandText: string) => Promise<void>;
+    } | null;
+  };
 };
 
 // Mid-run continuity across remounts. While June is working, a session has
@@ -1649,6 +1666,13 @@ const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
   "june-agent-issue-report-follow-up-submit-failed";
 const ISSUE_REPORT_SENT_MESSAGE =
   "Your report was sent to the June team. Thank you for helping improve June.";
+
+/** Success copy for a delivered report; names files that could not be attached
+ * in Open Software (JUN-238: a skipped file must never be a silent drop). */
+function issueReportSentMessage(skippedAttachmentNames: string[] | undefined) {
+  if (!skippedAttachmentNames?.length) return ISSUE_REPORT_SENT_MESSAGE;
+  return `${ISSUE_REPORT_SENT_MESSAGE} These files could not be attached to the report in Open Software and were sent by name only: ${skippedAttachmentNames.join(", ")}.`;
+}
 const ISSUE_REPORT_DIAGNOSIS_REFRESH_TIMEOUT_MS = 1500;
 const ISSUE_REPORT_DIAGNOSIS_BOUNDARY_SKEW_MS = 1500;
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
@@ -2084,6 +2108,10 @@ export function AgentWorkspace({
   topUpLabel = "Upgrade",
   sessionInProject = false,
   onMoveSessionToProject,
+  creditActionsDisabledReason,
+  fundingNotice,
+  fundingTier,
+  testOnlySlashCommandEntriesRef,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   // Read once per mount (lazy initializer): the continuity snapshot the
@@ -2151,7 +2179,9 @@ export function AgentWorkspace({
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
   const [reportDialogCategory, setReportDialogCategory] = useState<ReportCategory>("bug");
   const [reportDialogDescription, setReportDialogDescription] = useState("");
-  const [reportDialogAttachments, setReportDialogAttachments] = useState<AgentAttachment[]>([]);
+  const [reportDialogAttachments, setReportDialogAttachments] = useState<ReportDialogAttachment[]>(
+    [],
+  );
   // Bumped when a report is sent; see reportDialogAppendForCurrentGeneration.
   const reportDialogGenerationRef = useRef(0);
   const [hermesSessionItems, setHermesSessionItems] = useState<HermesSessionInfo[]>(() => {
@@ -4236,6 +4266,10 @@ export function AgentWorkspace({
   // the follow-up. The image generation model is still resolved server-side
   // from the saved image default.
   async function runImageSlashCommand(argument: string, commandText: string) {
+    if (creditActionsDisabledReason) {
+      setError(creditActionsDisabledReason);
+      return;
+    }
     const prompt = argument.trim();
     if (!prompt) {
       setError("Type a description after /image to generate an image.");
@@ -4659,6 +4693,10 @@ export function AgentWorkspace({
     assistantTurnId: string,
     part: Extract<AgentChatPart, { type: "video" }>,
   ) {
+    if (creditActionsDisabledReason && !part.jobId) {
+      setError(creditActionsDisabledReason);
+      return;
+    }
     if (part.status !== "error" || !part.requestId) return;
     const now = new Date().toISOString();
     setError(null);
@@ -4681,6 +4719,10 @@ export function AgentWorkspace({
   }
 
   async function runVideoSlashCommand(argument: string, commandText: string) {
+    if (creditActionsDisabledReason) {
+      setError(creditActionsDisabledReason);
+      return;
+    }
     const prompt = argument.trim();
     if (!prompt) {
       setError("Type a description after /video to generate a video.");
@@ -4823,6 +4865,13 @@ export function AgentWorkspace({
     });
   }
 
+  if (testOnlySlashCommandEntriesRef) {
+    testOnlySlashCommandEntriesRef.current = {
+      runImageSlashCommand,
+      runVideoSlashCommand,
+    };
+  }
+
   async function runModelSlashCommand(argument: string, commandText: string) {
     if (composerModelSelectionLocked()) {
       clearComposerCommandDraft(commandText);
@@ -4898,6 +4947,7 @@ export function AgentWorkspace({
       (!message && !attachments.length) ||
       submitting ||
       importingFiles ||
+      creditActionsDisabledReason ||
       selectedHermesSessionIsProvisional ||
       imageSlashBlockedByModel
     )
@@ -5185,8 +5235,16 @@ export function AgentWorkspace({
     };
   }
 
-  function addReportDialogAttachments(nextAttachments: AgentAttachment[]) {
-    setReportDialogAttachments((current) => [...current, ...nextAttachments]);
+  function addReportDialogAttachments(nextAttachments: ReportDialogAttachment[]) {
+    setReportDialogAttachments((current) => {
+      const paths = new Set(current.map((attachment) => attachment.path));
+      const uniqueAttachments = nextAttachments.filter((attachment) => {
+        if (paths.has(attachment.path)) return false;
+        paths.add(attachment.path);
+        return true;
+      });
+      return [...current, ...uniqueAttachments];
+    });
   }
 
   async function importAttachments<T>(
@@ -5238,17 +5296,19 @@ export function AgentWorkspace({
   // so read each blob and import its bytes.
   async function importDroppedFiles(
     files: File[],
-    options: { onImported?: (attachments: AgentAttachment[]) => void } = {},
+    options: { onImported?: (attachments: AgentAttachment[]) => void; maxFiles?: number } = {},
   ) {
-    await importFileBytes(
+    const { maxFiles, ...importOptions } = options;
+    return importFileBytes(
       files,
       {
         tooLargeMessage: "Dropped files must be 50 MB or smaller.",
         readErrorMessage: (file) =>
           // Reading fails for directories, which Finder happily lets you drop.
           `Could not read "${file.name}". Folders can't be attached.`,
+        maxFiles,
       },
-      options,
+      importOptions,
     );
   }
 
@@ -5264,8 +5324,13 @@ export function AgentWorkspace({
     options: FileBytesImportOptions,
     importOptions: { onImported?: (attachments: AgentAttachment[]) => void } = {},
   ) {
-    await importAttachments(
-      files.slice(0, 8),
+    if (options.maxFiles !== undefined && files.length > options.maxFiles) {
+      setError(`You can attach up to ${options.maxFiles} files at a time.`);
+      return false;
+    }
+    const filesToImport = options.maxFiles === undefined ? files.slice(0, 8) : files;
+    return importAttachments(
+      filesToImport,
       async (file) => {
         if (file.size > 50 * 1024 * 1024) {
           throw new Error(options.tooLargeMessage);
@@ -5287,6 +5352,10 @@ export function AgentWorkspace({
   // the same command the hotkey path sends. The helper records, shows the HUD,
   // and pastes the transcription into the focused field (the composer).
   async function startDictation() {
+    if (creditActionsDisabledReason) {
+      setError(creditActionsDisabledReason);
+      return;
+    }
     composerEditorRef.current?.focus();
     try {
       await dictationHelperCommand({
@@ -5336,7 +5405,7 @@ export function AgentWorkspace({
       // Best-effort; the report ships without the diagnosis.
     }
     try {
-      await submitIssueReport({
+      const response = await submitIssueReport({
         category: report.category,
         description: issueReportDescription(report),
         agentDiagnosis,
@@ -5345,7 +5414,9 @@ export function AgentWorkspace({
         sessionId,
       });
       clearErrorForSession(sessionId);
-      toast.success(ISSUE_REPORT_SENT_MESSAGE, { id: ISSUE_REPORT_SENT_TOAST_ID });
+      toast.success(issueReportSentMessage(response?.skippedAttachmentNames), {
+        id: ISSUE_REPORT_SENT_TOAST_ID,
+      });
       return { sent: true };
     } catch (err) {
       const errorMessage = `The issue report could not be sent. ${messageFromError(err)}`;
@@ -5384,7 +5455,7 @@ export function AgentWorkspace({
     const sessionId = error.sessionId ?? selectedHermesSessionIdRef.current;
     setSubmittingErrorIssueReport(true);
     try {
-      await submitIssueReport({
+      const response = await submitIssueReport({
         category: report.category,
         description: issueReportDescription(report),
         agentDiagnosis: undefined,
@@ -5397,7 +5468,9 @@ export function AgentWorkspace({
       } else {
         setError(null);
       }
-      toast.success(ISSUE_REPORT_SENT_MESSAGE, { id: ISSUE_REPORT_SENT_TOAST_ID });
+      toast.success(issueReportSentMessage(response?.skippedAttachmentNames), {
+        id: ISSUE_REPORT_SENT_TOAST_ID,
+      });
     } catch (err) {
       setError(`The issue report could not be sent. ${messageFromError(err)}`, {
         sessionId: sessionId ?? null,
@@ -5843,6 +5916,9 @@ export function AgentWorkspace({
       skipPrompt?: boolean;
     },
   ): Promise<string | undefined> {
+    if (creditActionsDisabledReason && !options?.skipPrompt) {
+      throw new Error(creditActionsDisabledReason);
+    }
     const displayContent = options?.displayContent ?? content;
     const titleContent = options?.titleContent ?? displayContent;
     let attachmentOnlyTitle: string | undefined;
@@ -7264,19 +7340,47 @@ export function AgentWorkspace({
    * from an abandoned draft is discarded rather than resurfaced. */
   function reportDialogAppendForCurrentGeneration() {
     const generation = reportDialogGenerationRef.current;
-    return (attachments: AgentAttachment[]) => {
+    return (attachments: ReportDialogAttachment[]) => {
       if (generation === reportDialogGenerationRef.current) {
         addReportDialogAttachments(attachments);
       }
     };
   }
 
-  function pickReportDialogAttachments() {
-    return pickAttachments(reportDialogAppendForCurrentGeneration());
+  async function pickReportDialogAttachments() {
+    const append = reportDialogAppendForCurrentGeneration();
+    setImportingFiles(true);
+    try {
+      const selected = await openFileDialog({
+        multiple: true,
+        title: "Attach files",
+      });
+      if (!selected) return false;
+
+      const selectedPaths = Array.isArray(selected) ? selected : [selected];
+      const uniquePaths = Array.from(new Set(selectedPaths.filter((path) => path.trim())));
+      append(
+        uniquePaths.map((path) => ({
+          id: `${path}:${Date.now()}:${Math.random().toString(36)}`,
+          name: path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? path,
+          path,
+        })),
+      );
+      setError(null);
+      return true;
+    } catch (err) {
+      setError(messageFromError(err));
+      return false;
+    } finally {
+      setImportingFiles(false);
+    }
   }
 
   function importReportDialogDroppedFiles(files: File[]) {
-    return importDroppedFiles(files, { onImported: reportDialogAppendForCurrentGeneration() });
+    return importDroppedFiles(files, {
+      onImported: reportDialogAppendForCurrentGeneration(),
+      maxFiles: 20,
+    });
   }
 
   function removeReportDialogAttachment(id: string) {
@@ -8239,6 +8343,12 @@ export function AgentWorkspace({
         {heroMode ? null : (
           <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
         )}
+        {fundingNotice ??
+          (creditActionsDisabledReason ? (
+            <p className="agent-composer-notice" role="status">
+              {creditActionsDisabledReason}
+            </p>
+          ) : null)}
         <AnimatePresence>
           {galleryErrors ? (
             // Dev gallery only: the busy nudge is a toast in real use (see
@@ -8500,7 +8610,8 @@ export function AgentWorkspace({
                 type="button"
                 className="agent-composer-mic"
                 aria-label="Dictate"
-                title="Start dictation"
+                title={creditActionsDisabledReason ?? "Start dictation"}
+                disabled={Boolean(creditActionsDisabledReason)}
                 onClick={() => void startDictation()}
               >
                 <IconMicrophone size={18} />
@@ -8527,6 +8638,7 @@ export function AgentWorkspace({
                   disabled={
                     submitting ||
                     importingFiles ||
+                    Boolean(creditActionsDisabledReason) ||
                     selectedHermesSessionIsProvisional ||
                     imageSlashBlockedByModel ||
                     (!draft.trim() && !attachments.length)
@@ -8725,6 +8837,7 @@ export function AgentWorkspace({
     <AgentResponseGallery
       sections={gallerySections}
       errors={galleryErrors}
+      fundingTier={fundingTier}
       onClose={() => setGalleryDesired(false)}
     />
   ) : !newSessionMode && selectedHermesSessionId ? (
@@ -8789,6 +8902,7 @@ export function AgentWorkspace({
           onRetryVideo={(assistantTurnId, part) =>
             void retryVideoSlashTurn(selectedHermesSessionId, assistantTurnId, part)
           }
+          creditActionsDisabledReason={creditActionsDisabledReason}
           onApproval={(part, choice) =>
             void respondToApproval(
               selectedHermesSessionId,
@@ -8800,6 +8914,7 @@ export function AgentWorkspace({
           }
           onTopUp={handleTopUp}
           topUpLabel={topUpLabel}
+          fundingTier={fundingTier}
           onClarify={(part, answer) =>
             void respondToClarify(
               selectedHermesSessionId,
@@ -8894,8 +9009,10 @@ export function AgentWorkspace({
             onThinkingOpenChange={setThinkingOpen}
             onDownloadArtifact={downloadArtifact}
             onOpenArtifact={openArtifact}
+            creditActionsDisabledReason={creditActionsDisabledReason}
             onTopUp={handleTopUp}
             topUpLabel={topUpLabel}
+            fundingTier={fundingTier}
             onApproval={(part, choice) => {
               const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
               if (!sessionId) return;
@@ -10549,10 +10666,12 @@ const galleryNoop = () => {};
 function AgentResponseGallery({
   sections,
   errors,
+  fundingTier,
   onClose,
 }: {
   sections: AgentChatGallerySection[];
   errors?: boolean;
+  fundingTier?: FundingTier;
   onClose: () => void;
 }) {
   const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
@@ -10606,6 +10725,7 @@ function AgentResponseGallery({
               onDownloadArtifact={galleryNoop}
               onThinkingOpenChange={setThinkingOpen}
               onTopUp={galleryNoop}
+              fundingTier={fundingTier}
             />
           ))}
         </section>
@@ -10634,9 +10754,11 @@ function AgentChatTurnRow({
   onRetryImage,
   onDownloadVideo,
   onRetryVideo,
+  creditActionsDisabledReason,
   onThinkingOpenChange,
   onTopUp,
   topUpLabel,
+  fundingTier,
   onBranch,
   branchingMessageId,
   turn,
@@ -10667,9 +10789,11 @@ function AgentChatTurnRow({
   onRetryImage?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "image" }>) => void;
   onDownloadVideo?: (part: Extract<AgentChatPart, { type: "video" }>) => void;
   onRetryVideo?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "video" }>) => void;
+  creditActionsDisabledReason?: string;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
   topUpLabel?: string;
+  fundingTier?: FundingTier;
   /** Fork the conversation from this turn into a new session (feature 07).
    * Optional: only Hermes-session rows pass it — task rows and the dev gallery
    * omit it, so the action is absent there. */
@@ -10943,6 +11067,7 @@ function AgentChatTurnRow({
                 key={`${turn.id}:notice:${index}`}
                 onTopUp={onTopUp}
                 topUpLabel={topUpLabel}
+                tier={fundingTier}
               />
             )
           ) : part.type === "steering" ? (
@@ -10961,6 +11086,7 @@ function AgentChatTurnRow({
               part={part}
               onDownload={onDownloadVideo}
               onRetry={onRetryVideo ? () => onRetryVideo(turn.id, part) : undefined}
+              retryDisabledReason={part.jobId ? undefined : creditActionsDisabledReason}
             />
           ) : null,
         )}
@@ -11237,20 +11363,24 @@ function visibleAgentWorkspaceError(
 // The raw billing failure ("Error: Error code: 402 - …") never reaches the
 // transcript — the chat runtime folds it into a notice part, and this card is
 // how the user learns the turn stopped and what to do about it. No title —
-// icon + one sentence + the action, Claude-style.
+// the user's own (depleted) tier card + one sentence + the action, matching
+// the FundingNotice family; the warning triangle is the fallback when the
+// caller has no account snapshot.
 function CreditsNoticePart({
   onTopUp,
   topUpLabel = "Upgrade",
+  tier,
 }: {
   onTopUp?: () => void;
   topUpLabel?: string;
+  tier?: FundingTier;
 }) {
   return (
     <InlineNotice
       className="agent-credits-notice"
       tone="destructive"
       role="alert"
-      icon={<IconExclamationTriangle size={14} aria-hidden />}
+      icon={tier ? <TierMiniCard tier={tier} /> : <IconExclamationTriangle size={14} aria-hidden />}
       body="June stopped because your balance ran out."
       actions={
         onTopUp ? (
@@ -11406,10 +11536,12 @@ function AgentGeneratedVideo({
   part,
   onDownload,
   onRetry,
+  retryDisabledReason,
 }: {
   part: Extract<AgentChatPart, { type: "video" }>;
   onDownload?: (part: Extract<AgentChatPart, { type: "video" }>) => void;
   onRetry?: () => void;
+  retryDisabledReason?: string;
 }) {
   if (part.status === "running") {
     const progress = videoProgressLabel(part);
@@ -11429,9 +11561,17 @@ function AgentGeneratedVideo({
           {part.error?.trim() || "Could not generate the video."}
         </p>
         {onRetry && part.requestId ? (
-          <button type="button" className="agent-generated-image-retry" onClick={onRetry}>
-            Try again
-          </button>
+          retryDisabledReason ? (
+            <HoverTip tip={retryDisabledReason} tabIndex={0}>
+              <button type="button" className="agent-generated-image-retry" disabled>
+                Try again
+              </button>
+            </HoverTip>
+          ) : (
+            <button type="button" className="agent-generated-image-retry" onClick={onRetry}>
+              Try again
+            </button>
+          )
         ) : null}
       </div>
     );

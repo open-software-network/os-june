@@ -60,6 +60,7 @@ const mocks = vi.hoisted(() => ({
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
   osAccountsUpgrade: vi.fn(),
+  openFileDialog: vi.fn(),
   setImageSafeMode: vi.fn(),
   setImageSafeModePromptDismissed: vi.fn(),
   setVeniceModel: vi.fn(),
@@ -150,6 +151,10 @@ vi.mock("../lib/tauri", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: mocks.openFileDialog,
 }));
 
 // Pin VIDEO_GENERATION_ENABLED on so the /video surfaces stay testable
@@ -404,6 +409,7 @@ describe("AgentWorkspace", () => {
     }
     window.sessionStorage.clear();
     window.localStorage.clear();
+    mocks.openFileDialog.mockResolvedValue(null);
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
@@ -862,6 +868,62 @@ describe("AgentWorkspace", () => {
     );
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
+  });
+
+  it("submits a large native-picker attachment from its original path", async () => {
+    const user = userEvent.setup();
+    const originalPath = "/Users/alex/Desktop/recording-over-50mb.mov";
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+    );
+    mocks.openFileDialog.mockResolvedValue([originalPath]);
+    mocks.submitIssueReport.mockResolvedValue({ received: true });
+
+    render(<AgentWorkspace />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Issue report" });
+    mocks.importHermesBridgeFile.mockClear();
+    mocks.importHermesBridgeFileBytes.mockClear();
+    mocks.hermesBridgeFilePreview.mockClear();
+    await user.click(within(dialog).getByRole("button", { name: "Add files" }));
+    expect(await within(dialog).findByText("recording-over-50mb.mov")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Send report" }));
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "bug",
+        description: "No description was typed; see the attachments.",
+        attachmentNames: ["recording-over-50mb.mov"],
+        attachmentPaths: [originalPath],
+      }),
+    );
+    expect(mocks.importHermesBridgeFile).not.toHaveBeenCalled();
+    expect(mocks.importHermesBridgeFileBytes).not.toHaveBeenCalled();
+    expect(mocks.hermesBridgeFilePreview).not.toHaveBeenCalled();
+  });
+
+  it("imports all nine report files from a DOM drop", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+    );
+    const files = Array.from(
+      { length: 9 },
+      (_, index) => new File([`log-${index + 1}`], `report-${index + 1}.txt`),
+    );
+
+    render(<AgentWorkspace />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Issue report" });
+    mocks.importHermesBridgeFileBytes.mockClear();
+    const dropZone = dialog.querySelector(".report-dialog-drop");
+    expect(dropZone).not.toBeNull();
+    fireEvent.drop(dropZone as HTMLElement, { dataTransfer: { files } });
+
+    await waitFor(() => expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledTimes(9));
+    expect(await within(dialog).findByText("report-9.txt")).toBeInTheDocument();
   });
 
   it("clears a stale new-session draft before opening a report dialog", async () => {
@@ -4307,6 +4369,34 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Agent CLI access enabled")).toBeInTheDocument();
   });
 
+  it("blocks the CLI-access follow-up at the shared paid dispatch boundary", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "a1",
+        role: "assistant",
+        content: "[REQUEST:AGENT_CLI_ACCESS]",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+    ]);
+    mocks.setHermesAgentCliAccess.mockResolvedValue({ enabled: true });
+    const user = userEvent.setup();
+
+    render(
+      <AgentWorkspace
+        initialSession={existingSession}
+        creditActionsDisabledReason="Add credits to send messages or generate images and videos."
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Enable Agent CLI access" }));
+
+    await waitFor(() => expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(true));
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+    expect(
+      screen.getAllByText("Add credits to send messages or generate images and videos.").length,
+    ).toBeGreaterThan(0);
+  });
+
   it("shows the CLI access request as already granted when the setting is on", async () => {
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: true });
     mocks.listHermesSessionMessages.mockResolvedValue([
@@ -5547,6 +5637,99 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Summarize Current Page")).toBeInTheDocument();
     expect(screen.queryByText("Untitled session")).toBeNull();
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
+  });
+
+  it.each([
+    ["routine description", "Set up a weekday summary of my unread notes"],
+    ["bundle chat", "/release-check prepare this repository for release"],
+  ])("preserves a blocked %s prompt as a draft", async (_entryPoint, prompt) => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt,
+      }),
+    );
+
+    render(
+      <AgentWorkspace creditActionsDisabledReason="Add credits to send messages or generate images and videos." />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(prompt),
+    );
+    expect(window.sessionStorage.getItem("june:agent:new-session-draft")).toContain(prompt);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+  });
+
+  it("preserves a blocked dictated prompt as a draft", async () => {
+    const prompt = "Summarize the launch plan";
+
+    render(
+      <AgentWorkspace creditActionsDisabledReason="Add credits to send messages or generate images and videos." />,
+    );
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: { prompt },
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(prompt),
+    );
+    expect(window.sessionStorage.getItem("june:agent:new-session-draft")).toContain(prompt);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+  });
+
+  it.each([
+    {
+      command: "/image a red bicycle",
+      entry: "runImageSlashCommand" as const,
+      generationCall: () => mocks.generateImage,
+    },
+    {
+      command: "/video a red bicycle",
+      entry: "runVideoSlashCommand" as const,
+      generationCall: () => mocks.videoGenerate,
+    },
+  ])("blocks the direct $entry fast-path entry when credit actions are disabled", async (test) => {
+    const reason = "Add credits to send messages or generate images and videos.";
+    const slashCommandEntriesRef: {
+      current: {
+        runImageSlashCommand: (argument: string, commandText: string) => Promise<void>;
+        runVideoSlashCommand: (argument: string, commandText: string) => Promise<void>;
+      } | null;
+    } = { current: null };
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+
+    render(
+      <AgentWorkspace
+        creditActionsDisabledReason={reason}
+        testOnlySlashCommandEntriesRef={slashCommandEntriesRef}
+      />,
+    );
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    mocks.gatewayRequest.mockClear();
+    test.generationCall().mockClear();
+
+    const entries = slashCommandEntriesRef.current;
+    if (!entries) throw new Error("Agent workspace did not expose its slash-command entries.");
+    await act(async () => {
+      await entries[test.entry]("a red bicycle", test.command);
+    });
+
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(test.generationCall()).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(reason);
   });
 
   it("stops a working session from the composer", async () => {
@@ -8627,6 +8810,43 @@ describe("AgentWorkspace", () => {
     expect(storedVideoSlashTurnsForTest()).toEqual([]);
   });
 
+  it("polls an already-paid video job after the last credit is spent", async () => {
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
+    mocks.videoGenerate.mockResolvedValueOnce({ jobId: "video-job-last-credit" });
+    mocks.videoStatus.mockRejectedValueOnce(new Error("video delivery unavailable"));
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(await screen.findByRole("textbox"), "/video a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    expect(await screen.findByText("video delivery unavailable")).toBeInTheDocument();
+    const firstRequestId = mocks.videoGenerate.mock.calls[0]?.[0]?.requestId;
+    expect(firstRequestId).toEqual(expect.any(String));
+
+    view.rerender(
+      <AgentWorkspace creditActionsDisabledReason="Add credits to use video generation." />,
+    );
+
+    mocks.videoStatus.mockResolvedValueOnce({
+      status: "completed",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/videos/generated-video-last-credit.mp4",
+      mimeType: "video/mp4",
+      sizeBytes: 5,
+      model: "wan-2.2-a14b-text-to-video",
+    });
+
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
+    expect(screen.getByText("Add credits to use video generation.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByRole("button", { name: "Download video" })).toBeInTheDocument();
+    expect(mocks.videoGenerate).toHaveBeenCalledOnce();
+    expect(mocks.videoGenerate.mock.calls[0]?.[0]?.requestId).toBe(firstRequestId);
+    expect(mocks.videoStatus).toHaveBeenLastCalledWith("video-job-last-credit");
+  });
+
   it("keeps the persisted /video pending turn when the submit poll budget expires", async () => {
     mockGlmCapabilities(["functionCalling"]);
     mockVideoSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
@@ -8881,6 +9101,46 @@ describe("AgentWorkspace", () => {
     expect(mocks.generateImage).toHaveBeenCalledTimes(2);
     expect(mocks.generateImage.mock.calls[1]?.[2]).toBe(firstRequestId);
     expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays an already-paid image request after the last credit is spent", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    mocks.generateImage.mockResolvedValue({
+      imageBase64: "aGVsbG8=",
+      mimeType: "image/png",
+      model: "venice-sd35",
+      provider: "venice",
+    });
+    mocks.importHermesBridgeFileBytes
+      .mockRejectedValueOnce(new Error("image delivery unavailable"))
+      .mockResolvedValueOnce({
+        name: "generated-image.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
+        rootLabel: "Workspace",
+        size: 5,
+        previewDataUrl: "data:image/png;base64,preview",
+      });
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    expect(await screen.findByText("image delivery unavailable")).toBeInTheDocument();
+    const firstRequestId = mocks.generateImage.mock.calls[0]?.[2];
+    expect(firstRequestId).toEqual(expect.any(String));
+
+    view.rerender(
+      <AgentWorkspace creditActionsDisabledReason="Add credits to use image generation." />,
+    );
+
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
+    expect(screen.getByText("Add credits to use image generation.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(mocks.generateImage).toHaveBeenCalledTimes(2);
+    expect(mocks.generateImage.mock.calls[1]?.[2]).toBe(firstRequestId);
   });
 
   it("replays the pinned image shape when settings change before retry", async () => {

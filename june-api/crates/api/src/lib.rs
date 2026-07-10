@@ -11,12 +11,16 @@ mod validation;
 
 use axum::{
     Router,
+    body::Body,
     error_handling::HandleErrorLayer,
-    extract::DefaultBodyLimit,
-    response::IntoResponse,
+    extract::{DefaultBodyLimit, Request, State},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
-use std::time::Duration;
+use state::{IssueReportDeadline, IssueReportPermit, IssueReportRequestContext};
+use std::{sync::Arc, time::Duration};
+use tokio_stream::StreamExt;
 use tower::{BoxError, ServiceBuilder, timeout::TimeoutLayer};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
@@ -111,9 +115,20 @@ pub fn router(state: ApiState) -> Router {
         )
         .route(
             "/v1/issue-reports",
-            // Reports carry screenshot uploads, so they get the audio-sized
-            // body budget rather than the JSON one.
-            post(handlers::issues::submit).layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
+            // Reports can carry QA videos accepted by os-platform, so they
+            // have a dedicated body budget instead of inheriting audio's
+            // unrelated 25 MiB ceiling.
+            post(handlers::issues::submit).layer(
+                ServiceBuilder::new()
+                    // ServiceBuilder's first layer is outermost: acquire the
+                    // one shared permit before multipart extraction, then keep
+                    // it through delivery and response-body completion.
+                    .layer(middleware::from_fn_with_state(
+                        state.clone(),
+                        issue_report_permit_middleware,
+                    ))
+                    .layer(DefaultBodyLimit::max(limits.max_issue_report_bytes)),
+            ),
         )
         .route(
             "/v1/p3a/reports",
@@ -130,4 +145,38 @@ async fn handle_timeout_error(error: BoxError) -> axum::response::Response {
         return envelope::timeout_response();
     }
     error::ApiError::Internal.into_response()
+}
+
+async fn issue_report_permit_middleware(
+    State(state): State<ApiState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let deadline =
+        IssueReportDeadline::from_now(Duration::from_secs(state.limits().request_timeout_secs));
+    let permit = match state.acquire_issue_report_permit().await {
+        Ok(permit) => permit,
+        Err(error) => {
+            tracing::error!(%error, "issue-report concurrency semaphore closed");
+            return ApiError::Internal.into_response();
+        }
+    };
+    request.extensions_mut().insert(IssueReportRequestContext {
+        permit: permit.clone(),
+        deadline,
+    });
+    let response = next.run(request).await;
+    hold_issue_report_permit_through_body(response, permit)
+}
+
+fn hold_issue_report_permit_through_body(
+    response: Response,
+    permit: Arc<IssueReportPermit>,
+) -> Response {
+    let (parts, body) = response.into_parts();
+    let stream = body.into_data_stream().map(move |chunk| {
+        let _keep_permit_alive = &permit;
+        chunk
+    });
+    Response::from_parts(parts, Body::from_stream(stream))
 }

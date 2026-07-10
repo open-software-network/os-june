@@ -27,8 +27,10 @@ see [june-api-prd.md](june-api-prd.md). Implementation lives in
 ## Gates
 
 - **AccountGate** — the sign-in wall, shown until there is a valid session.
-- **FundingGate** — the credits-exhausted / upgrade wall, keyed off
-  `subscription.subscribed`.
+- **FundingNotice** — the credits-exhausted / upgrade surface, keyed off
+  `subscription.subscribed`. Not a wall: a persistent notice docked above the
+  chat composers plus a sidebar chip (FundingChip); credit-consuming actions
+  are individually gated while the rest of the app stays usable.
 
 ## Local dev
 
