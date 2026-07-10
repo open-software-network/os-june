@@ -425,7 +425,9 @@ fn build_p3a_sink(config: &AppConfig, http: &reqwest::Client) -> Arc<dyn june_do
         tracing::info!("P3A reports will be forwarded to OS Accounts");
         Arc::new(sink)
     } else {
-        tracing::warn!("P3A ingest token is missing; reports will be logged only");
+        tracing::warn!(
+            "P3A ingest disabled: JUNE__OS_ACCOUNTS__P3A_INGEST_TOKEN not set; reports will be logged only"
+        );
         Arc::new(LogP3aSink)
     }
 }
