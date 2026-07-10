@@ -19763,6 +19763,12 @@ input:focus-visible,
   color: var(--foreground);
 }
 
+/* The current project's check is state ("it lives here"), a step quieter
+ * than the check on a picked destination row. */
+.add-notes-row[data-current="true"] .add-notes-check {
+  color: var(--muted-foreground);
+}
+
 .add-notes-icon {
   display: inline-grid;
   place-items: center;

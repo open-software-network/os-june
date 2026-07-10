@@ -953,7 +953,7 @@ describe("MoveNoteToFolderDialog", () => {
     expect(screen.getByRole("option", { name: /Beta/ })).toBeInTheDocument();
   });
 
-  it("removes a filed note from its project through the remove row", async () => {
+  it("lists the current project checked and unfiles the note when clicked", async () => {
     const user = userEvent.setup();
     const onRemoveFolder = vi.fn().mockResolvedValue(undefined);
     const onClose = vi.fn();
@@ -970,14 +970,17 @@ describe("MoveNoteToFolderDialog", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Remove from “Alpha”" }));
+    const current = screen.getByRole("option", { name: "Remove from Alpha" });
+    expect(current).toHaveAttribute("aria-selected", "true");
+
+    await user.click(current);
 
     expect(onRemoveFolder).toHaveBeenCalledWith("note-2", "folder-1");
     expect(onMoved).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("offers no remove row without an onRemoveFolder handler or a current project", () => {
+  it("keeps the current project out of the list without an onRemoveFolder handler", () => {
     render(
       <MoveNoteToFolderDialog
         open
@@ -988,7 +991,8 @@ describe("MoveNoteToFolderDialog", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: /Remove from/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Remove from/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
   });
 
   it("creates a project from the search query and files the note in it", async () => {

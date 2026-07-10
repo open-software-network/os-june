@@ -1,6 +1,5 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
-import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
@@ -24,9 +23,9 @@ type Props = {
    */
   onCreateFolder?: (name: string) => Promise<FolderDto | undefined> | FolderDto | undefined;
   /**
-   * Unfiles the session from its current project. Removal lives inside this
-   * dialog (a quiet row under the search) rather than as a separate menu item
-   * on the calling surface.
+   * Unfiles the session from its current project. When provided, the current
+   * project stays in the list with a checkmark and clicking it removes -
+   * the same toggle the note editor's project chip uses.
    */
   onRemoveFolder?: (sessionId: string, folderId: string) => Promise<unknown> | void;
   onMoved?: () => void;
@@ -67,8 +66,13 @@ export function MoveSessionToProjectDialog({
   const currentFolder = folders.find((f) => f.id === currentFolderId);
   const hasCurrent = isSingle && Boolean(currentFolder);
 
+  // With onRemoveFolder wired, the current project stays listed (checked) so
+  // clicking it can unfile; without it, it's excluded as before.
+  const includeCurrent = Boolean(onRemoveFolder) && Boolean(currentFolder);
   const candidates = useMemo(() => {
-    const available = folders.filter((folder) => folder.id !== currentFolderId);
+    const available = includeCurrent
+      ? folders
+      : folders.filter((folder) => folder.id !== currentFolderId);
     const normalized = query.trim().toLowerCase();
     const filtered = normalized
       ? available.filter((folder) =>
@@ -78,7 +82,7 @@ export function MoveSessionToProjectDialog({
     return [...filtered].sort((a, b) =>
       a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
     );
-  }, [folders, currentFolderId, query]);
+  }, [folders, currentFolderId, includeCurrent, query]);
 
   const trimmedQuery = query.trim();
   // Mirrors the note editor's project chip: offer create only when the query
@@ -107,7 +111,7 @@ export function MoveSessionToProjectDialog({
   }
 
   async function handleRemoveFromProject() {
-    if (!onRemoveFolder || !hasCurrent || !currentFolderId || submitting) return;
+    if (!onRemoveFolder || !currentFolderId || submitting) return;
     setSubmitting(true);
     try {
       for (const session of sessions) {
@@ -217,40 +221,28 @@ export function MoveSessionToProjectDialog({
             </button>
           ) : null}
         </label>
-        {onRemoveFolder && hasCurrent && currentFolder ? (
-          <>
-            <button
-              type="button"
-              className="add-notes-row add-notes-remove"
-              disabled={submitting}
-              onClick={() => void handleRemoveFromProject()}
-            >
-              <span className="add-notes-icon" aria-hidden>
-                <IconFolderDelete size={14} />
-              </span>
-              <span className="add-notes-body">
-                <span className="add-notes-title">Remove from “{currentFolder.name}”</span>
-              </span>
-              <span className="add-notes-check" aria-hidden />
-            </button>
-            {candidates.length > 0 ? <div className="add-notes-divider" aria-hidden /> : null}
-          </>
-        ) : null}
         {candidates.length > 0 ? (
           <ul className="add-notes-list" role="listbox">
             {candidates.map((folder) => {
               const isSelected = folder.id === selectedId;
+              // The current project reads as checked; clicking it unfiles the
+              // session - the same toggle as the note editor's project chip.
+              const isCurrent = includeCurrent && folder.id === currentFolderId;
               return (
                 <li key={folder.id}>
                   <button
                     type="button"
                     role="option"
-                    aria-selected={isSelected}
+                    aria-selected={isSelected || isCurrent}
+                    aria-label={isCurrent ? `Remove from ${folder.name}` : undefined}
                     className="add-notes-row"
                     data-selected={isSelected}
+                    data-current={isCurrent || undefined}
                     disabled={submitting}
-                    onClick={() => setSelectedId(folder.id)}
-                    onDoubleClick={() => void handleCommit()}
+                    onClick={() =>
+                      isCurrent ? void handleRemoveFromProject() : setSelectedId(folder.id)
+                    }
+                    onDoubleClick={isCurrent ? undefined : () => void handleCommit()}
                   >
                     <span className="add-notes-icon" aria-hidden>
                       <IconProjects size={14} />
@@ -262,7 +254,7 @@ export function MoveSessionToProjectDialog({
                       ) : null}
                     </span>
                     <span className="add-notes-check" aria-hidden>
-                      {isSelected ? <IconCheckmark1 size={12} /> : null}
+                      {isSelected || isCurrent ? <IconCheckmark1 size={12} /> : null}
                     </span>
                   </button>
                 </li>
