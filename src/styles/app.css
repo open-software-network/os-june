@@ -469,7 +469,7 @@ input:focus-visible,
 .agent-task-row:hover,
 .agent-task-row[data-active="true"] {
   border-color: var(--border-subtle);
-  background: var(--surface-subtle);
+  background: var(--card);
 }
 
 .agent-task-row-title {
@@ -6390,9 +6390,9 @@ input:focus-visible,
   width: calc(var(--attachment-tile-size) - var(--sp-1) * 2);
   height: calc(var(--attachment-tile-size) - var(--sp-1) * 2);
   border-radius: var(--r-md);
-  background: var(--background);
+  background: var(--surface-subtle);
   color: var(--warm-strong);
-  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+  box-shadow: none;
 }
 
 .agent-attachment-file-details {
@@ -6510,9 +6510,12 @@ input:focus-visible,
   outline-offset: -1px;
 }
 
-[data-theme="dark"] .agent-attachment-chip,
-[data-theme="dark"] .agent-attachment-file-icon {
+[data-theme="dark"] .agent-attachment-chip {
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%);
+}
+
+[data-theme="dark"] .agent-attachment-file-icon {
+  box-shadow: none;
 }
 
 [data-theme="dark"] .agent-attachment-chip[data-kind="image"] {
