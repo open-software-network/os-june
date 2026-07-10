@@ -24471,64 +24471,140 @@ input:focus-visible,
   line-height: 1.45;
 }
 
-/* Connectors settings page. */
-.connectors-account-list {
+/* The house checkbox (ui/Checkbox): the notes list's rounded-square select
+ * box promoted to a shared primitive. The native input is invisible but
+ * stretched over the box so it stays the click target and keeps the
+ * semantics; the box carries the visual — outline unchecked, brand fill +
+ * checkmark checked. */
+.checkbox-control {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+}
+
+.checkbox-control input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.checkbox-control input:disabled {
+  cursor: default;
+}
+
+.checkbox-box {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--card);
+  color: var(--on-solid);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.checkbox-control:hover input:not(:disabled) + .checkbox-box {
+  border-color: color-mix(in oklch, var(--muted-foreground) 35%, var(--border));
+}
+
+.checkbox-control:has(input:checked) .checkbox-box {
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+.checkbox-control:has(input:focus-visible) .checkbox-box {
+  outline: 2px solid color-mix(in oklch, var(--ring) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.checkbox-control:has(input:disabled) {
+  opacity: 0.55;
+}
+
+/* Connectors settings page: a provider directory (Linear's connected-accounts
+ * pattern). Every provider is always listed — logo tile, name, one capability
+ * line — with the connection status pill and actions on the right. The row
+ * recipe mirrors .mcp-server-row so integration lists read the same across
+ * settings. */
+.connectors-card {
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.connectors-list {
+  display: grid;
+  gap: var(--sp-1);
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.connectors-account-row {
-  align-items: flex-start;
+.connector-row {
+  display: grid;
+  grid-template-columns: var(--control-lg) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.connectors-account-email {
+.connector-row:hover {
+  background: var(--secondary);
+}
+
+/* Brand marks are monochrome (central-icons currentColor), so the tile keeps
+ * the quiet surface-subtle wash and the mark renders in foreground — no
+ * multicolor logo tiles. */
+.connector-logo {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.connector-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.connector-name {
+  overflow: hidden;
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-subtitle {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-actions {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-}
-
-.connectors-account-status {
-  padding: 1px var(--sp-2);
-  border-radius: var(--r-sm);
-  background: color-mix(in oklch, var(--muted) 60%, transparent);
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  font-weight: 400;
-}
-
-.connectors-account-status[data-tone="ok"] {
-  background: color-mix(in oklch, var(--success, var(--primary)) 12%, transparent);
-  color: var(--success, var(--primary));
-}
-
-.connectors-account-status[data-tone="attention"] {
-  background: color-mix(in oklch, var(--destructive) 12%, transparent);
-  color: var(--destructive);
-}
-
-.connectors-account-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-
-.connectors-empty {
-  padding: var(--sp-4);
-}
-
-.connectors-connect-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
-  border-top: 1px solid var(--border-subtle);
-}
-
-.connectors-connect-row .settings-row-description {
-  flex-basis: 100%;
-  margin: 0;
+  min-width: max-content;
 }
 
 .connectors-bundle-list {
@@ -24542,9 +24618,10 @@ input:focus-visible,
   display: flex;
   align-items: flex-start;
   gap: var(--sp-3);
+  cursor: pointer;
 }
 
-.connectors-bundle-option input {
+.connectors-bundle-option .checkbox-control {
   margin-top: 3px;
 }
 
@@ -24574,6 +24651,7 @@ input:focus-visible,
   color: var(--foreground);
   font-size: var(--fs-sm);
   line-height: 1.45;
+  cursor: pointer;
 }
 
 /* Connector approvals tray: a shell-level queue for parked action calls under

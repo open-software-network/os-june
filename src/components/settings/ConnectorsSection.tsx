@@ -2,7 +2,6 @@ import { listen } from "@tauri-apps/api/event";
 import { IconGoogle } from "central-icons/IconGoogle";
 import { IconLinear } from "central-icons/IconLinear";
 import { IconNotion } from "central-icons/IconNotion";
-import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { useCallback, useEffect, useState } from "react";
 import {
   ALL_SCOPE_BUNDLES,
@@ -23,6 +22,7 @@ import {
   type ConnectorProvider,
   type ConnectorScopeBundle,
 } from "../../lib/tauri";
+import { Checkbox } from "../ui/Checkbox";
 import { Dialog } from "../ui/Dialog";
 import { InlineNotice } from "../ui/InlineNotice";
 import { toast } from "../ui/Toaster";
@@ -33,16 +33,26 @@ import { SettingsPageHeader } from "./AppSettings";
 // never grants mutation authority the user did not ask for.
 const DEFAULT_CONNECT_BUNDLES: readonly ConnectorScopeBundle[] = ["gmail_read", "calendar_read"];
 
+const PROVIDER_ORDER: readonly ConnectorProvider[] = ["google", "notion", "linear"];
+
 const PROVIDER_NAMES: Readonly<Record<ConnectorProvider, string>> = {
   google: "Google",
   notion: "Notion",
   linear: "Linear",
 };
 
-function ProviderIcon({ provider }: { provider: ConnectorProvider }) {
-  if (provider === "notion") return <IconNotion size={14} aria-hidden />;
-  if (provider === "linear") return <IconLinear size={14} aria-hidden />;
-  return <IconGoogle size={14} aria-hidden />;
+/** One-line capability blurb shown while a provider is not connected: what
+ * connecting it lets June do, in the provider directory row. */
+const PROVIDER_BLURBS: Readonly<Record<ConnectorProvider, string>> = {
+  google: "Mail and calendar for briefings, triage, and meeting prep.",
+  notion: "Search, read, and create pages in your workspace.",
+  linear: "Read issues, create issues and comments, and watch assignments.",
+};
+
+function ProviderIcon({ provider, size = 18 }: { provider: ConnectorProvider; size?: number }) {
+  if (provider === "notion") return <IconNotion size={size} aria-hidden />;
+  if (provider === "linear") return <IconLinear size={size} aria-hidden />;
+  return <IconGoogle size={size} aria-hidden />;
 }
 
 function featureSummary(account: ConnectorAccount): string {
@@ -54,11 +64,18 @@ function featureSummary(account: ConnectorAccount): string {
   return "Can read issues, create issues and comments, and watch assignments.";
 }
 
+/** The connected row's one-liner: who is connected, then what June may do. */
+function accountSubtitle(account: ConnectorAccount): string {
+  const summary = featureSummary(account);
+  return summary ? `${account.displayName} · ${summary}` : account.displayName;
+}
+
 /**
- * The Connectors settings page: connected provider accounts/workspaces,
- * Google's feature-bundle picker, reconnect for lapsed grants, and disconnect
- * with optional provider-side revoke. Local mode only: tokens live in the
- * Mac's Keychain and provider calls originate on this device.
+ * The Connectors settings page: a provider directory (one row per provider,
+ * always listed) with Google's feature-bundle picker, reconnect for lapsed
+ * grants, and disconnect with optional provider-side revoke. Local mode only:
+ * tokens live in the Mac's Keychain and provider calls originate on this
+ * device.
  */
 export function ConnectorsSection() {
   const [accounts, setAccounts] = useState<ConnectorAccount[] | null>(null);
@@ -220,18 +237,17 @@ export function ConnectorsSection() {
     });
   }
 
-  // The single healthy account, if any: the one incremental "Add access" acts
-  // on and the one every connector surface binds to.
-  const googleAccount = accounts?.find((account) => account.provider === "google") ?? null;
-  const notionAccount = accounts?.find((account) => account.provider === "notion") ?? null;
-  const linearAccount = accounts?.find((account) => account.provider === "linear") ?? null;
+  function connectRow(provider: ConnectorProvider) {
+    if (provider === "google") openConnectNew();
+    else void connectProvider(provider);
+  }
 
   return (
     <section className="settings-group" aria-labelledby="connectors-heading">
       <SettingsPageHeader
         id="connectors-heading"
         title="Connectors"
-        blurb="Connect Google, Notion, and Linear in local mode. Tokens stay in your Mac's Keychain, and provider calls go straight from this device."
+        blurb="Connect Google, Notion, and Linear in local mode: one account or workspace per provider. Tokens stay in your Mac's Keychain, and provider calls go straight from this device."
       />
 
       {notConfigured ? (
@@ -245,116 +261,86 @@ export function ConnectorsSection() {
         <InlineNotice tone="warning" body={loadError} aria-label="Connectors load error" />
       ) : null}
 
-      <div className="settings-card">
-        {accounts === null ? (
-          <p className="settings-status">Loading accounts…</p>
-        ) : accounts.length === 0 ? (
-          <div className="connectors-empty">
-            <p className="settings-row-description">
-              No accounts connected yet. Connect a provider to give June access to the work you
-              choose, with mutations gated by routine trust.
-            </p>
-          </div>
-        ) : (
-          <ul className="settings-rows connectors-account-list" role="list">
-            {accounts.map((account) => {
-              const status = accountStatusMeta(account.status, account.provider);
-              return (
-                <li key={account.accountId} className="settings-row connectors-account-row">
-                  <div className="settings-row-info">
-                    <h3 className="settings-row-title connectors-account-email">
-                      <ProviderIcon provider={account.provider} />
-                      {account.displayName}
-                      <span className="connectors-account-status" data-tone={status.tone}>
-                        {status.label}
-                      </span>
-                    </h3>
-                    <p className="settings-row-description">
-                      {featureSummary(account)} {status.blurb}
-                    </p>
-                  </div>
-                  <div className="settings-row-control connectors-account-actions">
-                    {account.status === "reconnect_required" ? (
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        disabled={reconnectingId !== null}
-                        aria-busy={reconnectingId === account.accountId || undefined}
-                        onClick={() => void reconnect(account)}
-                      >
-                        {reconnectingId === account.accountId
-                          ? "Waiting for browser…"
-                          : "Reconnect"}
-                      </button>
-                    ) : null}
+      <div className="settings-card connectors-card">
+        <ul className="connectors-list">
+          {PROVIDER_ORDER.map((provider) => {
+            const account = accounts?.find((entry) => entry.provider === provider) ?? null;
+            const name = PROVIDER_NAMES[provider];
+            const status = account ? accountStatusMeta(account.status, provider) : null;
+            const subtitle = account ? accountSubtitle(account) : PROVIDER_BLURBS[provider];
+            const reconnecting = account !== null && reconnectingId === account.accountId;
+            return (
+              <li key={provider} className="connector-row">
+                <span className="connector-logo" aria-hidden>
+                  <ProviderIcon provider={provider} />
+                </span>
+                <div className="connector-main">
+                  <span className="connector-name">{name}</span>
+                  <p className="connector-subtitle" title={subtitle}>
+                    {subtitle}
+                  </p>
+                </div>
+                <div className="connector-actions">
+                  {account && status ? (
+                    <span
+                      className="status-pill"
+                      data-tone={status.tone === "ok" ? "ok" : "warning"}
+                      title={status.blurb}
+                    >
+                      {status.label}
+                    </span>
+                  ) : null}
+                  {!account ? (
                     <button
                       type="button"
-                      className="btn btn-ghost"
-                      onClick={() => {
-                        setRevoke(false);
-                        setDisconnectTarget(account);
-                      }}
+                      className="btn btn-secondary"
+                      aria-label={`Connect ${name}`}
+                      disabled={accounts === null || connectingProvider !== null}
+                      aria-busy={connectingProvider === provider || undefined}
+                      onClick={() => connectRow(provider)}
                     >
-                      Disconnect
+                      {connectingProvider === provider ? "Waiting for browser…" : "Connect"}
                     </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        <div className="connectors-connect-row">
-          {accounts ? (
-            <>
-              {googleAccount ? (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => openAddAccess(googleAccount)}
-                >
-                  <IconPlusMedium size={13} aria-hidden />
-                  Add Google access
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="primary-action primary-solid"
-                  onClick={openConnectNew}
-                >
-                  <IconPlusMedium size={13} aria-hidden />
-                  Connect Google
-                </button>
-              )}
-              {!notionAccount ? (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  disabled={connectingProvider !== null}
-                  aria-busy={connectingProvider === "notion" || undefined}
-                  onClick={() => void connectProvider("notion")}
-                >
-                  <IconPlusMedium size={13} aria-hidden />
-                  {connectingProvider === "notion" ? "Waiting for browser…" : "Connect Notion"}
-                </button>
-              ) : null}
-              {!linearAccount ? (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  disabled={connectingProvider !== null}
-                  aria-busy={connectingProvider === "linear" || undefined}
-                  onClick={() => void connectProvider("linear")}
-                >
-                  <IconPlusMedium size={13} aria-hidden />
-                  {connectingProvider === "linear" ? "Waiting for browser…" : "Connect Linear"}
-                </button>
-              ) : null}
-              <p className="settings-row-description">
-                Local mode supports one account or workspace per provider.
-              </p>
-            </>
-          ) : null}
-        </div>
+                  ) : (
+                    <>
+                      {account.status === "reconnect_required" ? (
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          aria-label={`Reconnect ${name}`}
+                          disabled={reconnectingId !== null}
+                          aria-busy={reconnecting || undefined}
+                          onClick={() => void reconnect(account)}
+                        >
+                          {reconnecting ? "Waiting for browser…" : "Reconnect"}
+                        </button>
+                      ) : provider === "google" ? (
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={() => openAddAccess(account)}
+                        >
+                          Add access
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        aria-label={`Disconnect ${name}`}
+                        onClick={() => {
+                          setRevoke(false);
+                          setDisconnectTarget(account);
+                        }}
+                      >
+                        Disconnect
+                      </button>
+                    </>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
       </div>
 
       <Dialog
@@ -394,9 +380,13 @@ export function ConnectorsSection() {
           {ALL_SCOPE_BUNDLES.map((bundle) => {
             const meta = BUNDLE_META[bundle];
             return (
-              <label key={bundle} className="connectors-bundle-option">
-                <input
-                  type="checkbox"
+              <label
+                key={bundle}
+                className="connectors-bundle-option"
+                htmlFor={`connectors-bundle-${bundle}`}
+              >
+                <Checkbox
+                  id={`connectors-bundle-${bundle}`}
                   checked={bundles.includes(bundle)}
                   disabled={connecting}
                   onChange={(event) => toggleBundle(bundle, event.currentTarget.checked)}
@@ -440,9 +430,9 @@ export function ConnectorsSection() {
           </>
         }
       >
-        <label className="connectors-revoke-option">
-          <input
-            type="checkbox"
+        <label className="connectors-revoke-option" htmlFor="connectors-revoke">
+          <Checkbox
+            id="connectors-revoke"
             checked={revoke}
             disabled={disconnecting}
             onChange={(event) => setRevoke(event.currentTarget.checked)}

@@ -49,43 +49,68 @@ beforeEach(() => {
   mocks.listen.mockResolvedValue(() => {});
 });
 
+/** Waits for the initial connectorsList load to settle: the directory always
+ * renders all provider rows, so "loaded" means the connect actions unlock. */
+async function findEnabledConnect(name: string) {
+  const button = await screen.findByRole("button", { name });
+  await waitFor(() => expect(button).toBeEnabled());
+  return button;
+}
+
 describe("ConnectorsSection", () => {
+  it("always lists every provider row with a capability blurb", async () => {
+    render(<ConnectorsSection />);
+    await findEnabledConnect("Connect Google");
+
+    expect(screen.getByText("Google")).toBeInTheDocument();
+    expect(screen.getByText("Notion")).toBeInTheDocument();
+    expect(screen.getByText("Linear")).toBeInTheDocument();
+    expect(screen.getByText(/mail and calendar for briefings/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect Notion" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect Linear" })).toBeInTheDocument();
+  });
+
   it("lists connected accounts with feature labels and status", async () => {
     mocks.connectorsList.mockResolvedValue([
       account(),
       account({
         accountId: "acc-2",
-        email: "work@example.com",
-        scopes: [GMAIL_READONLY],
+        provider: "notion",
+        displayName: "Acme workspace",
+        email: undefined,
+        scopes: [],
         status: "reconnect_required",
       }),
     ]);
     render(<ConnectorsSection />);
 
-    expect(await screen.findByText("alex@example.com")).toBeInTheDocument();
+    expect(await screen.findByText(/alex@example\.com/)).toBeInTheDocument();
     expect(screen.getByText("Connected")).toBeInTheDocument();
     expect(screen.getByText("Reconnect needed")).toBeInTheDocument();
     expect(screen.getByText(/read mail, manage calendar/i)).toBeInTheDocument();
+    expect(screen.getByText(/Acme workspace/)).toBeInTheDocument();
     // Subscribed to the connectors-changed Tauri event to stay fresh.
     expect(mocks.listen).toHaveBeenCalledWith("june://connectors-changed", expect.any(Function));
   });
 
-  it("keeps local mode to one account: hides connect once an account exists", async () => {
+  it("keeps local mode to one account: a connected provider offers no second connect", async () => {
     mocks.connectorsList.mockResolvedValue([account()]);
     render(<ConnectorsSection />);
-    await screen.findByText("alex@example.com");
+    await screen.findByText(/alex@example\.com/);
 
     // No "add another account" affordance while one is connected; the base
     // connector servers, triggers, and grants all bind to that single account.
-    expect(screen.queryByRole("button", { name: "Connect Google account" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect Google" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add access" })).toBeInTheDocument();
     expect(screen.getByText(/one account or workspace per provider/i)).toBeInTheDocument();
+    // The other providers stay connectable.
+    expect(screen.getByRole("button", { name: "Connect Notion" })).toBeInTheDocument();
   });
 
   it("connects an account from the feature-bundle dialog and applies the runtime", async () => {
     render(<ConnectorsSection />);
-    await screen.findByText(/No accounts connected yet/);
 
-    await userEvent.click(screen.getByRole("button", { name: "Connect Google" }));
+    await userEvent.click(await findEnabledConnect("Connect Google"));
     const dialog = screen.getByRole("dialog", { name: "Connect Google account" });
     // Read mail and read calendar are preselected; add drafting.
     expect(within(dialog).getByRole("checkbox", { name: /read mail/i })).toBeChecked();
@@ -104,20 +129,19 @@ describe("ConnectorsSection", () => {
       }),
     );
     await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
-    expect(await screen.findByText("alex@example.com")).toBeInTheDocument();
+    expect(await screen.findByText(/alex@example\.com/)).toBeInTheDocument();
   });
 
   it("connects Notion and Linear through their provider OAuth flows", async () => {
     render(<ConnectorsSection />);
-    await screen.findByText(/No accounts connected yet/);
 
-    await userEvent.click(screen.getByRole("button", { name: "Connect Notion" }));
+    await userEvent.click(await findEnabledConnect("Connect Notion"));
     await waitFor(() =>
       expect(mocks.connectorsConnect).toHaveBeenCalledWith({ provider: "notion" }),
     );
     await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
 
-    await userEvent.click(screen.getByRole("button", { name: "Connect Linear" }));
+    await userEvent.click(await findEnabledConnect("Connect Linear"));
     await waitFor(() =>
       expect(mocks.connectorsConnect).toHaveBeenCalledWith({ provider: "linear" }),
     );
@@ -129,9 +153,8 @@ describe("ConnectorsSection", () => {
       message: "GOOGLE_OAUTH_CLIENT_ID missing",
     });
     render(<ConnectorsSection />);
-    await screen.findByText(/No accounts connected yet/);
 
-    await userEvent.click(screen.getByRole("button", { name: "Connect Google" }));
+    await userEvent.click(await findEnabledConnect("Connect Google"));
     await userEvent.click(
       within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }),
     );
@@ -144,9 +167,9 @@ describe("ConnectorsSection", () => {
   it("reconnects a lapsed account with the same bundles and a login hint", async () => {
     mocks.connectorsList.mockResolvedValue([account({ status: "reconnect_required" })]);
     render(<ConnectorsSection />);
-    await screen.findByText("alex@example.com");
+    await screen.findByText(/alex@example\.com/);
 
-    await userEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect Google" }));
 
     await waitFor(() =>
       expect(mocks.connectorsConnect).toHaveBeenCalledWith({
@@ -161,9 +184,9 @@ describe("ConnectorsSection", () => {
   it("disconnects with the optional Google-side revoke", async () => {
     mocks.connectorsList.mockResolvedValue([account()]);
     render(<ConnectorsSection />);
-    await screen.findByText("alex@example.com");
+    await screen.findByText(/alex@example\.com/);
 
-    await userEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect Google" }));
     const dialog = await screen.findByRole("dialog", { name: /Disconnect alex@example.com/ });
     await userEvent.click(
       within(dialog).getByRole("checkbox", { name: /revoke June's access with Google/i }),
@@ -177,15 +200,15 @@ describe("ConnectorsSection", () => {
         revoke: true,
       }),
     );
-    expect(await screen.findByText(/No accounts connected yet/)).toBeInTheDocument();
+    expect(await findEnabledConnect("Connect Google")).toBeInTheDocument();
   });
 
   it("disconnects without revoking by default", async () => {
     mocks.connectorsList.mockResolvedValue([account()]);
     render(<ConnectorsSection />);
-    await screen.findByText("alex@example.com");
+    await screen.findByText(/alex@example\.com/);
 
-    await userEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect Google" }));
     const dialog = await screen.findByRole("dialog", { name: /Disconnect alex@example.com/ });
     await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
 
