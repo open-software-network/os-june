@@ -36,19 +36,17 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
-  dictationCapabilities: vi
-    .fn()
-    .mockResolvedValue({
-      capabilities: {
-        available: true,
-        platform: "macos",
-        shortcuts: true,
-        paste: true,
-        microphoneSelection: true,
-        accessibilityPermission: true,
-        systemAudio: true,
-      },
-    }),
+  dictationCapabilities: vi.fn().mockResolvedValue({
+    capabilities: {
+      available: true,
+      platform: "macos",
+      shortcuts: true,
+      paste: true,
+      microphoneSelection: true,
+      accessibilityPermission: true,
+      systemAudio: true,
+    },
+  }),
   dictationSettings: mocks.dictationSettings,
   dictationHelperCommand: mocks.dictationHelperCommand,
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
@@ -689,7 +687,7 @@ describe("OnboardingFlow", () => {
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     );
     try {
-      const onComplete = await renderFlow();
+      await renderFlow();
 
       expect(
         screen.getByText("Dictation and meeting notes need microphone access."),
