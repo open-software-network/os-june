@@ -272,24 +272,43 @@ async fn poll_event_trigger(
     let now = Utc::now();
     // Scan a little past the lead window so an event is seen before it starts.
     let time_max = now + ChronoDuration::minutes(lead_minutes + 5);
-    let params = ListEventsParams {
+    let base_params = ListEventsParams {
         time_min: Some(now.to_rfc3339()),
         time_max: Some(time_max.to_rfc3339()),
         max_results: Some(25),
         ..ListEventsParams::default()
     };
-    let events = match call_list_events(app, account_id, &token, &params).await {
-        Ok(events) => events,
-        Err(error) if error.code == "connector_sync_token_expired" => {
-            // Window mode never sends a sync token, but clear the cursor
-            // defensively so a stale one can never wedge the poll.
-            let _ = repos
-                .set_trigger_cursor(account_id, &cursor_kind, "{}")
-                .await;
-            return Ok(());
+
+    // Drain every page of the window. A busy calendar can hold more than one
+    // 25-event page, and a matching event on a later page must not be missed,
+    // or the routine silently skips its trigger. Bounded by a page cap so a
+    // pathological calendar can never spin the poll forever.
+    const MAX_EVENT_PAGES: usize = 20;
+    let mut items: Vec<google::EventSummary> = Vec::new();
+    let mut page_token: Option<String> = None;
+    for _ in 0..MAX_EVENT_PAGES {
+        let params = ListEventsParams {
+            page_token: page_token.take(),
+            ..base_params.clone()
+        };
+        let page = match call_list_events(app, account_id, &token, &params).await {
+            Ok(page) => page,
+            Err(error) if error.code == "connector_sync_token_expired" => {
+                // Window mode never sends a sync token, but clear the cursor
+                // defensively so a stale one can never wedge the poll.
+                let _ = repos
+                    .set_trigger_cursor(account_id, &cursor_kind, "{}")
+                    .await;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        items.extend(page.items);
+        match page.next_page_token {
+            Some(next) => page_token = Some(next),
+            None => break,
         }
-        Err(error) => return Err(error),
-    };
+    }
 
     let mut fired = load_fired(repos, account_id, &cursor_kind).await;
     let lead_cutoff = now + ChronoDuration::minutes(lead_minutes);
@@ -297,7 +316,7 @@ async fn poll_event_trigger(
     // Collect the events that should wake the routine this cycle; do not mark
     // them fired yet, so a failed wake does not skip them.
     let mut to_fire: Vec<(String, i64)> = Vec::new();
-    for event in &events.items {
+    for event in &items {
         if fired.contains_key(&event.id) {
             continue;
         }

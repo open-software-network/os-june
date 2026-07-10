@@ -8645,6 +8645,15 @@ fn parse_rfc3339(value: &str) -> Result<chrono::DateTime<chrono::Utc>, AppError>
         })
 }
 
+/// This machine's current offset from UTC, in minutes. Used to interpret a
+/// free-slot working-hours window (e.g. 9 to 17) in the user's local day when
+/// the caller omits an explicit offset. Defaulting to 0 (UTC) would place the
+/// window in the wrong part of the day for every non-UTC user.
+fn local_utc_offset_minutes() -> i32 {
+    use chrono::Offset;
+    chrono::Local::now().offset().fix().local_minus_utc() / 60
+}
+
 /// Explicit send consent is the presence of the `gmail.send` scope on the
 /// account, not a latent capability of the compose/modify scopes.
 fn scopes_allow_send(scopes: &[String]) -> bool {
@@ -8826,11 +8835,14 @@ async fn dispatch_connector_route(
                     .and_then(serde_json::Value::as_u64)
                     .map(|value| value as u32)
                     .unwrap_or(17),
+                // The model rarely sends an offset; fall back to this machine's
+                // local offset rather than UTC so the working-hours window lands
+                // on the user's actual day.
                 utc_offset_minutes: body
                     .get("utc_offset_minutes")
                     .and_then(serde_json::Value::as_i64)
                     .map(|value| value as i32)
-                    .unwrap_or(0),
+                    .unwrap_or_else(local_utc_offset_minutes),
                 min_slot_minutes: duration,
             };
             connector_json(google::find_free_slots(&params, &busy))
