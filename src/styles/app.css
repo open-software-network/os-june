@@ -5728,15 +5728,15 @@ input:focus-visible,
     0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
 }
 
-/* The whole header toggles the list; hover matches the row treatment below.
-   Grid hands the count pill the rows' leading-rail column, so the "Up next"
-   label sits on the rows' text edge without stretching the pill itself. */
+/* A compact trigger, not a full-width bar: the button hugs the pill, label,
+   and chevron so the affordance stays subtle. Grid hands the count pill the
+   rows' leading-rail column, so the "Up next" label sits on the rows' text
+   edge without stretching the pill itself. */
 .agent-steer-queue-header {
-  display: grid;
-  grid-template-columns: var(--follow-up-rail) 1fr auto;
+  display: inline-grid;
+  grid-template-columns: var(--follow-up-rail) auto auto;
   align-items: center;
   gap: var(--sp-2);
-  width: 100%;
   min-height: var(--control-md);
   padding: var(--sp-1) var(--sp-3);
   border: 0;
@@ -5767,7 +5767,6 @@ input:focus-visible,
 /* Open, the chevron points down (fold the list away); collapsed it turns up,
    toward where the queue reopens. */
 .agent-steer-queue-chevron {
-  margin-left: auto;
   transition: rotate var(--t-med) var(--ease-out);
 }
 
@@ -5833,25 +5832,38 @@ input:focus-visible,
   flex: 0 0 auto;
 }
 
-/* A multi-attachment message reads as a small deck: the first attachment's
-   tile in front, card slivers fanning out behind its right edge - one sliver
-   for a pair, two for three or more, fading as they recede. The fan borrows
-   the gap to the text, so the rail and the text edge hold still. */
+/* A multi-attachment message reads as a casual pile: the first attachment's
+   tile in front, blank cards in the composer's surface recipe tilted behind
+   it - one card for a pair, two for three or more, each leaning a little
+   further. Rotation keeps the peeks diagonal, so the rail and the text edge
+   hold still. */
+.agent-follow-up-attachments[data-stacked] {
+  /* Own stacking context so the far card's negative z stays inside the pile
+     instead of dropping behind the row's hover wash. */
+  z-index: 0;
+}
+
 .agent-follow-up-attachments[data-stacked]::before,
 .agent-follow-up-attachments[data-stacked="3"]::after {
   content: "";
   position: absolute;
+  inset: 1px;
   border-radius: var(--r-md);
+  background: var(--card);
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
 }
 
 .agent-follow-up-attachments[data-stacked]::before {
-  inset: 2px -3px 2px 3px;
-  background: color-mix(in oklch, var(--muted-foreground) 16%, var(--card));
+  translate: -1px 0;
+  rotate: -10deg;
 }
 
 .agent-follow-up-attachments[data-stacked="3"]::after {
-  inset: 4px -5px 4px 6px;
-  background: color-mix(in oklch, var(--muted-foreground) 9%, var(--card));
+  z-index: -1;
+  translate: -2px 0;
+  rotate: -20deg;
 }
 
 .agent-follow-up-attachments[data-stacked] .agent-attachment-chip {
