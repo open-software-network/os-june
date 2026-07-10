@@ -356,6 +356,7 @@ export function BillingSettingsSection({
     refreshing,
     spins,
     maxGrantPending: maxGrantWait !== undefined,
+    maxGrantRetry: maxGrantWait?.phase === "slow",
     onRefresh: () => void handleRefresh(),
     onUpgrade: (plan: SubscriptionPlan) => void handleUpgrade(plan),
     // Confirm first because the change may charge the saved card.
@@ -414,6 +415,11 @@ type BillingCardProps = {
   refreshing: boolean;
   spins: number;
   maxGrantPending: boolean;
+  /** The pending grant wait outlasted its poll window (an abandoned or
+   * still-open Stripe page). The plan stays suppressed, but the upgrade CTA
+   * must come back: retrying opens a fresh hosted session and charges
+   * nothing until the Stripe confirm. */
+  maxGrantRetry: boolean;
   onRefresh: () => void;
   onUpgrade: (plan: SubscriptionPlan) => void;
   onChangePlan: (plan: SubscriptionPlan) => void;
@@ -425,6 +431,7 @@ function BillingCard({
   refreshing,
   spins,
   maxGrantPending,
+  maxGrantRetry,
   onRefresh,
   onUpgrade,
   onChangePlan,
@@ -462,10 +469,12 @@ function BillingCard({
         ? (describeEnd("Billing starts", subscription.trialEnd) ?? "Free trial")
         : (describeEnd("Renews", subscription?.currentPeriodEnd) ?? "Active");
   const ctas: { label: string; onClick: () => void; title?: string }[] = onPaidPlan
-    ? onMaxPlan || maxGrantPending
+    ? onMaxPlan || (maxGrantPending && !maxGrantRetry)
       ? [{ label: "Manage billing", onClick: onManage }]
       : // Pro subscribers keep billing management and can upgrade their
         // existing subscription in place; this is their path beyond Pro.
+        // A slow grant wait keeps the retry path here too - the status line
+        // points at trying again, so the affordance must exist.
         [
           { label: "Manage billing", onClick: onManage },
           {

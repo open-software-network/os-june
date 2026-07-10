@@ -108,7 +108,11 @@ export function clearMaxGrantWait(wait?: MaxGrantWait): void {
  * never see rise) means the account is live or long settled - the surface
  * should re-derive from the refreshed snapshot instead of parking on a poll
  * that cannot succeed. A failed refresh (undefined) counts as pending: the
- * poll itself refreshes and can recover. */
+ * poll itself refreshes and can recover. Downward movement also reads as
+ * settled on purpose: it usually means a stale baseline from a drained Max
+ * account, where a poll could never succeed. The narrow miss (a metered
+ * charge settling mid-upgrade) re-derives an honest top-up prompt the user
+ * must still explicitly confirm. */
 export function accountLooksPreGrant(
   account: AccountStatus | undefined,
   baselineCredits: number,

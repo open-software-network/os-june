@@ -348,6 +348,26 @@ describe("FundingGate", () => {
     expect(screen.queryByRole("button", { name: "Upgrade to Pro" })).toBeNull();
   });
 
+  it("cancelling from the browser phase returns to the upgrade prompt without charging", async () => {
+    const user = userEvent.setup();
+    renderDepletedProGate();
+
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
+    expect(
+      await screen.findAllByText("Waiting for you to confirm in the browser"),
+    ).not.toHaveLength(0);
+
+    // Closing the Stripe page must not wall the app-blocking gate for the
+    // whole poll window; nothing has been charged in the browser phase.
+    await user.click(screen.getByRole("button", { name: "I closed the Stripe page" }));
+
+    expect(screen.getByRole("button", { name: "Upgrade to Max" })).toBeInTheDocument();
+    expect(currentMaxGrantWait()).toBeUndefined();
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
+  });
+
   it("announces Max only after a refreshed account snapshot shows the grant", async () => {
     const user = userEvent.setup();
     const depletedProAccount: AccountStatus = {

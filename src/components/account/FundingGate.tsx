@@ -301,6 +301,25 @@ export function FundingGate({ account, onRefresh, onSignOut }: Props) {
               >
                 {checking ? "Checking..." : "Check again"}
               </button>
+              {awaitingBrowser ? (
+                // The browser phase means nothing has been charged yet: the
+                // user is (or was) on the Stripe page. Closing that page
+                // must not wall the gate for the whole poll window, so this
+                // clears the wait and returns to the upgrade prompt. If the
+                // payment actually went through, the focus refresh observes
+                // the landed grant and unblocks anyway.
+                <button
+                  type="button"
+                  className="welcome-cancel-btn"
+                  onClick={() => {
+                    if (maxGrantWait) clearMaxGrantWait(maxGrantWait);
+                    setMaxGrantWait(undefined);
+                    setBillingStatus(undefined);
+                  }}
+                >
+                  I closed the Stripe page
+                </button>
+              ) : null}
             </div>
           ) : grantNotConfirmed || proUpgradeRequired ? (
             <button

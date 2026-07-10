@@ -1051,6 +1051,32 @@ describe("AppSettings", () => {
     expect(screen.getByRole("heading", { name: "Max plan" })).toBeInTheDocument();
   });
 
+  it("restores the upgrade CTA when a hosted wait outlasts its poll window", async () => {
+    const user = userEvent.setup();
+    // An abandoned Stripe page leaves the hosted wait in the slow phase. The
+    // status copy points at trying again, so the retry affordance must exist:
+    // reopening a hosted session charges nothing until the Stripe confirm.
+    const grantWait = beginMaxGrantWait(1200, signedInAccount.user?.id, "browser");
+    markMaxGrantWaitSlow(grantWait);
+    renderProBillingSettings();
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    expect(
+      screen.getByText(
+        "Still waiting for payment confirmation. If you closed the Stripe page, you can try again.",
+      ),
+    ).toBeInTheDocument();
+    // The plan claim stays suppressed, but the retry path is back.
+    expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+    const retry = screen.getByRole("button", { name: "Upgrade to Max" });
+
+    await user.click(retry);
+    expect(await screen.findByText(MAX_CONFIRM_BODY)).toBeInTheDocument();
+    expect(mocks.osAccountsUpgradeSession).not.toHaveBeenCalled();
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+  });
+
   it("never changes plans without an explicit confirm", async () => {
     const user = userEvent.setup();
     renderProBillingSettings();
