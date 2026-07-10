@@ -103,6 +103,11 @@ input:focus-visible,
 .app-shell {
   display: grid;
   grid-template-columns: var(--sidebar-w-current, var(--sidebar-w)) minmax(0, 1fr);
+  /* One full-height row, always. Without this the row is implicit (auto), and
+   * any stray in-flow child wraps into a second implicit row that steals
+   * height from the main column once the collapsed sidebar stops propping the
+   * first row up to 100vh (JUN-237's bottom gap). */
+  grid-template-rows: minmax(0, 100%);
   position: relative;
   height: 100vh;
   overflow: hidden;
