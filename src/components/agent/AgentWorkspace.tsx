@@ -5846,6 +5846,8 @@ export function AgentWorkspace({
         options.attachments.length === 1
           ? firstDisplayName
           : `${firstDisplayName} +${options.attachments.length - 1} more`;
+      // Array.from splits on Unicode code points, so the cap cannot cut an
+      // emoji or surrogate pair in half the way String.slice would.
       attachmentOnlyTitle = Array.from(title.replace(/\s+/g, " "))
         .slice(0, AGENT_TITLE_MAX_CHARS)
         .join("")
