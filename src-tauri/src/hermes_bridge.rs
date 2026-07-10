@@ -2288,7 +2288,9 @@ fn june_character_status(hermes_home: &Path) -> JuneCharacterStatus {
         character: custom.unwrap_or_else(|| JUNE_SOUL_CHARACTER_DEFAULT_MD.to_string()),
         is_custom,
         default_character: JUNE_SOUL_CHARACTER_DEFAULT_MD.to_string(),
-        path: june_character_path(hermes_home).to_string_lossy().into_owned(),
+        path: june_character_path(hermes_home)
+            .to_string_lossy()
+            .into_owned(),
     }
 }
 
