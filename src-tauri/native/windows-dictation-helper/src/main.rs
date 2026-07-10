@@ -131,7 +131,7 @@ impl HelperApp {
             | "request_accessibility_permission" => {
                 let microphone = audio::microphone_permission_status();
                 if command.command_type == "request_microphone_permission"
-                    && microphone != "granted"
+                    && matches!(microphone.status, "denied" | "restricted")
                 {
                     open_microphone_settings();
                 }
@@ -196,10 +196,13 @@ impl HelperApp {
     }
 
     fn emit_permission_status(&self) {
+        let microphone = audio::microphone_permission_status();
         self.writer.emit(event(
             "permission_status",
             serde_json::json!({
-                "microphone": audio::microphone_permission_status(),
+                "microphone": microphone.status,
+                "microphoneDeviceAvailable": microphone.device_available,
+                "microphoneReason": microphone.reason,
                 "accessibility": "granted",
             }),
         ));

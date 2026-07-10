@@ -73,6 +73,7 @@ export function PermissionsStep({
   const [showUnknownStatuses, setShowUnknownStatuses] = useState(false);
   const micGranted = isMicrophoneGranted(statuses);
   const micDenied = isMicrophoneDenied(statuses);
+  const micUnavailable = statuses.microphone === "unavailable";
   const accessibilityGranted = isAccessibilityGranted(statuses);
   const systemAudioGranted = systemAudioStatus === "granted";
   const systemAudioDenied = systemAudioStatus === "denied";
@@ -139,20 +140,27 @@ export function PermissionsStep({
           granted={showPermissionRows && micGranted}
           title="Microphone"
           detail={
-            micDenied
-              ? macLikePlatform
-                ? "Turned off in System Settings. Flip the toggle and June will notice."
-                : "Turned off in Windows settings. Flip the toggle and June will notice."
-              : "Hears you only when you ask June to listen."
+            micUnavailable
+              ? "No microphone found. Connect one, choose it in Windows sound settings, then try again."
+              : micDenied
+                ? macLikePlatform
+                  ? "Turned off in System Settings. Flip the toggle and June will notice."
+                  : "Turned off in Windows settings. Flip the toggle and June will notice."
+                : "Hears you only when you ask June to listen."
           }
           onAllow={
             showPermissionRows
-              ? micDenied
-                ? () => void openPrivacySettings("microphone")
-                : () =>
+              ? micUnavailable
+                ? () =>
                     void dictationHelperCommand({
-                      type: "request_microphone_permission",
+                      type: "get_permission_status",
                     }).catch(() => undefined)
+                : micDenied
+                  ? () => void openPrivacySettings("microphone")
+                  : () =>
+                      void dictationHelperCommand({
+                        type: "request_microphone_permission",
+                      }).catch(() => undefined)
               : undefined
           }
         />
