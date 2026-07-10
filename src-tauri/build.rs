@@ -238,8 +238,10 @@ fn build_windows_dictation_helper() {
         .join("windows-dictation-helper")
         .join("Cargo.toml");
     if !helper_manifest.exists() {
-        println!("cargo:warning=Windows dictation helper manifest is missing");
-        return;
+        panic!(
+            "Windows dictation helper manifest is missing at {}",
+            helper_manifest.display()
+        );
     }
     println!("cargo:rerun-if-changed={}", helper_manifest.display());
     for source in [
@@ -276,10 +278,17 @@ fn build_windows_dictation_helper() {
     if let Some(target) = target.as_deref() {
         command.arg("--target").arg(target);
     }
-    let status = command.status();
-    if !matches!(status, Ok(status) if status.success()) {
-        println!("cargo:warning=Windows dictation helper could not be built; dictation will report unavailable");
-        return;
+    let status = command.status().unwrap_or_else(|error| {
+        panic!(
+            "Windows dictation helper build command could not start for {}: {error}",
+            helper_manifest.display()
+        )
+    });
+    if !status.success() {
+        panic!(
+            "Windows dictation helper build failed for {} with status {status}",
+            helper_manifest.display()
+        );
     }
 
     let mut built = target_dir.join("release").join("june-dictation-helper.exe");
