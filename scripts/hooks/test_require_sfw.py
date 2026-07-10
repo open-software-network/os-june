@@ -22,6 +22,8 @@ cases = [
     ("true `cargo install cargo-edit`", True),
     ("diff <(pnpm dlx thing) /dev/null", True),
     ("echo $(sfw pnpm add lodash)", False),
+    ("pnpm \\\nadd lodash", True),
+    ("echo $(pnpm \\\n  add lodash)", True),
     ("cargo add serde", True),
     ("cargo install cargo-edit", True),
     ("cargo update", True),

@@ -35,6 +35,9 @@ def pnpm_install_with_package(seg):
 
 
 def check(command):
+    # Backslash-newline continues a command across lines; collapse it so the
+    # newline split below cannot break one command into non-matching pieces.
+    command = re.sub(r"\\\r?\n\s*", " ", command)
     # Separators and substitution openers ($(, `, <(, >() all start a new
     # segment, so a guarded command nested inside them still hits the
     # anchored patterns below.
