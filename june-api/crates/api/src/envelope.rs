@@ -5,6 +5,7 @@ use serde_json::json;
 pub const ERR_BAD_REQUEST: i32 = 2001;
 pub const ERR_UNAUTHORIZED: i32 = 3001;
 pub const ERR_UNPROCESSABLE: i32 = 4201;
+pub const ERR_NOT_FOUND: i32 = 4041;
 pub const ERR_INSUFFICIENT_CREDITS: i32 = 4301;
 pub const ERR_PAYLOAD_TOO_LARGE: i32 = 4131;
 pub const ERR_AUTHORIZATION_DENIED: i32 = 4401;

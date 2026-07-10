@@ -61,7 +61,18 @@ vi.mock("../lib/recording-sounds", () => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
-  dictationCapabilities: vi.fn().mockResolvedValue({ capabilities: { available: true, platform: "macos", shortcuts: true, paste: true, microphoneSelection: true, accessibilityPermission: true, systemAudio: true } }),
+  dictationCapabilities: vi.fn().mockResolvedValue({
+    capabilities: {
+      available: true,
+      platform: "macos",
+      shortcuts: true,
+      paste: true,
+      microphoneSelection: true,
+      accessibilityPermission: true,
+      systemAudio: true,
+    },
+  }),
+  primeGeneratedVideoDir: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
@@ -186,7 +197,7 @@ describe("meeting start transcription event", () => {
       sourceMode: "microphonePlusSystem",
       sources: [
         { source: "microphone", ready: true },
-        { source: "system", ready: true },
+        { source: "system", ready: true, permissionState: "granted" },
       ],
     });
     mocks.startRecording.mockResolvedValue(recording());
@@ -353,7 +364,7 @@ describe("agent recorder request event", () => {
       sourceMode: "microphonePlusSystem",
       sources: [
         { source: "microphone", ready: true },
-        { source: "system", ready: true },
+        { source: "system", ready: true, permissionState: "granted" },
       ],
     });
     mocks.startRecording.mockResolvedValue(recording({ id: "rec-agent", noteId: "note-agent" }));

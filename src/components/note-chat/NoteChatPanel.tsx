@@ -252,6 +252,9 @@ export function NoteChatPanel({
       const target = event.target as Node;
       if (modelPopoverRef.current?.contains(target)) return;
       if (modelTriggerRef.current?.contains(target)) return;
+      // The hover detail cards are portaled to document.body, so a click inside
+      // one (its "Show more" toggle) lands outside the popover — treat it as in.
+      if (target instanceof Element && target.closest(".agent-composer-model-hovercard")) return;
       setModelOpen(false);
     }
     window.addEventListener("mousedown", handlePointerDown);

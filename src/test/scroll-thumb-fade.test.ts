@@ -77,23 +77,39 @@ describe("attachScrollThumbFade", () => {
     expect(alpha()).toBe(0);
   });
 
-  it("fades the thumb in on pointer movement and back out after idle", () => {
+  it("reveals the thumb on hover and holds it until the pointer leaves", () => {
     detach = attachScrollThumbFade(el);
 
-    el.dispatchEvent(new Event("pointermove"));
+    el.dispatchEvent(new Event("pointerenter"));
     expect(isActive()).toBe(true);
-    frame(50);
-    expect(alpha()).toBeGreaterThan(0);
-    expect(alpha()).toBeLessThan(30);
     while (frame(200));
     expect(alpha()).toBe(30);
 
-    vi.advanceTimersByTime(800);
-    while (frame(2000));
+    vi.advanceTimersByTime(5000); // no idle fade-out while the pointer rests
+    while (frame(6000));
+    expect(alpha()).toBe(30);
+
+    el.dispatchEvent(new Event("pointerleave"));
+    while (frame(10000));
     expect(alpha()).toBe(0);
+    expect(isActive()).toBe(false);
   });
 
-  it("treats wheel and mouse movement as scrollbar activity", () => {
+  it("does not re-arm the idle fade when scrolling while hovering", () => {
+    detach = attachScrollThumbFade(el);
+
+    el.dispatchEvent(new Event("pointerenter"));
+    el.dispatchEvent(new Event("scroll"));
+    while (frame(200));
+    expect(alpha()).toBe(30);
+
+    vi.advanceTimersByTime(5000);
+    while (frame(6000));
+    expect(alpha()).toBe(30);
+    expect(isActive()).toBe(true);
+  });
+
+  it("treats wheel as scrollbar activity", () => {
     detach = attachScrollThumbFade(el);
 
     el.dispatchEvent(new WheelEvent("wheel"));
@@ -101,13 +117,29 @@ describe("attachScrollThumbFade", () => {
     while (frame(200));
     expect(alpha()).toBe(30);
 
-    vi.advanceTimersByTime(500);
-    el.dispatchEvent(new MouseEvent("mousemove"));
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(300);
+    el.dispatchEvent(new WheelEvent("wheel"));
+    vi.advanceTimersByTime(300);
     expect(isActive()).toBe(true);
     expect(alpha()).toBe(30);
 
     vi.advanceTimersByTime(300);
+    while (frame(5000));
+    expect(alpha()).toBe(0);
+    expect(isActive()).toBe(false);
+  });
+
+  it("honors custom idle and hide timings", () => {
+    detach = attachScrollThumbFade(el, { idleMs: 1000, hideMs: 500 });
+
+    el.dispatchEvent(new Event("scroll"));
+    while (frame(200));
+    expect(alpha()).toBe(30);
+
+    vi.advanceTimersByTime(999); // default 400ms idle would already have fired
+    frame(1500); // pump a frame: nothing should be animating yet
+    expect(alpha()).toBe(30);
+    vi.advanceTimersByTime(1); // custom idle delay elapses → fade-out starts
     while (frame(5000));
     expect(alpha()).toBe(0);
     expect(isActive()).toBe(false);

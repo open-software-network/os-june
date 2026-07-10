@@ -787,6 +787,25 @@ describe("OnboardingFlow", () => {
       restoreNavigator();
     }
   });
+
+  it("says system audio needs a restart rather than calling it allowed", async () => {
+    const restoreNavigator = stubMacNavigatorPlatform();
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioCaptureUnavailableReadiness());
+    try {
+      await renderFlow();
+      grantPermissions();
+
+      // The grant exists, so there is nothing left to allow, but the source
+      // does not work yet and the row must not claim otherwise.
+      await screen.findByText("Allowed. Restart June to finish turning it on.");
+      expect(
+        screen.queryByText("Hears your calls and meetings, only while you record."),
+      ).not.toBeInTheDocument();
+      expect(mocks.openPrivacySettings).not.toHaveBeenCalled();
+    } finally {
+      restoreNavigator();
+    }
+  });
 });
 
 describe("subscribeToOnboardingComplete", () => {

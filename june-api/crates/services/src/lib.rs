@@ -14,6 +14,7 @@ mod p3a;
 mod pricing;
 mod prompts;
 mod util;
+mod video;
 mod web_augment;
 
 pub use agent_chat::{
@@ -38,6 +39,10 @@ pub use note_transcribe::{
 };
 pub use p3a::{P3aReportParams, P3aReportService, P3aReportServiceDeps};
 pub use pricing::{PricingError, PricingTable};
+pub use video::{
+    JobId, VideoAnimateParams, VideoGenerateParams, VideoJobHandle, VideoModelPrice, VideoService,
+    VideoServiceDeps, VideoStatusOutput,
+};
 pub use web_augment::{
     WebAugmentService, WebAugmentServiceDeps, WebFetchOutput, WebFetchParams, WebSearchOutput,
     WebSearchParams,

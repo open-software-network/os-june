@@ -24,8 +24,9 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0012](adr/0012-direct-issue-report-submission.md) — issue reports submit directly (no client model turn, nothing to charge); June API generates the team-facing diagnosis
 - [adr/0013](adr/0013-stream-inference-responses-through-june-api.md) — inference responses stream through June API (SSE pass-through + keep-alive heartbeats); charges settle after the stream ends
 - [adr/0014](adr/0014-pinned-dictation-paste-target.md) — the dictation paste target is pinned when the recording stops, never re-resolved at paste time
-- [adr/0015](adr/0015-windows-dictation-helper.md) — Windows dictation uses a platform-native helper process
-- [adr/0016](adr/0016-windows-dictation-keyboard-hook.md) — Windows shortcuts combine `RegisterHotKey` with a narrow keyboard hook
+- [adr/0015](adr/0015-video-generation-tools.md) — video generation: `/video` fast path + LLM tools, async job + poll, quote-priced, via Venice
+- [adr/0016](adr/0016-windows-dictation-helper.md) — Windows dictation uses a platform-native helper process
+- [adr/0017](adr/0017-windows-dictation-keyboard-hook.md) — Windows shortcuts combine `RegisterHotKey` with a narrow keyboard hook
 
 ## Enforceable rules (spec/)
 

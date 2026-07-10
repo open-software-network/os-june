@@ -39,7 +39,20 @@ export function isAccessibilityGranted(statuses: PermissionStatuses) {
  * screen the whole time, so the usual focus-refresh in App.tsx isn't
  * running yet.
  */
-export type SystemAudioStatus = "unknown" | "probing" | "granted" | "denied" | "unsupported";
+/**
+ * `unavailable` is granted-but-uncapturable: the user allowed system audio,
+ * yet the capture helper cannot open the tap and recovers on restart. It is a
+ * settled state with nothing left to ask for, so it neither holds the Continue
+ * gate nor sends the user to System Settings. It is deliberately not `granted`,
+ * because the source does not work.
+ */
+export type SystemAudioStatus =
+  | "unknown"
+  | "probing"
+  | "granted"
+  | "unavailable"
+  | "denied"
+  | "unsupported";
 
 /**
  * System-audio permission state for the onboarding wizard.
@@ -72,14 +85,21 @@ export function useSystemAudioStatus(active: boolean): {
     checkRecordingSourceReadiness("microphonePlusSystem")
       .then((readiness) => {
         const system = readiness.sources.find((source) => source.source === "system");
+        // This row reports the *grant*, so it cannot reuse `systemAudioAvailability`:
+        // that predicate calls a capable-but-unprobed source usable, which is right
+        // for a recording switch (flipping it fires the prompt) and wrong here,
+        // where the grant is still the open question.
         if (!system || system.permissionState === "unsupported") {
           setStatus("unsupported");
         } else if (system.permissionState === "granted") {
-          setStatus("granted");
+          // Granted, but `ready` says the helper cannot open the tap.
+          setStatus(system.ready ? "granted" : "unavailable");
         } else if (system.permissionState === "denied" || system.permissionState === "restricted") {
           setStatus("denied");
         } else {
-          setStatus(system.ready ? "granted" : "unknown");
+          // `ready` only says this Mac is capable; an unprobed source carries
+          // no grant, so it stays unknown rather than reading as allowed.
+          setStatus("unknown");
         }
       })
       .catch(() => {

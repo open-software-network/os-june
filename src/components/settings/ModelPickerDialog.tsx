@@ -29,7 +29,7 @@ export function ModelMeta({ model }: { model: VeniceModelDto }) {
   const items: ReactNode[] = [];
   if (price) items.push(<span className="model-meta-price">{price}</span>);
   if (context) items.push(<span>{context}</span>);
-  if (model.modelType === "image" && model.description) {
+  if ((model.modelType === "image" || model.modelType === "video") && model.description) {
     items.push(<span>{model.description}</span>);
   }
   if (privacyBadge) {
@@ -135,7 +135,9 @@ export function ModelPickerDialog({
       ? "Transcription model"
       : mode === "image"
         ? "Image model"
-        : "Text model";
+        : mode === "video"
+          ? "Video model"
+          : "Text model";
 
   return (
     <Dialog
@@ -324,6 +326,47 @@ export function contextLabel(model: VeniceModelDto) {
 
 function trimNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+// The hover card's spec list: the pricing/context facts split into label/value
+// pairs so the card renders a compact spec table instead of a prose sentence.
+// Falls back to a single "Pricing" row when there is no clean input/output
+// credit split.
+export function modelSpecEntries(model: VeniceModelDto): { label: string; value: string }[] {
+  const entries: { label: string; value: string }[] = [];
+  // Use June's billed credit price (with margin) for the input/output split.
+  // The raw `pricing.*.usd` on the DTO is upstream provider metadata the backend
+  // keeps for reference only — the user-facing price must come from the credit
+  // price (see june-api handlers/models.rs), so it is never shown as the price
+  // here. Anything without the credit split defers to `pricingLabel`, which
+  // resolves the price the same way the rest of the app does.
+  if (
+    model.priceUnit === "tokens" &&
+    typeof model.inputCreditsPerMillionTokens === "number" &&
+    typeof model.outputCreditsPerMillionTokens === "number"
+  ) {
+    entries.push({
+      label: "Input",
+      value: `${formatCreditsAsUsd(model.inputCreditsPerMillionTokens)} /1M`,
+    });
+    entries.push({
+      label: "Output",
+      value: `${formatCreditsAsUsd(model.outputCreditsPerMillionTokens)} /1M`,
+    });
+  } else {
+    const price = pricingLabel(model);
+    if (price) entries.push({ label: "Pricing", value: price });
+  }
+  if (model.contextTokens) {
+    const context =
+      model.contextTokens >= 1_000_000
+        ? `${trimNumber(model.contextTokens / 1_000_000)}M tokens`
+        : model.contextTokens >= 1_000
+          ? `${trimNumber(model.contextTokens / 1_000)}K tokens`
+          : `${model.contextTokens} tokens`;
+    entries.push({ label: "Context", value: context });
+  }
+  return entries;
 }
 
 export function modelOptions(models: VeniceModelDto[], selectedModel: string) {

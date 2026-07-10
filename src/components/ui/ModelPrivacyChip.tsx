@@ -1,13 +1,23 @@
 import { IconAnonymous } from "central-icons/IconAnonymous";
 import { IconGhost2 } from "central-icons/IconGhost2";
 import { IconLock } from "central-icons/IconLock";
-import type { ModelPrivacyBadge } from "../../lib/model-privacy";
+import { modelPrivacyBadge, type ModelPrivacyBadge } from "../../lib/model-privacy";
+import type { VeniceModelDto } from "../../lib/tauri";
 import { HoverTip } from "./HoverTip";
+
+/** The privacy mode's mascot: the lock for E2EE, the ghost for private, the
+ * anonymized figure otherwise. Shared so every surface draws the same glyph
+ * for a given mode. */
+function privacyModeIcon(mode: ModelPrivacyBadge["mode"], size: number) {
+  if (mode === "e2ee") return <IconLock size={size} aria-hidden />;
+  if (mode === "private") return <IconGhost2 size={size} aria-hidden />;
+  return <IconAnonymous size={size} aria-hidden />;
+}
 
 /**
  * The single chip for a model's privacy badge — the icon-by-mode (lock / ghost /
  * anonymous) plus its label. Shared by the model picker (`ModelMeta`), the chat
- * model hover cards (`ComposerModelCardContent`), the chat session bar
+ * model hover cards (`ModelPickerCardContent`), the chat session bar
  * (`PrivacyModeBadge`), and the session usage panel so the surfaces stay
  * identical.
  *
@@ -52,14 +62,7 @@ export function ModelPrivacyChip({
   // its shorter height; every other placement keeps the 13/14px icon.
   const iconSize = size === "sm" ? 12 : variant === "themed" ? 13 : 14;
 
-  const icon =
-    badge.mode === "e2ee" ? (
-      <IconLock size={iconSize} aria-hidden />
-    ) : badge.mode === "private" ? (
-      <IconGhost2 size={iconSize} aria-hidden />
-    ) : (
-      <IconAnonymous size={iconSize} aria-hidden />
-    );
+  const icon = privacyModeIcon(badge.mode, iconSize);
 
   if (!withTip) {
     return (
@@ -80,6 +83,26 @@ export function ModelPrivacyChip({
     >
       {icon}
       <span>{label}</span>
+    </HoverTip>
+  );
+}
+
+/**
+ * The compact private marker for model-picker rows. It stays icon-only because
+ * row details live in the hover card. Anonymous/E2EE models keep their privacy
+ * detail in the hover card instead of adding a trailing row icon.
+ */
+export function ModelRowPrivacyBadge({ model }: { model: VeniceModelDto }) {
+  const badge = modelPrivacyBadge(model);
+  if (badge?.mode !== "private") return null;
+  return (
+    <HoverTip
+      tip={badge.description}
+      className="model-row-privacy"
+      data-mode={badge.mode}
+      aria-label={`${badge.label}: ${badge.description}`}
+    >
+      {privacyModeIcon("private", 14)}
     </HoverTip>
   );
 }

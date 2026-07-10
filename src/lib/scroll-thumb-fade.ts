@@ -2,25 +2,35 @@
  * Recreates the native overlay scrollbar's show-while-scrolling behavior for
  * the custom webkit scrollbars on detail views (see the --thumb-alpha rules
  * in app.css). Scrollbar parts ignore CSS transitions, so the fade is driven
- * by stepping the --thumb-alpha custom property each frame. The helper also
- * toggles data-scrollbar-active so WebKit repaints the scrollbar part when the
- * pointer is over content rather than directly over the scrollbar gutter.
+ * by stepping the --thumb-alpha custom property each frame, and the paint is
+ * gated on data-scrollbar-active so WebKit reliably repaints the part.
  */
 
 /** Thumb opacity while scrolling, in color-mix percent of muted-foreground. */
 const VISIBLE_ALPHA = 30;
 /** Fade-in duration — quick, so the thumb tracks the first scroll tick. */
 const SHOW_MS = 100;
-/** Fade-out duration — a softer dissolve, like the native overlay. */
-const HIDE_MS = 450;
+/** Fade-out duration — quick, so the thumb gets out of the way. */
+const HIDE_MS = 200;
 /** How long after the last scroll event the thumb starts fading out. */
-const IDLE_MS = 800;
+const IDLE_MS = 400;
+
+export type ScrollThumbFadeOptions = {
+  /** Fade-out duration; defaults to the shared 200ms dissolve. */
+  hideMs?: number;
+  /** Idle delay before the fade-out starts; defaults to 400ms. */
+  idleMs?: number;
+};
 
 /**
  * Fade `el`'s scrollbar thumb in on scroll or pointer activity and back out
- * after a beat of idleness. Returns a cleanup function.
+ * after a beat of idleness. Returns a cleanup function. Callers with special
+ * pacing needs can override the fade-out timings.
  */
-export function attachScrollThumbFade(el: HTMLElement): () => void {
+export function attachScrollThumbFade(
+  el: HTMLElement,
+  { hideMs = HIDE_MS, idleMs = IDLE_MS }: ScrollThumbFadeOptions = {},
+): () => void {
   let alpha = 0;
   let target = 0;
   let rate = 0; // alpha units per ms
@@ -55,15 +65,33 @@ export function attachScrollThumbFade(el: HTMLElement): () => void {
     }
   };
 
+  // While the pointer rests over the scroller the thumb holds steady —
+  // arming the idle fade-out under a hovering pointer would blink the thumb
+  // in and out on every stray hand movement. The idle timer only runs for
+  // non-hover activity (keyboard-driven scrolls, focus moves).
+  let hovering = false;
+
   const show = () => {
     animateTo(VISIBLE_ALPHA, SHOW_MS);
     window.clearTimeout(idleTimer);
-    idleTimer = window.setTimeout(() => animateTo(0, HIDE_MS), IDLE_MS);
+    if (!hovering) {
+      idleTimer = window.setTimeout(() => animateTo(0, hideMs), idleMs);
+    }
   };
 
   const hide = () => {
     window.clearTimeout(idleTimer);
-    animateTo(0, HIDE_MS);
+    animateTo(0, hideMs);
+  };
+
+  const enter = () => {
+    hovering = true;
+    show();
+  };
+
+  const leave = () => {
+    hovering = false;
+    hide();
   };
 
   const activityOptions = { passive: true, capture: true };
@@ -71,24 +99,20 @@ export function attachScrollThumbFade(el: HTMLElement): () => void {
   el.addEventListener("scroll", show, { passive: true });
   el.addEventListener("wheel", show, activityOptions);
   el.addEventListener("touchmove", show, activityOptions);
-  el.addEventListener("pointerenter", show, { passive: true });
-  el.addEventListener("pointermove", show, activityOptions);
-  el.addEventListener("mouseenter", show, { passive: true });
-  el.addEventListener("mousemove", show, activityOptions);
-  el.addEventListener("pointerleave", hide, { passive: true });
-  el.addEventListener("mouseleave", hide, { passive: true });
+  el.addEventListener("pointerenter", enter, { passive: true });
+  el.addEventListener("mouseenter", enter, { passive: true });
+  el.addEventListener("pointerleave", leave, { passive: true });
+  el.addEventListener("mouseleave", leave, { passive: true });
   el.addEventListener("focusin", show);
   el.addEventListener("focusout", hide);
   return () => {
     el.removeEventListener("scroll", show);
     el.removeEventListener("wheel", show, activityOptions);
     el.removeEventListener("touchmove", show, activityOptions);
-    el.removeEventListener("pointerenter", show);
-    el.removeEventListener("pointermove", show, activityOptions);
-    el.removeEventListener("mouseenter", show);
-    el.removeEventListener("mousemove", show, activityOptions);
-    el.removeEventListener("pointerleave", hide);
-    el.removeEventListener("mouseleave", hide);
+    el.removeEventListener("pointerenter", enter);
+    el.removeEventListener("mouseenter", enter);
+    el.removeEventListener("pointerleave", leave);
+    el.removeEventListener("mouseleave", leave);
     el.removeEventListener("focusin", show);
     el.removeEventListener("focusout", hide);
     window.clearTimeout(idleTimer);

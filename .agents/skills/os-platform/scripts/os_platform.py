@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Read-only os-platform production API helper for agents."""
+"""os-platform production API helper for agents."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import mimetypes
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import textwrap
 import urllib.error
@@ -23,8 +25,14 @@ DEFAULT_BASE_URL = "https://app.opensoftware.co/api"
 CONFIG_FILE_NAME = "os-platform.json"
 API_KEY_ENV = "OS_PLATFORM_API_KEY"
 BASE_URL_ENV = "OS_PLATFORM_API_BASE_URL"
+USER_AGENT = (os.environ.get("OS_PLATFORM_USER_AGENT") or "").strip() or (
+    "os-platform-cli/2.0 (+https://opensoftware.co)"
+)
 WORD_RE = re.compile(r"[a-z0-9]+")
 ME_TOKENS = {"me", "@me"}
+ISSUE_STATUSES = ("proposed", "todo", "in_progress", "in_review", "completed", "cancelled")
+TERMINAL_ISSUE_STATUSES = {"completed", "cancelled"}
+FILE_PURPOSES = ("attachment", "avatar")
 
 COMPACT_KEYS = {
     "id",
@@ -234,12 +242,14 @@ def build_json_request(
     url: str,
     api_key: str,
     body: Mapping[str, Any] | None = None,
+    extra_headers: Mapping[str, str] | None = None,
 ) -> urllib.request.Request:
     headers = {
         "Accept": "application/json",
-        "User-Agent": "os-platform-agent-skill/1.0",
+        "User-Agent": USER_AGENT,
         "Authorization": f"Bearer {api_key}",
     }
+    headers.update(extra_headers or {})
     data = None
     if body is not None:
         headers["Content-Type"] = "application/json"
@@ -255,10 +265,11 @@ def request_json(
     api_key: str,
     query: Mapping[str, Any] | None = None,
     body: Mapping[str, Any] | None = None,
+    headers: Mapping[str, str] | None = None,
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Any:
     url = build_url(base_url, path, query)
-    req = build_json_request(method, url, api_key, body)
+    req = build_json_request(method, url, api_key, body, headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
@@ -523,7 +534,10 @@ def take_issue(
 
 def print_payload(data: Any, args: argparse.Namespace) -> None:
     data = output_data_for_args(data, args)
-    if args.full or args.json:
+    issue_show = (
+        getattr(args, "resource", None) == "issues" and getattr(args, "action", None) == "show"
+    )
+    if args.full or args.json or issue_show:
         output = data
     else:
         output = compact_value(data, limit=args.limit)
@@ -560,9 +574,18 @@ def leaf_parser(subparsers: argparse._SubParsersAction, name: str, **kwargs: Any
 
 def add_issue_filters(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--project", help="CSV of project handles/public ids, or none.")
-    parser.add_argument("--status", help="CSV statuses: todo,in_progress,in_review,completed,cancelled.")
-    parser.add_argument("--type", help="CSV issue types: feature,bug,improvement,design,docs,refactor,other.")
-    parser.add_argument("--priority", help="CSV priorities: none,low,med,high,urgent.")
+    parser.add_argument(
+        "--status",
+        help="CSV statuses: proposed,todo,in_progress,in_review,completed,cancelled.",
+    )
+    parser.add_argument(
+        "--type",
+        help="CSV issue types: feature,bug,improvement,design,docs,refactor,other.",
+    )
+    parser.add_argument(
+        "--priority",
+        help="CSV priorities: none,low,med,high,urgent.",
+    )
     parser.add_argument("--assignee", help="CSV user refs, me/@me for yourself, or none.")
     parser.add_argument("--creator", help="CSV user refs, or me/@me for yourself.")
     parser.add_argument("--labels", help="CSV label slugs.")
@@ -601,6 +624,25 @@ def issue_get_request(org: str, number: str) -> tuple[str, str, dict[str, Any]]:
     return "GET", f"/v1/orgs/{org_ref}/bounties/{number_ref}", {}
 
 
+def issue_create_request(
+    org: str,
+    title: str,
+    body_markdown: str,
+    issue_type: str | None,
+    priority: str | None,
+) -> tuple[str, str, dict[str, Any], dict[str, str]]:
+    org_ref = urllib.parse.quote(require_text(org, "org"))
+    body = {
+        "title": require_text(title, "title"),
+        "body_markdown": require_text(body_markdown, "body"),
+    }
+    if issue_type is not None:
+        body["type"] = issue_type
+    if priority is not None:
+        body["priority"] = priority
+    return "POST", f"/v1/orgs/{org_ref}/bounties", {}, body
+
+
 def issue_status_request(org: str, number: str, status: str) -> tuple[str, str, dict[str, Any], dict[str, str]]:
     org_ref = urllib.parse.quote(require_text(org, "org"))
     number_ref = urllib.parse.quote(require_text(number, "issue number"))
@@ -617,24 +659,49 @@ def issue_update_request(
     return "PATCH", f"/v1/orgs/{org_ref}/bounties/{number_ref}", {}, dict(body)
 
 
+def comment_create_request(
+    org: str,
+    number: str,
+    body_markdown: str,
+) -> tuple[str, str, dict[str, Any], dict[str, str]]:
+    org_ref = urllib.parse.quote(require_text(org, "org"))
+    number_ref = urllib.parse.quote(require_text(number, "issue number"))
+    body = {"body_markdown": require_text(body_markdown, "body")}
+    return "POST", f"/v1/orgs/{org_ref}/bounties/{number_ref}/comments", {}, body
+
+
 def current_user_request() -> tuple[str, str, dict[str, Any]]:
     return "GET", "/v1/users/me", {}
 
 
 def issue_has_assignee(issue: Mapping[str, Any]) -> bool:
-    if issue.get("assignee_user_id"):
-        return True
-    assignee = issue.get("assignee")
-    return assignee is not None
+    value = issue.get("assignee_user_id")
+    return isinstance(value, str) and bool(value.strip())
 
 
-def current_user_public_id(
+def issue_assignee_label(issue: Mapping[str, Any]) -> str:
+    for field in ("assignee", "assignee_user"):
+        assignee = issue.get(field)
+        if isinstance(assignee, Mapping):
+            for key in ("handle", "display_name", "name", "public_id", "id", "user_id"):
+                value = assignee.get(key)
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+        elif assignee is not None and str(assignee).strip():
+            return str(assignee).strip()
+    value = issue.get("assignee_user_id")
+    if value is not None and str(value).strip():
+        return str(value).strip()
+    return "an unknown assignee"
+
+
+def current_user(
     *,
     base_url: str,
     api_key: str,
     timeout: int,
     request: Any = request_json,
-) -> str:
+) -> Mapping[str, Any]:
     method, path, query = current_user_request()
     payload = request(
         method,
@@ -647,6 +714,22 @@ def current_user_public_id(
     user = unwrap_envelope(payload)
     if not isinstance(user, Mapping):
         raise OsPlatformError("current user response did not contain an object")
+    return user
+
+
+def current_user_public_id(
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    request: Any = request_json,
+) -> str:
+    user = current_user(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        request=request,
+    )
     public_id = user.get("public_id")
     if not isinstance(public_id, str) or not public_id.strip():
         raise OsPlatformError("current user response did not contain public_id")
@@ -660,15 +743,258 @@ def assign_issue_to_current_user(
     base_url: str,
     api_key: str,
     timeout: int,
+    force: bool = False,
     request: Any = request_json,
 ) -> Any:
+    get_method, get_path, get_query = issue_get_request(org, number)
+    issue_payload = request(
+        get_method,
+        get_path,
+        base_url=base_url,
+        api_key=api_key,
+        query=get_query,
+        timeout=timeout,
+    )
+    issue = unwrap_envelope(issue_payload)
+    if not isinstance(issue, Mapping):
+        raise OsPlatformError("issue response did not contain an object")
+
+    user = current_user(
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        request=request,
+    )
+    user_id = user.get("public_id")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise OsPlatformError("current user response did not contain public_id")
+
+    assignee_user_id = issue.get("assignee_user_id")
+    if issue_has_assignee(issue):
+        if assignee_user_id == user_id:
+            return issue
+        if not force:
+            raise OsPlatformError(
+                f"issue is already assigned to {issue_assignee_label(issue)}; "
+                "refusing to replace the assignee without --force"
+            )
+
+    method, path, query, body = issue_update_request(org, number, {"assignee_user_id": user_id})
+    unwrap_envelope(
+        request(
+            method,
+            path,
+            base_url=base_url,
+            api_key=api_key,
+            query=query,
+            timeout=timeout,
+            body=body,
+        )
+    )
+
+    verify_payload = request(
+        get_method,
+        get_path,
+        base_url=base_url,
+        api_key=api_key,
+        query=get_query,
+        timeout=timeout,
+    )
+    verified_issue = unwrap_envelope(verify_payload)
+    if not isinstance(verified_issue, Mapping):
+        raise OsPlatformError("assignment verification response did not contain an issue object")
+    verified_assignee_id = verified_issue.get("assignee_user_id")
+    if verified_assignee_id != user_id:
+        actual = verified_assignee_id or "unassigned"
+        raise OsPlatformError(
+            "assignment verification failed after PATCH: "
+            f"expected {user_id}, found {actual}; another writer may have raced this update"
+        )
+    return verified_issue
+
+
+def print_issue_status_context(issue: Mapping[str, Any]) -> None:
+    label = issue.get("external_id") or issue.get("number_in_org") or "Issue"
+    title = issue.get("title") or ""
+    status = issue.get("status") or "unknown"
+    print(f"{label} {title!r} (current status: {status})", file=sys.stderr)
+
+
+def set_issue_status(
+    org: str,
+    number: str,
+    status: str,
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    force: bool = False,
+    assume_yes: bool = False,
+    request: Any = request_json,
+) -> Any:
+    get_method, get_path, get_query = issue_get_request(org, number)
+    issue_payload = request(
+        get_method,
+        get_path,
+        base_url=base_url,
+        api_key=api_key,
+        query=get_query,
+        timeout=timeout,
+    )
+    issue = unwrap_envelope(issue_payload)
+    if not isinstance(issue, Mapping):
+        raise OsPlatformError("issue response did not contain an object")
+    print_issue_status_context(issue)
+
     user_id = current_user_public_id(
         base_url=base_url,
         api_key=api_key,
         timeout=timeout,
         request=request,
     )
-    method, path, query, body = issue_update_request(org, number, {"assignee_user_id": user_id})
+    if issue_has_assignee(issue) and issue.get("assignee_user_id") != user_id and not force:
+        raise OsPlatformError(
+            f"issue is assigned to {issue_assignee_label(issue)}; "
+            "refusing to change its status without --force"
+        )
+
+    if status in TERMINAL_ISSUE_STATUSES and not assume_yes:
+        label = issue.get("external_id") or issue.get("number_in_org") or "Issue"
+        current_status = issue.get("status") or "unknown"
+        print(f"WOULD change {label} from {current_status} to {status}.", file=sys.stderr)
+        raise OsPlatformError("terminal status transitions require --yes")
+
+    return send_write_request(
+        issue_status_request(org, number, status),
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        request=request,
+    )
+
+
+def curl_config_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def upload_file(
+    file_path: pathlib.Path | str,
+    *,
+    is_public: bool,
+    purpose: str,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    run: Any = subprocess.run,
+) -> Any:
+    path = pathlib.Path(file_path).expanduser()
+    if not path.is_file():
+        raise OsPlatformError(f"file does not exist or is not a regular file: {path}")
+    if purpose not in FILE_PURPOSES:
+        raise OsPlatformError(f"file purpose must be one of: {', '.join(FILE_PURPOSES)}")
+
+    endpoint = build_url(base_url, "/v1/files")
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    curl_config = f'header = "Authorization: Bearer {curl_config_value(api_key)}"\n'
+    command = [
+        "curl",
+        "-sS",
+        "-X",
+        "POST",
+        endpoint,
+        "--config",
+        "-",
+        "-H",
+        "Accept: application/json",
+        "-H",
+        f"User-Agent: {USER_AGENT}",
+        "-F",
+        f"file=@{path};type={content_type};filename={path.name}",
+        "-F",
+        f"is_public={'true' if is_public else 'false'}",
+        "-F",
+        f"purpose={purpose}",
+    ]
+    try:
+        result = run(
+            command,
+            input=curl_config,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise OsPlatformError("curl is required for file uploads") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise OsPlatformError(f"file upload timed out after {timeout} seconds") from exc
+
+    if result.returncode != 0:
+        raise OsPlatformError(result.stderr.strip() or "curl file upload failed")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise OsPlatformError(f"non-JSON response from /v1/files: {result.stdout[:800]}") from exc
+    return unwrap_envelope(payload)
+
+
+def attach_file_to_issue(
+    org: str,
+    number: str,
+    file_id: str,
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    request: Any = request_json,
+) -> Any:
+    attached_file_id = require_text(file_id, "file id")
+    get_method, get_path, get_query = issue_get_request(org, number)
+    issue_payload = request(
+        get_method,
+        get_path,
+        base_url=base_url,
+        api_key=api_key,
+        query=get_query,
+        timeout=timeout,
+    )
+    issue = unwrap_envelope(issue_payload)
+    if not isinstance(issue, Mapping):
+        raise OsPlatformError("issue response did not contain an object")
+
+    files = issue.get("files")
+    if not isinstance(files, list):
+        raise OsPlatformError("issue response did not contain a files array")
+    file_ids: list[str] = []
+    for attached_file in files:
+        if not isinstance(attached_file, Mapping):
+            raise OsPlatformError("issue files array contained a non-object entry")
+        existing_id = attached_file.get("id")
+        if not isinstance(existing_id, str) or not existing_id.strip():
+            raise OsPlatformError("issue files array contained an entry without an id")
+        file_ids.append(existing_id)
+    if attached_file_id not in file_ids:
+        file_ids.append(attached_file_id)
+
+    return send_write_request(
+        issue_update_request(org, number, {"file_ids": file_ids}),
+        base_url=base_url,
+        api_key=api_key,
+        timeout=timeout,
+        request=request,
+    )
+
+
+def send_write_request(
+    request_spec: tuple[str, str, dict[str, Any], dict[str, Any]],
+    *,
+    base_url: str,
+    api_key: str,
+    timeout: int,
+    headers: Mapping[str, str] | None = None,
+    request: Any = request_json,
+) -> Any:
+    method, path, query, body = request_spec
     payload = request(
         method,
         path,
@@ -677,6 +1003,7 @@ def assign_issue_to_current_user(
         query=query,
         timeout=timeout,
         body=body,
+        headers=headers,
     )
     return unwrap_envelope(payload)
 
@@ -791,14 +1118,15 @@ def command_to_request(args: argparse.Namespace) -> tuple[str, str, dict[str, An
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="os_platform.py",
-        description="Read-only helper for querying os-platform production API data.",
+        description="Helper for reading and updating os-platform production API data.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent(
             """\
             Examples:
               python3 scripts/os_platform.py status
               python3 scripts/os_platform.py issues list open-software --q wallet --limit 10
-              python3 scripts/os_platform.py issues show open-software 123 --full
+              python3 scripts/os_platform.py issues show open-software 123
+              python3 scripts/os_platform.py issues status open-software 123 in_review
               python3 scripts/os_platform.py raw GET /v1/_status
             """
         ),
@@ -827,7 +1155,7 @@ def build_parser() -> argparse.ArgumentParser:
     project_get = leaf_parser(project_sub, "get", help="Get one Project.")
     project_get.add_argument("refs", nargs="*", metavar="ref")
 
-    issues = subparsers.add_parser("issues", help="Issue/Bounty reads.")
+    issues = subparsers.add_parser("issues", help="Issue/Bounty reads and writes.")
     issues_sub = issues.add_subparsers(dest="action", required=True)
     issues_list = leaf_parser(issues_sub, "list", help="List Issues for an Org.")
     issues_list.add_argument("org", nargs="?")
@@ -836,6 +1164,36 @@ def build_parser() -> argparse.ArgumentParser:
     issues_search.add_argument("org", nargs="?")
     issues_search.add_argument("search_query")
     add_issue_filters(issues_search)
+    issues_create = leaf_parser(issues_sub, "create", help="Create an Issue in an Org.")
+    issues_create.add_argument("org", nargs="?")
+    issues_create.add_argument("--title", required=True)
+    issues_create.add_argument("--body", required=True)
+    issues_create.add_argument("--type", help="Issue type passed through to the platform.")
+    issues_create.add_argument("--priority", help="Priority passed through to the platform.")
+    issues_assign = leaf_parser(issues_sub, "assign", help="Assign an Issue to the current user.")
+    issues_assign.add_argument("refs", nargs="*", metavar="ref")
+    issues_assign.add_argument("--to", choices=["me"], default="me")
+    issues_assign.add_argument("--force", action="store_true", help="Replace another current assignee.")
+    issues_status = leaf_parser(issues_sub, "status", help="Set an Issue's status.")
+    issues_status.add_argument("refs", nargs="*", metavar="ref")
+    issues_status.add_argument("status", choices=ISSUE_STATUSES)
+    issues_status.add_argument("--force", action="store_true", help="Change an Issue assigned to another user.")
+    issues_status.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm a terminal completed or cancelled transition.",
+    )
+    issues_attach = leaf_parser(issues_sub, "attach", help="Attach an uploaded file to an Issue.")
+    issues_attach.add_argument("refs", nargs="*", metavar="ref")
+    attach_source = issues_attach.add_mutually_exclusive_group(required=True)
+    attach_source.add_argument("--file-id", help="Opaque fil_xxx id of a PUBLIC upload (the platform rejects private attachments).")
+    attach_source.add_argument("--path", help="Upload this path, then attach it. Requires --public.")
+    issues_attach.add_argument(
+        "--public",
+        action="store_true",
+        dest="is_public",
+        help="Acknowledge the upload is public: anyone with the URL can download it. Required with --path.",
+    )
     issues_take = leaf_parser(issues_sub, "take", help="Move a todo Issue to in_progress after confirmation.")
     issues_take.add_argument("refs", nargs="*", metavar="ref")
     issues_take.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
@@ -854,7 +1212,7 @@ def build_parser() -> argparse.ArgumentParser:
     activity_list.add_argument("--page", type=int)
     activity_list.add_argument("--per-page", type=int, dest="per_page")
 
-    comments = subparsers.add_parser("comments", help="Comment reads.")
+    comments = subparsers.add_parser("comments", help="Comment reads and writes.")
     comments_sub = comments.add_subparsers(dest="action", required=True)
     comments_list = comments_sub.add_parser("list", help="List comments.")
     comments_list_sub = comments_list.add_subparsers(dest="target", required=True)
@@ -862,6 +1220,16 @@ def build_parser() -> argparse.ArgumentParser:
     issue_comments.add_argument("refs", nargs="*", metavar="ref")
     issue_comments.add_argument("--page", type=int)
     issue_comments.add_argument("--per-page", type=int, dest="per_page")
+    comments_add = leaf_parser(comments_sub, "add", help="Add a comment to an Issue.")
+    comments_add.add_argument("refs", nargs="*", metavar="ref")
+    comments_add.add_argument("--body", required=True)
+
+    files = subparsers.add_parser("files", help="File uploads.")
+    files_sub = files.add_subparsers(dest="action", required=True)
+    files_upload = leaf_parser(files_sub, "upload", help="Upload a file to os-platform.")
+    files_upload.add_argument("path")
+    files_upload.add_argument("--public", action="store_true", dest="is_public")
+    files_upload.add_argument("--purpose", choices=FILE_PURPOSES, default="attachment")
 
     contributors = subparsers.add_parser("contributors", help="Contributor reads.")
     contributors_sub = contributors.add_subparsers(dest="action", required=True)
@@ -894,15 +1262,115 @@ def main(argv: Sequence[str] | None = None) -> int:
             resolve_self_refs(args, base_url=base_url, api_key=api_key, timeout=args.timeout)
 
         if args.resource == "issues" and args.action == "take":
+            org = require_arg(args, "org", "org")
+            number = require_arg(args, "number", "issue number")
             data = take_issue(
-                args.org,
-                args.number,
+                org,
+                number,
                 base_url=base_url,
                 api_key=api_key,
                 timeout=args.timeout,
                 assume_yes=args.yes,
             )
             print_payload(data, args)
+            return 0
+
+        if args.resource == "issues" and args.action == "create":
+            data = send_write_request(
+                issue_create_request(args.org, args.title, args.body, args.type, args.priority),
+                base_url=base_url,
+                api_key=api_key,
+                timeout=args.timeout,
+            )
+            print_payload(data, args)
+            return 0
+
+        if args.resource == "issues" and args.action == "assign":
+            org = require_arg(args, "org", "org")
+            number = require_arg(args, "number", "issue number")
+            data = assign_issue_to_current_user(
+                org,
+                number,
+                base_url=base_url,
+                api_key=api_key,
+                timeout=args.timeout,
+                force=args.force,
+            )
+            print_payload(data, args)
+            return 0
+
+        if args.resource == "issues" and args.action == "status":
+            org = require_arg(args, "org", "org")
+            number = require_arg(args, "number", "issue number")
+            data = set_issue_status(
+                org,
+                number,
+                args.status,
+                base_url=base_url,
+                api_key=api_key,
+                timeout=args.timeout,
+                force=args.force,
+                assume_yes=args.yes,
+            )
+            print_payload(data, args)
+            return 0
+
+        if args.resource == "issues" and args.action == "attach":
+            org = require_arg(args, "org", "org")
+            number = require_arg(args, "number", "issue number")
+            file_id = args.file_id
+            if args.path is not None:
+                if not args.is_public:
+                    raise OsPlatformError(
+                        "the platform only attaches public files (error 2015); "
+                        "re-run with --public to acknowledge anyone with the URL can download it"
+                    )
+                uploaded = upload_file(
+                    args.path,
+                    is_public=True,
+                    purpose="attachment",
+                    base_url=base_url,
+                    api_key=api_key,
+                    timeout=args.timeout,
+                )
+                if not isinstance(uploaded, Mapping):
+                    raise OsPlatformError("file upload response did not contain an object")
+                file_id = uploaded.get("id")
+                if not isinstance(file_id, str) or not file_id.strip():
+                    raise OsPlatformError("file upload response did not contain an id")
+            data = attach_file_to_issue(
+                org,
+                number,
+                require_text(file_id, "file id"),
+                base_url=base_url,
+                api_key=api_key,
+                timeout=args.timeout,
+            )
+            print_payload(data, args)
+            return 0
+
+        if args.resource == "comments" and args.action == "add":
+            org = require_arg(args, "org", "org")
+            number = require_arg(args, "number", "issue number")
+            data = send_write_request(
+                comment_create_request(org, number, args.body),
+                base_url=base_url,
+                api_key=api_key,
+                timeout=args.timeout,
+            )
+            print_payload(data, args)
+            return 0
+
+        if args.resource == "files" and args.action == "upload":
+            data = upload_file(
+                args.path,
+                is_public=args.is_public,
+                purpose=args.purpose,
+                base_url=base_url,
+                api_key=api_key,
+                timeout=args.timeout,
+            )
+            print(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False))
             return 0
 
         method, path, query = command_to_request(args)

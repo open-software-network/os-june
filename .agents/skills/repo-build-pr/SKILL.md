@@ -174,6 +174,15 @@ Run the smallest checks that prove the change, then broaden based on blast radiu
 - **June API:** `make june-api-test` — uses the pinned toolchain from the Makefile.
 - **Docs or skill-only:** validate the skill's structure and that it is symlinked per `AGENTS.md`; skip expensive app builds unless touched files require them.
 
+Hosted PR CI intentionally skips slower local-signoff gates. After the final
+commit is pushed, run `make local-ci` from a clean branch. That command
+detects changed paths, runs frontend typecheck/Vitest and macOS Tauri Rust
+fmt/clippy/tests when relevant, and posts the required `signoff/frontend` and
+`signoff/rust-macos` statuses. Do this before final review or ready-for-review;
+if local tooling or hardware blocks it, record the blocker and add the relevant
+escape-hatch label (`run-frontend-ci` or `run-macos-ci`) so hosted CI covers the
+gap.
+
 Judge vitest by failure count, not exit code (`hud-meeting` teardown noise can exit non-zero at zero real failures — see `AGENTS.md`). If a check cannot run because of local tooling, missing services, or credentials, say exactly what blocked it and what evidence still supports the PR.
 
 Never read a gate's exit code through a pipe: `make verify 2>&1 | tail -40` reports **tail's** status, so a failed gate prints `exit=0`. Redirect to a log and echo `$?` (`make verify > verify.log 2>&1; echo $?`), or read the log's last target — `make` runs prerequisites in order and halts on the first failure, so the final target passing is itself the proof.
@@ -222,7 +231,11 @@ Use a draft PR for the first publish.
    ```bash
    git push -u origin "$(git branch --show-current)"
    ```
-5. Open a draft PR against the chosen base. The PR body should include:
+5. Run the local signoff gate for the pushed commit:
+   ```bash
+   make local-ci
+   ```
+6. Open a draft PR against the chosen base. The PR body should include:
    - task ID from the prompt or live issue data, including `Closes <TASK-ID>` when a tracker Issue exists
    - what changed
    - why it changed
@@ -230,7 +243,7 @@ Use a draft PR for the first publish.
    - live agent walkthrough evidence, os-platform video URLs or PR comments, or the reason no live walkthrough was useful
    - assumptions taken on clarifying questions that went unanswered, flagged for reviewer attention
    - known gaps or skipped checks
-6. Watch initial CI with:
+7. Watch initial CI with:
    ```bash
    gh pr checks --watch
    ```

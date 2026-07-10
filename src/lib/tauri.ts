@@ -188,7 +188,7 @@ export type DictationHelperEvent = {
   };
 };
 
-export type ProviderModelMode = "transcription" | "generation" | "image";
+export type ProviderModelMode = "transcription" | "generation" | "image" | "video";
 
 export type ProviderModelSettingsDto = {
   transcriptionProvider: string;
@@ -197,6 +197,7 @@ export type ProviderModelSettingsDto = {
   generationModel: string;
   remoteGenerationModel: string;
   imageModel: string;
+  videoModel: string;
   veniceApiKeyConfigured: boolean;
   localGeneration: LocalGenerationSettingsDto;
   /** Venice safe mode for image generation/editing (blurs adult content). On
@@ -218,6 +219,28 @@ export type GeneratedImageDto = {
   model: string;
   provider: string;
 };
+
+export type VideoJobDto = {
+  jobId: string;
+};
+
+export type VideoStatusDto =
+  | {
+      status: "processing";
+      averageExecutionMs: number;
+      executionMs: number;
+    }
+  | {
+      status: "completed";
+      path: string;
+      mimeType: string;
+      sizeBytes: number;
+      model: string;
+    }
+  | {
+      status: "failed";
+      reason: string;
+    };
 
 export type ImagePromptScreenResponse = {
   mayBeExplicit: boolean;
@@ -1767,6 +1790,26 @@ export async function editImage(input: {
   });
 }
 
+export async function videoGenerate(input: {
+  prompt: string;
+  model?: string;
+  requestId?: string;
+  duration?: string;
+  resolution?: string;
+  aspectRatio?: string;
+  audio?: boolean;
+}) {
+  return invoke<VideoJobDto>("video_generate", {
+    request: input,
+  });
+}
+
+export async function videoStatus(jobId: string) {
+  return invoke<VideoStatusDto>("video_status", {
+    request: { jobId },
+  });
+}
+
 /** Persists the local endpoint, model id, and optional API key. Strictly
  * validated backend-side (any http/https URL with a host is accepted) and it
  * never changes the active provider — enabling is a separate step. */
@@ -1830,6 +1873,34 @@ export async function dictationHelperCommand(command: Record<string, unknown>) {
 
 export function localAudioFileSrc(path: string) {
   return convertFileSrc(path);
+}
+
+let generatedVideoDirCache: string | undefined;
+
+/** Preload the generated-videos directory so localVideoFileSrc can resolve a
+ * bare `generated-video-*.mp4` filename — the agent frequently refers to a
+ * finished video by filename only — to an absolute, asset-scoped path the
+ * webview can load. Best-effort; call once on mount. */
+export async function primeGeneratedVideoDir(): Promise<void> {
+  try {
+    generatedVideoDirCache = await invoke<string>("generated_video_dir");
+  } catch {
+    // Non-fatal: absolute MEDIA paths still resolve without the cache.
+  }
+}
+
+function isAbsoluteVideoPath(path: string) {
+  return path.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(path);
+}
+
+export function localVideoFileSrc(path: string) {
+  // A bare generated-video filename resolves against the cached videos dir; an
+  // absolute path (fast-path result, or an absolute MEDIA ref) is used as-is.
+  const resolved =
+    isAbsoluteVideoPath(path) || !generatedVideoDirCache
+      ? path
+      : `${generatedVideoDirCache}/${path}`;
+  return convertFileSrc(resolved);
 }
 
 export async function dictationHotkeyStatus() {

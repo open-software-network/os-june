@@ -61,7 +61,7 @@ All events have a `type` string and optional `payload` object.
 
 ## Windows shortcut contract
 
-Windows v1 uses `RegisterHotKey` for reservation and initial key-down, with a narrowly scoped low-level keyboard hook for push-to-talk release and shortcut capture. See [ADR-0016](adr/0016-windows-dictation-keyboard-hook.md).
+Windows v1 uses `RegisterHotKey` for reservation and initial key-down, with a narrowly scoped low-level keyboard hook for push-to-talk release and shortcut capture. See [ADR-0017](adr/0017-windows-dictation-keyboard-hook.md).
 
 Supported shortcut shapes contain at least one of `Ctrl`, `Alt`, `Shift`, or `Win`, and exactly one supported non-modifier physical key. Labels use those Windows names, while `code` carries the layout-independent DOM physical-key code. The supported non-modifier allowlist is letters, digits, punctuation keys, `Space`, `Tab`, `Enter`, `Backspace`, `Escape`, arrow keys, and `F1` through `F12`.
 
