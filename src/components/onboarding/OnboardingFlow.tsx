@@ -4,7 +4,6 @@ import { onboardingResumeStep, setOnboardingResumeStep } from "../../lib/onboard
 import { isMacLikePlatform } from "../../lib/platform";
 import { dictationSettings, p3aRecord, setDictationShortcut } from "../../lib/tauri";
 import type { AccountStatus, DictationShortcutSetting } from "../../lib/tauri";
-import { CharacterStep } from "./steps/CharacterStep";
 import { PermissionsStep } from "./steps/PermissionSteps";
 import { DictationPracticeStep } from "./steps/PracticeStep";
 import { SignInStep } from "./steps/SignInStep";
@@ -12,13 +11,7 @@ import { TelemetryConsentStep } from "./steps/TelemetryConsentStep";
 import { UsageIntentStep } from "./steps/UsageIntentStep";
 import { usePermissionStatuses, useSystemAudioStatus } from "./use-permission-status";
 
-type StepId =
-  | "sign-in"
-  | "telemetry"
-  | "usage-intent"
-  | "character"
-  | "permissions"
-  | "dictation-practice";
+type StepId = "sign-in" | "telemetry" | "usage-intent" | "permissions" | "dictation-practice";
 
 // The product default: bare fn, mirroring DictationShortcutSetting::bare_fn()
 // on the Rust side.
@@ -52,17 +45,10 @@ const MAC_STEPS: StepId[] = [
   "sign-in",
   "telemetry",
   "usage-intent",
-  "character",
   "permissions",
   "dictation-practice",
 ];
-const NON_MAC_STEPS: StepId[] = [
-  "sign-in",
-  "telemetry",
-  "usage-intent",
-  "character",
-  "permissions",
-];
+const NON_MAC_STEPS: StepId[] = ["sign-in", "telemetry", "usage-intent", "permissions"];
 
 type Props = {
   account: AccountStatus;
@@ -88,7 +74,6 @@ function browserOnboardingDemoStep(): StepId | null {
   return step === "sign-in" ||
     step === "telemetry" ||
     step === "usage-intent" ||
-    step === "character" ||
     step === "permissions" ||
     step === "dictation-practice"
     ? step
@@ -209,8 +194,6 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
           <TelemetryConsentStep onContinue={goNext} />
         ) : stepId === "usage-intent" ? (
           <UsageIntentStep onContinue={goNext} />
-        ) : stepId === "character" ? (
-          <CharacterStep onContinue={goNext} />
         ) : stepId === "permissions" ? (
           <PermissionsStep
             statuses={permissionStatuses}

@@ -21394,47 +21394,6 @@ input:focus-visible,
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
-/* Character step: one roomy textarea prefilled with June's current
- * personality, matching the intent step's input treatment. */
-.onboarding-character-input {
-  width: 100%;
-  min-height: 180px;
-  margin-block-start: var(--sp-3);
-  padding: var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--card);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--fs-sm);
-  line-height: 1.5;
-  outline: 0;
-  resize: vertical;
-  transition:
-    border-color var(--t-fast) var(--ease-out),
-    box-shadow var(--t-fast) var(--ease-out);
-}
-
-.onboarding-character-input::placeholder {
-  color: var(--muted-foreground);
-}
-
-.onboarding-character-input:hover {
-  border-color: var(--ring);
-}
-
-.onboarding-character-input:focus,
-.onboarding-character-input:focus-visible {
-  border-color: var(--ring-focus);
-  box-shadow: 0 0 0 3px var(--focus-ring);
-}
-
-.onboarding-character-error {
-  margin-block-start: var(--sp-2);
-  color: var(--destructive);
-  font-size: var(--fs-xs);
-}
-
 /* Permissions: one bordered card, one row per permission — icon chip, a
  * line of copy, the grant affordance. A granted row trades its icon for a
  * check and tints terracotta. */

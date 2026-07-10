@@ -27,8 +27,6 @@ const mocks = vi.hoisted(() => ({
   setDictationShortcut: vi.fn(),
   setP3aEnabled: vi.fn(),
   p3aRecord: vi.fn(),
-  juneCharacter: vi.fn(),
-  setJuneCharacter: vi.fn(),
   osAccountsLogin: vi.fn(),
   juneOpenCommunityPage: vi.fn(),
   juneOpenVerifyPage: vi.fn(),
@@ -46,8 +44,6 @@ vi.mock("../lib/tauri", () => ({
   setDictationShortcut: mocks.setDictationShortcut,
   setP3aEnabled: mocks.setP3aEnabled,
   p3aRecord: mocks.p3aRecord,
-  juneCharacter: mocks.juneCharacter,
-  setJuneCharacter: mocks.setJuneCharacter,
   osAccountsLogin: mocks.osAccountsLogin,
   juneOpenCommunityPage: mocks.juneOpenCommunityPage,
   juneOpenVerifyPage: mocks.juneOpenVerifyPage,
@@ -78,18 +74,6 @@ const signedOutAccount: AccountStatus = {
 };
 
 type ListenHandler = (event: { payload: string }) => void;
-
-const DEFAULT_CHARACTER =
-  "You are helpful, knowledgeable, and direct. Communicate clearly and prioritize being genuinely useful.";
-
-function characterStatus(character: string, isCustom = false) {
-  return {
-    character,
-    isCustom,
-    defaultCharacter: DEFAULT_CHARACTER,
-    path: "/tmp/hermes/CHARACTER.md",
-  };
-}
 
 // What check_recording_source_readiness returns after the capture-helper
 // probe: a passing probe reports the system source as granted; a denial
@@ -177,10 +161,6 @@ describe("OnboardingFlow", () => {
       }),
     );
     mocks.p3aRecord.mockResolvedValue(undefined);
-    mocks.juneCharacter.mockResolvedValue(characterStatus(DEFAULT_CHARACTER));
-    mocks.setJuneCharacter.mockImplementation((character: string) =>
-      Promise.resolve(characterStatus(character || DEFAULT_CHARACTER, character !== "")),
-    );
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: shortcut("fn"),
@@ -209,8 +189,6 @@ describe("OnboardingFlow", () => {
       name: "What are you interested in using June for?",
     });
     await userEvent.click(screen.getByRole("button", { name: "Work" }));
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Give June a personality" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Let June listen and type" });
     return onComplete;
@@ -332,7 +310,7 @@ describe("OnboardingFlow", () => {
     expect(onboardingUseCases()).toEqual(["work", "personal"]);
     expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.work");
     expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.personal");
-    await screen.findByRole("heading", { name: "Give June a personality" });
+    await screen.findByRole("heading", { name: "Let June listen and type" });
   });
 
   it("saves a custom onboarding use case locally", async () => {
@@ -357,103 +335,6 @@ describe("OnboardingFlow", () => {
     expect(onboardingCustomUseCase()).toBe("family admin");
     expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.other");
     expect(mocks.p3aRecord.mock.calls.flat()).not.toContain("family admin");
-    await screen.findByRole("heading", { name: "Give June a personality" });
-  });
-
-  it("lets the user rewrite June's character during onboarding", async () => {
-    const user = userEvent.setup();
-    setOnboardingResumeStep("character");
-    render(<OnboardingFlow {...flowProps()} />);
-
-    await screen.findByRole("heading", { name: "Give June a personality" });
-    const textarea = screen.getByRole("textbox", { name: "June's character" });
-    // Prefilled with the effective character so keeping it is one click.
-    await waitFor(() => expect(textarea).toHaveValue(DEFAULT_CHARACTER));
-
-    await user.clear(textarea);
-    await user.type(textarea, "Talk like a friendly pirate.");
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
-    await waitFor(() =>
-      expect(mocks.setJuneCharacter).toHaveBeenCalledWith("Talk like a friendly pirate."),
-    );
-    // The character text is personal and must never reach telemetry.
-    expect(mocks.p3aRecord.mock.calls.flat()).not.toContain("Talk like a friendly pirate.");
-    await screen.findByRole("heading", { name: "Let June listen and type" });
-  });
-
-  it("keeps text typed before the character finishes loading", async () => {
-    const user = userEvent.setup();
-    let resolveLoad: (status: ReturnType<typeof characterStatus>) => void = () => {};
-    mocks.juneCharacter.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveLoad = resolve;
-        }),
-    );
-    setOnboardingResumeStep("character");
-    render(<OnboardingFlow {...flowProps()} />);
-
-    await screen.findByRole("heading", { name: "Give June a personality" });
-    const textarea = screen.getByRole("textbox", { name: "June's character" });
-    await user.type(textarea, "Be blunt.");
-
-    // The slow load must not clobber what the user already typed.
-    resolveLoad(characterStatus(DEFAULT_CHARACTER));
-    await waitFor(() => expect(mocks.juneCharacter).toHaveBeenCalled());
-    expect(textarea).toHaveValue("Be blunt.");
-
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await waitFor(() => expect(mocks.setJuneCharacter).toHaveBeenCalledWith("Be blunt."));
-    await screen.findByRole("heading", { name: "Let June listen and type" });
-  });
-
-  it("continues without saving when the character is unchanged", async () => {
-    const user = userEvent.setup();
-    setOnboardingResumeStep("character");
-    render(<OnboardingFlow {...flowProps()} />);
-
-    await screen.findByRole("heading", { name: "Give June a personality" });
-    await waitFor(() =>
-      expect(screen.getByRole("textbox", { name: "June's character" })).toHaveValue(
-        DEFAULT_CHARACTER,
-      ),
-    );
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
-    await screen.findByRole("heading", { name: "Let June listen and type" });
-    expect(mocks.setJuneCharacter).not.toHaveBeenCalled();
-  });
-
-  it("skips character setup without saving", async () => {
-    const user = userEvent.setup();
-    setOnboardingResumeStep("character");
-    render(<OnboardingFlow {...flowProps()} />);
-
-    await screen.findByRole("heading", { name: "Give June a personality" });
-    await user.click(screen.getByRole("button", { name: "Skip for now" }));
-
-    await screen.findByRole("heading", { name: "Let June listen and type" });
-    expect(mocks.setJuneCharacter).not.toHaveBeenCalled();
-  });
-
-  it("stays on the character step when saving fails, with skip as the way out", async () => {
-    const user = userEvent.setup();
-    mocks.setJuneCharacter.mockRejectedValue(new Error("disk full"));
-    setOnboardingResumeStep("character");
-    render(<OnboardingFlow {...flowProps()} />);
-
-    await screen.findByRole("heading", { name: "Give June a personality" });
-    const textarea = screen.getByRole("textbox", { name: "June's character" });
-    await waitFor(() => expect(textarea).toHaveValue(DEFAULT_CHARACTER));
-    await user.clear(textarea);
-    await user.type(textarea, "Be extremely terse.");
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
-    await screen.findByRole("alert");
-    expect(screen.getByRole("heading", { name: "Give June a personality" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Skip for now" }));
     await screen.findByRole("heading", { name: "Let June listen and type" });
   });
 
@@ -681,8 +562,6 @@ describe("OnboardingFlow", () => {
       name: "What are you interested in using June for?",
     });
     await user.click(screen.getByRole("button", { name: "Work" }));
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Give June a personality" });
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Let June listen and type" });
 
