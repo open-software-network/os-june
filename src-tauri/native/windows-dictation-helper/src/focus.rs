@@ -49,12 +49,34 @@ pub fn verify_foreground(target: PinnedTarget) -> bool {
     if unsafe { IsWindow(target.hwnd) } == 0 {
         return false;
     }
+    if is_process_restricted(target.pid) {
+        return false;
+    }
     unsafe { SetForegroundWindow(target.hwnd) };
     for _ in 0..FOCUS_VERIFY_ATTEMPTS {
         if unsafe { GetForegroundWindow() } == target.hwnd {
             return true;
         }
         thread::sleep(FOCUS_VERIFY_DELAY);
+    }
+    false
+}
+
+fn is_process_restricted(pid: u32) -> bool {
+    let handle = unsafe {
+        windows_sys::Win32::System::Threading::OpenProcess(
+            windows_sys::Win32::System::Threading::PROCESS_QUERY_INFORMATION,
+            0,
+            pid,
+        )
+    };
+    if handle.is_null() {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::PermissionDenied {
+            return true;
+        }
+    } else {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
     }
     false
 }

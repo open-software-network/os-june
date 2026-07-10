@@ -246,7 +246,6 @@ fn build_windows_dictation_helper() {
         "main.rs",
         "protocol.rs",
         "hotkeys.rs",
-        "shortcut_capture.rs",
         "audio.rs",
         "clipboard.rs",
         "focus.rs",
