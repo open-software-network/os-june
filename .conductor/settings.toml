@@ -6,7 +6,8 @@
 # defined `run` + `runScriptMode`.
 
 [scripts]
-# pnpm is the repo's declared package manager (packageManager: pnpm@9.15.4).
+# pnpm is the repo's declared package manager (pinned by the packageManager
+# field in package.json).
 # Installs the front-end deps; the Rust crates (src-tauri, june-api) compile
 # on the first `tauri:dev` run. The .env files live in the root checkout and
 # are symlinked into each workspace so updates do not drift.
