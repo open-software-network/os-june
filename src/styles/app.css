@@ -5834,43 +5834,29 @@ input:focus-visible,
 }
 
 /* A multi-attachment message reads as a small deck: the first attachment's
-   tile in front, a card sliver peeking out behind its right edge. The sliver
-   borrows the gap to the text, so the rail and the text edge hold still. */
-.agent-follow-up-attachments[data-stacked]::before {
+   tile in front, card slivers fanning out behind its right edge - one sliver
+   for a pair, two for three or more, fading as they recede. The fan borrows
+   the gap to the text, so the rail and the text edge hold still. */
+.agent-follow-up-attachments[data-stacked]::before,
+.agent-follow-up-attachments[data-stacked="3"]::after {
   content: "";
   position: absolute;
-  inset: 3px -3px 3px 3px;
   border-radius: var(--r-md);
-  background: var(--card);
-  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.agent-follow-up-attachments[data-stacked]::before {
+  inset: 2px -3px 2px 3px;
+  background: color-mix(in oklch, var(--muted-foreground) 16%, var(--card));
+}
+
+.agent-follow-up-attachments[data-stacked="3"]::after {
+  inset: 4px -5px 4px 6px;
+  background: color-mix(in oklch, var(--muted-foreground) 9%, var(--card));
 }
 
 .agent-follow-up-attachments[data-stacked] .agent-attachment-chip {
   position: relative;
   z-index: 1;
-}
-
-/* Total count for a multi-attachment message, notched into the tile's
-   top-right corner: a card-colored ring carves the circle out of the tile
-   (avatar-stack style), the leading rail stays a single square, and the text
-   stays aligned. */
-.agent-follow-up-attachment-count {
-  position: absolute;
-  /* Same stacking level as the raised tile; later in the DOM, so it wins. */
-  z-index: 1;
-  top: calc(var(--sp-1) * -1);
-  right: calc(var(--sp-1) * -1);
-  display: inline-grid;
-  place-items: center;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 var(--sp-1);
-  border-radius: var(--r-pill);
-  background: var(--card);
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  line-height: 1;
-  box-shadow: 0 0 0 2px var(--card);
 }
 
 .agent-follow-up-copy {

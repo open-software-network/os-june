@@ -1181,10 +1181,10 @@ describe("AgentWorkspace", () => {
     expect(within(upNext).getByText("Review this attachment next")).toBeInTheDocument();
     expect(within(upNext).getByText("reference.png")).toBeInTheDocument();
     expect(within(upNext).getByText("Fold these findings into the report")).toBeInTheDocument();
-    // The multi-attachment row leads with its first tile and carries the
-    // total count in the corner badge.
+    // The multi-attachment row leads with its first tile; the rest of the
+    // stack is purely visual (card slivers), so no count renders.
     expect(within(upNext).getByText("usability-findings.pdf")).toBeInTheDocument();
-    expect(within(upNext).getByText("3")).toBeInTheDocument();
+    expect(within(upNext).queryByText("3")).toBeNull();
     expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.steer", expect.anything());
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
