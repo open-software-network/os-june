@@ -102,6 +102,15 @@ pub(crate) fn clamp_to_cap(actual: Credits, cap: Credits) -> Credits {
     Credits(min(actual.0, cap.0))
 }
 
+/// Mints the attempt-unique scope for a settlement idempotency key. Keys must
+/// be stable across retries of ONE charge call (OS Accounts replays them) but
+/// unique across upstream attempts — a key derived from request content alone
+/// lets a retried identical request run fresh upstream work whose settlement
+/// replays as a no-op.
+pub(crate) fn new_charge_operation_id() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+
 pub(crate) fn zero_receipt() -> Receipt {
     Receipt {
         credits_charged: Credits(0),

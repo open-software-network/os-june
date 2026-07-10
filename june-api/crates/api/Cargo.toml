@@ -19,6 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 tower = { workspace = true, features = ["timeout", "util"] }
 tower-http.workspace = true
 tracing.workspace = true

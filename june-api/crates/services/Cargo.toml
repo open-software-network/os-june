@@ -11,6 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+bytes.workspace = true
 june-config.workspace = true
 june-domain.workspace = true
 serde.workspace = true

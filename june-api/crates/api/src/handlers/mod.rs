@@ -7,4 +7,5 @@ pub(crate) mod models;
 pub(crate) mod notes;
 pub(crate) mod p3a;
 pub(crate) mod verify;
+pub(crate) mod video;
 pub(crate) mod web;

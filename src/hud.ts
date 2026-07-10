@@ -95,6 +95,7 @@ if (meetingStartIcon) {
 
 let hideTimer: number | undefined;
 let meetingPromptTimer: number | undefined;
+let longDictationNoticeTimer: number | undefined;
 let brailleTimer: number | undefined;
 let brailleFrame = 0;
 let meetingPromptSuppressed = false;
@@ -121,6 +122,9 @@ const WINDOW_GUTTER = 18;
 // — must match the .hud-error-layer margin in hud.css.
 const ERROR_LAYER_GAP = 8;
 const MEETING_PROMPT_TIMEOUT_MS = 30_000;
+// A short dictation round-trips in well under a second. Past this, the
+// user is watching a spinner wondering whether June hung, so say so.
+const LONG_DICTATION_NOTICE_MS = 6_000;
 
 function invokeBestEffort(command: string, args?: Record<string, unknown>) {
   try {
@@ -221,6 +225,9 @@ function setHud(state: string, status: string): HudTransition {
   // sizing, and error exits clear it before fading the expanded HUD in place.
   if (state !== "error" && state !== "exiting") {
     hud.classList.remove("hud-reveal-collapsed");
+  }
+  if (state !== "transcribing") {
+    clearLongDictationNotice();
   }
   if (state === "transcribing" || state === "pasting") {
     startBraille();
@@ -642,6 +649,23 @@ function startMeetingPromptTimer() {
   }, MEETING_PROMPT_TIMEOUT_MS);
 }
 
+function clearLongDictationNotice() {
+  if (longDictationNoticeTimer !== undefined) {
+    window.clearTimeout(longDictationNoticeTimer);
+    longDictationNoticeTimer = undefined;
+  }
+}
+
+function startLongDictationNotice() {
+  if (longDictationNoticeTimer !== undefined) return;
+  longDictationNoticeTimer = window.setTimeout(() => {
+    longDictationNoticeTimer = undefined;
+    if (hud?.dataset.state !== "transcribing") return;
+    const transition = setHud("transcribing", "Still transcribing");
+    void showHud(showOptionsForTransition(transition));
+  }, LONG_DICTATION_NOTICE_MS);
+}
+
 async function hideHud() {
   const requestId = ++hideRequestId;
   showRequestId += 1;
@@ -860,6 +884,7 @@ async function handleDictationEventPayload(payload: unknown) {
     cancelPendingAudioLevel();
     const transition = setHud("transcribing", "Transcribing");
     await showHud(showOptionsForTransition(transition));
+    startLongDictationNotice();
     return;
   }
 

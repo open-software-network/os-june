@@ -3,6 +3,7 @@ import {
   ANONYMOUS_MODEL_DESCRIPTION,
   E2EE_MODEL_DESCRIPTION,
   PRIVATE_MODEL_DESCRIPTION,
+  modelIsPrivate,
   modelPrivacyBadge,
   modelSupportsImageInput,
 } from "../lib/model-privacy";
@@ -53,6 +54,23 @@ describe("model privacy labels", () => {
 
   it("does not label models without a privacy signal", () => {
     expect(modelPrivacyBadge({ privacy: "OpenAI", traits: ["prompt"] })).toBe(undefined);
+  });
+});
+
+describe("private catalog filter", () => {
+  it("keeps zero-retention-or-stronger models: private, e2ee, and loopback local", () => {
+    expect(modelIsPrivate({ privacy: "private", traits: [] })).toBe(true);
+    expect(modelIsPrivate({ privacy: "", traits: ["e2ee"] })).toBe(true);
+    // A loopback local model never leaves the machine — stronger than any
+    // provider retention claim, so the filter must not hide it.
+    expect(modelIsPrivate({ privacy: "local", traits: [] })).toBe(true);
+  });
+
+  it("drops anonymized models and custom endpoints that make no claim", () => {
+    expect(modelIsPrivate({ privacy: "anonymized", traits: [] })).toBe(false);
+    // A non-loopback custom endpoint reports "external" — no privacy claim.
+    expect(modelIsPrivate({ privacy: "external", traits: [] })).toBe(false);
+    expect(modelIsPrivate({ privacy: "", traits: [] })).toBe(false);
   });
 });
 

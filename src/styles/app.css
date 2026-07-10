@@ -1588,9 +1588,7 @@ input:focus-visible,
  * border, soft shadow. */
 .agent-safety-panel,
 .agent-tool-event,
-.agent-hermes-event,
-.agent-approval-card,
-.agent-clarify-card {
+.agent-hermes-event {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: var(--sp-3);
@@ -1601,31 +1599,40 @@ input:focus-visible,
   box-shadow: var(--shadow-sm);
 }
 
-.agent-approval-card > .agent-tool-icon {
-  display: inline-grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--card);
-  color: var(--warm-strong);
-}
-
-.agent-approval-card > div {
+/* A pending action card (approval / clarify / sudo / secret / CLI access) is
+ * single-column: no icon tile and no inline title glyph. The title text stands
+ * alone; structure comes from spacing, not decoration. No shadow: the redesign
+ * is quieter, so the border + card surface carry the elevation on their own. */
+.agent-approval-card,
+.agent-clarify-card {
+  display: block;
   min-width: 0;
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
 }
 
-.agent-approval-card .agent-tool-title > span:first-child {
+/* Card title: the shared row-title treatment across all five card types, so
+ * approval / clarify / sudo / secret / CLI titles land on one scale.
+ * `.agent-action-card-title` is the condensed approval/sudo header title. */
+.agent-approval-card .agent-tool-title > span:first-child,
+.agent-clarify-card .agent-tool-title > span:first-child,
+.agent-action-card-title {
   color: var(--foreground);
+  font-size: var(--fs-lg);
   font-weight: var(--fw-medium);
 }
 
+/* Card body/description prose across all five card types (approval, clarify,
+ * sudo, secret, CLI access). One coherent body tier at --fs-md — the meta,
+ * status, note, and mono tiers stay put; the resolved-receipt rows live under
+ * .agent-tool-disclosure, not here, so they're unaffected. */
 .agent-approval-card p,
 .agent-clarify-card p {
   margin: var(--sp-2) 0 0;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   line-height: 1.45;
   white-space: pre-wrap;
 }
@@ -1637,6 +1644,10 @@ input:focus-visible,
 .agent-clarify-card {
   width: min(760px, 100%);
 }
+
+/* The question reads at the shared card body tier (--fs-md / --muted-foreground
+ * via .agent-clarify-card p), matching the approval/sudo description text — no
+ * override needed. */
 
 .agent-clarify-answer {
   border-left: 2px solid var(--border-subtle);
@@ -1650,19 +1661,21 @@ input:focus-visible,
   margin-top: var(--sp-3);
 }
 
-/* Choice rows stay quiet: hairline outline, transparent fill, soft tint on
- * hover. The numeral is a bare muted digit — no keycap chip. */
+/* Choice rows stay quiet: a light neutral fill (no border, so they don't read as
+ * a second border inside the already-bordered card), firming one step on hover.
+ * The numeral is a bare muted digit — no keycap chip. */
 .agent-clarify-choices button {
   display: flex;
   align-items: center;
   gap: var(--sp-3);
   min-height: var(--control-sm);
-  border: 1px solid var(--border-subtle);
+  border: 0;
   border-radius: var(--r-sm);
   padding: 0 var(--sp-3);
-  background: transparent;
+  background: var(--surface-subtle);
   color: var(--foreground);
   font: inherit;
+  font-size: var(--fs-md);
   text-align: left;
   transition: background-color var(--t-fast) var(--ease-out);
 }
@@ -1677,7 +1690,7 @@ input:focus-visible,
 }
 
 .agent-clarify-choices button:hover:not(:disabled) {
-  background: var(--surface-subtle);
+  background: var(--muted);
 }
 
 .agent-clarify-choices button:disabled,
@@ -1693,28 +1706,22 @@ input:focus-visible,
   margin-top: var(--sp-3);
 }
 
-.agent-clarify-form textarea {
-  width: 100%;
+/* The field itself is the canonical dialog-textarea treatment (border + focus
+ * ring); this only adds the clarify deltas: a taller default and vertical
+ * resize. Scoped under .agent-clarify-form so it outranks the later
+ * .dialog-textarea rule that would otherwise reset resize/min-height. */
+.agent-clarify-form .agent-clarify-textarea {
   min-height: 84px;
   resize: vertical;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: var(--sp-3);
-  background: var(--surface);
-  color: var(--foreground);
-  font: inherit;
-  line-height: 1.45;
 }
 
-.agent-clarify-form textarea:focus {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
+/* A little extra air above the actions row so the buttons don't crowd the
+ * textarea (additive to the form's --sp-2 gap). */
 .agent-clarify-form div {
   display: flex;
   justify-content: flex-end;
   gap: var(--sp-2);
+  margin-top: var(--sp-1);
 }
 
 .agent-approval-card pre {
@@ -1731,6 +1738,102 @@ input:focus-visible,
   max-width: 100%;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+/* The condensed pending card (approval / sudo). Compact by default: a plain
+ * header row (title + optional mode tag + waiting status), the prose description
+ * (clamped to two lines while collapsed), a quiet "Details" disclosure for the
+ * full command / notice, and the always-visible actions row. Tighter padding
+ * than the fuller cards, with a touch of extra room below so the always-visible
+ * actions row never crowds the card's bottom edge. */
+.agent-action-card {
+  padding: var(--sp-5);
+  padding-bottom: var(--sp-6);
+}
+
+/* The header is a plain row: the title stands alone; the mode tag and the
+ * waiting status pin to its right. */
+.agent-action-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+}
+
+.agent-action-card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The description reads at all times; collapsed it clamps to two lines so a long
+ * reason never pushes the actions down. Expanding (via Details) restores the
+ * full prose. */
+.agent-action-card-description[data-clamped] {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* A quiet text-level disclosure under the description: reveals the full command
+ * pre (and, for sudo, the mode notice). Color-only hover; the chevron rotates
+ * when open. */
+.agent-action-card-details {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-top: var(--sp-3);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.agent-action-card-details:hover {
+  color: var(--foreground);
+}
+
+.agent-action-card-details .agent-disclosure-chevron {
+  flex: 0 0 auto;
+  transition: transform var(--t-fast) var(--ease-out);
+}
+
+.agent-action-card-details[aria-expanded="true"] .agent-disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+/* Collapsed unrestricted signal: only the unrestricted (elevated blast radius)
+ * mode earns a header badge so the wider access registers at the decision point
+ * before the card is expanded. Sandboxed is the safe default and shows no
+ * collapsed badge (the full mode line still lives in Details for both).
+ * Unrestricted is a CAUTION, not an error, so it wears the system warning
+ * treatment (the warm palette — the same recipe as .status-pill[data-tone=
+ * "warning"] and InlineNotice's warning tone: --warm-soft bg + --warm-strong
+ * text) rather than the error-reserved destructive red. A leading warning glyph,
+ * --fs-xs, --r-sm. Weight matches the sibling "Waiting" status pill (400) — the
+ * warm caution color carries the emphasis, not the weight. */
+.agent-sudo-mode-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  /* Quiet neutral pill; the leading caution glyph + "Unrestricted" label carry
+   * the meaning without a pop of color. */
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .agent-approval-explanation {
@@ -1753,30 +1856,189 @@ input:focus-visible,
   gap: var(--sp-2);
 }
 
-/* Buttons come from the .btn system (secondary fills, ghost deny) — this
- * block only lays them out and adds the deny accent. */
+/* Buttons come from the .btn system, but at the small control height and
+ * smaller type so the row reads quiet. On the approval card, a split "Approve"
+ * (with a scope caret) and a quiet "Deny" anchor the row, and "Explain first"
+ * demotes to a plain text button pushed to the right edge. */
 .agent-approval-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--sp-2);
   margin-top: var(--sp-4);
+}
+
+.agent-approval-actions .btn {
+  height: var(--control-md);
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-md);
 }
 
 .agent-approval-actions button:disabled {
   opacity: 0.55;
 }
 
-.agent-approval-explain[aria-expanded="true"] {
-  color: var(--warm-strong);
+/* "Explain first" and "Deny" are plain neutral ghost buttons: only Approve
+ * carries color (green). The system .btn-ghost:hover fills --muted (a mid grey)
+ * which jumps starkly from transparent on the near-white card, so the footer's
+ * ghost buttons rest on the softer --surface-subtle instead. Denying is the
+ * safe choice, so it wears no alarm color — red stays reserved for genuinely
+ * destructive states. */
+.agent-approval-actions .btn-ghost:hover:not(:disabled) {
+  background: var(--surface-subtle);
 }
 
+/* Explain sits at the right edge of the footer, past the anchor actions. `auto`
+ * still wraps cleanly when the row runs out of room. */
+.agent-approval-actions .agent-approval-explain {
+  margin-left: auto;
+}
+
+/* Deny is quieter than the Approve/Explain labels at rest (it is the secondary
+ * choice), firming to the shared subtle-gray hover. */
 .agent-approval-deny {
   color: var(--muted-foreground);
 }
 
-.agent-approval-deny:hover:not(:disabled) {
-  background: var(--destructive-soft);
-  color: var(--destructive);
+/* Approve is a split button in the Cursor mold: a compact secondary rail
+ * (--surface-subtle) holds two distinct inset segments with a 2px gutter on
+ * every side and between them, so the rail reads as the tray and each segment as
+ * its own button. "Approve" is the primary segment — transparent until hovered,
+ * when it fills a contained rounded shape (never edge-to-edge). The scope caret
+ * is a square segment on a darker fill, deepening on hover (background only). */
+/* Outlined split button: a hairline border reads as a clear affordance on the
+ * near-white card (a filled --surface-subtle pill did not). Approve and the
+ * caret sit inset with a 2px gutter, so a strip of negative space divides them
+ * (no seam line). No overflow:hidden — the scope menu is positioned outside the
+ * rail and must not be clipped. */
+.agent-approval-split {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--control-md);
+  padding: 2px;
+  /* The container is just a hairline outline that binds Approve + caret into
+   * one control; the gray fill lives on the segments themselves. */
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: transparent;
+}
+
+/* Both segments disable together; dim the whole control so it reads inert. */
+.agent-approval-split:has(:disabled) {
+  opacity: 0.55;
+}
+
+.agent-approval-approve {
+  height: 100%;
+  padding: 0 var(--sp-3);
+  border: 0;
+  /* Concentric with the rail: inset by the 1px border + 2px gutter. */
+  border-radius: calc(var(--r-md) - 3px);
+  /* Solid gray fill (the system secondary surface); firms to --muted on hover.
+   * Approve reads as primary by being filled, against the ghost Deny/Explain. */
+  background: var(--surface-subtle);
+  color: var(--secondary-foreground);
+  font-size: var(--fs-md);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* Approve is the confirm action, so its hover reveals an explicit green wash
+ * (--success, a fixed hue-150 green — the same recipe as the "ok" status pill,
+ * theme-stable, not the brand accent) — the universal go signal opposite Deny's
+ * red. */
+.agent-approval-approve:hover:not(:disabled) {
+  background: var(--muted);
+}
+
+/* The caret sits inset in the rail with a 2px gutter from Approve — the strip
+ * of negative space divides them, no seam line. A subtle resting fill marks it
+ * as the secondary; its corners are concentric with the rail. */
+.agent-approval-scope {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--control-md) - 4px);
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: calc(var(--r-md) - 3px);
+  /* Same gray fill as Approve so the split reads as one control; the 2px gap
+   * (not a seam line) divides them. Firms to --muted on hover. */
+  background: var(--surface-subtle);
+  color: var(--secondary-foreground);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* On hover the caret joins Approve's green wash so the whole control reads as
+ * one confirm affordance on interaction, transparent at rest. */
+.agent-approval-scope:hover:not(:disabled) {
+  background: var(--muted);
+}
+
+/* The scope menu opens upward from the caret (the actions sit near the card
+ * floor). Popover tokens + one ambient shadow, per the popover conventions. */
+.agent-approval-scope-menu {
+  position: absolute;
+  bottom: calc(100% + var(--sp-1));
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 208px;
+  padding: var(--sp-1);
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-lg);
+  background: var(--popover);
+  box-shadow: var(--shadow-lg);
+}
+
+.agent-approval-scope-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--control-sm);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* Focus mirrors hover exactly: the menu autofocuses its first item on open and
+ * moves focus with the arrow keys, so the focused item just wears the hover
+ * background. */
+.agent-approval-scope-item:hover:not(:disabled),
+.agent-approval-scope-item:focus:not(:disabled) {
+  background: var(--surface-subtle);
+}
+
+/* Focus is always visible via that background, so drop the default ring (which
+ * otherwise reads as an ugly outline the moment the menu autofocuses). */
+.agent-approval-scope-item:focus {
+  outline: none;
+}
+
+/* Prevent a double highlight: once the mouse is in the menu, only the hovered
+ * item stays lit — the keyboard-focused-but-not-hovered item drops its
+ * background so hover and focus never light two rows at once. With the mouse
+ * outside the menu (keyboard only), the focused item keeps its background. */
+.agent-approval-scope-menu:hover .agent-approval-scope-item:focus:not(:hover) {
+  background: transparent;
+}
+
+.agent-approval-scope-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 /* The resolved record is a quiet line of text, not a chip. */
@@ -1794,20 +2056,21 @@ input:focus-visible,
   color: var(--destructive) !important;
 }
 
-/* Sudo execution-mode line: a quiet inline note under the command, tinted by
- * blast radius. Sandboxed stays neutral; unrestricted picks up the warm accent
- * so the wider access reads at a glance. */
-.agent-sudo-mode {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  width: fit-content;
+/* Pending sudo shows the blast radius as an InlineNotice under the command. */
+.agent-sudo-mode-notice {
+  margin-top: var(--sp-3);
+}
+
+/* Receipt sudo shows the same mode line as quiet plain text — no notice chrome
+ * in a receipt. Unrestricted picks up the warm accent so the wider access
+ * reads at a glance. */
+.agent-sudo-mode-receipt {
   margin-top: var(--sp-3) !important;
   color: var(--muted-foreground) !important;
   font-size: var(--fs-xs) !important;
 }
 
-.agent-sudo-mode[data-mode="unrestricted"] {
+.agent-sudo-mode-receipt[data-mode="unrestricted"] {
   color: var(--warm-strong) !important;
 }
 
@@ -1838,27 +2101,29 @@ input:focus-visible,
   margin-top: var(--sp-3);
 }
 
+/* Matches the system field-label recipe (.dialog-field-label), the canonical
+ * partner of the .dialog-input the secret field already uses: --fs-md,
+ * full-strength foreground, weight 400. The reassurance .agent-secret-note stays
+ * quieter (--fs-sm muted) so the label reads as the field's title above it. */
 .agent-secret-label {
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-}
-
-.agent-secret-input {
-  width: 100%;
-  min-height: var(--control-md, 36px);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: 0 var(--sp-3);
-  background: var(--surface);
   color: var(--foreground);
-  font: inherit;
-  /* Mono so the (masked) length reads consistently. */
-  font-family: var(--font-mono);
+  font-size: var(--fs-md);
+  font-weight: 400;
 }
 
-.agent-secret-input:focus {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
+/* The field itself is the canonical dialog-input treatment (border + focus
+ * ring); this adds the secret deltas, all scoped under .agent-secret-form (0,2,0)
+ * so they outrank the later single-class .dialog-input base (0,1,0) regardless
+ * of order: mono so the (masked) length reads consistently, and a tighter fit so
+ * the field sits proportionate to the --control-sm footer buttons rather than
+ * looming over them. Down from the dialog default (--control-lg / --sp-3 pad /
+ * --fs-md): --control-md height, --sp-2 vertical padding, --fs-sm mono so the
+ * masked dots don't read chunky. Border + focus ring stay from the base. */
+.agent-secret-form .agent-secret-input {
+  min-height: var(--control-md);
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
 }
 
 .agent-secret-input:disabled {
@@ -1866,11 +2131,13 @@ input:focus-visible,
   opacity: 0.55;
 }
 
-/* The reassurance line under the input — smaller and quieter than the body. */
+/* The reassurance line under the input — quieter than the body, but not the
+ * micro --fs-xs (which read tiny once the body prose moved up to --fs-md). One
+ * step down at --fs-sm, still muted so the label above it reads as the title. */
 .agent-secret-note {
   margin-top: 0 !important;
   color: var(--muted-foreground) !important;
-  font-size: var(--fs-xs) !important;
+  font-size: var(--fs-sm) !important;
 }
 
 .agent-safety-panel h3 {
@@ -1979,6 +2246,18 @@ input:focus-visible,
 
 .agent-assistant-turn-body {
   position: relative;
+}
+
+/* An action card (approval / clarify / sudo / secret / CLI access) sits flush at
+ * the turn's bottom edge, and the timestamp/actions row is absolutely positioned
+ * at the turn body's floor (inset-block-start: 100%) with only 1px of padding —
+ * so under a bordered card the timestamp nearly touches the card's bottom border.
+ * Reserve clearance below a card-bearing turn (padding grows the padding box, so
+ * the 100%-anchored row drops clear of the border). Scoped via :has() so text
+ * turns keep their tight 1px timestamp spacing. */
+.agent-assistant-turn-body:has(.agent-approval-card),
+.agent-assistant-turn-body:has(.agent-clarify-card) {
+  padding-bottom: var(--sp-2);
 }
 
 .agent-user-turn:hover .agent-turn-actions,
@@ -2255,13 +2534,6 @@ input:focus-visible,
   font-weight: 400;
 }
 
-/* Timestamp pins to the right edge and matches the row's body size. */
-.agent-context-summary time {
-  margin-left: auto;
-  color: var(--muted-foreground);
-  font-size: var(--fs-lg);
-}
-
 /* Feature 06: the "Steering" system item recording a mid-run instruction. Quiet
  * one-line row in the same muted register as the context-compaction summary, so
  * a redirect reads as a beat in the transcript rather than a message bubble —
@@ -2298,13 +2570,6 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.agent-steering-item time {
-  margin-left: auto;
-  flex: 0 0 auto;
-  color: var(--muted-foreground);
-  font-size: var(--fs-lg);
-}
-
 /* Expanded summary reads at body size, same as the row above it. */
 .agent-context-summary > .agent-markdown {
   overflow: auto;
@@ -2316,6 +2581,86 @@ input:focus-visible,
 
 .agent-context-summary:not([open]) > .agent-markdown {
   display: none;
+}
+
+/* Resolved action card (approval / clarify / sudo / secret / CLI access) — a
+ * quiet one-line receipt row. It reuses the .agent-tool-disclosure row treatment
+ * VERBATIM (body size, 15px flat icon cell, gap, padding, hover firms to
+ * --foreground, instant opacity glyph→+/− swap) so a receipt is exactly the
+ * same size as the "Run Command"/"Fetch Url" tool rows above it in a turn — one
+ * source of truth. This modifier only carries the receipt-specific bits: the
+ * denied tint and the collapsed-body layout. No card border/shadow; it's a
+ * receipt, not a prompt. */
+
+/* The outcome label anchors the row and never shrinks; the detail truncates.
+ * Color is inherited from the row so it firms to --foreground on hover exactly
+ * like the tool-row name. A denied outcome stays quiet too — it reads via its
+ * cross glyph and "Denied" label, not a color, since denying is a safe choice
+ * (not destructive). */
+.agent-resolved-label {
+  flex: 0 0 auto;
+}
+
+/* One-line detail: truncated with an ellipsis so the receipt stays a single
+ * quiet line no matter how long the command or question is. */
+.agent-resolved-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-resolved-detail .agent-resolved-mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+/* Expanded body reads quiet, indented under the row to line up under the 15px
+ * icon cell, like the context summary. */
+.agent-resolved-body {
+  margin: var(--sp-2) 0 0 calc(15px + var(--sp-2));
+  color: var(--muted-foreground);
+}
+
+.agent-resolved-row:not([open]) > .agent-resolved-body {
+  display: none;
+}
+
+.agent-resolved-body p {
+  margin: var(--sp-2) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.agent-resolved-body p:first-child {
+  margin-top: 0;
+}
+
+/* Reuse the approval card's pre/mode/key treatments inside the expanded body. */
+.agent-resolved-body pre {
+  overflow: auto;
+  max-height: 220px;
+  margin: var(--sp-3) 0 0;
+  border-radius: var(--r-md);
+  padding: var(--sp-3) var(--sp-4);
+  background: color-mix(in oklch, var(--muted) 45%, transparent);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.agent-resolved-body .agent-clarify-answer {
+  margin-top: var(--sp-3);
+  border-left: 2px solid var(--border-subtle);
+  padding-left: var(--sp-3);
+  color: var(--foreground);
 }
 
 /* Context-compaction dialog (feature 08). Confirmation copy, then a success or
@@ -2486,7 +2831,7 @@ input:focus-visible,
 .agent-tool-icon-minimize {
   opacity: 0;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 15px;
+  font-size: var(--fs-lg);
   line-height: 1;
 }
 
@@ -2762,6 +3107,48 @@ input:focus-visible,
 .agent-generated-image-download:focus-visible {
   background: var(--muted);
   color: var(--foreground);
+}
+
+.agent-generated-video {
+  max-width: min(100%, 520px);
+  margin-block: var(--sp-2);
+}
+
+.agent-generated-video-placeholder {
+  display: grid;
+  place-items: center;
+  gap: var(--sp-2);
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.agent-generated-video-progress {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-generated-video-frame {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  overflow: hidden;
+}
+
+.agent-generated-video-frame video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--background);
+  object-fit: contain;
 }
 
 /* Artifact viewer ----------------------------------------------------
@@ -4605,9 +4992,155 @@ input:focus-visible,
   flex-shrink: 0;
 }
 
-/* No per-state / collapsed overrides or left transition needed: the single
- * max(--sidebar-w-current, --sp-3) rule above already tracks the card edge in
- * every state, and animating that one variable tweens it in lockstep. */
+/* Toast notifications (sonner) ---------------------------------------------
+ * Sonner is mounted unstyled (toastOptions.unstyled) and rendered into a
+ * portal at document.body, tucked into the workspace's top-right corner. Every
+ * visual comes from these tokens, so toasts follow all five theme presets and
+ * dark mode automatically. The surface mirrors a popover: --popover fill,
+ * hairline --popover-border, and the soft ambient --shadow-md (a lighter lift
+ * than --shadow-lg — a floating notice, not a raised card). Only the tone icon
+ * is tinted; the surface stays neutral so the whole toast family reads as one
+ * calm system. */
+.june-toast {
+  /* Height model: the row is center-aligned, so every child — tone icon, text,
+   * action, close — sits on one optical line and a single-line toast reads
+   * perfectly centered. Height is driven by the tallest child (the controls)
+   * plus symmetric padding; no per-element margin nudging. */
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+  border: 1px solid var(--popover-border);
+  border-radius: var(--r-lg);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-md);
+  font-family: var(--font-sans);
+  font-synthesis: none;
+  font-size: var(--fs-md);
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+.june-toast:focus-visible {
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 2px var(--focus-ring);
+}
+
+/* Leading tone glyph, vertically centered against the message. */
+.june-toast-icon {
+  order: 0;
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+}
+
+.june-toast-content {
+  order: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+  flex: 1;
+}
+
+.june-toast-title {
+  font-size: var(--fs-md);
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.35;
+  /* Quieter than body copy: notifications are transient status, not document
+   * text. */
+  color: color-mix(in oklch, var(--foreground) 74%, var(--muted-foreground));
+}
+
+/* Stacked (collapsed) toasts: sonner squashes the back toasts to the front
+ * toast's height, but only fades their content when running styled — its
+ * fade rule is gated on [data-styled='true'], which unstyled mode disables.
+ * Replicate it here so squashed back toasts never show overflowing text. */
+.june-toast[data-expanded="false"][data-front="false"] {
+  overflow: hidden;
+}
+
+.june-toast[data-expanded="false"][data-front="false"] > * {
+  opacity: 0;
+}
+
+.june-toast-description {
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+  line-height: 1.5;
+}
+
+/* Tone accents: the leading glyph only. */
+.june-toast--success .june-toast-icon {
+  color: var(--success);
+}
+
+.june-toast--error .june-toast-icon {
+  color: var(--destructive);
+}
+
+.june-toast--warning .june-toast-icon {
+  color: var(--warm-strong);
+}
+
+.june-toast--info .june-toast-icon {
+  color: var(--brand);
+}
+
+/* The dot spinner already carries its own size and currentColor. */
+.june-toast--loading .june-toast-icon {
+  color: var(--muted-foreground);
+}
+
+/* Actions use the existing grey .btn-secondary family, sized down to a compact
+ * control for the toast. */
+.june-toast .june-toast-action,
+.june-toast .june-toast-cancel {
+  flex-shrink: 0;
+  height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  font-family: inherit;
+  font-size: var(--fs-md);
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.june-toast .june-toast-action {
+  order: 3;
+}
+
+.june-toast .june-toast-cancel {
+  order: 2;
+}
+
+/* Sonner renders the close button first. Order it to the far right and let
+ * .icon-button provide the squircle hit target, matched to the action button's
+ * height so the pair reads as a set; keep it quiet at rest. */
+.june-toast .june-toast-close {
+  order: 4;
+  position: static;
+  flex-shrink: 0;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  transform: none;
+  margin-left: calc(var(--sp-1) * -1);
+  color: var(--muted-foreground);
+  letter-spacing: 0;
+}
+
+.june-toast .june-toast-close:hover {
+  color: var(--foreground);
+}
 
 .agent-composer[data-drop-active="true"] {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
@@ -5217,6 +5750,16 @@ input:focus-visible,
   background: var(--secondary);
 }
 
+/* While a safe-polygon hover traversal is in flight the popover carries
+   data-hover-bridging: only the active row (the one whose card is open) may
+   read as highlighted, so a row the pointer merely crosses on its diagonal
+   path to the card does not also light up. Higher specificity than the :hover
+   rule above so it wins regardless of source order in this flat stylesheet. */
+.agent-composer-model-popover[data-hover-bridging]
+.agent-composer-model-row:hover:not([data-active="true"]) {
+  background: transparent;
+}
+
 .agent-composer-model-row[aria-selected="true"] {
   color: var(--foreground);
 }
@@ -5249,16 +5792,48 @@ input:focus-visible,
 .agent-composer-model-row-check,
 .agent-composer-model-row-chevron {
   flex: 0 0 auto;
-  margin-left: auto;
 }
 
 .agent-composer-model-row-check {
   width: 16px;
+  margin-left: auto;
   color: var(--foreground);
 }
 
 .agent-composer-model-row-chevron {
+  margin-left: auto;
   color: var(--muted-foreground);
+}
+
+/* Trailing private marker: a compact mode icon in the same clay-tinted family
+ * as .agent-safety-badge. It claims the auto gap on private rows; if the row is
+ * also selected, the selected checkmark sits immediately to its left. */
+.model-row-privacy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--brand) 14%, transparent);
+  color: var(--warm-strong);
+  line-height: 0;
+}
+
+/* Center the glyph on whole pixels: a 14px icon in the 20px box leaves a 3px
+ * ring on every side (an odd 13px icon rounded to 3.5px and read off-center). */
+.model-row-privacy svg {
+  display: block;
+  color: var(--warm-strong);
+}
+
+/* When the selected checkmark precedes the private marker, the check already
+ * claimed the auto gap, so the icon just trails it and stays flush right. */
+.agent-composer-model-row-check ~ .model-row-privacy {
+  margin-left: 0;
 }
 
 /* Sits below the suggested rows with the same breathing room, so its hover
@@ -5267,10 +5842,10 @@ input:focus-visible,
   margin-top: var(--sp-1);
 }
 
-/* Second layer: a side panel hanging off the root menu — the hover detail
- * card for a suggested model, or the searchable full catalog. The bottom
- * anchor here is the panel's; the detail card gets repositioned to its
- * hovered row from JS (see the flyout measure effect). */
+/* Second layer: the searchable full-catalog panel hanging off the root menu,
+ * anchored to the panel's bottom edge. (The suggested-model detail card renders
+ * as a body-portaled .agent-composer-model-hovercard so the note-chat panel
+ * can't clip or cover it — see the model pickers.) */
 .agent-composer-model-flyout {
   position: absolute;
   bottom: -1px;
@@ -5321,14 +5896,34 @@ input:focus-visible,
 }
 
 .agent-composer-model-detail .agent-composer-model-surface {
-  gap: var(--sp-1);
-  width: 232px;
+  gap: var(--sp-2);
+  width: 248px;
   padding: var(--sp-3);
+}
+
+.agent-composer-model-detail-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.agent-composer-model-detail-content[data-animate-change="true"] {
+  animation: agent-composer-model-detail-content-in var(--t-fast) var(--ease-out);
+}
+
+@keyframes agent-composer-model-detail-content-in {
+  from {
+    opacity: 0.72;
+    filter: blur(4px);
+    transform: translateY(1px);
+  }
 }
 
 .agent-composer-model-detail-name {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--sp-2);
   margin: 0;
   font-size: var(--fs-md);
@@ -5336,63 +5931,184 @@ input:focus-visible,
 }
 
 .agent-composer-model-detail-name > span:first-child {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-composer-model-detail-name .model-trait-icon {
+/* The privacy chip uses the themed (brand-tinted clay) pill so it reads as the
+ * same family as the trailing row marker. Pin it so it never shrinks against a
+ * long model name. */
+.agent-composer-model-detail-name .agent-safety-badge {
   flex: 0 0 auto;
-  font-weight: 400;
 }
 
-.agent-composer-model-detail-values {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+/* ============================================================================
+ * Scroll fades (design system)
+ *
+ * A scroller melts its clipped edge when content is hidden above or below the
+ * viewport. Driven by the `useScrollFade` hook, which sets `data-fade-top` /
+ * `data-fade-bottom` only on the edge(s) with hidden content (so a fade never
+ * shows when everything fits). Two flavors, one contract:
+ *
+ *  - `.scroll-fade`      — contained overlays: `::before`/`::after` gradients
+ *    pinned to the wrapper's edges. WKWebView-safe for popovers (a mask on the
+ *    scroller rides the scrolled content in WebKit and bleeds past the bounds).
+ *    Put the class + data attributes on a non-scrolling wrapper; the scroller
+ *    is its child. Tunables: `--scroll-fade-size`, `--scroll-fade-color`,
+ *    `--scroll-fade-inset-right`.
+ *  - `.scroll-fade-mask` — mask-image gradient on the scroller itself. Reveals
+ *    the real content at the edge (clean in light + dark) for large panel
+ *    scrollers. Put the class + data attributes on the scroller. Tunable:
+ *    `--scroll-fade-size`.
+ * ============================================================================ */
+.scroll-fade {
+  position: relative;
+}
+
+.scroll-fade::before,
+.scroll-fade::after {
+  content: "";
+  position: absolute;
+  right: var(--scroll-fade-inset-right, 0);
+  left: 0;
+  z-index: 1;
+  height: var(--scroll-fade-size, 24px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.scroll-fade::before {
+  top: 0;
+  background: linear-gradient(to bottom, var(--scroll-fade-color, var(--popover)), transparent);
+}
+
+.scroll-fade::after {
+  bottom: 0;
+  background: linear-gradient(to top, var(--scroll-fade-color, var(--popover)), transparent);
+}
+
+.scroll-fade[data-fade-top]::before,
+.scroll-fade[data-fade-bottom]::after {
+  opacity: 1;
+}
+
+.scroll-fade-mask[data-fade-top][data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--scroll-fade-size, 28px),
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 var(--scroll-fade-size, 28px),
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+}
+
+.scroll-fade-mask[data-fade-top]:not([data-fade-bottom]) {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
+}
+
+.scroll-fade-mask:not([data-fade-top])[data-fade-bottom] {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--scroll-fade-size, 28px)),
+    transparent
+  );
+}
+
+/* The card always shows the full description (no "Show more" toggle): a capped,
+ * scrollable box so the card can never grow after it opens, which keeps the
+ * open-time viewport clamp correct and the expansion keyboard-neutral. It rides
+ * the shared `.scroll-fade` primitive with a tighter fade sized for the short
+ * box. */
+.agent-composer-model-detail-desc-wrap {
+  --scroll-fade-size: 14px;
+  overflow: hidden;
+  contain: paint;
 }
 
 .agent-composer-model-detail-desc {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
   margin: 0;
-  overflow: hidden;
+  max-height: 104px;
+  overflow-y: auto;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  line-height: 1.4;
+  font-size: var(--fs-sm);
+  line-height: 1.5;
 }
 
-/* When the description is clamped it's wrapped in a HoverTip; the wrapper span
- * must stretch so the clamped text keeps the card's full width (an inline span
- * would shrink-wrap and throw off the two-line measurement). */
-.agent-composer-model-detail-desc-tip {
-  display: block;
+/* The card's spec table: pricing and context as label/value rows, set on a
+ * subtle inset panel (rather than a divider) so it reads as its own group.
+ * Muted labels on the left, values hugging the right edge. */
+.agent-composer-model-detail-specs {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.agent-composer-model-detail-specs dt {
+  color: var(--muted-foreground);
+}
+
+.agent-composer-model-detail-specs dd {
+  margin: 0;
+  color: var(--popover-foreground);
+  text-align: right;
 }
 
 /* The catalog rows' hover card — same body as the suggested-model detail
  * card, but fixed-positioned beside the hovered row (set from JS) so it can
  * escape the panel's clipping and tracks the pointer like Codex's item
- * tooltips. Interactive so the pointer can reach its (clamped) description and
- * its hover tip; a close debounce keeps it alive across the gap from the row. */
+ * tooltips. Interactive so the pointer can move onto and read the card; a
+ * close debounce keeps it alive across the gap from the row. */
 .agent-composer-model-hovercard {
   position: fixed;
-  z-index: 3;
+  /* Portaled to document.body, so it must clear every panel it can open over —
+   * notably the note-chat panel (z-index 6) and its resize handle (z-index 71).
+   * Shares the top transient layer with .hover-tip (also z-index 140). */
+  z-index: 140;
   display: block;
   pointer-events: auto;
   color: var(--popover-foreground);
-  /* Keep the hover card above the panel so the panel shadow/fade cannot wash
-   * over the card. Clip only the side facing the panel; the other three sides
-   * keep the same elevation, and the clipped side cannot bleed back into the
-   * panel. */
-  clip-path: inset(-48px 0 -48px -48px);
+  transition:
+    top var(--t-med) var(--ease-spring),
+    right var(--t-med) var(--ease-spring),
+    left var(--t-med) var(--ease-spring);
   animation: agent-composer-model-flyout-left var(--t-med) var(--ease-out);
 }
 
 .agent-composer-model-hovercard[data-side="right"] {
-  clip-path: inset(-48px -48px -48px 0);
   animation-name: agent-composer-model-flyout-right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-composer-model-hovercard {
+    transition: none;
+  }
+
+  .agent-composer-model-detail-content[data-animate-change="true"] {
+    animation: none;
+  }
 }
 
 .agent-composer-model-all-panel {
@@ -5400,40 +6116,36 @@ input:focus-visible,
 }
 
 .agent-composer-model-all-panel .agent-composer-model-surface {
-  /* Tight: rows fade out right under the search field, no blank band. */
-  gap: var(--sp-2);
+  /* Tight: the search and filter rows sit flush; the filter's full-bleed
+   * hairline (below) does the separating, not whitespace. */
+  gap: 0;
   width: min(280px, calc(100vw - 48px));
   max-height: inherit;
   padding: var(--sp-1);
 }
 
 .agent-composer-model-search {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
+  display: flex;
   align-items: center;
-  gap: var(--sp-2);
   flex: 0 0 auto;
-  height: var(--control-lg);
-  /* Inset the field from the popover edges so the focus ring has breathing
-   * room (sp-2 margin clears the 4px ring off the edge), and keep the
-   * icon+placeholder gutter aligned with the row names below (row content
-   * starts at the row's own sp-2 padding). */
-  margin: var(--sp-1) var(--sp-2) 0;
-  padding: 0 calc(var(--sp-2) - 2px);
-  border-radius: var(--r-md);
-  background: var(--card);
+  height: var(--control-md);
+  /* Bare inline input, matching the command prompt: no icon, no boxed
+   * container — sp-2 padding lines the caret up with the rows below. */
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
   color: var(--muted-foreground);
-  box-shadow: inset 0 0 0 1px var(--popover-border);
-  transition:
-    box-shadow var(--t-fast) var(--ease-out),
-    background-color var(--t-fast) var(--ease-out);
 }
 
+/* The input suppresses the default outline, so the row itself must carry a
+ * visible focus state for keyboard users: the same quiet wash the app's menus
+ * use for their active row, rather than boxing the field back in. The outline
+ * is transparent in normal themes but forced-colors mode repaints outline
+ * colors, so high-contrast users still get a drawn ring where the background
+ * wash would be flattened away. */
 .agent-composer-model-search:focus-within {
-  background: var(--popover);
-  box-shadow:
-    0 0 0 1px var(--ring),
-    0 0 0 4px var(--focus-ring);
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
 }
 
 .agent-composer-model-search input {
@@ -5450,18 +6162,44 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
-/* The list's scroll viewport plus its edge fades. The wrap exists so the
- * overlays can sit at top: 0 / bottom: 0 of the exact scroll area — no
- * hand-computed offsets to drift out of place. */
+/* The "Private" catalog filter: a quiet label + switch row between the search
+ * input and the list, on the rows' own padding so everything lines up. The
+ * barely-there hairline under it splits the search + filter block from the
+ * model list (Cursor-style). */
+.agent-composer-model-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  min-height: var(--control-md);
+  /* Bleed past the surface padding so the hairline runs the panel's full
+   * width; the widened padding keeps the label on the shared content gutter. */
+  margin: 0 calc(-1 * var(--sp-1));
+  padding: 0 calc(var(--sp-1) + var(--sp-2));
+  border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
+  color: var(--popover-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.3;
+}
+
+/* Catalog list scroller. Fades come from the shared `.scroll-fade` primitive
+ * (contained overlays, WKWebView-safe for this popover); only the fade size is
+ * tuned here so rows melt into the popover surface at the boundary. */
 .agent-composer-model-list-wrap {
-  position: relative;
+  --scroll-fade-size: 16px;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
   contain: paint;
-  --scroll-fade-size: 16px;
+}
+
+/* In the all-models panel the surface stacks with no gap (the filter hairline
+ * separates instead), so the list carries its own breathing room. */
+.agent-composer-model-all-panel .agent-composer-model-list-wrap {
+  margin-top: var(--sp-1);
 }
 
 .agent-composer-model-list {
@@ -6818,7 +7556,9 @@ input:focus-visible,
 .sidebar-brand {
   display: inline-flex;
   align-items: center;
-  height: 14px;
+  /* Matches .sidebar-brand-mark: the wordmark scales with the text-size
+   * preference, so its wrapper must grow with it. */
+  height: calc(14px * var(--font-scale));
   color: var(--foreground);
   text-decoration: none;
   flex: 0 1 auto;
@@ -6910,7 +7650,9 @@ input:focus-visible,
  * accent. Replaces the old light/dark <img> swap. */
 .sidebar-brand-mark {
   display: block;
-  height: 14px;
+  /* The wordmark is brand *text*, so it rides the text-size preference like
+   * the nav labels beside it — unlike glyph icons, which stay fixed chrome. */
+  height: calc(14px * var(--font-scale));
   width: auto;
   color: var(--foreground);
 }
@@ -7082,14 +7824,14 @@ input:focus-visible,
 
 .command-prompt-search {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-2);
   height: 44px;
-  padding: 0 14px;
-  /* Barely-there hairline: half the strength of --border-subtle, just enough
-   * to seat the search row without drawing a visible divider. */
-  border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
+  /* Bare input, Linear-style: no icon, no divider — the results' top
+   * scroll-fade melts rows out underneath this row instead. 17px lines the
+   * caret up with the group titles below (8px results + 9px title padding). */
+  padding: 0 17px;
   color: var(--muted-foreground);
 }
 
@@ -7144,7 +7886,13 @@ input:focus-visible,
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px;
+  /* Top edge tucks the first group up under the search row (the group title's
+   * own 5px top padding provides the rest of the gap). */
+  padding: 2px 8px 8px;
+  /* Opt out of the global standard scrollbar props so the app's quiet 4px
+   * hover-reveal webkit scrollbar engages here (same move as .agent-scroll). */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 .command-prompt-group + .command-prompt-group {
@@ -7154,7 +7902,7 @@ input:focus-visible,
 .command-prompt-group-title {
   padding: 5px 9px 7px;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
 }
 
@@ -7810,10 +8558,7 @@ input:focus-visible,
 .agent-session-time {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
-  /* Ticking value: the sidebar re-renders on a 60s clock so this relative time
-   * advances (5m to 10m to 1h). Tabular figures keep the width stable across
-   * ticks per the spec/no-tabular-numerals.md live-value exception. */
-  font-variant-numeric: tabular-nums;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -8048,6 +8793,9 @@ input:focus-visible,
  * where even icon-width tabs overflow. */
 .tab-strip {
   --tab-strip-shadow-pad: 4px;
+  /* Width the active tab holds at the compact (tight/icon) sizes so its label
+   * stays readable. Keep in sync with ACTIVE_COMPACT_TAB in TabBar.tsx. */
+  --tab-active-compact-w: 160px;
 
   display: flex;
   align-items: center;
@@ -8073,11 +8821,12 @@ input:focus-visible,
  * tabs are the same pill, just lighter; the active one is solid white with a
  * lift. */
 .tab {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   height: calc(var(--titlebar-h) - var(--sp-2));
-  padding: 0 var(--sp-1) 0 var(--sp-2);
+  padding: 0 var(--sp-2);
   flex: 1 1 0;
   min-width: 40px;
   max-width: min(25%, 240px);
@@ -8089,6 +8838,8 @@ input:focus-visible,
   cursor: default;
   user-select: none;
   -webkit-app-region: no-drag;
+  /* Width changes (the active pill moving between tabs at compact sizes)
+   * deliberately snap — only drag-reorder animates, via transform. */
   transition:
     background-color var(--t-fast) var(--ease-out),
     box-shadow var(--t-fast) var(--ease-out),
@@ -8108,23 +8859,19 @@ input:focus-visible,
   box-shadow: var(--shadow-sm), var(--shadow-inset);
 }
 
-/* As the strip tightens (data-size is set from the measured tab width in
- * TabBar): first the close button goes when the label is squeezed... */
-.tab-strip[data-size="tight"] .tab-close,
-.tab-strip[data-size="icon"] .tab-close {
-  display: none;
+/* Drag-reorder: while a tab is being dragged, displaced neighbors slide aside
+ * (transform is set from TabBar's pointer math)... */
+.tab-strip[data-dragging] .tab {
+  transition: transform 160ms var(--ease-out);
 }
 
-/* ...then the label goes too and we resort to a centered icon, Linear-style —
- * nothing else, so a packed strip stays clean. */
-.tab-strip[data-size="icon"] .tab-label {
-  display: none;
-}
-
-.tab-strip[data-size="icon"] .tab {
-  justify-content: center;
-  gap: 0;
-  padding-inline: 0;
+/* ...while the grabbed tab itself tracks the pointer transition-free, lifted
+ * solid above the row so it reads as picked up. */
+.tab-strip[data-dragging] .tab[data-drag-source] {
+  z-index: 1;
+  background: var(--card);
+  box-shadow: var(--shadow-md), var(--shadow-inset);
+  transition: none;
 }
 
 .tab-icon {
@@ -8134,21 +8881,37 @@ input:focus-visible,
   opacity: 0.65;
 }
 
+/* The label runs the tab's full width and fades out at its right edge instead
+ * of ellipsizing — the close button floats above that faded tail, so squeezed
+ * tabs keep every pixel of title. The fade completes 14px in — the close
+ * button's left edge — so text never collides with the x. */
 .tab-label {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 38px),
+    transparent calc(100% - 14px)
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 38px), transparent calc(100% - 14px));
 }
 
+/* Overlaid on the tab's right edge, above the label's faded tail, so showing
+ * it never squeezes the title. Centered with auto margins, NOT a translateY
+ * transform: flex tabs sit at fractional widths, and a transform makes the
+ * hover fade-in rasterize on its own snapped layer — the x visibly shifts
+ * half a pixel while the opacity transition runs. */
 .tab-close {
+  position: absolute;
+  right: var(--sp-1);
+  inset-block: 0;
+  margin-block: auto;
   display: inline-grid;
   place-items: center;
-  flex: 0 0 auto;
   width: 16px;
   height: 16px;
-  margin-left: 1px;
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
@@ -8172,6 +8935,34 @@ input:focus-visible,
 .tab-close:hover {
   background: color-mix(in oklch, var(--foreground) 10%, transparent);
   color: var(--foreground);
+}
+
+/* As the strip tightens (data-size is set from the measured tab width in
+ * TabBar), inactive tabs shed their label and close and resort to a centered
+ * icon, Linear-style — nothing else, so a packed strip stays clean. The active
+ * tab keeps its wide pill (below) so the current document stays named. */
+.tab-strip[data-size="icon"] .tab:not([data-active]) .tab-close {
+  display: none;
+}
+
+.tab-strip[data-size="icon"] .tab:not([data-active]) .tab-label {
+  display: none;
+}
+
+.tab-strip[data-size="icon"] .tab:not([data-active]) {
+  justify-content: center;
+  gap: 0;
+  padding-inline: 0;
+}
+
+/* At both compact sizes the active tab holds a fixed readable width (TabBar
+ * budgets for it when deciding what folds into overflow) instead of the shared
+ * sliver, keeping the current document prominent. It may still shrink on an
+ * extremely narrow window — better than clipping. */
+.tab-strip[data-size="tight"] .tab[data-active],
+.tab-strip[data-size="icon"] .tab[data-active] {
+  flex: 0 1 var(--tab-active-compact-w);
+  max-width: none;
 }
 
 .tab-new {
@@ -8361,6 +9152,23 @@ input:focus-visible,
   padding: 0 var(--sp-8) var(--sp-5);
 }
 
+.main-panel-body[data-active-view="settings"] {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+  padding-bottom: calc(var(--sp-5) + 96px);
+}
+
+.main-panel-body[data-active-view="settings"]::-webkit-scrollbar {
+  width: var(--scrollbar-w);
+  background: transparent;
+}
+
+.main-panel-body[data-active-view="settings"]::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  background-clip: padding-box;
+}
+
 /* Top + bottom fades for the main card. Top is short (28px) since no
  * sticky header sits there; bottom is taller (96px) so content dissolves
  * cleanly behind the record button. Same scroll-timeline trick as the
@@ -8387,6 +9195,7 @@ input:focus-visible,
   bottom: 0;
   height: 96px;
   background: linear-gradient(to bottom, transparent, var(--card) 78%);
+  opacity: 0;
   /* Soften any static opacity flip (e.g. leaving the agent view, where the
    * :has() rule below holds the dissolve at 0) so the veil never pops in a
    * single frame over content. Matches the warm wash's 280ms fade. Lives
@@ -10289,58 +11098,8 @@ input:focus-visible,
   margin-top: var(--sp-5);
 }
 
-/* Feature 07: the calm "Branched from <title>" confirmation. Neutral-toned
- * (this is reassurance, not an error) and laid out like the error banner so
- * the two read as a consistent family. */
-.agent-main > .agent-branched-banner,
-.agent-main > .agent-branching-banner {
-  margin-top: var(--sp-5);
-}
-
-.agent-branched-banner,
-.agent-branching-banner {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--accent);
-  color: var(--foreground);
-  font-size: var(--fs-md);
-}
-
-.agent-branched-banner svg,
-.agent-branching-banner-spinner {
-  flex-shrink: 0;
-  color: var(--muted-foreground);
-}
-
-.agent-branched-banner p,
-.agent-branching-banner p {
-  margin: 0;
-  min-width: 0;
-  flex: 1;
-}
-
-.agent-branched-banner button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  height: 24px;
-  min-width: 24px;
-  padding: 0 var(--sp-2);
-  border: none;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
-
-.agent-branched-banner button:hover {
-  background: color-mix(in oklch, var(--foreground) 8%, transparent);
-}
+/* Feature 07: the fork lifecycle (creating → branched) is now surfaced as a
+ * toast, not an inline banner — see branchFromMessage in AgentWorkspace.tsx. */
 
 .agent-turn-action-spinner {
   color: var(--warm-strong);
@@ -10403,6 +11162,15 @@ input:focus-visible,
  * pieces out as wrapping flex items, so long text drops wholesale onto its
  * own line the moment it can't fit — inline flow wraps mid-sentence like a
  * paragraph instead. */
+/* Single-line body + action: vertically center the icon/content in the row
+ * rather than top-aligning against a one-line message. The base inline-notice
+ * rule (align-items flex-start) sits LATER in this flat stylesheet, so at equal
+ * specificity it would win and re-impose flex-start; pairing the base class
+ * here bumps specificity (two classes) so the center override holds. */
+.inline-notice.agent-credits-notice {
+  align-items: center;
+}
+
 .agent-credits-notice .inline-notice-message {
   display: block;
 }
@@ -10725,6 +11493,10 @@ input:focus-visible,
   font-size: var(--fs-md);
   font-weight: 400;
   letter-spacing: 0;
+}
+
+.settings-group-heading + .settings-group-description {
+  margin-top: calc(-1 * var(--sp-1));
 }
 
 /* The platforms group heading carries a quiet muted count beside it (the count
@@ -11307,12 +12079,13 @@ input:focus-visible,
  * the external-dir summary hover), not a full-bleed edge-to-edge band. Content
  * stays left-aligned; the bottom border is dropped so the rounded fill reads as
  * a single rectangle. */
-.settings-rows .settings-more-options-trigger,
 .settings-more-options-trigger {
-  width: auto;
-  /* Top inset so the rounded hover fill has clear separation from the row/border
-   * directly above it. */
-  margin: var(--sp-3) calc(var(--sp-3) * -1) 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-6);
+  width: 100%;
+  margin: 0;
   padding: var(--sp-3);
   border: 0;
   border-radius: var(--r-md);
@@ -11322,6 +12095,33 @@ input:focus-visible,
   cursor: pointer;
   color: inherit;
   transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.settings-more-options-row {
+  width: auto;
+  margin: var(--sp-2) calc(var(--sp-3) * -1);
+}
+
+/* When "More options" is collapsed it sits last in the card, so its sp-2 bottom
+ * margin stacks on the card's own bottom padding and reads as a dead gap. Drop
+ * it there; when expanded the options panel follows, so the row isn't last. */
+.settings-more-options-row:last-child {
+  margin-block-end: 0;
+}
+
+.settings-row-divider {
+  height: 1px;
+  margin: 0;
+  background: var(--border-subtle);
+}
+
+.settings-row:has(+ .settings-row-divider) {
+  border-bottom: 0;
+}
+
+.settings-more-options-panel {
+  display: flex;
+  flex-direction: column;
 }
 
 .settings-more-options-trigger:hover {
@@ -15739,18 +16539,21 @@ input:focus-visible,
 .model-summary-hovercard {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  width: 232px;
+  gap: var(--sp-2);
+  width: 248px;
   max-width: 100%;
 }
 
 /* Hover callout card (HoverTip) — the Venice-style explainer behind privacy
  * pills. Body-portaled at a fixed position, so it must sit above dialogs
- * (backdrop is z-index 112). data-side="top" anchors the card's bottom edge
- * to the coordinate instead of its top. */
+ * (backdrop is z-index 112) and above the model picker popover (130), which
+ * hosts a privacy-ghost tip inside its own rows. As the topmost transient
+ * layer the tip clears every overlay it can be triggered from over.
+ * data-side="top" anchors the card's bottom edge to the coordinate instead of
+ * its top. */
 .hover-tip {
   position: fixed;
-  z-index: 120;
+  z-index: 140;
   padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
@@ -15767,6 +16570,10 @@ input:focus-visible,
    * box width to hug the widest line, so the box edges match the text edges. */
   text-wrap: balance;
   pointer-events: none;
+}
+
+.hover-tip[data-interactive="true"] {
+  pointer-events: auto;
 }
 
 /* First frame: rendered hidden so its content width can be measured before the
@@ -16143,6 +16950,7 @@ input:focus-visible,
 .agent-scroll::-webkit-scrollbar,
 .agent-steer-cards-list::-webkit-scrollbar,
 .note-detail-scroll::-webkit-scrollbar,
+.command-prompt-results::-webkit-scrollbar,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar {
   width: var(--scrollbar-w);
   background: transparent;
@@ -16151,6 +16959,7 @@ input:focus-visible,
 .agent-scroll::-webkit-scrollbar-thumb,
 .agent-steer-cards-list::-webkit-scrollbar-thumb,
 .note-detail-scroll::-webkit-scrollbar-thumb,
+.command-prompt-results::-webkit-scrollbar-thumb,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   background: transparent;
@@ -16160,6 +16969,7 @@ input:focus-visible,
 .agent-scroll[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
 .agent-steer-cards-list[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
 .note-detail-scroll[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
+.command-prompt-results[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
 .main-panel-body[data-detail-scroller="true"][data-scrollbar-active="true"]::-webkit-scrollbar-thumb {
   background: color-mix(
     in oklch,
@@ -16172,6 +16982,7 @@ input:focus-visible,
 .agent-scroll::-webkit-scrollbar-thumb:hover,
 .agent-steer-cards-list::-webkit-scrollbar-thumb:hover,
 .note-detail-scroll::-webkit-scrollbar-thumb:hover,
+.command-prompt-results::-webkit-scrollbar-thumb:hover,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb:hover {
   background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
   background-clip: padding-box;
@@ -18389,27 +19200,6 @@ input:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.folder-note-title-input {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  border-radius: var(--r-xs);
-  padding: 0 var(--sp-1);
-  outline: 0;
-  background: var(--surface-subtle);
-  color: var(--foreground);
-  font-family: var(--font-sans);
-  font-size: var(--fs-md);
-  font-weight: 400;
-  line-height: 1.2;
-}
-
-.folder-note-title-input:focus,
-.folder-note-title-input:focus-visible {
-  outline: none;
-  box-shadow: none;
 }
 
 .folder-note-subtitle {

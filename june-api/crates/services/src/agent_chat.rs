@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
         AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
-        zero_receipt,
+        new_charge_operation_id, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
@@ -9,8 +9,9 @@ use crate::{
     util::sha256_hex,
 };
 use june_domain::{
-    ActionSlug, AgentChatCompleter, AgentChatCompletion, AgentChatRequest, Credits, ModelId,
-    ModelKind, OsAccountsClient, ProviderCredentials, Receipt, UserId,
+    ActionSlug, AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStreamOutcome,
+    Credits, DomainError, ModelId, ModelKind, OsAccountsClient, ProviderCredentials, Receipt,
+    UserId,
 };
 use std::sync::Arc;
 
@@ -55,6 +56,7 @@ impl AgentChatService {
                     body: params.body,
                     model: params.model_id.clone(),
                     provider_credentials: params.provider_credentials.clone(),
+                    unmetered: true,
                 })
                 .await?;
             log_skipped_user_venice_key(ActionSlug::AgentChat, &params.user_id, &params.model_id.0);
@@ -72,13 +74,14 @@ impl AgentChatService {
             hold_ttl_seconds: self.hold_ttl_seconds,
         })
         .await?;
-        let body_digest = body_digest(&params.body);
+        let idempotency_key = idempotency_key(&params.user_id, &params.body);
         let completion = self
             .chat_completer
             .complete(AgentChatRequest {
                 body: params.body,
                 model: params.model_id.clone(),
                 provider_credentials: params.provider_credentials.clone(),
+                unmetered: false,
             })
             .await?;
         let actual = self
@@ -89,10 +92,7 @@ impl AgentChatService {
             os_accounts: self.os_accounts.as_ref(),
             action_token: authorization.action_token,
             credits: charge_credits,
-            idempotency_key: format!(
-                "agent_chat:{}:{}:{}",
-                params.user_id.0, params.model_id.0, body_digest
-            ),
+            idempotency_key,
         })
         .await?;
         log_settled(
@@ -104,6 +104,74 @@ impl AgentChatService {
         Ok(AgentChatOutput {
             completion,
             receipt,
+        })
+    }
+
+    pub async fn complete_stream(
+        &self,
+        params: AgentChatParams,
+    ) -> Result<AgentChatStreamOutput, ServiceError> {
+        self.pricing
+            .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        if uses_user_venice_key_for_model(
+            &self.pricing,
+            &params.model_id.0,
+            &params.provider_credentials,
+        ) {
+            let stream = self
+                .chat_completer
+                .complete_stream(AgentChatRequest {
+                    body: params.body,
+                    model: params.model_id.clone(),
+                    provider_credentials: params.provider_credentials.clone(),
+                    unmetered: true,
+                })
+                .await?;
+            tokio::spawn(async move {
+                let _ = stream.outcome.await;
+            });
+            log_skipped_user_venice_key(ActionSlug::AgentChat, &params.user_id, &params.model_id.0);
+            return Ok(AgentChatStreamOutput {
+                content_type: stream.content_type,
+                provider: stream.provider,
+                chunks: stream.chunks,
+            });
+        }
+
+        let estimate = Credits(self.flat_estimate_credits);
+        let authorization = authorize_or_deny(AuthorizeParams {
+            os_accounts: self.os_accounts.as_ref(),
+            user_id: params.user_id.clone(),
+            action: ActionSlug::AgentChat,
+            estimate,
+            hold_ttl_seconds: self.hold_ttl_seconds,
+        })
+        .await?;
+        let idempotency_key = idempotency_key(&params.user_id, &params.body);
+        let stream = self
+            .chat_completer
+            .complete_stream(AgentChatRequest {
+                body: params.body,
+                model: params.model_id.clone(),
+                provider_credentials: params.provider_credentials.clone(),
+                unmetered: false,
+            })
+            .await?;
+        spawn_stream_settlement(StreamSettlement {
+            pricing: self.pricing.clone(),
+            os_accounts: self.os_accounts.clone(),
+            user_id: params.user_id,
+            model_id: params.model_id,
+            action_token: authorization.action_token,
+            cap_credits: authorization.cap_credits,
+            flat_estimate_credits: self.flat_estimate_credits,
+            idempotency_key,
+            outcome: stream.outcome,
+        });
+        Ok(AgentChatStreamOutput {
+            content_type: stream.content_type,
+            provider: stream.provider,
+            chunks: stream.chunks,
         })
     }
 }
@@ -122,8 +190,118 @@ pub struct AgentChatOutput {
     pub receipt: Receipt,
 }
 
+pub struct AgentChatStreamOutput {
+    pub content_type: String,
+    pub provider: String,
+    pub chunks: tokio::sync::mpsc::UnboundedReceiver<Result<bytes::Bytes, DomainError>>,
+}
+
 fn body_digest(body: &serde_json::Value) -> String {
     sha256_hex(body.to_string().as_bytes())
+}
+
+/// Each paid chat attempt gets a globally unique settlement scope, minted
+/// before the upstream call (same rule as the image keys). A retried
+/// identical body runs a fresh upstream completion that delivers its own
+/// content, so it settles its own charge — under the old digest-only key the
+/// second attempt's settlement replayed as a no-op, delivering content
+/// without a wallet movement. Unlike images there is no retry ledger in
+/// front: chat has no client-supplied request id, and any retry that reaches
+/// the upstream does real billable work. The digest stays for debuggability.
+fn idempotency_key(user_id: &UserId, body: &serde_json::Value) -> String {
+    format!(
+        "agent_chat:{}:attempt:{}:{}",
+        user_id.0,
+        new_charge_operation_id(),
+        body_digest(body)
+    )
+}
+
+struct StreamSettlement {
+    pricing: Arc<PricingTable>,
+    os_accounts: Arc<dyn OsAccountsClient>,
+    user_id: UserId,
+    model_id: ModelId,
+    action_token: String,
+    cap_credits: Credits,
+    flat_estimate_credits: u64,
+    idempotency_key: String,
+    outcome: tokio::sync::oneshot::Receiver<AgentChatStreamOutcome>,
+}
+
+fn spawn_stream_settlement(params: StreamSettlement) {
+    tokio::spawn(async move {
+        settle_stream_charge(params).await;
+    });
+}
+
+async fn settle_stream_charge(params: StreamSettlement) {
+    // Failed (or a dead pump) charges nothing — the buffered path errors
+    // before its charge line on the same transport failure, and the hold
+    // expires on its own. Only a DELIVERED body may bill: at metered usage
+    // when the frame arrived, at the flat estimate when it did not.
+    let credits = match params.outcome.await {
+        Ok(AgentChatStreamOutcome::Usage(usage)) => {
+            match params.pricing.price_token_usage(&params.model_id.0, usage) {
+                Ok(actual) => clamp_to_cap(actual, params.cap_credits),
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        user_id = %params.user_id.0,
+                        action = ActionSlug::AgentChat.as_str(),
+                        model = %params.model_id.0,
+                        "agent chat stream usage failed to price; settling at flat estimate"
+                    );
+                    clamp_to_cap(Credits(params.flat_estimate_credits), params.cap_credits)
+                }
+            }
+        }
+        Ok(AgentChatStreamOutcome::CompletedWithoutUsage) => {
+            tracing::error!(
+                user_id = %params.user_id.0,
+                action = ActionSlug::AgentChat.as_str(),
+                model = %params.model_id.0,
+                "agent chat stream completed without usage; settling at flat estimate"
+            );
+            clamp_to_cap(Credits(params.flat_estimate_credits), params.cap_credits)
+        }
+        Ok(AgentChatStreamOutcome::Failed) | Err(_) => {
+            tracing::error!(
+                user_id = %params.user_id.0,
+                action = ActionSlug::AgentChat.as_str(),
+                model = %params.model_id.0,
+                "agent chat stream failed mid-transport; leaving hold unsettled"
+            );
+            return;
+        }
+    };
+    let receipt = match charge(ChargeParams {
+        os_accounts: params.os_accounts.as_ref(),
+        action_token: params.action_token,
+        credits,
+        idempotency_key: params.idempotency_key,
+    })
+    .await
+    {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                user_id = %params.user_id.0,
+                action = ActionSlug::AgentChat.as_str(),
+                model = %params.model_id.0,
+                credits = credits.0,
+                "agent chat stream charge failed"
+            );
+            return;
+        }
+    };
+    log_settled(
+        ActionSlug::AgentChat,
+        &params.user_id,
+        &params.model_id.0,
+        &receipt,
+    );
 }
 
 #[cfg(test)]

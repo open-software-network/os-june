@@ -6,6 +6,8 @@ import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { replayOnboarding } from "./lib/onboarding";
 import { initTheme } from "./lib/theme";
 import { initBrand } from "./lib/brand";
+import { initFontScale } from "./lib/font-scale";
+import { installExternalLinkOpener } from "./lib/external-links";
 import "./styles/app.css";
 
 declare global {
@@ -23,6 +25,8 @@ if (import.meta.env.DEV) {
 
 initTheme();
 initBrand();
+initFontScale();
+installExternalLinkOpener();
 installNativeContextMenuGuard();
 
 // Console driver for the agent HUD overlay window: __agentHud("demo") etc.

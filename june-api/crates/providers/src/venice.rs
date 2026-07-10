@@ -3,9 +3,10 @@ use crate::transcription::TranscriptionWireResponse;
 use async_trait::async_trait;
 use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit, UpstreamConfig};
 use june_domain::{
-    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, CleanedText, Cleaner,
-    CleanupRequest, DomainError, GeneratedNote, GenerationRequest, Generator, ProviderCredentials,
-    TokenUsage, Transcriber, Transcript, TranscriptionRequest,
+    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
+    AgentChatStreamOutcome, CleanedText, Cleaner, CleanupRequest, DomainError, GeneratedNote,
+    GenerationRequest, Generator, ProviderCredentials, TokenUsage, Transcriber, Transcript,
+    TranscriptionRequest,
 };
 use reqwest::{
     StatusCode,
@@ -13,11 +14,16 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use tokio::sync::{mpsc, oneshot};
 
 pub const PROVIDER_NAME: &str = "venice";
 
 const CREDITS_PER_USD: f64 = 1_000.0;
 const RATE_SCALE: f64 = 1_000_000.0;
+#[cfg(not(test))]
+const STREAM_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+#[cfg(test)]
+const STREAM_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 /// A 20% markup over upstream cost is a 1.2x retail price.
 const RETAIL_PRICE_MULTIPLIER: f64 = 1.2;
 
@@ -235,9 +241,13 @@ pub struct VeniceGenerator {
 }
 
 impl VeniceGenerator {
-    pub fn from_config(http: reqwest::Client, config: &UpstreamConfig) -> Self {
+    pub fn from_config(
+        http: reqwest::Client,
+        unmetered_http: reqwest::Client,
+        config: &UpstreamConfig,
+    ) -> Self {
         Self {
-            chat: VeniceChat::new(http, config),
+            chat: VeniceChat::with_unmetered(http, unmetered_http, config),
         }
     }
 }
@@ -278,7 +288,10 @@ impl Generator for VeniceGenerator {
                     ],
                     temperature: None,
                 },
-                &request.provider_credentials,
+                ChatCallAuth {
+                    provider_credentials: &request.provider_credentials,
+                    unmetered: request.unmetered,
+                },
             )
             .await?;
         let content = parsed
@@ -314,9 +327,13 @@ pub struct VeniceAgentChat {
 }
 
 impl VeniceAgentChat {
-    pub fn from_config(http: reqwest::Client, config: &UpstreamConfig) -> Self {
+    pub fn from_config(
+        http: reqwest::Client,
+        unmetered_http: reqwest::Client,
+        config: &UpstreamConfig,
+    ) -> Self {
         Self {
-            chat: VeniceChat::new(http, config),
+            chat: VeniceChat::with_unmetered(http, unmetered_http, config),
         }
     }
 }
@@ -328,7 +345,30 @@ impl AgentChatCompleter for VeniceAgentChat {
         request: AgentChatRequest,
     ) -> Result<AgentChatCompletion, DomainError> {
         self.chat
-            .complete_raw(request.body, request.model, &request.provider_credentials)
+            .complete_raw(
+                request.body,
+                request.model,
+                ChatCallAuth {
+                    provider_credentials: &request.provider_credentials,
+                    unmetered: request.unmetered,
+                },
+            )
+            .await
+    }
+
+    async fn complete_stream(
+        &self,
+        request: AgentChatRequest,
+    ) -> Result<AgentChatStream, DomainError> {
+        self.chat
+            .complete_stream(
+                request.body,
+                request.model,
+                ChatCallAuth {
+                    provider_credentials: &request.provider_credentials,
+                    unmetered: request.unmetered,
+                },
+            )
             .await
     }
 }
@@ -369,7 +409,12 @@ impl Cleaner for VeniceCleaner {
                     // dictation should clean up the same way every time.
                     temperature: Some(0.0),
                 },
-                &request.provider_credentials,
+                // Dictation cleanup is short and always metered the same way;
+                // it never gets the unmetered client.
+                ChatCallAuth {
+                    provider_credentials: &request.provider_credentials,
+                    unmetered: false,
+                },
             )
             .await?;
         let cleaned = parsed
@@ -385,8 +430,23 @@ impl Cleaner for VeniceCleaner {
     }
 }
 
+/// Per-call auth context for `VeniceChat`: whose key goes upstream and whether
+/// the call settles an OS Accounts charge (which selects the client — see
+/// `AgentChatRequest::unmetered`).
+#[derive(Clone, Copy)]
+struct ChatCallAuth<'a> {
+    provider_credentials: &'a ProviderCredentials,
+    unmetered: bool,
+}
+
 struct VeniceChat {
     http: reqwest::Client,
+    /// Client for requests that settle no OS Accounts charge (user-supplied
+    /// Venice key). The metered window on `http` exists only to keep
+    /// settlement inside the authorization hold; unmetered calls have no hold
+    /// and keep the full route budget. `None` means no distinction (callers
+    /// whose requests are always metered the same way).
+    unmetered_http: Option<reqwest::Client>,
     api_key: String,
     base_url: String,
 }
@@ -395,15 +455,35 @@ impl VeniceChat {
     fn new(http: reqwest::Client, config: &UpstreamConfig) -> Self {
         Self {
             http,
+            unmetered_http: None,
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
+        }
+    }
+
+    fn with_unmetered(
+        http: reqwest::Client,
+        unmetered_http: reqwest::Client,
+        config: &UpstreamConfig,
+    ) -> Self {
+        Self {
+            unmetered_http: Some(unmetered_http),
+            ..Self::new(http, config)
+        }
+    }
+
+    fn client(&self, unmetered: bool) -> &reqwest::Client {
+        if unmetered {
+            self.unmetered_http.as_ref().unwrap_or(&self.http)
+        } else {
+            &self.http
         }
     }
 
     async fn complete(
         &self,
         mut body: ChatCompletionRequest,
-        provider_credentials: &ProviderCredentials,
+        auth: ChatCallAuth<'_>,
     ) -> Result<ChatCompletionResponse, DomainError> {
         body.messages.insert(0, ChatMessage::safety_context());
         let url = format!("{}/chat/completions", self.base_url);
@@ -411,7 +491,7 @@ impl VeniceChat {
         // transcribers: metering settles only after success, so a replay
         // can never double-charge.
         for attempt in 0..retry::UPSTREAM_ATTEMPTS {
-            let error = match self.complete_once(&url, &body, provider_credentials).await {
+            let error = match self.complete_once(&url, &body, auth).await {
                 Ok(parsed) => return Ok(parsed),
                 Err(error) => error,
             };
@@ -434,11 +514,11 @@ impl VeniceChat {
         &self,
         url: &str,
         body: &ChatCompletionRequest,
-        provider_credentials: &ProviderCredentials,
+        auth: ChatCallAuth<'_>,
     ) -> Result<ChatCompletionResponse, UpstreamAttemptError> {
-        let api_key = venice_api_key(&self.api_key, provider_credentials);
+        let api_key = venice_api_key(&self.api_key, auth.provider_credentials);
         let response = self
-            .http
+            .client(auth.unmetered)
             .post(url)
             .bearer_auth(api_key)
             .json(body)
@@ -457,7 +537,7 @@ impl VeniceChat {
             let retryable = retry::is_retryable_status(status);
             let body_text = response.text().await.unwrap_or_default();
             tracing::error!(%status, %url, model = %body.model, body_bytes = body_text.len(), retryable, "venice: chat non-success response");
-            if let Some(error) = user_venice_key_auth_error(status, provider_credentials) {
+            if let Some(error) = user_venice_key_auth_error(status, auth.provider_credentials) {
                 return Err(UpstreamAttemptError::fatal(error));
             }
             return Err(UpstreamAttemptError {
@@ -476,40 +556,16 @@ impl VeniceChat {
 
     async fn complete_raw(
         &self,
-        mut body: serde_json::Value,
+        body: serde_json::Value,
         model: june_domain::ModelId,
-        provider_credentials: &ProviderCredentials,
+        auth: ChatCallAuth<'_>,
     ) -> Result<AgentChatCompletion, DomainError> {
-        let Some(object) = body.as_object_mut() else {
-            return Err(DomainError::InvalidInput {
-                reason: "invalid_chat_completion_body".to_string(),
-            });
-        };
-        object.insert(
-            "model".to_string(),
-            serde_json::Value::String(model.0.clone()),
-        );
-        inject_safety_context(object);
-        sanitize_tool_schemas(object);
-        if object.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
-            let stream_options = object
-                .entry("stream_options")
-                .or_insert_with(|| serde_json::json!({}));
-            // Replace a non-object `stream_options` instead of leaving it:
-            // without `include_usage` the stream carries no usage frame, so
-            // metering fails after the upstream call has already been made.
-            if !stream_options.is_object() {
-                *stream_options = serde_json::json!({});
-            }
-            if let Some(options) = stream_options.as_object_mut() {
-                options.insert("include_usage".to_string(), serde_json::Value::Bool(true));
-            }
-        }
+        let body = prepare_agent_chat_body(body, &model)?;
         let url = format!("{}/chat/completions", self.base_url);
         let response = self
-            .http
+            .client(auth.unmetered)
             .post(&url)
-            .bearer_auth(venice_api_key(&self.api_key, provider_credentials))
+            .bearer_auth(venice_api_key(&self.api_key, auth.provider_credentials))
             .json(&body)
             .send()
             .await
@@ -529,25 +585,16 @@ impl VeniceChat {
             DomainError::UpstreamProvider
         })?;
         if !status.is_success() {
-            // The upstream error body is the only place Venice states WHY it
-            // rejected the request (e.g. its tool-schema normalizer bugs) —
-            // but agent chat bodies can carry private note/chat content that a
-            // validation error might echo. Log ONLY the structured error field
-            // from a JSON error body (capped), never a raw body preview, so
-            // this path keeps the provider-wide no-payload-in-logs rule.
-            let error_detail = upstream_error_detail(&body).unwrap_or_default();
-            tracing::error!(
-                %status,
-                %url,
-                model = %model.0,
-                body_bytes = body.len(),
-                error_detail = %error_detail,
-                "venice: agent chat non-success response"
-            );
-            if let Some(error) = user_venice_key_auth_error(status, provider_credentials) {
-                return Err(error);
-            }
-            return Err(DomainError::UpstreamProvider);
+            return Err(handle_agent_chat_non_success(
+                AgentChatNonSuccess {
+                    status,
+                    url: &url,
+                    model: &model.0,
+                    body_bytes: body.len(),
+                    body: &body,
+                },
+                auth.provider_credentials,
+            ));
         }
         let usage = usage_from_chat_body(&body, &content_type)?;
         Ok(AgentChatCompletion {
@@ -556,6 +603,260 @@ impl VeniceChat {
             provider: PROVIDER_NAME.to_string(),
             usage,
         })
+    }
+
+    async fn complete_stream(
+        &self,
+        body: serde_json::Value,
+        model: june_domain::ModelId,
+        auth: ChatCallAuth<'_>,
+    ) -> Result<AgentChatStream, DomainError> {
+        let body = prepare_agent_chat_body(body, &model)?;
+        let url = format!("{}/chat/completions", self.base_url);
+        let mut response = self
+            .client(auth.unmetered)
+            .post(&url)
+            .bearer_auth(venice_api_key(&self.api_key, auth.provider_credentials))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
+                DomainError::UpstreamProvider
+            })?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+        if !status.is_success() {
+            let body = response.bytes().await.map_err(|error| {
+                tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
+                DomainError::UpstreamProvider
+            })?;
+            return Err(handle_agent_chat_non_success(
+                AgentChatNonSuccess {
+                    status,
+                    url: &url,
+                    model: &model.0,
+                    body_bytes: body.len(),
+                    body: &body,
+                },
+                auth.provider_credentials,
+            ));
+        }
+
+        let (chunks_tx, chunks_rx) = mpsc::unbounded_channel();
+        let (outcome_tx, outcome_rx) = oneshot::channel();
+        let task_content_type = content_type.clone();
+        let task_url = url.clone();
+        let task_model = model.0.clone();
+        let drain_for_settlement = !auth.unmetered;
+        tokio::spawn(async move {
+            pump_agent_chat_stream(StreamPump {
+                response: &mut response,
+                chunks_tx,
+                outcome_tx,
+                content_type: task_content_type,
+                url: task_url,
+                model: task_model,
+                drain_for_settlement,
+            })
+            .await;
+        });
+
+        Ok(AgentChatStream {
+            content_type,
+            provider: PROVIDER_NAME.to_string(),
+            chunks: chunks_rx,
+            outcome: outcome_rx,
+        })
+    }
+}
+
+fn prepare_agent_chat_body(
+    mut body: serde_json::Value,
+    model: &june_domain::ModelId,
+) -> Result<serde_json::Value, DomainError> {
+    let Some(object) = body.as_object_mut() else {
+        return Err(DomainError::InvalidInput {
+            reason: "invalid_chat_completion_body".to_string(),
+        });
+    };
+    object.insert(
+        "model".to_string(),
+        serde_json::Value::String(model.0.clone()),
+    );
+    inject_safety_context(object);
+    sanitize_tool_schemas(object);
+    if object.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
+        let stream_options = object
+            .entry("stream_options")
+            .or_insert_with(|| serde_json::json!({}));
+        // Replace a non-object `stream_options` instead of leaving it:
+        // without `include_usage` the stream carries no usage frame, so
+        // metering fails after the upstream call has already been made.
+        if !stream_options.is_object() {
+            *stream_options = serde_json::json!({});
+        }
+        if let Some(options) = stream_options.as_object_mut() {
+            options.insert("include_usage".to_string(), serde_json::Value::Bool(true));
+        }
+    }
+    Ok(body)
+}
+
+fn handle_agent_chat_non_success(
+    error: AgentChatNonSuccess<'_>,
+    provider_credentials: &ProviderCredentials,
+) -> DomainError {
+    // The upstream error body is the only place Venice states WHY it
+    // rejected the request (e.g. its tool-schema normalizer bugs) —
+    // but agent chat bodies can carry private note/chat content that a
+    // validation error might echo. Log ONLY the structured error field
+    // from a JSON error body (capped), never a raw body preview, so
+    // this path keeps the provider-wide no-payload-in-logs rule.
+    let error_detail = upstream_error_detail(error.body).unwrap_or_default();
+    tracing::error!(
+        status = %error.status,
+        url = %error.url,
+        model = %error.model,
+        body_bytes = error.body_bytes,
+        error_detail = %error_detail,
+        "venice: agent chat non-success response"
+    );
+    if let Some(error) = user_venice_key_auth_error(error.status, provider_credentials) {
+        return error;
+    }
+    DomainError::UpstreamProvider
+}
+
+#[derive(Clone, Copy)]
+struct AgentChatNonSuccess<'a> {
+    status: StatusCode,
+    url: &'a str,
+    model: &'a str,
+    body_bytes: usize,
+    body: &'a [u8],
+}
+
+struct StreamPump<'a> {
+    response: &'a mut reqwest::Response,
+    chunks_tx: mpsc::UnboundedSender<Result<bytes::Bytes, DomainError>>,
+    outcome_tx: oneshot::Sender<AgentChatStreamOutcome>,
+    content_type: String,
+    url: String,
+    model: String,
+    /// Whether the upstream must be drained to its usage frame after the
+    /// client is gone. True for metered streams (June settles a charge from
+    /// that frame). False for BYOK: there is no charge to protect, and
+    /// draining would keep spending the user's own upstream account on a
+    /// response nobody reads — dropping the connection stops generation.
+    drain_for_settlement: bool,
+}
+
+async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
+    let mut accumulated = Vec::new();
+    let mut forwarding = true;
+    let is_sse = pump.content_type.contains("text/event-stream");
+    // The stream opens at a line boundary by definition.
+    let mut at_line_start = true;
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + STREAM_HEARTBEAT_INTERVAL,
+        STREAM_HEARTBEAT_INTERVAL,
+    );
+    loop {
+        tokio::select! {
+            chunk = pump.response.chunk() => {
+                match chunk {
+                    Ok(Some(chunk)) => {
+                        accumulated.extend_from_slice(&chunk);
+                        // Chunk boundaries are arbitrary bytes, not SSE event
+                        // boundaries — a heartbeat is only legal at a line
+                        // start, or it would splice into a partial `data:`
+                        // line and corrupt the frame.
+                        at_line_start = chunk.last() == Some(&b'\n');
+                        // Unbounded send: draining to the usage frame must not
+                        // block on a slow client, or settlement stalls with it.
+                        if forwarding && pump.chunks_tx.send(Ok(chunk)).is_err() {
+                            if !pump.drain_for_settlement {
+                                let _ = pump.outcome_tx.send(AgentChatStreamOutcome::Failed);
+                                return;
+                            }
+                            forwarding = false;
+                        }
+                        // Heartbeats are silence-gated: an active upstream is
+                        // its own keep-alive, so only a stall restarts the
+                        // countdown.
+                        heartbeat.reset();
+                    }
+                    Ok(None) => {
+                        let outcome = match usage_from_chat_body(&accumulated, &pump.content_type) {
+                            Ok(usage) => AgentChatStreamOutcome::Usage(usage),
+                            // Delivered body, missing meter reading — the
+                            // service settles this at the flat estimate.
+                            Err(_) => AgentChatStreamOutcome::CompletedWithoutUsage,
+                        };
+                        let _ = pump.outcome_tx.send(outcome);
+                        return;
+                    }
+                    Err(error) => {
+                        // Two distinct billing cases hide in this arm. Our own
+                        // client timeout cutting a stream that had already
+                        // delivered bytes is a deliberate cap (the metered
+                        // window keeps settlement inside the hold TTL), so it
+                        // settles like a delivered-but-unmetered body. An
+                        // upstream fault — or a cut before any byte arrived —
+                        // charges nothing, matching the buffered path which
+                        // errors before its charge line.
+                        let deliberate_cut = error.is_timeout() && !accumulated.is_empty();
+                        tracing::error!(%error, url = %pump.url, model = %pump.model, deliberate_cut, "venice: agent chat body read failed");
+                        if forwarding {
+                            let _ = pump.chunks_tx.send(Err(DomainError::UpstreamProvider));
+                        }
+                        let outcome = if deliberate_cut {
+                            AgentChatStreamOutcome::CompletedWithoutUsage
+                        } else {
+                            AgentChatStreamOutcome::Failed
+                        };
+                        let _ = pump.outcome_tx.send(outcome);
+                        return;
+                    }
+                }
+            }
+            // BYOK only: with no settlement to protect, a dropped downstream
+            // aborts the upstream immediately. The send-failure paths cannot
+            // stand in for this — heartbeats are suppressed mid-line and
+            // non-SSE bodies never heartbeat, so a disconnect during an
+            // upstream stall would otherwise keep spending the user's own
+            // account until the next chunk or the client timeout.
+            () = pump.chunks_tx.closed(), if !pump.drain_for_settlement => {
+                let _ = pump.outcome_tx.send(AgentChatStreamOutcome::Failed);
+                return;
+            }
+            // A stall after a PARTIAL line keeps heartbeats suppressed until
+            // the line completes: a proxy may then time the response out, but
+            // that beats corrupting the frame — and upstreams flush whole
+            // events in practice, so the suppressed window is rare and short.
+            _ = heartbeat.tick(), if forwarding && is_sse && at_line_start => {
+                // A comment line with NO trailing blank line: a blank line
+                // dispatches whatever event fields are already buffered, so
+                // `\n\n` would split a legal multi-line event stalled between
+                // its data lines. A lone comment line is ignored everywhere.
+                if pump.chunks_tx
+                    .send(Ok(bytes::Bytes::from_static(b": keep-alive\n")))
+                    .is_err()
+                {
+                    if !pump.drain_for_settlement {
+                        let _ = pump.outcome_tx.send(AgentChatStreamOutcome::Failed);
+                        return;
+                    }
+                    forwarding = false;
+                }
+            }
+        }
     }
 }
 
@@ -1139,20 +1440,25 @@ fn strip_scaffolding_tags(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        SAFETY_CONTEXT, VeniceAgentChat, VeniceGenerator, VeniceModelsApiResponse,
-        cleanup_generated_note_text, cleanup_source_text, generation_source_text,
-        inject_safety_context, sanitize_tool_schemas, strip_scaffolding_tags,
-        venice_priced_model_items,
+        SAFETY_CONTEXT, STREAM_HEARTBEAT_INTERVAL, VeniceAgentChat, VeniceGenerator,
+        VeniceModelsApiResponse, cleanup_generated_note_text, cleanup_source_text,
+        generation_source_text, inject_safety_context, sanitize_tool_schemas,
+        strip_scaffolding_tags, venice_priced_model_items,
     };
     use crate::http;
     use june_config::ModelType;
     use june_config::UpstreamConfig;
     use june_domain::{
-        AgentChatCompleter, AgentChatRequest, DomainError, GenerationRequest, Generator, ModelId,
-        ProviderCredentials,
+        AgentChatCompleter, AgentChatRequest, AgentChatStreamOutcome, DomainError,
+        GenerationRequest, Generator, ModelId, ProviderCredentials,
     };
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use std::time::Duration;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{body_string_contains, header, method, path},
@@ -1177,6 +1483,7 @@ mod tests {
             .await;
         let generator = VeniceGenerator::from_config(
             http::default_client(),
+            http::default_client(),
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
@@ -1194,6 +1501,7 @@ mod tests {
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
                 provider_credentials: ProviderCredentials::default(),
+                unmetered: false,
             })
             .await;
 
@@ -1233,6 +1541,7 @@ mod tests {
             .await;
         let generator = VeniceGenerator::from_config(
             http::default_client(),
+            http::default_client(),
             &UpstreamConfig {
                 api_key: "shared_venice_key".to_string(),
                 base_url: server.uri(),
@@ -1252,6 +1561,7 @@ mod tests {
                 provider_credentials: ProviderCredentials {
                     venice_api_key: Some("user_venice_key".to_string()),
                 },
+                unmetered: true,
             })
             .await;
 
@@ -1279,6 +1589,7 @@ mod tests {
             .await;
         let generator = VeniceGenerator::from_config(
             http::default_client(),
+            http::default_client(),
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
@@ -1296,6 +1607,7 @@ mod tests {
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
                 provider_credentials: ProviderCredentials::default(),
+                unmetered: false,
             })
             .await
             .expect("generation should succeed");
@@ -1324,6 +1636,7 @@ mod tests {
             .await;
         let generator = VeniceGenerator::from_config(
             http::default_client(),
+            http::default_client(),
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
@@ -1341,6 +1654,7 @@ mod tests {
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
                 provider_credentials: ProviderCredentials::default(),
+                unmetered: false,
             })
             .await
             .expect("generation should succeed");
@@ -1396,6 +1710,7 @@ mod tests {
             .await;
         let generator = VeniceGenerator::from_config(
             http::default_client(),
+            http::default_client(),
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
@@ -1413,6 +1728,7 @@ mod tests {
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
                 provider_credentials: ProviderCredentials::default(),
+                unmetered: false,
             })
             .await;
 
@@ -1433,6 +1749,7 @@ mod tests {
             .await;
         let generator = VeniceGenerator::from_config(
             http::default_client(),
+            http::default_client(),
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
@@ -1450,6 +1767,7 @@ mod tests {
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
                 provider_credentials: ProviderCredentials::default(),
+                unmetered: false,
             })
             .await;
 
@@ -1521,6 +1839,7 @@ mod tests {
             .await;
         let agent = VeniceAgentChat::from_config(
             http::default_client(),
+            http::default_client(),
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
@@ -1537,6 +1856,7 @@ mod tests {
                 }),
                 model: ModelId("text-model".to_string()),
                 provider_credentials: ProviderCredentials::default(),
+                unmetered: false,
             })
             .await
             .expect("completion succeeds");
@@ -1558,6 +1878,7 @@ mod tests {
             .await;
         let agent = VeniceAgentChat::from_config(
             http::default_client(),
+            http::default_client(),
             &UpstreamConfig {
                 api_key: "shared_venice_key".to_string(),
                 base_url: server.uri(),
@@ -1574,6 +1895,7 @@ mod tests {
                 provider_credentials: ProviderCredentials {
                     venice_api_key: Some("VENICE_INFERENCE_KEY_bad".to_string()),
                 },
+                unmetered: true,
             })
             .await
             .expect_err("bad user key should be rejected");
@@ -1584,6 +1906,146 @@ mod tests {
                 reason: "venice_api_key_rejected".to_string()
             }
         );
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_forwards_chunks_and_resolves_usage() {
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![
+                (
+                    b"data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}],\"usage\":null}\n\n"
+                        .to_vec(),
+                    Duration::ZERO,
+                ),
+                (
+                    b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n"
+                        .to_vec(),
+                    Duration::ZERO,
+                ),
+                (b"data: [DONE]\n\n".to_vec(), Duration::ZERO),
+            ],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let mut stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.chunks.recv().await {
+            body.extend_from_slice(&chunk.expect("chunk succeeds"));
+        }
+        let outcome = stream.outcome.await.expect("outcome sender resolves");
+        let AgentChatStreamOutcome::Usage(usage) = outcome else {
+            panic!("expected usage outcome, got {outcome:?}");
+        };
+
+        assert!(String::from_utf8_lossy(&body).contains("\"content\":\"hel\""));
+        assert_eq!(usage.prompt_tokens, 3);
+        assert_eq!(usage.completion_tokens, 4);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_missing_usage_resolves_completed_without_usage() {
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![(b"data: {\"choices\":[]}\n\n".to_vec(), Duration::ZERO)],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+
+        let outcome = stream.outcome.await.expect("outcome sender resolves");
+
+        assert_eq!(outcome, AgentChatStreamOutcome::CompletedWithoutUsage);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_non_success_returns_error_before_streaming() {
+        let (base_url, _server) = stream_stub(
+            400,
+            "application/json",
+            vec![(br#"{"error":"bad request"}"#.to_vec(), Duration::ZERO)],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let Err(error) = agent.complete_stream(stream_request()).await else {
+            panic!("non-success status should be an error");
+        };
+
+        assert_eq!(error, DomainError::UpstreamProvider);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_drains_usage_after_receiver_is_dropped() {
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![(
+                b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":6}}\n\n"
+                    .to_vec(),
+                Duration::from_millis(10),
+            )],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+        drop(stream.chunks);
+        let outcome = stream.outcome.await.expect("outcome sender resolves");
+        let AgentChatStreamOutcome::Usage(usage) = outcome else {
+            panic!("expected usage outcome after disconnect, got {outcome:?}");
+        };
+
+        assert_eq!(usage.prompt_tokens, 5);
+        assert_eq!(usage.completion_tokens, 6);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_emits_sse_heartbeat_when_upstream_stalls() {
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![(
+                b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":8}}\n\n"
+                    .to_vec(),
+                STREAM_HEARTBEAT_INTERVAL + Duration::from_millis(30),
+            )],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let mut stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+
+        let heartbeat = stream
+            .chunks
+            .recv()
+            .await
+            .expect("first chunk")
+            .expect("heartbeat chunk");
+        assert_eq!(heartbeat, bytes::Bytes::from_static(b": keep-alive\n"));
+        let outcome = stream.outcome.await.expect("outcome sender resolves");
+        let AgentChatStreamOutcome::Usage(usage) = outcome else {
+            panic!("expected usage outcome, got {outcome:?}");
+        };
+        assert_eq!(usage.prompt_tokens, 7);
+        assert_eq!(usage.completion_tokens, 8);
     }
 
     #[tokio::test]
@@ -1598,6 +2060,7 @@ mod tests {
             .mount(&server)
             .await;
         let generator = VeniceGenerator::from_config(
+            http::default_client(),
             http::default_client(),
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
@@ -1616,6 +2079,7 @@ mod tests {
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "caller system prompt".to_string(),
                 provider_credentials: ProviderCredentials::default(),
+                unmetered: false,
             })
             .await
             .expect("generation succeeds");
@@ -1643,6 +2107,7 @@ mod tests {
             .await;
         let agent = VeniceAgentChat::from_config(
             http::default_client(),
+            http::default_client(),
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
@@ -1660,6 +2125,7 @@ mod tests {
                 }),
                 model: ModelId("text-model".to_string()),
                 provider_credentials: ProviderCredentials::default(),
+                unmetered: false,
             })
             .await
             .expect("completion succeeds");
@@ -1673,6 +2139,207 @@ mod tests {
         assert_eq!(messages[0]["content"], SAFETY_CONTEXT);
         assert_eq!(messages[1]["content"], "client system prompt");
         assert_eq!(messages[2]["content"], "hi");
+    }
+
+    fn test_agent(base_url: &str) -> VeniceAgentChat {
+        VeniceAgentChat::from_config(
+            http::default_client(),
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: base_url.to_string(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_heartbeat_never_splices_into_a_partial_line() {
+        // The upstream stalls past the heartbeat interval in the MIDDLE of a
+        // data line. A heartbeat injected there would corrupt the frame; the
+        // pump must suppress it until the line completes.
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![
+                (b"data: {\"choices\":[{\"delta\":{\"content\":\"he".to_vec(), Duration::ZERO),
+                (
+                    b"llo\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n".to_vec(),
+                    STREAM_HEARTBEAT_INTERVAL + Duration::from_millis(30),
+                ),
+            ],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+
+        let mut stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+
+        let mut body = Vec::new();
+        while let Some(chunk) = stream.chunks.recv().await {
+            body.extend_from_slice(&chunk.expect("chunk succeeds"));
+        }
+        let body = String::from_utf8(body).expect("client bytes are utf-8");
+
+        assert!(
+            body.contains("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n"),
+            "the split data line must reach the client intact, got: {body:?}"
+        );
+        let outcome = stream.outcome.await.expect("outcome sender resolves");
+        let AgentChatStreamOutcome::Usage(usage) = outcome else {
+            panic!("expected usage outcome, got {outcome:?}");
+        };
+        assert_eq!(usage.prompt_tokens, 1);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_unmetered_aborts_instead_of_draining_after_disconnect() {
+        // BYOK: no June charge to protect, so a client disconnect must drop
+        // the upstream connection instead of draining it on the user's own
+        // upstream account. The closed() watch notices the drop immediately;
+        // the second stub chunk arrives far later.
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![
+                (b"data: {\"choices\":[]}\n\n".to_vec(), Duration::ZERO),
+                (b"data: [DONE]\n\n".to_vec(), Duration::from_secs(5)),
+            ],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+        let mut request = stream_request();
+        request.unmetered = true;
+
+        let stream = agent.complete_stream(request).await.expect("stream starts");
+        drop(stream.chunks);
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), stream.outcome)
+            .await
+            .expect("outcome must resolve long before the delayed upstream chunk")
+            .expect("outcome sender resolves");
+        assert_eq!(outcome, AgentChatStreamOutcome::Failed);
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_unmetered_aborts_on_disconnect_during_partial_line_stall() {
+        // BYOK disconnect while the upstream is stalled MID-LINE: heartbeats
+        // are suppressed off a line boundary, so no send can fail — only the
+        // closed() watch can notice the drop. Without it the pump would sit
+        // in chunk() spending the user's own account until the next upstream
+        // byte or the client timeout.
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![
+                (
+                    b"data: {\"choices\":[{\"delta\":{\"content\":\"he".to_vec(),
+                    Duration::ZERO,
+                ),
+                (
+                    b"llo\"}}]}\n\ndata: [DONE]\n\n".to_vec(),
+                    Duration::from_secs(5),
+                ),
+            ],
+        )
+        .await;
+        let agent = test_agent(&base_url);
+        let mut request = stream_request();
+        request.unmetered = true;
+
+        let mut stream = agent.complete_stream(request).await.expect("stream starts");
+        let first = stream.chunks.recv().await.expect("partial chunk arrives");
+        assert!(first.is_ok(), "partial chunk forwards before the drop");
+        drop(stream.chunks);
+
+        let outcome = tokio::time::timeout(Duration::from_secs(2), stream.outcome)
+            .await
+            .expect("outcome must resolve long before the delayed upstream chunk")
+            .expect("outcome sender resolves");
+        assert_eq!(outcome, AgentChatStreamOutcome::Failed);
+    }
+
+    fn short_timeout_agent(base_url: &str) -> VeniceAgentChat {
+        VeniceAgentChat::from_config(
+            http::client_with_timeout(Duration::from_millis(300)),
+            http::client_with_timeout(Duration::from_millis(300)),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: base_url.to_string(),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn agent_chat_stream_client_timeout_after_delivery_resolves_completed_without_usage() {
+        // One chunk arrives, then the upstream stalls past the client's total
+        // timeout: our own deliberate cut after delivered bytes must settle
+        // like a delivered-but-unmetered body, not like an upstream fault.
+        let (base_url, _server) = stream_stub(
+            200,
+            "text/event-stream",
+            vec![
+                (b"data: {\"choices\":[]}\n\n".to_vec(), Duration::ZERO),
+                (b"data: [DONE]\n\n".to_vec(), Duration::from_secs(5)),
+            ],
+        )
+        .await;
+        let agent = short_timeout_agent(&base_url);
+
+        let mut stream = agent
+            .complete_stream(stream_request())
+            .await
+            .expect("stream starts");
+
+        let first = stream.chunks.recv().await.expect("first chunk");
+        assert!(first.is_ok(), "delivered chunk precedes the cut");
+        let outcome = stream.outcome.await.expect("outcome sender resolves");
+
+        assert_eq!(outcome, AgentChatStreamOutcome::CompletedWithoutUsage);
+    }
+
+    fn stream_request() -> AgentChatRequest {
+        AgentChatRequest {
+            body: json!({
+                "model": "text-model",
+                "stream": true,
+                "messages": [{ "role": "user", "content": "hi" }],
+            }),
+            model: ModelId("text-model".to_string()),
+            provider_credentials: ProviderCredentials::default(),
+            unmetered: false,
+        }
+    }
+
+    async fn stream_stub(
+        status: u16,
+        content_type: &'static str,
+        chunks: Vec<(Vec<u8>, Duration)>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind stub");
+        let address = listener.local_addr().expect("stub local addr");
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await.expect("read request");
+            let reason = if status == 200 { "OK" } else { "Bad Request" };
+            let headers = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nConnection: close\r\n\r\n"
+            );
+            socket
+                .write_all(headers.as_bytes())
+                .await
+                .expect("write headers");
+            for (chunk, delay) in chunks {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                socket.write_all(&chunk).await.expect("write chunk");
+            }
+            socket.shutdown().await.expect("shutdown stub");
+        });
+        (format!("http://{address}"), handle)
     }
 
     #[test]

@@ -9,13 +9,14 @@ use june_providers::{
     LogP3aSink, MultiFormatDurationProbe, OsAccountsHttpClient, OsAccountsP3aSink,
     OsPlatformIssueReportSink, RoutingTranscriber, VeniceAgentChat, VeniceAugment, VeniceCleaner,
     VeniceGenerator, VeniceImageEditor, VeniceImageGenerator, VeniceModelCatalog,
-    client_with_timeout, default_client, jwks_client,
+    VeniceVideoProvider, client_with_timeout, default_client, jwks_client,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
     ImageService, ImageServiceDeps, IssueReportService, IssueReportServiceDeps,
     NoteGenerateService, NoteGenerateServiceDeps, NoteTranscribeService, NoteTranscribeServiceDeps,
-    P3aReportService, P3aReportServiceDeps, PricingTable, WebAugmentService, WebAugmentServiceDeps,
+    P3aReportService, P3aReportServiceDeps, PricingTable, VideoModelPrice, VideoService,
+    VideoServiceDeps, WebAugmentService, WebAugmentServiceDeps,
 };
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -48,14 +49,18 @@ async fn serve() -> anyhow::Result<()> {
     let upstream_http = client_with_timeout(Duration::from_secs(
         config.server.request_timeout_secs.max(1),
     ));
-    let image_http = client_with_timeout(Duration::from_secs(image_client_timeout_secs(
-        config.server.request_timeout_secs,
-    )));
+    // Shared bounded client for every long-running metered inference call
+    // (image generate/edit, note generation, agent chat): route timeout minus
+    // the authorize + settlement budgets, so settlement always lands inside
+    // the hold TTL.
+    let metered_inference_http = client_with_timeout(Duration::from_secs(
+        image_client_timeout_secs(config.server.request_timeout_secs),
+    ));
     let pricing = load_pricing(&config, upstream_http.clone()).await;
     let clients = HttpClients {
         default: &http,
         upstream: &upstream_http,
-        image: &image_http,
+        metered_inference: &metered_inference_http,
     };
     let app = build_router(&config, clients, pricing);
     let listener = tokio::net::TcpListener::bind(address).await?;
@@ -116,7 +121,16 @@ fn build_router(
         &config.upstreams,
         openai_model_ids,
     ));
+    // Note generation and agent chat can now run long (streamed/kept-alive
+    // responses), so their upstream window must leave the settlement budget
+    // inside the authorization hold — the same route/client/hold math the
+    // image path pins (see image_client_timeout_secs and
+    // validate_long_inference_hold_ttl). The full-route `upstream` client
+    // would let a 300-600s call reach `charge` after its hold expired.
+    // Unmetered (user-Venice-key) requests have no hold to protect and keep
+    // the full-route client — see AgentChatRequest::unmetered.
     let generator: Arc<dyn june_domain::Generator> = Arc::new(VeniceGenerator::from_config(
+        clients.metered_inference.clone(),
         clients.upstream.clone(),
         &config.upstreams.venice,
     ));
@@ -124,9 +138,12 @@ fn build_router(
         clients.upstream.clone(),
         &config.upstreams.venice,
     ));
-    let agent_chat_completer: Arc<dyn june_domain::AgentChatCompleter> = Arc::new(
-        VeniceAgentChat::from_config(clients.upstream.clone(), &config.upstreams.venice),
-    );
+    let agent_chat_completer: Arc<dyn june_domain::AgentChatCompleter> =
+        Arc::new(VeniceAgentChat::from_config(
+            clients.metered_inference.clone(),
+            clients.upstream.clone(),
+            &config.upstreams.venice,
+        ));
     // One client backs both web traits (search + fetch) over the same Venice
     // credential and base URL.
     let web_augment = Arc::new(VeniceAugment::from_config(
@@ -183,14 +200,14 @@ fn build_router(
     let image = Arc::new(ImageService::new(ImageServiceDeps {
         os_accounts: os_accounts.clone(),
         generator: build_image_generator(
-            clients.image,
+            clients.metered_inference,
             &config.upstreams.venice,
             Duration::from_secs(image_client_timeout_secs(
                 config.server.request_timeout_secs,
             )),
         ),
         editor: build_image_editor(
-            clients.image,
+            clients.metered_inference,
             &config.upstreams.venice,
             Duration::from_secs(image_client_timeout_secs(
                 config.server.request_timeout_secs,
@@ -210,6 +227,30 @@ fn build_router(
         // Edits are the same latency class as generation, so they reuse the
         // image hold TTL rather than adding a second knob.
         hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_image_secs,
+    }));
+    let video = Arc::new(VideoService::new(VideoServiceDeps {
+        os_accounts: os_accounts.clone(),
+        provider: build_video_provider(
+            clients.metered_inference,
+            &config.upstreams.venice,
+            Duration::from_secs(image_client_timeout_secs(
+                config.server.request_timeout_secs,
+            )),
+            config.video_max_response_bytes,
+        ),
+        pricing: config
+            .video_pricing
+            .iter()
+            .map(|(model, markup)| (model.clone(), VideoModelPrice::venice(*markup)))
+            .collect(),
+        animate_pricing: config
+            .video_animate_pricing
+            .iter()
+            .map(|(model, markup)| (model.clone(), VideoModelPrice::venice(*markup)))
+            .collect(),
+        default_animate_model: config.default_video_animate_model.clone(),
+        max_credits_per_request: config.video_max_credits_per_request,
+        hold_ttl_seconds: config.os_accounts.authorize_hold_ttl_video_secs,
     }));
     let dictate = Arc::new(DictateService::new(DictateServiceDeps {
         pricing: pricing.clone(),
@@ -233,6 +274,7 @@ fn build_router(
         dictate,
         web,
         image,
+        video,
         issue_reports,
         p3a_reports,
         limits: ApiLimits {
@@ -255,7 +297,7 @@ fn build_router(
 struct HttpClients<'a> {
     default: &'a reqwest::Client,
     upstream: &'a reqwest::Client,
-    image: &'a reqwest::Client,
+    metered_inference: &'a reqwest::Client,
 }
 
 fn build_image_generator(
@@ -279,6 +321,20 @@ fn build_image_editor(
         upstream_http.clone(),
         venice,
         leg_budget,
+    ))
+}
+
+fn build_video_provider(
+    upstream_http: &reqwest::Client,
+    venice: &june_config::UpstreamConfig,
+    call_timeout: Duration,
+    max_response_bytes: u64,
+) -> Arc<dyn june_domain::VideoProvider> {
+    Arc::new(VeniceVideoProvider::from_config(
+        upstream_http.clone(),
+        venice,
+        call_timeout,
+        max_response_bytes,
     ))
 }
 

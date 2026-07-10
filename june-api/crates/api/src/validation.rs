@@ -39,8 +39,12 @@ pub(crate) const MAX_PROVIDER_API_KEY_CHARS: usize = 4_096;
 /// Venice caps a search query at 400 characters.
 pub(crate) const MAX_WEB_QUERY_CHARS: usize = 400;
 pub(crate) const MAX_WEB_URL_CHARS: usize = 4_096;
-/// Venice caps an image prompt at 7,500 characters.
+/// Venice caps an image prompt at 7,500 characters. Reused for a video prompt
+/// and negative prompt.
 pub(crate) const MAX_IMAGE_PROMPT_CHARS: usize = 7_500;
+/// Short enum-like video knobs (`duration`, `resolution`, `aspect_ratio`).
+/// Venice validates the exact values; this only bounds abuse.
+pub(crate) const MAX_VIDEO_PARAM_CHARS: usize = 64;
 
 pub(crate) fn validate_text_len(
     field: &str,

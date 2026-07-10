@@ -41,7 +41,7 @@ import { PermissionBanner } from "../components/permissions/PermissionBanner";
 import { AppSettings, SETTINGS_TABS, type SettingsTab } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import { TabBar, type TabItem } from "../components/tabs/TabBar";
-import { defaultNav, makeTabId, navEquals, type Tab, type TabNav } from "./tabs/tabs";
+import { defaultNav, makeTabId, navEquals, reorderTabs, type Tab, type TabNav } from "./tabs/tabs";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconBubble3 } from "central-icons/IconBubble3";
@@ -50,6 +50,7 @@ import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { Dialog } from "../components/ui/Dialog";
+import { Toaster } from "../components/ui/Toaster";
 import {
   assignNoteToFolder,
   assignSessionToFolder,
@@ -86,6 +87,7 @@ import {
 } from "../lib/tauri";
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
 import { isMacLikePlatform, isPrimaryShortcut } from "../lib/platform";
+import { mergeSourceReadiness } from "../lib/source-readiness";
 import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_GALLERY_EVENT,
@@ -414,8 +416,13 @@ export function App() {
   const [preparingUpdate, setPreparingUpdate] = useState(false);
   const [relaunchingUpdate, setRelaunchingUpdate] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<UpdateInstallProgress | null>(null);
-  const systemGranted = !!sourceReadiness?.sources.find((source) => source.source === "system")
-    ?.ready;
+  // `ready` only says this Mac is capable of system capture; the grant is the
+  // permission state, which only a microphone-plus-system probe establishes.
+  const systemSourceReadiness = sourceReadiness?.sources.find(
+    (source) => source.source === "system",
+  );
+  const systemGranted =
+    systemSourceReadiness?.ready === true && systemSourceReadiness.permissionState === "granted";
   const recordingState = state.recordingStatus?.state;
   const captureActive =
     recordingState === "recording" ||
@@ -517,6 +524,21 @@ export function App() {
       cancelled = true;
       updateCardDemoRef.current?.dispose();
       updateCardDemoRef.current = null;
+    };
+  }, []);
+  // Dev console driver (window.__toastDemo) that fires each toast variant so
+  // the toast styling can be inspected without walking a real flow.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/toast-demo").then(({ registerToastDemo }) => {
+      if (cancelled) return;
+      ({ dispose } = registerToastDemo());
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
     };
   }, []);
   // Sessions with a finishRecording call in flight; guards stop double-clicks.
@@ -909,6 +931,12 @@ export function App() {
       setActiveTabId(id);
       applyNav(keep.nav);
     }
+  }
+
+  // Drag-reorder from the tab strip: the visible tabs land in their new order,
+  // overflow tabs stay put (see reorderTabs).
+  function handleReorderTabs(orderedVisibleIds: string[]) {
+    setTabs((prev) => reorderTabs(prev, orderedVisibleIds));
   }
 
   function cycleTab(delta: number) {
@@ -2186,15 +2214,6 @@ export function App() {
     }
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
-    // The agent view resolves the conversation by this id, so switch straight
-    // in. Backfill the bridge session-list registration in the background (best
-    // effort) so the session also shows in the agent history sidebar even if
-    // the note chat's own registration hadn't landed yet — never blocks the
-    // handoff, so a slow or failed registration can't stall or dead-end it.
-    void ensureHermesBridgeSession({
-      sessionId,
-      title: noteRef.title.trim() || "Note chat",
-    }).catch(() => undefined);
     setActiveAgentSession({ id: sessionId, title: noteRef.title.trim() || undefined });
     setActiveView("agent");
   }
@@ -2417,7 +2436,7 @@ export function App() {
       try {
         setCheckingSourceReadiness(true);
         const readiness = await checkRecordingSourceReadiness(requestedSourceMode);
-        setSourceReadiness(readiness);
+        setSourceReadiness((previous) => mergeSourceReadiness(previous, readiness));
 
         const micSource = readiness.sources.find((source) => source.source === "microphone");
         if (!micSource?.ready) {
@@ -3137,6 +3156,7 @@ export function App() {
           onClose={closeTab}
           onCloseOthers={closeOtherTabs}
           onNew={openNewChatTab}
+          onReorder={handleReorderTabs}
           layoutFrozen={sidebarResizing}
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
@@ -3694,6 +3714,9 @@ export function App() {
         confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />
+      {/* Global toast host. Mounted once beside the dialogs; sonner portals its
+          own list to document.body, so placement in the tree is immaterial. */}
+      <Toaster />
     </main>
   );
 }

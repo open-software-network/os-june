@@ -11,7 +11,7 @@ import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Medium } from "central-icons/IconCheckmark1Medium";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
-import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
@@ -19,6 +19,7 @@ import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
 import { IconFinder } from "central-icons/IconFinder";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconFolders } from "central-icons/IconFolders";
+import { IconLightBulbSimple } from "central-icons/IconLightBulbSimple";
 import { IconConsole } from "central-icons/IconConsole";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconStopCircle } from "central-icons/IconStopCircle";
@@ -33,7 +34,6 @@ import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
-import { IconWallet3 } from "central-icons/IconWallet3";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
 import { IconCheckCircle2 } from "central-icons/IconCheckCircle2";
 import { IconConcise } from "central-icons/IconConcise";
@@ -44,7 +44,6 @@ import { IconFileText } from "central-icons/IconFileText";
 import { IconEmail1Sparkle } from "central-icons/IconEmail1Sparkle";
 import { IconGauge } from "central-icons/IconGauge";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
-import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconNoteText } from "central-icons/IconNoteText";
@@ -61,6 +60,7 @@ import {
   type ClipboardEvent,
   type DragEvent,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
@@ -80,6 +80,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { HoverTip } from "../ui/HoverTip";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
+import { toast } from "../ui/Toaster";
 import { Spinner } from "../ui/Spinner";
 import { Switch } from "../ui/Switch";
 import {
@@ -98,6 +99,8 @@ import {
   hermesAgentCliAccess,
   hermesBridgeSkills,
   generateImage,
+  localVideoFileSrc,
+  primeGeneratedVideoDir,
   hermesBridgeStatus,
   hermesBridgeToolsets,
   importHermesBridgeFile,
@@ -122,6 +125,8 @@ import {
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform,
+  videoGenerate,
+  videoStatus,
   type AgentTaskDto,
   type AgentTaskStatus,
   type HermesBridgeStatus,
@@ -275,8 +280,14 @@ import {
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
 import { generateChatImage, newImageRequestId } from "../../lib/chat-image-generation";
-import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
+import {
+  generateChatVideo,
+  newVideoRequestId,
+  pollChatVideo,
+} from "../../lib/chat-video-generation";
+import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { ImageSafeModeConsentDialog } from "./ImageSafeModeConsentDialog";
+import { VideoSafeModeConsentDialog } from "./VideoSafeModeConsentDialog";
 import {
   ComposerEditor,
   type ComposerEditorHandle,
@@ -352,6 +363,22 @@ const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
 const SESSION_GONE_MESSAGE = "This session has ended, so the request can no longer be answered.";
 const SESSION_NOT_AVAILABLE_MESSAGE =
   "This session is no longer available. Open another conversation or start a new one.";
+
+// A stable id for the "June is still working" nudge (fired when a send is
+// rejected mid-turn), so repeated send attempts refresh one toast instead of
+// stacking.
+const SESSION_BUSY_TOAST_ID = "agent-session-busy";
+
+// A stable id for the model control's notices (default-model changed,
+// model-locked on an existing session, off-device confirm), so they replace one
+// another in a single toast rather than stacking.
+const MODEL_SWITCH_TOAST_ID = "agent-model-switch";
+
+// Stable ids so the fork lifecycle (creating → branched) rides one
+// self-replacing toast, and repeat report deliveries reuse a single "sent"
+// confirmation rather than stacking.
+const BRANCH_TOAST_ID = "agent-branch";
+const ISSUE_REPORT_SENT_TOAST_ID = "agent-issue-report-sent";
 
 function isSessionGoneError(message: string): boolean {
   return message.toLowerCase().includes("session not found");
@@ -841,18 +868,13 @@ type AgentWorkspaceErrorOptions = {
   issueReport?: PendingIssueReport;
 };
 
-type AgentWorkspaceNotice = {
-  message: string;
-  sessionId: string | null;
-};
-
 type ImageSafeModeConsentChoice =
   | { action: "keep"; dontAskAgain: boolean }
   | { action: "turnOff"; dontAskAgain: boolean }
   | { action: "dismiss" };
 
 type ImageSafeModeConsentRequest = {
-  variant: "slash" | "agent";
+  variant: "slash" | "agent" | "video-slash";
   resolve: (choice: ImageSafeModeConsentChoice) => void;
 };
 
@@ -919,6 +941,25 @@ type PersistedImageSlashTurn = {
   requestId?: string;
   model?: string;
   safeMode?: boolean;
+};
+
+type PersistedVideoSlashTurn = {
+  id: string;
+  sessionId: string;
+  prompt: string;
+  path: string;
+  name: string;
+  createdAt: string;
+  videoCreatedAt: string;
+  pending?: boolean;
+  requestId?: string;
+  model?: string;
+  jobId?: string;
+  averageExecutionMs?: number;
+  executionMs?: number;
+  /** True once the generation completed but its context has not yet ridden a
+   * follow-up prompt (the video fold; see storedPendingVideoSlashContexts). */
+  contextPending?: boolean;
 };
 
 function imageSlashUserTurn(turn: Pick<PersistedImageSlashTurn, "createdAt" | "id" | "prompt">) {
@@ -1020,12 +1061,120 @@ function runningImageSlashTurns(input: {
   ];
 }
 
+function videoSlashUserTurn(turn: Pick<PersistedVideoSlashTurn, "createdAt" | "id" | "prompt">) {
+  return {
+    id: `${turn.id}:user`,
+    role: "user" as const,
+    createdAt: turn.createdAt,
+    status: "complete" as const,
+    parts: [{ type: "text" as const, text: turn.prompt, status: "complete" as const }],
+  };
+}
+
+function videoSlashAssistantTurn(
+  turn: Pick<
+    PersistedVideoSlashTurn,
+    | "id"
+    | "videoCreatedAt"
+    | "name"
+    | "path"
+    | "prompt"
+    | "createdAt"
+    | "pending"
+    | "requestId"
+    | "model"
+    | "jobId"
+    | "averageExecutionMs"
+    | "executionMs"
+  >,
+): AgentChatTurn {
+  if (turn.pending) {
+    return {
+      id: `${turn.id}:assistant`,
+      role: "assistant",
+      createdAt: turn.videoCreatedAt,
+      status: turn.jobId ? "running" : "complete",
+      parts: [
+        {
+          type: "video",
+          status: turn.jobId ? "running" : "error",
+          prompt: turn.prompt,
+          requestId: turn.requestId,
+          model: turn.model,
+          jobId: turn.jobId,
+          userCreatedAt: turn.createdAt,
+          videoCreatedAt: turn.videoCreatedAt,
+          averageExecutionMs: turn.averageExecutionMs,
+          executionMs: turn.executionMs,
+          error: turn.jobId ? undefined : "Generation was interrupted. Try again to resume.",
+        },
+      ],
+    };
+  }
+  return {
+    id: `${turn.id}:assistant`,
+    role: "assistant",
+    createdAt: turn.videoCreatedAt,
+    status: "complete",
+    parts: [
+      {
+        type: "video",
+        status: "complete",
+        prompt: turn.prompt,
+        path: turn.path,
+        name: turn.name,
+        model: turn.model,
+      },
+    ],
+  };
+}
+
+function runningVideoSlashTurns(input: {
+  id: string;
+  prompt: string;
+  requestId: string;
+  createdAt: string;
+  videoCreatedAt: string;
+  model?: string;
+}): AgentChatTurn[] {
+  return [
+    videoSlashUserTurn(input),
+    {
+      id: `${input.id}:assistant`,
+      role: "assistant",
+      createdAt: input.videoCreatedAt,
+      status: "running",
+      parts: [
+        {
+          type: "video",
+          status: "running",
+          prompt: input.prompt,
+          requestId: input.requestId,
+          model: input.model,
+          userCreatedAt: input.createdAt,
+          videoCreatedAt: input.videoCreatedAt,
+        },
+      ],
+    },
+  ];
+}
+
 function imageSlashTurnsBySessionFromStored(): Record<string, AgentChatTurn[]> {
   const turns = storedImageSlashTurns();
   return Object.fromEntries(
     Object.entries(turns).map(([sessionId, sessionTurns]) => [
       sessionId,
       sessionTurns.flatMap((turn) => [imageSlashUserTurn(turn), imageSlashAssistantTurn(turn)]),
+    ]),
+  );
+}
+
+function videoSlashTurnsBySessionFromStored(): Record<string, AgentChatTurn[]> {
+  const turns = storedVideoSlashTurns();
+  return Object.fromEntries(
+    Object.entries(turns).map(([sessionId, sessionTurns]) => [
+      sessionId,
+      sessionTurns.flatMap((turn) => [videoSlashUserTurn(turn), videoSlashAssistantTurn(turn)]),
     ]),
   );
 }
@@ -1174,6 +1323,189 @@ function removeStoredImageSlashSession(sessionId: string) {
   if (!turns[sessionId]) return;
   delete turns[sessionId];
   writeStoredImageSlashTurns(turns);
+}
+
+function storedVideoSlashTurns(): Record<string, PersistedVideoSlashTurn[]> {
+  try {
+    const raw = window.localStorage.getItem(VIDEO_SLASH_TURNS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>)
+        .map(([sessionId, value]) => [
+          sessionId,
+          Array.isArray(value)
+            ? value
+                .map((item) => persistedVideoSlashTurn(sessionId, item))
+                .filter((item): item is PersistedVideoSlashTurn => item !== undefined)
+            : [],
+        ])
+        .filter(([, turns]) => turns.length > 0),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function persistedVideoSlashTurn(
+  sessionId: string,
+  value: unknown,
+): PersistedVideoSlashTurn | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Partial<PersistedVideoSlashTurn>;
+  const pending =
+    candidate.pending === true &&
+    typeof candidate.requestId === "string" &&
+    candidate.requestId.trim() !== "";
+  if (
+    typeof candidate.id !== "string" ||
+    typeof candidate.prompt !== "string" ||
+    typeof candidate.path !== "string" ||
+    typeof candidate.name !== "string" ||
+    typeof candidate.createdAt !== "string" ||
+    typeof candidate.videoCreatedAt !== "string" ||
+    !candidate.id.trim() ||
+    !candidate.prompt.trim() ||
+    (!pending && !candidate.path.trim()) ||
+    Number.isNaN(Date.parse(candidate.createdAt)) ||
+    Number.isNaN(Date.parse(candidate.videoCreatedAt))
+  ) {
+    return undefined;
+  }
+  return {
+    id: candidate.id,
+    sessionId,
+    prompt: candidate.prompt,
+    path: candidate.path,
+    name: candidate.name,
+    createdAt: candidate.createdAt,
+    videoCreatedAt: candidate.videoCreatedAt,
+    // A pending turn has no completed video to describe on the follow-up.
+    // Defaults true for completed turns stored before this field existed, so
+    // sessions with an already-generated video get the fold on their next
+    // message too.
+    contextPending: pending ? false : candidate.contextPending !== false,
+    ...(pending
+      ? {
+          pending: true,
+          requestId: candidate.requestId,
+          model: typeof candidate.model === "string" ? candidate.model : undefined,
+          jobId: typeof candidate.jobId === "string" ? candidate.jobId : undefined,
+          averageExecutionMs:
+            typeof candidate.averageExecutionMs === "number"
+              ? candidate.averageExecutionMs
+              : undefined,
+          executionMs:
+            typeof candidate.executionMs === "number" ? candidate.executionMs : undefined,
+        }
+      : {
+          model: typeof candidate.model === "string" ? candidate.model : undefined,
+        }),
+  };
+}
+
+function writeStoredVideoSlashTurns(turns: Record<string, PersistedVideoSlashTurn[]>) {
+  try {
+    const entries = Object.entries(turns)
+      .map(([sessionId, sessionTurns]) => [
+        sessionId,
+        sessionTurns
+          .slice()
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+          .slice(-50),
+      ])
+      .filter(([, sessionTurns]) => (sessionTurns as PersistedVideoSlashTurn[]).length > 0);
+    if (!entries.length) {
+      window.localStorage.removeItem(VIDEO_SLASH_TURNS_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(
+      VIDEO_SLASH_TURNS_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(entries)),
+    );
+  } catch {
+    // Best-effort restore only; the live in-memory turns still render.
+  }
+}
+
+function upsertStoredVideoSlashTurn(turn: PersistedVideoSlashTurn) {
+  const turns = storedVideoSlashTurns();
+  const sessionTurns = turns[turn.sessionId] ?? [];
+  turns[turn.sessionId] = [...sessionTurns.filter((item) => item.id !== turn.id), turn];
+  writeStoredVideoSlashTurns(turns);
+}
+
+function removeStoredVideoSlashTurn(id: string) {
+  const turns = storedVideoSlashTurns();
+  let changed = false;
+  for (const [sessionId, sessionTurns] of Object.entries(turns)) {
+    const nextTurns = sessionTurns.filter((item) => item.id !== id);
+    if (nextTurns.length === sessionTurns.length) continue;
+    changed = true;
+    if (nextTurns.length) {
+      turns[sessionId] = nextTurns;
+    } else {
+      delete turns[sessionId];
+    }
+  }
+  if (changed) writeStoredVideoSlashTurns(turns);
+}
+
+function removeStoredVideoSlashSession(sessionId: string) {
+  const turns = storedVideoSlashTurns();
+  if (!turns[sessionId]) return;
+  delete turns[sessionId];
+  writeStoredVideoSlashTurns(turns);
+}
+
+/** Completed `/video` fast-path turns whose context has not yet ridden a
+ * follow-up prompt. The fast path never invokes the model (skipPrompt), so
+ * without this fold a follow-up reads as the first message of the conversation
+ * and the model does not know a video was ever generated. Mirrors the JUN-171
+ * held-image fold, but as text: no model takes an mp4 as input, so the context
+ * is described rather than attached. */
+function storedPendingVideoSlashContexts(sessionId: string): PersistedVideoSlashTurn[] {
+  return (storedVideoSlashTurns()[sessionId] ?? []).filter(
+    (turn) => turn.contextPending && !turn.pending && turn.path.trim() !== "",
+  );
+}
+
+function markStoredVideoSlashContextsSent(sessionId: string, ids: string[]) {
+  if (!ids.length) return;
+  const idSet = new Set(ids);
+  const turns = storedVideoSlashTurns();
+  const sessionTurns = turns[sessionId] ?? [];
+  if (!sessionTurns.length) return;
+  turns[sessionId] = sessionTurns.map((turn) =>
+    idSet.has(turn.id) ? { ...turn, contextPending: false } : turn,
+  );
+  writeStoredVideoSlashTurns(turns);
+}
+
+/** Appends the pending `/video` context under the `--- Attached Context ---`
+ * marker, which every user-bubble render path already strips - the model sees
+ * it, the user never does (same convention as unsupportedImageInputPrompt). */
+function withVideoFastPathContext(content: string, turns: PersistedVideoSlashTurn[]): string {
+  if (!turns.length) return content;
+  return [
+    content,
+    "",
+    "--- Attached Context ---",
+    "Earlier in this session the user generated video(s) with the /video command. Those turns ran outside this transcript; the videos already play inline for the user:",
+    ...turns.map(
+      (turn) =>
+        `- prompt: "${turn.prompt}" -> ${turn.name || "video"}${
+          turn.model ? ` (model: ${turn.model})` : ""
+        }, saved at ${turn.path}`,
+    ),
+    "Generated videos cannot be edited in place. If the user asks to change, extend, or redo a video, call the june_video generate_video tool with a revised full prompt (or animate_image to animate a source image).",
+  ].join("\n");
+}
+
+function filenameFromWorkspacePath(path: string, fallback: string) {
+  const name = path.split(/[\\/]/).pop()?.trim();
+  return name || fallback;
 }
 
 function uniqueAttachmentsByWorkspacePath(attachments: AgentAttachment[]) {
@@ -1329,6 +1661,7 @@ const NEW_SESSION_DRAFT_KEY = "new-session";
 const NEW_SESSION_DRAFT_STORAGE_KEY = "june:agent:new-session-draft";
 const REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY = "june:agent:reviewable-issue-reports";
 const IMAGE_SLASH_TURNS_STORAGE_KEY = "june:agent:image-slash-turns";
+const VIDEO_SLASH_TURNS_STORAGE_KEY = "june:agent:video-slash-turns";
 const ISSUE_REPORT_DELIVERY_SETTLED_EVENT = "june-agent-issue-report-delivery-settled";
 const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
   "june-agent-issue-report-follow-up-submit-failed";
@@ -1791,19 +2124,13 @@ export function AgentWorkspace({
   // Reuses the importingFiles busy-gating (set alongside it); this flag only
   // tailors the composer placeholder copy while an image is generating.
   const [generatingImage, setGeneratingImage] = useState(false);
+  const [generatingVideo, setGeneratingVideo] = useState(false);
   // Dev-only: window.__composerSteerDemo() parks the composer in the working
   // branch so the stop/steer-send interaction can be iterated without a turn.
   const [composerSteerDemo, setComposerSteerDemo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [errorState, setErrorState] = useState<AgentWorkspaceError | null>(null);
-  // A rejected send into a still-running session, explained by the composer.
-  // Separate from `errorState` because background session refreshes clear that
-  // banner on success — this notice must survive until the turn finishes.
-  const [busyNotice, setBusyNotice] = useState<string | null>(null);
-  // Confirmation that a submitted issue report reached the June team; shown
-  // in the composer notice slot until dismissed by the next send.
-  const [issueReportNotice, setIssueReportNotice] = useState<AgentWorkspaceNotice | null>(null);
   const [submittingErrorIssueReport, setSubmittingErrorIssueReport] = useState(false);
   const [composerSizeWarning, setComposerSizeWarning] = useState<ComposerInputSizeWarning | null>(
     null,
@@ -1813,24 +2140,9 @@ export function AgentWorkspace({
   const imageSafeModeConsentRequestRef = useRef<ImageSafeModeConsentRequest | null>(null);
   const composerSizeProceedSignatureRef = useRef<string | null>(null);
   const composerSizeProceedInputSignatureRef = useRef<string | null>(null);
-  // Honest result of the last model switch (feature 10): scoped to the session
-  // it acted on so it survives background refreshes and disappears when the
-  // user moves to another conversation. A null sessionId means it reports a
-  // default-only change shown on the hero.
-  const [modelSwitchNotice, setModelSwitchNotice] = useState<{
-    message: string;
-    sessionId: string | null;
-  } | null>(null);
-  // Feature 07: after a successful fork, the banner that tells the user the
-  // freshly-opened session was branched from another. Keyed by the NEW
-  // session's id so it shows only while that session is selected, then clears
-  // itself once they navigate away.
-  const [branchedNotice, setBranchedNotice] = useState<{
-    sessionId: string;
-    sourceTitle: string;
-  } | null>(null);
-  const branchedNoticeRef = useRef(branchedNotice);
-  const [branchingNotice, setBranchingNotice] = useState<{ sourceTitle: string } | null>(null);
+  // Feature 07: the fork lifecycle (creating → branched) is surfaced as a
+  // toast — a loading toast while the branch is created, resolving into a
+  // "Branched from …" confirmation. See branchFromMessage.
   // Which message a branch is currently in flight for, so its action shows a
   // disabled/working state and double-clicks can't fork twice.
   const [branchingMessageId, setBranchingMessageId] = useState<string | null>(null);
@@ -1948,6 +2260,21 @@ export function AgentWorkspace({
   const [imageTurnsBySession, setImageTurnsBySession] = useState<Record<string, AgentChatTurn[]>>(
     imageSlashTurnsBySessionFromStored,
   );
+  const [videoTurnsBySession, setVideoTurnsBySession] = useState<Record<string, AgentChatTurn[]>>(
+    videoSlashTurnsBySessionFromStored,
+  );
+
+  useEffect(() => {
+    // Cache the generated-videos dir so a video the agent names by bare
+    // filename (MEDIA:generated-video-*.mp4) resolves to a playable src.
+    void primeGeneratedVideoDir();
+    const pending = Object.values(storedVideoSlashTurns())
+      .flat()
+      .filter((turn) => turn.pending && turn.jobId && turn.requestId);
+    for (const turn of pending) {
+      void resumePendingVideoSlashTurn(turn);
+    }
+  }, []);
   // JUN-171 (Phase A): the `/image` fast path renders in-thread but never enters
   // the model's session history, so a follow-up ("do you think it's nice?")
   // reaches an empty context. Hold each generated image here, keyed by session,
@@ -2434,7 +2761,9 @@ export function AgentWorkspace({
       return next;
     });
     setImageTurnsBySession((current) => omitRecordKey(current, sessionId));
+    setVideoTurnsBySession((current) => omitRecordKey(current, sessionId));
     removeStoredImageSlashSession(sessionId);
+    removeStoredVideoSlashSession(sessionId);
     // Feature 11: a deleted session has no activity to show, so drop its row
     // from the activity drawer's store as well.
     hermesActivityStore.clearSession(sessionId);
@@ -2668,16 +2997,6 @@ export function AgentWorkspace({
   const visibleErrorRetryable =
     visibleError != null &&
     (GATEWAY_CONNECTION_ERROR.test(visibleError) || visibleError === HERMES_SERVER_ERROR_MESSAGE);
-  const visibleIssueReportNotice =
-    issueReportNotice && issueReportNotice.sessionId === (selectedHermesSessionId ?? null)
-      ? issueReportNotice.message
-      : null;
-  // The model-switch notice (feature 10) shows on the session it acted on; a
-  // null sessionId is the default-only notice, shown while no session is open.
-  const visibleModelSwitchNotice =
-    modelSwitchNotice && modelSwitchNotice.sessionId === (selectedHermesSessionId ?? null)
-      ? modelSwitchNotice.message
-      : null;
   // Unsupported Hermes events for the selected session surface a generic,
   // recoverable notice (and sanitized dev details). Subscribing to the store's
   // version re-derives the notice whenever a new unsupported frame lands.
@@ -2876,6 +3195,9 @@ export function AgentWorkspace({
       const target = event.target as Node;
       if (composerModelPopoverRef.current?.contains(target)) return;
       if (composerModelTriggerRef.current?.contains(target)) return;
+      // The hover detail cards are portaled to document.body, so a click inside
+      // one (its "Show more" toggle) lands outside the popover — treat it as in.
+      if (target instanceof Element && target.closest(".agent-composer-model-hovercard")) return;
       setComposerModelOpen(false);
     }
     function onKey(event: KeyboardEvent) {
@@ -3165,10 +3487,7 @@ export function AgentWorkspace({
 
   function showComposerModelLockedNotice() {
     setComposerModelOpen(false);
-    setModelSwitchNotice({
-      message: MODEL_CHANGE_LOCKED_NOTICE,
-      sessionId: selectedHermesSessionIdRef.current ?? null,
-    });
+    toast(MODEL_CHANGE_LOCKED_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
   }
 
   // Stale catalog (the mount fetch can fail while the bridge is starting) is
@@ -3205,11 +3524,10 @@ export function AgentWorkspace({
     if (!isLoopbackUrl(baseUrl)) {
       if (localEnableConfirmArmedForRef.current !== baseUrl) {
         localEnableConfirmArmedForRef.current = baseUrl;
-        setModelSwitchNotice({
-          message:
-            "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
-          sessionId: null,
-        });
+        toast.warning(
+          "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
+          { id: MODEL_SWITCH_TOAST_ID },
+        );
         return false;
       }
       localEnableConfirmArmedForRef.current = null;
@@ -3229,10 +3547,7 @@ export function AgentWorkspace({
       setError(messageFromError(err));
       return false;
     }
-    setModelSwitchNotice({
-      message: MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
-      sessionId: null,
-    });
+    toast(MODEL_SWITCH_DEFAULT_ONLY_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
     return true;
   }
 
@@ -3272,10 +3587,7 @@ export function AgentWorkspace({
       setError(messageFromError(err));
       return false;
     }
-    setModelSwitchNotice({
-      message: MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
-      sessionId: null,
-    });
+    toast(MODEL_SWITCH_DEFAULT_ONLY_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
     return true;
   }
 
@@ -3686,14 +3998,14 @@ export function AgentWorkspace({
     restoreComposerDraft(composerDraftKey);
   }, [activePanel, composerDraftKey]);
 
-  // The busy notice's advice ("wait for the reply") expires the moment the
-  // selected session stops working — including when the user switches to a
-  // session that isn't running.
+  // The busy toast's advice ("wait for the reply") goes stale the moment the
+  // selected session stops working — including when the user switches to an
+  // idle session — so dismiss it then rather than leaving it up for the full
+  // toast duration. Dismissing an absent toast is a no-op.
   useEffect(() => {
-    if (!busyNotice) return;
     if (selectedHermesSessionId && workingSessionIds.has(selectedHermesSessionId)) return;
-    setBusyNotice(null);
-  }, [busyNotice, selectedHermesSessionId, workingSessionIds]);
+    toast.dismiss(SESSION_BUSY_TOAST_ID);
+  }, [selectedHermesSessionId, workingSessionIds]);
 
   async function prepareComposerSubmission(
     message: string,
@@ -3777,6 +4089,15 @@ export function AgentWorkspace({
         return true;
       }
       await runImageSlashCommand(parsed.argument, commandText);
+      return true;
+    }
+
+    if (parsed.name === "video") {
+      if (!VIDEO_GENERATION_ENABLED) {
+        setError("Video generation is not available.");
+        return true;
+      }
+      await runVideoSlashCommand(parsed.argument, commandText);
       return true;
     }
 
@@ -3929,7 +4250,7 @@ export function AgentWorkspace({
   }
 
   function requestImageSafeModeConsent(
-    variant: "slash" | "agent",
+    variant: "slash" | "agent" | "video-slash",
   ): Promise<ImageSafeModeConsentChoice> {
     return new Promise((resolve) => {
       const request = { variant, resolve };
@@ -4129,6 +4450,445 @@ export function AgentWorkspace({
       imageCreatedAt,
       model: pinnedModel,
       safeMode: pinnedSafeMode,
+    });
+  }
+
+  function updateVideoSlashPart(
+    sessionId: string,
+    assistantTurnId: string,
+    patch: Partial<Extract<AgentChatPart, { type: "video" }>>,
+  ) {
+    setVideoTurnsBySession((current) => {
+      const turns = current[sessionId] ?? [];
+      return {
+        ...current,
+        [sessionId]: turns.map((turn) => {
+          if (turn.id !== assistantTurnId) return turn;
+          const parts = turn.parts.map((part) =>
+            part.type === "video" ? { ...part, ...patch } : part,
+          );
+          const running = parts.some((part) => part.type === "video" && part.status === "running");
+          return { ...turn, parts, status: running ? "running" : "complete" };
+        }),
+      };
+    });
+  }
+
+  function videoSlashBaseTurnId(assistantTurnId: string) {
+    return assistantTurnId.endsWith(":assistant")
+      ? assistantTurnId.slice(0, -":assistant".length)
+      : assistantTurnId;
+  }
+
+  async function finishVideoSlashGeneration(input: {
+    sessionId: string;
+    turnId: string;
+    prompt: string;
+    requestId: string;
+    createdAt: string;
+    videoCreatedAt: string;
+    model?: string;
+    jobId?: string;
+  }) {
+    const { sessionId, turnId, prompt, requestId, createdAt, videoCreatedAt } = input;
+    const assistantTurnId = `${turnId}:assistant`;
+    try {
+      const result = input.jobId
+        ? await pollExistingVideoSlashJob(input)
+        : await generateChatVideo(
+            prompt,
+            {
+              startGenerate: async (text, model, nextRequestId, options) => {
+                const job = await videoGenerate({
+                  prompt: text,
+                  model,
+                  requestId: nextRequestId,
+                  ...options,
+                });
+                updateVideoSlashPart(sessionId, assistantTurnId, { jobId: job.jobId });
+                upsertStoredVideoSlashTurn({
+                  id: turnId,
+                  sessionId,
+                  prompt,
+                  path: "",
+                  name: "",
+                  createdAt,
+                  videoCreatedAt,
+                  pending: true,
+                  requestId,
+                  model: input.model,
+                  jobId: job.jobId,
+                });
+                return job;
+              },
+              pollStatus: videoStatus,
+              onProgress: (progress) => {
+                updateVideoSlashPart(sessionId, assistantTurnId, {
+                  jobId: progress.jobId,
+                  averageExecutionMs: progress.averageExecutionMs,
+                  executionMs: progress.executionMs,
+                });
+                upsertStoredVideoSlashTurn({
+                  id: turnId,
+                  sessionId,
+                  prompt,
+                  path: "",
+                  name: "",
+                  createdAt,
+                  videoCreatedAt,
+                  pending: true,
+                  requestId,
+                  model: input.model,
+                  jobId: progress.jobId,
+                  averageExecutionMs: progress.averageExecutionMs,
+                  executionMs: progress.executionMs,
+                });
+              },
+            },
+            input.model,
+            requestId,
+            {},
+          );
+      if (result.status !== "ok") {
+        updateVideoSlashPart(sessionId, assistantTurnId, {
+          status: "error",
+          error: result.message,
+          jobId: result.jobId,
+        });
+        if (!result.stillRunning) {
+          removeStoredVideoSlashTurn(turnId);
+        }
+        return;
+      }
+      const name = filenameFromWorkspacePath(result.path, "generated-video.mp4");
+      updateVideoSlashPart(sessionId, assistantTurnId, {
+        status: "complete",
+        path: result.path,
+        name,
+        model: result.model ?? input.model,
+      });
+      upsertStoredVideoSlashTurn({
+        id: turnId,
+        sessionId,
+        prompt,
+        path: result.path,
+        name,
+        createdAt,
+        videoCreatedAt,
+        requestId,
+        model: result.model ?? input.model,
+        jobId: result.jobId,
+        // Hold this turn's context for the video fold: the next real prompt in
+        // this session carries it to the model (storedPendingVideoSlashContexts).
+        contextPending: true,
+      });
+      hermesArtifactStore.recordArtifact(
+        {
+          sessionId,
+          kind: "file",
+          action: "created",
+          path: result.path,
+          displayName: name,
+          previewAvailable: false,
+        },
+        hermesModeFor(sessionId),
+      );
+      void loadFilesystemSnapshot();
+    } catch (err) {
+      updateVideoSlashPart(sessionId, assistantTurnId, {
+        status: "error",
+        error: messageFromError(err),
+      });
+    } finally {
+      setGeneratingVideo(false);
+      setImportingFiles(false);
+    }
+  }
+
+  async function pollExistingVideoSlashJob(input: {
+    sessionId: string;
+    turnId: string;
+    prompt: string;
+    requestId: string;
+    createdAt: string;
+    videoCreatedAt: string;
+    model?: string;
+    jobId?: string;
+  }) {
+    if (!input.jobId) {
+      return { status: "error" as const, message: "Generation was interrupted." };
+    }
+    // Poll the existing job with the full loop (not a single shot) so a retry
+    // follows it to completion, re-attaching to the same server-side job.
+    return pollChatVideo(input.jobId, {
+      pollStatus: videoStatus,
+      onProgress: (progress) => {
+        updateVideoSlashPart(input.sessionId, `${input.turnId}:assistant`, {
+          jobId: progress.jobId,
+          averageExecutionMs: progress.averageExecutionMs,
+          executionMs: progress.executionMs,
+        });
+        upsertStoredVideoSlashTurn({
+          id: input.turnId,
+          sessionId: input.sessionId,
+          prompt: input.prompt,
+          path: "",
+          name: "",
+          createdAt: input.createdAt,
+          videoCreatedAt: input.videoCreatedAt,
+          pending: true,
+          requestId: input.requestId,
+          model: input.model,
+          jobId: input.jobId,
+          averageExecutionMs: progress.averageExecutionMs,
+          executionMs: progress.executionMs,
+        });
+      },
+    });
+  }
+
+  // Resume a `/video` turn whose poll loop was lost (app crash, restart, or dev
+  // hot-reload). The server job keeps running, so re-attach with the SAME poll
+  // loop and follow it to completion instead of a single shot — the user gets
+  // the video without a new billable generation, and never has to hit "Try
+  // again" just because the app closed mid-render.
+  async function resumePendingVideoSlashTurn(turn: PersistedVideoSlashTurn) {
+    if (!turn.jobId) return;
+    const jobId = turn.jobId;
+    const assistantTurnId = `${turn.id}:assistant`;
+    const result = await pollChatVideo(jobId, {
+      pollStatus: videoStatus,
+      onProgress: (progress) => {
+        updateVideoSlashPart(turn.sessionId, assistantTurnId, {
+          status: "running",
+          jobId: progress.jobId,
+          averageExecutionMs: progress.averageExecutionMs,
+          executionMs: progress.executionMs,
+        });
+        upsertStoredVideoSlashTurn({
+          ...turn,
+          pending: true,
+          averageExecutionMs: progress.averageExecutionMs,
+          executionMs: progress.executionMs,
+        });
+      },
+    });
+    if (result.status === "ok") {
+      const name = filenameFromWorkspacePath(result.path, "generated-video.mp4");
+      updateVideoSlashPart(turn.sessionId, assistantTurnId, {
+        status: "complete",
+        path: result.path,
+        name,
+        model: result.model ?? turn.model,
+      });
+      upsertStoredVideoSlashTurn({
+        ...turn,
+        pending: false,
+        path: result.path,
+        name,
+        model: result.model ?? turn.model,
+        // Fold this turn's context into the next prompt, same as a live finish.
+        contextPending: true,
+      });
+      hermesArtifactStore.recordArtifact(
+        {
+          sessionId: turn.sessionId,
+          kind: "file",
+          action: "created",
+          path: result.path,
+          displayName: name,
+          previewAvailable: false,
+        },
+        hermesModeFor(turn.sessionId),
+      );
+      void loadFilesystemSnapshot();
+      return;
+    }
+    // Budget exhausted while the job was still processing: it lives on the
+    // server, so keep the turn pending (its stored jobId) and leave the loader
+    // up — the next app launch resumes this exact loop. Only a real Venice
+    // failure or a poll error is terminal and surfaces as retryable.
+    if (result.stillRunning) {
+      updateVideoSlashPart(turn.sessionId, assistantTurnId, {
+        status: "running",
+        jobId,
+      });
+      return;
+    }
+    updateVideoSlashPart(turn.sessionId, assistantTurnId, {
+      status: "error",
+      error: result.message,
+      jobId,
+    });
+    removeStoredVideoSlashTurn(turn.id);
+  }
+
+  async function retryVideoSlashTurn(
+    sessionId: string,
+    assistantTurnId: string,
+    part: Extract<AgentChatPart, { type: "video" }>,
+  ) {
+    if (part.status !== "error" || !part.requestId) return;
+    const now = new Date().toISOString();
+    setError(null);
+    setImportingFiles(true);
+    setGeneratingVideo(true);
+    updateVideoSlashPart(sessionId, assistantTurnId, {
+      status: "running",
+      error: undefined,
+    });
+    await finishVideoSlashGeneration({
+      sessionId,
+      turnId: videoSlashBaseTurnId(assistantTurnId),
+      prompt: part.prompt,
+      requestId: part.requestId,
+      createdAt: part.userCreatedAt ?? now,
+      videoCreatedAt: part.videoCreatedAt ?? now,
+      model: part.model,
+      jobId: part.jobId,
+    });
+  }
+
+  async function runVideoSlashCommand(argument: string, commandText: string) {
+    const prompt = argument.trim();
+    if (!prompt) {
+      setError("Type a description after /video to generate a video.");
+      return;
+    }
+
+    // Busy-gate the consent + generation flow before any async IPC, mirroring
+    // /image: a second submission can't start while the prompt screen or
+    // consent dialog is pending, and dismiss leaves the draft untouched.
+    setImportingFiles(true);
+
+    // Pin the video model before the paid turn starts (same replay-ledger
+    // rationale as /image). Safe mode is read alongside but never pinned into
+    // the request: video requests carry no safeMode field (Venice cannot blur
+    // video), so the value only gates the consent dialog below.
+    let settings: ProviderModelSettingsDto | undefined;
+    let pinnedModel: string | undefined;
+    try {
+      const settingsResponse = await providerModelSettings();
+      settings = settingsResponse.settings;
+      pinnedModel = settings.videoModel || undefined;
+    } catch {
+      // Non-fatal: generation proceeds with server-resolved settings.
+    }
+
+    // Unlike /image, the screen runs even after "don't ask again": for video
+    // the dialog is the enforcement point (there is no blur to fall back to),
+    // so an explicit prompt with safe mode on must never generate silently.
+    if (settings?.imageSafeMode) {
+      let mayBeExplicit = false;
+      try {
+        mayBeExplicit = await imagePromptMayBeExplicit(prompt);
+      } catch {
+        mayBeExplicit = false;
+      }
+      if (mayBeExplicit) {
+        if (settings.imageSafeModePromptDismissed) {
+          // The user opted out of the dialog, not out of safe mode: skip the
+          // generation with a notice instead of asking again.
+          setImportingFiles(false);
+          setError(
+            "Safe mode is on, so this video was skipped. Turn safe mode off in Settings to generate it.",
+          );
+          return;
+        }
+        const choice = await requestImageSafeModeConsent("video-slash");
+        if (choice.action === "dismiss") {
+          setImportingFiles(false);
+          return;
+        }
+        if (choice.action === "keep") {
+          // "Skip this video": no blurred fallback exists for video, so safe
+          // mode on means the generation is skipped (the dialog says so).
+          if (choice.dontAskAgain) void setImageSafeModePromptDismissed(true);
+          setImportingFiles(false);
+          return;
+        }
+        try {
+          await setImageSafeMode(false);
+        } catch (err) {
+          setImportingFiles(false);
+          setError(messageFromError(err));
+          return;
+        }
+        if (choice.dontAskAgain) void setImageSafeModePromptDismissed(true);
+      }
+    }
+
+    const heroMode = newSessionModeRef.current;
+    if (heroMode) setHeroLeaving(true);
+    clearComposerCommandDraft(commandText);
+    setError(null);
+    setGeneratingVideo(true);
+
+    let targetSessionId: string | undefined;
+    try {
+      targetSessionId = await submitHermesSession(prompt, undefined, {
+        skipPrompt: true,
+        displayContent: prompt,
+        titleContent: prompt,
+      });
+    } catch (err) {
+      if (heroMode) setHeroLeaving(false);
+      setGeneratingVideo(false);
+      setImportingFiles(false);
+      setError(messageFromError(err));
+      return;
+    }
+    if (!targetSessionId) {
+      if (heroMode) setHeroLeaving(false);
+      setGeneratingVideo(false);
+      setImportingFiles(false);
+      setError("Could not start a video session. Try again.");
+      return;
+    }
+    const sessionId = targetSessionId;
+
+    const turnStartedAt = Date.now();
+    const turnId = `video:${sessionId}:${turnStartedAt}`;
+    const createdAt = new Date(turnStartedAt).toISOString();
+    const videoCreatedAt = new Date(turnStartedAt + 1).toISOString();
+    const requestId = newVideoRequestId();
+
+    setVideoTurnsBySession((current) => ({
+      ...current,
+      [sessionId]: [
+        ...(current[sessionId] ?? []),
+        ...runningVideoSlashTurns({
+          id: turnId,
+          prompt,
+          requestId,
+          createdAt,
+          videoCreatedAt,
+          model: pinnedModel,
+        }),
+      ],
+    }));
+
+    upsertStoredVideoSlashTurn({
+      id: turnId,
+      sessionId,
+      prompt,
+      path: "",
+      name: "",
+      createdAt,
+      videoCreatedAt,
+      pending: true,
+      requestId,
+      model: pinnedModel,
+    });
+
+    await finishVideoSlashGeneration({
+      sessionId,
+      turnId,
+      prompt,
+      requestId,
+      createdAt,
+      videoCreatedAt,
+      model: pinnedModel,
     });
   }
 
@@ -4367,7 +5127,6 @@ export function AgentWorkspace({
             submittingIssueReportSessionIdsRef.current.has(reportFollowUpSessionId),
         };
       }
-      setIssueReportNotice(null);
       await submitHermesSession(runtimeContent, undefined, {
         displayContent: prepared.displayContent,
         titleContent: prepared.titleContent,
@@ -4378,7 +5137,7 @@ export function AgentWorkspace({
         deferredFailedIssueReportDeliverySessionIdsRef.current.delete(reportFollowUpSessionId);
       }
       setError(null);
-      setBusyNotice(null);
+      toast.dismiss(SESSION_BUSY_TOAST_ID);
     } catch (err) {
       // Restore the composer so a failed send doesn't eat the message, its
       // category chip, or its attachments — but only where the user hasn't
@@ -4422,9 +5181,9 @@ export function AgentWorkspace({
       }
       if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale
-        // connection banner along with showing the notice.
+        // connection banner along with showing the nudge.
         setError(null);
-        setBusyNotice(SESSION_BUSY_NOTICE);
+        toast(SESSION_BUSY_NOTICE, { id: SESSION_BUSY_TOAST_ID });
       } else {
         setError(messageFromError(err));
       }
@@ -4634,16 +5393,6 @@ export function AgentWorkspace({
     }
   }
 
-  // A success notice about one report reads fine anywhere, but not stale on
-  // a conversation the user opened later.
-  useEffect(() => {
-    setIssueReportNotice(null);
-  }, [selectedHermesSessionId]);
-
-  useEffect(() => {
-    branchedNoticeRef.current = branchedNotice;
-  }, [branchedNotice]);
-
   /** Sends the captured report plus June's diagnostic reply (the last
    * assistant message of the turn) to the June team. The diagnosis fetch is
    * best-effort: a report without June's assessment still beats no report. */
@@ -4674,12 +5423,7 @@ export function AgentWorkspace({
         sessionId,
       });
       clearErrorForSession(sessionId);
-      if (selectedHermesSessionIdRef.current === sessionId) {
-        setIssueReportNotice({
-          message: ISSUE_REPORT_SENT_MESSAGE,
-          sessionId,
-        });
-      }
+      toast.success(ISSUE_REPORT_SENT_MESSAGE, { id: ISSUE_REPORT_SENT_TOAST_ID });
       return { sent: true };
     } catch (err) {
       const errorMessage = `The issue report could not be sent. ${messageFromError(err)}`;
@@ -4728,19 +5472,10 @@ export function AgentWorkspace({
       });
       if (sessionId) {
         clearErrorForSession(sessionId);
-        if (selectedHermesSessionIdRef.current === sessionId) {
-          setIssueReportNotice({
-            message: ISSUE_REPORT_SENT_MESSAGE,
-            sessionId,
-          });
-        }
       } else {
         setError(null);
-        setIssueReportNotice({
-          message: ISSUE_REPORT_SENT_MESSAGE,
-          sessionId: null,
-        });
       }
+      toast.success(ISSUE_REPORT_SENT_MESSAGE, { id: ISSUE_REPORT_SENT_TOAST_ID });
     } catch (err) {
       setError(`The issue report could not be sent. ${messageFromError(err)}`, {
         sessionId: sessionId ?? null,
@@ -5189,6 +5924,25 @@ export function AgentWorkspace({
   ): Promise<string | undefined> {
     const displayContent = options?.displayContent ?? content;
     const titleContent = options?.titleContent ?? displayContent;
+    let attachmentOnlyTitle: string | undefined;
+    if (!titleContent.trim() && options?.attachments?.length) {
+      const firstName = options.attachments[0].name.trim();
+      const extensionIndex = firstName.lastIndexOf(".");
+      const firstDisplayName = (
+        extensionIndex > 0 ? firstName.slice(0, extensionIndex) : firstName
+      ).trim();
+      const title =
+        options.attachments.length === 1
+          ? firstDisplayName
+          : `${firstDisplayName} +${options.attachments.length - 1} more`;
+      // Array.from splits on Unicode code points, so the cap cannot cut an
+      // emoji or surrogate pair in half the way String.slice would.
+      attachmentOnlyTitle = Array.from(title.replace(/\s+/g, " "))
+        .slice(0, AGENT_TITLE_MAX_CHARS)
+        .join("")
+        .replace(/[–—]/g, "-")
+        .replace(/^([a-z])/, (match) => match.toUpperCase());
+    }
     const targetSessionId = explicitSession?.id
       ? explicitSession.id
       : newSessionModeRef.current
@@ -5220,6 +5974,12 @@ export function AgentWorkspace({
             ...(pendingFastPathImagesRef.current[targetSessionId] ?? []),
             ...storedPendingImageSlashAttachments(targetSessionId),
           ]);
+    // The video counterpart of the fold above, gated the same way (never on
+    // the skipPrompt fast path itself, only on a real follow-up prompt).
+    const heldVideoContexts =
+      options?.skipPrompt || !targetSessionId
+        ? []
+        : storedPendingVideoSlashContexts(targetSessionId);
     const turnAttachments = [...(options?.attachments ?? []), ...heldFastPathImages];
     const pendingImages = pendingImageAttachments(
       turnAttachments.map((attachment) => attachment.attach),
@@ -5247,21 +6007,33 @@ export function AgentWorkspace({
             runtimeContent: content,
           })
         : undefined;
-    const promptSubmitContent = promptSubmitContentWithFastPathImageContext(
-      imageInputFallbackContent ?? content,
-      heldFastPathImages,
+    const promptSubmitContent = withVideoFastPathContext(
+      promptSubmitContentWithFastPathImageContext(
+        imageInputFallbackContent ?? content,
+        heldFastPathImages,
+      ),
+      heldVideoContexts,
     );
     // Issue reports skip title suggestion: the content is the wrapped
     // investigation prompt, which would title the session after the wrapper.
     const titlePromise =
       targetSessionId || options?.issueReport
         ? undefined
-        : agentSessionTitleForPrompt(titleContent).then((suggestion) => suggestion.title);
-    const fallbackSessionTitle = options?.issueReport
-      ? "Issue report"
-      : explicitSession?.title?.trim() ||
+        : attachmentOnlyTitle
+          ? Promise.resolve(attachmentOnlyTitle)
+          : agentSessionTitleForPrompt(titleContent).then((suggestion) => suggestion.title);
+    const listedTargetSession = targetSessionId
+      ? hermesSessionItemsRef.current.find((session) => session.id === targetSessionId)
+      : undefined;
+    const fallbackSessionTitle = targetSessionId
+      ? explicitSession?.title?.trim() ||
         explicitSession?.preview?.trim() ||
-        titleFromPrompt(titleContent);
+        listedTargetSession?.title?.trim() ||
+        listedTargetSession?.preview?.trim() ||
+        titleFromPrompt(titleContent)
+      : options?.issueReport
+        ? "Issue report"
+        : attachmentOnlyTitle || titleFromPrompt(titleContent);
     const optimisticSession =
       targetSessionId || options?.skipPrompt
         ? undefined
@@ -5331,7 +6103,7 @@ export function AgentWorkspace({
     const ensureStoredHermesSession = () =>
       ensureHermesBridgeSession({
         sessionId: storedSessionId,
-        title: sessionDisplayTitle,
+        ...(!targetSessionId ? { title: sessionDisplayTitle } : {}),
         ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
       });
     if (optimisticSession) {
@@ -5500,6 +6272,12 @@ export function AgentWorkspace({
       // the message, so a rejected submit can be retried with the same image
       // context.
       clearHeldFastPathImages(storedSessionId, heldFastPathImages);
+      // Same contract for the video fold: clear only after prompt.submit
+      // accepts, so a rejected submit retries with the same video context.
+      markStoredVideoSlashContextsSent(
+        storedSessionId,
+        heldVideoContexts.map((turn) => turn.id),
+      );
       await loadHermesSessions({
         suppressStartupRequestError: !hermesSessionsHydratedRef.current,
       });
@@ -6156,7 +6934,14 @@ export function AgentWorkspace({
     const sourceTitle =
       hermesSessionItems.find((session) => session.id === sessionId || session.id === modeSessionId)
         ?.title ?? "this session";
-    setBranchingNotice({ sourceTitle });
+    // The fork lifecycle rides one self-replacing toast: a loading toast while
+    // the branch is created, upgraded in place to the "Branched from …"
+    // confirmation on success, or dismissed if the branch fails (the failure
+    // surfaces on the error banner instead).
+    const branchToastId = toast.loading(`Creating branch from ${sourceTitle}`, {
+      id: BRANCH_TOAST_ID,
+    });
+    let branched = false;
     const unrestricted = sessionUnrestricted(modeSessionId);
     try {
       const gateway = await ensureHermesGateway(unrestricted);
@@ -6324,9 +7109,8 @@ export function AgentWorkspace({
       selectedHermesSessionIdRef.current = result.sessionId;
       setSelectedHermesSessionId(result.sessionId);
       setActivePanel("chat");
-      const nextBranchedNotice = { sessionId: result.sessionId, sourceTitle };
-      branchedNoticeRef.current = nextBranchedNotice;
-      setBranchedNotice(nextBranchedNotice);
+      branched = true;
+      toast.success(`Branched from ${sourceTitle}`, { id: branchToastId });
       composerEditorRef.current?.setContent(branchComposerText, null);
       setError(null);
       await loadHermesSessions({ suppressSessionGoneError: true });
@@ -6346,7 +7130,9 @@ export function AgentWorkspace({
     } finally {
       branchingMessageIdRef.current = null;
       setBranchingMessageId(null);
-      setBranchingNotice(null);
+      // A failed or aborted branch never resolves the loading toast; drop it so
+      // the error banner is the only surface. Success already upgraded it.
+      if (!branched) toast.dismiss(branchToastId);
     }
   }
 
@@ -6622,7 +7408,6 @@ export function AgentWorkspace({
     setReportDialogAttachments([]);
     setReportDialogCategory(categoryToOpen);
     setReportDialogOpen(true);
-    setIssueReportNotice(null);
   }
 
   /** Drops appends from imports that were still in flight when the report
@@ -7248,10 +8033,10 @@ export function AgentWorkspace({
   // send (last turn is the user's) — once an assistant turn exists it carries
   // its own thinking/streaming state, so we don't double up.
   const hermesTurns = selectedHermesSessionId
-    ? // Merge the `/image` overlay (client-synthesized assistant image turns)
-      // with the gateway-derived turns, ordered by createdAt. Array.sort is
-      // stable, and an image turn's createdAt is minted strictly after its user
-      // prompt, so the image always renders below the prompt that produced it.
+    ? // Merge client-synthesized slash overlays with gateway-derived turns,
+      // ordered by createdAt. Array.sort is stable, and media turn timestamps
+      // are minted strictly after their user prompts, so results render below
+      // the prompts that produced them.
       [
         ...mergeThinkingTurns(
           buildHermesSessionChatTurns(
@@ -7260,6 +8045,7 @@ export function AgentWorkspace({
           ),
         ),
         ...(imageTurnsBySession[selectedHermesSessionId] ?? []),
+        ...(videoTurnsBySession[selectedHermesSessionId] ?? []),
       ].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     : [];
   const taskTurns = selectedTask
@@ -7329,6 +8115,12 @@ export function AgentWorkspace({
       path: part.path,
       rootLabel: "Workspace",
     });
+  };
+  const downloadGeneratedVideo = (part: Extract<AgentChatPart, { type: "video" }>) => {
+    if (!part.path) return;
+    void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
+      setError(messageFromError(err)),
+    );
   };
 
   // Feature 14: open an artifact from the drawer's timeline. The timeline's
@@ -7650,9 +8442,10 @@ export function AgentWorkspace({
           <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
         )}
         <AnimatePresence>
-          {busyNotice || galleryErrors ? (
-            // Same fade as the recording-consent note, so the pill dissolves
-            // when the turn finishes instead of vanishing.
+          {galleryErrors ? (
+            // Dev gallery only: the busy nudge is a toast in real use (see
+            // SESSION_BUSY_TOAST_ID); this renders the old inline pill so
+            // __agentErrors can still screenshot that surface.
             <motion.p
               key="busy-notice"
               className="agent-composer-notice"
@@ -7663,7 +8456,7 @@ export function AgentWorkspace({
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
               <DotSpinner />
-              {busyNotice ?? SESSION_BUSY_NOTICE}
+              {SESSION_BUSY_NOTICE}
             </motion.p>
           ) : visibleIssueReportReview ? (
             <motion.div
@@ -7702,30 +8495,6 @@ export function AgentWorkspace({
                       : "Send report"}
               </button>
             </motion.div>
-          ) : visibleIssueReportNotice ? (
-            <motion.p
-              key="issue-report-notice"
-              className="agent-composer-notice"
-              role="status"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-            >
-              {visibleIssueReportNotice}
-            </motion.p>
-          ) : visibleModelSwitchNotice ? (
-            <motion.p
-              key="model-switch-notice"
-              className="agent-composer-notice"
-              role="status"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-            >
-              {visibleModelSwitchNotice}
-            </motion.p>
           ) : null}
         </AnimatePresence>
         {selectedHermesSessionId && selectedSteerCards.length ? (
@@ -7754,8 +8523,6 @@ export function AgentWorkspace({
             </button>
             {steerQueueOpen ? (
               <div className="agent-steer-cards-scroll scroll-fade" {...steerCardsFade.props}>
-                {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: scroll
-                    listener only clears a hover highlight; the list stays passive. */}
                 <div
                   ref={steerCardsListRef}
                   className="agent-steer-cards-list"
@@ -7890,19 +8657,21 @@ export function AgentWorkspace({
             ref={composerEditorRef}
             skills={skills}
             placeholder={
-              generatingImage
-                ? "Generating image…"
-                : importingFiles
-                  ? "Attaching file…"
-                  : composerInSteerState
-                    ? // June is mid-run: a typed message steers this turn
-                      // immediately (it is not staged), so the copy names the
-                      // outcome — a follow-up folded into the running work —
-                      // rather than a queue that doesn't exist.
-                      "Ask for follow-up changes"
-                    : heroMode
-                      ? "Ask June anything, run / commands"
-                      : "Send a message"
+              generatingVideo
+                ? "Generating video…"
+                : generatingImage
+                  ? "Generating image…"
+                  : importingFiles
+                    ? "Attaching file…"
+                    : composerInSteerState
+                      ? // June is mid-run: a typed message steers this turn
+                        // immediately (it is not staged), so the copy names the
+                        // outcome - a follow-up folded into the running work -
+                        // rather than a queue that doesn't exist.
+                        "Ask for follow-up changes"
+                      : heroMode
+                        ? "Ask June anything, run / commands"
+                        : "Send a message"
             }
             onChange={(text, nextCategory) => {
               draftRef.current = text;
@@ -8302,6 +9071,10 @@ export function AgentWorkspace({
           onRetryImage={(assistantTurnId, part) =>
             void retryImageSlashTurn(selectedHermesSessionId, assistantTurnId, part)
           }
+          onDownloadVideo={downloadGeneratedVideo}
+          onRetryVideo={(assistantTurnId, part) =>
+            void retryVideoSlashTurn(selectedHermesSessionId, assistantTurnId, part)
+          }
           onApproval={(part, choice) =>
             void respondToApproval(
               selectedHermesSessionId,
@@ -8662,15 +9435,6 @@ export function AgentWorkspace({
                   onDismiss={() => setError(null)}
                 />
               ) : null}
-              {branchedNotice && branchedNotice.sessionId === selectedHermesSessionId ? (
-                <AgentBranchedBanner
-                  sourceTitle={branchedNotice.sourceTitle}
-                  onDismiss={() => setBranchedNotice(null)}
-                />
-              ) : null}
-              {branchingNotice ? (
-                <AgentBranchingBanner sourceTitle={branchingNotice.sourceTitle} />
-              ) : null}
               {detailContent}
               {composer}
             </section>
@@ -8756,16 +9520,28 @@ export function AgentWorkspace({
         </>
       )}
       {imageSafeModeConsentRequest ? (
-        <ImageSafeModeConsentDialog
-          variant={imageSafeModeConsentRequest.variant}
-          onKeepSafeMode={(dontAskAgain) =>
-            resolveImageSafeModeConsent({ action: "keep", dontAskAgain })
-          }
-          onTurnOffSafeMode={(dontAskAgain) =>
-            resolveImageSafeModeConsent({ action: "turnOff", dontAskAgain })
-          }
-          onDismiss={() => resolveImageSafeModeConsent({ action: "dismiss" })}
-        />
+        imageSafeModeConsentRequest.variant === "video-slash" ? (
+          <VideoSafeModeConsentDialog
+            onSkipVideo={(dontAskAgain) =>
+              resolveImageSafeModeConsent({ action: "keep", dontAskAgain })
+            }
+            onTurnOffSafeMode={(dontAskAgain) =>
+              resolveImageSafeModeConsent({ action: "turnOff", dontAskAgain })
+            }
+            onDismiss={() => resolveImageSafeModeConsent({ action: "dismiss" })}
+          />
+        ) : (
+          <ImageSafeModeConsentDialog
+            variant={imageSafeModeConsentRequest.variant}
+            onKeepSafeMode={(dontAskAgain) =>
+              resolveImageSafeModeConsent({ action: "keep", dontAskAgain })
+            }
+            onTurnOffSafeMode={(dontAskAgain) =>
+              resolveImageSafeModeConsent({ action: "turnOff", dontAskAgain })
+            }
+            onDismiss={() => resolveImageSafeModeConsent({ action: "dismiss" })}
+          />
+        )
       ) : null}
     </section>
   );
@@ -9009,6 +9785,8 @@ function AgentSessionBar({
     </div>
   );
 }
+
+const AGENT_TITLE_MAX_CHARS = 48;
 
 async function agentSessionTitleForPrompt(prompt: string, response?: string) {
   try {
@@ -10102,6 +10880,8 @@ function AgentChatTurnRow({
   onDownloadImage,
   onOpenImage,
   onRetryImage,
+  onDownloadVideo,
+  onRetryVideo,
   onThinkingOpenChange,
   onTopUp,
   topUpLabel,
@@ -10133,6 +10913,8 @@ function AgentChatTurnRow({
   onDownloadImage?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
   onOpenImage?: (part: Extract<AgentChatPart, { type: "image" }>) => void;
   onRetryImage?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "image" }>) => void;
+  onDownloadVideo?: (part: Extract<AgentChatPart, { type: "video" }>) => void;
+  onRetryVideo?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "video" }>) => void;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
   topUpLabel?: string;
@@ -10207,6 +10989,7 @@ function AgentChatTurnRow({
     (part): part is Extract<AgentChatPart, { type: "context" }> => part.type === "context",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
+  const concreteResponse = turnIsConcreteResponse(turn);
   const copyText = copyableTextForTurn(turn);
 
   async function copyTurn() {
@@ -10284,7 +11067,7 @@ function AgentChatTurnRow({
     </HoverTip>
   ) : null;
   const turnActions =
-    copyAction || branchAction || timestampAction ? (
+    concreteResponse && (copyAction || branchAction || timestampAction) ? (
       <div className="agent-turn-actions" data-branching={branchSubmitting ? "true" : undefined}>
         <div className="agent-turn-actions-inner">
           {/* The timestamp sits on the outer/far side of the row: before the
@@ -10302,11 +11085,7 @@ function AgentChatTurnRow({
     return (
       <>
         {contextParts.map((part, index) => (
-          <ContextCompactionPart
-            key={`${turn.id}:context:${index}`}
-            createdAt={turn.createdAt}
-            part={part}
-          />
+          <ContextCompactionPart key={`${turn.id}:context:${index}`} part={part} />
         ))}
       </>
     );
@@ -10375,11 +11154,7 @@ function AgentChatTurnRow({
               </div>
             )
           ) : part.type === "context" ? (
-            <ContextCompactionPart
-              key={`${turn.id}:context:${index}`}
-              createdAt={turn.createdAt}
-              part={part}
-            />
+            <ContextCompactionPart key={`${turn.id}:context:${index}`} part={part} />
           ) : part.type === "approval" ? (
             <ApprovalPart
               key={`${turn.id}:approval:${part.id}`}
@@ -10419,11 +11194,7 @@ function AgentChatTurnRow({
               />
             )
           ) : part.type === "steering" ? (
-            <SteeringPart
-              key={`${turn.id}:steering:${index}`}
-              createdAt={turn.createdAt}
-              part={part}
-            />
+            <SteeringPart key={`${turn.id}:steering:${index}`} part={part} />
           ) : part.type === "image" ? (
             <AgentGeneratedImage
               key={`${turn.id}:image:${index}`}
@@ -10431,6 +11202,13 @@ function AgentChatTurnRow({
               onOpen={onOpenImage}
               onDownload={onDownloadImage}
               onRetry={onRetryImage ? () => onRetryImage(turn.id, part) : undefined}
+            />
+          ) : part.type === "video" ? (
+            <AgentGeneratedVideo
+              key={`${turn.id}:video:${index}`}
+              part={part}
+              onDownload={onDownloadVideo}
+              onRetry={onRetryVideo ? () => onRetryVideo(turn.id, part) : undefined}
             />
           ) : null,
         )}
@@ -10473,26 +11251,20 @@ function userPromptTextForTurn(turn: AgentChatTurn): string {
     .trim();
 }
 
-function ContextCompactionPart({
-  createdAt,
-  part,
-}: {
-  createdAt: string;
-  part: Extract<AgentChatPart, { type: "context" }>;
-}) {
+function ContextCompactionPart({ part }: { part: Extract<AgentChatPart, { type: "context" }> }) {
   return (
     <details className="agent-context-summary">
       <summary>
         {/* Same hover affordance as the tool rows: the glyph cross-fades to a
          * plain-text "+"/"−" so the row reads as one quiet, expandable line.
-         * IconConcise (thinned via CSS) marks the squeeze of compaction. */}
+         * IconConcise (thinned via CSS) marks the squeeze of compaction. No
+         * timestamp: this is a system marker, not a concrete message. */}
         <span className="agent-tool-icon">
           <IconConcise size={15} className="agent-context-icon-glyph" />
           <span className="agent-tool-icon-expand">+</span>
           <span className="agent-tool-icon-minimize">−</span>
         </span>
         <span className="agent-context-label">Context compacted</span>
-        <time>{relativeDate(createdAt)}</time>
       </summary>
       <MarkdownContent markdown={part.text} />
     </details>
@@ -10701,36 +11473,6 @@ function AgentErrorBanner({
   );
 }
 
-// Feature 07: confirms the freshly-opened session was forked from another, so
-// the user understands why they're suddenly in a new (but pre-populated)
-// thread. role="status" (not "alert") — this is reassurance, not an error.
-function AgentBranchedBanner({
-  sourceTitle,
-  onDismiss,
-}: {
-  sourceTitle: string;
-  onDismiss: () => void;
-}) {
-  return (
-    <div className="agent-branched-banner" role="status">
-      <IconBranchSimple size={14} aria-hidden />
-      <p>Branched from {sourceTitle}</p>
-      <button type="button" aria-label="Dismiss" onClick={onDismiss}>
-        <IconCrossMedium size={14} />
-      </button>
-    </div>
-  );
-}
-
-function AgentBranchingBanner({ sourceTitle }: { sourceTitle: string }) {
-  return (
-    <div className="agent-branching-banner" role="status" aria-live="polite">
-      <DotSpinner className="agent-branching-banner-spinner" />
-      <p>Creating branch from {sourceTitle}</p>
-    </div>
-  );
-}
-
 function visibleAgentWorkspaceError(
   error: AgentWorkspaceError | null,
   selectedSessionId: string | undefined,
@@ -10756,7 +11498,7 @@ function CreditsNoticePart({
       className="agent-credits-notice"
       tone="destructive"
       role="alert"
-      icon={<IconWallet3 size={14} aria-hidden />}
+      icon={<IconExclamationTriangle size={14} aria-hidden />}
       body="June stopped because your balance ran out."
       actions={
         onTopUp ? (
@@ -10791,13 +11533,7 @@ function ContextOverflowNoticePart() {
  * June toward mid-run, recorded quietly in the transcript so the conversation
  * shows what changed course. Mirrors {@link ContextCompactionPart}'s quiet,
  * timestamped system-row styling. */
-function SteeringPart({
-  createdAt,
-  part,
-}: {
-  createdAt: string;
-  part: Extract<AgentChatPart, { type: "steering" }>;
-}) {
+function SteeringPart({ part }: { part: Extract<AgentChatPart, { type: "steering" }> }) {
   return (
     <div className="agent-steering-item">
       <span className="agent-steering-icon" aria-hidden>
@@ -10805,7 +11541,6 @@ function SteeringPart({
       </span>
       <span className="agent-steering-label">Steering</span>
       <span className="agent-steering-text">{part.text}</span>
-      <time>{relativeDate(createdAt)}</time>
     </div>
   );
 }
@@ -10915,7 +11650,339 @@ function AgentGeneratedImage({
   );
 }
 
-function ClarifyPart({
+function AgentGeneratedVideo({
+  part,
+  onDownload,
+  onRetry,
+}: {
+  part: Extract<AgentChatPart, { type: "video" }>;
+  onDownload?: (part: Extract<AgentChatPart, { type: "video" }>) => void;
+  onRetry?: () => void;
+}) {
+  if (part.status === "running") {
+    const progress = videoProgressLabel(part);
+    return (
+      <div className="agent-generated-video" data-status="running" role="status" aria-live="polite">
+        <div className="agent-generated-video-placeholder">
+          <span className="text-shimmer">Generating video, this can take a minute</span>
+          {progress ? <span className="agent-generated-video-progress">{progress}</span> : null}
+        </div>
+      </div>
+    );
+  }
+  if (part.status === "error") {
+    return (
+      <div className="agent-generated-video" data-status="error">
+        <p className="agent-generated-image-error">
+          {part.error?.trim() || "Could not generate the video."}
+        </p>
+        {onRetry && part.requestId ? (
+          <button type="button" className="agent-generated-image-retry" onClick={onRetry}>
+            Try again
+          </button>
+        ) : null}
+      </div>
+    );
+  }
+  const label = part.name?.trim() || "Generated video";
+  const src = part.path ? localVideoFileSrc(part.path) : undefined;
+  return (
+    <figure className="agent-generated-video" data-status="complete">
+      <div className="agent-generated-video-frame">
+        {src ? (
+          <video controls src={src} poster={part.posterDataUrl} preload="metadata" />
+        ) : (
+          <span className="agent-generated-image-loading text-shimmer">Loading video...</span>
+        )}
+      </div>
+      <figcaption className="agent-generated-image-bar">
+        <span className="agent-generated-image-name" title={label}>
+          {label}
+        </span>
+        {onDownload && part.path ? (
+          <button
+            type="button"
+            className="agent-generated-image-download"
+            onClick={() => onDownload(part)}
+            aria-label="Download video"
+            title="Download video"
+          >
+            <IconArrowInbox size={14} aria-hidden />
+            <span>Download</span>
+          </button>
+        ) : null}
+      </figcaption>
+    </figure>
+  );
+}
+
+function videoProgressLabel(part: Extract<AgentChatPart, { type: "video" }>) {
+  if (typeof part.executionMs !== "number" || part.executionMs <= 0) return undefined;
+  const elapsed = Math.max(1, Math.round(part.executionMs / 1000));
+  if (typeof part.averageExecutionMs !== "number" || part.averageExecutionMs <= 0) {
+    return `${elapsed}s elapsed`;
+  }
+  const total = Math.max(elapsed, Math.round(part.averageExecutionMs / 1000));
+  return `${elapsed}s of about ${total}s`;
+}
+
+/** A resolved action card renders as a quiet, expandable one-line row instead
+ * of a full card — a receipt in the transcript rather than a prompt. The row
+ * mirrors {@link ContextCompactionPart}: an outcome glyph (checkmark / cross)
+ * that cross-fades to a plain-text "+"/"−" on hover (pure opacity — no layout
+ * shift, a WKWebView compositing constraint), a short outcome label, and a
+ * truncated one-line detail. Expanding reveals the full detail body (the
+ * `children`) minus the action buttons. */
+function ResolvedActionRow({
+  denied = false,
+  label,
+  detail,
+  children,
+}: {
+  /** Renders the cross glyph and destructive tint instead of the checkmark. */
+  denied?: boolean;
+  /** Short outcome word(s), e.g. "Approved once" / "Answered" / "Denied". */
+  label: string;
+  /** One-line truncated detail shown inline on the collapsed row. */
+  detail?: ReactNode;
+  /** The full detail body revealed on expand. */
+  children?: ReactNode;
+}) {
+  return (
+    <details
+      className="agent-tool-disclosure agent-resolved-row"
+      data-choice={denied ? "deny" : "done"}
+    >
+      <summary>
+        <span className="agent-tool-icon">
+          {denied ? (
+            <IconCrossSmall size={15} className="agent-tool-icon-glyph agent-resolved-icon-glyph" />
+          ) : (
+            <IconCheckmark2Small
+              size={15}
+              className="agent-tool-icon-glyph agent-resolved-icon-glyph"
+            />
+          )}
+          <span className="agent-tool-icon-expand">+</span>
+          <span className="agent-tool-icon-minimize">−</span>
+        </span>
+        <span className="agent-tool-name agent-resolved-label">{label}</span>
+        {detail !== undefined ? <span className="agent-resolved-detail">{detail}</span> : null}
+      </summary>
+      {children !== undefined ? <div className="agent-resolved-body">{children}</div> : null}
+    </details>
+  );
+}
+
+/** The condensed chrome shared by the pending approval and sudo cards. The
+ * header is a plain row (title + optional inline mode tag + waiting status) —
+ * not a toggle. Below it the prose `description` reads at all times, clamped to
+ * two lines while collapsed. When there is more to show (`hasDetails` — a
+ * command, or the sudo mode notice) a quiet "Details" disclosure sits under the
+ * description and reveals the full body (`children`: the full command `pre` and
+ * any extra detail). The actions row (`footer`) is always visible. Collapsed by
+ * default so a long command never dominates the card before a decision. */
+function CollapsibleActionCard({
+  title,
+  description,
+  headerMeta,
+  command,
+  hasDetails,
+  expanded,
+  onToggleExpanded,
+  footer,
+  children,
+}: {
+  title: string;
+  /** The prose description (part.description / sudo reason), always visible. */
+  description: ReactNode;
+  /** A short signal pinned to the header row that must stay visible while
+   * collapsed (e.g. the sudo blast-radius mode tag). */
+  headerMeta?: ReactNode;
+  /** SECURITY: the concrete command being authorized. Rendered ALWAYS (never
+   * behind the disclosure) so the exact command is visible at the decision
+   * point — the Approve button is live while the card is collapsed, so a user
+   * must be able to see what they are approving without expanding anything. */
+  command?: ReactNode;
+  /** Whether there is supplementary body content worth a "Details" disclosure
+   * (e.g. the sudo mode notice). The command is NOT gated on this. */
+  hasDetails: boolean;
+  expanded: boolean;
+  onToggleExpanded: () => void;
+  /** The actions row (or the in-flight result line), always visible. */
+  footer: ReactNode;
+  /** Supplementary body revealed on expand (never the command). */
+  children: ReactNode;
+}) {
+  return (
+    <article
+      className="agent-approval-card agent-action-card"
+      data-status="pending"
+      data-expanded={expanded || undefined}
+    >
+      <div className="agent-action-card-header">
+        <span className="agent-action-card-title">{title}</span>
+        {headerMeta}
+      </div>
+      {/* Only clamp when a Details expander exists to reveal the rest; otherwise
+       * a long description-only request would be truncated with no way to read
+       * it before choosing. */}
+      <p
+        className="agent-action-card-description"
+        data-clamped={(hasDetails && !expanded) || undefined}
+      >
+        {description}
+      </p>
+      {command}
+      {hasDetails ? (
+        <button
+          type="button"
+          className="agent-action-card-details"
+          aria-expanded={expanded}
+          onClick={onToggleExpanded}
+        >
+          Details
+          <IconChevronDownSmall size={14} className="agent-disclosure-chevron" aria-hidden />
+        </button>
+      ) : null}
+      {expanded ? <div className="agent-action-card-body">{children}</div> : null}
+      {footer}
+    </article>
+  );
+}
+
+/** The approval footer's primary control: a split button. "Approve" approves
+ * "once"; the attached caret opens a small scope menu ("Approve once" /
+ * "Approve for this session" / "Always approve", the last hidden when
+ * `allowPermanent` is false). Dismisses on outside click or Escape and supports
+ * arrow-key navigation, mirroring the repo's other hand-rolled menus. */
+function ApproveSplitButton({
+  disabled,
+  allowPermanent,
+  onChoice,
+}: {
+  disabled: boolean;
+  allowPermanent?: boolean;
+  onChoice: (choice: AgentApprovalChoice) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const scopeRef = useRef<HTMLButtonElement | null>(null);
+
+  // Close on a click outside the split wrapper or on Escape.
+  useEffect(() => {
+    if (!open) return;
+    function onPointer(event: MouseEvent) {
+      if (wrapRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+        // Escape is a keyboard dismissal — return focus to the caret trigger so
+        // it doesn't drop to <body> when the focused menu item unmounts.
+        scopeRef.current?.focus();
+      }
+    }
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  // Move focus into the menu when it opens so arrow keys land immediately.
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
+  }, [open]);
+
+  const items: { choice: AgentApprovalChoice; label: string }[] = [
+    { choice: "once", label: "Approve once" },
+    { choice: "session", label: "Approve for this session" },
+    ...(allowPermanent
+      ? [{ choice: "always" as AgentApprovalChoice, label: "Always approve" }]
+      : []),
+  ];
+
+  function choose(choice: AgentApprovalChoice) {
+    setOpen(false);
+    onChoice(choice);
+  }
+
+  function onMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const buttons = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [],
+    );
+    if (!buttons.length) return;
+    const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      buttons[(current + 1 + buttons.length) % buttons.length]?.focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      buttons[(current - 1 + buttons.length) % buttons.length]?.focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      buttons[0]?.focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      buttons[buttons.length - 1]?.focus();
+    }
+  }
+
+  return (
+    <div className="agent-approval-split" ref={wrapRef}>
+      <button
+        type="button"
+        className="agent-approval-approve"
+        disabled={disabled}
+        onClick={() => onChoice("once")}
+      >
+        Approve
+      </button>
+      <button
+        ref={scopeRef}
+        type="button"
+        className="agent-approval-scope"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Approve options"
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <IconChevronDownSmall size={14} aria-hidden />
+      </button>
+      {open ? (
+        <div
+          ref={menuRef}
+          className="agent-approval-scope-menu"
+          role="menu"
+          aria-label="Approve scope"
+          onKeyDown={onMenuKeyDown}
+        >
+          {items.map((item) => (
+            <button
+              key={item.choice}
+              type="button"
+              role="menuitem"
+              className="agent-approval-scope-item"
+              disabled={disabled}
+              onClick={() => choose(item.choice)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function ClarifyPart({
   onClarify,
   part,
   submitting,
@@ -10928,25 +11995,25 @@ function ClarifyPart({
   const [draft, setDraft] = useState("");
   const disabled = part.status !== "pending" || submitting !== undefined;
 
+  // Resolved clarify collapses to a quiet receipt row: "Answered" (or "Skipped")
+  // plus the question, expandable to the full question and answer.
+  if (part.status !== "pending") {
+    const answered = Boolean(part.answer?.trim());
+    return (
+      <ResolvedActionRow label={answered ? "Answered" : "Skipped"} detail={part.question}>
+        <p>{part.question}</p>
+        {answered ? <p className="agent-clarify-answer">{part.answer}</p> : null}
+      </ResolvedActionRow>
+    );
+  }
+
   return (
     <article className="agent-clarify-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        <IconBubbleWide size={14} />
-      </span>
       <div>
         <div className="agent-tool-title">
           <span>Clarify</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Answered"}
-          </span>
         </div>
-        <p>{part.question}</p>
-        {part.answer !== undefined ? (
-          <p className="agent-clarify-answer">{part.answer.trim() ? part.answer : "Skipped"}</p>
-        ) : null}
+        <p className="agent-clarify-question">{part.question}</p>
         {part.status === "pending" ? (
           <>
             {!typing && part.choices.length ? (
@@ -10982,6 +12049,7 @@ function ClarifyPart({
                 }}
               >
                 <textarea
+                  className="dialog-textarea agent-clarify-textarea"
                   value={draft}
                   disabled={disabled}
                   rows={3}
@@ -11041,60 +12109,61 @@ type AgentCliAccessCardProps = {
  * live setting rather than stored per message: a revisited transcript shows
  * "Enabled" once the grant is on, and re-offers the choice while it is off.
  * Mirrors the approval card chrome. */
-function AgentCliAccessCard({ cliAccess }: { cliAccess?: AgentCliAccessCardProps }) {
+export function AgentCliAccessCard({ cliAccess }: { cliAccess?: AgentCliAccessCardProps }) {
   const [dismissed, setDismissed] = useState(false);
   const enabled = cliAccess?.enabled === true;
   const resolved = enabled || dismissed;
   const busy = Boolean(cliAccess?.submitting);
+
+  const description = (
+    <p>
+      June wants write access to the state folders of your coding CLIs (Claude Code, Codex, Gemini,
+      opencode) so they stay logged in and can save their work in sandboxed sessions. Those folders
+      configure software that also runs outside June's sandbox. Enabling turns on "Agent CLI access"
+      in Settings and restarts the sandboxed runtime.
+    </p>
+  );
+
+  // Resolved collapses to a quiet receipt row, expandable to the description.
+  if (resolved) {
+    return (
+      <ResolvedActionRow denied={!enabled} label={enabled ? "Agent CLI access enabled" : "Not now"}>
+        {description}
+      </ResolvedActionRow>
+    );
+  }
+
   return (
-    <article className="agent-approval-card" data-status={resolved ? "resolved" : "pending"}>
-      <span className="agent-tool-icon">
-        <IconConsole size={14} />
-      </span>
+    <article className="agent-approval-card" data-status="pending">
       <div>
         <div className="agent-tool-title">
           <span>Agent CLI access requested</span>
-          <span className="agent-tool-live-status" data-status={resolved ? "complete" : "running"}>
-            {resolved ? "Resolved" : "Waiting"}
-          </span>
         </div>
-        <p>
-          June wants write access to the state folders of your coding CLIs (Claude Code, Codex,
-          Gemini, opencode) so they stay logged in and can save their work in sandboxed sessions.
-          Those folders configure software that also runs outside June's sandbox. Enabling turns on
-          "Agent CLI access" in Settings and restarts the sandboxed runtime.
-        </p>
-        {resolved ? (
-          <p className="agent-approval-result" data-choice={enabled ? "once" : "deny"}>
-            {enabled ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
-            {enabled ? "Agent CLI access enabled" : "Not now"}
-          </p>
-        ) : (
-          <div className="agent-approval-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={busy || !cliAccess || cliAccess.enabled === undefined}
-              onClick={() => cliAccess?.onEnable()}
-            >
-              {busy ? "Enabling…" : "Enable Agent CLI access"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost agent-approval-deny"
-              disabled={busy}
-              onClick={() => setDismissed(true)}
-            >
-              Not now
-            </button>
-          </div>
-        )}
+        {description}
+        <div className="agent-approval-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={busy || !cliAccess || cliAccess.enabled === undefined}
+            onClick={() => cliAccess?.onEnable()}
+          >
+            {busy ? "Enabling…" : "Enable Agent CLI access"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost agent-approval-deny"
+            disabled={busy}
+            onClick={() => setDismissed(true)}
+          >
+            Not now
+          </button>
+        </div>
       </div>
     </article>
   );
 }
 
-function ApprovalPart({
+export function ApprovalPart({
   onApproval,
   part,
   submitting,
@@ -11108,7 +12177,13 @@ function ApprovalPart({
 }) {
   const disabled = Boolean(submitting) || part.status !== "pending";
   const activeChoice = part.choice ?? submitting;
-  const resolved = part.status !== "pending" || activeChoice !== undefined;
+  // A card that has actually resolved collapses to a receipt row. A submission
+  // still in flight (submitting set, status pending) keeps the card so the
+  // in-progress line ("Approving once") stays visible until it resolves.
+  const resolved = part.status !== "pending";
+  const showResult = resolved || activeChoice !== undefined;
+  // The whole card is compact by default; expanding reveals the full body.
+  const [expanded, setExpanded] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
   // "Explain first" asks the generation model what this specific request
   // would do — the request stays parked, nothing is approved by asking.
@@ -11121,6 +12196,8 @@ function ApprovalPart({
   function toggleExplain() {
     const nextOpen = !explainOpen;
     setExplainOpen(nextOpen);
+    // Opening the explanation auto-expands the card so the panel has room.
+    if (nextOpen) setExpanded(true);
     if (!nextOpen || explainState === "loading" || explainState === "ready") {
       return;
     }
@@ -11138,117 +12215,115 @@ function ApprovalPart({
       });
   }
 
-  return (
-    <article className="agent-approval-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        <IconShieldCheck size={14} />
-      </span>
-      <div>
-        <div className="agent-tool-title">
-          <span>Approval required</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Resolved"}
-          </span>
-        </div>
+  // Resolved collapses to a quiet receipt row: the outcome label plus the
+  // command (or description) truncated to one line, expandable to the full
+  // description and command — no action buttons.
+  if (resolved) {
+    return (
+      <ResolvedActionRow
+        denied={activeChoice === "deny"}
+        label={approvalChoiceLabel(activeChoice)}
+        detail={
+          part.command ? (
+            <span className="agent-resolved-mono">{part.command}</span>
+          ) : (
+            part.description
+          )
+        }
+      >
         <p>{part.description}</p>
         {part.command ? <pre>{part.command}</pre> : null}
-        {!resolved && explainOpen ? (
-          <div className="agent-approval-explanation" id={explanationId}>
-            {explainState === "loading" ? (
-              <p className="agent-approval-explanation-loading" role="status" aria-live="polite">
-                <Spinner aria-hidden />
-                <span>Working out what this request does…</span>
-              </p>
-            ) : explainState === "ready" && explanation ? (
-              explanation
-                .split(/\n{2,}/)
-                .map((paragraph) => paragraph.trim())
-                .filter(Boolean)
-                .map((paragraph, index) => <p key={index}>{paragraph}</p>)
-            ) : (
-              // Generation unavailable (offline, signed out): keep the
-              // static framing rather than an empty panel.
-              <p>
-                June is paused because this request needs your explicit permission before it can
-                continue.
-              </p>
-            )}
-            <p>
-              Approve once allows only this request. This session allows matching requests until the
-              session ends.{" "}
-              {part.allowPermanent ? "Always allows matching requests in future sessions. " : null}
-              Deny blocks the request.
+      </ResolvedActionRow>
+    );
+  }
+
+  const footer = showResult ? (
+    // Submission in flight (status still pending): the in-progress line stays
+    // in the card until the request actually resolves.
+    <p className="agent-approval-result" data-choice={activeChoice}>
+      {activeChoice === "deny" ? <IconCrossMedium size={14} /> : <IconCheckmark1Small size={14} />}
+      {approvalChoiceLabel(activeChoice, submitting !== undefined)}
+    </p>
+  ) : (
+    // Compact footer: a split "Approve" (approves once, caret opens the scope
+    // menu) and a quiet "Deny" anchor the row; "Explain first" demotes to a
+    // plain text-level button pushed to the right edge.
+    <div className="agent-approval-actions">
+      <ApproveSplitButton
+        disabled={disabled}
+        allowPermanent={part.allowPermanent}
+        onChoice={(choice) => onApproval(part, choice)}
+      />
+      <button
+        type="button"
+        className="btn btn-ghost agent-approval-deny"
+        disabled={disabled}
+        onClick={() => onApproval(part, "deny")}
+      >
+        Deny
+      </button>
+      <button
+        type="button"
+        className="btn btn-ghost agent-approval-explain"
+        aria-expanded={explainOpen}
+        // Only advertise the panel while it's actually in the DOM (the body
+        // renders only when the card is expanded and the explanation is open).
+        aria-controls={explainOpen ? explanationId : undefined}
+        disabled={disabled}
+        onClick={toggleExplain}
+      >
+        <IconLightBulbSimple size={14} aria-hidden />
+        {explainOpen ? "Hide explanation" : "Explain first"}
+      </button>
+    </div>
+  );
+
+  return (
+    <CollapsibleActionCard
+      title="Approval required"
+      description={part.description}
+      command={part.command ? <pre>{part.command}</pre> : null}
+      // The command is always shown; the only expandable body is the optional
+      // explanation, which its own "Explain first" button toggles.
+      hasDetails={false}
+      expanded={expanded}
+      onToggleExpanded={() => {
+        const next = !expanded;
+        setExpanded(next);
+        if (!next) setExplainOpen(false);
+      }}
+      footer={footer}
+    >
+      {explainOpen ? (
+        <div className="agent-approval-explanation" id={explanationId}>
+          {explainState === "loading" ? (
+            <p className="agent-approval-explanation-loading" role="status" aria-live="polite">
+              <Spinner aria-hidden />
+              <span>Working out what this request does…</span>
             </p>
-          </div>
-        ) : null}
-        {resolved ? (
-          <p className="agent-approval-result" data-choice={activeChoice}>
-            {activeChoice === "deny" ? (
-              <IconCrossMedium size={14} />
-            ) : (
-              <IconCheckmark1Small size={14} />
-            )}
-            {approvalChoiceLabel(
-              activeChoice,
-              part.status === "pending" && submitting !== undefined,
-            )}
+          ) : explainState === "ready" && explanation ? (
+            explanation
+              .split(/\n{2,}/)
+              .map((paragraph) => paragraph.trim())
+              .filter(Boolean)
+              .map((paragraph, index) => <p key={index}>{paragraph}</p>)
+          ) : (
+            // Generation unavailable (offline, signed out): keep the
+            // static framing rather than an empty panel.
+            <p>
+              June is paused because this request needs your explicit permission before it can
+              continue.
+            </p>
+          )}
+          <p>
+            Approve once allows only this request. This session allows matching requests until the
+            session ends.{" "}
+            {part.allowPermanent ? "Always allows matching requests in future sessions. " : null}
+            Deny blocks the request.
           </p>
-        ) : (
-          // System buttons (.btn) — quiet soft-fill choices, ghost deny. The
-          // repeated per-button icons read as noise, so labels stand alone.
-          <div className="agent-approval-actions">
-            <button
-              type="button"
-              className="btn btn-secondary agent-approval-explain"
-              aria-expanded={explainOpen}
-              aria-controls={explanationId}
-              disabled={disabled}
-              onClick={toggleExplain}
-            >
-              <IconCircleQuestionmark size={14} />
-              {explainOpen ? "Hide explanation" : "Explain first"}
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={disabled}
-              onClick={() => onApproval(part, "once")}
-            >
-              Approve once
-            </button>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={disabled}
-              onClick={() => onApproval(part, "session")}
-            >
-              This session
-            </button>
-            {part.allowPermanent ? (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                disabled={disabled}
-                onClick={() => onApproval(part, "always")}
-              >
-                Always
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="btn btn-ghost agent-approval-deny"
-              disabled={disabled}
-              onClick={() => onApproval(part, "deny")}
-            >
-              Deny
-            </button>
-          </div>
-        )}
-      </div>
-    </article>
+        </div>
+      ) : null}
+    </CollapsibleActionCard>
   );
 }
 
@@ -11268,6 +12343,22 @@ export function branchSourceSessionIdForTurn(turn: Pick<AgentChatTurn, "parts">)
     if (sessionId) return sessionId;
   }
   return undefined;
+}
+
+/** Whether a turn is a concrete message — the only kind that carries per-turn
+ * affordances (copy / branch / timestamp). A user message always qualifies; an
+ * assistant turn qualifies once it has produced a real answer: non-empty text
+ * or a finished image. Everything else is process or interaction — thinking in
+ * progress, tool calls, approval/clarify/sudo/secret cards, context summaries,
+ * in-flight/empty turns — and gets nothing below it. An allowlist (not a
+ * per-type blocklist) so new process/card part types stay quiet by default. */
+export function turnIsConcreteResponse(turn: Pick<AgentChatTurn, "role" | "parts">) {
+  if (turn.role === "user") return true;
+  return turn.parts.some(
+    (part) =>
+      (part.type === "text" && part.text.trim().length > 0) ||
+      (part.type === "image" && part.status === "complete"),
+  );
 }
 
 function previousBranchableMessageIndex(messages: HermesSessionMessage[], beforeIndex: number) {
@@ -11390,75 +12481,121 @@ export function SudoPart({
   submitting?: "approve" | "deny";
 }) {
   const disabled = Boolean(submitting) || part.status !== "pending";
-  const resolved = part.status !== "pending" || submitting !== undefined;
+  // A card that has actually resolved collapses to a receipt row. A submission
+  // still in flight (submitting set, status pending) keeps the card.
+  const resolved = part.status !== "pending";
+  const showResult = resolved || submitting !== undefined;
+  // The whole card is compact by default; expanding reveals the full body.
+  const [expanded, setExpanded] = useState(false);
   // Absent mode defaults to the safe direction (sandboxed) so the card never
   // implies more access than is being granted.
   const mode: HermesMode = part.mode ?? "sandboxed";
   const unrestricted = mode === "unrestricted";
   const decided = part.approved ?? (submitting ? submitting === "approve" : undefined);
 
-  return (
-    <article className="agent-approval-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        {unrestricted ? <IconShieldCrossed size={14} /> : <IconShieldCheck size={14} />}
-      </span>
-      <div>
-        <div className="agent-tool-title">
-          <span>Privilege escalation requested</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Resolved"}
-          </span>
-        </div>
+  const modeCopy = unrestricted
+    ? "Will run unrestricted (full write access)"
+    : "Will run sandboxed (limited write access)";
+
+  // Pending: the blast radius shows as an InlineNotice — warning chrome for
+  // unrestricted, neutral for sandboxed.
+  const modeNotice = (
+    <InlineNotice
+      className="agent-sudo-mode-notice"
+      tone={unrestricted ? "warning" : "info"}
+      icon={
+        unrestricted ? (
+          <IconShieldCrossed size={14} aria-hidden />
+        ) : (
+          <IconShieldCheck size={14} aria-hidden />
+        )
+      }
+      body={modeCopy}
+    />
+  );
+
+  // Receipt: the same mode line, but as quiet plain text — receipts carry no
+  // notice chrome.
+  const modeReceiptLine = (
+    <p className="agent-sudo-mode-receipt" data-mode={mode}>
+      {modeCopy}
+    </p>
+  );
+
+  // Collapsed pending: the full InlineNotice lives behind Details, so the header
+  // still has to carry the blast radius at the moment of decision — but only for
+  // the unrestricted (elevated) case. A small warning badge pinned in the header
+  // row does it. Sandboxed is the safe default and shows no collapsed badge (the
+  // full mode line still appears in Details for both).
+  const modeBadge = unrestricted ? (
+    <span className="agent-sudo-mode-badge">
+      <IconExclamationTriangle size={12} aria-hidden />
+      Unrestricted
+    </span>
+  ) : null;
+
+  // Resolved collapses to a quiet receipt row: "Approved"/"Denied" plus the
+  // command, expandable to the reason, command, and execution mode.
+  if (resolved) {
+    return (
+      <ResolvedActionRow
+        denied={!decided}
+        label={decided ? "Approved" : "Denied"}
+        detail={
+          part.command ? <span className="agent-resolved-mono">{part.command}</span> : undefined
+        }
+      >
         <p>{part.reason ?? "June needs elevated permissions before it can continue."}</p>
         {part.command ? <pre>{part.command}</pre> : null}
-        <p
-          className="agent-sudo-mode"
-          data-mode={mode}
-          title={
-            unrestricted
-              ? "Runs with full write access, outside June's sandbox."
-              : "Runs inside June's write sandbox."
-          }
-        >
-          {unrestricted ? (
-            <IconShieldCrossed size={12} aria-hidden />
-          ) : (
-            <IconShieldCheck size={12} aria-hidden />
-          )}
-          {unrestricted
-            ? "Will run unrestricted (full write access)"
-            : "Will run sandboxed (limited write access)"}
-        </p>
-        {resolved ? (
-          <p className="agent-approval-result" data-choice={decided ? "once" : "deny"}>
-            {decided ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
-            {decided ? (submitting ? "Approving" : "Approved") : submitting ? "Denying" : "Denied"}
-          </p>
-        ) : (
-          <div className="agent-approval-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={disabled}
-              onClick={() => onSudo(part, true)}
-            >
-              Approve
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost agent-approval-deny"
-              disabled={disabled}
-              onClick={() => onSudo(part, false)}
-            >
-              Deny
-            </button>
-          </div>
-        )}
-      </div>
-    </article>
+        {modeReceiptLine}
+      </ResolvedActionRow>
+    );
+  }
+
+  const reason = part.reason ?? "June needs elevated permissions before it can continue.";
+
+  const footer = showResult ? (
+    <p className="agent-approval-result" data-choice={decided ? "once" : "deny"}>
+      {decided ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
+      {decided ? (submitting ? "Approving" : "Approved") : submitting ? "Denying" : "Denied"}
+    </p>
+  ) : (
+    // Sudo keeps a simple Approve/Deny pair.
+    <div className="agent-approval-actions">
+      <button
+        type="button"
+        className="btn btn-secondary"
+        disabled={disabled}
+        onClick={() => onSudo(part, true)}
+      >
+        Approve
+      </button>
+      <button
+        type="button"
+        className="btn btn-ghost agent-approval-deny"
+        disabled={disabled}
+        onClick={() => onSudo(part, false)}
+      >
+        Deny
+      </button>
+    </div>
+  );
+
+  return (
+    <CollapsibleActionCard
+      title="Privilege escalation requested"
+      description={reason}
+      headerMeta={modeBadge}
+      command={part.command ? <pre>{part.command}</pre> : null}
+      // Command is always visible; Details reveals the fuller mode notice (the
+      // blast-radius badge already shows collapsed).
+      hasDetails={true}
+      expanded={expanded}
+      onToggleExpanded={() => setExpanded((value) => !value)}
+      footer={footer}
+    >
+      {modeNotice}
+    </CollapsibleActionCard>
   );
 }
 
@@ -11504,78 +12641,80 @@ export function SecretPart({
     onCancel?.(part);
   }
 
+  const keyLine = label ? (
+    <p className="agent-secret-key">
+      <span>Key</span>
+      <code>{label}</code>
+    </p>
+  ) : null;
+
+  // Resolved collapses to a quiet receipt row: "Secret provided" plus the
+  // redacted key name (never the value), expandable to the reason and key.
+  // SECURITY: no secret value is ever rendered here — only the reason and the
+  // already-redacted key label.
+  if (part.status !== "pending") {
+    return (
+      <ResolvedActionRow
+        label="Secret provided"
+        detail={label ? <span className="agent-resolved-mono">{label}</span> : undefined}
+      >
+        <p>{part.reason ?? "June needs a secret value before it can continue."}</p>
+        {keyLine}
+      </ResolvedActionRow>
+    );
+  }
+
   return (
     <article className="agent-approval-card" data-status={part.status}>
-      <span className="agent-tool-icon">
-        <IconLock size={14} />
-      </span>
       <div>
         <div className="agent-tool-title">
           <span>Secret requested</span>
-          <span
-            className="agent-tool-live-status"
-            data-status={part.status === "pending" ? "running" : "complete"}
-          >
-            {part.status === "pending" ? "Waiting" : "Provided"}
-          </span>
         </div>
         <p>{part.reason ?? "June needs a secret value before it can continue."}</p>
-        {label ? (
-          <p className="agent-secret-key">
-            <span>Key</span>
-            <code>{label}</code>
+        {keyLine}
+        <form
+          className="agent-secret-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit();
+          }}
+        >
+          <label htmlFor={inputId} className="agent-secret-label">
+            Secret value
+          </label>
+          <input
+            id={inputId}
+            type="password"
+            className="dialog-input agent-secret-input"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            // The browser must never store or suggest this value.
+            data-1p-ignore
+            data-lpignore="true"
+            disabled={disabled}
+            value={value}
+            placeholder="Paste the value"
+            onChange={(event) => setValue(event.currentTarget.value)}
+          />
+          <p className="agent-secret-note">
+            Sent straight to the agent and never saved, logged, or shown.
           </p>
-        ) : null}
-        {part.status === "pending" ? (
-          <form
-            className="agent-secret-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              submit();
-            }}
-          >
-            <label htmlFor={inputId} className="agent-secret-label">
-              Secret value
-            </label>
-            <input
-              id={inputId}
-              type="password"
-              className="agent-secret-input"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              // The browser must never store or suggest this value.
-              data-1p-ignore
-              data-lpignore="true"
-              disabled={disabled}
-              value={value}
-              placeholder="Paste the value"
-              onChange={(event) => setValue(event.currentTarget.value)}
-            />
-            <p className="agent-secret-note">
-              Sent straight to the agent and never saved, logged, or shown.
-            </p>
-            <div className="agent-approval-actions">
-              <button type="submit" className="btn btn-secondary" disabled={disabled || !value}>
-                {submitting ? "Submitting" : "Submit"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost agent-approval-deny"
-                disabled={submitting !== undefined}
-                onClick={cancel}
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        ) : (
-          <p className="agent-approval-result" data-choice="once">
-            <IconCheckmark1Small size={14} />
-            Secret provided
-          </p>
-        )}
+          <div className="agent-approval-actions">
+            <button type="submit" className="btn btn-secondary" disabled={disabled || !value}>
+              {submitting ? "Submitting" : "Submit"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost agent-approval-deny"
+              disabled={submitting !== undefined}
+              onClick={cancel}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
       </div>
     </article>
   );

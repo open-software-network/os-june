@@ -31,6 +31,7 @@ import { primaryShortcutLabel } from "../../lib/platform";
 import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
+import { RenameSessionDialog } from "./RenameSessionDialog";
 
 type AgentSessionsListProps = {
   sessions: HermesSessionInfo[];
@@ -193,7 +194,8 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
     useEffect(() => {
       if (selectedCount === 0 || confirmBulkDelete) return;
       function onKey(event: KeyboardEvent) {
-        if (event.key === "Escape") resetSelection();
+        const target = event.target instanceof Element ? event.target : null;
+        if (event.key === "Escape" && !target?.closest('[role="dialog"]')) resetSelection();
       }
       window.addEventListener("keydown", onKey);
       return () => window.removeEventListener("keydown", onKey);
@@ -445,22 +447,7 @@ function AgentSessionListRow({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [titleDraft, setTitleDraft] = useState(title);
-  const titleInputRef = useRef<HTMLInputElement | null>(null);
-  const titleEditFinalizedRef = useRef(false);
-
-  useEffect(() => {
-    if (editingTitle && titleInputRef.current) {
-      titleEditFinalizedRef.current = false;
-      titleInputRef.current.focus();
-      titleInputRef.current.select();
-    }
-  }, [editingTitle]);
-
-  useEffect(() => {
-    if (!editingTitle) setTitleDraft(title);
-  }, [editingTitle, title]);
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
 
   useEffect(() => {
     if (!menu) return;
@@ -499,24 +486,6 @@ function AgentSessionListRow({
     }
   }
 
-  function commitRename(value: string) {
-    if (titleEditFinalizedRef.current) return;
-    titleEditFinalizedRef.current = true;
-    setEditingTitle(false);
-    const next = value.trim();
-    if (!next || next === title) {
-      setTitleDraft(title);
-      return;
-    }
-    onRename(next);
-  }
-
-  function cancelRename() {
-    titleEditFinalizedRef.current = true;
-    setTitleDraft(title);
-    setEditingTitle(false);
-  }
-
   const rowMain = (
     <>
       <span className="folder-note-icon" aria-hidden>
@@ -527,31 +496,7 @@ function AgentSessionListRow({
         )}
       </span>
       <span className="folder-note-body">
-        {editingTitle ? (
-          <input
-            ref={titleInputRef}
-            className="folder-note-title-input"
-            aria-label="Session name"
-            value={titleDraft}
-            onChange={(event) => setTitleDraft(event.currentTarget.value)}
-            onClick={(event) => event.stopPropagation()}
-            onMouseDown={(event) => event.stopPropagation()}
-            onBlur={(event) => commitRename(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              event.stopPropagation();
-              if (event.key === "Enter") {
-                event.preventDefault();
-                commitRename(event.currentTarget.value);
-              }
-              if (event.key === "Escape") {
-                event.preventDefault();
-                cancelRename();
-              }
-            }}
-          />
-        ) : (
-          <span className="folder-note-title">{title}</span>
-        )}
+        <span className="folder-note-title">{title}</span>
         <span className="folder-note-subtitle">
           {projectName ? `${projectName} · ${preview}` : preview}
         </span>
@@ -579,13 +524,9 @@ function AgentSessionListRow({
             {checked ? <IconCheckmark2Medium size={10} /> : null}
           </span>
         </label>
-        {editingTitle ? (
-          <div className="folder-note-main">{rowMain}</div>
-        ) : (
-          <button type="button" className="folder-note-main" onClick={onSelect}>
-            {rowMain}
-          </button>
-        )}
+        <button type="button" className="folder-note-main" onClick={onSelect}>
+          {rowMain}
+        </button>
         {status ? (
           <span
             className="agent-session-list-status"
@@ -635,9 +576,7 @@ function AgentSessionListRow({
               role="menuitem"
               onClick={() => {
                 setMenu(null);
-                setTitleDraft(title);
-                titleEditFinalizedRef.current = false;
-                setEditingTitle(true);
+                setRenameDialogOpen(true);
               }}
             >
               <IconPencil size={14} />
@@ -684,6 +623,12 @@ function AgentSessionListRow({
           </div>
         ) : null}
       </div>
+      <RenameSessionDialog
+        open={renameDialogOpen}
+        currentName={title}
+        onClose={() => setRenameDialogOpen(false)}
+        onRename={onRename}
+      />
       <ConfirmDialog
         open={confirmDelete}
         onClose={() => {

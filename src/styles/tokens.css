@@ -46,6 +46,54 @@
   initial-value: #976851;
 }
 
+/* The --fs-* type tokens are registered as lengths so their computed value
+ * resolves to concrete px instead of an unevaluated calc() token stream —
+ * JS readers (the styleguide's resolveToken) get "13px", not
+ * "calc(13px * 1)", and a bad --font-scale falls back to the base size
+ * rather than unsetting the token. @property initial-value must be a
+ * literal, so each mirrors its base size in :root below — keep them in
+ * sync (same drill as --sidebar-w-current / --sidebar-w). */
+@property --fs-2xs {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 10px;
+}
+@property --fs-xs {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 11px;
+}
+@property --fs-sm {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 12px;
+}
+@property --fs-md {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 13px;
+}
+@property --fs-lg {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 14px;
+}
+@property --fs-xl {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 16px;
+}
+@property --fs-2xl {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 20px;
+}
+@property --fs-display {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 30px;
+}
+
 :root {
   /* Type ------------------------------------------------------------- */
   --font-sans:
@@ -54,14 +102,23 @@
   --font-serif: "Martina Plantijn", "Iowan Old Style", Georgia, serif;
   --font-mono: "Berkeley Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 
-  --fs-2xs: 10px;
-  --fs-xs: 11px;
-  --fs-sm: 12px;
-  --fs-md: 13px;
-  --fs-lg: 14px;
-  --fs-xl: 16px;
-  --fs-2xl: 20px;
-  --fs-display: 30px;
+  /* Global text-size multiplier. Every --fs-* token below is `base *
+   * --font-scale`, so the Appearance "Text size" preference recolors the whole
+   * app's type by overriding this one value on <html> (see src/lib/font-scale.ts
+   * and the pre-paint bootstrap in index.html). Default 1 = the base scale.
+   * Line-heights are unitless and spacing/control heights stay fixed, so text
+   * grows within the existing chrome rather than reflowing the shell. Separate
+   * HUD webviews don't read the preference, so they stay at 1 on purpose. */
+  --font-scale: 1;
+
+  --fs-2xs: calc(10px * var(--font-scale));
+  --fs-xs: calc(11px * var(--font-scale));
+  --fs-sm: calc(12px * var(--font-scale));
+  --fs-md: calc(13px * var(--font-scale));
+  --fs-lg: calc(14px * var(--font-scale));
+  --fs-xl: calc(16px * var(--font-scale));
+  --fs-2xl: calc(20px * var(--font-scale));
+  --fs-display: calc(30px * var(--font-scale));
 
   /* Diatype ships Regular (400) and Medium (600) only, and font-synthesis is
    * off — intermediate weights silently resolve to Regular. "Medium" anywhere
@@ -198,8 +255,11 @@
   --muted-foreground: oklch(55.8% 0.0015 84.59);
   --accent: color-mix(in oklch, oklch(97.03% 0 none), var(--brand-wash) 3%);
   --accent-foreground: oklch(20.44% 0 none);
-  --destructive: oklch(57% 0.22 27);
-  --destructive-soft: oklch(95% 0.025 27);
+  /* An earthy brick red: chroma pulled down from 0.22 to 0.15 (into the same
+   * register as --brand ~0.13 and --success 0.12) and hue nudged 27 to 30 so it
+   * reads as danger without the neon pop that fought the low-chroma palette. */
+  --destructive: oklch(57% 0.15 30);
+  --destructive-soft: oklch(95% 0.025 30);
   --success: oklch(48% 0.12 150);
   --border: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand-wash) 5%);
   --input: color-mix(in oklch, oklch(86.91% 0.0015 84.59), var(--brand-wash) 5%);
@@ -360,8 +420,10 @@
   --muted-foreground: oklch(0.709 0.0015 84.59);
   --accent: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand-wash) 7%);
   --accent-foreground: oklch(0.985 0.0015 84.59);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-soft: oklch(0.3 0.08 22 / 40%);
+  /* Earthy brick red, matching the light theme's dechromatized destructive:
+   * chroma 0.191 to 0.14, hue aligned to 30. */
+  --destructive: oklch(0.704 0.14 30);
+  --destructive-soft: oklch(0.3 0.08 30 / 40%);
   --success: oklch(0.72 0.14 150);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);

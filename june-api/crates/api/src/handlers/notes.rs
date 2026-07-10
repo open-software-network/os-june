@@ -1,7 +1,7 @@
 use crate::{
     audio::validate_audio,
     auth::{authenticated_user, provider_credentials},
-    envelope::ApiResponse,
+    envelope::{self, ApiResponse},
     error::ApiError,
     multipart::MultipartFields,
     state::ApiState,
@@ -9,8 +9,10 @@ use crate::{
 };
 use axum::{
     Json,
+    body::{Body, Bytes},
     extract::{Multipart, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
+    response::{IntoResponse, Response},
 };
 use june_domain::{ModelId, ModelKind};
 use june_services::{
@@ -18,6 +20,9 @@ use june_services::{
     PricingError, PricingTable,
 };
 use serde::{Deserialize, Serialize};
+use std::{convert::Infallible, time::Duration};
+use tokio::{sync::mpsc, time::MissedTickBehavior};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 pub(crate) async fn transcribe(
     State(state): State<ApiState>,
@@ -81,30 +86,138 @@ pub(crate) async fn generate(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Json(request): Json<GenerateRequest>,
-) -> Result<Json<ApiResponse<GenerateResponse>>, ApiError> {
+) -> Result<Response, ApiError> {
     let user_id = authenticated_user(&state, &headers).await?;
     let provider_credentials = provider_credentials(&headers)?;
     request.validate()?;
     let model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
     require_priced_model(&state, &model_id, ModelKind::Text)?;
-    let output = state
-        .note_generate()
-        .generate(NoteGenerateParams {
-            user_id,
-            note_id: required(request.note_id, "note_id_required")?,
-            prompt_version: required(request.prompt_version, "prompt_version_required")?,
-            title: request.title,
-            transcript: request.transcript,
-            transcript_source_labels: request.transcript_source_labels,
-            manual_notes: request.manual_notes,
-            language: request.language,
-            existing_generated_note: request.existing_generated_note,
-            model_id: ModelId(model_id),
-            provider_credentials,
-        })
-        .await?;
-    Ok(Json(ApiResponse::ok(GenerateResponse::from(output))))
+
+    let stream = request.stream;
+    let params = NoteGenerateParams {
+        user_id,
+        note_id: required(request.note_id, "note_id_required")?,
+        prompt_version: required(request.prompt_version, "prompt_version_required")?,
+        title: request.title,
+        transcript: request.transcript,
+        transcript_source_labels: request.transcript_source_labels,
+        manual_notes: request.manual_notes,
+        language: request.language,
+        existing_generated_note: request.existing_generated_note,
+        model_id: ModelId(model_id),
+        provider_credentials,
+    };
+
+    if stream {
+        return Ok(stream_generate(state, params));
+    }
+
+    let output = state.note_generate().generate(params).await?;
+    Ok(Json(ApiResponse::ok(GenerateResponse::from(output))).into_response())
+}
+
+fn stream_generate(state: ApiState, params: NoteGenerateParams) -> Response {
+    // Unbounded + non-blocking sends: a client that stops reading must not
+    // suspend this loop mid-send, or the generation timeout below would stop
+    // being polled and holds/upstream work could outlive request_timeout_secs.
+    // Keep-alives are tiny and the terminal event is a single frame, so the
+    // queue cannot grow meaningfully.
+    let (tx, rx) = mpsc::unbounded_channel::<Result<Bytes, Infallible>>();
+    // Full-route backstop only. `generate()` spans authorize + upstream +
+    // charge settlement; a tighter bound would cancel `charge` after June
+    // already paid the upstream. The hold-TTL guarantee comes from the layers
+    // below: the upstream leg is cut at the metered-inference client timeout
+    // (route minus the authorize + settlement budgets), which leaves the
+    // settlement budget inside the hold (validate_long_inference_hold_ttl).
+    let generation_backstop = Duration::from_secs(state.limits().request_timeout_secs);
+    tokio::spawn(async move {
+        let generation =
+            tokio::time::timeout(generation_backstop, state.note_generate().generate(params));
+        tokio::pin!(generation);
+        let mut keep_alive = tokio::time::interval(Duration::from_secs(10));
+        keep_alive.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        keep_alive.tick().await;
+
+        loop {
+            // Biased so a disconnect that is already visible wins over a
+            // generation that became ready in the same wake: polling the
+            // generation first could drive it across its charge call after
+            // the client is known gone. (Once the charge request is on the
+            // wire nothing here can recall it — bias narrows the race to
+            // that unavoidable in-flight window.)
+            tokio::select! {
+                biased;
+                // Cancel the moment the client is gone — not at the next
+                // keep-alive tick. Generation is all-or-nothing delivery:
+                // dropping the future cancels the upstream call and no charge
+                // settles, the same semantics a buffered request has when the
+                // connection drops (and deliberately different from agent
+                // chat's drain-and-settle, where content was already
+                // streamed). Waiting for a tick left a window where a
+                // generation completing after the disconnect billed for a
+                // result nobody received.
+                () = tx.closed() => {
+                    break;
+                }
+                result = &mut generation => {
+                    let event = match result {
+                        Ok(Ok(output)) => result_event(output).unwrap_or_else(|_| {
+                            error_event(ApiError::Internal.response_parts(), None)
+                        }),
+                        Ok(Err(error)) => {
+                            let error = ApiError::from(error);
+                            let retry_after = error.retry_after_secs();
+                            error_event(error.response_parts(), retry_after)
+                        }
+                        Err(_elapsed) => error_event(envelope::timeout_response_parts(), None),
+                    };
+                    let _ = tx.send(Ok(Bytes::from(event)));
+                    break;
+                }
+                _ = keep_alive.tick() => {
+                    // Unbounded sends never fail on backpressure; a failure
+                    // means the client vanished between closed() polls.
+                    // Comment line only — no blank line (same rule as the
+                    // chat pump: a blank line dispatches buffered SSE fields).
+                    if tx.send(Ok(Bytes::from_static(b": keep-alive\n"))).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    (
+        StatusCode::OK,
+        [(CONTENT_TYPE, "text/event-stream")],
+        Body::from_stream(UnboundedReceiverStream::new(rx)),
+    )
+        .into_response()
+}
+
+fn result_event(output: NoteGenerateOutput) -> Result<String, serde_json::Error> {
+    let body = ApiResponse::ok(GenerateResponse::from(output));
+    Ok(format!(
+        "event: result\ndata: {}\n\n",
+        serde_json::to_string(&body)?
+    ))
+}
+
+fn error_event(
+    (status, body): (StatusCode, serde_json::Value),
+    retry_after_secs: Option<u64>,
+) -> String {
+    // retry_after_secs carries the buffered path's Retry-After header — an
+    // SSE body cannot set response headers, so the hint rides the payload.
+    let mut data = serde_json::json!({
+        "status": status.as_u16(),
+        "body": body,
+    });
+    if let (Some(secs), Some(object)) = (retry_after_secs, data.as_object_mut()) {
+        object.insert("retry_after_secs".to_string(), serde_json::json!(secs));
+    }
+    format!("event: error\ndata: {data}\n\n")
 }
 
 impl GenerateRequest {
@@ -157,6 +270,8 @@ pub struct GenerateRequest {
     pub language: Option<String>,
     pub existing_generated_note: Option<String>,
     pub model: Option<String>,
+    #[serde(default)]
+    pub stream: bool,
 }
 
 #[derive(Serialize)]
