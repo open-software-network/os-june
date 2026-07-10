@@ -1,13 +1,16 @@
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
-import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 
-import { modelSupportsTools, type ModelPrivacyBadge } from "../../../lib/model-privacy";
+import {
+  modelIsPrivate,
+  modelSupportsTools,
+  type ModelPrivacyBadge,
+} from "../../../lib/model-privacy";
 import { suggestedModelsForMode } from "../../../lib/suggested-models";
 import type { VeniceModelDto } from "../../../lib/tauri";
 import { useScrollFade } from "../../../lib/use-scroll-fade";
@@ -15,6 +18,7 @@ import { rectFromElement, type HoverBridgeRect } from "../../ui/hoverBridge";
 import { useCatalogHoverBridge, useModelDetailHoverBridge } from "../../ui/useModelHoverBridge";
 import { HoverTip } from "../../ui/HoverTip";
 import { ModelPrivacyChip, ModelRowPrivacyBadge } from "../../ui/ModelPrivacyChip";
+import { Switch } from "../../ui/Switch";
 import { ModelPickerCardContent } from "../../settings/ModelPickerPopover";
 
 /** The composer's model picker: the trigger pill and its two-layer popover
@@ -101,6 +105,10 @@ export function ComposerModelPopover({
 }) {
   const flyoutRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  // "Private" catalog filter. Local to the popover on purpose: it resets when
+  // the picker closes, so a stale filter can never silently hide models on the
+  // next open.
+  const [privateOnly, setPrivateOnly] = useState(false);
   // Styled hover card for catalog rows (replaces the native title tooltip):
   // fixed-positioned next to the hovered row, on the panel's outer side.
   const [catalogHover, setCatalogHover] = useState<{
@@ -255,16 +263,17 @@ export function ComposerModelPopover({
   }, [detailPos]);
 
   // Re-measure the fades whenever the list's content or cap changes: panel
-  // open (after the max-height effect above), and every search keystroke.
+  // open (after the max-height effect above), every search keystroke, and the
+  // privacy filter.
   useLayoutEffect(() => {
     fade.update();
-  }, [flyout, search, options, fade.update]);
+  }, [flyout, search, privateOnly, options, fade.update]);
 
   // Row positions shift under the pointer on filter/reflow, so a lingering
   // card would point at the wrong row.
   useEffect(() => {
     setCatalogHover(null);
-  }, [flyout, search]);
+  }, [flyout, search, privateOnly]);
 
   const suggested = suggestedModelsForMode("generation", options);
   const query = search.trim().toLowerCase();
@@ -272,9 +281,10 @@ export function ComposerModelPopover({
   // be picked — leave them out of the quick-switch list entirely instead of
   // showing dead rows. (Settings still lists them, greyed, for context.)
   const selectable = options.filter((option) => !option.provider || modelSupportsTools(option));
+  const privacyFiltered = privateOnly ? selectable.filter(modelIsPrivate) : selectable;
   const filteredOptions = query
-    ? selectable.filter((option) => modelMatchesQuery(option, query))
-    : selectable;
+    ? privacyFiltered.filter((option) => modelMatchesQuery(option, query))
+    : privacyFiltered;
   const detail =
     flyout?.kind === "model" ? suggested.find((item) => item.model.id === flyout.id) : undefined;
 
@@ -376,7 +386,7 @@ export function ComposerModelPopover({
         setBridging(false);
       }}
     >
-      <p className="agent-composer-model-title">Model</p>
+      <p className="agent-composer-model-title">Suggested</p>
       <div className="agent-composer-model-menu" role="listbox" aria-label="Suggested text models">
         {suggested.length ? (
           suggested.map(({ model: option }) => (
@@ -496,7 +506,6 @@ export function ComposerModelPopover({
         >
           <div className="agent-composer-model-surface">
             <label className="agent-composer-model-search">
-              <IconMagnifyingGlass size={14} aria-hidden />
               <input
                 ref={searchRef}
                 value={search}
@@ -505,6 +514,14 @@ export function ComposerModelPopover({
                 aria-label="Search models"
               />
             </label>
+            <div className="agent-composer-model-filter">
+              <span>Private</span>
+              <Switch
+                checked={privateOnly}
+                onCheckedChange={setPrivateOnly}
+                aria-label="Only show private models"
+              />
+            </div>
             <div className="agent-composer-model-list-wrap scroll-fade" {...fade.props}>
               <div
                 ref={listRef}
@@ -540,7 +557,11 @@ export function ComposerModelPopover({
                     />
                   ))
                 ) : (
-                  <p className="agent-composer-model-empty">No models match your search.</p>
+                  <p className="agent-composer-model-empty">
+                    {privateOnly && !query
+                      ? "No private models available."
+                      : "No models match your search."}
+                  </p>
                 )}
               </div>
             </div>

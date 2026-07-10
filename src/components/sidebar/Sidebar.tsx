@@ -75,6 +75,7 @@ import {
 import { errorCode, messageFromError } from "../../lib/errors";
 import { NOTE_DND_MIME } from "../../lib/dnd";
 import { useDismiss } from "../../lib/use-dismiss";
+import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { useRecordingPresenceBounds } from "../../lib/recording-presence-bounds";
@@ -1653,6 +1654,14 @@ function CommandPrompt({
 }) {
   const resultsRef = useRef<HTMLDivElement>(null);
   const fade = useScrollFade(resultsRef);
+  // Native-overlay scrollbar feel, same as the main content areas: the custom
+  // webkit thumb fades in on scroll/hover and back out when idle (see
+  // scroll-thumb-fade.ts and the --thumb-alpha rules in app.css).
+  useEffect(() => {
+    const el = resultsRef.current;
+    if (!el) return;
+    return attachScrollThumbFade(el);
+  }, []);
   // Re-measure the edge fades when the query or result groups change.
   useEffect(() => {
     fade.update();
@@ -1722,7 +1731,6 @@ function CommandPrompt({
     >
       <div className="command-prompt" role="dialog" aria-modal="true" aria-label="Search">
         <label className="command-prompt-search">
-          <IconMagnifyingGlass size={16} />
           <input
             ref={inputRef}
             type="text"

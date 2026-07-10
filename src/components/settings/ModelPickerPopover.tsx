@@ -1,5 +1,4 @@
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
-import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconCheckmark2Small } from "central-icons-filled/IconCheckmark2Small";
 import {
   Fragment,
@@ -12,13 +11,14 @@ import {
 } from "react";
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
-import { modelAvailableForMode, modelPrivacyBadge } from "../../lib/model-privacy";
+import { modelAvailableForMode, modelIsPrivate, modelPrivacyBadge } from "../../lib/model-privacy";
 import { suggestedModelsForMode } from "../../lib/suggested-models";
 import type { ProviderModelMode, VeniceModelDto } from "../../lib/tauri";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { rectFromElement, type HoverBridgeRect } from "../ui/hoverBridge";
 import { useCatalogHoverBridge, useModelDetailHoverBridge } from "../ui/useModelHoverBridge";
 import { ModelPrivacyChip, ModelRowPrivacyBadge } from "../ui/ModelPrivacyChip";
+import { Switch } from "../ui/Switch";
 import { modelSpecEntries } from "./ModelPickerDialog";
 import { ProviderLogo } from "./ProviderLogo";
 
@@ -41,7 +41,7 @@ export function ModelPickerPopover({
   popoverRef,
   searchRef,
   className,
-  title = "Model",
+  title = "Suggested",
   ariaLabel = `Choose ${modelModeLabel(mode)} model`,
   suggestedListLabel = `Suggested ${modelModeLabel(mode)} models`,
   allModelsLabel = `All ${modelModeLabel(mode)} models`,
@@ -68,6 +68,10 @@ export function ModelPickerPopover({
   const flyoutRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const hovercardRef = useRef<HTMLDivElement | null>(null);
+  // "Private" catalog filter. Local to the popover on purpose: it resets when
+  // the picker closes, so a stale filter can never silently hide models on the
+  // next open.
+  const [privateOnly, setPrivateOnly] = useState(false);
   // The suggested-row detail card is portaled to document.body (so a scroll
   // container or panel can't clip or cover it) and positioned in viewport
   // coordinates beside the popover — the same mechanism as the catalog
@@ -217,11 +221,11 @@ export function ModelPickerPopover({
 
   useLayoutEffect(() => {
     fade.update();
-  }, [flyout, options, search, fade.update]);
+  }, [flyout, options, search, privateOnly, fade.update]);
 
   useEffect(() => {
     setCatalogHover(null);
-  }, [flyout, search]);
+  }, [flyout, search, privateOnly]);
 
   // Keep the row's fixed-positioned hover card inside the viewport vertically:
   // the card is anchored to the hovered row's top, but the settings picker
@@ -248,9 +252,10 @@ export function ModelPickerPopover({
     [mode, options],
   );
   const suggested = useMemo(() => suggestedModelsForMode(mode, selectable), [mode, selectable]);
+  const privacyFiltered = privateOnly ? selectable.filter(modelIsPrivate) : selectable;
   const filteredOptions = query
-    ? selectable.filter((option) => modelMatchesQuery(option, query))
-    : selectable;
+    ? privacyFiltered.filter((option) => modelMatchesQuery(option, query))
+    : privacyFiltered;
   const detail =
     flyout?.kind === "model" ? suggested.find((item) => item.model.id === flyout.id) : undefined;
 
@@ -339,7 +344,6 @@ export function ModelPickerPopover({
     return (
       <>
         <label className="agent-composer-model-search">
-          <IconMagnifyingGlass size={14} aria-hidden />
           <input
             ref={searchRef}
             value={search}
@@ -348,6 +352,14 @@ export function ModelPickerPopover({
             aria-label="Search models"
           />
         </label>
+        <div className="agent-composer-model-filter">
+          <span>Private</span>
+          <Switch
+            checked={privateOnly}
+            onCheckedChange={setPrivateOnly}
+            aria-label="Only show private models"
+          />
+        </div>
         <div className="agent-composer-model-list-wrap scroll-fade" {...fade.props}>
           <div
             ref={listRef}
@@ -383,7 +395,11 @@ export function ModelPickerPopover({
                 />
               ))
             ) : (
-              <p className="agent-composer-model-empty">No models match your search.</p>
+              <p className="agent-composer-model-empty">
+                {privateOnly && !query
+                  ? "No private models available."
+                  : "No models match your search."}
+              </p>
             )}
           </div>
         </div>

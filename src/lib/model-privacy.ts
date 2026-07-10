@@ -118,6 +118,14 @@ export function modelPrivacyBadge(
   return undefined;
 }
 
+/** What the catalog's "Private" filter keeps: zero-retention or stronger.
+ * E2EE models are also private, so they pass; anonymized models (prompts may
+ * be retained) do not. */
+export function modelIsPrivate(model: ModelPrivacySignals) {
+  const flags = modelPrivacyFlags(model);
+  return flags.e2ee || flags.private;
+}
+
 export function modelPrivacyFlags(model: ModelPrivacySignals): ModelPrivacyFlags {
   const privacy = (model.privacy ?? "").toLowerCase();
   const traits = model.traits.map((trait) => trait.toLowerCase());

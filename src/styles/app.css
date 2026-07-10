@@ -5951,40 +5951,23 @@ input:focus-visible,
 }
 
 .agent-composer-model-all-panel .agent-composer-model-surface {
-  /* Tight: rows fade out right under the search field, no blank band. */
-  gap: var(--sp-2);
+  /* Tight: the search and filter rows sit flush; the filter's full-bleed
+   * hairline (below) does the separating, not whitespace. */
+  gap: 0;
   width: min(280px, calc(100vw - 48px));
   max-height: inherit;
   padding: var(--sp-1);
 }
 
 .agent-composer-model-search {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
+  display: flex;
   align-items: center;
-  gap: var(--sp-2);
   flex: 0 0 auto;
-  height: var(--control-lg);
-  /* Inset the field from the popover edges so the focus ring has breathing
-   * room (sp-2 margin clears the 4px ring off the edge), and keep the
-   * icon+placeholder gutter aligned with the row names below (row content
-   * starts at the row's own sp-2 padding). */
-  margin: var(--sp-1) var(--sp-2) 0;
-  padding: 0 calc(var(--sp-2) - 2px);
-  border-radius: var(--r-md);
-  background: var(--card);
+  height: var(--control-md);
+  /* Bare inline input, matching the command prompt: no icon, no boxed
+   * container — sp-2 padding lines the caret up with the rows below. */
+  padding: 0 var(--sp-2);
   color: var(--muted-foreground);
-  box-shadow: inset 0 0 0 1px var(--popover-border);
-  transition:
-    box-shadow var(--t-fast) var(--ease-out),
-    background-color var(--t-fast) var(--ease-out);
-}
-
-.agent-composer-model-search:focus-within {
-  background: var(--popover);
-  box-shadow:
-    0 0 0 1px var(--ring),
-    0 0 0 4px var(--focus-ring);
 }
 
 .agent-composer-model-search input {
@@ -6001,6 +5984,27 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
+/* The "Private" catalog filter: a quiet label + switch row between the search
+ * input and the list, on the rows' own padding so everything lines up. The
+ * barely-there hairline under it splits the search + filter block from the
+ * model list (Cursor-style). */
+.agent-composer-model-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  flex: 0 0 auto;
+  min-height: var(--control-md);
+  /* Bleed past the surface padding so the hairline runs the panel's full
+   * width; the widened padding keeps the label on the shared content gutter. */
+  margin: 0 calc(-1 * var(--sp-1));
+  padding: 0 calc(var(--sp-1) + var(--sp-2));
+  border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
+  color: var(--popover-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.3;
+}
+
 /* Catalog list scroller. Fades come from the shared `.scroll-fade` primitive
  * (contained overlays, WKWebView-safe for this popover); only the fade size is
  * tuned here so rows melt into the popover surface at the boundary. */
@@ -6012,6 +6016,12 @@ input:focus-visible,
   min-height: 0;
   overflow: hidden;
   contain: paint;
+}
+
+/* In the all-models panel the surface stacks with no gap (the filter hairline
+ * separates instead), so the list carries its own breathing room. */
+.agent-composer-model-all-panel .agent-composer-model-list-wrap {
+  margin-top: var(--sp-1);
 }
 
 .agent-composer-model-list {
@@ -7553,14 +7563,14 @@ input:focus-visible,
 
 .command-prompt-search {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-2);
   height: 44px;
-  padding: 0 14px;
-  /* Barely-there hairline: half the strength of --border-subtle, just enough
-   * to seat the search row without drawing a visible divider. */
-  border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
+  /* Bare input, Linear-style: no icon, no divider — the results' top
+   * scroll-fade melts rows out underneath this row instead. 17px lines the
+   * caret up with the group titles below (8px results + 9px title padding). */
+  padding: 0 17px;
   color: var(--muted-foreground);
 }
 
@@ -7615,7 +7625,13 @@ input:focus-visible,
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 8px;
+  /* Top edge tucks the first group up under the search row (the group title's
+   * own 5px top padding provides the rest of the gap). */
+  padding: 2px 8px 8px;
+  /* Opt out of the global standard scrollbar props so the app's quiet 4px
+   * hover-reveal webkit scrollbar engages here (same move as .agent-scroll). */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 .command-prompt-group + .command-prompt-group {
@@ -7625,7 +7641,7 @@ input:focus-visible,
 .command-prompt-group-title {
   padding: 5px 9px 7px;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: var(--fw-medium);
 }
 
@@ -16626,6 +16642,7 @@ input:focus-visible,
  * inset 2px from the card edge and the content alike. */
 .agent-scroll::-webkit-scrollbar,
 .note-detail-scroll::-webkit-scrollbar,
+.command-prompt-results::-webkit-scrollbar,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar {
   width: var(--scrollbar-w);
   background: transparent;
@@ -16633,6 +16650,7 @@ input:focus-visible,
 
 .agent-scroll::-webkit-scrollbar-thumb,
 .note-detail-scroll::-webkit-scrollbar-thumb,
+.command-prompt-results::-webkit-scrollbar-thumb,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   background: transparent;
@@ -16641,6 +16659,7 @@ input:focus-visible,
 
 .agent-scroll[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
 .note-detail-scroll[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
+.command-prompt-results[data-scrollbar-active="true"]::-webkit-scrollbar-thumb,
 .main-panel-body[data-detail-scroller="true"][data-scrollbar-active="true"]::-webkit-scrollbar-thumb {
   background: color-mix(
     in oklch,
@@ -16652,6 +16671,7 @@ input:focus-visible,
 
 .agent-scroll::-webkit-scrollbar-thumb:hover,
 .note-detail-scroll::-webkit-scrollbar-thumb:hover,
+.command-prompt-results::-webkit-scrollbar-thumb:hover,
 .main-panel-body[data-detail-scroller="true"]::-webkit-scrollbar-thumb:hover {
   background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
   background-clip: padding-box;
