@@ -40,9 +40,15 @@ impl EventWriter {
     }
 }
 
+struct MicTest {
+    recorder: Recorder,
+    deadline: std::time::Instant,
+}
+
 struct HelperApp {
     writer: EventWriter,
     recorder: Option<Recorder>,
+    mic_test: Option<MicTest>,
     selected_microphone_id: Option<String>,
     pinned_target: Option<PinnedTarget>,
     hotkeys: Option<HotkeyManager>,
@@ -116,6 +122,7 @@ impl HelperApp {
         Self {
             writer,
             recorder: None,
+            mic_test: None,
             selected_microphone_id: None,
             pinned_target: None,
             hotkeys,
@@ -182,7 +189,11 @@ impl HelperApp {
                 }
             }
             "paste_text" => self.paste_text(command.text.unwrap_or_default()),
-            "discard_recording" | "discard_mic_test" => self.discard_recording(),
+            "start_mic_test" => {
+                self.start_mic_test(command.duration_seconds.unwrap_or(5).clamp(1, 10))
+            }
+            "discard_mic_test" => self.discard_mic_test(),
+            "discard_recording" => self.discard_recording(),
             "shutdown" => {
                 self.writer.emit(simple_event("shutdown_ack"));
                 return false;
@@ -232,7 +243,7 @@ impl HelperApp {
     }
 
     fn start_listening(&mut self) {
-        if self.recorder.is_some() {
+        if self.recorder.is_some() || self.mic_test.is_some() {
             return;
         }
         match Recorder::start(self.selected_microphone_id.as_deref()) {
@@ -335,6 +346,89 @@ impl HelperApp {
         }
     }
 
+    fn start_mic_test(&mut self, duration_seconds: u64) {
+        if self.recorder.is_some() || self.mic_test.is_some() {
+            self.writer.emit(event(
+                "mic_test_error",
+                serde_json::json!({
+                    "code": "microphone_busy",
+                    "message": "Stop dictation before testing the microphone.",
+                }),
+            ));
+            return;
+        }
+        match Recorder::start(self.selected_microphone_id.as_deref()) {
+            Ok(recorder) => {
+                let (latest_level, active) = recorder.latest_level_handle();
+                self.mic_test = Some(MicTest {
+                    recorder,
+                    deadline: std::time::Instant::now() + Duration::from_secs(duration_seconds),
+                });
+                self.writer.emit(simple_event("mic_test_started"));
+
+                let level_writer = self.writer.clone();
+                thread::spawn(move || {
+                    while active.load(std::sync::atomic::Ordering::SeqCst) {
+                        thread::sleep(Duration::from_millis(80));
+                        let level = latest_level.lock().map(|level| *level).unwrap_or_default();
+                        level_writer.emit(event(
+                            "mic_test_level",
+                            serde_json::json!({ "level": level }),
+                        ));
+                    }
+                });
+            }
+            Err(error) => self.writer.emit(event(
+                "mic_test_error",
+                serde_json::json!({
+                    "code": "mic_test_start_failed",
+                    "message": error.to_string(),
+                }),
+            )),
+        }
+    }
+
+    fn tick(&mut self) {
+        if self
+            .mic_test
+            .as_ref()
+            .is_some_and(|test| std::time::Instant::now() >= test.deadline)
+        {
+            self.finish_mic_test();
+        }
+    }
+
+    fn finish_mic_test(&mut self) {
+        let Some(test) = self.mic_test.take() else {
+            return;
+        };
+        match test.recorder.stop() {
+            Ok(summary) => self.writer.emit(event(
+                "mic_test_ready",
+                serde_json::json!({
+                    "path": summary.path.to_string_lossy(),
+                    "durationMs": summary.duration.as_millis() as u64,
+                    "observedAudioLevel": summary.observed_level,
+                }),
+            )),
+            Err(error) => self.writer.emit(event(
+                "mic_test_error",
+                serde_json::json!({
+                    "code": "mic_test_stop_failed",
+                    "message": error.to_string(),
+                }),
+            )),
+        }
+    }
+
+    fn discard_mic_test(&mut self) {
+        if let Some(test) = self.mic_test.take() {
+            if let Ok(summary) = test.recorder.stop() {
+                let _ = std::fs::remove_file(summary.path);
+            }
+        }
+    }
+
     fn discard_recording(&mut self) {
         if let Some(recorder) = self.recorder.take() {
             if let Ok(summary) = recorder.stop() {
@@ -365,6 +459,11 @@ impl HelperApp {
 impl Drop for HelperApp {
     fn drop(&mut self) {
         self.finish_clipboard_restore();
+        if let Some(test) = self.mic_test.take() {
+            if let Ok(summary) = test.recorder.stop() {
+                let _ = std::fs::remove_file(summary.path);
+            }
+        }
         if let Some(recorder) = self.recorder.take() {
             if let Ok(summary) = recorder.stop() {
                 let _ = std::fs::remove_file(summary.path);
@@ -388,16 +487,32 @@ fn main() {
     let writer = EventWriter::new();
     writer.emit(simple_event("ready"));
     let mut app = HelperApp::new(writer.clone());
-    let stdin = io::stdin();
-    for line in stdin.lock().lines().map_while(Result::ok) {
-        let parsed = serde_json::from_str::<CommandEnvelope>(&line);
-        match parsed {
-            Ok(command) => {
-                if !app.handle_command(command) {
-                    break;
+    let (line_tx, line_rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let stdin = io::stdin();
+        for line in stdin.lock().lines().map_while(Result::ok) {
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    loop {
+        match line_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(line) => {
+                let parsed = serde_json::from_str::<CommandEnvelope>(&line);
+                match parsed {
+                    Ok(command) => {
+                        if !app.handle_command(command) {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        writer.emit(error_event("command_parse_failed", error.to_string()))
+                    }
                 }
             }
-            Err(error) => writer.emit(error_event("command_parse_failed", error.to_string())),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => app.tick(),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 }

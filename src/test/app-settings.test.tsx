@@ -2040,10 +2040,10 @@ describe("AppSettings", () => {
         }),
       ).not.toBeInTheDocument();
       expect(
-        screen.queryByRole("button", {
+        screen.getByRole("button", {
           name: "Start test",
         }),
-      ).not.toBeInTheDocument();
+      ).toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
       expect(screen.getByText("Push to talk")).toBeInTheDocument();
