@@ -7615,7 +7615,8 @@ input:focus-visible,
 
 /* Clear button: a quiet keycap-like gray square replacing the native
  * type="search" clear affordance. */
-.command-prompt-clear {
+.command-prompt-clear,
+.search-clear {
   display: inline-grid;
   place-items: center;
   width: 22px;
@@ -7633,7 +7634,8 @@ input:focus-visible,
     color var(--t-fast) var(--ease-out);
 }
 
-.command-prompt-clear:hover {
+.command-prompt-clear:hover,
+.search-clear:hover {
   background: var(--muted);
   color: var(--foreground);
 }
@@ -19663,8 +19665,9 @@ input:focus-visible,
 }
 
 .add-notes-search {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
+  /* Flex (not the old fixed grid) so the clear button only takes a track
+   * while it's rendered. */
+  display: flex;
   align-items: center;
   gap: var(--sp-2);
   height: var(--control-lg);
@@ -19681,8 +19684,14 @@ input:focus-visible,
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
+.add-notes-search > svg,
+.add-notes-search .search-clear {
+  flex: none;
+}
+
 .add-notes-search input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: 0;
   outline: 0;
   background: transparent;
@@ -20543,8 +20552,9 @@ input:focus-visible,
 }
 
 .move-to-folder-search {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
+  /* Flex (not the old fixed grid) so the clear button only takes a track
+   * while it's rendered. */
+  display: flex;
   align-items: center;
   gap: var(--sp-2);
   height: var(--control-md);
@@ -20553,8 +20563,14 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
+.move-to-folder-search > svg,
+.move-to-folder-search .search-clear {
+  flex: none;
+}
+
 .move-to-folder-search input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: 0;
   outline: 0;
   background: transparent;

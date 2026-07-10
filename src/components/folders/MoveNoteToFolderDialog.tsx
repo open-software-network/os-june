@@ -1,8 +1,9 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
+import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconFolder1 } from "central-icons/IconFolder1";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
 
@@ -33,6 +34,7 @@ export function MoveNoteToFolderDialog({
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -158,6 +160,7 @@ export function MoveNoteToFolderDialog({
         <label className="add-notes-search">
           <IconMagnifyingGlass size={14} />
           <input
+            ref={searchRef}
             type="search"
             name="move-note-search"
             placeholder={onCreateFolder ? "Search or create project" : "Search projects"}
@@ -171,26 +174,21 @@ export function MoveNoteToFolderDialog({
             }}
             autoComplete="off"
           />
+          {query ? (
+            <button
+              type="button"
+              className="search-clear"
+              aria-label="Clear search"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                setQuery("");
+                searchRef.current?.focus();
+              }}
+            >
+              <IconCrossSmall size={13} />
+            </button>
+          ) : null}
         </label>
-        {showCreate ? (
-          <button
-            type="button"
-            className="add-notes-row add-notes-create"
-            disabled={submitting}
-            onClick={() => void handleCreateAndAssign()}
-          >
-            <span className="add-notes-icon" aria-hidden>
-              <IconPlusMedium size={14} />
-            </span>
-            <span className="add-notes-body">
-              <span className="add-notes-title">Create “{trimmedQuery}”</span>
-            </span>
-            <span className="add-notes-check" aria-hidden />
-          </button>
-        ) : null}
-        {showCreate && candidates.length > 0 ? (
-          <div className="add-notes-divider" aria-hidden />
-        ) : null}
         {candidates.length > 0 ? (
           <ul className="add-notes-list" role="listbox">
             {candidates.map((folder) => {
@@ -235,6 +233,27 @@ export function MoveNoteToFolderDialog({
                 : "No other projects to move to."}
           </p>
         )}
+        {/* Create sits under the results: matches, if any, come first — the
+            common case is filing into an existing project. */}
+        {showCreate && candidates.length > 0 ? (
+          <div className="add-notes-divider" aria-hidden />
+        ) : null}
+        {showCreate ? (
+          <button
+            type="button"
+            className="add-notes-row add-notes-create"
+            disabled={submitting}
+            onClick={() => void handleCreateAndAssign()}
+          >
+            <span className="add-notes-icon" aria-hidden>
+              <IconPlusMedium size={14} />
+            </span>
+            <span className="add-notes-body">
+              <span className="add-notes-title">Create “{trimmedQuery}”</span>
+            </span>
+            <span className="add-notes-check" aria-hidden />
+          </button>
+        ) : null}
       </div>
     </Dialog>
   );

@@ -690,6 +690,13 @@ export function App() {
     agentOrigin?.kind === "project"
       ? state.folders.find((folder) => folder.id === agentOrigin.folderId)
       : undefined;
+  // The active session's own project. Sessions opened outside a project (the
+  // Sessions view, the sidebar) still crumb to the project they're filed in,
+  // so membership is visible wherever the session was entered from — same as
+  // meeting notes showing their project up top.
+  const activeAgentSessionFolder = activeAgentSessionId
+    ? state.folders.find((folder) => folder.id === sessionFolders[activeAgentSessionId]?.[0])
+    : undefined;
   const recoveriesByNote = useMemo(() => {
     const map = new Map<string, (typeof state.activeRecoveries)[number]>();
     for (const recovery of state.activeRecoveries) {
@@ -2285,6 +2292,15 @@ export function App() {
     setAgentOrigin(undefined);
   }
 
+  // Jumps from an open session to the project it's filed in (the crumb that
+  // shows even when the session was opened from the Sessions view).
+  function handleOpenSessionProject(folderId: string) {
+    setActiveView("folders");
+    dispatch({ type: "folderSelected", folderId });
+    setActiveAgentSession(undefined);
+    setAgentOrigin(undefined);
+  }
+
   // Leaves the agent workspace for the run history it was entered from.
   function handleReturnToRoutines() {
     setActiveView("routines");
@@ -3296,16 +3312,31 @@ export function App() {
                               },
                             ],
                           }
-                        : {
-                            backLabel: "Back to sessions",
-                            onBack: handleReturnToAgentsList,
-                            crumbs: [
-                              {
-                                label: "Sessions",
-                                onClick: handleReturnToAgentsList,
-                              },
-                            ],
-                          }
+                        : activeAgentSessionFolder
+                          ? // Opened from the Sessions view or sidebar but filed in a
+                            // project: the crumb shows the session's home (back still
+                            // returns to where the user came from).
+                            {
+                              backLabel: "Back to sessions",
+                              onBack: handleReturnToAgentsList,
+                              crumbs: [
+                                {
+                                  label: activeAgentSessionFolder.name,
+                                  onClick: () =>
+                                    handleOpenSessionProject(activeAgentSessionFolder.id),
+                                },
+                              ],
+                            }
+                          : {
+                              backLabel: "Back to sessions",
+                              onBack: handleReturnToAgentsList,
+                              crumbs: [
+                                {
+                                  label: "Sessions",
+                                  onClick: handleReturnToAgentsList,
+                                },
+                              ],
+                            }
                   }
                 />
               ) : activeView === "agent-sessions" ? (

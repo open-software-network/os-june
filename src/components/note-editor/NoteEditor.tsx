@@ -6,6 +6,7 @@ import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconMicrophone as IconMicrophoneLine } from "central-icons/IconMicrophone";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
+import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
@@ -717,24 +718,21 @@ function FolderChip({
                 }
               }}
             />
-          </div>
-          {showCreate ? (
-            <>
+            {query ? (
               <button
                 type="button"
-                className="move-to-folder-create"
+                className="search-clear"
+                aria-label="Clear search"
+                onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
-                  onCreateAndAssign(trimmed);
-                  setOpen(false);
+                  setQuery("");
+                  searchRef.current?.focus();
                 }}
               >
-                <IconPlusMedium size={14} />
-                <span className="move-to-folder-item-name">Create “{trimmed}”</span>
-                <span aria-hidden />
+                <IconCrossSmall size={13} />
               </button>
-              <div className="move-to-folder-divider" aria-hidden />
-            </>
-          ) : null}
+            ) : null}
+          </div>
           <div className="move-to-folder-list">
             {filtered.length > 0 ? (
               filtered.map((folder) => {
@@ -760,6 +758,25 @@ function FolderChip({
               <p className="move-to-folder-empty">No projects yet.</p>
             ) : null}
           </div>
+          {/* Create sits under the results: matches, if any, come first — the
+              common case is filing into an existing project. */}
+          {showCreate ? (
+            <>
+              {filtered.length > 0 ? <div className="move-to-folder-divider" aria-hidden /> : null}
+              <button
+                type="button"
+                className="move-to-folder-create"
+                onClick={() => {
+                  onCreateAndAssign(trimmed);
+                  setOpen(false);
+                }}
+              >
+                <IconPlusMedium size={14} />
+                <span className="move-to-folder-item-name">Create “{trimmed}”</span>
+                <span aria-hidden />
+              </button>
+            </>
+          ) : null}
         </div>
       ) : null}
     </div>
