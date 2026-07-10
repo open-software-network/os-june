@@ -16,6 +16,8 @@ pub struct CommandEnvelope {
     pub shortcut: Option<ShortcutCommand>,
     #[serde(default)]
     pub text: Option<String>,
+    #[serde(default)]
+    pub duration_seconds: Option<u64>,
     #[serde(flatten)]
     pub _extra: serde_json::Map<String, Value>,
 }

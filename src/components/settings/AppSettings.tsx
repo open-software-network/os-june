@@ -1605,7 +1605,11 @@ export function AppSettings({
             <SettingsPageHeader
               id="audio-heading"
               title="Audio"
-              blurb="Control how June captures meeting and system audio on this Mac."
+              blurb={
+                capabilities.platform === "windows"
+                  ? "Control how June captures microphone audio on this device."
+                  : "Control how June captures meeting and system audio on this Mac."
+              }
             />
             <div className="settings-card">
               <div className="settings-rows">
@@ -1667,7 +1671,7 @@ export function AppSettings({
                   </div>
                 </div>
 
-                {macLikePlatform ? (
+                {capabilities.platform === "macos" || capabilities.platform === "windows" ? (
                   <MicTestControl
                     state={micTestState}
                     level={micTestLevel}
