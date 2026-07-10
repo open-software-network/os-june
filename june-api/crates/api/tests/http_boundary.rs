@@ -6,17 +6,18 @@ use axum::{
 };
 use june_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, router};
 use june_config::{
-    DEFAULT_MAX_IMAGE_EDIT_BYTES, ModelPriceConfig, ModelProvider, ModelType, PriceUnit,
+    DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_MAX_ISSUE_REPORT_BYTES, ModelPriceConfig, ModelProvider,
+    ModelType, PriceUnit,
 };
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
     AgentChatStreamOutcome, AudioDurationProbe, AuthError, Authorization, AuthorizeRequest,
     CleanedText, Cleaner, CleanupRequest, Credits, DomainError, GeneratedImage, GeneratedNote,
     GenerationRequest, Generator, ImageEditRequest, ImageEditor, ImageGenerationRequest,
-    ImageGenerator, IssueReport, IssueReportSink, OsAccountsClient, P3aReport, P3aSink, Receipt,
-    TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId, VideoAnimationRequest,
-    VideoGenerationRequest, VideoProvider, VideoQueued, VideoQuoteRequest, VideoRetrieved,
-    WebFetchRequest, WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult,
+    ImageGenerator, IssueReport, IssueReportDelivery, IssueReportSink, OsAccountsClient, P3aReport,
+    P3aSink, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
+    VideoAnimationRequest, VideoGenerationRequest, VideoProvider, VideoQueued, VideoQuoteRequest,
+    VideoRetrieved, WebFetchRequest, WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult,
     WebSearchResults, WebSearcher,
 };
 use june_services::{
@@ -31,7 +32,10 @@ use pretty_assertions::assert_eq;
 use std::{
     collections::BTreeMap,
     error::Error,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 use tower::ServiceExt;
@@ -412,8 +416,17 @@ async fn integration_issue_report_rejects_blank_description() -> Result<(), Box<
 
 #[tokio::test]
 async fn integration_issue_report_delivers_attachments_to_the_sink() -> Result<(), Box<dyn Error>> {
-    let sink = Arc::new(RecordingIssueReportSink::default());
+    let sink = Arc::new(RecordingIssueReportSink {
+        delivery: IssueReportDelivery {
+            unattached_names: vec!["recording.mov".to_string()],
+        },
+        ..RecordingIssueReportSink::default()
+    });
     let router = router(test_state_with_issue_sink(sink.clone(), test_attestation()));
+    // The legacy June-only cap was 10 MiB. Crossing it proves the video bytes
+    // now reach the authenticated June API boundary instead of being dropped
+    // by the desktop before submission.
+    let recording_bytes = vec![0x5a; (10 * 1024 * 1024) + 1];
 
     let response = match router
         .oneshot(multipart_request(
@@ -426,6 +439,7 @@ async fn integration_issue_report_delivers_attachments_to_the_sink() -> Result<(
                     "Likely the audio capture thread is blocked",
                 ),
                 text_part("attachmentName", "screenshot.png"),
+                text_part("attachmentName", "recording.mov"),
                 text_part("sessionId", "session-9"),
                 text_part("appVersion", "0.0.5"),
                 text_part("platform", "macos"),
@@ -434,6 +448,14 @@ async fn integration_issue_report_delivers_attachments_to_the_sink() -> Result<(
                     "screenshot.png",
                     "image/png",
                     b"fake-png-bytes".to_vec(),
+                ),
+                // JUN-238: a second attachment part must survive the boundary
+                // alongside the first.
+                typed_file_part(
+                    "attachment",
+                    "recording.mov",
+                    "video/quicktime",
+                    recording_bytes.clone(),
                 ),
             ]),
         )?)
@@ -447,6 +469,10 @@ async fn integration_issue_report_delivers_attachments_to_the_sink() -> Result<(
     let body = response_json(response).await?;
     assert_eq!(body["success"], true);
     assert_eq!(body["data"]["received"], true);
+    assert_eq!(
+        body["data"]["skippedAttachmentNames"],
+        serde_json::json!(["recording.mov"])
+    );
 
     let Ok(reports) = sink.reports.lock() else {
         return Err("sink mutex poisoned".into());
@@ -462,12 +488,270 @@ async fn integration_issue_report_delivers_attachments_to_the_sink() -> Result<(
         reports[0].agent_diagnosis.as_deref(),
         Some("Likely the audio capture thread is blocked")
     );
-    assert_eq!(reports[0].attachment_names, vec!["screenshot.png"]);
+    assert_eq!(
+        reports[0].attachment_names,
+        vec!["screenshot.png", "recording.mov"]
+    );
     assert_eq!(reports[0].session_id.as_deref(), Some("session-9"));
-    assert_eq!(reports[0].attachments.len(), 1);
+    assert_eq!(reports[0].attachments.len(), 2);
     assert_eq!(reports[0].attachments[0].name, "screenshot.png");
     assert_eq!(reports[0].attachments[0].content_type, "image/png");
     assert_eq!(reports[0].attachments[0].bytes, b"fake-png-bytes".to_vec());
+    assert_eq!(reports[0].attachments[1].name, "recording.mov");
+    assert_eq!(reports[0].attachments[1].content_type, "video/quicktime");
+    assert_eq!(reports[0].attachments[1].bytes.len(), recording_bytes.len());
+    assert!(
+        reports[0].attachments[1]
+            .bytes
+            .iter()
+            .all(|byte| *byte == 0x5a)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_issue_report_stream_opt_in_preserves_buffered_json()
+-> Result<(), Box<dyn Error>> {
+    let sink = Arc::new(RecordingIssueReportSink {
+        delivery: IssueReportDelivery {
+            unattached_names: vec!["clip.mov".to_string()],
+        },
+        ..RecordingIssueReportSink::default()
+    });
+    let app = router(test_state_with_issue_sink(sink, test_attestation()));
+
+    let buffered_response = match app
+        .clone()
+        .oneshot(multipart_request(
+            "/v1/issue-reports",
+            multipart_body([text_part("description", "Buffered report")]),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(buffered_response.status(), StatusCode::OK);
+    assert_eq!(
+        buffered_response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json")
+    );
+    let buffered_body = response_json(buffered_response).await?;
+
+    let streamed_response = match app
+        .oneshot(multipart_request(
+            "/v1/issue-reports",
+            multipart_body([
+                text_part("description", "Streamed report"),
+                text_part("stream", "true"),
+            ]),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(streamed_response.status(), StatusCode::OK);
+    assert_eq!(
+        streamed_response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let streamed_body = response_text(streamed_response).await?;
+    let event_body = sse_event_data(&streamed_body, "result")?;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&event_body)?,
+        buffered_body
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_issue_report_stream_returns_compatible_error_event()
+-> Result<(), Box<dyn Error>> {
+    let app = router(test_state_with_issue_sink(
+        Arc::new(FailingIssueReportSink),
+        test_attestation(),
+    ));
+
+    let buffered_response = match app
+        .clone()
+        .oneshot(multipart_request(
+            "/v1/issue-reports",
+            multipart_body([text_part("description", "Buffered failure")]),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(buffered_response.status(), StatusCode::BAD_GATEWAY);
+    let buffered_status = buffered_response.status().as_u16();
+    let buffered_body = response_json(buffered_response).await?;
+
+    let streamed_response = match app
+        .oneshot(multipart_request(
+            "/v1/issue-reports",
+            multipart_body([
+                text_part("description", "Streamed failure"),
+                text_part("stream", "true"),
+            ]),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(streamed_response.status(), StatusCode::OK);
+    let streamed_body = response_text(streamed_response).await?;
+    let event_body =
+        serde_json::from_str::<serde_json::Value>(&sse_event_data(&streamed_body, "error")?)?;
+    assert_eq!(event_body["status"], buffered_status);
+    assert_eq!(event_body["body"], buffered_body);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_issue_report_stream_sends_keep_alive_before_result()
+-> Result<(), Box<dyn Error>> {
+    let app = router(test_state_with_issue_sink_and_timeout(
+        Arc::new(SlowIssueReportSink),
+        test_attestation(),
+        30,
+    ));
+    let response = match app
+        .oneshot(multipart_request(
+            "/v1/issue-reports",
+            multipart_body([
+                text_part("description", "Slow report"),
+                text_part("stream", "true"),
+            ]),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_text(response).await?;
+    let keep_alive_index = body.find(": keep-alive").ok_or("missing keep-alive")?;
+    let result_index = body.find("event: result").ok_or("missing result event")?;
+    assert!(keep_alive_index < result_index);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_issue_report_permit_survives_stream_disconnect_until_delivery_finishes()
+-> Result<(), Box<dyn Error>> {
+    let sink = Arc::new(BlockingIssueReportSink::new());
+    let app = router(test_state_with_issue_sink_and_timeout(
+        sink.clone(),
+        test_attestation(),
+        30,
+    ));
+    let first_response = match app
+        .clone()
+        .oneshot(multipart_request(
+            "/v1/issue-reports",
+            multipart_body([
+                text_part("description", "First report"),
+                text_part("stream", "true"),
+            ]),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    tokio::time::timeout(Duration::from_secs(1), sink.wait_until_started(1)).await?;
+
+    // Dropping the response simulates the production ingress closing its
+    // upstream response stream or the desktop client disconnecting. Delivery
+    // is still blocked in the background and must continue holding the permit.
+    drop(first_response);
+    let second = app.oneshot(multipart_request(
+        "/v1/issue-reports",
+        multipart_body([
+            text_part("description", "Second report"),
+            text_part("stream", "true"),
+        ]),
+    )?);
+    tokio::pin!(second);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut second)
+            .await
+            .is_err(),
+        "second report entered while disconnected first delivery was running"
+    );
+    assert_eq!(sink.started.load(Ordering::SeqCst), 1);
+
+    sink.release.add_permits(1);
+    let second_response = match tokio::time::timeout(Duration::from_secs(1), &mut second).await? {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    tokio::time::timeout(Duration::from_secs(1), sink.wait_until_started(2)).await?;
+    drop(second_response);
+    sink.release.add_permits(1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_issue_report_stream_deadline_includes_permit_wait()
+-> Result<(), Box<dyn Error>> {
+    let sink = Arc::new(DeadlineBudgetIssueReportSink::new());
+    let app = router(test_state_with_issue_sink_and_timeout(
+        sink.clone(),
+        test_attestation(),
+        1,
+    ));
+    let first_response = match app
+        .clone()
+        .oneshot(multipart_request(
+            "/v1/issue-reports",
+            multipart_body([
+                text_part("description", "Permit holder"),
+                text_part("stream", "true"),
+            ]),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    tokio::time::timeout(Duration::from_secs(1), sink.wait_until_first_started()).await?;
+    drop(first_response);
+
+    // The second request establishes its one-second deadline before waiting
+    // for the first report's permit. Spend most of that budget queued, then let
+    // its 500ms delivery run: a reset-at-headers timer would return success,
+    // while the shared absolute deadline must emit timeout.
+    let second = tokio::spawn(app.oneshot(multipart_request(
+        "/v1/issue-reports",
+        multipart_body([
+            text_part("description", "Deadline consumer"),
+            text_part("stream", "true"),
+        ]),
+    )?));
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    sink.release_first.add_permits(1);
+
+    let second_response = match tokio::time::timeout(Duration::from_secs(1), second).await?? {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(second_response.status(), StatusCode::OK);
+    let body = response_text(second_response).await?;
+    let event = serde_json::from_str::<serde_json::Value>(&sse_event_data(&body, "error")?)?;
+    assert_eq!(event["status"], StatusCode::GATEWAY_TIMEOUT.as_u16());
+    assert_eq!(event["body"]["message"], "timeout");
     Ok(())
 }
 
@@ -1179,7 +1463,22 @@ fn test_state_with_issue_sink(
     issue_reports: Arc<dyn IssueReportSink>,
     attestation: AttestationInfo,
 ) -> ApiState {
-    test_state_with_sinks(test_issue_report_service(issue_reports), attestation)
+    test_state_with_issue_sink_and_timeout(issue_reports, attestation, 5)
+}
+
+fn test_state_with_issue_sink_and_timeout(
+    issue_reports: Arc<dyn IssueReportSink>,
+    attestation: AttestationInfo,
+    request_timeout_secs: u64,
+) -> ApiState {
+    test_state_from_deps(TestStateDeps {
+        issue_reports: test_issue_report_service(issue_reports),
+        attestation,
+        transcriber: Arc::new(FakeTranscriber),
+        generator: Arc::new(FakeGenerator),
+        request_timeout_secs,
+        p3a_sink: Arc::new(RecordingP3aSink::default()),
+    })
 }
 
 fn test_issue_report_service(issue_reports: Arc<dyn IssueReportSink>) -> Arc<IssueReportService> {
@@ -1333,6 +1632,7 @@ fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
         limits: ApiLimits {
             max_audio_bytes: 1024 * 1024,
             max_json_bytes: 1024 * 1024,
+            max_issue_report_bytes: DEFAULT_MAX_ISSUE_REPORT_BYTES,
             max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
             request_timeout_secs: deps.request_timeout_secs,
         },
@@ -1609,16 +1909,120 @@ fn valid_wav() -> Vec<u8> {
 #[derive(Default)]
 struct RecordingIssueReportSink {
     reports: Mutex<Vec<IssueReport>>,
+    delivery: IssueReportDelivery,
 }
 
 #[async_trait]
 impl IssueReportSink for RecordingIssueReportSink {
-    async fn deliver(&self, report: IssueReport) -> Result<(), DomainError> {
+    async fn deliver(&self, report: IssueReport) -> Result<IssueReportDelivery, DomainError> {
         self.reports
             .lock()
             .map_err(|_| DomainError::UpstreamProvider)?
             .push(report);
-        Ok(())
+        Ok(self.delivery.clone())
+    }
+}
+
+struct FailingIssueReportSink;
+
+#[async_trait]
+impl IssueReportSink for FailingIssueReportSink {
+    async fn deliver(&self, _report: IssueReport) -> Result<IssueReportDelivery, DomainError> {
+        Err(DomainError::UpstreamProvider)
+    }
+}
+
+struct SlowIssueReportSink;
+
+#[async_trait]
+impl IssueReportSink for SlowIssueReportSink {
+    async fn deliver(&self, _report: IssueReport) -> Result<IssueReportDelivery, DomainError> {
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(IssueReportDelivery::default())
+    }
+}
+
+struct BlockingIssueReportSink {
+    started: AtomicUsize,
+    started_notify: tokio::sync::Notify,
+    release: tokio::sync::Semaphore,
+}
+
+impl BlockingIssueReportSink {
+    fn new() -> Self {
+        Self {
+            started: AtomicUsize::new(0),
+            started_notify: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        }
+    }
+
+    async fn wait_until_started(&self, target: usize) {
+        loop {
+            let notified = self.started_notify.notified();
+            if self.started.load(Ordering::SeqCst) >= target {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[async_trait]
+impl IssueReportSink for BlockingIssueReportSink {
+    async fn deliver(&self, _report: IssueReport) -> Result<IssueReportDelivery, DomainError> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        self.started_notify.notify_one();
+        self.release
+            .acquire()
+            .await
+            .map_err(|_| DomainError::UpstreamProvider)?
+            .forget();
+        Ok(IssueReportDelivery::default())
+    }
+}
+
+struct DeadlineBudgetIssueReportSink {
+    calls: AtomicUsize,
+    first_started: tokio::sync::Notify,
+    release_first: tokio::sync::Semaphore,
+}
+
+impl DeadlineBudgetIssueReportSink {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            first_started: tokio::sync::Notify::new(),
+            release_first: tokio::sync::Semaphore::new(0),
+        }
+    }
+
+    async fn wait_until_first_started(&self) {
+        loop {
+            let notified = self.first_started.notified();
+            if self.calls.load(Ordering::SeqCst) >= 1 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[async_trait]
+impl IssueReportSink for DeadlineBudgetIssueReportSink {
+    async fn deliver(&self, _report: IssueReport) -> Result<IssueReportDelivery, DomainError> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            self.first_started.notify_one();
+            self.release_first
+                .acquire()
+                .await
+                .map_err(|_| DomainError::UpstreamProvider)?
+                .forget();
+        } else {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Ok(IssueReportDelivery::default())
     }
 }
 

@@ -29,7 +29,12 @@ const DEFAULT_JUNE_API_URL: &str = "https://june-api.opensoftware.co";
 // word loss) and the formal style sometimes skips contraction expansion. No
 // other catalog model beats it: everything smarter benchmarked 2-20x slower.
 const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
+// Mirrors June API's authoritative 600-second request deadline.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(600);
+// Adds 300 seconds of client-only grace around that server deadline for a
+// large request-body transfer and the terminal SSE event. This is not a
+// second server budget.
+const ISSUE_REPORT_MULTIPART_TIMEOUT: Duration = Duration::from_secs(900);
 const AGENT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
 const AGENT_PROXY_MAX_MESSAGES: usize = 64;
 const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
@@ -1459,10 +1464,6 @@ fn parse_explicit_classification(text: &str) -> Option<bool> {
     }
 }
 
-// Matches the server's per-attachment cap; bigger files are listed by name
-// in the report but their bytes stay local.
-const ISSUE_ATTACHMENT_MAX_BYTES: usize = 10 * 1024 * 1024;
-
 pub async fn submit_issue_report(
     request: &crate::domain::types::SubmitIssueReportRequest,
     app_version: &str,
@@ -1474,10 +1475,64 @@ pub async fn submit_issue_report(
             "Cannot send an empty issue report.",
         ));
     }
+
+    let IssueAttachmentParts {
+        parts,
+        included_names,
+        skipped_names,
+    } = issue_attachment_parts(&request.attachment_paths).await?;
+    let mut form = issue_report_form(request, app_version);
+    for part in parts {
+        form = form.part("attachment", part);
+    }
+
+    let first_response = send_multipart("/v1/issue-reports", form, false).await?;
+    let status = first_response.status();
+    let retry_after_ms = response_retry_after_ms(&first_response);
+    if status.is_success() && response_is_event_stream(&first_response) {
+        let mut response: crate::domain::types::SubmitIssueReportResponse =
+            parse_sse_response("/v1/issue-reports", first_response).await?;
+        merge_skipped_attachment_names(&mut response, skipped_names);
+        return Ok(response);
+    }
+    let body = first_response.text().await.map_err(network_error)?;
+
+    if issue_report_needs_names_only_retry(status, &body) {
+        // Older June API deployments and a lower production ingress limit can
+        // reject a body containing files. Rebuild the form once without file
+        // parts so the issue report is still delivered with attachment names.
+        let mut omitted_names = request.attachment_names.clone();
+        extend_unique_names(&mut omitted_names, skipped_names);
+        extend_unique_names(&mut omitted_names, included_names);
+        let retry_response = send_multipart(
+            "/v1/issue-reports",
+            issue_report_form(request, app_version),
+            false,
+        )
+        .await?;
+        let mut response: crate::domain::types::SubmitIssueReportResponse =
+            parse_json_or_sse_response("/v1/issue-reports", retry_response).await?;
+        merge_skipped_attachment_names(&mut response, omitted_names);
+        return Ok(response);
+    }
+
+    let mut response: crate::domain::types::SubmitIssueReportResponse =
+        parse_response_body("/v1/issue-reports", status, retry_after_ms, &body)?;
+    merge_skipped_attachment_names(&mut response, skipped_names);
+    Ok(response)
+}
+
+fn issue_report_form(
+    request: &crate::domain::types::SubmitIssueReportRequest,
+    app_version: &str,
+) -> Form {
     let mut form = Form::new()
-        .text("description", description.to_string())
+        .text("description", request.description.trim().to_string())
         .text("appVersion", app_version.to_string())
-        .text("platform", std::env::consts::OS);
+        .text("platform", std::env::consts::OS)
+        // Keep-alive comments prevent ingress idle timeouts while June API
+        // forwards platform-sized files to Open Software.
+        .text("stream", "true");
     if let Some(category) = request
         .category
         .as_deref()
@@ -1505,35 +1560,117 @@ pub async fn submit_issue_report(
     for name in &request.attachment_names {
         form = form.text("attachmentName", name.clone());
     }
-    // Attachment uploads are best-effort: an unreadable or oversized file
-    // must not block the report, and its name above still tells the team it
-    // existed.
-    for path in &request.attachment_paths {
-        let bytes = match tokio::fs::read(path).await {
-            Ok(bytes) => bytes,
+    form
+}
+
+fn issue_report_needs_names_only_retry(status: reqwest::StatusCode, body: &str) -> bool {
+    if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+        return true;
+    }
+    if status != reqwest::StatusCode::BAD_REQUEST {
+        return false;
+    }
+    serde_json::from_str::<ApiEnvelope<serde_json::Value>>(body)
+        .ok()
+        .and_then(|envelope| envelope.message)
+        .is_some_and(|message| {
+            matches!(message.as_str(), "multipart_invalid" | "payload_too_large")
+        })
+}
+
+fn extend_unique_names(names: &mut Vec<String>, additional: impl IntoIterator<Item = String>) {
+    for name in additional {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+}
+
+fn merge_skipped_attachment_names(
+    response: &mut crate::domain::types::SubmitIssueReportResponse,
+    local_names: Vec<String>,
+) {
+    let mut combined = Vec::new();
+    extend_unique_names(&mut combined, local_names);
+    extend_unique_names(
+        &mut combined,
+        std::mem::take(&mut response.skipped_attachment_names),
+    );
+    response.skipped_attachment_names = combined;
+}
+
+fn issue_attachment_filename(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "attachment".to_string())
+}
+
+const ISSUE_ATTACHMENT_MAX_BYTES: u64 = 300 * 1024 * 1024;
+const ISSUE_ATTACHMENTS_TOTAL_MAX_BYTES: u64 = 300 * 1024 * 1024;
+
+struct IssueAttachmentParts {
+    parts: Vec<Part>,
+    included_names: Vec<String>,
+    skipped_names: Vec<String>,
+}
+
+/// Builds one streaming multipart part per readable, non-empty attachment.
+///
+/// Metadata is checked before a file is opened for streaming so an unreadable,
+/// empty, or over-budget file does not block the report or allocate its entire
+/// contents. The cumulative byte budget mirrors June API's single-request
+/// attachment allowance and prevents the desktop from building a form June API
+/// must reject. Every skipped file remains represented by its `attachmentName`.
+async fn issue_attachment_parts(paths: &[String]) -> Result<IssueAttachmentParts, AppError> {
+    let mut parts = Vec::new();
+    let mut included_names = Vec::new();
+    let mut skipped_names = Vec::new();
+    let mut included_bytes = 0_u64;
+    for path in paths {
+        let filename = issue_attachment_filename(path);
+        let metadata = match tokio::fs::metadata(path).await {
+            Ok(metadata) => metadata,
             Err(error) => {
                 eprintln!("skipping unreadable issue report attachment {path}: {error}");
+                skipped_names.push(filename);
                 continue;
             }
         };
-        if bytes.is_empty() || bytes.len() > ISSUE_ATTACHMENT_MAX_BYTES {
-            eprintln!(
-                "skipping issue report attachment {path}: {} bytes",
-                bytes.len()
-            );
+        let file_bytes = metadata.len();
+        if !metadata.is_file() || file_bytes == 0 {
+            eprintln!("skipping empty issue report attachment {path}");
+            skipped_names.push(filename);
             continue;
         }
-        let filename = Path::new(path)
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "attachment".to_string());
-        let part = Part::bytes(bytes)
-            .file_name(filename)
+        if file_bytes > ISSUE_ATTACHMENT_MAX_BYTES
+            || included_bytes.saturating_add(file_bytes) > ISSUE_ATTACHMENTS_TOTAL_MAX_BYTES
+        {
+            eprintln!("skipping over-budget issue report attachment {path}: {file_bytes} bytes");
+            skipped_names.push(filename);
+            continue;
+        }
+        let part = match Part::file(path).await {
+            Ok(part) => part,
+            Err(error) => {
+                eprintln!("skipping unreadable issue report attachment {path}: {error}");
+                skipped_names.push(filename);
+                continue;
+            }
+        };
+        let part = part
+            .file_name(filename.clone())
             .mime_str(issue_attachment_mime(path))
             .map_err(|error| AppError::new("issue_report_attachment_invalid", error.to_string()))?;
-        form = form.part("attachment", part);
+        included_bytes += file_bytes;
+        included_names.push(filename);
+        parts.push(part);
     }
-    post_multipart("/v1/issue-reports", form, false).await
+    Ok(IssueAttachmentParts {
+        parts,
+        included_names,
+        skipped_names,
+    })
 }
 
 fn issue_attachment_mime(path: &str) -> &'static str {
@@ -1546,6 +1683,10 @@ fn issue_attachment_mime(path: &str) -> &'static str {
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("heic") => "image/heic",
+        Some("mp4") => "video/mp4",
+        Some("mov") => "video/quicktime",
+        Some("m4v") => "video/x-m4v",
+        Some("webm") => "video/webm",
         Some("pdf") => "application/pdf",
         Some("txt" | "log") => "text/plain",
         _ => "application/octet-stream",
@@ -1902,14 +2043,7 @@ where
         client.post(url).bearer_auth(token).json(body)
     })
     .await?;
-    let status = response.status();
-    if !status.is_success() {
-        return parse_response(path, response).await;
-    }
-    if response_is_event_stream(&response) {
-        return parse_generate_sse_response(path, response).await;
-    }
-    parse_response(path, response).await
+    parse_json_or_sse_response(path, response).await
 }
 
 fn response_is_event_stream(response: &reqwest::Response) -> bool {
@@ -1921,31 +2055,44 @@ fn response_is_event_stream(response: &reqwest::Response) -> bool {
         .is_some_and(|value| value.starts_with("text/event-stream"))
 }
 
-async fn parse_generate_sse_response(
+async fn parse_json_or_sse_response<T>(
     path: &str,
-    mut response: reqwest::Response,
-) -> Result<GenerateResponse, AppError> {
-    let mut parser = GenerateSseParser::default();
+    response: reqwest::Response,
+) -> Result<T, AppError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    if response.status().is_success() && response_is_event_stream(&response) {
+        return parse_sse_response(path, response).await;
+    }
+    parse_response(path, response).await
+}
+
+async fn parse_sse_response<T>(path: &str, mut response: reqwest::Response) -> Result<T, AppError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let mut parser = ApiSseParser::default();
     while let Some(chunk) = response.chunk().await.map_err(network_error)? {
         if let Some(event) = parser.push(&chunk)? {
-            return parse_generate_terminal_event(path, event);
+            return parse_sse_terminal_event(path, event);
         }
     }
     if let Some(event) = parser.finish()? {
-        return parse_generate_terminal_event(path, event);
+        return parse_sse_terminal_event(path, event);
     }
-    Err(generate_stream_ended_unexpectedly())
+    Err(api_stream_ended_unexpectedly())
 }
 
-fn parse_generate_terminal_event(
-    path: &str,
-    event: GenerateTerminalEvent,
-) -> Result<GenerateResponse, AppError> {
+fn parse_sse_terminal_event<T>(path: &str, event: ApiTerminalEvent) -> Result<T, AppError>
+where
+    T: for<'de> Deserialize<'de>,
+{
     match event {
-        GenerateTerminalEvent::Result(body) => {
+        ApiTerminalEvent::Result(body) => {
             parse_response_body(path, reqwest::StatusCode::OK, None, &body)
         }
-        GenerateTerminalEvent::Error {
+        ApiTerminalEvent::Error {
             status,
             body,
             retry_after_secs,
@@ -1961,15 +2108,15 @@ fn parse_generate_terminal_event(
     }
 }
 
-fn generate_stream_ended_unexpectedly() -> AppError {
+fn api_stream_ended_unexpectedly() -> AppError {
     AppError::new(
         "june_request_failed",
-        "The note generation stream ended unexpectedly.",
+        "The processing service response stream ended unexpectedly.",
     )
 }
 
 #[derive(Debug, PartialEq)]
-enum GenerateTerminalEvent {
+enum ApiTerminalEvent {
     Result(String),
     Error {
         status: u16,
@@ -1979,14 +2126,14 @@ enum GenerateTerminalEvent {
 }
 
 #[derive(Default)]
-struct GenerateSseParser {
+struct ApiSseParser {
     buffer: Vec<u8>,
     event: Option<String>,
     data: Vec<String>,
 }
 
-impl GenerateSseParser {
-    fn push(&mut self, chunk: &[u8]) -> Result<Option<GenerateTerminalEvent>, AppError> {
+impl ApiSseParser {
+    fn push(&mut self, chunk: &[u8]) -> Result<Option<ApiTerminalEvent>, AppError> {
         self.buffer.extend_from_slice(chunk);
         while let Some(newline) = self.buffer.iter().position(|byte| *byte == b'\n') {
             let line = self.buffer.drain(..=newline).collect::<Vec<_>>();
@@ -1995,7 +2142,7 @@ impl GenerateSseParser {
             let line = std::str::from_utf8(line).map_err(|error| {
                 AppError::new(
                     "june_api_response_invalid",
-                    format!("The note generation stream contained invalid UTF-8: {error}"),
+                    format!("The response stream contained invalid UTF-8: {error}"),
                 )
             })?;
             if let Some(event) = self.push_line(line)? {
@@ -2005,12 +2152,12 @@ impl GenerateSseParser {
         Ok(None)
     }
 
-    fn finish(&mut self) -> Result<Option<GenerateTerminalEvent>, AppError> {
+    fn finish(&mut self) -> Result<Option<ApiTerminalEvent>, AppError> {
         if !self.buffer.is_empty() {
             let line = std::str::from_utf8(&self.buffer).map_err(|error| {
                 AppError::new(
                     "june_api_response_invalid",
-                    format!("The note generation stream contained invalid UTF-8: {error}"),
+                    format!("The response stream contained invalid UTF-8: {error}"),
                 )
             })?;
             let line = line.strip_suffix('\r').unwrap_or(line).to_string();
@@ -2022,7 +2169,7 @@ impl GenerateSseParser {
         Ok(None)
     }
 
-    fn push_line(&mut self, line: &str) -> Result<Option<GenerateTerminalEvent>, AppError> {
+    fn push_line(&mut self, line: &str) -> Result<Option<ApiTerminalEvent>, AppError> {
         if line.is_empty() {
             return self.dispatch();
         }
@@ -2039,24 +2186,24 @@ impl GenerateSseParser {
         Ok(None)
     }
 
-    fn dispatch(&mut self) -> Result<Option<GenerateTerminalEvent>, AppError> {
+    fn dispatch(&mut self) -> Result<Option<ApiTerminalEvent>, AppError> {
         let event = self.event.take();
         if self.data.is_empty() {
             return Ok(None);
         }
         let data = std::mem::take(&mut self.data).join("\n");
         match event.as_deref() {
-            Some("result") => Ok(Some(GenerateTerminalEvent::Result(data))),
+            Some("result") => Ok(Some(ApiTerminalEvent::Result(data))),
             Some("error") => {
-                let error: GenerateStreamError = serde_json::from_str(&data).map_err(|error| {
+                let error: ApiStreamError = serde_json::from_str(&data).map_err(|error| {
                     tracing::warn!(
                         body_bytes = data.len(),
                         %error,
-                        "june api returned an invalid note generation stream error"
+                        "june api returned an invalid response stream error"
                     );
                     AppError::new("june_api_response_invalid", INVALID_JUNE_RESPONSE_MESSAGE)
                 })?;
-                Ok(Some(GenerateTerminalEvent::Error {
+                Ok(Some(ApiTerminalEvent::Error {
                     status: error.status,
                     body: error.body,
                     retry_after_secs: error.retry_after_secs,
@@ -2068,7 +2215,7 @@ impl GenerateSseParser {
 }
 
 #[derive(Deserialize)]
-struct GenerateStreamError {
+struct ApiStreamError {
     status: u16,
     body: serde_json::Value,
     #[serde(default)]
@@ -2134,18 +2281,39 @@ async fn post_multipart<T>(path: &str, form: Form, send_venice_api_key: bool) ->
 where
     T: for<'de> Deserialize<'de>,
 {
+    let response = send_multipart(path, form, send_venice_api_key).await?;
+    parse_response(path, response).await
+}
+
+async fn send_multipart(
+    path: &str,
+    form: Form,
+    send_venice_api_key: bool,
+) -> Result<reqwest::Response, AppError> {
     // access_token() now pre-emptively refreshes if the cached JWT is stale,
     // so multipart bodies (which can't be replayed on a 401) go out with a
     // known-fresh token. Form is not Clone, so a retry-on-401 fallback isn't
     // possible here anyway.
     let url = format!("{}{}", june_api_url(), path);
     let token = crate::os_accounts::access_token().await?;
-    let request = http_client().post(&url).bearer_auth(token).multipart(form);
+    let request = http_client()
+        .post(&url)
+        .bearer_auth(token)
+        .multipart(form)
+        .timeout(multipart_request_timeout(path));
     let response = with_venice_api_key(path, request, send_venice_api_key)
         .send()
         .await
         .map_err(network_error)?;
-    parse_response(path, response).await
+    Ok(response)
+}
+
+fn multipart_request_timeout(path: &str) -> Duration {
+    if path == "/v1/issue-reports" {
+        ISSUE_REPORT_MULTIPART_TIMEOUT
+    } else {
+        HTTP_TIMEOUT
+    }
 }
 
 async fn authed_send<F>(
@@ -2400,6 +2568,7 @@ mod tests {
     use super::*;
 
     const NOTE_GENERATE_PATH: &str = "/v1/notes/generate";
+    const ISSUE_REPORT_PATH: &str = "/v1/issue-reports";
 
     fn generate_success_envelope(content: &str) -> String {
         serde_json::json!({
@@ -2422,8 +2591,28 @@ mod tests {
         })
     }
 
-    fn parse_sse_chunks(chunks: &[&[u8]]) -> Result<Option<GenerateTerminalEvent>, AppError> {
-        let mut parser = GenerateSseParser::default();
+    fn issue_report_success_envelope(skipped_attachment_names: &[&str]) -> String {
+        serde_json::json!({
+            "success": true,
+            "data": {
+                "received": true,
+                "skippedAttachmentNames": skipped_attachment_names,
+            }
+        })
+        .to_string()
+    }
+
+    fn buffered_response(content_type: &str, body: String) -> reqwest::Response {
+        tauri::http::Response::builder()
+            .status(reqwest::StatusCode::OK)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body)
+            .expect("test response should build")
+            .into()
+    }
+
+    fn parse_sse_chunks(chunks: &[&[u8]]) -> Result<Option<ApiTerminalEvent>, AppError> {
+        let mut parser = ApiSseParser::default();
         for chunk in chunks {
             if let Some(event) = parser.push(chunk)? {
                 return Ok(Some(event));
@@ -2459,6 +2648,108 @@ mod tests {
     }
 
     #[test]
+    fn issue_report_legacy_json_response_remains_compatible() {
+        let response: crate::domain::types::SubmitIssueReportResponse = parse_response_body(
+            ISSUE_REPORT_PATH,
+            reqwest::StatusCode::OK,
+            None,
+            &issue_report_success_envelope(&["legacy.mov"]),
+        )
+        .expect("legacy JSON envelope should parse");
+
+        assert!(response.received);
+        assert_eq!(response.skipped_attachment_names, vec!["legacy.mov"]);
+    }
+
+    #[test]
+    fn issue_report_multipart_timeout_adds_client_grace_only_for_that_path() {
+        let issue_report_timeout = multipart_request_timeout(ISSUE_REPORT_PATH);
+        assert_eq!(issue_report_timeout, Duration::from_secs(900));
+        assert!(issue_report_timeout > HTTP_TIMEOUT);
+        assert_eq!(
+            issue_report_timeout - HTTP_TIMEOUT,
+            Duration::from_secs(300)
+        );
+        for path in ["/v1/notes/transcribe", "/v1/dictate"] {
+            assert_eq!(multipart_request_timeout(path), HTTP_TIMEOUT);
+        }
+    }
+
+    #[test]
+    fn issue_report_sse_keep_alive_comments_then_result_parse_success() {
+        let stream = format!(
+            ": keep-alive\n\n: keep-alive\n\nevent: result\ndata: {}\n\n",
+            issue_report_success_envelope(&["platform.mov"])
+        );
+        let event = parse_sse_chunks(&[stream.as_bytes()])
+            .expect("SSE should parse")
+            .expect("SSE should contain a terminal event");
+
+        let response: crate::domain::types::SubmitIssueReportResponse =
+            parse_sse_terminal_event(ISSUE_REPORT_PATH, event)
+                .expect("result event should parse through the API envelope");
+
+        assert!(response.received);
+        assert_eq!(response.skipped_attachment_names, vec!["platform.mov"]);
+    }
+
+    #[test]
+    fn issue_report_sse_error_maps_like_buffered_non_success_response() {
+        let body = serde_json::json!({
+            "success": false,
+            "errorCode": 5000,
+            "message": "issue_report_delivery_failed",
+        });
+        let buffered = parse_response_body::<crate::domain::types::SubmitIssueReportResponse>(
+            ISSUE_REPORT_PATH,
+            reqwest::StatusCode::BAD_GATEWAY,
+            None,
+            &body.to_string(),
+        )
+        .expect_err("buffered delivery failure should fail");
+        let stream = format!(
+            "event: error\ndata: {}\n\n",
+            serde_json::json!({
+                "status": reqwest::StatusCode::BAD_GATEWAY.as_u16(),
+                "body": body,
+            })
+        );
+        let event = parse_sse_chunks(&[stream.as_bytes()])
+            .expect("SSE error should parse")
+            .expect("SSE should contain a terminal event");
+        let streamed = parse_sse_terminal_event::<crate::domain::types::SubmitIssueReportResponse>(
+            ISSUE_REPORT_PATH,
+            event,
+        )
+        .expect_err("streamed delivery failure should fail");
+
+        assert_eq!(streamed.code, buffered.code);
+        assert_eq!(streamed.message, buffered.message);
+        assert_eq!(streamed.details, buffered.details);
+    }
+
+    #[tokio::test]
+    async fn issue_report_names_only_retry_accepts_json_or_sse_response() {
+        let envelope = issue_report_success_envelope(&["fallback.mov"]);
+        let sse = format!(": keep-alive\n\nevent: result\ndata: {envelope}\n\n");
+        for (content_type, body) in [
+            ("application/json", envelope),
+            ("text/event-stream; charset=utf-8", sse),
+        ] {
+            let response: crate::domain::types::SubmitIssueReportResponse =
+                parse_json_or_sse_response(
+                    ISSUE_REPORT_PATH,
+                    buffered_response(content_type, body),
+                )
+                .await
+                .expect("retry response should parse");
+
+            assert!(response.received);
+            assert_eq!(response.skipped_attachment_names, vec!["fallback.mov"]);
+        }
+    }
+
+    #[test]
     fn generate_sse_keep_alive_comments_then_result_parse_success() {
         let stream = format!(
             ": keep-alive\n\n: keep-alive\n\nevent: result\ndata: {}\n\n",
@@ -2468,7 +2759,7 @@ mod tests {
             .expect("SSE should parse")
             .expect("SSE should contain a terminal event");
 
-        let response = parse_generate_terminal_event(NOTE_GENERATE_PATH, event)
+        let response: GenerateResponse = parse_sse_terminal_event(NOTE_GENERATE_PATH, event)
             .expect("result event should parse through the API envelope");
 
         assert_eq!(response.content, "Streamed note");
@@ -2496,7 +2787,7 @@ mod tests {
             .expect("SSE error should parse")
             .expect("SSE should contain a terminal event");
         let streamed = expect_generate_error(
-            parse_generate_terminal_event(NOTE_GENERATE_PATH, event),
+            parse_sse_terminal_event(NOTE_GENERATE_PATH, event),
             "streamed insufficient credits should fail",
         );
 
@@ -2523,7 +2814,7 @@ mod tests {
             .expect("SSE error should parse")
             .expect("SSE should contain a terminal event");
         let error = expect_generate_error(
-            parse_generate_terminal_event(NOTE_GENERATE_PATH, event),
+            parse_sse_terminal_event(NOTE_GENERATE_PATH, event),
             "streamed authorization denial should fail",
         );
 
@@ -2544,16 +2835,16 @@ mod tests {
         let error = event
             .map(|event| {
                 expect_generate_error(
-                    parse_generate_terminal_event(NOTE_GENERATE_PATH, event),
+                    parse_sse_terminal_event(NOTE_GENERATE_PATH, event),
                     "truncated stream must not produce a successful response",
                 )
             })
-            .unwrap_or_else(generate_stream_ended_unexpectedly);
+            .unwrap_or_else(api_stream_ended_unexpectedly);
 
         assert_eq!(error.code, "june_request_failed");
         assert_eq!(
             error.message,
-            "The note generation stream ended unexpectedly."
+            "The processing service response stream ended unexpectedly."
         );
     }
 
@@ -2570,7 +2861,7 @@ mod tests {
         let event = parse_sse_chunks(&chunks)
             .expect("split SSE should parse")
             .expect("split SSE should contain a terminal event");
-        let response = parse_generate_terminal_event(NOTE_GENERATE_PATH, event)
+        let response: GenerateResponse = parse_sse_terminal_event(NOTE_GENERATE_PATH, event)
             .expect("split result should parse through the API envelope");
 
         assert_eq!(response.content, "Split note");
@@ -2584,7 +2875,7 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         let event = parse_sse_chunks(&[stream])
             .expect("multiline SSE should parse")
             .expect("multiline SSE should contain a terminal event");
-        let response = parse_generate_terminal_event(NOTE_GENERATE_PATH, event)
+        let response: GenerateResponse = parse_sse_terminal_event(NOTE_GENERATE_PATH, event)
             .expect("multiline result should parse after newline joining");
 
         assert_eq!(response.content, "Joined");
@@ -3216,6 +3507,136 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             .as_str()
             .unwrap()
             .contains("Standing content policy"));
+    }
+
+    #[test]
+    fn issue_attachment_mime_maps_videos() {
+        assert_eq!(issue_attachment_mime("/tmp/clip.mp4"), "video/mp4");
+        assert_eq!(
+            issue_attachment_mime("/tmp/Screen Recording.MOV"),
+            "video/quicktime"
+        );
+        assert_eq!(issue_attachment_mime("/tmp/clip.m4v"), "video/x-m4v");
+        assert_eq!(issue_attachment_mime("/tmp/clip.webm"), "video/webm");
+        assert_eq!(
+            issue_attachment_mime("/tmp/unknown.bin"),
+            "application/octet-stream"
+        );
+    }
+
+    fn create_sparse_file(path: &Path, len: u64) {
+        let file = std::fs::File::create(path).expect("create sparse file");
+        file.set_len(len).expect("size sparse file");
+    }
+
+    // JUN-238: a video larger than June's former 10 MiB limit must remain an
+    // issue-report attachment part without reading the whole file into memory.
+    #[tokio::test]
+    async fn issue_attachment_parts_streams_video_above_legacy_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let large = dir.path().join("clip.mov");
+        let empty = dir.path().join("empty.txt");
+        create_sparse_file(&large, (10 * 1024 * 1024) + 1);
+        std::fs::write(&empty, b"").expect("write empty");
+        let missing = dir.path().join("gone.mp4");
+
+        let paths: Vec<String> = [&large, &empty, &missing]
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect();
+        let result = issue_attachment_parts(&paths)
+            .await
+            .expect("parts should build");
+
+        assert_eq!(result.parts.len(), 1);
+        assert_eq!(result.included_names, vec!["clip.mov".to_string()]);
+        assert_eq!(
+            result.skipped_names,
+            vec!["empty.txt".to_string(), "gone.mp4".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_attachment_parts_skip_per_file_and_cumulative_overages() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let accepted = dir.path().join("accepted.mov");
+        let exceeds_total = dir.path().join("exceeds-total.mp4");
+        let exceeds_file = dir.path().join("exceeds-file.webm");
+        create_sparse_file(&accepted, 200 * 1024 * 1024);
+        create_sparse_file(&exceeds_total, (100 * 1024 * 1024) + 1);
+        create_sparse_file(&exceeds_file, ISSUE_ATTACHMENT_MAX_BYTES + 1);
+
+        let paths = [&accepted, &exceeds_total, &exceeds_file]
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let result = issue_attachment_parts(&paths)
+            .await
+            .expect("metadata checks should succeed");
+
+        assert_eq!(result.parts.len(), 1);
+        assert_eq!(result.included_names, vec!["accepted.mov".to_string()]);
+        assert_eq!(
+            result.skipped_names,
+            vec![
+                "exceeds-total.mp4".to_string(),
+                "exceeds-file.webm".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn issue_report_names_only_retry_is_limited_to_size_failures() {
+        assert!(issue_report_needs_names_only_retry(
+            reqwest::StatusCode::PAYLOAD_TOO_LARGE,
+            "<html>ingress rejection</html>",
+        ));
+        for message in ["multipart_invalid", "payload_too_large"] {
+            let body = serde_json::json!({
+                "data": null,
+                "success": false,
+                "error_code": 4000,
+                "message": message,
+            })
+            .to_string();
+            assert!(issue_report_needs_names_only_retry(
+                reqwest::StatusCode::BAD_REQUEST,
+                &body,
+            ));
+        }
+        let validation = serde_json::json!({
+            "data": null,
+            "success": false,
+            "error_code": 4000,
+            "message": "description_required",
+        })
+        .to_string();
+        assert!(!issue_report_needs_names_only_retry(
+            reqwest::StatusCode::BAD_REQUEST,
+            &validation,
+        ));
+    }
+
+    #[test]
+    fn skipped_attachment_names_merge_without_duplicates() {
+        let mut response = crate::domain::types::SubmitIssueReportResponse {
+            received: true,
+            skipped_attachment_names: vec!["server.mov".to_string(), "local.mov".to_string()],
+        };
+
+        merge_skipped_attachment_names(
+            &mut response,
+            vec!["local.mov".to_string(), "fallback.mp4".to_string()],
+        );
+
+        assert_eq!(
+            response.skipped_attachment_names,
+            vec![
+                "local.mov".to_string(),
+                "fallback.mp4".to_string(),
+                "server.mov".to_string(),
+            ]
+        );
     }
 }
 

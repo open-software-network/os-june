@@ -16,6 +16,14 @@ pub const OPENAI_API_KEY_PLACEHOLDER: &str = "sk_REPLACE_ME";
 pub const VENICE_API_KEY_PLACEHOLDER: &str = "VENICE_API_KEY_REPLACE_ME";
 pub const IMAGE_EDIT_SOURCE_MAX_BYTES: usize = 50 * 1024 * 1024;
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
+/// Matches os-platform's general attachment cap. June API is the authenticated
+/// report boundary, so it must accept the same video size the downstream file
+/// API accepts instead of silently imposing the platform's former 10 MiB cap.
+pub const ISSUE_REPORT_ATTACHMENT_MAX_BYTES: usize = 300 * 1024 * 1024;
+/// Multipart framing and the report's text fields need a small amount of room
+/// beyond one maximum-sized attachment. This remains a total request cap, so
+/// many attachments cannot multiply the per-file allowance into unbounded RAM.
+pub const DEFAULT_MAX_ISSUE_REPORT_BYTES: usize = ISSUE_REPORT_ATTACHMENT_MAX_BYTES + (1024 * 1024);
 /// OS Accounts rejects `/authorize` holds outside its deployed cap as
 /// `invalid_ttl` (envelope code 4201). This mirrors `MAX_HOLD_TTL_SECONDS`
 /// in the os-accounts repo (`api/crates/services/src/grants.rs`), which is
@@ -341,6 +349,8 @@ pub struct ServerConfig {
     pub request_timeout_secs: u64,
     pub max_audio_bytes: usize,
     pub max_json_bytes: usize,
+    /// Total multipart body cap for `/v1/issue-reports`.
+    pub max_issue_report_bytes: usize,
     /// JSON body cap for `/v1/image/edit`. It is sized for a 50 MiB source
     /// image after base64 expansion plus fixed request overhead.
     pub max_image_edit_bytes: usize,
@@ -876,6 +886,7 @@ impl Default for AppConfig {
                 request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
                 max_audio_bytes: 26_214_400,
                 max_json_bytes: 524_288,
+                max_issue_report_bytes: DEFAULT_MAX_ISSUE_REPORT_BYTES,
                 max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
             },
             local_dev: LocalDevConfig::default(),
@@ -1145,6 +1156,10 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
         "server.max_image_edit_bytes",
         config.server.max_image_edit_bytes,
     )?;
+    validate_positive_usize_config(
+        "server.max_issue_report_bytes",
+        config.server.max_issue_report_bytes,
+    )?;
     validate_image_hold_ttl(config)?;
     validate_video_hold_ttl(config)?;
     validate_long_inference_hold_ttl(config)?;
@@ -1392,9 +1407,10 @@ fn validate_positive_rate(
 mod tests {
     use super::{
         AppConfig, ConfigError, DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS, DEFAULT_IMAGE_HOLD_TTL_SECS,
-        DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, DEFAULT_VIDEO_HOLD_TTL_SECS,
-        DEFAULT_VIDEO_JOB_MAX_SECS, DEFAULT_VIDEO_MAX_RESPONSE_BYTES, IMAGE_EDIT_SOURCE_MAX_BYTES,
-        IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS, ModelPriceConfig, ModelProvider, ModelType,
+        DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_MAX_ISSUE_REPORT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS,
+        DEFAULT_VIDEO_HOLD_TTL_SECS, DEFAULT_VIDEO_JOB_MAX_SECS, DEFAULT_VIDEO_MAX_RESPONSE_BYTES,
+        IMAGE_EDIT_SOURCE_MAX_BYTES, IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS,
+        ISSUE_REPORT_ATTACHMENT_MAX_BYTES, ModelPriceConfig, ModelProvider, ModelType,
         OPENAI_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
         OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS, OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit,
         VENICE_API_KEY_PLACEHOLDERS, VIDEO_CLIENT_POLL_WINDOW_SECS,
@@ -1696,6 +1712,54 @@ mod tests {
             AppConfig::default().server.max_image_edit_bytes,
             DEFAULT_MAX_IMAGE_EDIT_BYTES
         );
+    }
+
+    #[test]
+    fn default_issue_report_body_limit_matches_platform_attachment_cap() {
+        assert_eq!(ISSUE_REPORT_ATTACHMENT_MAX_BYTES, 300 * 1024 * 1024);
+        assert_eq!(
+            AppConfig::default().server.max_issue_report_bytes,
+            ISSUE_REPORT_ATTACHMENT_MAX_BYTES + (1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn production_ingress_accepts_the_issue_report_body_budget() -> Result<(), String> {
+        let compose = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../deploy/docker-compose.production.yml"
+        ));
+        let configured_limits = compose
+            .lines()
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix("- CLIENT_MAX_BODY_SIZE=")
+                    .map(str::trim)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            configured_limits.len(),
+            1,
+            "production compose must declare one ingress body limit"
+        );
+        let configured_limit = configured_limits
+            .first()
+            .copied()
+            .ok_or_else(|| "production ingress body limit is missing".to_string())?;
+        let configured_mib = configured_limit
+            .strip_suffix('m')
+            .ok_or_else(|| "ingress limit should use nginx MiB units".to_string())?
+            .parse::<usize>()
+            .map_err(|error| format!("ingress limit should be numeric: {error}"))?;
+        let configured_bytes = configured_mib
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| "ingress body limit should fit usize".to_string())?;
+
+        assert!(
+            configured_bytes >= DEFAULT_MAX_ISSUE_REPORT_BYTES,
+            "production ingress body limit ({configured_bytes}) is below June API's issue-report limit ({DEFAULT_MAX_ISSUE_REPORT_BYTES})"
+        );
+        Ok(())
     }
 
     #[test]

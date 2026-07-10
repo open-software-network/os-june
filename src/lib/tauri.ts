@@ -894,14 +894,17 @@ export type SubmitIssueReportRequest = {
   /** June's diagnostic assessment from the report session, when available. */
   agentDiagnosis?: string;
   attachmentNames: string[];
-  /** Workspace paths of the attached files; their bytes are uploaded with
-   * the report. */
+  /** Original local paths from the report picker or workspace paths created
+   * for DOM-dropped files; their bytes are sent with the report. */
   attachmentPaths: string[];
   sessionId?: string;
 };
 
 export type SubmitIssueReportResponse = {
   received: boolean;
+  /** Names of files that could not be attached to the report, either because
+   * the local file was unreadable or empty or Open Software rejected it. */
+  skippedAttachmentNames?: string[];
 };
 
 export async function submitIssueReport(request: SubmitIssueReportRequest) {

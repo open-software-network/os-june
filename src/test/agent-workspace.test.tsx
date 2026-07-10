@@ -60,6 +60,7 @@ const mocks = vi.hoisted(() => ({
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
   osAccountsUpgrade: vi.fn(),
+  openFileDialog: vi.fn(),
   setImageSafeMode: vi.fn(),
   setImageSafeModePromptDismissed: vi.fn(),
   setVeniceModel: vi.fn(),
@@ -150,6 +151,10 @@ vi.mock("../lib/tauri", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: mocks.openFileDialog,
 }));
 
 // Pin VIDEO_GENERATION_ENABLED on so the /video surfaces stay testable
@@ -404,6 +409,7 @@ describe("AgentWorkspace", () => {
     }
     window.sessionStorage.clear();
     window.localStorage.clear();
+    mocks.openFileDialog.mockResolvedValue(null);
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
@@ -862,6 +868,62 @@ describe("AgentWorkspace", () => {
     );
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
+  });
+
+  it("submits a large native-picker attachment from its original path", async () => {
+    const user = userEvent.setup();
+    const originalPath = "/Users/alex/Desktop/recording-over-50mb.mov";
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+    );
+    mocks.openFileDialog.mockResolvedValue([originalPath]);
+    mocks.submitIssueReport.mockResolvedValue({ received: true });
+
+    render(<AgentWorkspace />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Issue report" });
+    mocks.importHermesBridgeFile.mockClear();
+    mocks.importHermesBridgeFileBytes.mockClear();
+    mocks.hermesBridgeFilePreview.mockClear();
+    await user.click(within(dialog).getByRole("button", { name: "Add files" }));
+    expect(await within(dialog).findByText("recording-over-50mb.mov")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Send report" }));
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "bug",
+        description: "No description was typed; see the attachments.",
+        attachmentNames: ["recording-over-50mb.mov"],
+        attachmentPaths: [originalPath],
+      }),
+    );
+    expect(mocks.importHermesBridgeFile).not.toHaveBeenCalled();
+    expect(mocks.importHermesBridgeFileBytes).not.toHaveBeenCalled();
+    expect(mocks.hermesBridgeFilePreview).not.toHaveBeenCalled();
+  });
+
+  it("imports all nine report files from a DOM drop", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+    );
+    const files = Array.from(
+      { length: 9 },
+      (_, index) => new File([`log-${index + 1}`], `report-${index + 1}.txt`),
+    );
+
+    render(<AgentWorkspace />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Issue report" });
+    mocks.importHermesBridgeFileBytes.mockClear();
+    const dropZone = dialog.querySelector(".report-dialog-drop");
+    expect(dropZone).not.toBeNull();
+    fireEvent.drop(dropZone as HTMLElement, { dataTransfer: { files } });
+
+    await waitFor(() => expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledTimes(9));
+    expect(await within(dialog).findByText("report-9.txt")).toBeInTheDocument();
   });
 
   it("clears a stale new-session draft before opening a report dialog", async () => {

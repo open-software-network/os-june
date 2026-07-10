@@ -302,7 +302,7 @@ import {
   REPORT_CATEGORIES,
   type ReportCategory,
 } from "./composer/reportCategory";
-import { ReportDialog } from "./ReportDialog";
+import { ReportDialog, type ReportDialogAttachment } from "./ReportDialog";
 import { hermesConnectionForMode } from "../../lib/hermes-connection";
 import {
   forgetSessionMode,
@@ -1561,6 +1561,7 @@ type TauriFileDropPayload = {
 type FileBytesImportOptions = {
   tooLargeMessage: string;
   readErrorMessage: (file: File) => string;
+  maxFiles?: number;
 };
 
 type HermesRuntimeSessionResponse = {
@@ -1641,6 +1642,13 @@ const ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT =
   "june-agent-issue-report-follow-up-submit-failed";
 const ISSUE_REPORT_SENT_MESSAGE =
   "Your report was sent to the June team. Thank you for helping improve June.";
+
+/** Success copy for a delivered report; names files that could not be attached
+ * in Open Software (JUN-238: a skipped file must never be a silent drop). */
+function issueReportSentMessage(skippedAttachmentNames: string[] | undefined) {
+  if (!skippedAttachmentNames?.length) return ISSUE_REPORT_SENT_MESSAGE;
+  return `${ISSUE_REPORT_SENT_MESSAGE} These files could not be attached to the report in Open Software and were sent by name only: ${skippedAttachmentNames.join(", ")}.`;
+}
 const ISSUE_REPORT_DIAGNOSIS_REFRESH_TIMEOUT_MS = 1500;
 const ISSUE_REPORT_DIAGNOSIS_BOUNDARY_SKEW_MS = 1500;
 const agentComposerDrafts = new Map<string, ComposerDraftSnapshot>();
@@ -2141,7 +2149,9 @@ export function AgentWorkspace({
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
   const [reportDialogCategory, setReportDialogCategory] = useState<ReportCategory>("bug");
   const [reportDialogDescription, setReportDialogDescription] = useState("");
-  const [reportDialogAttachments, setReportDialogAttachments] = useState<AgentAttachment[]>([]);
+  const [reportDialogAttachments, setReportDialogAttachments] = useState<ReportDialogAttachment[]>(
+    [],
+  );
   // Bumped when a report is sent; see reportDialogAppendForCurrentGeneration.
   const reportDialogGenerationRef = useRef(0);
   const [hermesSessionItems, setHermesSessionItems] = useState<HermesSessionInfo[]>(() => {
@@ -5175,8 +5185,16 @@ export function AgentWorkspace({
     };
   }
 
-  function addReportDialogAttachments(nextAttachments: AgentAttachment[]) {
-    setReportDialogAttachments((current) => [...current, ...nextAttachments]);
+  function addReportDialogAttachments(nextAttachments: ReportDialogAttachment[]) {
+    setReportDialogAttachments((current) => {
+      const paths = new Set(current.map((attachment) => attachment.path));
+      const uniqueAttachments = nextAttachments.filter((attachment) => {
+        if (paths.has(attachment.path)) return false;
+        paths.add(attachment.path);
+        return true;
+      });
+      return [...current, ...uniqueAttachments];
+    });
   }
 
   async function importAttachments<T>(
@@ -5228,17 +5246,19 @@ export function AgentWorkspace({
   // so read each blob and import its bytes.
   async function importDroppedFiles(
     files: File[],
-    options: { onImported?: (attachments: AgentAttachment[]) => void } = {},
+    options: { onImported?: (attachments: AgentAttachment[]) => void; maxFiles?: number } = {},
   ) {
-    await importFileBytes(
+    const { maxFiles, ...importOptions } = options;
+    return importFileBytes(
       files,
       {
         tooLargeMessage: "Dropped files must be 50 MB or smaller.",
         readErrorMessage: (file) =>
           // Reading fails for directories, which Finder happily lets you drop.
           `Could not read "${file.name}". Folders can't be attached.`,
+        maxFiles,
       },
-      options,
+      importOptions,
     );
   }
 
@@ -5254,8 +5274,13 @@ export function AgentWorkspace({
     options: FileBytesImportOptions,
     importOptions: { onImported?: (attachments: AgentAttachment[]) => void } = {},
   ) {
-    await importAttachments(
-      files.slice(0, 8),
+    if (options.maxFiles !== undefined && files.length > options.maxFiles) {
+      setError(`You can attach up to ${options.maxFiles} files at a time.`);
+      return false;
+    }
+    const filesToImport = options.maxFiles === undefined ? files.slice(0, 8) : files;
+    return importAttachments(
+      filesToImport,
       async (file) => {
         if (file.size > 50 * 1024 * 1024) {
           throw new Error(options.tooLargeMessage);
@@ -5326,7 +5351,7 @@ export function AgentWorkspace({
       // Best-effort; the report ships without the diagnosis.
     }
     try {
-      await submitIssueReport({
+      const response = await submitIssueReport({
         category: report.category,
         description: issueReportDescription(report),
         agentDiagnosis,
@@ -5335,7 +5360,9 @@ export function AgentWorkspace({
         sessionId,
       });
       clearErrorForSession(sessionId);
-      toast.success(ISSUE_REPORT_SENT_MESSAGE, { id: ISSUE_REPORT_SENT_TOAST_ID });
+      toast.success(issueReportSentMessage(response?.skippedAttachmentNames), {
+        id: ISSUE_REPORT_SENT_TOAST_ID,
+      });
       return { sent: true };
     } catch (err) {
       const errorMessage = `The issue report could not be sent. ${messageFromError(err)}`;
@@ -5374,7 +5401,7 @@ export function AgentWorkspace({
     const sessionId = error.sessionId ?? selectedHermesSessionIdRef.current;
     setSubmittingErrorIssueReport(true);
     try {
-      await submitIssueReport({
+      const response = await submitIssueReport({
         category: report.category,
         description: issueReportDescription(report),
         agentDiagnosis: undefined,
@@ -5387,7 +5414,9 @@ export function AgentWorkspace({
       } else {
         setError(null);
       }
-      toast.success(ISSUE_REPORT_SENT_MESSAGE, { id: ISSUE_REPORT_SENT_TOAST_ID });
+      toast.success(issueReportSentMessage(response?.skippedAttachmentNames), {
+        id: ISSUE_REPORT_SENT_TOAST_ID,
+      });
     } catch (err) {
       setError(`The issue report could not be sent. ${messageFromError(err)}`, {
         sessionId: sessionId ?? null,
@@ -7254,19 +7283,47 @@ export function AgentWorkspace({
    * from an abandoned draft is discarded rather than resurfaced. */
   function reportDialogAppendForCurrentGeneration() {
     const generation = reportDialogGenerationRef.current;
-    return (attachments: AgentAttachment[]) => {
+    return (attachments: ReportDialogAttachment[]) => {
       if (generation === reportDialogGenerationRef.current) {
         addReportDialogAttachments(attachments);
       }
     };
   }
 
-  function pickReportDialogAttachments() {
-    return pickAttachments(reportDialogAppendForCurrentGeneration());
+  async function pickReportDialogAttachments() {
+    const append = reportDialogAppendForCurrentGeneration();
+    setImportingFiles(true);
+    try {
+      const selected = await openFileDialog({
+        multiple: true,
+        title: "Attach files",
+      });
+      if (!selected) return false;
+
+      const selectedPaths = Array.isArray(selected) ? selected : [selected];
+      const uniquePaths = Array.from(new Set(selectedPaths.filter((path) => path.trim())));
+      append(
+        uniquePaths.map((path) => ({
+          id: `${path}:${Date.now()}:${Math.random().toString(36)}`,
+          name: path.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? path,
+          path,
+        })),
+      );
+      setError(null);
+      return true;
+    } catch (err) {
+      setError(messageFromError(err));
+      return false;
+    } finally {
+      setImportingFiles(false);
+    }
   }
 
   function importReportDialogDroppedFiles(files: File[]) {
-    return importDroppedFiles(files, { onImported: reportDialogAppendForCurrentGeneration() });
+    return importDroppedFiles(files, {
+      onImported: reportDialogAppendForCurrentGeneration(),
+      maxFiles: 20,
+    });
   }
 
   function removeReportDialogAttachment(id: string) {

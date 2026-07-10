@@ -618,8 +618,8 @@ pub struct SubmitIssueReportRequest {
     pub agent_diagnosis: Option<String>,
     #[serde(default)]
     pub attachment_names: Vec<String>,
-    /// Local paths of the attached files (already imported into the Hermes
-    /// workspace); their bytes are uploaded with the report.
+    /// Original local paths from the report picker or workspace paths created
+    /// for DOM-dropped files; their bytes are sent with the report.
     #[serde(default)]
     pub attachment_paths: Vec<String>,
     #[serde(default)]
@@ -630,6 +630,11 @@ pub struct SubmitIssueReportRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SubmitIssueReportResponse {
     pub received: bool,
+    /// Names of attachments whose bytes were omitted locally, by a
+    /// compatibility fallback, or by June API. The report still carries the
+    /// names so the team knows which files were intended.
+    #[serde(default)]
+    pub skipped_attachment_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

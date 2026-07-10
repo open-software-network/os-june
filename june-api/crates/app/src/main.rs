@@ -9,7 +9,7 @@ use june_providers::{
     LogP3aSink, MultiFormatDurationProbe, OsAccountsHttpClient, OsAccountsP3aSink,
     OsPlatformIssueReportSink, RoutingTranscriber, VeniceAgentChat, VeniceAugment, VeniceCleaner,
     VeniceGenerator, VeniceImageEditor, VeniceImageGenerator, VeniceModelCatalog,
-    VeniceVideoProvider, client_with_timeout, default_client, jwks_client,
+    VeniceVideoProvider, client_with_timeout, default_client, issue_report_client, jwks_client,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
@@ -56,11 +56,18 @@ async fn serve() -> anyhow::Result<()> {
     let metered_inference_http = client_with_timeout(Duration::from_secs(
         image_client_timeout_secs(config.server.request_timeout_secs),
     ));
+    // os-platform attachment uploads can carry the full 300 MiB file budget.
+    // Give that dedicated client the route's configured window instead of the
+    // shared client's 60 seconds. The client deliberately has no retry layer:
+    // file and Issue creation POSTs are not idempotent.
+    let issue_report_http =
+        issue_report_client(Duration::from_secs(config.server.request_timeout_secs))?;
     let pricing = load_pricing(&config, upstream_http.clone()).await;
     let clients = HttpClients {
         default: &http,
         upstream: &upstream_http,
         metered_inference: &metered_inference_http,
+        issue_reports: &issue_report_http,
     };
     let app = build_router(&config, clients, pricing);
     let listener = tokio::net::TcpListener::bind(address).await?;
@@ -153,7 +160,7 @@ fn build_router(
     let duration_probe: Arc<dyn june_domain::AudioDurationProbe> =
         Arc::new(MultiFormatDurationProbe);
     let token_verifier = build_token_verifier(config);
-    let issue_report_sink = build_issue_report_sink(config, clients.default);
+    let issue_report_sink = build_issue_report_sink(config, clients.issue_reports);
     let p3a_sink = build_p3a_sink(config, clients.default);
     let issue_reports = Arc::new(IssueReportService::new(IssueReportServiceDeps {
         sink: issue_report_sink,
@@ -280,6 +287,7 @@ fn build_router(
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,
             max_json_bytes: config.server.max_json_bytes,
+            max_issue_report_bytes: config.server.max_issue_report_bytes,
             max_image_edit_bytes: config.server.max_image_edit_bytes,
             request_timeout_secs: config.server.request_timeout_secs,
         },
@@ -298,6 +306,7 @@ struct HttpClients<'a> {
     default: &'a reqwest::Client,
     upstream: &'a reqwest::Client,
     metered_inference: &'a reqwest::Client,
+    issue_reports: &'a reqwest::Client,
 }
 
 fn build_image_generator(
