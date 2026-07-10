@@ -30,7 +30,7 @@ describe("app shell layout (JUN-237)", () => {
     // The sonner host renders a real in-flow <section>; inside .app-shell it
     // becomes a grid item and re-opens the bottom gap. It mounts in main.tsx,
     // beside <App />, never inside it.
-    expect(appSrc).not.toContain("<Toaster");
-    expect(mainSrc).toContain("<Toaster />");
+    expect(appSrc).not.toMatch(/<Toaster\b/);
+    expect(mainSrc).toMatch(/<Toaster\b/);
   });
 });
