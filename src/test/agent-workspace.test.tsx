@@ -959,6 +959,92 @@ describe("AgentWorkspace", () => {
     });
   });
 
+  it("keeps Stop disabled until an existing-session send is actually running", async () => {
+    const user = userEvent.setup();
+    let resolveResume: (() => void) | undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return new Promise((resolve) => {
+          resolveResume = () => resolve({ session_id: "runtime-session-1" });
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "start carefully");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    const stopWhileStarting = await screen.findByRole("button", { name: "Stop June" });
+    expect(stopWhileStarting).toBeDisabled();
+    expect(stopWhileStarting).toHaveAttribute("title", "June is starting");
+    await user.click(stopWhileStarting);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.interrupt", expect.anything());
+
+    await act(async () => resolveResume?.());
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start carefully",
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Stop June" })).toBeEnabled();
+  });
+
+  it("keeps delivery tracking when a submitted steer is revised or dismissed", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+
+    await user.type(composer, "focus on the API boundary");
+    await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+        session_id: "session-1",
+        text: "focus on the API boundary",
+      }),
+    );
+
+    const submittedSteer = screen.getByTitle("focus on the API boundary");
+    fireEvent.pointerEnter(submittedSteer);
+    await user.click(screen.getByRole("button", { name: "Revise steer" }));
+    expect(submittedSteer).toBeInTheDocument();
+    expect(composer).toHaveTextContent("focus on the API boundary");
+
+    await user.click(screen.getByRole("button", { name: "Dismiss steer" }));
+    expect(screen.queryByTitle("focus on the API boundary")).toBeNull();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "focus on the API boundary",
+      }),
+    );
+  });
+
   it("opens report rows from the plus menu without inserting a chip", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(

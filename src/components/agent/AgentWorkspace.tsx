@@ -2319,13 +2319,13 @@ export function AgentWorkspace({
   // track the text and resend it as a follow-up on completion when no tool
   // consumed it (cleared on a tool.complete or a clean terminal).
   const pendingSteerBySessionIdRef = useRef<
-    Record<string, { text: string; accepted: boolean; toolDrained: boolean; cardId: string }[]>
+    Record<string, { text: string; accepted: boolean; toolDrained: boolean }[]>
   >({});
   // Steer cards: injected instructions tacked to the top of the composer while
-  // June works. Each card is the live handle on an in-flight (undelivered) steer
-  // — it mirrors an entry in pendingSteerBySessionIdRef by `id`, so editing or
-  // removing a card also cancels the pending re-delivery. Cleared when the turn
-  // ends (delivered or resent) or is stopped, matching the pending list.
+  // June works. They present instructions already submitted to Hermes, not a
+  // cancellable staging queue: revise creates a later correction, and dismiss
+  // only hides the row. The pending ref retains delivery tracking until the
+  // turn ends or is stopped.
   const [steerCardsBySessionId, setSteerCardsBySessionId] = useState<
     Record<string, { id: string; text: string }[]>
   >({});
@@ -5010,7 +5010,7 @@ export function AgentWorkspace({
       // tool.complete only clears ones a tool could actually have drained.
       steerCardSeqRef.current += 1;
       const cardId = `steer-${steerCardSeqRef.current}`;
-      const steerEntry = { text: message, accepted: false, toolDrained: false, cardId };
+      const steerEntry = { text: message, accepted: false, toolDrained: false };
       pendingSteerBySessionIdRef.current = {
         ...pendingSteerBySessionIdRef.current,
         [steerSessionId]: [
@@ -5018,9 +5018,9 @@ export function AgentWorkspace({
           steerEntry,
         ],
       };
-      // Tack the instruction onto the composer as an editable card. This is the
-      // sole in-flight representation (steerActiveSession no longer writes a
-      // transcript line) — it clears when the turn drains or ends.
+      // Tack the submitted instruction onto the composer as a revisable card.
+      // This is the sole in-flight representation (steerActiveSession no longer
+      // writes a transcript line); it clears when the turn drains or ends.
       setSteerCardsBySessionId((prev) => ({
         ...prev,
         [steerSessionId]: [...(prev[steerSessionId] ?? []), { id: cardId, text: message }],
@@ -7171,9 +7171,8 @@ export function AgentWorkspace({
   async function steerActiveSession(sessionId: string, text: string) {
     const instruction = normalizeSteerText(text);
     if (!instruction) return;
-    // The instruction is shown as an editable steer card tacked to the composer
-    // (see the submit path) rather than a transcript line, so the sender can
-    // still revise or cancel it while it's undelivered.
+    // The instruction is shown as a revisable steer card tacked to the composer
+    // (see the submit path) rather than a transcript line.
     const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
     await createHermesMethods(gateway).steerSession({
       sessionId,
@@ -7181,9 +7180,10 @@ export function AgentWorkspace({
     });
   }
 
-  // Remove a steer card and cancel its pending re-delivery. Called by the card's
-  // remove action and by Edit (which reopens the text in the composer first).
-  function removeSteerCard(sessionId: string, id: string) {
+  // Hide one submitted steer from the queue surface. This deliberately does
+  // not alter pending delivery tracking: session.steer has no recall primitive,
+  // so claiming that dismissing a row cancels the instruction would be false.
+  function dismissSteerCard(sessionId: string, id: string) {
     setSteerCardsBySessionId((prev) => {
       const list = prev[sessionId];
       if (!list) return prev;
@@ -7194,24 +7194,19 @@ export function AgentWorkspace({
       else delete copy[sessionId];
       return copy;
     });
-    const pending = pendingSteerBySessionIdRef.current[sessionId];
-    if (pending) {
-      const next = pending.filter((entry) => entry.cardId !== id);
-      pendingSteerBySessionIdRef.current = { ...pendingSteerBySessionIdRef.current };
-      if (next.length) pendingSteerBySessionIdRef.current[sessionId] = next;
-      else delete pendingSteerBySessionIdRef.current[sessionId];
-    }
   }
 
-  // Reopen a still-pending steer in the composer to revise and re-send it. The
-  // original is cancelled; a fresh steer + card is created on the next submit.
-  function editSteerCard(sessionId: string, id: string, text: string) {
-    removeSteerCard(sessionId, id);
+  // Reopen a submitted steer as the starting point for a correction. The
+  // original remains visible and tracked because Hermes may already have
+  // consumed it; submitting the revision appends a new instruction in honest
+  // delivery order.
+  function reviseSteerCard(text: string) {
     composerEditorRef.current?.setContent(text, null);
+    composerEditorRef.current?.focus();
   }
 
-  // Drop every steer card for a session — the turn ended (delivered or resent as
-  // a follow-up) or was stopped, so the live handles retire.
+  // Drop every steer card for a session - the turn ended (delivered or resent as
+  // a follow-up) or was stopped, so the submitted-steer history retires.
   function clearSteerCards(sessionId: string) {
     setSteerCardsBySessionId((prev) => {
       if (!prev[sessionId]) return prev;
@@ -7222,7 +7217,7 @@ export function AgentWorkspace({
   }
 
   // One queued-steer row: bare text (the "Queued" header labels the section,
-  // so no per-row glyph), full-row hover reveals the actions. Hover is the
+  // so no per-row glyph), full-row hover reveals revise/dismiss. Hover is the
   // tracked data attribute, not CSS :hover — WebKit doesn't re-evaluate
   // :hover when rows reflow under a stationary pointer.
   function renderSteerCard(card: { id: string; text: string }) {
@@ -7244,19 +7239,19 @@ export function AgentWorkspace({
         <div className="agent-steer-card-actions">
           <button
             type="button"
-            aria-label="Edit steer"
-            title="Edit"
-            onClick={() => editSteerCard(sessionId, card.id, card.text)}
+            aria-label="Revise steer"
+            title="Revise"
+            onClick={() => reviseSteerCard(card.text)}
           >
             <IconPencil size={13} />
           </button>
           <button
             type="button"
-            aria-label="Remove steer"
-            title="Remove"
-            onClick={() => removeSteerCard(sessionId, card.id)}
+            aria-label="Dismiss steer"
+            title="Dismiss"
+            onClick={() => dismissSteerCard(sessionId, card.id)}
           >
-            <IconTrashCan size={13} />
+            <IconCrossMedium size={13} />
           </button>
         </div>
       </div>
@@ -8799,8 +8794,15 @@ export function AgentWorkspace({
                     type="button"
                     className="agent-composer-stop"
                     aria-label="Stop June"
-                    title="Stop June"
-                    disabled={stoppingSessionIds.has(selectedHermesSessionId)}
+                    title={
+                      workingSessionIds.has(selectedHermesSessionId)
+                        ? "Stop June"
+                        : "June is starting"
+                    }
+                    disabled={
+                      stoppingSessionIds.has(selectedHermesSessionId) ||
+                      !workingSessionIds.has(selectedHermesSessionId)
+                    }
                     onClick={() => void stopHermesSession(selectedHermesSessionId)}
                   >
                     <IconStop size={16} />

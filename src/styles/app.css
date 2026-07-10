@@ -5470,9 +5470,9 @@ input:focus-visible,
 /* Steer queue — the queued/steering instructions as their own elevated card
    ABOVE the composer box (not a region inside it). All rows show by default;
    the header collapses the list to itself and stays put ("Queued" + count,
-   constant copy in both states). Each row is the live handle on an in-flight
-   steer: full-row hover reveals edit (reopen in the composer) and remove
-   (cancel). Sending is automatic, so there is no send action. */
+   constant copy in both states). Each row represents a submitted steer;
+   full-row hover reveals revise (draft a later correction) and dismiss
+   (hide the row). Sending is automatic, so there is no send action. */
 .agent-steer-queue {
   pointer-events: auto;
   width: 100%;
