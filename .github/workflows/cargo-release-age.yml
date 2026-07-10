@@ -5,8 +5,7 @@ on:
   pull_request:
     paths:
       - "**/Cargo.toml"
-      - "src-tauri/Cargo.lock"
-      - "june-api/Cargo.lock"
+      - "**/Cargo.lock"
       - "scripts/check-cargo-release-age.py"
       - "scripts/cargo-release-age-exclude.txt"
       - ".github/workflows/cargo-release-age.yml"

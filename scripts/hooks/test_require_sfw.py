@@ -17,6 +17,7 @@ cases = [
     ("cd foo\npnpm add lodash", True),
     ("echo start\ncargo add serde", True),
     ("true\nbun add x", True),
+    ("echo hi & pnpm add evil", True),
     ("cargo add serde", True),
     ("cargo install cargo-edit", True),
     ("cargo update", True),

@@ -35,7 +35,7 @@ def pnpm_install_with_package(seg):
 
 
 def check(command):
-    for raw in re.split(r"&&|\|\||;|\||[\n\r]+", command):
+    for raw in re.split(r"&&|\|\||;|\||&|[\n\r]+", command):
         seg = re.sub(r"^(?:\w+=\S*\s+)+", "", raw.strip())
         if seg.startswith("sfw "):
             continue
