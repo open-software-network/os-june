@@ -4,8 +4,8 @@ use windows_sys::Win32::{
     Foundation::{GlobalFree, HANDLE, HWND},
     System::{
         DataExchange::{
-            CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
-            OpenClipboard, SetClipboardData,
+            CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
+            IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
         },
         Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT},
     },
@@ -15,29 +15,31 @@ const CLIPBOARD_RETRY_ATTEMPTS: usize = 12;
 const CLIPBOARD_RETRY_DELAY: Duration = Duration::from_millis(25);
 const CF_UNICODETEXT: u32 = 13;
 
-pub fn replace_text(text: &str) -> Result<Option<String>> {
+pub struct ClipboardBackup {
+    items: Vec<ClipboardBackupItem>,
+}
+
+struct ClipboardBackupItem {
+    format: u32,
+    data: Vec<u8>,
+}
+
+pub fn replace_text(text: &str) -> Result<ClipboardBackup> {
     with_open_clipboard(|| {
-        let previous = read_open_clipboard_text()?;
+        let items = backup_clipboard()?;
         set_open_clipboard_text(text)?;
-        Ok(previous)
+        Ok(ClipboardBackup {
+            items,
+        })
     })
 }
 
-pub fn restore_text_if_unchanged(expected: &str, previous: Option<&str>) -> Result<()> {
+pub fn restore_clipboard_if_unchanged(expected: &str, backup: ClipboardBackup) -> Result<()> {
     with_open_clipboard(|| {
         if read_open_clipboard_text()?.as_deref() != Some(expected) {
             return Ok(());
         }
-        match previous {
-            Some(previous) => set_open_clipboard_text(previous),
-            None => {
-                if unsafe { EmptyClipboard() } == 0 {
-                    Err(anyhow!("EmptyClipboard failed"))
-                } else {
-                    Ok(())
-                }
-            }
-        }
+        restore_clipboard(backup.items)
     })
 }
 
@@ -123,5 +125,72 @@ fn set_open_clipboard_text(text: &str) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn backup_clipboard() -> Result<Vec<ClipboardBackupItem>> {
+    let mut items = Vec::new();
+    let mut format = 0;
+    loop {
+        format = unsafe { EnumClipboardFormats(format) };
+        if format == 0 {
+            break;
+        }
+
+        let handle = unsafe { GetClipboardData(format) };
+        if handle.is_null() {
+            continue;
+        }
+
+        let size = unsafe { GlobalSize(handle as HANDLE) };
+        if size == 0 {
+            items.push(ClipboardBackupItem {
+                format,
+                data: Vec::new(),
+            });
+            continue;
+        }
+
+        let locked = unsafe { GlobalLock(handle as HANDLE) };
+        if locked.is_null() {
+            continue;
+        }
+
+        let mut data = vec![0u8; size];
+        unsafe {
+            std::ptr::copy_nonoverlapping(locked as *const u8, data.as_mut_ptr(), size);
+            GlobalUnlock(handle as HANDLE);
+        }
+
+        items.push(ClipboardBackupItem { format, data });
+    }
+    Ok(items)
+}
+
+fn restore_clipboard(items: Vec<ClipboardBackupItem>) -> Result<()> {
+    if unsafe { EmptyClipboard() } == 0 {
+        return Err(anyhow!("EmptyClipboard failed"));
+    }
+    for item in items {
+        if item.data.is_empty() {
+            continue;
+        }
+        unsafe {
+            let handle = GlobalAlloc(GMEM_MOVEABLE, item.data.len());
+            if handle.is_null() {
+                continue;
+            }
+            let locked = GlobalLock(handle);
+            if locked.is_null() {
+                GlobalFree(handle);
+                continue;
+            }
+            std::ptr::copy_nonoverlapping(item.data.as_ptr(), locked as *mut u8, item.data.len());
+            GlobalUnlock(handle);
+            if SetClipboardData(item.format, handle).is_null() {
+                GlobalFree(handle);
+            }
+        }
+    }
     Ok(())
 }

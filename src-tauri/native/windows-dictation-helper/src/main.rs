@@ -349,7 +349,7 @@ impl HelperApp {
         self.writer.emit(simple_event("paste_completed"));
         self.clipboard_restore = Some(thread::spawn(move || {
             thread::sleep(CLIPBOARD_RESTORE_DELAY);
-            let _ = clipboard::restore_text_if_unchanged(&text, previous_clipboard.as_deref());
+            let _ = clipboard::restore_clipboard_if_unchanged(&text, previous_clipboard);
         }));
     }
 
