@@ -69,7 +69,7 @@ New crate in the Tauri workspace (`src-tauri` sibling, consistent with `june-*` 
 - **OAuth engine:** native-app flow, PKCE (S256), loopback redirect on an ephemeral port, browser handoff via default browser (not a webview — users should see the real Google consent screen). Handle refresh-token rotation and `invalid_grant` (revocation) → surface a "reconnect" state, never a silent failure.
 - **Token store:** macOS Keychain via the same plumbing the dictation helper uses for TCC-adjacent secrets. Key layout: one Keychain item per (provider, account) pair, tagged with scope set granted. Never write tokens to disk, logs, or issue reports (extend the issue-report scrubber's denylist).
 - **Scope registry:** central table mapping features → minimal scopes. As shipped, the read-only surfaces never carry a write scope: `gmail.readonly` (triage/briefings), `calendar.readonly` (briefings, meeting prep). Write scopes are added only when a mutating routine is enabled: `gmail.compose` (drafts), `gmail.modify` (label/archive — `gmail.readonly` cannot apply labels, and Google's `users.threads.modify` requires `gmail.modify`), `gmail.send` (autonomous send, requested only when a user first enables an autonomous send routine), `calendar.events` (create events, respond to invites). Incremental auth: escalate scopes per-feature with a clear in-app explanation; never request the superset up front (protects consent conversion and eases Google review). Coverage is superset-aware, so an account that already granted a write scope is not re-prompted for the narrower read (e.g. `calendar.events` satisfies a read-only briefing).
-- **Multi-account:** support ≥2 Google accounts from day one (work + personal is the norm for our prosumer target).
+- **Account routing:** local v1 intentionally supports one connected Google account at a time. Every base MCP server, trigger, approval, and grant is bound to that same account. Multi-account support is a follow-up that must add an explicit account selector and preserve that binding end to end rather than silently choosing the first account.
 
 ### 1.2 MCP servers: `june_gmail`, `june_gcal` (week 2–3)
 
@@ -88,7 +88,7 @@ Design rules: tools return compact structured summaries by default (subject/send
 
 ### 1.4 Trust modes on routines (week 3–4)
 
-- Extend routine config: `trust: read_only | approval | autonomous`, default `approval`. UI copy mirrors Town's proven three-mode framing but in our sentence-case voice.
+- Extend connector-aware routine config: `trust: read_only | approval | autonomous`. Plain routines and connector reads start `read_only`; templates or routines that enable mutating connector tools start in `approval`. UI copy mirrors Town's proven three-mode framing but in our sentence-case voice.
 - `read_only`: routine's tool allowlist excludes all mutating tools. `approval`: mutating calls route through the existing agent approval pipeline (same surface as risky-action approvals today; batched approvals for triage runs — approve 5 drafts at once). `autonomous`: per-routine, per-tool grants; requires the routine to have run ≥3 times in approval mode first ("earned autonomy" — cheap to build, big trust win).
 - Never conflate with Sandboxed/Unrestricted (existing guardrail): trust modes govern *outward actions*, sandbox governs *local system access*. Docs and UI keep them visually separate.
 
@@ -115,7 +115,7 @@ Design rules: tools return compact structured summaries by default (subject/send
 - On first connect, a one-shot local agent task builds a profile from `june_context` (notes, transcripts) + `june_gmail`/`june_gcal`: who you work with, active projects, meeting cadence, writing register. Rendered as an editable card ("Here's what I already know — and it never left your Mac"), stored locally, feeds the soul's context section.
 - Cost note: this is a real agent session (metered `agent_chat`); cap its budget and show progress. Fully deletable/regenerable in Settings.
 
-**Exit criteria for P1+P2 (rc channel):** team dogfood ≥2 weeks; ≥1 routine/day/dogfooder; zero token-material leaks in logs/issue reports (audited); approval UX reviewed for the 20-drafts-at-once case.
+**Exit criteria for P1+P2 (rc channel):** team dogfood ≥2 weeks; ≥1 routine/day/dogfooder; zero token-material leaks in logs/issue reports (audited); approval UX reviewed for the 20-drafts-at-once case. A signed rc build must also pass the live-account matrix: first OAuth connect, app restart, access-token refresh, incremental scope escalation, reconnect after `invalid_grant`, disconnect, and server-side revoke. From a sandboxed agent session, both `/usr/bin/security` and a small `SecItemCopyMatching` probe must fail to read the connector item while the Rust host can still refresh and call Google.
 
 ---
 

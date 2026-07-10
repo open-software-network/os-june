@@ -16,8 +16,10 @@
 //! Interactive chat and biography sessions carry no job id, so they always
 //! park: an action call from chat prompts the user too.
 //!
-//! Previews stored for the UI are scrubbed of addresses and secret-shaped
-//! values and truncated; tokens and full recipient lists never reach here.
+//! Previews stored for the UI contain only mutation-target metadata assembled
+//! by the Rust proxy. Recipient addresses and object identifiers are preserved
+//! because hiding them would make the approval meaningless; message bodies,
+//! event descriptions, grant tokens, and Google tokens never reach here.
 
 use crate::domain::types::AppError;
 use rand::{distributions::Alphanumeric, Rng};
@@ -34,7 +36,6 @@ use tokio::sync::oneshot;
 /// connector OAuth login window so a slow-but-real approval is never cut short.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 const APPROVALS_CHANGED_EVENT: &str = "june://connector-approvals-changed";
-const ARGS_PREVIEW_MAX_CHARS: usize = 240;
 
 /// The outcome of gating a mutating connector action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,18 +90,32 @@ fn registry() -> &'static Mutex<HashMap<String, PendingEntry>> {
 /// out. Read-only enforcement lives at the toolset layer (a read-only routine
 /// never gets an action server), so there is no read-only branch here.
 pub async fn gate_action(app: &AppHandle, request: ActionRequest<'_>) -> ActionDecision {
-    if let Some(token) = request.grant_token.filter(|token| !token.is_empty()) {
-        // A DB failure here is a fail-closed signal: fall through to parking
-        // rather than silently allowing an ungoverned mutation.
-        if let Ok(repos) = crate::commands::repositories(app).await {
-            if let Ok(Some(grant)) = repos.find_connector_grant_by_token(token).await {
-                if grant_authorizes(&grant, request.account_id, request.tool) {
-                    return ActionDecision::Allow;
-                }
-            }
-        }
+    if action_is_authorized(app, request.grant_token, request.account_id, request.tool).await {
+        return ActionDecision::Allow;
     }
     park(app, request).await
+}
+
+/// Whether a per-routine grant lets this action bypass the approval surface.
+/// The proxy uses this before loading human-readable message/event metadata so
+/// autonomous calls do not make a redundant read solely to build an approval
+/// card that will never be shown. Any lookup failure is fail-closed.
+pub async fn action_is_authorized(
+    app: &AppHandle,
+    grant_token: Option<&str>,
+    account_id: &str,
+    tool: &str,
+) -> bool {
+    let Some(token) = grant_token.filter(|token| !token.is_empty()) else {
+        return false;
+    };
+    let Ok(repos) = crate::commands::repositories(app).await else {
+        return false;
+    };
+    let Ok(Some(grant)) = repos.find_connector_grant_by_token(token).await else {
+        return false;
+    };
+    grant_authorizes(&grant, account_id, tool)
 }
 
 /// A grant authorizes a call only when it is bound to the SAME (non-empty)
@@ -124,8 +139,8 @@ async fn park(app: &AppHandle, request: ActionRequest<'_>) -> ActionDecision {
         tool: request.tool.to_string(),
         server: request.server.to_string(),
         account_email: request.account_id.to_string(),
-        summary: scrub_preview(&request.summary),
-        args_preview: scrub_preview(&request.args_preview),
+        summary: sanitize_preview(&request.summary),
+        args_preview: sanitize_preview(&request.args_preview),
         requested_at_ms: now_ms(),
     };
     {
@@ -193,46 +208,12 @@ fn random_approval_id() -> String {
         .collect()
 }
 
-/// Redact addresses and secret-shaped runs from a preview, then truncate. No
-/// full recipient addresses, bodies, or tokens are ever stored for the UI.
-fn scrub_preview(preview: &str) -> String {
-    let scrubbed = preview
-        .split_whitespace()
-        .map(scrub_word)
-        .collect::<Vec<_>>()
-        .join(" ");
-    truncate_chars(&scrubbed, ARGS_PREVIEW_MAX_CHARS)
-}
-
-fn scrub_word(word: &str) -> String {
-    let trimmed = word.trim_matches(|c: char| matches!(c, '<' | '>' | ',' | ';' | '(' | ')'));
-    // An address-shaped token (has an @ and a dot after it) is redacted whole.
-    if let Some(at) = trimmed.find('@') {
-        if trimmed[at..].contains('.') {
-            return "[address]".to_string();
-        }
-    }
-    // A long separator-free credential-shaped run.
-    if trimmed.len() >= 32
-        && !trimmed.contains('/')
-        && !trimmed.contains('\\')
-        && trimmed
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        && trimmed.chars().any(|c| c.is_ascii_alphanumeric())
-    {
-        return "[redacted]".to_string();
-    }
-    word.to_string()
-}
-
-fn truncate_chars(value: &str, max: usize) -> String {
-    if value.chars().count() <= max {
-        return value.to_string();
-    }
-    let mut out: String = value.chars().take(max).collect();
-    out.push_str("...");
-    out
+/// Collapse line breaks/control whitespace so untrusted metadata cannot forge
+/// extra UI rows. The producer deliberately omits bodies and credentials and
+/// bounds the complete preview before it reaches this module; target addresses
+/// and identifiers stay intact for informed consent.
+fn sanitize_preview(preview: &str) -> String {
+    preview.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // --- Commands ----------------------------------------------------------------
@@ -332,31 +313,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scrub_preview_redacts_addresses_and_secrets() {
-        let scrubbed = scrub_preview("Subject: hi to ada@example.com <bob@corp.io>");
-        assert!(scrubbed.contains("Subject:"));
-        assert!(scrubbed.contains("[address]"));
-        assert!(!scrubbed.contains("ada@example.com"));
-        assert!(!scrubbed.contains("bob@corp.io"));
-
-        let token = "abcdefghijklmnopqrstuvwxyz0123456789";
-        let scrubbed = scrub_preview(&format!("token {token}"));
-        assert!(scrubbed.contains("[redacted]"));
-        assert!(!scrubbed.contains(token));
-    }
-
-    #[test]
-    fn scrub_preview_truncates_long_text() {
-        let long = "word ".repeat(200);
-        let scrubbed = scrub_preview(&long);
-        assert!(scrubbed.chars().count() <= ARGS_PREVIEW_MAX_CHARS + 3);
-        assert!(scrubbed.ends_with("..."));
+    fn sanitize_preview_preserves_targets_and_collapses_lines() {
+        let sanitized = sanitize_preview(
+            "To: ada@example.com, bob@corp.io\nMessage: 18f3abc0123456789\tSubject: hi",
+        );
+        assert_eq!(
+            sanitized,
+            "To: ada@example.com, bob@corp.io Message: 18f3abc0123456789 Subject: hi"
+        );
     }
 
     #[test]
     fn short_plain_text_is_unchanged() {
         assert_eq!(
-            scrub_preview("Subject: Weekly sync"),
+            sanitize_preview("Subject: Weekly sync"),
             "Subject: Weekly sync"
         );
     }

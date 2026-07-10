@@ -61,6 +61,11 @@ TOOLS: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": "Recipient email addresses.",
                 },
+                "cc": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional Cc recipient email addresses.",
+                },
                 "subject": {"type": "string", "description": "The subject line."},
                 "body": {"type": "string", "description": "The plain-text body."},
                 "in_reply_to": {
@@ -91,6 +96,11 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Recipient email addresses.",
+                },
+                "cc": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional Cc recipient email addresses.",
                 },
                 "subject": {"type": "string", "description": "The subject line."},
                 "body": {"type": "string", "description": "The plain-text body."},
@@ -290,6 +300,7 @@ def build_payload(
         payload["to"] = string_list(arguments.get("to"))
         if not payload["to"]:
             raise ValueError("at least one recipient is required")
+        payload["cc"] = string_list(arguments.get("cc"))
         payload["subject"] = str(arguments.get("subject") or "")
         payload["body"] = str(arguments.get("body") or "")
         reply = str(arguments.get("in_reply_to") or "").strip()

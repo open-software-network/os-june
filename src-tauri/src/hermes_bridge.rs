@@ -364,6 +364,7 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_CONFIG_PATH",
     "HERMES_DASHBOARD_SESSION_TOKEN",
     "HERMES_ENVIRONMENT_HINT",
+    "HERMES_TUI_TOOLSETS",
     "HERMES_MODEL",
     "HERMES_PROVIDER",
     "OPENAI_API_KEY",
@@ -1161,6 +1162,15 @@ async fn start_hermes_bridge_inner(
         &hermes_home,
         &token,
         environment_hint_for_spawn(full_mode, sandbox_available),
+    );
+    // The pinned runtime otherwise auto-includes every enabled MCP server in
+    // interactive chat. Per-routine autonomy servers carry bypass grants, so
+    // normal chat must never inherit them; it uses the base action servers,
+    // whose calls always enter June's approval surface. Cron jobs are separate
+    // launchd processes and continue to use each job's enabled_toolsets.
+    cmd.env(
+        "HERMES_TUI_TOOLSETS",
+        hermes_interactive_toolsets(&hermes_home.join(HERMES_CONFIG_FILE)).join(","),
     );
     cmd.current_dir(&cwd);
 
@@ -6509,8 +6519,9 @@ fn sandbox_config_temp_prefix(hermes_home: &Path) -> PathBuf {
 /// Renders the Seatbelt (SBPL) profile text. Strategy: allow broadly, because
 /// the embedded Python runtime needs wide syscall, mach-service, and exec
 /// rights and any tighter base brings the runtime down; then deny every write
-/// and re-grant only the app-owned roots, and deny reads of credential stores.
-/// Pure (no IO) so it can be unit-tested.
+/// and re-grant only the app-owned roots, deny reads of credential stores, and
+/// deny the securityd services used by Keychain Services. Pure (no IO) so it
+/// can be unit-tested.
 #[cfg(target_os = "macos")]
 fn build_sandbox_profile(
     home: &Path,
@@ -6602,6 +6613,24 @@ fn build_sandbox_profile(
     }
     out.push_str("  (regex #\"^/dev/fd/[0-9]+$\")\n");
     out.push_str("  (regex #\"^/dev/ttys[0-9]+$\")\n");
+    out.push_str(")\n\n");
+
+    // Blocking the Keychain database files is not sufficient: clients normally
+    // use Keychain Services over securityd rather than opening those files.
+    // The unsandboxed Rust host retains access and exposes only scoped
+    // connector operations over the loopback proxy.
+    out.push_str(";; Keychain service boundary: block SecItem/Keychain Services IPC.\n");
+    out.push_str("(deny mach-lookup\n");
+    for service in [
+        "com.apple.securityd",
+        "com.apple.securityd.xpc",
+        "com.apple.securityd.general",
+        "com.apple.securityd.systemkeychain",
+        "com.apple.securityd.service",
+        "com.apple.securitydservice",
+    ] {
+        out.push_str(&format!("  (global-name {})\n", sbpl_quote(service)));
+    }
     out.push_str(")\n\n");
 
     out.push_str(";; Secret-read denylist: reads are otherwise open so June can work on\n");
@@ -7121,6 +7150,61 @@ fn is_june_connector_server_name(name: &str) -> bool {
         || name == JUNE_GCAL_MCP_SERVER_NAME
         || name.starts_with("june_gmail_")
         || name.starts_with("june_gcal_")
+}
+
+/// Resolve the dashboard/TUI toolset pin from the merged Hermes config while
+/// excluding every per-routine connector autonomy server. This mirrors the
+/// pinned runtime's CLI-platform behavior: an explicit MCP name is an
+/// allowlist; otherwise all enabled MCP servers are included. User-added MCPs
+/// and native toolset choices survive unchanged.
+fn hermes_interactive_toolsets(config_path: &Path) -> Vec<String> {
+    let config = std::fs::read_to_string(config_path)
+        .ok()
+        .and_then(|text| serde_yaml::from_str::<serde_yaml::Value>(&text).ok());
+    let Some(config) = config else {
+        // Fail closed for MCP access: a malformed config gets the native
+        // interactive default but no globally registered MCP server.
+        return vec!["hermes-cli".to_string()];
+    };
+
+    let mut selected: Vec<String> = config
+        .get("platform_toolsets")
+        .and_then(|value| value.get("cli"))
+        .and_then(serde_yaml::Value::as_sequence)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .filter(|name| !is_june_connector_auto_server_name(name))
+                .collect()
+        })
+        .unwrap_or_else(|| vec!["hermes-cli".to_string()]);
+
+    let enabled_mcp: Vec<String> = config
+        .get("mcp_servers")
+        .and_then(serde_yaml::Value::as_mapping)
+        .into_iter()
+        .flat_map(|servers| servers.iter())
+        .filter_map(|(name, settings)| {
+            let name = name.as_str()?;
+            let enabled = settings
+                .get("enabled")
+                .and_then(serde_yaml::Value::as_bool)
+                .unwrap_or(true);
+            (enabled && !is_june_connector_auto_server_name(name)).then(|| name.to_string())
+        })
+        .collect();
+    let has_explicit_mcp = selected.iter().any(|name| enabled_mcp.contains(name));
+    let disables_mcp = selected.iter().any(|name| name == "no_mcp");
+    if !has_explicit_mcp && !disables_mcp {
+        selected.extend(enabled_mcp);
+    }
+    selected.dedup();
+    selected
+}
+
+fn is_june_connector_auto_server_name(name: &str) -> bool {
+    name.starts_with("june_gmail_auto_") || name.starts_with("june_gcal_auto_")
 }
 
 /// Recursive overlay merge: mappings merge key by key (overlay wins on leaf
@@ -8447,21 +8531,35 @@ async fn handle_connector_route(
         .await;
     };
 
-    // Mutating routes are gated at this choke point before any Google call.
+    // Mutating routes are gated at this choke point before any Google
+    // mutation. Calls that need approval first load read-only message/event
+    // metadata so the card can identify the exact object; autonomous grants
+    // skip that read because no card is shown.
     if let Some(tool) = connector_action_tool(path) {
-        let (server, summary, args_preview) = describe_connector_action(path, tool, &body);
-        let request = crate::connectors::approvals::ActionRequest {
-            grant_token: body.get("grant").and_then(serde_json::Value::as_str),
-            account_id: &account_id,
-            server,
-            tool,
-            summary,
-            args_preview,
-        };
-        if let crate::connectors::approvals::ActionDecision::Deny(reason) =
-            crate::connectors::approvals::gate_action(&app, request).await
+        let grant_token = body.get("grant").and_then(serde_json::Value::as_str);
+        if !crate::connectors::approvals::action_is_authorized(&app, grant_token, &account_id, tool)
+            .await
         {
-            return connector_error_response(stream, "connector_action_denied", &reason).await;
+            let (server, summary, args_preview) =
+                match describe_connector_action(&app, &account_id, path, tool, &body).await {
+                    Ok(description) => description,
+                    Err(error) => {
+                        return connector_error_response(stream, &error.code, &error.message).await;
+                    }
+                };
+            let request = crate::connectors::approvals::ActionRequest {
+                grant_token: None,
+                account_id: &account_id,
+                server,
+                tool,
+                summary,
+                args_preview,
+            };
+            if let crate::connectors::approvals::ActionDecision::Deny(reason) =
+                crate::connectors::approvals::gate_action(&app, request).await
+            {
+                return connector_error_response(stream, "connector_action_denied", &reason).await;
+            }
         }
     }
 
@@ -8505,66 +8603,178 @@ fn connector_action_tool(path: &str) -> Option<&str> {
         .find_map(|prefix| path.strip_prefix(prefix))
 }
 
-/// A short, human summary and a scrubbable args preview for the approval card.
-/// Neither carries a full recipient address or body; `approvals` scrubs both
-/// again before they are stored.
-fn describe_connector_action(
+const CONNECTOR_APPROVAL_PREVIEW_MAX_CHARS: usize = 16 * 1024;
+
+/// A short human summary and complete mutation-target preview for the approval
+/// card. Recipient addresses and stable object ids are intentionally visible.
+/// Bodies, event descriptions, grants, and OAuth tokens are never copied in.
+async fn describe_connector_action(
+    app: &AppHandle,
+    account_id: &str,
     path: &str,
     tool: &str,
     body: &serde_json::Value,
-) -> (&'static str, String, String) {
+) -> Result<(&'static str, String, String), AppError> {
     let server = if path.starts_with("/v1/gmail-actions/") {
         JUNE_GMAIL_ACTIONS_MCP_SERVER_NAME
     } else {
         JUNE_GCAL_ACTIONS_MCP_SERVER_NAME
     };
-    let recipient_count = body
-        .get("to")
-        .and_then(serde_json::Value::as_array)
-        .map(|list| list.len())
-        .unwrap_or(0);
-    let subject = body
-        .get("subject")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
+    let to = body_string_list(body, "to");
+    let cc = body_string_list(body, "cc");
+    let subject = approval_field(
+        body_str(body, "subject")
+            .as_deref()
+            .unwrap_or("(no subject)"),
+    );
     let (summary, preview) = match tool {
         "send_email" => (
-            format!("Send an email to {recipient_count} recipient(s)"),
-            format!("Subject: {subject}"),
+            "Send an email".to_string(),
+            email_approval_preview(body, &to, &cc, &subject),
         ),
         "create_draft" => (
-            format!("Save a draft to {recipient_count} recipient(s)"),
-            format!("Subject: {subject}"),
+            "Save an email draft".to_string(),
+            email_approval_preview(body, &to, &cc, &subject),
         ),
-        "modify_labels" => ("Change a message's labels".to_string(), String::new()),
-        "archive" => ("Archive a message".to_string(), String::new()),
+        "modify_labels" | "archive" => {
+            let message_id = require_body_str(body, "message_id")?;
+            let message = connector_google_call(app, account_id, |token| {
+                let message_id = message_id.clone();
+                async move { crate::connectors::google::get_message(&token, &message_id).await }
+            })
+            .await
+            .map_err(|_| {
+                AppError::new(
+                    "connector_approval_context_failed",
+                    "June could not load that message's details, so it did not ask you to approve a blind action.",
+                )
+            })?;
+            let message_subject =
+                approval_field(message.subject.as_deref().unwrap_or("(no subject)"));
+            let from = approval_field(message.from.as_deref().unwrap_or("unknown sender"));
+            if tool == "archive" {
+                (
+                    "Archive a message".to_string(),
+                    format!(
+                        "Message: {message_subject} | From: {from} | Message ID: {} | Remove label: INBOX",
+                        message.id
+                    ),
+                )
+            } else {
+                let add = display_list(&body_string_list(body, "add"));
+                let remove = display_list(&body_string_list(body, "remove"));
+                (
+                    "Change a message's labels".to_string(),
+                    format!(
+                        "Message: {message_subject} | From: {from} | Message ID: {} | Add labels: {add} | Remove labels: {remove}",
+                        message.id
+                    ),
+                )
+            }
+        }
         "create_event" => {
-            let event = body
-                .get("summary")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let start = body
-                .get("start")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
+            let event =
+                approval_field(body_str(body, "summary").as_deref().unwrap_or("(untitled)"));
+            let start = approval_field(body_str(body, "start").as_deref().unwrap_or("unknown"));
+            let end = approval_field(body_str(body, "end").as_deref().unwrap_or("unknown"));
+            let calendar = approval_field(
+                body_str(body, "calendar_id")
+                    .as_deref()
+                    .unwrap_or("primary"),
+            );
+            let location = approval_field(body_str(body, "location").as_deref().unwrap_or("none"));
+            let attendees = display_list(&body_string_list(body, "attendees"));
             (
                 "Create a calendar event".to_string(),
-                format!("{event} starting {start}"),
+                format!(
+                    "Event: {event} | Start: {start} | End: {end} | Calendar: {calendar} | Location: {location} | Attendees: {attendees}"
+                ),
             )
         }
         "respond_to_invite" => {
-            let response = body
-                .get("response")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
+            let event_id = require_body_str(body, "event_id")?;
+            let calendar_id = body_str(body, "calendar_id");
+            let event = connector_google_call(app, account_id, |token| {
+                let event_id = event_id.clone();
+                let calendar_id = calendar_id.clone();
+                async move {
+                    crate::connectors::google::get_event(
+                        &token,
+                        calendar_id.as_deref(),
+                        &event_id,
+                    )
+                    .await
+                }
+            })
+            .await
+            .map_err(|_| {
+                AppError::new(
+                    "connector_approval_context_failed",
+                    "June could not load that event's details, so it did not ask you to approve a blind response.",
+                )
+            })?;
+            let response =
+                approval_field(body_str(body, "response").as_deref().unwrap_or("unknown"));
+            let title = approval_field(event.summary.as_deref().unwrap_or("(untitled)"));
+            let start = approval_field(event.start.as_deref().unwrap_or("unknown"));
+            let organizer = approval_field(event.organizer.as_deref().unwrap_or("unknown"));
             (
                 "Respond to a calendar invite".to_string(),
-                format!("Response: {response}"),
+                format!(
+                    "Event: {title} | Start: {start} | Organizer: {organizer} | Event ID: {} | Response: {response}",
+                    event.id
+                ),
             )
         }
         other => (other.to_string(), String::new()),
     };
-    (server, summary, preview)
+    let preview = preview.split_whitespace().collect::<Vec<_>>().join(" ");
+    if preview.chars().count() > CONNECTOR_APPROVAL_PREVIEW_MAX_CHARS {
+        return Err(AppError::new(
+            "connector_approval_context_too_large",
+            "This action has too many targets to review safely in one approval. Reduce the recipient or attendee list and try again.",
+        ));
+    }
+    Ok((server, summary, preview))
+}
+
+fn email_approval_preview(
+    body: &serde_json::Value,
+    to: &[String],
+    cc: &[String],
+    subject: &str,
+) -> String {
+    let mut preview = format!(
+        "To: {} | Cc: {} | Subject: {subject}",
+        display_list(to),
+        display_list(cc)
+    );
+    if let Some(thread_id) = body_str(body, "thread_id") {
+        preview.push_str(&format!(" | Thread ID: {thread_id}"));
+    }
+    if let Some(message_id) = body_str(body, "in_reply_to") {
+        preview.push_str(&format!(" | In reply to: {message_id}"));
+    }
+    preview
+}
+
+fn display_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn approval_field(value: &str) -> String {
+    const FIELD_MAX_CHARS: usize = 300;
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= FIELD_MAX_CHARS {
+        return normalized;
+    }
+    let mut truncated: String = normalized.chars().take(FIELD_MAX_CHARS).collect();
+    truncated.push_str("...");
+    truncated
 }
 
 /// Resolves a token and calls a `connectors::google` function, refreshing the
@@ -8870,9 +9080,16 @@ async fn dispatch_connector_route(
             let updated = connector_google_call(app, account_id, |token| {
                 let event_id = event_id.clone();
                 let calendar_id = calendar_id.clone();
+                let account_id = account_id.to_string();
                 async move {
-                    google::respond_to_invite(&token, calendar_id.as_deref(), &event_id, response)
-                        .await
+                    google::respond_to_invite(
+                        &token,
+                        calendar_id.as_deref(),
+                        &event_id,
+                        &account_id,
+                        response,
+                    )
+                    .await
                 }
             })
             .await?;
@@ -12837,6 +13054,79 @@ mcp_servers:
         apply_isolated_hermes_env(&mut bare, Path::new("/tmp/hermes-home"), "token", None);
         std::env::remove_var("HERMES_ENVIRONMENT_HINT");
         assert!(!envs_of(&bare).contains_key("HERMES_ENVIRONMENT_HINT"));
+        assert!(!envs_of(&bare).contains_key("HERMES_TUI_TOOLSETS"));
+    }
+
+    #[test]
+    fn interactive_toolsets_exclude_per_routine_autonomy_servers() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config_path = home.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            r#"platform_toolsets:
+  cron: [web]
+mcp_servers:
+  june_context: { enabled: true }
+  june_gmail: { enabled: true }
+  june_gmail_actions: { enabled: true }
+  june_gmail_auto_job_a: { enabled: true }
+  june_gcal_auto_job_b: { enabled: true }
+  user_server: { enabled: true }
+  disabled_server: { enabled: false }
+"#,
+        )
+        .expect("write config");
+
+        let selected = hermes_interactive_toolsets(&config_path);
+        assert!(selected.contains(&"hermes-cli".to_string()));
+        assert!(selected.contains(&"june_context".to_string()));
+        assert!(selected.contains(&"june_gmail".to_string()));
+        assert!(selected.contains(&"june_gmail_actions".to_string()));
+        assert!(selected.contains(&"user_server".to_string()));
+        assert!(!selected.iter().any(|name| name.contains("_auto_")));
+        assert!(!selected.contains(&"disabled_server".to_string()));
+
+        // Once the user names an MCP server explicitly, preserve that
+        // allowlist rather than silently adding June's base servers back.
+        std::fs::write(
+            &config_path,
+            r#"platform_toolsets:
+  cli: [web, user_server, june_gmail_auto_job_a]
+mcp_servers:
+  june_gmail: { enabled: true }
+  june_gmail_auto_job_a: { enabled: true }
+  user_server: { enabled: true }
+"#,
+        )
+        .expect("rewrite config");
+        let selected = hermes_interactive_toolsets(&config_path);
+        assert_eq!(selected, vec!["web", "user_server"]);
+    }
+
+    #[test]
+    fn email_approval_preview_shows_every_mutation_target_but_not_the_body() {
+        let body = serde_json::json!({
+            "to": ["ada@example.com", "bob@corp.io"],
+            "cc": ["legal@example.com"],
+            "subject": "Quarterly filing",
+            "body": "This body must never enter the approval registry.",
+            "thread_id": "thread-123",
+            "in_reply_to": "<message-456@example.com>",
+            "grant": "connector-grant-secret",
+        });
+        let preview = email_approval_preview(
+            &body,
+            &body_string_list(&body, "to"),
+            &body_string_list(&body, "cc"),
+            "Quarterly filing",
+        );
+        assert!(preview.contains("ada@example.com, bob@corp.io"));
+        assert!(preview.contains("legal@example.com"));
+        assert!(preview.contains("Quarterly filing"));
+        assert!(preview.contains("thread-123"));
+        assert!(preview.contains("<message-456@example.com>"));
+        assert!(!preview.contains("This body"));
+        assert!(!preview.contains("connector-grant-secret"));
     }
 
     #[test]
@@ -13381,6 +13671,8 @@ mcp_servers:
         assert!(profile.contains("(deny file-read*"));
         assert!(profile.contains("(subpath \"/Users/test/.ssh\")"));
         assert!(profile.contains("(subpath \"/Users/test/Library/Keychains\")"));
+        assert!(profile.contains("(deny mach-lookup"));
+        assert!(profile.contains("(global-name \"com.apple.securityd.xpc\")"));
 
         // Without the opt-in, no agent CLI state dir is writable.
         assert!(!profile.contains(".claude"));
@@ -13419,6 +13711,7 @@ mcp_servers:
         assert!(profile.contains("(deny file-write*)"));
         assert!(profile.contains("(subpath \"/Users/test/.ssh\")"));
         assert!(profile.contains("(subpath \"/Users/test/Library/Keychains\")"));
+        assert!(profile.contains("(global-name \"com.apple.securityd.xpc\")"));
         // The CLI grant must come after the blanket write deny to take effect.
         let deny_at = profile.find("(deny file-write*)").expect("deny present");
         let cli_grant_at = profile
@@ -13537,6 +13830,87 @@ mcp_servers:
         assert!(
             !String::from_utf8_lossy(&out.stdout).contains("TOPSECRET"),
             "secret read must be denied, but the contents leaked"
+        );
+    }
+
+    /// Child half of the signed-build Keychain boundary probe. The parent runs
+    /// this exact test binary under Seatbelt so the creator/accessor identity
+    /// is the same executable; success therefore cannot be explained by a
+    /// different app's Keychain ACL.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_probe_child() {
+        let Ok(service) = std::env::var("JUNE_KEYCHAIN_PROBE_SERVICE") else {
+            return;
+        };
+        let account = std::env::var("JUNE_KEYCHAIN_PROBE_ACCOUNT").expect("probe account");
+        match keyring::Entry::new(&service, &account).and_then(|entry| entry.get_password()) {
+            Ok(secret) => println!("KEYCHAIN_PROBE_RESULT={secret}"),
+            Err(error) => println!("KEYCHAIN_PROBE_DENIED={error}"),
+        }
+    }
+
+    /// Opt-in because it touches the logged-in user's real Keychain. Release
+    /// qualification runs it with the signed rc test binary; the item is unique
+    /// and deleted before the assertion even if the sandbox unexpectedly leaks
+    /// it. This exercises Keychain Services directly through keyring/SecItem,
+    /// not merely the Keychain database path.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires an unlocked login Keychain; run for signed rc qualification"]
+    fn sandbox_blocks_keychain_services_for_the_same_executable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = PathBuf::from(std::env::var("HOME").expect("HOME"));
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let config_path = sandbox_config_write_path(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let profile = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &config_path,
+            &config_temp_prefix,
+            &[],
+            false,
+        );
+        let profile_path = dir.path().join("keychain-probe.sb");
+        std::fs::write(&profile_path, profile).expect("profile");
+
+        let nonce = format!(
+            "{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_millis()
+        );
+        let service = format!("co.opensoftware.june.agent-probe.{nonce}");
+        let account = "sandboxed-agent";
+        let secret = format!("KEYCHAIN_PROBE_SECRET_{nonce}");
+        let entry = keyring::Entry::new(&service, account).expect("probe entry");
+        entry.set_password(&secret).expect("seed probe secret");
+
+        let output = std::process::Command::new(SANDBOX_EXEC_PATH)
+            .arg("-f")
+            .arg(&profile_path)
+            .arg(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "hermes_bridge::tests::keychain_probe_child",
+                "--nocapture",
+            ])
+            .env("JUNE_KEYCHAIN_PROBE_SERVICE", &service)
+            .env("JUNE_KEYCHAIN_PROBE_ACCOUNT", account)
+            .output()
+            .expect("run sandboxed Keychain probe");
+        let _ = entry.delete_credential();
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !stdout.contains(&secret),
+            "sandboxed process recovered a Keychain secret: {stdout}"
+        );
+        assert!(
+            stdout.contains("KEYCHAIN_PROBE_DENIED="),
+            "probe did not reach a denied Keychain lookup: {stdout}; stderr={}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 

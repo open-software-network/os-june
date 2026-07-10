@@ -54,10 +54,10 @@ email, holding a `Zeroize`/`ZeroizeOnDrop` token blob. This reuses the exact
 plumbing proven by OS Accounts sign-in (`os_accounts.rs`).
 
 Only a non-secret index (email, granted scopes, status) lives in the app DB, so
-accounts can be enumerated without touching the Keychain. The Keychain is
-already denied to the agent by the Seatbelt profile (`Library/Keychains`); the
-dev plaintext fallback file, when enabled, is added to the sandbox deny-read set
-and the secret-filename denylist.
+accounts can be enumerated without touching the Keychain. The Seatbelt profile
+denies both Keychain database paths (`Library/Keychains`) and the `securityd`
+Mach services used by Keychain APIs; the dev plaintext fallback file, when
+enabled, is added to the sandbox deny-read set and the secret-filename denylist.
 
 ### 2. Connector API calls originate on-device and never transit June API
 
@@ -77,9 +77,10 @@ token custody and provider calls, never inference; the copy says so.
 
 ### 3. Trust modes are enforced in the Rust proxy, not by prompting the model
 
-Every routine carries a trust mode: `read_only` (default is `approval`) ->
-`approval` -> `autonomous`, tracked in an app-side `routine_trust` table (the
-source of truth, not the Hermes job record).
+Every connector-aware routine carries a trust mode: `read_only` -> `approval`
+-> `autonomous`, tracked in an app-side `routine_trust` table (the source of
+truth, not the Hermes job record). Plain/read-only routines start `read_only`;
+routines that enable connector actions start in `approval`.
 
 - **read_only**: the routine's `enabled_toolsets` include only the read servers
   (`june_gmail`, `june_gcal`). The mutating servers are simply absent, so the
@@ -113,14 +114,12 @@ account.
 - **The headline privacy claim is enforceable and true in local mode.** A
   compromise of OpenSoftware infrastructure yields no token that can read mail;
   the tokens are on the device, and connector traffic never reaches the backend.
-- **Known limitation of this Hermes pin (documented, bounded, followup):**
-  interactive chat sessions receive every globally-enabled MCP server by
-  default. So a tool the user granted a routine for autonomous use is also
-  reachable without parking in interactive chat for the same account. It is
-  bounded to tools the user explicitly granted, and to the connected account.
-  The clean fix is upstream per-session toolset selection (absent in v0.17.0) or
-  rendering the CLI/TUI toolset allowlist without the action servers; tracked as
-  a followup. The away-mode threat-model page states this plainly.
+- **Autonomy grants do not leak into interactive chat.** The pinned runtime
+  auto-includes globally enabled MCP servers by default, so June sets an
+  explicit dashboard/TUI toolset pin. It includes the base connector servers
+  (whose actions park for approval) and excludes every per-routine
+  `june_*_auto_*` server. Cron still resolves those servers from each job's
+  explicit `enabled_toolsets`.
 - **Applying connector config requires a runtime restart.** `config.yaml` is
   only rendered on runtime start, so connect/disconnect/grant changes restart
   the mode-scoped Hermes runtime, exactly as the model switch and MCP admin

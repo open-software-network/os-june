@@ -17,10 +17,11 @@ backend (June API) is not involved in connector calls.
 
 **Cannot see, by architecture:**
 
-- Your Google refresh or access tokens. They are in your Keychain, sealed to
-  June's code-signing identity, and never transmitted to OpenSoftware. We hold
-  no credential that can read your mail, so there is nothing to hand over under
-  a subpoena and nothing to steal in a breach of our servers.
+- Your Google refresh or access tokens. They are in your Keychain, protected by
+  Keychain access control and June's code-signing identity, and never
+  transmitted to OpenSoftware. We hold no credential that can read your mail,
+  so there is nothing to hand over under a subpoena and nothing to steal in a
+  breach of our servers.
 - The content of your mail or calendar as it flows through a connector call.
   Connector requests go device -> Google, not through June API.
 
@@ -55,28 +56,29 @@ Local mode adds exactly these things to what you already trust by running June:
 
 ## Agent-facing protections
 
-- The agent cannot read the token store. The Keychain is denied to the agent by
-  the sandbox profile; the tokens live in Rust, and the MCP tool servers hold
-  only a scoped loopback token, never a Google token.
+- The agent cannot read the token store while June's sandbox is engaged. The
+  profile denies both direct reads of Keychain database paths and Mach lookup
+  of the `securityd` services used by Keychain APIs. Tokens live in the
+  unsandboxed Rust host, and MCP tool servers hold only a scoped loopback token,
+  never a Google token. Signed rc builds verify this with both the `security`
+  CLI and a direct `SecItemCopyMatching` probe before release.
 - Connector tool descriptions mark email and calendar content as untrusted
   input, because a hostile email can carry instructions (prompt injection).
 - Mutating actions (send, draft, label changes, event changes, invite
-  responses) are gated by **trust mode**. The default is approval: the action
-  parks in June's own approval surface and waits for you. Read-only routines
-  cannot call mutating tools at all. Autonomous execution must be earned (three
-  correct approval-mode runs) and is granted per tool.
+  responses) are gated by **trust mode**. Plain and read-only routines cannot
+  call mutating tools. A routine that enables actions starts in approval: the
+  action parks in June's own approval surface, shows the exact recipients or
+  object and change, and waits for you. Autonomous execution must be earned
+  (three successful approval-mode runs) and is granted per tool.
 
-## Known limitation (stated plainly)
+## Interactive-session isolation
 
-The pinned agent runtime grants every enabled connector tool to interactive
-chat sessions by default. So a tool you granted a routine for autonomous use is
-also callable, without the approval prompt, if you ask June to do it in a normal
-chat for the same account. This is bounded to tools you explicitly granted and
-to the account you connected. Routines still enforce trust modes as described.
-The fix (per-session tool selection, or excluding the action servers from the
-interactive toolset) depends on a runtime capability not present in the current
-pin and is tracked as a followup; away mode's threat model will restate this if
-it is still open then. See
+The pinned runtime auto-includes globally enabled MCP servers unless June pins
+the interactive toolset. June does pin it: normal chat receives the base read
+and action servers, whose mutations always park for approval, but never receives
+the per-routine `june_*_auto_*` servers that carry autonomy grants. Cron jobs use
+their own per-job `enabled_toolsets`, so this exclusion does not weaken a grant
+the user intentionally gave a routine. See
 [ADR-0016](adr/0016-private-connectors-local-mode.md).
 
 ## Revocation

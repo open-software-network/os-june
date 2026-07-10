@@ -85,7 +85,7 @@ follows [telemetry-p3a-prd.md](telemetry-p3a-prd.md).)*
 |---|---|---|
 | WAU connecting ≥1 account within 30 days of GA | ≥40% | Connectors are the product now, not a feature |
 | Connector users activating ≥1 gallery routine | ≥25% | Routines are the retention primitive |
-| 8-week retention delta, routine vs non-routine users | Measurable and positive | Validates the Town thesis on our base |
+| Opt-in weekly active aggregate reporting ≥1 successful routine run | ≥25% | Measures routine adoption with one local weekly boolean and no durable user or cohort identifier |
 | Away-mode opt-in among routine users (Pro) | ≥20% | Reason-to-buy working |
 | Free→Pro conversion lift post-launch | Directional up | Away mode as the upgrade trigger |
 | External audit: plaintext-at-rest findings | Zero | The claim underneath every marketing line |
