@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { parseDictationHelperEvent } from "./dictation-events";
 
 // Re-exported so modules that build their own command calls (e.g. the Hermes
 // admin Rust transport) route through the same `invoke` the rest of the app's
@@ -1837,5 +1838,5 @@ export async function dictationHotkeyStatus() {
 
 export async function latestDictationEvent() {
   const payload = await invoke<string | undefined>("latest_dictation_event");
-  return payload ? (JSON.parse(payload) as DictationHelperEvent) : undefined;
+  return parseDictationHelperEvent(payload);
 }
