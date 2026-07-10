@@ -7652,15 +7652,22 @@ export function AgentWorkspace({
         className="agent-follow-up-row"
         data-kind="attachment"
         data-status={item.status}
-        title={item.error ?? statusLabel}
+        title={item.error ?? undefined}
       >
         <div className="agent-follow-up-attachments">
-          {item.attachments.slice(0, 1).map((attachment) => (
-            <AgentAttachmentTile key={attachment.id} attachment={attachment} />
-          ))}
           {item.attachments.length > 1 ? (
-            <span className="agent-follow-up-attachment-count">{item.attachments.length}</span>
-          ) : null}
+            <span className="agent-attachment-chip" data-kind="file" aria-hidden>
+              <span className="agent-attachment-file-icon">
+                <IconFiles size={14} />
+              </span>
+            </span>
+          ) : (
+            item.attachments
+              .slice(0, 1)
+              .map((attachment) => (
+                <AgentAttachmentTile key={attachment.id} attachment={attachment} />
+              ))
+          )}
         </div>
         <div className="agent-follow-up-copy">
           <span className="agent-follow-up-text">{item.prepared.typedMessage || "Attachment"}</span>
@@ -9053,8 +9060,10 @@ export function AgentWorkspace({
                 aria-expanded={steerQueueOpen}
                 onClick={() => setSteerQueueOpen((open) => !open)}
               >
-                <span className="status-pill agent-steer-queue-count">{selectedFollowUpCount}</span>
                 Up next
+                {steerQueueOpen ? null : (
+                  <span className="agent-steer-queue-count">{selectedFollowUpCount}</span>
+                )}
               </button>
               <button
                 type="button"

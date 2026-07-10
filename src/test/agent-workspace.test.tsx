@@ -1150,7 +1150,8 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Queue next message" }));
 
     const upNext = await screen.findByRole("region", { name: "Up next" });
-    expect(within(upNext).getByText("2")).toBeInTheDocument();
+    // The count numeral only shows while the queue is collapsed.
+    expect(within(upNext).queryByText("2")).toBeNull();
     expect(within(upNext).getByText("check the API boundary")).toBeInTheDocument();
     expect(within(upNext).queryByText("Steering current turn")).toBeNull();
     expect(within(upNext).getByText("review the brief next")).toBeInTheDocument();
@@ -1174,17 +1175,18 @@ describe("AgentWorkspace", () => {
     });
 
     const upNext = await screen.findByRole("region", { name: "Up next" });
-    expect(within(upNext).getByText("4")).toBeInTheDocument();
+    // The count numeral only shows while the queue is collapsed.
+    expect(within(upNext).queryByText("4")).toBeNull();
     expect(within(upNext).getByText("Check the API boundary")).toBeInTheDocument();
     expect(within(upNext).getByText("Keep the migration additive")).toBeInTheDocument();
     expect(within(upNext).queryByText("Steering current turn")).toBeNull();
     expect(within(upNext).getByText("Review this attachment next")).toBeInTheDocument();
     expect(within(upNext).getByText("reference.png")).toBeInTheDocument();
     expect(within(upNext).getByText("Fold these findings into the report")).toBeInTheDocument();
-    // The multi-attachment row leads with its first tile and a small corner
-    // numeral carrying the total count.
-    expect(within(upNext).getByText("usability-findings.pdf")).toBeInTheDocument();
-    expect(within(upNext).getByText("3")).toBeInTheDocument();
+    // A multi-attachment message shows the generic files tile, no filename
+    // and no count.
+    expect(within(upNext).queryByText("usability-findings.pdf")).toBeNull();
+    expect(within(upNext).queryByText("3")).toBeNull();
     expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.steer", expect.anything());
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
