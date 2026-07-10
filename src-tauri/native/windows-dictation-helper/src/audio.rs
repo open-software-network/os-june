@@ -111,13 +111,12 @@ impl Recorder {
             bits_per_sample: 16,
             sample_format: hound::SampleFormat::Int,
         };
-        let path = tempfile::Builder::new()
+        let temp_file = tempfile::Builder::new()
             .prefix("os-june-dictation-")
             .suffix(".wav")
-            .tempfile()?
-            .into_temp_path()
-            .keep()?;
-        let writer = Arc::new(Mutex::new(Some(hound::WavWriter::create(&path, spec)?)));
+            .tempfile()?;
+        let temp_path = temp_file.into_temp_path();
+        let writer = Arc::new(Mutex::new(Some(hound::WavWriter::create(&temp_path, spec)?)));
         let observed_peak = Arc::new(Mutex::new(0.0));
         let latest_level = Arc::new(Mutex::new(0.0));
         let active = Arc::new(AtomicBool::new(true));
@@ -169,6 +168,7 @@ impl Recorder {
             _ => return Err(anyhow!("unsupported input sample format")),
         };
         stream.play()?;
+        let path = temp_path.keep()?;
         Ok(Self {
             stream,
             writer,
