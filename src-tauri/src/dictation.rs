@@ -2526,6 +2526,7 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 }
 
 async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInfo) {
+    let audio_path = recording.audio_path.clone();
     // Resolve the paste target before the first await. Prefer the bundle id
     // the helper captured with the recording: the helper pins that same app
     // when the recording stops and pastes into it once we return, so layout
@@ -2535,8 +2536,8 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     let app_context = recording
         .target_bundle_id
         .as_deref()
-        .and_then(|bundle_id| is_email_app_bundle(bundle_id).then(|| APP_CONTEXT_EMAIL.to_string()))
-        .or_else(frontmost_app_context);
+        .map(|bundle_id| is_email_app_bundle(bundle_id).then(|| APP_CONTEXT_EMAIL.to_string()))
+        .unwrap_or_else(frontmost_app_context);
     // Backstop for the toggle-start path (where the start-time gate in
     // send_dictation_command can't tell start from stop) and for tokens that
     // expired between start and finish.
@@ -2555,6 +2556,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
             let state = app.state::<HelperState>();
             let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
             notify_dictation_not_signed_in(&app);
+            let _ = std::fs::remove_file(&audio_path);
             return;
         }
     }
@@ -2564,6 +2566,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
             let state = app.state::<HelperState>();
             let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
             emit_dictation_event_value(&app, app_error_event(error));
+            let _ = std::fs::remove_file(&audio_path);
             return;
         }
     };
@@ -2600,6 +2603,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     let state = app.state::<HelperState>();
     if let Err(error) = send_helper_command(&state, outcome.helper_command) {
         emit_dictation_event_value(&app, app_error_event(error));
+        let _ = std::fs::remove_file(&audio_path);
         return;
     }
     if let Some(transcript) = outcome.transcript.as_ref() {
@@ -2612,6 +2616,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     if let Some(event) = outcome.event {
         emit_dictation_event_value(&app, event);
     }
+    let _ = std::fs::remove_file(&audio_path);
 }
 
 fn dictation_session_id() -> String {
@@ -4520,6 +4525,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn deserializes_new_shortcut_settings_and_preserves_bare_fn_push_to_talk() {
         let settings: DictationSettings = serde_json::from_str(
             r#"{"pushToTalkShortcut":{"keyCode":0,"code":"Fn","modifiers":{"command":false,"control":false,"option":false,"shift":false,"function":true},"label":"Fn","pressCount":1},"toggleShortcut":{"keyCode":49,"code":"Space","modifiers":{"command":false,"control":true,"option":true,"shift":false,"function":false},"label":"Ctrl+Opt+Space","pressCount":1},"microphone":{"id":null,"name":null}}"#,
@@ -4555,6 +4561,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn deserializes_modifier_only_shortcuts() {
         let settings: DictationSettings = serde_json::from_str(
             r#"{"pushToTalkShortcut":{"keyCode":0,"code":"Modifiers","modifiers":{"command":false,"control":true,"option":true,"shift":false,"function":false},"label":"Ctrl+Opt","pressCount":1},"toggleShortcut":{"keyCode":999,"code":"Digit1","modifiers":{"command":false,"control":true,"option":false,"shift":false,"function":false},"label":"Ctrl+1","pressCount":1},"microphone":{"id":null,"name":null}}"#,
@@ -4569,6 +4576,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn shortcut_updates_are_written_in_reloadable_settings_file() {
         let directory = tempfile::tempdir().expect("settings tempdir should be created");
         let state = DictationSettingsState {
@@ -4661,7 +4669,7 @@ mod tests {
             label: "Fn".to_string(),
             press_count: None,
         }
-        .into_setting()
+        .into_setting_for_platform(false)
         .expect("bare Fn should be accepted");
 
         assert_eq!(shortcut, DictationShortcutSetting::bare_fn());
@@ -4678,7 +4686,7 @@ mod tests {
             label: "Fn".to_string(),
             press_count: Some(2),
         }
-        .into_setting()
+        .into_setting_for_platform(false)
         .expect("bare Fn should be accepted");
 
         assert_eq!(shortcut, DictationShortcutSetting::bare_fn());
@@ -4695,7 +4703,7 @@ mod tests {
             label: "Ctrl+T".to_string(),
             press_count: Some(2),
         }
-        .into_setting()
+        .into_setting_for_platform(false)
         .expect("control letter should be accepted");
 
         assert_eq!(shortcut.key_code, 0x11);
@@ -4824,7 +4832,7 @@ mod tests {
             label: "Ctrl+Opt".to_string(),
             press_count: Some(1),
         }
-        .into_setting()
+        .into_setting_for_platform(false)
         .expect("modifier-only combo should be accepted");
 
         assert_eq!(shortcut.key_code, 0);

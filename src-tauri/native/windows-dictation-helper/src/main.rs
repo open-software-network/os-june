@@ -57,7 +57,15 @@ struct HelperApp {
 
 impl HelperApp {
     fn new(writer: EventWriter) -> Self {
+        let (event_tx, event_rx) = std::sync::mpsc::channel::<serde_json::Value>();
         let hotkey_writer = writer.clone();
+        thread::spawn(move || {
+            while let Ok(event) = event_rx.recv() {
+                hotkey_writer.emit(event);
+            }
+        });
+
+        let event_tx = std::sync::Mutex::new(event_tx);
         let hotkeys = HotkeyManager::start(Box::new(move |hotkey| {
             let event = match hotkey {
                 HotkeyEvent::KeyDown { kind, shortcut } => event(
@@ -117,7 +125,9 @@ impl HelperApp {
                     serde_json::json!({ "kind": kind, "shortcut": shortcut }),
                 ),
             };
-            hotkey_writer.emit(event);
+            if let Ok(tx) = event_tx.lock() {
+                let _ = tx.send(event);
+            }
         }));
         Self {
             writer,
