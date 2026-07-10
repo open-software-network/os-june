@@ -51,6 +51,15 @@ button {
   cursor: pointer;
 }
 
+/* Search fields never show WebKit's native grey cancel bubble: clearing is
+ * Escape / select-all, matching the model picker and command prompt fields
+ * (which are bare text inputs and never had one). */
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
 button:focus-visible,
 input:focus-visible,
 [role="tab"]:focus-visible {
@@ -7844,7 +7853,8 @@ input:focus-visible,
 
 /* Clear button: a quiet keycap-like gray square replacing the native
  * type="search" clear affordance. */
-.command-prompt-clear {
+.command-prompt-clear,
+.search-clear {
   display: inline-grid;
   place-items: center;
   width: 22px;
@@ -7862,7 +7872,8 @@ input:focus-visible,
     color var(--t-fast) var(--ease-out);
 }
 
-.command-prompt-clear:hover {
+.command-prompt-clear:hover,
+.search-clear:hover {
   background: var(--muted);
   color: var(--foreground);
 }
@@ -17253,6 +17264,16 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+/* Leading glyph inside a crumb (the project icon): inline-flex keeps the svg
+ * on the text baseline box while the crumb itself stays an ellipsizing inline
+ * element; the small negative shift optically centers it against fs-md text. */
+.detail-breadcrumb-icon {
+  display: inline-flex;
+  flex: none;
+  margin-right: var(--sp-2);
+  vertical-align: -2px;
+}
+
 .detail-breadcrumb-current {
   color: var(--foreground);
   font-weight: 400;
@@ -17301,6 +17322,9 @@ input:focus-visible,
   right: 0;
   bottom: auto;
   left: auto;
+  /* Absolutely positioned inside the inline-flex trigger wrap, so shrink-to-fit
+   * would wrap the longer labels onto two lines — size to the content instead. */
+  width: max-content;
   min-width: 168px;
 }
 
@@ -18522,12 +18546,6 @@ input:focus-visible,
 
 .folders-search input::placeholder {
   color: var(--muted-foreground);
-}
-
-.folders-search input::-webkit-search-cancel-button {
-  -webkit-appearance: none;
-  appearance: none;
-  display: none;
 }
 
 /* The magnifier reads a step lighter than the placeholder — it's decoration,
@@ -20048,6 +20066,10 @@ input:focus-visible,
   top: calc(100% + var(--sp-2));
   right: 0;
   z-index: 60;
+  /* Absolutely positioned inside the small trigger wrapper, so shrink-to-fit
+   * would wrap the longest label ("Add existing meeting note") — size to the
+   * content instead. */
+  width: max-content;
   min-width: 178px;
   padding: var(--sp-1);
   border: 1px solid var(--popover-border);
@@ -20099,8 +20121,9 @@ input:focus-visible,
 }
 
 .add-notes-search {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
+  /* Flex (not the old fixed grid) so the clear button only takes a track
+   * while it's rendered. */
+  display: flex;
   align-items: center;
   gap: var(--sp-2);
   height: var(--control-lg);
@@ -20117,8 +20140,14 @@ input:focus-visible,
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
+.add-notes-search > svg,
+.add-notes-search .search-clear {
+  flex: none;
+}
+
 .add-notes-search input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: 0;
   outline: 0;
   background: transparent;
@@ -20128,6 +20157,14 @@ input:focus-visible,
 
 .add-notes-search input::placeholder {
   color: var(--muted-foreground);
+}
+
+/* Hairline between the create row and the existing projects, mirroring the
+ * note editor's project chip popover (.move-to-folder-divider). */
+.add-notes-divider {
+  height: 1px;
+  margin: 2px var(--sp-1);
+  background: var(--border-subtle);
 }
 
 .add-notes-list {
@@ -20167,6 +20204,12 @@ input:focus-visible,
   width: 18px;
   height: 18px;
   color: var(--foreground);
+}
+
+/* The current project's check is state ("it lives here"), a step quieter
+ * than the check on a picked destination row. */
+.add-notes-row[data-current="true"] .add-notes-check {
+  color: var(--muted-foreground);
 }
 
 .add-notes-icon {
@@ -20971,8 +21014,9 @@ input:focus-visible,
 }
 
 .move-to-folder-search {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
+  /* Flex (not the old fixed grid) so the clear button only takes a track
+   * while it's rendered. */
+  display: flex;
   align-items: center;
   gap: var(--sp-2);
   height: var(--control-md);
@@ -20981,8 +21025,14 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
+.move-to-folder-search > svg,
+.move-to-folder-search .search-clear {
+  flex: none;
+}
+
 .move-to-folder-search input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   border: 0;
   outline: 0;
   background: transparent;

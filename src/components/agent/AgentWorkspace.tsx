@@ -42,7 +42,9 @@ import { IconFiles } from "central-icons/IconFiles";
 import { IconFileSparkle } from "central-icons/IconFileSparkle";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconEmail1Sparkle } from "central-icons/IconEmail1Sparkle";
+import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconGauge } from "central-icons/IconGauge";
+import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
@@ -1576,7 +1578,7 @@ type HermesRuntimeSessionResponse = {
 export type AgentWorkspaceOrigin = {
   backLabel: string;
   onBack: () => void;
-  crumbs: { label: string; onClick: () => void }[];
+  crumbs: { label: string; icon?: ReactNode; onClick: () => void }[];
 };
 
 type AgentWorkspaceProps = {
@@ -1586,6 +1588,12 @@ type AgentWorkspaceProps = {
   onSessionSelected?: (session: HermesSessionInfo | undefined) => void;
   onTopUp?: () => void | Promise<void>;
   topUpLabel?: string;
+  /** Whether the active session is filed in a project — drives the session
+   * bar menu's project item label (App owns the folder state). */
+  sessionInProject?: boolean;
+  /** Opens the change-project dialog (which also owns removal) for the given
+   * stored session id. */
+  onMoveSessionToProject?: (sessionId: string) => void;
   creditActionsDisabledReason?: string;
   /** The persistent out-of-credits notice, pre-wired by App. When present it
    * replaces the plain composer-notice paragraph; the disabled reason keeps
@@ -2098,6 +2106,8 @@ export function AgentWorkspace({
   onSessionSelected,
   onTopUp,
   topUpLabel = "Upgrade",
+  sessionInProject = false,
+  onMoveSessionToProject,
   creditActionsDisabledReason,
   fundingNotice,
   fundingTier,
@@ -9132,6 +9142,15 @@ export function AgentWorkspace({
               ? (title) => renameHermesSession(selectedHermesSessionId, title)
               : undefined
           }
+          inProject={sessionInProject}
+          onMoveToProject={
+            onMoveSessionToProject &&
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional
+              ? () => onMoveSessionToProject(selectedHermesSessionId)
+              : undefined
+          }
           onDelete={
             !newSessionMode && selectedHermesSessionId && !selectedHermesSessionIsProvisional
               ? () => void deleteSelectedHermesSession(selectedHermesSessionId)
@@ -9380,8 +9399,10 @@ function AgentSessionBar({
   title,
   artifactCount = 0,
   artifactsOpen = false,
+  inProject = false,
   onToggleArtifacts,
   onRename,
+  onMoveToProject,
   onDelete,
   onShowUsage,
   onCompactContext,
@@ -9393,8 +9414,11 @@ function AgentSessionBar({
   title?: string;
   artifactCount?: number;
   artifactsOpen?: boolean;
+  inProject?: boolean;
   onToggleArtifacts?: () => void;
   onRename?: (title: string) => void;
+  /** Opens the change-project dialog (which also owns removal). */
+  onMoveToProject?: () => void;
   onDelete?: () => void;
   onShowUsage?: () => void;
   onCompactContext?: () => void;
@@ -9431,7 +9455,7 @@ function AgentSessionBar({
   }
 
   const hasMenu = Boolean(
-    onRename || onDelete || onShowUsage || onCompactContext || onOpenTuiDebug,
+    onRename || onMoveToProject || onDelete || onShowUsage || onCompactContext || onOpenTuiDebug,
   );
 
   return (
@@ -9448,6 +9472,11 @@ function AgentSessionBar({
                   </span>
                 ) : null}
                 <button type="button" className="detail-breadcrumb-link" onClick={crumb.onClick}>
+                  {crumb.icon ? (
+                    <span className="detail-breadcrumb-icon" aria-hidden>
+                      {crumb.icon}
+                    </span>
+                  ) : null}
                   {crumb.label}
                 </button>
               </li>
@@ -9525,6 +9554,36 @@ function AgentSessionBar({
             </button>
             {menuOpen ? (
               <div className="sidebar-identity-menu agent-session-menu" role="menu">
+                {onRename ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setDraft(title ?? "");
+                      setRenaming(true);
+                    }}
+                  >
+                    <IconPencil size={14} />
+                    Rename
+                  </button>
+                ) : null}
+                {onMoveToProject ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onMoveToProject();
+                    }}
+                  >
+                    {inProject ? <IconMoveFolder size={14} /> : <IconFolderAddRight size={14} />}
+                    {inProject ? "Change project" : "Add to project"}
+                  </button>
+                ) : null}
+                {(onRename || onMoveToProject) && (onShowUsage || onCompactContext) ? (
+                  <div className="context-menu-separator" role="separator" />
+                ) : null}
                 {onShowUsage ? (
                   <button
                     type="button"
@@ -9551,19 +9610,8 @@ function AgentSessionBar({
                     Compact context
                   </button>
                 ) : null}
-                {onRename ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      setDraft(title ?? "");
-                      setRenaming(true);
-                    }}
-                  >
-                    <IconPencil size={14} />
-                    Rename
-                  </button>
+                {onDelete && (onRename || onMoveToProject || onShowUsage || onCompactContext) ? (
+                  <div className="context-menu-separator" role="separator" />
                 ) : null}
                 {onDelete ? (
                   <button

@@ -313,4 +313,41 @@ describe("MoveSessionToProjectDialog", () => {
     expect(onMoved).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("creates a project from the search query and files the session in it", async () => {
+    const user = userEvent.setup();
+    const created: FolderDto = {
+      id: "project-new",
+      name: "Roadmap",
+      createdAt: "2026-06-04T10:00:00Z",
+      updatedAt: "2026-06-04T10:00:00Z",
+    };
+    const onCreateFolder = vi.fn().mockResolvedValue(created);
+    const onSetFolder = vi.fn().mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    const onMoved = vi.fn();
+
+    render(
+      <MoveSessionToProjectDialog
+        open
+        onClose={onClose}
+        sessions={[sessions[0]]}
+        sessionFolderIds={{}}
+        folders={[]}
+        onSetFolder={onSetFolder}
+        onCreateFolder={onCreateFolder}
+        onMoved={onMoved}
+      />,
+    );
+
+    expect(screen.getByText("No projects yet. Type a name to create one.")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Search or create project"), "Roadmap");
+    await user.click(screen.getByRole("button", { name: "Create “Roadmap”" }));
+
+    expect(onCreateFolder).toHaveBeenCalledWith("Roadmap");
+    expect(onSetFolder).toHaveBeenCalledWith("idle-session", "project-new");
+    expect(onMoved).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
 });

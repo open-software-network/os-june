@@ -727,6 +727,13 @@ export function App() {
     agentOrigin?.kind === "project"
       ? state.folders.find((folder) => folder.id === agentOrigin.folderId)
       : undefined;
+  // The active session's own project. Sessions opened outside a project (the
+  // Sessions view, the sidebar) still crumb to the project they're filed in,
+  // so membership is visible wherever the session was entered from — same as
+  // meeting notes showing their project up top.
+  const activeAgentSessionFolder = activeAgentSessionId
+    ? state.folders.find((folder) => folder.id === sessionFolders[activeAgentSessionId]?.[0])
+    : undefined;
   const recoveriesByNote = useMemo(() => {
     const map = new Map<string, (typeof state.activeRecoveries)[number]>();
     for (const recovery of state.activeRecoveries) {
@@ -2151,12 +2158,17 @@ export function App() {
     }
   }
 
-  async function handleRemoveNoteFromFolder(noteId: string, folderId: string) {
+  async function handleRemoveNoteFromFolder(
+    noteId: string,
+    folderId: string,
+    options?: { rethrow?: boolean },
+  ) {
     try {
       const note = await removeNoteFromFolder(noteId, folderId);
       dispatch({ type: "noteUpdated", note });
     } catch (err) {
       setError(messageFromError(err));
+      if (options?.rethrow) throw err;
     }
   }
 
@@ -2212,7 +2224,11 @@ export function App() {
     }
   }
 
-  async function handleRemoveSessionFromFolder(sessionId: string, folderId: string) {
+  async function handleRemoveSessionFromFolder(
+    sessionId: string,
+    folderId: string,
+    options?: { rethrow?: boolean },
+  ) {
     try {
       await removeSessionFromFolder(sessionId, folderId);
       setSessionFolders((prev) => {
@@ -2224,6 +2240,7 @@ export function App() {
       });
     } catch (err) {
       setError(messageFromError(err));
+      if (options?.rethrow) throw err;
     }
   }
 
@@ -2322,6 +2339,15 @@ export function App() {
   // Back target for sessions opened outside a project: the Agents view-all.
   function handleReturnToAgentsList() {
     setActiveView("agent-sessions");
+    setActiveAgentSession(undefined);
+    setAgentOrigin(undefined);
+  }
+
+  // Jumps from an open session to the project it's filed in (the crumb that
+  // shows even when the session was opened from the Sessions view).
+  function handleOpenSessionProject(folderId: string) {
+    setActiveView("folders");
+    dispatch({ type: "folderSelected", folderId });
     setActiveAgentSession(undefined);
     setAgentOrigin(undefined);
   }
@@ -3128,6 +3154,11 @@ export function App() {
           setActiveAgentSession(session);
           setActiveView("agent");
         }}
+        sessionFolderIds={sessionFolders}
+        onOpenSessionMoveDialog={(sessionId) => setMoveDialogSessionIds([sessionId])}
+        onRemoveSessionFromFolder={(sessionId, folderId) =>
+          void handleRemoveSessionFromFolder(sessionId, folderId)
+        }
         recoverableNoteIds={recoverableNoteIds}
         recordingStatus={sidebarRecorderStatus}
         recordingTitle={recordingNoteTitle}
@@ -3307,6 +3338,8 @@ export function App() {
                   fundingTier={fundingTierOf(fundingAccount)}
                   topUpLabel={topUpLabel}
                   onTopUp={handleTopUp}
+                  sessionInProject={Boolean(activeAgentSessionFolder)}
+                  onMoveSessionToProject={(sessionId) => setMoveDialogSessionIds([sessionId])}
                   origin={
                     agentOriginFolder
                       ? {
@@ -3327,6 +3360,7 @@ export function App() {
                             },
                             {
                               label: agentOriginFolder.name,
+                              icon: <IconProjects size={13} />,
                               onClick: handleReturnToAgentOriginFolder,
                             },
                           ],
@@ -3342,16 +3376,32 @@ export function App() {
                               },
                             ],
                           }
-                        : {
-                            backLabel: "Back to sessions",
-                            onBack: handleReturnToAgentsList,
-                            crumbs: [
-                              {
-                                label: "Sessions",
-                                onClick: handleReturnToAgentsList,
-                              },
-                            ],
-                          }
+                        : activeAgentSessionFolder
+                          ? // Opened from the Sessions view or sidebar but filed in a
+                            // project: the crumb shows the session's home (back still
+                            // returns to where the user came from).
+                            {
+                              backLabel: "Back to sessions",
+                              onBack: handleReturnToAgentsList,
+                              crumbs: [
+                                {
+                                  label: activeAgentSessionFolder.name,
+                                  icon: <IconProjects size={13} />,
+                                  onClick: () =>
+                                    handleOpenSessionProject(activeAgentSessionFolder.id),
+                                },
+                              ],
+                            }
+                          : {
+                              backLabel: "Back to sessions",
+                              onBack: handleReturnToAgentsList,
+                              crumbs: [
+                                {
+                                  label: "Sessions",
+                                  onClick: handleReturnToAgentsList,
+                                },
+                              ],
+                            }
                   }
                 />
               ) : activeView === "agent-sessions" ? (
@@ -3500,6 +3550,7 @@ export function App() {
                       items={[
                         {
                           label: originFolder.name,
+                          icon: <IconProjects size={13} />,
                           onClick: () => {
                             setActiveView("folders");
                             dispatch({
@@ -3768,7 +3819,11 @@ export function App() {
             : []
         }
         folders={state.folders}
-        onSetFolder={(noteId, folderId) => handleSetNoteFolder(noteId, folderId)}
+        onSetFolder={(noteId, folderId) => handleSetNoteFolder(noteId, folderId, { rethrow: true })}
+        onCreateFolder={(name) => handleCreateFolder(name)}
+        onRemoveFolder={(noteId, folderId) =>
+          handleRemoveNoteFromFolder(noteId, folderId, { rethrow: true })
+        }
         onMoved={() => notesListRef.current?.resetSelection()}
       />
       <MoveSessionToProjectDialog
@@ -3783,7 +3838,13 @@ export function App() {
         }
         sessionFolderIds={sessionFolders}
         folders={state.folders}
-        onSetFolder={(sessionId, folderId) => handleSetSessionFolder(sessionId, folderId)}
+        onSetFolder={(sessionId, folderId) =>
+          handleSetSessionFolder(sessionId, folderId, { rethrow: true })
+        }
+        onCreateFolder={(name) => handleCreateFolder(name)}
+        onRemoveFolder={(sessionId, folderId) =>
+          handleRemoveSessionFromFolder(sessionId, folderId, { rethrow: true })
+        }
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
       />
       <ConfirmDialog

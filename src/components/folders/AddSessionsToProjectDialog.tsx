@@ -1,7 +1,8 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconBubble3 } from "central-icons/IconBubble3";
+import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
 
@@ -27,6 +28,7 @@ export function AddSessionsToProjectDialog({
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [submitting, setSubmitting] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -105,6 +107,7 @@ export function AddSessionsToProjectDialog({
         <label className="add-notes-search">
           <IconMagnifyingGlass size={14} />
           <input
+            ref={searchRef}
             type="search"
             name="add-sessions-search"
             placeholder="Search sessions"
@@ -112,6 +115,20 @@ export function AddSessionsToProjectDialog({
             onChange={(event) => setQuery(event.currentTarget.value)}
             autoComplete="off"
           />
+          {query ? (
+            <button
+              type="button"
+              className="search-clear"
+              aria-label="Clear search"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                setQuery("");
+                searchRef.current?.focus();
+              }}
+            >
+              <IconCrossSmall size={13} />
+            </button>
+          ) : null}
         </label>
         {candidates.length > 0 ? (
           <ul className="add-notes-list" role="listbox" aria-multiselectable>

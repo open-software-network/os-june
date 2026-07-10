@@ -952,4 +952,185 @@ describe("MoveNoteToFolderDialog", () => {
     expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
     expect(screen.getByRole("option", { name: /Beta/ })).toBeInTheDocument();
   });
+
+  it("lists the current project checked and unfiles the note when clicked", async () => {
+    const user = userEvent.setup();
+    const onRemoveFolder = vi.fn().mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    const onMoved = vi.fn();
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={onClose}
+        notes={[notes[0]]}
+        folders={moveFolders}
+        onSetFolder={vi.fn()}
+        onRemoveFolder={onRemoveFolder}
+        onMoved={onMoved}
+      />,
+    );
+
+    const current = screen.getByRole("option", { name: "Remove from Alpha" });
+    expect(current).toHaveAttribute("aria-selected", "true");
+
+    await user.click(current);
+
+    expect(onRemoveFolder).toHaveBeenCalledWith("note-2", "folder-1");
+    expect(onMoved).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("keeps the current project out of the list without an onRemoveFolder handler", () => {
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={vi.fn()}
+        notes={[notes[0]]}
+        folders={moveFolders}
+        onSetFolder={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("option", { name: /Remove from/ })).toBeNull();
+    expect(screen.queryByRole("option", { name: /Alpha/ })).toBeNull();
+  });
+
+  it("creates a project from the search query and files the note in it", async () => {
+    const user = userEvent.setup();
+    const created: FolderDto = {
+      id: "folder-new",
+      name: "Roadmap",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const onCreateFolder = vi.fn().mockResolvedValue(created);
+    const onSetFolder = vi.fn().mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    const onMoved = vi.fn();
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={onClose}
+        notes={[notes[1]]}
+        folders={moveFolders}
+        onSetFolder={onSetFolder}
+        onCreateFolder={onCreateFolder}
+        onMoved={onMoved}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search or create project"), "Roadmap");
+    await user.click(screen.getByRole("button", { name: "Create “Roadmap”" }));
+
+    expect(onCreateFolder).toHaveBeenCalledWith("Roadmap");
+    expect(onSetFolder).toHaveBeenCalledWith("note-1", "folder-new");
+    expect(onMoved).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("hides the create row when the query matches an existing project name", async () => {
+    const user = userEvent.setup();
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={vi.fn()}
+        notes={[notes[1]]}
+        folders={moveFolders}
+        onSetFolder={vi.fn()}
+        onCreateFolder={vi.fn()}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search or create project"), "alpha");
+
+    expect(screen.queryByRole("button", { name: /^Create/ })).toBeNull();
+    expect(screen.getByRole("option", { name: /Alpha/ })).toBeInTheDocument();
+  });
+
+  it("lets the user create their first project inline via Enter", async () => {
+    const user = userEvent.setup();
+    const created: FolderDto = {
+      id: "folder-new",
+      name: "Client work",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const onCreateFolder = vi.fn().mockResolvedValue(created);
+    const onSetFolder = vi.fn().mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={onClose}
+        notes={[notes[1]]}
+        folders={[]}
+        onSetFolder={onSetFolder}
+        onCreateFolder={onCreateFolder}
+      />,
+    );
+
+    expect(screen.getByText("No projects yet. Type a name to create one.")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Search or create project"), "Client work{Enter}");
+
+    expect(onCreateFolder).toHaveBeenCalledWith("Client work");
+    expect(onSetFolder).toHaveBeenCalledWith("note-1", "folder-new");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("keeps the dialog open when assignment fails after creating the project", async () => {
+    const user = userEvent.setup();
+    const created: FolderDto = {
+      id: "folder-new",
+      name: "Roadmap",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const onCreateFolder = vi.fn().mockResolvedValue(created);
+    const onSetFolder = vi.fn().mockRejectedValue(new Error("db locked"));
+    const onClose = vi.fn();
+    const onMoved = vi.fn();
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={onClose}
+        notes={[notes[1]]}
+        folders={[]}
+        onSetFolder={onSetFolder}
+        onCreateFolder={onCreateFolder}
+        onMoved={onMoved}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search or create project"), "Roadmap");
+    await user.click(screen.getByRole("button", { name: "Create “Roadmap”" }));
+
+    expect(onSetFolder).toHaveBeenCalledWith("note-1", "folder-new");
+    expect(onMoved).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("keeps the dialog open when project creation fails", async () => {
+    const user = userEvent.setup();
+    const onCreateFolder = vi.fn().mockResolvedValue(undefined);
+    const onSetFolder = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={onClose}
+        notes={[notes[1]]}
+        folders={[]}
+        onSetFolder={onSetFolder}
+        onCreateFolder={onCreateFolder}
+      />,
+    );
+
+    await user.type(screen.getByPlaceholderText("Search or create project"), "Roadmap");
+    await user.click(screen.getByRole("button", { name: "Create “Roadmap”" }));
+
+    expect(onCreateFolder).toHaveBeenCalledWith("Roadmap");
+    expect(onSetFolder).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
