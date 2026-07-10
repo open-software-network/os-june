@@ -558,8 +558,10 @@ export function ComposerModelPopover({
                   ))
                 ) : (
                   <p className="agent-composer-model-empty">
-                    {privateOnly && !query
-                      ? "No private models available."
+                    {privateOnly
+                      ? query
+                        ? "No private models match your search."
+                        : "No private models available."
                       : "No models match your search."}
                   </p>
                 )}

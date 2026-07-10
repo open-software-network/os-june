@@ -5967,7 +5967,15 @@ input:focus-visible,
   /* Bare inline input, matching the command prompt: no icon, no boxed
    * container — sp-2 padding lines the caret up with the rows below. */
   padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
   color: var(--muted-foreground);
+}
+
+/* The input suppresses the default outline, so the row itself must carry a
+ * visible focus state for keyboard users: the same quiet wash the app's menus
+ * use for their active row, rather than boxing the field back in. */
+.agent-composer-model-search:focus-within {
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
 }
 
 .agent-composer-model-search input {
