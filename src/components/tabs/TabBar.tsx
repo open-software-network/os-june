@@ -226,10 +226,6 @@ export function TabBar({
     return () => observer.disconnect();
   }, []);
 
-  // A lone tab carries no meaning to switch between, but the strip stays so the
-  // "+" affordance is always discoverable.
-  const showClose = tabs.length > 1;
-
   // How wide each visible tab would render if they all shared evenly, so the
   // strip can shed labels as it tightens — deterministic (vs. relying on CSS
   // container queries to fire) since we already know the width. Below full
@@ -306,7 +302,7 @@ export function TabBar({
 
   function handleAuxClick(event: MouseEvent<HTMLDivElement>, id: string) {
     // Middle-click closes, matching every browser.
-    if (event.button === 1 && showClose) {
+    if (event.button === 1) {
       event.preventDefault();
       onClose(id);
     }
@@ -498,20 +494,20 @@ export function TabBar({
           {tab.icon}
         </span>
         <span className="tab-label">{tab.title}</span>
-        {showClose ? (
-          <button
-            type="button"
-            className="tab-close"
-            aria-label={`Close ${tab.title}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onClose(tab.id);
-            }}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            <IconCrossSmall size={12} />
-          </button>
-        ) : null}
+        <button
+          type="button"
+          className="tab-close"
+          tabIndex={-1}
+          aria-hidden="true"
+          aria-label={`Close ${tab.title}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onClose(tab.id);
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <IconCrossSmall size={12} />
+        </button>
       </div>
     );
   }
@@ -601,19 +597,19 @@ export function TabBar({
                   {tab.icon}
                 </span>
                 <span className="tab-overflow-title">{tab.title}</span>
-                {showClose ? (
-                  <button
-                    type="button"
-                    className="tab-overflow-close"
-                    aria-label={`Close ${tab.title}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onClose(tab.id);
-                    }}
-                  >
-                    <IconCrossSmall size={12} />
-                  </button>
-                ) : null}
+                <button
+                  type="button"
+                  className="tab-overflow-close"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  aria-label={`Close ${tab.title}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onClose(tab.id);
+                  }}
+                >
+                  <IconCrossSmall size={12} />
+                </button>
               </div>
             );
           })}
@@ -637,17 +633,18 @@ export function TabBar({
           >
             Close tab
           </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={tabs.length <= 1}
-            onClick={() => {
-              onCloseOthers(menu.tabId);
-              setMenu(null);
-            }}
-          >
-            Close other tabs
-          </button>
+          {tabs.length > 1 ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onCloseOthers(menu.tabId);
+                setMenu(null);
+              }}
+            >
+              Close other tabs
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>

@@ -9425,21 +9425,25 @@ input:focus-visible,
   opacity: 0.65;
 }
 
-/* The label runs the tab's full width and fades out at its right edge instead
- * of ellipsizing — the close button floats above that faded tail, so squeezed
- * tabs keep every pixel of title. The fade completes 14px in — the close
- * button's left edge — so text never collides with the x. */
+/* At rest, long labels dissolve through the tab's trailing edge. */
 .tab-label {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent 100%);
+}
+
+/* During interaction, finish the fade before the close control so its glyph
+ * appears on a clear patch instead of competing with the title. */
+.tab:hover .tab-label {
   -webkit-mask-image: linear-gradient(
     to right,
     #000 calc(100% - 38px),
-    transparent calc(100% - 14px)
+    transparent calc(100% - 22px)
   );
-  mask-image: linear-gradient(to right, #000 calc(100% - 38px), transparent calc(100% - 14px));
+  mask-image: linear-gradient(to right, #000 calc(100% - 38px), transparent calc(100% - 22px));
 }
 
 /* Overlaid on the tab's right edge, above the label's faded tail, so showing
@@ -9469,10 +9473,9 @@ input:focus-visible,
     color var(--t-fast) var(--ease-out);
 }
 
-/* Close stays hidden on idle inactive tabs so the strip reads as labels, not a
- * row of x's — it fades in on hover and is always present on the active tab. */
-.tab:hover .tab-close,
-.tab[data-active] .tab-close {
+/* Close stays hidden until the tab is being directly interacted with, so the
+ * active tab keeps the same clean resting state as every other tab. */
+.tab:hover .tab-close {
   opacity: 1;
 }
 
