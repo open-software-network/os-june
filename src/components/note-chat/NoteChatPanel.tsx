@@ -140,6 +140,8 @@ export function NoteChatPanel({
   note,
   chat,
   recordingActive,
+  creditActionsDisabledReason,
+  fundingNotice,
   onClose,
   onOpenInAgent,
 }: {
@@ -151,6 +153,11 @@ export function NoteChatPanel({
    * ducks the recording's mic while dictation listens (so a dictated question
    * never lands in the note); this only tunes the tooltip to say so. */
   recordingActive?: boolean;
+  creditActionsDisabledReason?: string;
+  /** The persistent out-of-credits notice, pre-wired by App. When present it
+   * replaces the plain composer-notice paragraph; the disabled reason keeps
+   * gating actions and tooltips. */
+  fundingNotice?: ReactNode;
   onClose: () => void;
   onOpenInAgent: (sessionId: string | undefined) => void;
 }) {
@@ -208,6 +215,10 @@ export function NoteChatPanel({
   // the same command the hotkey path sends. The helper records, shows the
   // HUD, and pastes the transcription into the focused field (the composer).
   async function startDictation() {
+    if (creditActionsDisabledReason) {
+      setComposerError(creditActionsDisabledReason);
+      return;
+    }
     composerRef.current?.focus();
     try {
       await dictationHelperCommand({ type: "toggle_listening", shortcut: "Dictation" });
@@ -333,7 +344,7 @@ export function NoteChatPanel({
   }, [turns.length, lastTurnSize, working, fade.update]);
 
   async function handleSend(text: string) {
-    if (working || importing) return;
+    if (working || importing || creditActionsDisabledReason) return;
     setComposerError(null);
     const accepted = await submit(text, attachments);
     if (accepted) {
@@ -455,6 +466,12 @@ export function NoteChatPanel({
           ) : null}
         </div>
         <footer className="note-chat-composer">
+          {fundingNotice ??
+            (creditActionsDisabledReason ? (
+              <p className="agent-composer-notice" role="status">
+                {creditActionsDisabledReason}
+              </p>
+            ) : null)}
           {/* The actual chatbox: the agent composer's box/attach/toolbar/model/
            * send classes, wired to the panel's session. */}
           <div className="agent-composer-box">
@@ -523,10 +540,12 @@ export function NoteChatPanel({
                   className="agent-composer-mic"
                   aria-label="Dictate"
                   title={
-                    recordingActive
+                    creditActionsDisabledReason ??
+                    (recordingActive
                       ? "Dictate a question (kept out of the recording)"
-                      : "Start dictation"
+                      : "Start dictation")
                   }
+                  disabled={Boolean(creditActionsDisabledReason)}
                   onClick={() => void startDictation()}
                 >
                   <IconMicrophone size={18} />
@@ -546,7 +565,11 @@ export function NoteChatPanel({
                     type="button"
                     className="agent-composer-send"
                     aria-label="Send message"
-                    disabled={importing || (draftEmpty && !attachments.length)}
+                    disabled={
+                      Boolean(creditActionsDisabledReason) ||
+                      importing ||
+                      (draftEmpty && !attachments.length)
+                    }
                     onClick={() => void handleSend(draftRef.current)}
                   >
                     <IconArrowUp size={18} />

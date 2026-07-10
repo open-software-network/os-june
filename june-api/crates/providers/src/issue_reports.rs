@@ -1,17 +1,17 @@
 use async_trait::async_trait;
 use june_config::IssueReportsConfig;
-use june_domain::{DomainError, IssueReport, IssueReportSink};
+use june_domain::{DomainError, IssueReport, IssueReportDelivery, IssueReportSink};
 use serde::Deserialize;
 
 /// Files user reports as Issues in the os-platform tracker. Uses only
-/// os-platform's stock API: attachments are uploaded first (best-effort — a
-/// failed upload never blocks the report; the names are listed in the body
-/// either way), the Issue is created with the report category mapped to an
+/// os-platform's stock API: files are sent to Open Software first (best-effort;
+/// a failed transfer never blocks the report and the names are listed in the
+/// body either way), the Issue is created with the report category mapped to an
 /// os-platform Issue type, and the configured label is attached afterwards
 /// via the labels PUT when it applies.
-/// Delivery to os-platform is best-effort: the sink retries without a Project
-/// destination and finally logs the report rather than surfacing delivery
-/// failures to the user.
+/// Delivery to os-platform is best-effort: an explicit Project rejection can
+/// fall back to an Org-scoped Issue, while ambiguous transport or envelope
+/// failures are logged without replaying the non-idempotent create request.
 pub struct OsPlatformIssueReportSink {
     http: reqwest::Client,
     api_url: String,
@@ -53,13 +53,51 @@ struct IssueCreateEntry {
     body_markdown: String,
 }
 
+/// Result of attaching a report's files in Open Software: the file ids that
+/// made it, plus the names of every file that did not.
+#[derive(Default)]
+struct AttachmentTransfers {
+    file_ids: Vec<String>,
+    unattached_names: Vec<String>,
+}
+
+/// The issue body ends with the Metadata bullet list, so an Open Software file
+/// failure slots in as one more bullet.
+fn append_unattached_names(body_markdown: &mut String, unattached_names: &[String]) {
+    use std::fmt::Write as _;
+
+    if !body_markdown.ends_with('\n') {
+        body_markdown.push('\n');
+    }
+    let _ = writeln!(
+        body_markdown,
+        "- Files Open Software could not attach: {}",
+        unattached_names.join(", ")
+    );
+}
+
+fn report_file_names(report: &IssueReport) -> Vec<String> {
+    let mut names = Vec::new();
+    for name in report
+        .attachment_names
+        .iter()
+        .chain(report.attachments.iter().map(|attachment| &attachment.name))
+    {
+        let name = name.trim();
+        if !name.is_empty() && !names.iter().any(|existing| existing == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
 struct SplitDiagnosisIssue {
     title: String,
     diagnosis: String,
     preamble: Option<String>,
 }
 
-struct ProjectIssueFailure<'a> {
+struct ProjectIssueRejection<'a> {
     report: &'a IssueReport,
     file_ids: &'a [String],
     project_message: &'a str,
@@ -105,23 +143,30 @@ impl OsPlatformIssueReportSink {
         })
     }
 
-    async fn upload_attachments(&self, report: &IssueReport) -> Vec<String> {
-        let mut file_ids = Vec::new();
+    async fn attach_report_files(&self, report: &IssueReport) -> AttachmentTransfers {
+        let mut transfers = AttachmentTransfers::default();
         for attachment in &report.attachments {
-            let part = match reqwest::multipart::Part::bytes(attachment.bytes.clone())
-                .file_name(attachment.name.clone())
-                .mime_str(&attachment.content_type)
+            // Bytes clones share the multipart payload allocation. Keeping the
+            // original value preserves its length if delivery falls back to logs.
+            let byte_len = attachment.bytes.len();
+            let part = match reqwest::multipart::Part::stream_with_length(
+                attachment.bytes.clone(),
+                byte_len as u64,
+            )
+            .file_name(attachment.name.clone())
+            .mime_str(&attachment.content_type)
             {
                 Ok(part) => part,
                 Err(error) => {
                     tracing::warn!(%error, name = %attachment.name, "issue_reports: skipping attachment with invalid content type");
+                    transfers.unattached_names.push(attachment.name.clone());
                     continue;
                 }
             };
             let form = reqwest::multipart::Form::new()
                 .text("is_public", "true")
                 .part("file", part);
-            let uploaded: Result<FellowEnvelope<FellowFile>, _> = async {
+            let transfer: Result<FellowEnvelope<FellowFile>, _> = async {
                 self.http
                     .post(format!("{}/v1/files", self.api_url))
                     .bearer_auth(&self.api_key)
@@ -132,25 +177,30 @@ impl OsPlatformIssueReportSink {
                     .await
             }
             .await;
-            match uploaded {
+            match transfer {
                 Ok(envelope) if envelope.success => {
                     if let Some(file) = envelope.data {
-                        file_ids.push(file.id);
+                        transfers.file_ids.push(file.id);
+                    } else {
+                        tracing::warn!(name = %attachment.name, "issue_reports: os-platform returned no file for an accepted attachment transfer");
+                        transfers.unattached_names.push(attachment.name.clone());
                     }
                 }
                 Ok(envelope) => {
                     tracing::warn!(
                         message = envelope.message.as_deref().unwrap_or(""),
                         name = %attachment.name,
-                        "issue_reports: os-platform rejected attachment upload"
+                        "issue_reports: os-platform rejected attachment transfer"
                     );
+                    transfers.unattached_names.push(attachment.name.clone());
                 }
                 Err(error) => {
-                    tracing::warn!(%error, name = %attachment.name, "issue_reports: attachment upload failed");
+                    tracing::warn!(%error, name = %attachment.name, "issue_reports: attachment transfer to os-platform failed");
+                    transfers.unattached_names.push(attachment.name.clone());
                 }
             }
         }
-        file_ids
+        transfers
     }
 
     fn issue_create_body(
@@ -232,13 +282,13 @@ impl OsPlatformIssueReportSink {
         log_issue_report_delivery_failed(report, reason, &self.org, &self.project);
     }
 
-    async fn create_org_issue_after_project_failure(
+    async fn create_org_issue_after_project_rejection(
         &self,
         entry: &IssueCreateEntry,
-        failure: ProjectIssueFailure<'_>,
+        rejection: ProjectIssueRejection<'_>,
     ) -> Option<(FellowEnvelope<FellowIssue>, IssueCreateDestination)> {
         match self
-            .create_org_issue(failure.report, entry, failure.file_ids)
+            .create_org_issue(rejection.report, entry, rejection.file_ids)
             .await
         {
             Ok(envelope) if envelope.success => {
@@ -246,15 +296,15 @@ impl OsPlatformIssueReportSink {
             }
             Ok(envelope) => {
                 tracing::error!(
-                    failure.project_message,
+                    rejection.project_message,
                     org_message = envelope.message.as_deref().unwrap_or(""),
                     "issue_reports: os-platform rejected both project and org issue creates"
                 );
-                self.fallback_to_log(failure.report, "project_and_org_create_rejected");
+                self.fallback_to_log(rejection.report, "project_and_org_create_rejected");
                 None
             }
             Err(_) => {
-                self.fallback_to_log(failure.report, "org_create_transport_or_envelope_error");
+                self.fallback_to_log(rejection.report, "org_create_transport_or_envelope_error");
                 None
             }
         }
@@ -278,9 +328,9 @@ impl OsPlatformIssueReportSink {
                     target_project = %self.project,
                     "issue_reports: os-platform rejected the project-scoped issue; retrying at org scope"
                 );
-                self.create_org_issue_after_project_failure(
+                self.create_org_issue_after_project_rejection(
                     entry,
-                    ProjectIssueFailure {
+                    ProjectIssueRejection {
                         report,
                         file_ids,
                         project_message,
@@ -289,22 +339,13 @@ impl OsPlatformIssueReportSink {
                 .await
             }
             Err(_) => {
-                let project_message = "project_create_transport_or_envelope_error";
                 tracing::warn!(
-                    message = project_message,
                     target_org = %self.org,
                     target_project = %self.project,
-                    "issue_reports: project-scoped issue create failed before envelope; retrying at org scope"
+                    "issue_reports: project-scoped issue create failed ambiguously; not replaying at org scope"
                 );
-                self.create_org_issue_after_project_failure(
-                    entry,
-                    ProjectIssueFailure {
-                        report,
-                        file_ids,
-                        project_message,
-                    },
-                )
-                .await
+                self.fallback_to_log(report, "project_create_transport_or_envelope_error");
+                None
             }
         }
     }
@@ -472,17 +513,26 @@ fn normalize_destination(org: &str, project: &str) -> Option<(String, String)> {
 
 #[async_trait]
 impl IssueReportSink for OsPlatformIssueReportSink {
-    async fn deliver(&self, report: IssueReport) -> Result<(), DomainError> {
-        let file_ids = self.upload_attachments(&report).await;
-        let entries = issue_create_entries(&report);
+    async fn deliver(&self, report: IssueReport) -> Result<IssueReportDelivery, DomainError> {
+        let transfers = self.attach_report_files(&report).await;
+        let mut entries = issue_create_entries(&report);
+        // A dropped attachment must leave a trace the team can act on: name the
+        // Open Software failures in the issue body instead of only logging them.
+        if !transfers.unattached_names.is_empty() {
+            for entry in &mut entries {
+                append_unattached_names(&mut entry.body_markdown, &transfers.unattached_names);
+            }
+        }
 
+        let mut filed_any_issue = false;
         for entry in &entries {
             let Some((envelope, destination)) = self
-                .create_issue_entry_or_log(entry, &report, &file_ids)
+                .create_issue_entry_or_log(entry, &report, &transfers.file_ids)
                 .await
             else {
                 continue;
             };
+            filed_any_issue = true;
             let issue = envelope.data.as_ref();
             if let Some(issue) = issue {
                 self.tag_issue(&report, issue.number_in_org, destination)
@@ -491,14 +541,20 @@ impl IssueReportSink for OsPlatformIssueReportSink {
             tracing::info!(
                 issue = issue.map_or("", |issue| issue.external_id.as_str()),
                 user_id = %report.user_id.0,
-                attachments = file_ids.len(),
+                attachments = transfers.file_ids.len(),
+                failed_attachments = transfers.unattached_names.len(),
                 split_issues = entries.len(),
                 issue_type = issue_type_for_report(&report),
                 destination = destination.as_str(),
                 "issue_reports: report filed as an os-platform issue"
             );
         }
-        Ok(())
+        let unattached_names = if filed_any_issue {
+            transfers.unattached_names
+        } else {
+            report_file_names(&report)
+        };
+        Ok(IssueReportDelivery { unattached_names })
     }
 }
 
@@ -830,7 +886,7 @@ fn log_issue_report_without_sink(report: &IssueReport) {
         description = %report.description,
         agent_diagnosis = report.agent_diagnosis.as_deref().unwrap_or(""),
         attachment_names = ?report.attachment_names,
-        // The Debug impl reports name/type/length only — uploaded bytes
+        // The Debug impl reports name/type/length only; attachment bytes
         // never reach the logs.
         attachments = ?report.attachments,
         category = report.category.as_deref().unwrap_or(""),
@@ -843,9 +899,11 @@ fn log_issue_report_without_sink(report: &IssueReport) {
 
 #[async_trait]
 impl IssueReportSink for LogIssueReportSink {
-    async fn deliver(&self, report: IssueReport) -> Result<(), DomainError> {
+    async fn deliver(&self, report: IssueReport) -> Result<IssueReportDelivery, DomainError> {
         log_issue_report_without_sink(&report);
-        Ok(())
+        Ok(IssueReportDelivery {
+            unattached_names: report_file_names(&report),
+        })
     }
 }
 
@@ -1167,12 +1225,49 @@ mod os_platform_tests {
             attachments: vec![june_domain::IssueReportAttachment {
                 name: "screenshot.png".to_string(),
                 content_type: "image/png".to_string(),
-                bytes: b"png-bytes".to_vec(),
+                bytes: bytes::Bytes::from_static(b"png-bytes"),
             }],
             session_id: Some("session-1".to_string()),
             app_version: Some("0.0.7".to_string()),
             platform: Some("macos".to_string()),
         }
+    }
+
+    #[tokio::test]
+    async fn log_sink_returns_named_files_as_unattached() {
+        let mut report = report();
+        report.attachment_names.push("local-only.mov".to_string());
+
+        let delivery = LogIssueReportSink
+            .deliver(report)
+            .await
+            .expect("log-only delivery succeeds");
+
+        assert_eq!(
+            delivery.unattached_names,
+            vec!["screenshot.png", "local-only.mov"]
+        );
+    }
+
+    #[tokio::test]
+    async fn open_software_transfer_keeps_payload_length_for_fallback_logs() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "id": "fil_1" },
+                "success": true,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let report = report();
+        let expected_len = report.attachments[0].bytes.len();
+
+        let transfers = sink(&server).attach_report_files(&report).await;
+
+        assert_eq!(transfers.file_ids, vec!["fil_1"]);
+        assert_eq!(report.attachments[0].bytes.len(), expected_len);
     }
 
     fn config(api_url: &str) -> IssueReportsConfig {
@@ -1385,6 +1480,125 @@ mod os_platform_tests {
             .await;
 
         assert!(sink(&server).deliver(report()).await.is_ok());
+    }
+
+    fn report_with_two_videos() -> IssueReport {
+        let mut report = report();
+        report.attachment_names = vec!["clip-a.mov".to_string(), "clip-b.mp4".to_string()];
+        report.attachments = vec![
+            june_domain::IssueReportAttachment {
+                name: "clip-a.mov".to_string(),
+                content_type: "video/quicktime".to_string(),
+                bytes: bytes::Bytes::from_static(b"mov-bytes"),
+            },
+            june_domain::IssueReportAttachment {
+                name: "clip-b.mp4".to_string(),
+                content_type: "video/mp4".to_string(),
+                bytes: bytes::Bytes::from_static(b"mp4-bytes"),
+            },
+        ];
+        report
+    }
+
+    // JUN-238: a report with two videos must register both on the Open Software
+    // issue, one file transfer per attachment.
+    #[tokio::test]
+    async fn os_platform_sink_attaches_every_file() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .and(body_string_contains("clip-a.mov"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "id": "fil_1" },
+                "success": true,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .and(body_string_contains("clip-b.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "id": "fil_2" },
+                "success": true,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
+            .and(body_partial_json(serde_json::json!({
+                "file_ids": ["fil_1", "fil_2"],
+            })))
+            .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/orgs/june/bounties/7/labels"))
+            .respond_with(labels_set())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert!(
+            sink(&server)
+                .deliver(report_with_two_videos())
+                .await
+                .is_ok()
+        );
+    }
+
+    // A rejected file transfer must not be silent: the issue still carries the
+    // file that made it, and the body names the one that did not.
+    #[tokio::test]
+    async fn os_platform_sink_names_files_open_software_could_not_attach() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .and(body_string_contains("clip-a.mov"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "id": "fil_1" },
+                "success": true,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .and(body_string_contains("clip-b.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": null,
+                "success": false,
+                "message": "file too large",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
+            .and(body_partial_json(serde_json::json!({
+                "file_ids": ["fil_1"],
+            })))
+            .and(body_string_contains(
+                "Files Open Software could not attach: clip-b.mp4",
+            ))
+            .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/orgs/june/bounties/7/labels"))
+            .respond_with(labels_set())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let delivery = sink(&server)
+            .deliver(report_with_two_videos())
+            .await
+            .expect("report delivery succeeds");
+        assert_eq!(delivery.unattached_names, vec!["clip-b.mp4"]);
     }
 
     #[tokio::test]
@@ -1609,11 +1823,15 @@ mod os_platform_tests {
     }
 
     #[tokio::test]
-    async fn os_platform_sink_retries_at_org_scope_when_project_create_has_bad_envelope() {
+    async fn os_platform_sink_does_not_replay_project_create_after_bad_envelope() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/files"))
-            .respond_with(ResponseTemplate::new(500))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "id": "fil_1" },
+                "success": true,
+            })))
+            .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -1625,21 +1843,19 @@ mod os_platform_tests {
         Mock::given(method("POST"))
             .and(path("/v1/orgs/june/bounties"))
             .respond_with(issue_created())
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("PUT"))
-            .and(path("/v1/orgs/june/bounties/7/labels"))
-            .respond_with(labels_set())
-            .expect(1)
+            .expect(0)
             .mount(&server)
             .await;
 
-        assert!(
-            missing_project_sink(&server)
-                .deliver(report())
-                .await
-                .is_ok()
+        let delivery = missing_project_sink(&server)
+            .deliver(report())
+            .await
+            .expect("ambiguous create failure falls back to logs");
+
+        assert_eq!(
+            delivery.unattached_names,
+            vec!["screenshot.png"],
+            "a successful file transfer is still unattached when Issue creation is ambiguous"
         );
     }
 
@@ -1710,7 +1926,10 @@ mod os_platform_tests {
             .mount(&server)
             .await;
 
-        let result = missing_project_sink(&server).deliver(report()).await;
-        assert!(result.is_ok());
+        let delivery = missing_project_sink(&server)
+            .deliver(report())
+            .await
+            .expect("log fallback still accepts the report");
+        assert_eq!(delivery.unattached_names, vec!["screenshot.png"]);
     }
 }

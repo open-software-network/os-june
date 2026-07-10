@@ -16,6 +16,14 @@ pub const OPENAI_API_KEY_PLACEHOLDER: &str = "sk_REPLACE_ME";
 pub const VENICE_API_KEY_PLACEHOLDER: &str = "VENICE_API_KEY_REPLACE_ME";
 pub const IMAGE_EDIT_SOURCE_MAX_BYTES: usize = 50 * 1024 * 1024;
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
+/// Matches os-platform's general attachment cap. June API is the authenticated
+/// report boundary, so it must accept the same video size the downstream file
+/// API accepts instead of silently imposing the platform's former 10 MiB cap.
+pub const ISSUE_REPORT_ATTACHMENT_MAX_BYTES: usize = 300 * 1024 * 1024;
+/// Multipart framing and the report's text fields need a small amount of room
+/// beyond one maximum-sized attachment. This remains a total request cap, so
+/// many attachments cannot multiply the per-file allowance into unbounded RAM.
+pub const DEFAULT_MAX_ISSUE_REPORT_BYTES: usize = ISSUE_REPORT_ATTACHMENT_MAX_BYTES + (1024 * 1024);
 /// OS Accounts rejects `/authorize` holds outside its deployed cap as
 /// `invalid_ttl` (envelope code 4201). This mirrors `MAX_HOLD_TTL_SECONDS`
 /// in the os-accounts repo (`api/crates/services/src/grants.rs`), which is
@@ -341,6 +349,8 @@ pub struct ServerConfig {
     pub request_timeout_secs: u64,
     pub max_audio_bytes: usize,
     pub max_json_bytes: usize,
+    /// Total multipart body cap for `/v1/issue-reports`.
+    pub max_issue_report_bytes: usize,
     /// JSON body cap for `/v1/image/edit`. It is sized for a 50 MiB source
     /// image after base64 expansion plus fixed request overhead.
     pub max_image_edit_bytes: usize,
@@ -396,6 +406,10 @@ impl Debug for LocalDevConfig {
 pub struct OsAccountsConfig {
     pub api_url: String,
     pub app_api_key: String,
+    /// Optional service token for anonymous P3A aggregate ingestion into OS
+    /// Accounts. When unset (empty), P3A ingest is disabled: reports fall back
+    /// to the log-only sink while startup and all other ingest proceed
+    /// normally.
     #[serde(default)]
     pub p3a_ingest_token: String,
     pub iss: String,
@@ -442,7 +456,14 @@ impl Debug for OsAccountsConfig {
             .debug_struct("OsAccountsConfig")
             .field("api_url", &self.api_url)
             .field("app_api_key", &REDACTED)
-            .field("p3a_ingest_token", &REDACTED)
+            .field(
+                "p3a_ingest_token",
+                if self.p3a_ingest_token.trim().is_empty() {
+                    &"<unset>"
+                } else {
+                    &REDACTED
+                },
+            )
             .field("iss", &self.iss)
             .field("aud", &self.aud)
             .field("jwks_refresh_secs", &self.jwks_refresh_secs)
@@ -865,6 +886,7 @@ impl Default for AppConfig {
                 request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
                 max_audio_bytes: 26_214_400,
                 max_json_bytes: 524_288,
+                max_issue_report_bytes: DEFAULT_MAX_ISSUE_REPORT_BYTES,
                 max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
             },
             local_dev: LocalDevConfig::default(),
@@ -977,11 +999,9 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
             &config.os_accounts.app_api_key,
             OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
         )?;
-        validate_required_secret(
-            "os_accounts.p3a_ingest_token",
-            &config.os_accounts.p3a_ingest_token,
-            &[],
-        )?;
+        // os_accounts.p3a_ingest_token is deliberately not validated here:
+        // the token is optional, and when unset the P3A sink degrades to
+        // log-only instead of failing startup (JUN-231).
     }
     validate_request_limits(config)?;
     validate_issue_report_diagnosis(config)?;
@@ -1135,6 +1155,10 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
     validate_positive_usize_config(
         "server.max_image_edit_bytes",
         config.server.max_image_edit_bytes,
+    )?;
+    validate_positive_usize_config(
+        "server.max_issue_report_bytes",
+        config.server.max_issue_report_bytes,
     )?;
     validate_image_hold_ttl(config)?;
     validate_video_hold_ttl(config)?;
@@ -1383,9 +1407,10 @@ fn validate_positive_rate(
 mod tests {
     use super::{
         AppConfig, ConfigError, DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS, DEFAULT_IMAGE_HOLD_TTL_SECS,
-        DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, DEFAULT_VIDEO_HOLD_TTL_SECS,
-        DEFAULT_VIDEO_JOB_MAX_SECS, DEFAULT_VIDEO_MAX_RESPONSE_BYTES, IMAGE_EDIT_SOURCE_MAX_BYTES,
-        IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS, ModelPriceConfig, ModelProvider, ModelType,
+        DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_MAX_ISSUE_REPORT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS,
+        DEFAULT_VIDEO_HOLD_TTL_SECS, DEFAULT_VIDEO_JOB_MAX_SECS, DEFAULT_VIDEO_MAX_RESPONSE_BYTES,
+        IMAGE_EDIT_SOURCE_MAX_BYTES, IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS,
+        ISSUE_REPORT_ATTACHMENT_MAX_BYTES, ModelPriceConfig, ModelProvider, ModelType,
         OPENAI_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
         OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS, OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit,
         VENICE_API_KEY_PLACEHOLDERS, VIDEO_CLIENT_POLL_WINDOW_SECS,
@@ -1690,6 +1715,54 @@ mod tests {
     }
 
     #[test]
+    fn default_issue_report_body_limit_matches_platform_attachment_cap() {
+        assert_eq!(ISSUE_REPORT_ATTACHMENT_MAX_BYTES, 300 * 1024 * 1024);
+        assert_eq!(
+            AppConfig::default().server.max_issue_report_bytes,
+            ISSUE_REPORT_ATTACHMENT_MAX_BYTES + (1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn production_ingress_accepts_the_issue_report_body_budget() -> Result<(), String> {
+        let compose = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../deploy/docker-compose.production.yml"
+        ));
+        let configured_limits = compose
+            .lines()
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix("- CLIENT_MAX_BODY_SIZE=")
+                    .map(str::trim)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            configured_limits.len(),
+            1,
+            "production compose must declare one ingress body limit"
+        );
+        let configured_limit = configured_limits
+            .first()
+            .copied()
+            .ok_or_else(|| "production ingress body limit is missing".to_string())?;
+        let configured_mib = configured_limit
+            .strip_suffix('m')
+            .ok_or_else(|| "ingress limit should use nginx MiB units".to_string())?
+            .parse::<usize>()
+            .map_err(|error| format!("ingress limit should be numeric: {error}"))?;
+        let configured_bytes = configured_mib
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| "ingress body limit should fit usize".to_string())?;
+
+        assert!(
+            configured_bytes >= DEFAULT_MAX_ISSUE_REPORT_BYTES,
+            "production ingress body limit ({configured_bytes}) is below June API's issue-report limit ({DEFAULT_MAX_ISSUE_REPORT_BYTES})"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn default_image_hold_ttl_covers_client_timeout_within_platform_cap() {
         let config = AppConfig::default();
         assert_eq!(
@@ -1924,18 +1997,16 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_missing_p3a_ingest_token() {
+    fn validate_accepts_missing_p3a_ingest_token() {
         let mut config = valid_config();
         config.os_accounts.p3a_ingest_token = String::new();
 
         let result = validate(&config);
 
-        assert!(matches!(
-            result,
-            Err(ConfigError::MissingRequired {
-                field: "os_accounts.p3a_ingest_token"
-            })
-        ));
+        assert!(
+            result.is_ok(),
+            "missing P3A ingest token must not fail validation: {result:?}"
+        );
     }
 
     #[test]

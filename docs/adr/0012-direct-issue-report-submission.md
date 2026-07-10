@@ -65,3 +65,32 @@ Reports no longer run a client-side model turn at all.
 - The report UX is fire-and-forget (JUN-197 direction): no visible agent
   conversation, no user-facing diagnosis. If a report-followup conversation
   is wanted later, it needs a new design.
+
+## Addendum: 2026-07-10
+
+### Decision
+
+- Attachments stay on the authenticated desktop -> June API -> os-platform
+  path. The desktop streams every readable file that fits a 300 MiB per-file
+  and cumulative budget; June API accepts 1 MiB of additional multipart
+  overhead and forwards every received file to os-platform. New clients send
+  `stream=true` and accept a heartbeat SSE response whose terminal result or
+  error contains the same envelope as the original buffered JSON response.
+  Old clients omit the flag and keep the buffered contract, while new clients
+  still accept JSON from an older server. One deadline created before permit
+  wait and multipart extraction bounds the complete request and downstream
+  delivery to `request_timeout_secs`. The desktop's dedicated issue-report
+  request window is longer (900 seconds with the 600-second server default),
+  leaving transport and terminal-response grace so the server remains the
+  authoritative deadline.
+
+### Consequences
+
+- A single issue-report permit spans multipart extraction, downstream
+  delivery, and streamed response completion. This bounds June API to one
+  platform-sized attachment buffer at a time, including when a client
+  disconnects while accepted delivery finishes in the background.
+- File and Issue creation requests are non-idempotent. June API does not
+  replay ambiguous transport or malformed-envelope failures. The legacy
+  project-to-org Issue fallback is retained only after a parsed, explicit
+  project rejection proves the first create did not succeed.
