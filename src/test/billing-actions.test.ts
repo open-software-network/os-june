@@ -10,7 +10,17 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
-  dictationCapabilities: vi.fn().mockResolvedValue({ capabilities: { available: true, platform: "macos", shortcuts: true, paste: true, microphoneSelection: true, accessibilityPermission: true, systemAudio: true } }),
+  dictationCapabilities: vi.fn().mockResolvedValue({
+    capabilities: {
+      available: true,
+      platform: "macos",
+      shortcuts: true,
+      paste: true,
+      microphoneSelection: true,
+      accessibilityPermission: true,
+      systemAudio: true,
+    },
+  }),
   osAccountsChangePlan: mocks.osAccountsChangePlan,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
