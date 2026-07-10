@@ -225,8 +225,16 @@ analysis.
 
 ### Phase 1 acceptance criteria
 
+- The complete Persona workflow is native to the June desktop app. A released
+  build never requires a browser page, generated HTML, Finder, a terminal, or
+  hand-edited JSON to inspect clusters, tag a voice, correct a match, or manage
+  a Persona.
 - In a finished note, an anonymous speaker cluster can be tagged with a name;
   tagging creates the persona and stores the voiceprint.
+- The Transcription tab displays every resolved and anonymous cluster in
+  conversation order, keeps Source and time provenance visible, and offers
+  local cluster-audio preview where the transcript alone is not enough to
+  recognize the person.
 - In the *next* recording where that person speaks on the System source, their turns
   are suggested (first match) then auto-named (subsequent), per the bands.
 - Auto-named turns show provenance and support one-click correction; a
@@ -239,6 +247,8 @@ analysis.
 
 ### Phase 2 acceptance criteria
 
+- Every supported Persona edit and lifecycle action is available in the June
+  app's People surface; there is no external management surface.
 - After a meeting with confirmed participants, each participant's dossier
   gains an update the user can read, edit, and delete; commitments appear as
   structured open items with source-note links.

@@ -151,6 +151,11 @@ high-confidence matches eligible for `automatic`.
 
 ### Finished-note UI
 
+All released Persona workflows live inside the June desktop app. The
+gitignored spike report, generated cluster WAVs, temporary labeling page, and
+labels JSON are evaluation artifacts only; none is a production interaction
+surface or a runtime dependency.
+
 The Transcription tab renders attribution without losing Source provenance:
 
 - legacy: `System` or `Microphone`;
@@ -159,6 +164,13 @@ The Transcription tab renders attribution without losing Source provenance:
 - automatic: Persona name, Source and time, `Auto`, plus `Not Name`;
 - tagged or confirmed: Persona name with Source and time;
 - frozen: the historical name with Source and time.
+
+Every diarized cluster appears in conversation order. A local in-app audio
+preview lets the user hear that cluster without opening Finder or a browser;
+the preview reads June's saved audio and never uploads it. The same row opens
+the native tag dialog, where the user selects an existing Persona or creates
+one with a name and optional relationship. Reassign, confirm, reject, and
+`Not Name` corrections all happen on that row and update the full cluster.
 
 The tag affordance appears on the first visible turn for a cluster; selecting
 any other turn for that cluster opens the same cluster action. Tagging searches
@@ -187,6 +199,11 @@ list/detail layout consistent with Projects:
 - editable identity, relationship, dossier, and Commitments in detail;
 - source-note links for Commitments and meeting history;
 - rename, archive, restore, and delete actions.
+
+Every supported Persona field, Voiceprint summary, correction entry point,
+Commitment mutation, and lifecycle action is reachable from June. Production
+does not expose or require generated HTML, JSON files, a terminal command, or
+another app for Persona management.
 
 Archived Personas are hidden from recognition, the roster, and tag search by
 default. Delete erases forward-looking Persona data and atomically freezes the
@@ -286,6 +303,8 @@ the brief is created. Calendar integration remains out of scope.
 
 - Every attribution band, correction, tag, and Participant action is covered
   in Rust repository/command tests and frontend interaction tests.
+- The Transcription tab can preview each cluster and complete create, assign,
+  reassign, confirm, and reject flows without leaving June.
 - Legacy and live-preview transcripts remain Source-only.
 - People covers empty, active, archived, edit, restore, delete, scrub, loading,
   error, dark-theme, narrow-window, and keyboard flows.
