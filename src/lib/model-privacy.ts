@@ -120,8 +120,11 @@ export function modelPrivacyBadge(
 
 /** What the catalog's "Private" filter keeps: zero-retention or stronger.
  * E2EE models are also private, so they pass; anonymized models (prompts may
- * be retained) do not. */
+ * be retained) do not. A loopback local model never leaves the machine —
+ * stronger than any zero-retention claim — so it passes too (a non-loopback
+ * custom endpoint reports "external" and makes no claim). */
 export function modelIsPrivate(model: ModelPrivacySignals) {
+  if ((model.privacy ?? "").toLowerCase() === "local") return true;
   const flags = modelPrivacyFlags(model);
   return flags.e2ee || flags.private;
 }
