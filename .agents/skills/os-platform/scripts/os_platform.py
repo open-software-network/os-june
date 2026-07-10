@@ -25,7 +25,7 @@ DEFAULT_BASE_URL = "https://app.opensoftware.co/api"
 CONFIG_FILE_NAME = "os-platform.json"
 API_KEY_ENV = "OS_PLATFORM_API_KEY"
 BASE_URL_ENV = "OS_PLATFORM_API_BASE_URL"
-USER_AGENT = os.environ.get("OS_PLATFORM_USER_AGENT") or (
+USER_AGENT = (os.environ.get("OS_PLATFORM_USER_AGENT") or "").strip() or (
     "os-platform-cli/2.0 (+https://opensoftware.co)"
 )
 WORD_RE = re.compile(r"[a-z0-9]+")
