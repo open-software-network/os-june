@@ -60,6 +60,15 @@ pub fn list_microphones() -> Result<(Vec<MicrophoneDevice>, Option<MicrophoneDev
     Ok((devices, default))
 }
 
+pub fn microphone_permission_status() -> &'static str {
+    let host = cpal::default_host();
+    if host.default_input_device().is_some() {
+        "granted"
+    } else {
+        "denied"
+    }
+}
+
 impl Recorder {
     pub fn start(selected_id: Option<&str>) -> Result<Self> {
         let host = cpal::default_host();

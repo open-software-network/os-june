@@ -300,13 +300,26 @@ fn build_windows_dictation_helper() {
         std::fs::create_dir_all(parent)
             .expect("Windows dictation helper destination should be created");
     }
-    std::fs::copy(&built, &destination).unwrap_or_else(|error| {
-        panic!(
-            "Windows dictation helper {} should copy to {}: {error}",
-            built.display(),
-            destination.display()
-        )
-    });
+    let should_copy = match (std::fs::read(&built), std::fs::read(&destination)) {
+        (Ok(built_contents), Ok(current_contents)) => built_contents != current_contents,
+        (Ok(_), Err(_)) => true,
+        (Err(error), _) => {
+            panic!(
+                "Windows dictation helper {} should be readable before copying to {}: {error}",
+                built.display(),
+                destination.display()
+            )
+        }
+    };
+    if should_copy {
+        std::fs::copy(&built, &destination).unwrap_or_else(|error| {
+            panic!(
+                "Windows dictation helper {} should copy to {}: {error}",
+                built.display(),
+                destination.display()
+            )
+        });
+    }
     sign_windows_helper_if_configured(&manifest_dir, &destination);
 }
 

@@ -2,7 +2,8 @@ use crate::protocol::{ShortcutCommand, ShortcutKind, ShortcutModifiers};
 use std::{collections::HashMap, sync::mpsc, thread};
 use windows_sys::Win32::UI::{
     Input::KeyboardAndMouse::{
-        RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, VK_0, VK_A,
+        RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
+        VK_0, VK_A,
     },
     WindowsAndMessaging::{
         DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW, TranslateMessage, MSG,
@@ -128,15 +129,22 @@ fn drain_messages(
     }
     for (kind, shortcut) in shortcuts.iter() {
         if let Some(vk) = virtual_key_for_code(&shortcut.code) {
-            let id = match kind {
-                ShortcutKind::PushToTalk => HOTKEY_PUSH_TO_TALK,
-                ShortcutKind::Toggle => HOTKEY_TOGGLE,
-            };
             let modifiers = modifiers_to_win32(shortcut.modifiers);
-            if unsafe { RegisterHotKey(std::ptr::null_mut(), id, modifiers, vk) } != 0 {
-                registered.push(id);
+            match kind {
+                ShortcutKind::PushToTalk => {
+                    register_hotkey(registered, HOTKEY_PUSH_TO_TALK, modifiers | MOD_NOREPEAT, vk);
+                }
+                ShortcutKind::Toggle => {
+                    register_hotkey(registered, HOTKEY_TOGGLE, modifiers | MOD_NOREPEAT, vk);
+                }
             }
         }
+    }
+}
+
+fn register_hotkey(registered: &mut Vec<i32>, id: i32, modifiers: u32, vk: u32) {
+    if unsafe { RegisterHotKey(std::ptr::null_mut(), id, modifiers, vk) } != 0 {
+        registered.push(id);
     }
 }
 
