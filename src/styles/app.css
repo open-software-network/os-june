@@ -5973,9 +5973,14 @@ input:focus-visible,
 
 /* The input suppresses the default outline, so the row itself must carry a
  * visible focus state for keyboard users: the same quiet wash the app's menus
- * use for their active row, rather than boxing the field back in. */
+ * use for their active row, rather than boxing the field back in. The outline
+ * is transparent in normal themes but forced-colors mode repaints outline
+ * colors, so high-contrast users still get a drawn ring where the background
+ * wash would be flattened away. */
 .agent-composer-model-search:focus-within {
   background: color-mix(in oklch, var(--muted) 50%, transparent);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
 }
 
 .agent-composer-model-search input {
