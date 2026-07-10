@@ -53,6 +53,7 @@ struct HelperApp {
     pinned_target: Option<PinnedTarget>,
     hotkeys: Option<HotkeyManager>,
     clipboard_restore: Option<thread::JoinHandle<()>>,
+    last_mic_test_path: Option<std::path::PathBuf>,
 }
 
 impl HelperApp {
@@ -137,6 +138,7 @@ impl HelperApp {
             pinned_target: None,
             hotkeys,
             clipboard_restore: None,
+            last_mic_test_path: None,
         }
     }
 
@@ -256,6 +258,7 @@ impl HelperApp {
         if self.recorder.is_some() || self.mic_test.is_some() {
             return;
         }
+        self.cleanup_last_mic_test();
         match Recorder::start(self.selected_microphone_id.as_deref()) {
             Ok(recorder) => {
                 self.recorder = Some(recorder);
@@ -298,7 +301,7 @@ impl HelperApp {
     }
 
     fn paste_text(&mut self, text: String) {
-        self.finish_clipboard_restore();
+        self.finish_clipboard_restore(false);
         self.writer.emit(event(
             "final_transcript",
             serde_json::json!({ "text": text }),
@@ -350,9 +353,19 @@ impl HelperApp {
         }));
     }
 
-    fn finish_clipboard_restore(&mut self) {
-        if let Some(restore) = self.clipboard_restore.take() {
-            let _ = restore.join();
+    fn finish_clipboard_restore(&mut self, force: bool) {
+        if let Some(restore) = &self.clipboard_restore {
+            if force || restore.is_finished() {
+                if let Some(handle) = self.clipboard_restore.take() {
+                    let _ = handle.join();
+                }
+            }
+        }
+    }
+
+    fn cleanup_last_mic_test(&mut self) {
+        if let Some(path) = self.last_mic_test_path.take() {
+            let _ = std::fs::remove_file(path);
         }
     }
 
@@ -367,6 +380,7 @@ impl HelperApp {
             ));
             return;
         }
+        self.cleanup_last_mic_test();
         match Recorder::start(self.selected_microphone_id.as_deref()) {
             Ok(recorder) => {
                 let (latest_level, active) = recorder.latest_level_handle();
@@ -413,14 +427,17 @@ impl HelperApp {
             return;
         };
         match test.recorder.stop() {
-            Ok(summary) => self.writer.emit(event(
-                "mic_test_ready",
-                serde_json::json!({
-                    "path": summary.path.to_string_lossy(),
-                    "durationMs": summary.duration.as_millis() as u64,
-                    "observedAudioLevel": summary.observed_level,
-                }),
-            )),
+            Ok(summary) => {
+                self.last_mic_test_path = Some(summary.path.clone());
+                self.writer.emit(event(
+                    "mic_test_ready",
+                    serde_json::json!({
+                        "path": summary.path.to_string_lossy(),
+                        "durationMs": summary.duration.as_millis() as u64,
+                        "observedAudioLevel": summary.observed_level,
+                    }),
+                ));
+            }
             Err(error) => self.writer.emit(event(
                 "mic_test_error",
                 serde_json::json!({
@@ -468,7 +485,8 @@ impl HelperApp {
 
 impl Drop for HelperApp {
     fn drop(&mut self) {
-        self.finish_clipboard_restore();
+        self.finish_clipboard_restore(true);
+        self.cleanup_last_mic_test();
         if let Some(test) = self.mic_test.take() {
             if let Ok(summary) = test.recorder.stop() {
                 let _ = std::fs::remove_file(summary.path);
@@ -506,6 +524,7 @@ fn main() {
             }
         }
     });
+    let mut last_tick = std::time::Instant::now();
     loop {
         match line_rx.recv_timeout(Duration::from_millis(50)) {
             Ok(line) => {
@@ -521,8 +540,12 @@ fn main() {
                     }
                 }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => app.tick(),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if last_tick.elapsed() >= Duration::from_millis(50) {
+            app.tick();
+            last_tick = std::time::Instant::now();
         }
     }
 }
