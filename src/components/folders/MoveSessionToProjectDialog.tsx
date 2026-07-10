@@ -1,5 +1,6 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
+import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
@@ -22,6 +23,12 @@ type Props = {
    * error).
    */
   onCreateFolder?: (name: string) => Promise<FolderDto | undefined> | FolderDto | undefined;
+  /**
+   * Unfiles the session from its current project. Removal lives inside this
+   * dialog (a quiet row under the search) rather than as a separate menu item
+   * on the calling surface.
+   */
+  onRemoveFolder?: (sessionId: string, folderId: string) => Promise<unknown> | void;
   onMoved?: () => void;
 };
 
@@ -33,6 +40,7 @@ export function MoveSessionToProjectDialog({
   folders,
   onSetFolder,
   onCreateFolder,
+  onRemoveFolder,
   onMoved,
 }: Props) {
   const [query, setQuery] = useState("");
@@ -90,6 +98,23 @@ export function MoveSessionToProjectDialog({
     } catch {
       // The caller surfaced the error; keep the dialog open so a partial
       // move is visible and the user can retry.
+      return;
+    } finally {
+      setSubmitting(false);
+    }
+    onMoved?.();
+    onClose();
+  }
+
+  async function handleRemoveFromProject() {
+    if (!onRemoveFolder || !hasCurrent || !currentFolderId || submitting) return;
+    setSubmitting(true);
+    try {
+      for (const session of sessions) {
+        await onRemoveFolder(session.id, currentFolderId);
+      }
+    } catch {
+      // The caller surfaced the error; keep the dialog open for a retry.
       return;
     } finally {
       setSubmitting(false);
@@ -192,6 +217,25 @@ export function MoveSessionToProjectDialog({
             </button>
           ) : null}
         </label>
+        {onRemoveFolder && hasCurrent && currentFolder ? (
+          <>
+            <button
+              type="button"
+              className="add-notes-row add-notes-remove"
+              disabled={submitting}
+              onClick={() => void handleRemoveFromProject()}
+            >
+              <span className="add-notes-icon" aria-hidden>
+                <IconFolderDelete size={14} />
+              </span>
+              <span className="add-notes-body">
+                <span className="add-notes-title">Remove from “{currentFolder.name}”</span>
+              </span>
+              <span className="add-notes-check" aria-hidden />
+            </button>
+            {candidates.length > 0 ? <div className="add-notes-divider" aria-hidden /> : null}
+          </>
+        ) : null}
         {candidates.length > 0 ? (
           <ul className="add-notes-list" role="listbox">
             {candidates.map((folder) => {

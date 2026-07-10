@@ -2117,12 +2117,17 @@ export function App() {
     }
   }
 
-  async function handleRemoveNoteFromFolder(noteId: string, folderId: string) {
+  async function handleRemoveNoteFromFolder(
+    noteId: string,
+    folderId: string,
+    options?: { rethrow?: boolean },
+  ) {
     try {
       const note = await removeNoteFromFolder(noteId, folderId);
       dispatch({ type: "noteUpdated", note });
     } catch (err) {
       setError(messageFromError(err));
+      if (options?.rethrow) throw err;
     }
   }
 
@@ -2178,7 +2183,11 @@ export function App() {
     }
   }
 
-  async function handleRemoveSessionFromFolder(sessionId: string, folderId: string) {
+  async function handleRemoveSessionFromFolder(
+    sessionId: string,
+    folderId: string,
+    options?: { rethrow?: boolean },
+  ) {
     try {
       await removeSessionFromFolder(sessionId, folderId);
       setSessionFolders((prev) => {
@@ -2190,6 +2199,7 @@ export function App() {
       });
     } catch (err) {
       setError(messageFromError(err));
+      if (options?.rethrow) throw err;
     }
   }
 
@@ -3279,10 +3289,6 @@ export function App() {
                   onTopUp={handleTopUp}
                   sessionInProject={Boolean(activeAgentSessionFolder)}
                   onMoveSessionToProject={(sessionId) => setMoveDialogSessionIds([sessionId])}
-                  onRemoveSessionFromProject={(sessionId) => {
-                    const folderId = sessionFolders[sessionId]?.[0];
-                    if (folderId) void handleRemoveSessionFromFolder(sessionId, folderId);
-                  }}
                   origin={
                     agentOriginFolder
                       ? {
@@ -3734,6 +3740,9 @@ export function App() {
         folders={state.folders}
         onSetFolder={(noteId, folderId) => handleSetNoteFolder(noteId, folderId, { rethrow: true })}
         onCreateFolder={(name) => handleCreateFolder(name)}
+        onRemoveFolder={(noteId, folderId) =>
+          handleRemoveNoteFromFolder(noteId, folderId, { rethrow: true })
+        }
         onMoved={() => notesListRef.current?.resetSelection()}
       />
       <MoveSessionToProjectDialog
@@ -3752,6 +3761,9 @@ export function App() {
           handleSetSessionFolder(sessionId, folderId, { rethrow: true })
         }
         onCreateFolder={(name) => handleCreateFolder(name)}
+        onRemoveFolder={(sessionId, folderId) =>
+          handleRemoveSessionFromFolder(sessionId, folderId, { rethrow: true })
+        }
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
       />
       <ConfirmDialog

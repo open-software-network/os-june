@@ -953,6 +953,44 @@ describe("MoveNoteToFolderDialog", () => {
     expect(screen.getByRole("option", { name: /Beta/ })).toBeInTheDocument();
   });
 
+  it("removes a filed note from its project through the remove row", async () => {
+    const user = userEvent.setup();
+    const onRemoveFolder = vi.fn().mockResolvedValue(undefined);
+    const onClose = vi.fn();
+    const onMoved = vi.fn();
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={onClose}
+        notes={[notes[0]]}
+        folders={moveFolders}
+        onSetFolder={vi.fn()}
+        onRemoveFolder={onRemoveFolder}
+        onMoved={onMoved}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Remove from “Alpha”" }));
+
+    expect(onRemoveFolder).toHaveBeenCalledWith("note-2", "folder-1");
+    expect(onMoved).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("offers no remove row without an onRemoveFolder handler or a current project", () => {
+    render(
+      <MoveNoteToFolderDialog
+        open
+        onClose={vi.fn()}
+        notes={[notes[0]]}
+        folders={moveFolders}
+        onSetFolder={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /Remove from/ })).toBeNull();
+  });
+
   it("creates a project from the search query and files the note in it", async () => {
     const user = userEvent.setup();
     const created: FolderDto = {

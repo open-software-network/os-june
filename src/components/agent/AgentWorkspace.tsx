@@ -43,7 +43,6 @@ import { IconFileSparkle } from "central-icons/IconFileSparkle";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconEmail1Sparkle } from "central-icons/IconEmail1Sparkle";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
-import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconGauge } from "central-icons/IconGauge";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
@@ -1587,12 +1586,11 @@ type AgentWorkspaceProps = {
   onTopUp?: () => void | Promise<void>;
   topUpLabel?: string;
   /** Whether the active session is filed in a project — drives the session
-   * bar menu's project items (App owns the folder state). */
+   * bar menu's project item label (App owns the folder state). */
   sessionInProject?: boolean;
-  /** Opens the move-to-project dialog for the given stored session id. */
+  /** Opens the change-project dialog (which also owns removal) for the given
+   * stored session id. */
   onMoveSessionToProject?: (sessionId: string) => void;
-  /** Removes the given stored session id from its current project. */
-  onRemoveSessionFromProject?: (sessionId: string) => void;
 };
 
 // Mid-run continuity across remounts. While June is working, a session has
@@ -2086,7 +2084,6 @@ export function AgentWorkspace({
   topUpLabel = "Upgrade",
   sessionInProject = false,
   onMoveSessionToProject,
-  onRemoveSessionFromProject,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   // Read once per mount (lazy initializer): the continuity snapshot the
@@ -9037,14 +9034,6 @@ export function AgentWorkspace({
               ? () => onMoveSessionToProject(selectedHermesSessionId)
               : undefined
           }
-          onRemoveFromProject={
-            onRemoveSessionFromProject &&
-            !newSessionMode &&
-            selectedHermesSessionId &&
-            !selectedHermesSessionIsProvisional
-              ? () => onRemoveSessionFromProject(selectedHermesSessionId)
-              : undefined
-          }
           onDelete={
             !newSessionMode && selectedHermesSessionId && !selectedHermesSessionIsProvisional
               ? () => void deleteSelectedHermesSession(selectedHermesSessionId)
@@ -9297,7 +9286,6 @@ function AgentSessionBar({
   onToggleArtifacts,
   onRename,
   onMoveToProject,
-  onRemoveFromProject,
   onDelete,
   onShowUsage,
   onCompactContext,
@@ -9312,8 +9300,8 @@ function AgentSessionBar({
   inProject?: boolean;
   onToggleArtifacts?: () => void;
   onRename?: (title: string) => void;
+  /** Opens the change-project dialog (which also owns removal). */
   onMoveToProject?: () => void;
-  onRemoveFromProject?: () => void;
   onDelete?: () => void;
   onShowUsage?: () => void;
   onCompactContext?: () => void;
@@ -9449,32 +9437,6 @@ function AgentSessionBar({
             </button>
             {menuOpen ? (
               <div className="sidebar-identity-menu agent-session-menu" role="menu">
-                {onShowUsage ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      onShowUsage();
-                    }}
-                  >
-                    <IconGauge size={14} />
-                    Usage
-                  </button>
-                ) : null}
-                {onCompactContext ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      onCompactContext();
-                    }}
-                  >
-                    <IconConcise size={14} />
-                    Compact context
-                  </button>
-                ) : null}
                 {onRename ? (
                   <button
                     type="button"
@@ -9502,18 +9464,37 @@ function AgentSessionBar({
                     {inProject ? "Change project" : "Add to project"}
                   </button>
                 ) : null}
-                {inProject && onRemoveFromProject ? (
+                {(onRename || onMoveToProject) && (onShowUsage || onCompactContext) ? (
+                  <div className="context-menu-separator" role="separator" />
+                ) : null}
+                {onShowUsage ? (
                   <button
                     type="button"
                     role="menuitem"
                     onClick={() => {
                       setMenuOpen(false);
-                      onRemoveFromProject();
+                      onShowUsage();
                     }}
                   >
-                    <IconFolderDelete size={14} />
-                    Remove from project
+                    <IconGauge size={14} />
+                    Usage
                   </button>
+                ) : null}
+                {onCompactContext ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onCompactContext();
+                    }}
+                  >
+                    <IconConcise size={14} />
+                    Compact context
+                  </button>
+                ) : null}
+                {onDelete && (onRename || onMoveToProject || onShowUsage || onCompactContext) ? (
+                  <div className="context-menu-separator" role="separator" />
                 ) : null}
                 {onDelete ? (
                   <button

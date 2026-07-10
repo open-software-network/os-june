@@ -1120,19 +1120,7 @@ function FolderAddMenu({
           {hasNotesElsewhere || hasSessionsElsewhere ? (
             <div className="context-menu-separator" role="separator" />
           ) : null}
-          {hasNotesElsewhere ? (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                onAddExisting();
-              }}
-            >
-              <IconPageSearch size={14} />
-              Add existing meeting note
-            </button>
-          ) : null}
+          {/* Session first, note second — matching the New items above. */}
           {hasSessionsElsewhere ? (
             <button
               type="button"
@@ -1144,6 +1132,19 @@ function FolderAddMenu({
             >
               <IconBubbleAnnotation3 size={14} />
               Add existing session
+            </button>
+          ) : null}
+          {hasNotesElsewhere ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onAddExisting();
+              }}
+            >
+              <IconPageSearch size={14} />
+              Add existing meeting note
             </button>
           ) : null}
         </div>
@@ -1169,14 +1170,14 @@ function FolderEmptyActions({
 }) {
   return (
     <div className="folder-empty-actions">
-      {hasNotesElsewhere ? (
-        <button type="button" className="primary-action" onClick={onAddExisting}>
-          Add existing meeting note
-        </button>
-      ) : null}
       {hasSessionsElsewhere ? (
         <button type="button" className="primary-action" onClick={onAddSessions}>
           Add existing session
+        </button>
+      ) : null}
+      {hasNotesElsewhere ? (
+        <button type="button" className="primary-action" onClick={onAddExisting}>
+          Add existing meeting note
         </button>
       ) : null}
       <button type="button" className="primary-action" onClick={onCreateSession}>
