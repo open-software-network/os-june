@@ -1561,6 +1561,14 @@ type PreparedComposerSubmission = {
   typedMessage: string;
 };
 
+type QueuedAttachmentFollowUp = {
+  id: string;
+  prepared: PreparedComposerSubmission;
+  attachments: AgentAttachment[];
+  status: "queued" | "sending" | "failed";
+  error?: string;
+};
+
 type ComposerInputSizeWarning = {
   inputSignature: string;
   signature: string;
@@ -1638,6 +1646,7 @@ type AgentSessionContinuity = {
   reviewableIssueReports: Record<string, PendingIssueReport>;
   diagnosisRefreshIssueReportSessionIds: string[];
   submittingIssueReportSessionIds: string[];
+  queuedAttachmentFollowUps: Record<string, QueuedAttachmentFollowUp[]>;
 };
 
 type AgentSessionTitleSource = "prompt" | "exchange" | "manual";
@@ -1784,6 +1793,7 @@ function captureSessionContinuity(state: {
   reviewableIssueReports: Record<string, PendingIssueReport>;
   diagnosisRefreshIssueReportSessionIds: Set<string>;
   submittingIssueReportSessionIds: Set<string>;
+  queuedAttachmentFollowUps: Record<string, QueuedAttachmentFollowUp[]>;
 }): AgentSessionContinuity | null {
   const activeIds = activeHermesActivitySessionIds();
   for (const [sessionId, pending] of Object.entries(state.pendingMessages)) {
@@ -1800,6 +1810,9 @@ function captureSessionContinuity(state: {
   }
   for (const sessionId of state.submittingIssueReportSessionIds) {
     activeIds.add(sessionId);
+  }
+  for (const [sessionId, queued] of Object.entries(state.queuedAttachmentFollowUps)) {
+    if (queued.length > 0) activeIds.add(sessionId);
   }
   if (activeIds.size === 0) return null;
   const pick = <T,>(record: Record<string, T>) =>
@@ -1819,6 +1832,7 @@ function captureSessionContinuity(state: {
     submittingIssueReportSessionIds: [...state.submittingIssueReportSessionIds].filter(
       (sessionId) => activeIds.has(sessionId),
     ),
+    queuedAttachmentFollowUps: pick(state.queuedAttachmentFollowUps),
   };
 }
 
@@ -1926,6 +1940,7 @@ function updateContinuityAfterIssueReportDelivery(detail: IssueReportDeliverySet
         (sessionId) => sessionId !== detail.sessionId,
       ),
     ),
+    queuedAttachmentFollowUps: sessionContinuity.queuedAttachmentFollowUps,
   });
 }
 
@@ -1957,6 +1972,7 @@ function updateContinuityAfterIssueReportFollowUpSubmitFailed(
       sessionContinuity.diagnosisRefreshIssueReportSessionIds,
     ),
     submittingIssueReportSessionIds: new Set(sessionContinuity.submittingIssueReportSessionIds),
+    queuedAttachmentFollowUps: sessionContinuity.queuedAttachmentFollowUps,
   });
 }
 
@@ -1984,6 +2000,7 @@ export function recordManualAgentSessionTitle(sessionId: string, title: string) 
       sessionContinuity.diagnosisRefreshIssueReportSessionIds,
     ),
     submittingIssueReportSessionIds: new Set(sessionContinuity.submittingIssueReportSessionIds),
+    queuedAttachmentFollowUps: sessionContinuity.queuedAttachmentFollowUps,
   });
 }
 
@@ -2349,6 +2366,38 @@ export function AgentWorkspace({
     Record<string, { id: string; text: string }[]>
   >({});
   const steerCardSeqRef = useRef(0);
+  const [queuedAttachmentFollowUps, setQueuedAttachmentFollowUps] = useState<
+    Record<string, QueuedAttachmentFollowUp[]>
+  >(() =>
+    Object.fromEntries(
+      Object.entries(continuity?.queuedAttachmentFollowUps ?? {}).map(([sessionId, items]) => [
+        sessionId,
+        items.map((item) =>
+          item.status === "sending"
+            ? {
+                ...item,
+                status: "failed" as const,
+                error: "Delivery was interrupted. Try again.",
+              }
+            : item,
+        ),
+      ]),
+    ),
+  );
+  const queuedAttachmentFollowUpsRef = useRef(queuedAttachmentFollowUps);
+  const queuedAttachmentFollowUpSeqRef = useRef(
+    Object.values(continuity?.queuedAttachmentFollowUps ?? {}).reduce(
+      (highest, items) =>
+        items.reduce((itemHighest, item) => {
+          const sequence = Number(item.id.match(/^attachment-follow-up-(\d+)$/)?.[1] ?? 0);
+          return Math.max(itemHighest, sequence);
+        }, highest),
+      0,
+    ),
+  );
+  // Completion is observable through the live gateway and both message-refresh
+  // paths. Only one of them may advance queued follow-ups for a finished turn.
+  const continuingCompletedTurnSessionIdsRef = useRef(new Set<string>());
   // The steer queue shows all rows by default; the header collapses the list
   // to itself. Reset (back open) per session below.
   const [steerQueueOpen, setSteerQueueOpen] = useState(true);
@@ -2998,6 +3047,9 @@ export function AgentWorkspace({
   });
   const selectedSteerCards = selectedHermesSessionId
     ? (steerCardsBySessionId[selectedHermesSessionId] ?? [])
+    : [];
+  const selectedQueuedAttachmentFollowUps = selectedHermesSessionId
+    ? (queuedAttachmentFollowUps[selectedHermesSessionId] ?? [])
     : [];
   const visibleErrorState = visibleAgentWorkspaceError(errorState, selectedHermesSessionId);
   const visibleError = visibleErrorState?.message ?? null;
@@ -3806,6 +3858,7 @@ export function AgentWorkspace({
               summary: "June finished.",
               ...activityCounts,
             });
+            continueAfterCompletedTurn(selectedHermesSessionId);
           }
           liveEventsRef.current = {
             ...liveEventsRef.current,
@@ -3894,6 +3947,7 @@ export function AgentWorkspace({
         reviewableIssueReports: reviewableIssueReportsRef.current,
         diagnosisRefreshIssueReportSessionIds: diagnosisRefreshIssueReportSessionIdsRef.current,
         submittingIssueReportSessionIds: submittingIssueReportSessionIdsRef.current,
+        queuedAttachmentFollowUps: queuedAttachmentFollowUpsRef.current,
       });
       for (const gateway of gatewaysRef.current.values()) {
         gateway.close();
@@ -4983,6 +5037,33 @@ export function AgentWorkspace({
     )
       return;
     if (message && (await handleBuiltinComposerSlashCommand(message))) return;
+    const attachmentQueueSessionId =
+      attachments.length > 0 &&
+      !category &&
+      !newSessionModeRef.current &&
+      selectedHermesSessionId &&
+      workingSessionIdsRef.current.has(selectedHermesSessionId)
+        ? selectedHermesSessionId
+        : undefined;
+    if (attachmentQueueSessionId) {
+      const prepared = await prepareComposerSubmission(message, attachments);
+      const sizeWarning = oversizedComposerInputWarning({
+        content: prepared.runtimeContent,
+        inputSignature: composerInputSignature,
+        attachments,
+        model: generationModel,
+        models: generationModels,
+      });
+      if (sizeWarning && composerSizeProceedSignatureRef.current !== sizeWarning.signature) {
+        setComposerSizeWarning(sizeWarning);
+        composerEditorRef.current?.focus();
+        return;
+      }
+      enqueueAttachmentFollowUp(attachmentQueueSessionId, prepared, attachments);
+      clearComposerDraft();
+      composerEditorRef.current?.focus();
+      return;
+    }
     // June is mid-run: send the message straight into the loop via steer so
     // June picks it up after the current tool call (adds context without
     // interrupting — Escape or Stop interrupts instead). Plain-text follow-ups
@@ -5075,6 +5156,7 @@ export function AgentWorkspace({
     setSubmitting(true);
     let clearedDraft = false;
     let clearedAttachments = false;
+    let submittedAttachments = attachments;
     let clearedIssueReportReview:
       | {
           sessionId: string;
@@ -5145,6 +5227,9 @@ export function AgentWorkspace({
         displayContent: prepared.displayContent,
         titleContent: prepared.titleContent,
         attachments,
+        onAttachmentsUpdated: (nextAttachments) => {
+          submittedAttachments = nextAttachments;
+        },
         ...(nextIssueReport ? { issueReport: nextIssueReport } : {}),
       });
       if (reportFollowUpSessionId) {
@@ -5164,7 +5249,7 @@ export function AgentWorkspace({
         // A blocked image attach carries the failed-status chips so the user
         // sees which image didn't go through; fall back to the originals
         // otherwise.
-        const restore = err instanceof AttachBlockedError ? err.attachments : attachments;
+        const restore = err instanceof AttachBlockedError ? err.attachments : submittedAttachments;
         setComposerAttachments((current) => (current.length ? current : restore));
       }
       if (clearedIssueReportReview) {
@@ -5516,7 +5601,7 @@ export function AgentWorkspace({
     turnAttachments: AgentAttachment[],
   ) {
     const pending = pendingImageAttachments(turnAttachments.map((attachment) => attachment.attach));
-    if (!pending.length) return;
+    if (!pending.length) return turnAttachments;
     const methods = createHermesMethods(gateway);
     const heldImageDataByPath = new Map(
       turnAttachments.flatMap((attachment) =>
@@ -5585,6 +5670,10 @@ export function AgentWorkspace({
         }),
       );
     }
+    return turnAttachments.map((item) => {
+      const next = nextStates.get(item.attach.localId);
+      return next ? { ...item, attach: next } : item;
+    });
   }
 
   function clearHeldFastPathImages(sessionId: string, heldImages: AgentAttachment[]) {
@@ -5862,37 +5951,17 @@ export function AgentWorkspace({
         if (!activityCounts) {
           clearSessionActivity(storedSessionId);
         }
-        // Delivery guarantee: any steer not consumed by a tool result this turn
-        // (Hermes only injects steers into tool output) would otherwise be lost.
-        // On a clean completion resend the leftovers as a follow-up so the
-        // message always reaches June; drop them on a failed/cancelled run.
-        const unconsumedSteers =
-          status === "completed"
-            ? pendingSteerBySessionIdRef.current[storedSessionId]?.filter(
-                // Consumed = Hermes accepted it AND a tool result drained it.
-                // Resend the rest (rejected, or accepted but no tool ran).
-                (entry) => !(entry.accepted && entry.toolDrained),
-              )
-            : undefined;
-        delete pendingSteerBySessionIdRef.current[storedSessionId];
-        clearSteerCards(storedSessionId);
-        if (unconsumedSteers?.length) {
-          const followUpSession = hermesSessionItemsRef.current.find(
-            (session) => session.id === storedSessionId,
-          );
-          if (followUpSession) {
-            const followUpText = unconsumedSteers.map((entry) => entry.text).join("\n");
-            window.setTimeout(() => {
-              void submitHermesSession(followUpText, followUpSession).catch((err: unknown) => {
-                // The follow-up never reached June (e.g. a gateway reconnect
-                // or a still-busy session right after completion). Surface it
-                // rather than silently losing the instruction.
-                setError(messageFromError(err), {
-                  sessionId: storedSessionId,
-                });
-              });
-            }, 0);
-          }
+        if (status === "completed") {
+          // Serialize any undrained text steer ahead of the first local
+          // attachment follow-up. Each accepted follow-up installs its own
+          // terminal listener, which advances the attachment FIFO one turn at
+          // a time.
+          continueAfterCompletedTurn(storedSessionId);
+        } else {
+          // Submitted text steers cannot be recalled and are retired on a
+          // failed/cancelled run. Local attachment follow-ups remain available
+          // to edit, remove, or send once the session is idle.
+          clearSubmittedSteers(storedSessionId);
         }
         // The diagnostic turn is over (even on error): let the user append
         // anything June's summary surfaced before sending the bundled report.
@@ -5928,6 +5997,11 @@ export function AgentWorkspace({
        * session id is known and before prompt.submit; a failed attach throws to
        * block the send so the user can retry. */
       attachments?: AgentAttachment[];
+      /** Background follow-ups must not pull the user into their session. */
+      selectSession?: boolean;
+      /** Persist structured image attach state before prompt.submit so a retry
+       * does not attach the same image twice. */
+      onAttachmentsUpdated?: (attachments: AgentAttachment[]) => void;
       /** Create + select the session and add the user bubble, then stop BEFORE
        * `prompt.submit` (the `/image` flow): the model is never invoked, and the
        * caller renders the result itself. Returns the stored session id so the
@@ -6180,7 +6254,13 @@ export function AgentWorkspace({
       // which the submit() catch turns into a restored composer the user can
       // retry — the prompt is NOT sent with a silently-missing image.
       try {
-        await attachPendingImages(gateway, runtimeSessionId, storedSessionId, turnAttachments);
+        const updatedAttachments = await attachPendingImages(
+          gateway,
+          runtimeSessionId,
+          storedSessionId,
+          turnAttachments,
+        );
+        options?.onAttachmentsUpdated?.(updatedAttachments);
       } catch (err) {
         clearQueuedIssueReport();
         rollbackOptimisticBeforePrompt(err);
@@ -6192,11 +6272,13 @@ export function AgentWorkspace({
       [storedSessionId]: runtimeSessionId,
     }));
     if (!optimisticSession) {
-      newSessionModeRef.current = false;
-      setNewSessionMode(false);
-      selectedHermesSessionIdRef.current = storedSessionId;
-      setSelectedHermesSessionId(storedSessionId);
-      setSelectedTaskId(undefined);
+      if (options?.selectSession !== false) {
+        newSessionModeRef.current = false;
+        setNewSessionMode(false);
+        selectedHermesSessionIdRef.current = storedSessionId;
+        setSelectedHermesSessionId(storedSessionId);
+        setSelectedTaskId(undefined);
+      }
       const optimisticSessionItem: HermesSessionInfo = {
         id: storedSessionId,
         title: sessionDisplayTitle,
@@ -6680,6 +6762,7 @@ export function AgentWorkspace({
             summary: "June finished.",
             ...activityCounts,
           });
+          continueAfterCompletedTurn(sessionId);
         }
         liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
         setLiveEvents(liveEventsRef.current);
@@ -7174,6 +7257,171 @@ export function AgentWorkspace({
     setLiveEvents(liveEventsRef.current);
   }
 
+  function writeQueuedAttachmentFollowUps(next: Record<string, QueuedAttachmentFollowUp[]>) {
+    queuedAttachmentFollowUpsRef.current = next;
+    setQueuedAttachmentFollowUps(next);
+  }
+
+  function updateQueuedAttachmentFollowUps(
+    sessionId: string,
+    update: (items: QueuedAttachmentFollowUp[]) => QueuedAttachmentFollowUp[],
+  ) {
+    const nextItems = update(queuedAttachmentFollowUpsRef.current[sessionId] ?? []);
+    const next = { ...queuedAttachmentFollowUpsRef.current };
+    if (nextItems.length) {
+      next[sessionId] = nextItems;
+    } else {
+      delete next[sessionId];
+    }
+    writeQueuedAttachmentFollowUps(next);
+  }
+
+  function enqueueAttachmentFollowUp(
+    sessionId: string,
+    prepared: PreparedComposerSubmission,
+    queuedAttachments: AgentAttachment[],
+  ) {
+    queuedAttachmentFollowUpSeqRef.current += 1;
+    const item: QueuedAttachmentFollowUp = {
+      id: `attachment-follow-up-${queuedAttachmentFollowUpSeqRef.current}`,
+      prepared,
+      attachments: queuedAttachments,
+      status: "queued",
+    };
+    updateQueuedAttachmentFollowUps(sessionId, (items) => [...items, item]);
+  }
+
+  function removeQueuedAttachmentFollowUp(sessionId: string, itemId: string) {
+    updateQueuedAttachmentFollowUps(sessionId, (items) =>
+      items.filter((item) => item.id !== itemId || item.status === "sending"),
+    );
+  }
+
+  function editQueuedAttachmentFollowUp(sessionId: string, itemId: string) {
+    if (sessionId !== selectedHermesSessionIdRef.current) return;
+    if (draftRef.current.trim() || attachmentsRef.current.length) return;
+    const item = queuedAttachmentFollowUpsRef.current[sessionId]?.find(
+      (candidate) => candidate.id === itemId,
+    );
+    if (!item || item.status === "sending") return;
+    removeQueuedAttachmentFollowUp(sessionId, itemId);
+    draftRef.current = item.prepared.typedMessage;
+    categoryRef.current = null;
+    attachmentsRef.current = item.attachments;
+    setDraft(item.prepared.typedMessage);
+    setCategory(null);
+    setAttachments(item.attachments);
+    rememberComposerDraft(
+      composerDraftKeyRef.current,
+      item.prepared.typedMessage,
+      null,
+      item.attachments,
+    );
+    composerEditorRef.current?.setContent(item.prepared.typedMessage);
+  }
+
+  async function deliverQueuedAttachmentFollowUp(
+    sessionId: string,
+    itemId?: string,
+    options: { afterCompletion?: boolean } = {},
+  ) {
+    if (!options.afterCompletion && workingSessionIdsRef.current.has(sessionId)) return false;
+    const queued = queuedAttachmentFollowUpsRef.current[sessionId] ?? [];
+    const item = itemId ? queued.find((candidate) => candidate.id === itemId) : queued[0];
+    if (!item || item.status === "sending") return false;
+    const session = hermesSessionItemsRef.current.find((candidate) => candidate.id === sessionId);
+    if (!session) {
+      updateQueuedAttachmentFollowUps(sessionId, (items) =>
+        items.map((candidate) =>
+          candidate.id === item.id
+            ? { ...candidate, status: "failed", error: "This session is no longer available." }
+            : candidate,
+        ),
+      );
+      return false;
+    }
+    updateQueuedAttachmentFollowUps(sessionId, (items) =>
+      items.map((candidate) =>
+        candidate.id === item.id
+          ? { ...candidate, status: "sending", error: undefined }
+          : candidate,
+      ),
+    );
+    try {
+      await submitHermesSession(item.prepared.runtimeContent, session, {
+        displayContent: item.prepared.displayContent,
+        titleContent: item.prepared.titleContent,
+        attachments: item.attachments,
+        selectSession: false,
+        onAttachmentsUpdated: (nextAttachments) => {
+          updateQueuedAttachmentFollowUps(sessionId, (items) =>
+            items.map((candidate) =>
+              candidate.id === item.id ? { ...candidate, attachments: nextAttachments } : candidate,
+            ),
+          );
+        },
+      });
+      updateQueuedAttachmentFollowUps(sessionId, (items) =>
+        items.filter((candidate) => candidate.id !== item.id),
+      );
+      return true;
+    } catch (err) {
+      const failedAttachments = err instanceof AttachBlockedError ? err.attachments : undefined;
+      updateQueuedAttachmentFollowUps(sessionId, (items) =>
+        items.map((candidate) =>
+          candidate.id === item.id
+            ? {
+                ...candidate,
+                ...(failedAttachments ? { attachments: failedAttachments } : {}),
+                status: "failed",
+                error: messageFromError(err),
+              }
+            : candidate,
+        ),
+      );
+      return false;
+    }
+  }
+
+  function continueAfterCompletedTurn(sessionId: string) {
+    if (continuingCompletedTurnSessionIdsRef.current.has(sessionId)) return;
+    continuingCompletedTurnSessionIdsRef.current.add(sessionId);
+    const unconsumedSteers = pendingSteerBySessionIdRef.current[sessionId]?.filter(
+      (entry) => !(entry.accepted && entry.toolDrained),
+    );
+    clearSubmittedSteers(sessionId);
+    window.setTimeout(async () => {
+      if (unconsumedSteers?.length) {
+        const followUpSession = hermesSessionItemsRef.current.find(
+          (session) => session.id === sessionId,
+        );
+        if (!followUpSession) {
+          continuingCompletedTurnSessionIdsRef.current.delete(sessionId);
+          return;
+        }
+        const followUpText = unconsumedSteers.map((entry) => entry.text).join("\n");
+        try {
+          await submitHermesSession(followUpText, followUpSession, { selectSession: false });
+        } catch (err) {
+          setError(messageFromError(err), { sessionId });
+        } finally {
+          continuingCompletedTurnSessionIdsRef.current.delete(sessionId);
+        }
+        return;
+      }
+      try {
+        await deliverQueuedAttachmentFollowUp(sessionId, undefined, { afterCompletion: true });
+      } finally {
+        continuingCompletedTurnSessionIdsRef.current.delete(sessionId);
+      }
+    }, 0);
+  }
+
+  function clearSubmittedSteers(sessionId: string) {
+    delete pendingSteerBySessionIdRef.current[sessionId];
+    clearSteerCards(sessionId);
+  }
+
   // Feature 06: steer a STILL-WORKING session with a mid-run instruction,
   // through the dedicated typed control-plane method (session.steer) — never
   // prompt.submit, which the gateway rejects with 4009 while a turn runs. On a
@@ -7213,6 +7461,89 @@ export function AgentWorkspace({
     return (
       <div key={card.id} className="agent-steer-card" title={card.text}>
         <span className="agent-steer-card-text">{card.text}</span>
+      </div>
+    );
+  }
+
+  function renderQueuedAttachmentFollowUp(sessionId: string, item: QueuedAttachmentFollowUp) {
+    const sessionWorking = workingSessionIds.has(sessionId);
+    const firstInQueue = queuedAttachmentFollowUpsRef.current[sessionId]?.[0]?.id === item.id;
+    const hasAttachedImage = item.attachments.some(
+      (attachment) => attachment.attach.kind === "image" && attachment.attach.status === "attached",
+    );
+    const locallyEditable = item.status !== "sending" && !hasAttachedImage;
+    const editable = locallyEditable && !draft.trim() && attachments.length === 0;
+    const statusLabel =
+      item.status === "sending"
+        ? "Sending"
+        : item.status === "failed"
+          ? hasAttachedImage
+            ? "Image attached; message not sent"
+            : "Couldn't send"
+          : sessionWorking
+            ? "Waiting for June to finish"
+            : "Ready to send";
+    return (
+      <div key={item.id} className="agent-up-next-card" data-status={item.status}>
+        <div className="agent-up-next-card-copy">
+          <span className="agent-up-next-card-text">
+            {item.prepared.typedMessage || "Attachment"}
+          </span>
+          <span className="agent-up-next-card-status" aria-live="polite">
+            {statusLabel}
+          </span>
+          {item.error ? <span className="agent-up-next-card-error">{item.error}</span> : null}
+        </div>
+        <div className="agent-up-next-attachments">
+          {item.attachments.map((attachment) => (
+            <AgentAttachmentTile key={attachment.id} attachment={attachment} />
+          ))}
+        </div>
+        {item.status === "sending" ? null : (
+          <div className="agent-up-next-card-actions">
+            {item.status === "failed" && firstInQueue ? (
+              <button
+                type="button"
+                aria-label="Retry queued message"
+                title="Retry"
+                disabled={sessionWorking}
+                onClick={() => void deliverQueuedAttachmentFollowUp(sessionId, item.id)}
+              >
+                <IconArrowRotateClockwise size={14} />
+              </button>
+            ) : !sessionWorking && firstInQueue ? (
+              <button
+                type="button"
+                aria-label="Send queued message"
+                title="Send now"
+                onClick={() => void deliverQueuedAttachmentFollowUp(sessionId, item.id)}
+              >
+                <IconArrowUp size={14} />
+              </button>
+            ) : null}
+            {locallyEditable ? (
+              <>
+                <button
+                  type="button"
+                  aria-label="Edit queued message"
+                  title={editable ? "Edit" : "Clear the composer before editing"}
+                  disabled={!editable}
+                  onClick={() => editQueuedAttachmentFollowUp(sessionId, item.id)}
+                >
+                  <IconPencil size={14} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Remove queued message"
+                  title="Remove"
+                  onClick={() => removeQueuedAttachmentFollowUp(sessionId, item.id)}
+                >
+                  <IconTrashCan size={14} />
+                </button>
+              </>
+            ) : null}
+          </div>
+        )}
       </div>
     );
   }
@@ -7495,8 +7826,7 @@ export function AgentWorkspace({
     // reaches the terminal handler, so clear the delivery-guarantee steers here
     // too -- otherwise a steer typed-then-stopped lingers and could auto-submit
     // as a follow-up after a later run in the same session.
-    delete pendingSteerBySessionIdRef.current[sessionId];
-    clearSteerCards(sessionId);
+    clearSubmittedSteers(sessionId);
     const activityCounts = clearSessionActivity(sessionId, "cancelled");
     dispatchAgentSessionStatus({
       sessionId,
@@ -7707,6 +8037,7 @@ export function AgentWorkspace({
     scrubHermesSessionState(sessionId);
     pendingIssueReportsRef.current.delete(sessionId);
     setReviewableIssueReport(sessionId, null);
+    updateQueuedAttachmentFollowUps(sessionId, () => []);
     forgetComposerDraft(sessionComposerDraftKey(sessionId));
     // Every deletion funnels through here (the in-workspace delete and the
     // sidebar/sessions-list AGENT_DELETE_SESSION_EVENT), so this is the one
@@ -7964,7 +8295,7 @@ export function AgentWorkspace({
 
   // Dev-only: window.__steerSubmitDemo("text") tacks a steer card onto the open
   // session's composer — the exact state a real steer submit produces — so the
-  // sent-steer card (and its edit/remove actions) can be seen without a turn.
+  // submitted, read-only steer card can be seen without a turn.
   useEffect(() => {
     if (!import.meta.env.DEV || typeof window === "undefined") return;
     const w = window as unknown as Record<string, unknown>;
@@ -8453,6 +8784,21 @@ export function AgentWorkspace({
             </motion.div>
           ) : null}
         </AnimatePresence>
+        {selectedHermesSessionId && selectedQueuedAttachmentFollowUps.length ? (
+          <section className="agent-up-next" aria-label="Up next">
+            <header className="agent-up-next-header">
+              <span className="status-pill agent-up-next-count">
+                {selectedQueuedAttachmentFollowUps.length}
+              </span>
+              <span>Up next</span>
+            </header>
+            <div className="agent-up-next-list">
+              {selectedQueuedAttachmentFollowUps.map((item) =>
+                renderQueuedAttachmentFollowUp(selectedHermesSessionId, item),
+              )}
+            </div>
+          </section>
+        ) : null}
         {selectedHermesSessionId && selectedSteerCards.length ? (
           // The steer queue: its own elevated surface above the composer (the
           // Cursor-style queue card), not a region inside the box. All rows
@@ -8490,65 +8836,11 @@ export function AgentWorkspace({
           {attachments.length ? (
             <div className="agent-composer-attachments">
               {attachments.map((attachment) => (
-                <span
+                <AgentAttachmentTile
                   key={attachment.id}
-                  className="agent-attachment-chip"
-                  // Images render as bare rounded thumbnails. Other files use a
-                  // document card at the same height, with a type icon and label.
-                  data-kind={attachment.previewDataUrl ? "image" : "file"}
-                  data-attach-status={attachment.attach.status}
-                  title={attachment.attach.error ?? attachment.name}
-                >
-                  {attachment.previewDataUrl ? (
-                    <img src={attachment.previewDataUrl} alt="" aria-hidden="true" />
-                  ) : (
-                    <>
-                      <span className="agent-attachment-file-icon" aria-hidden="true">
-                        <FileTypeIcon name={attachment.name} size={18} />
-                      </span>
-                      <span className="agent-attachment-file-details">
-                        <span className="agent-attachment-name">{attachment.name}</span>
-                        <span className="agent-attachment-file-meta">
-                          <span className="agent-attachment-file-type">
-                            {attachmentFileTypeLabel(attachment.name)}
-                          </span>
-                          {attachmentStatusLabel(attachment.attach) ? (
-                            <span
-                              className="agent-attachment-status"
-                              data-attach-status={attachment.attach.status}
-                            >
-                              {attachmentStatusLabel(attachment.attach)}
-                            </span>
-                          ) : null}
-                        </span>
-                      </span>
-                    </>
-                  )}
-                  {attachment.previewDataUrl ? (
-                    <span className="agent-attachment-name">{attachment.name}</span>
-                  ) : null}
-                  {attachment.previewDataUrl && attachmentStatusLabel(attachment.attach) ? (
-                    <span
-                      className="agent-attachment-status"
-                      data-attach-status={attachment.attach.status}
-                    >
-                      {attachmentStatusLabel(attachment.attach)}
-                    </span>
-                  ) : null}
-                  <button
-                    type="button"
-                    aria-label={`Remove ${attachment.name}`}
-                    onClick={() => removeAttachment(attachment.id)}
-                  >
-                    {attachment.previewDataUrl ? (
-                      // The image tile's corner control reads at thumbnail
-                      // scale; file chips keep the small inline cross.
-                      <IconCrossMedium size={14} />
-                    ) : (
-                      <IconCrossSmall size={12} />
-                    )}
-                  </button>
-                </span>
+                  attachment={attachment}
+                  onRemove={() => removeAttachment(attachment.id)}
+                />
               ))}
             </div>
           ) : null}
@@ -8741,7 +9033,7 @@ export function AgentWorkspace({
                 // redirects the run mid-flight (session.steer) without
                 // interrupting it. Stop returns when the draft clears, and
                 // Escape interrupts the turn at any time.
-                draft.trim().length > 0 ? (
+                draft.trim().length > 0 || attachments.length > 0 ? (
                   // Keyed so the swap remounts (button-for-button in one slot
                   // would be updated in place) and the scale-in trade plays.
                   <button
@@ -8752,9 +9044,11 @@ export function AgentWorkspace({
                     title={
                       imageSlashBlockedByModel
                         ? "Switch to a vision model before using /image."
-                        : "Send to steer June"
+                        : attachments.length
+                          ? "Queue next message"
+                          : "Send to steer June"
                     }
-                    aria-label="Send to steer June"
+                    aria-label={attachments.length ? "Queue next message" : "Send to steer June"}
                   >
                     <IconArrowUp size={18} />
                   </button>
@@ -13801,6 +14095,63 @@ function attachmentFileTypeLabel(name: string): string {
   const extensionIndex = filename.lastIndexOf(".");
   if (extensionIndex <= 0 || extensionIndex === filename.length - 1) return "File";
   return filename.slice(extensionIndex + 1).toUpperCase();
+}
+
+function AgentAttachmentTile({
+  attachment,
+  onRemove,
+}: {
+  attachment: AgentAttachment;
+  onRemove?: () => void;
+}) {
+  const statusLabel = attachmentStatusLabel(attachment.attach);
+  return (
+    <span
+      className="agent-attachment-chip"
+      data-kind={attachment.previewDataUrl ? "image" : "file"}
+      data-attach-status={attachment.attach.status}
+      title={attachment.attach.error ?? attachment.name}
+    >
+      {attachment.previewDataUrl ? (
+        <img src={attachment.previewDataUrl} alt="" aria-hidden="true" />
+      ) : (
+        <>
+          <span className="agent-attachment-file-icon" aria-hidden="true">
+            <FileTypeIcon name={attachment.name} size={18} />
+          </span>
+          <span className="agent-attachment-file-details">
+            <span className="agent-attachment-name">{attachment.name}</span>
+            <span className="agent-attachment-file-meta">
+              <span className="agent-attachment-file-type">
+                {attachmentFileTypeLabel(attachment.name)}
+              </span>
+              {statusLabel ? (
+                <span
+                  className="agent-attachment-status"
+                  data-attach-status={attachment.attach.status}
+                >
+                  {statusLabel}
+                </span>
+              ) : null}
+            </span>
+          </span>
+        </>
+      )}
+      {attachment.previewDataUrl ? (
+        <span className="agent-attachment-name">{attachment.name}</span>
+      ) : null}
+      {attachment.previewDataUrl && statusLabel ? (
+        <span className="agent-attachment-status" data-attach-status={attachment.attach.status}>
+          {statusLabel}
+        </span>
+      ) : null}
+      {onRemove ? (
+        <button type="button" aria-label={`Remove ${attachment.name}`} onClick={onRemove}>
+          {attachment.previewDataUrl ? <IconCrossMedium size={14} /> : <IconCrossSmall size={12} />}
+        </button>
+      ) : null}
+    </span>
+  );
 }
 
 function commandTokensForResolutions(

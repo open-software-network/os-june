@@ -5575,6 +5575,135 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+/* Attachment messages cannot enter a running Hermes turn. They remain local
+   on this distinct "Up next" surface until the current turn completes, so the
+   controls here genuinely edit/remove data that has not been submitted yet. */
+.agent-up-next {
+  pointer-events: auto;
+  width: 100%;
+  max-width: min(var(--chat-max), var(--content-max));
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-1);
+  border: 1px solid transparent;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+}
+
+.agent-up-next-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: var(--sp-1) var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.status-pill.agent-up-next-count {
+  background: color-mix(in oklch, var(--brand) 12%, transparent);
+  color: var(--warm-strong);
+}
+
+.agent-up-next-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-up-next-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--r-lg);
+}
+
+.agent-up-next-card:hover {
+  background: var(--secondary);
+}
+
+.agent-up-next-card-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--sp-px);
+}
+
+.agent-up-next-card-text {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-up-next-card-status {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-up-next-card[data-status="failed"] .agent-up-next-card-status {
+  color: var(--destructive);
+}
+
+.agent-up-next-card-error {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-up-next-attachments {
+  --attachment-tile-size: calc(var(--sp-12) + var(--sp-1));
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.agent-up-next-card-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-px);
+}
+
+.agent-up-next-card-actions button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-xs);
+  height: var(--control-xs);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    scale var(--t-fast) var(--ease-out);
+}
+
+.agent-up-next-card-actions button::after {
+  content: "";
+  position: absolute;
+  inset: calc(var(--sp-2) * -1);
+}
+
+.agent-up-next-card-actions button:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--muted-foreground) 16%, transparent);
+  color: var(--foreground);
+}
+
+.agent-up-next-card-actions button:active:not(:disabled) {
+  scale: 0.96;
+}
+
+.agent-up-next-card-actions button:disabled {
+  opacity: 0.35;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .agent-steer-queue-header,
   .agent-steer-queue-chevron {
@@ -6255,6 +6384,7 @@ input:focus-visible,
 }
 
 .agent-attachment-chip {
+  --attachment-tile-size: calc(var(--sp-12) + var(--sp-1));
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
@@ -6265,6 +6395,7 @@ input:focus-visible,
   background: var(--surface-subtle);
   color: var(--foreground);
   font-size: var(--fs-sm);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
 }
 
 .agent-attachment-file-icon {
@@ -6275,8 +6406,8 @@ input:focus-visible,
   height: calc(var(--attachment-tile-size) - var(--sp-1) * 2);
   border-radius: var(--r-md);
   background: var(--background);
-  color: var(--muted-foreground);
-  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  color: var(--warm-strong);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
 }
 
 .agent-attachment-file-details {
@@ -6382,6 +6513,7 @@ input:focus-visible,
   height: var(--attachment-tile-size);
   padding: 0;
   background: transparent;
+  box-shadow: none;
 }
 
 .agent-attachment-chip[data-kind="image"] > img {
@@ -6389,8 +6521,21 @@ input:focus-visible,
   height: var(--attachment-tile-size);
   border-radius: var(--r-md);
   object-fit: cover;
-  outline: 1px solid color-mix(in oklch, var(--foreground) 10%, transparent);
+  outline: 1px solid rgb(0 0 0 / 10%);
   outline-offset: -1px;
+}
+
+[data-theme="dark"] .agent-attachment-chip,
+[data-theme="dark"] .agent-attachment-file-icon {
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%);
+}
+
+[data-theme="dark"] .agent-attachment-chip[data-kind="image"] {
+  box-shadow: none;
+}
+
+[data-theme="dark"] .agent-attachment-chip[data-kind="image"] > img {
+  outline-color: rgb(255 255 255 / 10%);
 }
 
 .agent-attachment-chip[data-kind="image"] .agent-attachment-name,
