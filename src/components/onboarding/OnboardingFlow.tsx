@@ -103,7 +103,9 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
     const initial = initialStepIndex(steps);
     return account.signedIn && steps[initial] === "sign-in" ? 1 : initial;
   });
-  const [shortcutLabel, setShortcutLabel] = useState("fn");
+  const [shortcutLabel, setShortcutLabel] = useState(() =>
+    capabilities.platform === "windows" ? "Ctrl+Alt+D" : "fn",
+  );
 
   const stepId = steps[stepIndex];
 
@@ -142,19 +144,30 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
   // wizard run, not per practice-step mount, so a key rebound on the
   // practice screen survives stepping back and forward.
   useEffect(() => {
-    if (!supportsDictationPractice || capabilities.platform !== "macos") return;
-    dictationSettings()
-      .then(({ settings }) => {
-        const current = settings.pushToTalkShortcut;
-        if (current && !isFactoryDefaultShortcut(current)) {
-          if (current.label) setShortcutLabel(current.label);
-          return undefined;
-        }
-        return setDictationShortcut("push_to_talk", FN_SHORTCUT).then((saved) => {
-          setShortcutLabel(saved?.pushToTalkShortcut?.label ?? FN_SHORTCUT.label);
-        });
-      })
-      .catch(() => undefined);
+    if (!supportsDictationPractice) return;
+    if (capabilities.platform === "macos") {
+      dictationSettings()
+        .then(({ settings }) => {
+          const current = settings.pushToTalkShortcut;
+          if (current && !isFactoryDefaultShortcut(current)) {
+            if (current.label) setShortcutLabel(current.label);
+            return undefined;
+          }
+          return setDictationShortcut("push_to_talk", FN_SHORTCUT).then((saved) => {
+            setShortcutLabel(saved?.pushToTalkShortcut?.label ?? FN_SHORTCUT.label);
+          });
+        })
+        .catch(() => undefined);
+    } else if (capabilities.platform === "windows") {
+      dictationSettings()
+        .then(({ settings }) => {
+          const current = settings.pushToTalkShortcut;
+          if (current?.label) {
+            setShortcutLabel(current.label);
+          }
+        })
+        .catch(() => undefined);
+    }
   }, [supportsDictationPractice, capabilities.platform]);
 
   function goNext() {
