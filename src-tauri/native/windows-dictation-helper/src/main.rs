@@ -45,6 +45,12 @@ struct MicTest {
     deadline: std::time::Instant,
 }
 
+struct DelayedClipboardRestore {
+    deadline: std::time::Instant,
+    text: String,
+    backup: clipboard::ClipboardBackup,
+}
+
 struct HelperApp {
     writer: EventWriter,
     recorder: Option<Recorder>,
@@ -52,7 +58,7 @@ struct HelperApp {
     selected_microphone_id: Option<String>,
     pinned_target: Option<PinnedTarget>,
     hotkeys: Option<HotkeyManager>,
-    clipboard_restore: Option<thread::JoinHandle<()>>,
+    delayed_clipboard_restore: Option<DelayedClipboardRestore>,
     last_mic_test_path: Option<std::path::PathBuf>,
 }
 
@@ -137,7 +143,7 @@ impl HelperApp {
             selected_microphone_id: None,
             pinned_target: None,
             hotkeys,
-            clipboard_restore: None,
+            delayed_clipboard_restore: None,
             last_mic_test_path: None,
         }
     }
@@ -301,7 +307,7 @@ impl HelperApp {
     }
 
     fn paste_text(&mut self, text: String) {
-        self.finish_clipboard_restore(false);
+        self.finish_clipboard_restore(true);
         self.writer.emit(event(
             "final_transcript",
             serde_json::json!({ "text": text }),
@@ -347,19 +353,16 @@ impl HelperApp {
             return;
         }
         self.writer.emit(simple_event("paste_completed"));
-        self.clipboard_restore = Some(thread::spawn(move || {
-            thread::sleep(CLIPBOARD_RESTORE_DELAY);
-            let _ = clipboard::restore_clipboard_if_unchanged(&text, previous_clipboard);
-        }));
+        self.delayed_clipboard_restore = Some(DelayedClipboardRestore {
+            deadline: std::time::Instant::now() + CLIPBOARD_RESTORE_DELAY,
+            text,
+            backup: previous_clipboard,
+        });
     }
 
-    fn finish_clipboard_restore(&mut self, force: bool) {
-        if let Some(restore) = &self.clipboard_restore {
-            if force || restore.is_finished() {
-                if let Some(handle) = self.clipboard_restore.take() {
-                    let _ = handle.join();
-                }
-            }
+    fn finish_clipboard_restore(&mut self, _force: bool) {
+        if let Some(restore) = self.delayed_clipboard_restore.take() {
+            let _ = clipboard::restore_clipboard_if_unchanged(&restore.text, restore.backup);
         }
     }
 
@@ -419,6 +422,13 @@ impl HelperApp {
             .is_some_and(|test| std::time::Instant::now() >= test.deadline)
         {
             self.finish_mic_test();
+        }
+        if self
+            .delayed_clipboard_restore
+            .as_ref()
+            .is_some_and(|restore| std::time::Instant::now() >= restore.deadline)
+        {
+            self.finish_clipboard_restore(false);
         }
     }
 
