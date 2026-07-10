@@ -66,6 +66,28 @@ export function selectPopoverStyle(
   return { top: -(3 + selectedIndex * 28) };
 }
 
+const POPOVER_VIEWPORT_INSET = 12;
+const POPOVER_MIN_WIDTH = 260;
+
+/**
+ * Keeps a portaled select popover in view without disturbing its trigger
+ * alignment unless the viewport has no room to its right.
+ */
+export function selectPopoverHorizontalStyle(
+  rect: DOMRect,
+  minimumWidth = POPOVER_MIN_WIDTH,
+): CSSProperties {
+  const viewportWidth = Math.max(0, window.innerWidth);
+  const maxViewportWidth = Math.max(0, viewportWidth - POPOVER_VIEWPORT_INSET * 2);
+  const width = Math.min(Math.max(rect.width, minimumWidth), maxViewportWidth);
+  const left = Math.min(
+    Math.max(rect.left, POPOVER_VIEWPORT_INSET),
+    Math.max(POPOVER_VIEWPORT_INSET, viewportWidth - width - POPOVER_VIEWPORT_INSET),
+  );
+
+  return { left, width, minWidth: width, maxWidth: width };
+}
+
 /**
  * The same placement math as {@link selectPopoverStyle} but resolved to fixed
  * viewport coordinates, so the popover can render in a body portal (escaping any
@@ -112,6 +134,7 @@ export function Select({
   onChange,
   ariaLabel,
   className,
+  popoverWidth = "content",
 }: {
   value: string | null;
   options: SelectOption[];
@@ -120,6 +143,8 @@ export function Select({
   onChange: (value: string) => void;
   ariaLabel: string;
   className?: string;
+  /** Match the trigger for compact option sets such as the accent presets. */
+  popoverWidth?: "content" | "trigger";
 }) {
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState<SelectPopoverPlacement>("align-selected");
@@ -128,7 +153,7 @@ export function Select({
   // The popover is rendered in a portal so it escapes any ancestor card's
   // `overflow: hidden` clipping; fixed coordinates are measured from the
   // trigger on open (and on scroll/resize while open).
-  const [anchor, setAnchor] = useState<{ left: number; width: number; rect: DOMRect } | null>(null);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
 
   const selectedIndex = options.findIndex((option) => option.value === value);
   const selected = selectedIndex === -1 ? undefined : options[selectedIndex];
@@ -161,7 +186,7 @@ export function Select({
       const el = wrapRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      setAnchor({ left: rect.left, width: rect.width, rect });
+      setAnchor(rect);
     };
     measure();
     window.addEventListener("scroll", measure, true);
@@ -185,14 +210,20 @@ export function Select({
     setOpen((current) => !current);
   }
 
-  const fixedStyle: CSSProperties | undefined = anchor
-    ? {
-        position: "fixed",
-        left: anchor.left,
-        minWidth: Math.max(anchor.width, 260),
-        ...fixedVerticalStyle(placement, Math.max(selectedIndex, 0), anchor.rect),
-      }
+  const horizontalStyle = anchor
+    ? selectPopoverHorizontalStyle(
+        anchor,
+        popoverWidth === "trigger" ? Math.max(anchor.width, 1) : POPOVER_MIN_WIDTH,
+      )
     : undefined;
+  const fixedStyle: CSSProperties | undefined =
+    horizontalStyle && horizontalStyle.width !== 0 && anchor
+      ? {
+          position: "fixed",
+          ...horizontalStyle,
+          ...fixedVerticalStyle(placement, Math.max(selectedIndex, 0), anchor),
+        }
+      : undefined;
 
   return (
     <div className={`select-control${className ? ` ${className}` : ""}`} ref={wrapRef}>
@@ -214,7 +245,7 @@ export function Select({
         ) : null}
         <IconChevronDownSmall size={14} />
       </button>
-      {open && anchor
+      {open && fixedStyle
         ? createPortal(
             <ul
               ref={popoverRef}
