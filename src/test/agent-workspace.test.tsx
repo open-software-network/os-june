@@ -10,6 +10,7 @@ import {
   AgentWorkspace,
   HERO_GREETINGS,
   SkillsToolsPanel,
+  composerInSteerStateFor,
   projectAgentActivityLevels,
   resetAgentSessionContinuity,
   seedAgentComposerDraftForTest,
@@ -548,6 +549,19 @@ describe("AgentWorkspace", () => {
     expect(second.workingSessionIds).toBe(first.workingSessionIds);
     expect(second.waitingSessionIds).toBe(first.waitingSessionIds);
     expect(second.toolCallSessionIds).toBe(first.toolCallSessionIds);
+  });
+
+  it("scopes an in-flight submit's steer state to its owning session", () => {
+    const base = {
+      provisional: false,
+      working: false,
+      submitting: true,
+      submittingSessionId: "session-1",
+      demo: false,
+    };
+
+    expect(composerInSteerStateFor({ ...base, selectedSessionId: "session-1" })).toBe(true);
+    expect(composerInSteerStateFor({ ...base, selectedSessionId: "session-2" })).toBe(false);
   });
 
   it("lets users cancel a clean skill editor without making changes", async () => {

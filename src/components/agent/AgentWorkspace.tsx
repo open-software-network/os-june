@@ -2093,6 +2093,23 @@ function hermesModelIdFor(modelId: string): string {
   return rawLocalGenerationModelId(modelId) ?? modelId;
 }
 
+export function composerInSteerStateFor(input: {
+  selectedSessionId?: string;
+  provisional: boolean;
+  working: boolean;
+  submitting: boolean;
+  submittingSessionId: string | null;
+  demo: boolean;
+}): boolean {
+  return Boolean(
+    input.selectedSessionId &&
+      !input.provisional &&
+      (input.working ||
+        (input.submitting && input.submittingSessionId === input.selectedSessionId) ||
+        input.demo),
+  );
+}
+
 export function AgentWorkspace({
   initialSession,
   initialSessionId: initialSessionIdProp,
@@ -2130,6 +2147,9 @@ export function AgentWorkspace({
   const [composerSteerDemo, setComposerSteerDemo] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  // `submitting` gates the whole composer, while this id scopes the immediate
+  // Stop visual to the existing session that owns the in-flight send.
+  const [submittingHermesSessionId, setSubmittingHermesSessionId] = useState<string | null>(null);
   const [errorState, setErrorState] = useState<AgentWorkspaceError | null>(null);
   const [submittingErrorIssueReport, setSubmittingErrorIssueReport] = useState(false);
   const [composerSizeWarning, setComposerSizeWarning] = useState<ComposerInputSizeWarning | null>(
@@ -2968,10 +2988,14 @@ export function AgentWorkspace({
   // the send slot holds Stop and a typed message steers the running turn rather
   // than starting a new one. Drives the steer-send button, the queue-style
   // placeholder, and whether the steer-card stack renders.
-  const composerInSteerState =
-    !!selectedHermesSessionId &&
-    !selectedHermesSessionIsProvisional &&
-    (workingSessionIds.has(selectedHermesSessionId) || submitting || composerSteerDemo);
+  const composerInSteerState = composerInSteerStateFor({
+    selectedSessionId: selectedHermesSessionId,
+    provisional: selectedHermesSessionIsProvisional,
+    working: selectedHermesSessionId ? workingSessionIds.has(selectedHermesSessionId) : false,
+    submitting,
+    submittingSessionId: submittingHermesSessionId,
+    demo: composerSteerDemo,
+  });
   const selectedSteerCards = selectedHermesSessionId
     ? (steerCardsBySessionId[selectedHermesSessionId] ?? [])
     : [];
@@ -5045,6 +5069,9 @@ export function AgentWorkspace({
     // through the wait and then vanish in a single frame when the
     // conversation takes over.
     if (heroMode) setHeroLeaving(true);
+    setSubmittingHermesSessionId(
+      newSessionModeRef.current ? null : (selectedHermesSessionId ?? null),
+    );
     setSubmitting(true);
     let clearedDraft = false;
     let clearedAttachments = false;
@@ -5176,6 +5203,7 @@ export function AgentWorkspace({
       }
     } finally {
       setSubmitting(false);
+      setSubmittingHermesSessionId(null);
       // On success the hero is gone; on failure this fades the greeting and
       // suggestions back in behind the restored draft.
       setHeroLeaving(false);
@@ -7254,6 +7282,7 @@ export function AgentWorkspace({
       status: "starting",
       summary: "Starting June.",
     });
+    setSubmittingHermesSessionId(null);
     setSubmitting(true);
     try {
       await submitHermesSession(initialPrompt);
@@ -7272,6 +7301,7 @@ export function AgentWorkspace({
       });
     } finally {
       setSubmitting(false);
+      setSubmittingHermesSessionId(null);
     }
   }
 
