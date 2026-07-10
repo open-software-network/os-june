@@ -14,10 +14,14 @@ import {
   hermesBridgeMessagingPlatforms,
   agentHudHide,
   agentHudShow,
+  juneCharacter,
+  revealPath,
   setHermesAgentCliAccess,
+  setJuneCharacter,
   updateHermesBridgeMessagingPlatform,
   type HermesMessagingPlatformInfo,
   type HermesFilesystemSnapshot,
+  type JuneCharacterStatus,
 } from "../../lib/tauri";
 import {
   AGENT_HUD_VISIBILITY_CHANGED_EVENT,
@@ -381,6 +385,7 @@ export function AgentSettingsSection({
         </div>
         {error ? <p className="settings-row-error">{error}</p> : null}
       </section>
+      <CharacterGroup />
       <MessagingGroup
         loading={loading}
         platforms={platforms}
@@ -410,6 +415,105 @@ export function AgentSettingsSection({
         onRefresh={() => void loadFilesystemSnapshot()}
       />
     </>
+  );
+}
+
+/** Mirrors JUNE_CHARACTER_MAX_CHARS on the Rust side. */
+const CHARACTER_MAX_LENGTH = 4000;
+
+/** The character group: June's editable personality text, backed by
+ * CHARACTER.md in the agent home. Only the personality is editable here;
+ * identity, privacy, and tool instructions stay app-owned. The file link
+ * keeps the direct-editing path discoverable. */
+function CharacterGroup() {
+  const [status, setStatus] = useState<JuneCharacterStatus | null>(null);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    juneCharacter()
+      .then((loaded) => {
+        if (cancelled) return;
+        setStatus(loaded);
+        setDraft(loaded.character);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(messageFromError(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const dirty = status !== null && draft.trim() !== status.character.trim();
+
+  async function save(character: string) {
+    setSaving(true);
+    try {
+      const next = await setJuneCharacter(character);
+      setStatus(next);
+      setDraft(next.character);
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="settings-group" aria-labelledby="agent-character-heading">
+      <h2 id="agent-character-heading" className="settings-group-heading">
+        Character
+      </h2>
+      <p className="settings-group-description">
+        How June talks and behaves in agent sessions. Rewrite it freely; June's identity, privacy
+        rules, and tool instructions stay the same. Saved to CHARACTER.md, which you can also edit
+        directly. Applies to new sessions.
+      </p>
+      <div className="settings-card agent-character-card">
+        <textarea
+          className="agent-character-editor"
+          value={draft}
+          rows={6}
+          maxLength={CHARACTER_MAX_LENGTH}
+          aria-label="June's character"
+          disabled={status === null}
+          onChange={(event) => setDraft(event.currentTarget.value)}
+        />
+        <div className="agent-character-actions">
+          <button
+            type="button"
+            className="btn"
+            disabled={!dirty || saving}
+            onClick={() => void save(draft)}
+          >
+            {saving ? "Saving..." : "Save character"}
+          </button>
+          {status?.isCustom || (status !== null && dirty) ? (
+            <button type="button" className="btn" disabled={saving} onClick={() => void save("")}>
+              Reset to default
+            </button>
+          ) : null}
+          {status ? (
+            <button
+              type="button"
+              className="btn"
+              onClick={() =>
+                void revealPath(status.path).catch((err: unknown) =>
+                  setError(messageFromError(err)),
+                )
+              }
+            >
+              Show file
+            </button>
+          ) : null}
+        </div>
+        {error ? <p className="settings-row-error">{error}</p> : null}
+      </div>
+    </section>
   );
 }
 

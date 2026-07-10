@@ -1009,6 +1009,31 @@ export async function setHermesAgentCliAccess(enabled: boolean) {
   });
 }
 
+export type JuneCharacterStatus = {
+  /** The effective character text (the default when no custom one is set). */
+  character: string;
+  /** Whether the stored text differs from the app default. */
+  isCustom: boolean;
+  /** The app default, for "reset to default" affordances. */
+  defaultCharacter: string;
+  /** Absolute path of CHARACTER.md, for direct file editing. */
+  path: string;
+};
+
+/** June's editable character (personality) text, backed by CHARACTER.md in
+ * the June-managed agent home. */
+export async function juneCharacter() {
+  return invoke<JuneCharacterStatus>("june_character");
+}
+
+/** Persists the character text (blank resets to the default) and retires the
+ * agent runtimes so new sessions pick it up. */
+export async function setJuneCharacter(character: string) {
+  return invoke<JuneCharacterStatus>("set_june_character", {
+    request: { character },
+  });
+}
+
 export async function hermesBridgeMessagingPlatforms() {
   return invoke<HermesMessagingPlatformsResponse>("hermes_bridge_messaging_platforms");
 }

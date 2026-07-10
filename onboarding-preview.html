@@ -14,7 +14,7 @@
     june.replayOnboarding()            restart the wizard from step 1
     june.replayOnboarding("permissions")
                                        jump to a step (sign-in, permissions,
-                                       telemetry, usage-intent,
+                                       telemetry, usage-intent, character,
                                        dictation-practice)
     __JUNE_STUB__.signOut()            back to the signed-out welcome pitch
     localStorage.setItem("os-june:theme", "dark"); location.reload()
@@ -132,11 +132,19 @@
           };
         }
         const p3aEvents = [];
-        const p3aSettings = {
-          enabled: false,
-          consentVersion: 1,
-          consentedAtWeek: null,
-        };
+
+        // June's editable character, backed by CHARACTER.md in the real app.
+        const defaultCharacter =
+          "You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations. Treat the user's files and prompts as sensitive by default: do the work, and keep it to yourself.";
+        let character = defaultCharacter;
+        function characterStatus() {
+          return {
+            character,
+            isCustom: character !== defaultCharacter,
+            defaultCharacter,
+            path: "/Users/sam/Library/Application Support/june/hermes/CHARACTER.md",
+          };
+        }
 
         let account = step
           ? {
@@ -222,6 +230,13 @@
                   p3aEvents.push(args.request.questionId);
                 }
                 return null;
+              case "june_character":
+                return characterStatus();
+              case "set_june_character": {
+                const next = ((args.request && args.request.character) || "").trim();
+                character = next === "" ? defaultCharacter : next;
+                return characterStatus();
+              }
               case "dictation_settings":
                 return { settings: dictationSettings() };
               case "set_dictation_shortcut":
@@ -269,7 +284,7 @@
                       source: "system",
                       required: true,
                       ready,
-                      permissionState: ready ? "unknown" : "denied",
+                      permissionState: ready ? "granted" : "denied",
                       deviceAvailable: ready,
                       captureAvailable: ready,
                       recoveryAction: "openSystemAudioSettings",
