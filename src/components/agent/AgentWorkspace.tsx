@@ -1569,6 +1569,38 @@ type QueuedAttachmentFollowUp = {
   error?: string;
 };
 
+function buildUpNextDemoFollowUp(): QueuedAttachmentFollowUp {
+  const name = "reference.png";
+  return {
+    id: "attachment-follow-up-demo",
+    prepared: {
+      displayContent: "Review this attachment next",
+      runtimeContent: "Review this attachment next",
+      titleContent: "Review this attachment next",
+      typedMessage: "Review this attachment next",
+    },
+    attachments: [
+      {
+        id: "attachment-demo-image",
+        name,
+        path: "uploads/reference.png",
+        rootLabel: "Hermes workspace",
+        size: 24_576,
+        previewDataUrl:
+          "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='44'%3E%3Crect width='44' height='44' rx='8' fill='%23d8d5ee'/%3E%3Ccircle cx='17' cy='17' r='7' fill='%237a70ba'/%3E%3C/svg%3E",
+        attach: {
+          localId: "attachment-demo-image",
+          kind: "image",
+          displayName: name,
+          workspacePath: "uploads/reference.png",
+          status: "imported",
+        },
+      },
+    ],
+    status: "queued",
+  };
+}
+
 type ComposerInputSizeWarning = {
   inputSignature: string;
   signature: string;
@@ -2385,6 +2417,9 @@ export function AgentWorkspace({
     ),
   );
   const queuedAttachmentFollowUpsRef = useRef(queuedAttachmentFollowUps);
+  const [upNextDemoFollowUpsBySessionId, setUpNextDemoFollowUpsBySessionId] = useState<
+    Record<string, QueuedAttachmentFollowUp[]>
+  >({});
   const queuedAttachmentFollowUpSeqRef = useRef(
     Object.values(continuity?.queuedAttachmentFollowUps ?? {}).reduce(
       (highest, items) =>
@@ -3051,6 +3086,13 @@ export function AgentWorkspace({
   const selectedQueuedAttachmentFollowUps = selectedHermesSessionId
     ? (queuedAttachmentFollowUps[selectedHermesSessionId] ?? [])
     : [];
+  const selectedUpNextDemoFollowUps = selectedHermesSessionId
+    ? (upNextDemoFollowUpsBySessionId[selectedHermesSessionId] ?? [])
+    : [];
+  const selectedFollowUpCount =
+    selectedSteerCards.length +
+    selectedQueuedAttachmentFollowUps.length +
+    selectedUpNextDemoFollowUps.length;
   const visibleErrorState = visibleAgentWorkspaceError(errorState, selectedHermesSessionId);
   const visibleError = visibleErrorState?.message ?? null;
   // The banner offers "Try again" for failures a reconnect-and-reload can clear:
@@ -3331,13 +3373,13 @@ export function AgentWorkspace({
   // when the list actually scrolls. The helper also shows on pointer activity,
   // so on a short (non-scrollable) queue merely hovering toggled
   // scrollbar-part paints, flashing an artifact in the card's corner.
-  const hasSteerCards = selectedSteerCards.length > 0;
+  const hasFollowUps = selectedFollowUpCount > 0;
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-evaluate when the list mounts, opens, or grows
   useEffect(() => {
     const el = steerCardsListRef.current;
     if (!el || el.scrollHeight <= el.clientHeight + 1) return;
     return attachScrollThumbFade(el);
-  }, [hasSteerCards, steerQueueOpen, selectedSteerCards.length]);
+  }, [hasFollowUps, steerQueueOpen, selectedFollowUpCount]);
 
   // Updates the task list without touching the selection — a late poll
   // response must not re-select a task the user already navigated away from.
@@ -7454,19 +7496,31 @@ export function AgentWorkspace({
     });
   }
 
-  // One submitted-steer row: bare, read-only text. session.steer has no recall
-  // primitive, so edit/remove controls would falsely imply the instruction can
-  // still be changed after submission.
+  // Submitted text and locally waiting attachment messages share one visual
+  // follow-up system. The quiet row status explains the delivery difference;
+  // session.steer has no recall primitive, so submitted text remains read-only.
   function renderSteerCard(card: { id: string; text: string }) {
     return (
-      <div key={card.id} className="agent-steer-card" title={card.text}>
-        <span className="agent-steer-card-text">{card.text}</span>
+      <div key={card.id} className="agent-follow-up-row" data-kind="steer">
+        <span className="agent-follow-up-icon" aria-hidden>
+          <IconArrowCornerDownRight size={13} />
+        </span>
+        <span className="agent-follow-up-copy">
+          <span className="agent-follow-up-text" title={card.text}>
+            {card.text}
+          </span>
+          <span className="agent-follow-up-status">Steering current turn</span>
+        </span>
       </div>
     );
   }
 
-  function renderQueuedAttachmentFollowUp(sessionId: string, item: QueuedAttachmentFollowUp) {
-    const sessionWorking = workingSessionIds.has(sessionId);
+  function renderQueuedAttachmentFollowUp(
+    sessionId: string,
+    item: QueuedAttachmentFollowUp,
+    options: { demo?: boolean } = {},
+  ) {
+    const sessionWorking = options.demo || workingSessionIds.has(sessionId);
     const firstInQueue = queuedAttachmentFollowUpsRef.current[sessionId]?.[0]?.id === item.id;
     const hasAttachedImage = item.attachments.some(
       (attachment) => attachment.attach.kind === "image" && attachment.attach.status === "attached",
@@ -7484,23 +7538,29 @@ export function AgentWorkspace({
             ? "Waiting for June to finish"
             : "Ready to send";
     return (
-      <div key={item.id} className="agent-up-next-card" data-status={item.status}>
-        <div className="agent-up-next-card-copy">
-          <span className="agent-up-next-card-text">
-            {item.prepared.typedMessage || "Attachment"}
-          </span>
-          <span className="agent-up-next-card-status" aria-live="polite">
-            {statusLabel}
-          </span>
-          {item.error ? <span className="agent-up-next-card-error">{item.error}</span> : null}
-        </div>
-        <div className="agent-up-next-attachments">
-          {item.attachments.map((attachment) => (
+      <div
+        key={item.id}
+        className="agent-follow-up-row"
+        data-kind="attachment"
+        data-status={item.status}
+      >
+        <div className="agent-follow-up-attachments">
+          {item.attachments.slice(0, 1).map((attachment) => (
             <AgentAttachmentTile key={attachment.id} attachment={attachment} />
           ))}
+          {item.attachments.length > 1 ? (
+            <span className="agent-follow-up-attachment-count">+{item.attachments.length - 1}</span>
+          ) : null}
+        </div>
+        <div className="agent-follow-up-copy">
+          <span className="agent-follow-up-text">{item.prepared.typedMessage || "Attachment"}</span>
+          <span className="agent-follow-up-status" aria-live="polite">
+            {statusLabel}
+          </span>
+          {item.error ? <span className="agent-follow-up-error">{item.error}</span> : null}
         </div>
         {item.status === "sending" ? null : (
-          <div className="agent-up-next-card-actions">
+          <div className="agent-follow-up-actions">
             {item.status === "failed" && firstInQueue ? (
               <button
                 type="button"
@@ -7528,7 +7588,19 @@ export function AgentWorkspace({
                   aria-label="Edit queued message"
                   title={editable ? "Edit" : "Clear the composer before editing"}
                   disabled={!editable}
-                  onClick={() => editQueuedAttachmentFollowUp(sessionId, item.id)}
+                  onClick={() => {
+                    if (options.demo) {
+                      setUpNextDemoFollowUpsBySessionId((current) => ({
+                        ...current,
+                        [sessionId]: [],
+                      }));
+                      draftRef.current = item.prepared.typedMessage;
+                      setDraft(item.prepared.typedMessage);
+                      composerEditorRef.current?.setContent(item.prepared.typedMessage);
+                      return;
+                    }
+                    editQueuedAttachmentFollowUp(sessionId, item.id);
+                  }}
                 >
                   <IconPencil size={14} />
                 </button>
@@ -7536,7 +7608,14 @@ export function AgentWorkspace({
                   type="button"
                   aria-label="Remove queued message"
                   title="Remove"
-                  onClick={() => removeQueuedAttachmentFollowUp(sessionId, item.id)}
+                  onClick={() =>
+                    options.demo
+                      ? setUpNextDemoFollowUpsBySessionId((current) => ({
+                          ...current,
+                          [sessionId]: [],
+                        }))
+                      : removeQueuedAttachmentFollowUp(sessionId, item.id)
+                  }
                 >
                   <IconTrashCan size={14} />
                 </button>
@@ -8275,11 +8354,11 @@ export function AgentWorkspace({
     setSteerQueueOpen(true);
   }, [selectedHermesSessionId]);
 
-  // Re-measure the steer-list fade when the queue opens or the count changes —
+  // Re-measure the follow-up-list fade when the queue opens or the count changes —
   // data-driven size changes the hook's scroll/resize listeners can miss.
   useEffect(() => {
     steerCardsFade.update();
-  }, [steerQueueOpen, selectedSteerCards.length, steerCardsFade.update]);
+  }, [steerQueueOpen, selectedFollowUpCount, steerCardsFade.update]);
 
   // Dev-only composer steer-state driver (window.__composerSteerDemo): pick up
   // the desired state on mount and follow live toggles via the window event.
@@ -8293,9 +8372,9 @@ export function AgentWorkspace({
     return () => window.removeEventListener(COMPOSER_STEER_DEMO_EVENT, onDemo);
   }, []);
 
-  // Dev-only: window.__steerSubmitDemo("text") tacks a steer card onto the open
-  // session's composer — the exact state a real steer submit produces — so the
-  // submitted, read-only steer card can be seen without a turn.
+  // Dev-only: preview the working-composer follow-up system without starting a
+  // real turn. __steerSubmitDemo shows one submitted text steer; __upNextDemo
+  // adds the waiting attachment row too and parks the composer in steer state.
   useEffect(() => {
     if (!import.meta.env.DEV || typeof window === "undefined") return;
     const w = window as unknown as Record<string, unknown>;
@@ -8311,8 +8390,32 @@ export function AgentWorkspace({
       }));
       return `Tacked a steer card "${text}" onto the composer.`;
     };
+    w.__upNextDemo = (show: boolean = true) => {
+      if (!selectedHermesSessionId || selectedHermesSessionIsProvisional) {
+        return "Open a real session first, then run __upNextDemo().";
+      }
+      setComposerSteerDemoDesired(show);
+      const id = "steer-up-next-demo";
+      setSteerCardsBySessionId((prev) => ({
+        ...prev,
+        [selectedHermesSessionId]: show
+          ? [
+              ...(prev[selectedHermesSessionId] ?? []).filter((card) => card.id !== id),
+              { id, text: "Check the API boundary" },
+            ]
+          : (prev[selectedHermesSessionId] ?? []).filter((card) => card.id !== id),
+      }));
+      setUpNextDemoFollowUpsBySessionId((current) => ({
+        ...current,
+        [selectedHermesSessionId]: show ? [buildUpNextDemoFollowUp()] : [],
+      }));
+      return show
+        ? "Up next preview shown. Run __upNextDemo(false) to hide it."
+        : "Up next preview hidden.";
+    };
     return () => {
       delete w.__steerSubmitDemo;
+      delete w.__upNextDemo;
     };
   }, [selectedHermesSessionId, selectedHermesSessionIsProvisional]);
 
@@ -8784,38 +8887,20 @@ export function AgentWorkspace({
             </motion.div>
           ) : null}
         </AnimatePresence>
-        {selectedHermesSessionId && selectedQueuedAttachmentFollowUps.length ? (
-          <section className="agent-up-next" aria-label="Up next">
-            <header className="agent-up-next-header">
-              <span className="status-pill agent-up-next-count">
-                {selectedQueuedAttachmentFollowUps.length}
-              </span>
-              <span>Up next</span>
-            </header>
-            <div className="agent-up-next-list">
-              {selectedQueuedAttachmentFollowUps.map((item) =>
-                renderQueuedAttachmentFollowUp(selectedHermesSessionId, item),
-              )}
-            </div>
-          </section>
-        ) : null}
-        {selectedHermesSessionId && selectedSteerCards.length ? (
-          // The steer queue: its own elevated surface above the composer (the
-          // Cursor-style queue card), not a region inside the box. All rows
-          // show by default; the header collapses the list to itself. A
-          // separate surface means no reveal choreography — the card simply
-          // is whatever height its rows need, capped by the list scroller.
-          <div className="agent-steer-queue">
+        {selectedHermesSessionId && selectedFollowUpCount ? (
+          // One surface for the user's single intent: follow up while June is
+          // working. Text may steer the current turn while attachments wait,
+          // but that transport distinction belongs in row status, not in two
+          // competing queue cards.
+          <section className="agent-steer-queue" aria-label="Up next">
             <button
               type="button"
               className="agent-steer-queue-header"
               aria-expanded={steerQueueOpen}
               onClick={() => setSteerQueueOpen((open) => !open)}
             >
-              <span className="status-pill agent-steer-queue-count">
-                {selectedSteerCards.length}
-              </span>
-              Queued
+              <span className="status-pill agent-steer-queue-count">{selectedFollowUpCount}</span>
+              Up next
               <IconChevronDownSmall
                 size={13}
                 className="agent-steer-queue-chevron"
@@ -8827,10 +8912,16 @@ export function AgentWorkspace({
               <div className="agent-steer-cards-scroll scroll-fade" {...steerCardsFade.props}>
                 <div ref={steerCardsListRef} className="agent-steer-cards-list">
                   {selectedSteerCards.map((card) => renderSteerCard(card))}
+                  {selectedQueuedAttachmentFollowUps.map((item) =>
+                    renderQueuedAttachmentFollowUp(selectedHermesSessionId, item),
+                  )}
+                  {selectedUpNextDemoFollowUps.map((item) =>
+                    renderQueuedAttachmentFollowUp(selectedHermesSessionId, item, { demo: true }),
+                  )}
                 </div>
               </div>
             ) : null}
-          </div>
+          </section>
         ) : null}
         <div ref={composerBoxRef} className="agent-composer-box">
           {attachments.length ? (

@@ -1032,6 +1032,9 @@ describe("AgentWorkspace", () => {
       }),
     );
 
+    expect(screen.getByRole("region", { name: "Up next" })).toBeInTheDocument();
+    expect(screen.getByText("Steering current turn")).toBeInTheDocument();
+    expect(screen.queryByText("Queued")).toBeNull();
     expect(screen.getByTitle("focus on the API boundary")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /revise steer/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /dismiss steer/i })).toBeNull();
@@ -1052,6 +1055,74 @@ describe("AgentWorkspace", () => {
         text: "focus on the API boundary",
       }),
     );
+  });
+
+  it("combines steering text and waiting attachments in one Up next surface", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await user.type(composer, "check the API boundary");
+    await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+        session_id: "session-1",
+        text: "check the API boundary",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "review the brief next");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+
+    const upNext = await screen.findByRole("region", { name: "Up next" });
+    expect(within(upNext).getByText("2")).toBeInTheDocument();
+    expect(within(upNext).getByText("check the API boundary")).toBeInTheDocument();
+    expect(within(upNext).getByText("Steering current turn")).toBeInTheDocument();
+    expect(within(upNext).getByText("review the brief next")).toBeInTheDocument();
+    expect(within(upNext).getByText("Waiting for June to finish")).toBeInTheDocument();
+    expect(within(upNext).getByText("brief.pdf")).toBeInTheDocument();
+    expect(screen.getAllByRole("region", { name: "Up next" })).toHaveLength(1);
+    expect(screen.queryByText("Queued")).toBeNull();
+  });
+
+  it("previews the unified Up next composer state without submitting a message", async () => {
+    render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const upNextDemo = (window as unknown as { __upNextDemo?: (show?: boolean) => string })
+      .__upNextDemo;
+    expect(upNextDemo).toBeTypeOf("function");
+    act(() => {
+      upNextDemo?.();
+    });
+
+    const upNext = await screen.findByRole("region", { name: "Up next" });
+    expect(within(upNext).getByText("2")).toBeInTheDocument();
+    expect(within(upNext).getByText("Check the API boundary")).toBeInTheDocument();
+    expect(within(upNext).getByText("Steering current turn")).toBeInTheDocument();
+    expect(within(upNext).getByText("Review this attachment next")).toBeInTheDocument();
+    expect(within(upNext).getByText("reference.png")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.steer", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+    act(() => {
+      upNextDemo?.(false);
+    });
+    expect(screen.queryByRole("region", { name: "Up next" })).toBeNull();
   });
 
   it("queues and genuinely removes an attachment follow-up while June is working", async () => {

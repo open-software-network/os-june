@@ -5467,11 +5467,9 @@ input:focus-visible,
   gap: var(--sp-1);
 }
 
-/* Steer queue — the queued/steering instructions as their own elevated card
-   ABOVE the composer box (not a region inside it). All rows show by default;
-   the header collapses the list to itself and stays put ("Queued" + count,
-   constant copy in both states). Each row is a read-only record of a submitted
-   steer because the protocol cannot recall or mutate it. */
+/* Follow-ups share one elevated "Up next" surface above the composer. Text
+   steers and locally waiting attachment messages use the same row anatomy;
+   their quiet status copy carries the delivery distinction. */
 .agent-steer-queue {
   pointer-events: auto;
   width: 100%;
@@ -5548,10 +5546,12 @@ input:focus-visible,
   scrollbar-color: auto;
 }
 
-/* Bare rows on the card surface; the hover wash is the row's only chrome. */
-.agent-steer-card {
+/* The compact horizontal treatment from the original steering design: optional
+   leading context, flexible message copy, then genuine actions at the end. */
+.agent-follow-up-row {
   display: flex;
   align-items: center;
+  gap: var(--sp-2);
   flex-shrink: 0;
   min-height: var(--control-lg);
   padding: var(--sp-1) var(--sp-2);
@@ -5561,78 +5561,52 @@ input:focus-visible,
   font-size: var(--fs-lg);
 }
 
-.agent-steer-card:hover {
+.agent-follow-up-row:hover {
   background: var(--secondary);
 }
 
-/* One line, ellipsized - compact rows; the full text lives in the row's
-   title tooltip. */
-.agent-steer-card-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Attachment messages cannot enter a running Hermes turn. They remain local
-   on this distinct "Up next" surface until the current turn completes, so the
-   controls here genuinely edit/remove data that has not been submitted yet. */
-.agent-up-next {
-  pointer-events: auto;
-  width: 100%;
-  max-width: min(var(--chat-max), var(--content-max));
-  margin-bottom: var(--sp-2);
-  padding: var(--sp-1);
-  border: 1px solid transparent;
-  border-radius: var(--r-xl);
-  background: var(--card);
-  box-shadow:
-    var(--shadow-md),
-    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
-}
-
-.agent-up-next-header {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: var(--control-md);
-  padding: var(--sp-1) var(--sp-2);
+.agent-follow-up-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
   color: var(--muted-foreground);
-  font-size: var(--fs-md);
 }
 
-.status-pill.agent-up-next-count {
-  background: color-mix(in oklch, var(--brand) 12%, transparent);
-  color: var(--warm-strong);
-}
-
-.agent-up-next-list {
+.agent-follow-up-attachments {
+  --attachment-tile-size: calc(var(--sp-12) + var(--sp-1));
   display: flex;
-  flex-direction: column;
+  flex: 0 1 auto;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
 }
 
-.agent-up-next-card {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--sp-2);
-  padding: var(--sp-2);
-  border-radius: var(--r-lg);
-}
-
-.agent-up-next-card:hover {
+.agent-follow-up-attachment-count {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  min-width: var(--control-md);
+  height: var(--control-md);
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-pill);
   background: var(--secondary);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
 }
 
-.agent-up-next-card-copy {
+.agent-follow-up-copy {
   display: flex;
+  flex: 1 1 auto;
   min-width: 0;
   flex-direction: column;
   gap: var(--sp-px);
 }
 
-.agent-up-next-card-text {
+.agent-follow-up-text {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--fs-lg);
@@ -5640,40 +5614,39 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.agent-up-next-card-status {
+.agent-follow-up-status,
+.agent-follow-up-error {
+  overflow: hidden;
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.agent-up-next-card[data-status="failed"] .agent-up-next-card-status {
+.agent-follow-up-row[data-status="failed"] .agent-follow-up-status {
   color: var(--destructive);
 }
 
-.agent-up-next-card-error {
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-}
-
-.agent-up-next-attachments {
-  --attachment-tile-size: calc(var(--sp-12) + var(--sp-1));
+.agent-follow-up-actions {
   display: flex;
-  grid-column: 1 / -1;
-  flex-wrap: wrap;
-  gap: var(--sp-1);
+  align-items: center;
+  gap: var(--sp-3);
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease-out);
 }
 
-.agent-up-next-card-actions {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--sp-px);
+.agent-follow-up-row:hover .agent-follow-up-actions,
+.agent-follow-up-row:focus-within .agent-follow-up-actions {
+  opacity: 1;
 }
 
-.agent-up-next-card-actions button {
+.agent-follow-up-actions button {
   position: relative;
   display: inline-grid;
   place-items: center;
-  width: var(--control-xs);
-  height: var(--control-xs);
+  width: var(--control-md);
+  height: var(--control-md);
   padding: 0;
   border: 0;
   border-radius: var(--r-md);
@@ -5685,23 +5658,35 @@ input:focus-visible,
     scale var(--t-fast) var(--ease-out);
 }
 
-.agent-up-next-card-actions button::after {
+.agent-follow-up-actions button::after {
   content: "";
   position: absolute;
-  inset: calc(var(--sp-2) * -1);
+  inset: calc((var(--sp-1) + var(--sp-2)) / -2);
 }
 
-.agent-up-next-card-actions button:hover:not(:disabled) {
+.agent-follow-up-actions button:hover:not(:disabled) {
   background: color-mix(in oklch, var(--muted-foreground) 16%, transparent);
   color: var(--foreground);
 }
 
-.agent-up-next-card-actions button:active:not(:disabled) {
+.agent-follow-up-actions button:active:not(:disabled) {
   scale: 0.96;
 }
 
-.agent-up-next-card-actions button:disabled {
+.agent-follow-up-actions button:disabled {
   opacity: 0.35;
+}
+
+@media (hover: none) {
+  .agent-follow-up-actions {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-follow-up-actions {
+    transition: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
