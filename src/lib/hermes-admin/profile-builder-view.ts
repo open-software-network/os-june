@@ -88,10 +88,8 @@ export type ProfileBuilderForm = {
   imageModel: string;
   /** Explicit per-profile video model override. Empty keeps June's default. */
   videoModel: string;
-  /** Keep June's bundled skills (clones them from default). */
-  keepBundledSkills: boolean;
-  /** Bundled skill names to keep when `keepBundledSkills` is true and the user
-   * narrowed the set. Empty means "keep all". */
+  /** Bundled skill names to keep from June's default. Empty means "keep all";
+   * a non-empty subset narrows which bundled skills the profile keeps. */
   keepSkills: string[];
   /** Optional hub skill identifiers to install at create time. */
   hubSkills: string[];
@@ -111,7 +109,6 @@ export function emptyProfileForm(): ProfileBuilderForm {
     voiceProvider: "",
     imageModel: "",
     videoModel: "",
-    keepBundledSkills: true,
     keepSkills: [],
     hubSkills: [],
     mcpServers: [],
@@ -429,22 +426,14 @@ export function buildCreatePlan(
     });
   }
 
-  if (form.keepBundledSkills) {
-    changes.push({
-      target: `${root}/skills/`,
-      detail:
-        form.keepSkills.length > 0
-          ? `Copies ${form.keepSkills.length} bundled skill(s) from the default profile.`
-          : "Copies June's bundled skills from the default profile.",
-      risk: "info",
-    });
-  } else {
-    changes.push({
-      target: `${root}/skills/`,
-      detail: "Starts with no skills (bundled skills are not copied).",
-      risk: "info",
-    });
-  }
+  changes.push({
+    target: `${root}/skills/`,
+    detail:
+      form.keepSkills.length > 0
+        ? `Copies ${form.keepSkills.length} bundled skill(s) from the default profile.`
+        : "Copies June's bundled skills from the default profile.",
+    risk: "info",
+  });
 
   if (form.hubSkills.length > 0) {
     changes.push({
@@ -484,14 +473,15 @@ export function buildCreatePayload(form: ProfileBuilderForm): HermesCreateProfil
   const slug = slugifyProfileName(form.name);
   const payload: HermesCreateProfilePayload = {
     name: slug,
-    // clone_from_default brings June's default profile and bundled skills along.
+    // Every profile clones June's default so it inherits June's SOUL and bundled
+    // skills. Hermes rejects no_skills alongside a clone, so skills are only ever
+    // narrowed via keep_skills, never dropped wholesale.
     clone_from_default: true,
-    no_skills: !form.keepBundledSkills,
   };
   if (form.description.trim()) payload.description = form.description.trim();
   if (form.provider) payload.provider = form.provider;
   if (form.model) payload.model = form.model;
-  if (form.keepBundledSkills && form.keepSkills.length > 0) {
+  if (form.keepSkills.length > 0) {
     payload.keep_skills = [...form.keepSkills];
   }
   if (form.hubSkills.length > 0) payload.hub_skills = [...form.hubSkills];

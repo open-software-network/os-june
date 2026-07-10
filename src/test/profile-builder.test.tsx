@@ -229,12 +229,12 @@ describe("profile builder — create plan + payload", () => {
   });
 
   it("builds a ProfileCreate payload with the slug, model, and clone flags", () => {
-    const payload = buildCreatePayload(validForm({ keepBundledSkills: true, hubSkills: ["foo"] }));
+    const payload = buildCreatePayload(validForm({ hubSkills: ["foo"] }));
     expect(payload.name).toBe("research-assistant");
     expect(payload.provider).toBe("venice");
     expect(payload.model).toBe("tool-model");
     expect(payload.clone_from_default).toBe(true);
-    expect(payload.no_skills).toBe(false);
+    expect(payload.no_skills).toBeUndefined();
     expect(payload.hub_skills).toEqual(["foo"]);
   });
 
@@ -247,10 +247,17 @@ describe("profile builder — create plan + payload", () => {
     expect(payload.mcp_servers).toEqual([{ name: "linear" }, { name: "github" }]);
   });
 
-  it("sets no_skills when bundled skills are dropped", () => {
-    const payload = buildCreatePayload(validForm({ keepBundledSkills: false }));
-    expect(payload.no_skills).toBe(true);
+  it("always clones June's default and never sends no_skills (Hermes forbids the combo)", () => {
+    const payload = buildCreatePayload(validForm());
     expect(payload.clone_from_default).toBe(true);
+    expect(payload.no_skills).toBeUndefined();
+    expect(payload.keep_skills).toBeUndefined();
+  });
+
+  it("narrows bundled skills via keep_skills when a subset is chosen", () => {
+    const payload = buildCreatePayload(validForm({ keepSkills: ["web-search"] }));
+    expect(payload.keep_skills).toEqual(["web-search"]);
+    expect(payload.no_skills).toBeUndefined();
   });
 
   it("does not build profile model overrides for default slots", () => {

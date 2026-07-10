@@ -1142,21 +1142,12 @@ function SkillsStep({ state }: { state: ProfileBuilderState }) {
   const bundled = bundledSkillOptions(state.skills);
   return (
     <div className="profile-builder-fields">
-      <label className="profile-builder-checkbox">
-        <input
-          type="checkbox"
-          checked={form.keepBundledSkills}
-          onChange={(event) => state.update({ keepBundledSkills: event.currentTarget.checked })}
-        />
-        <span>
-          Keep June's bundled skills
-          <span className="profile-builder-field-meta">
-            Copies the default profile's skills into this one.
-          </span>
-        </span>
-      </label>
+      <p className="profile-builder-field-meta">
+        Every profile inherits June's bundled skills from the default profile. Uncheck any this
+        profile should leave out.
+      </p>
 
-      {form.keepBundledSkills && bundled.length > 0 ? (
+      {bundled.length > 0 ? (
         <div className="profile-builder-skill-list" role="group" aria-label="Bundled skills">
           {bundled.map((skill) => {
             const keptAll = form.keepSkills.length === 0;
