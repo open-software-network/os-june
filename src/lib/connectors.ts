@@ -2,7 +2,7 @@
  * Pure, render-free view logic for the private Google connectors (local
  * mode): scope-bundle metadata, account status labels, trust-mode metadata
  * and earned-autonomy gating, the trust-mode to Hermes toolset composition,
- * event-trigger metadata, and the biography generation prompt.
+ * and event-trigger metadata.
  *
  * Kept separate from the React components and the Tauri bindings (mirroring
  * the hermes-admin/*-view.ts split) so all of it is unit-testable without a
@@ -457,36 +457,4 @@ export function triggerConfigFromDraft(
     return { leadMinutes: draft.leadMinutes, externalOnly: draft.externalOnly };
   }
   return {};
-}
-
-// ---------------------------------------------------------------------------
-// Biography
-// ---------------------------------------------------------------------------
-
-/**
- * The one-shot agent prompt behind "Build my profile". Instructs the agent to
- * gather from local context plus the connector READ tools only, keep the
- * local-only framing, and emit the profile as a single fenced markdown block
- * so the UI can extract and store it.
- */
-export function biographyPrompt(): string {
-  return [
-    "Build a short professional profile of me, for my eyes only. The profile is saved only on this Mac. Do not send, share, or store it anywhere else.",
-    "Sources: use the june_context tools to review my notes and past sessions, and the gmail and gcal read tools (search_threads, read_thread, list_unread, list_events, get_event) to learn my role, the people I work with most, my current projects, and my typical week. Use read tools only: do not draft, send, label, or change anything.",
-    "Write the profile as concise markdown: who I am, what I am working on, key people and how we collaborate, recurring commitments, and anything a great assistant should remember.",
-    'When you are done, output the profile as one single fenced code block tagged "markdown" (```markdown ... ```), with no other fenced blocks in your final message, so June can save it.',
-  ].join("\n\n");
-}
-
-/**
- * Extracts the profile from an agent's final message: the contents of a
- * single fenced ```markdown block. Falls back to a bare ``` block when the
- * tag is missing, and to null when there is no fenced block at all.
- */
-export function extractBiographyMarkdown(text: string): string | null {
-  const tagged = text.match(/```markdown\r?\n([\s\S]*?)```/);
-  if (tagged) return tagged[1].trim() || null;
-  const bare = text.match(/```\r?\n([\s\S]*?)```/);
-  if (bare) return bare[1].trim() || null;
-  return null;
 }

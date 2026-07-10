@@ -1115,7 +1115,6 @@ async fn start_hermes_bridge_inner(
         agent_cli_access,
         video_generation_enabled,
         connectors_registered,
-        load_biography(app).as_deref(),
     )?;
     if sandboxed {
         eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
@@ -7857,14 +7856,12 @@ fn bundled_skill_resource_dir(resource_dir: &Path) -> PathBuf {
 /// this machine actually engage the jail (it's omitted when sandbox-exec is
 /// missing or the escape-hatch env var disabled it, so the agent never
 /// claims a protection that isn't enforced).
-#[allow(clippy::too_many_arguments)]
 fn sync_june_soul(
     hermes_home: &std::path::Path,
     sandbox_available: bool,
     agent_cli_access: bool,
     video_generation_enabled: bool,
     connectors_registered: bool,
-    biography: Option<&str>,
 ) -> Result<(), AppError> {
     let video_section = if video_generation_enabled {
         JUNE_SOUL_VIDEO_MD
@@ -7876,15 +7873,6 @@ fn sync_june_soul(
     } else {
         ""
     };
-    let biography_section = biography
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(|text| {
-            format!(
-                "\nThe user maintains a biography to give you standing context about who they are, their preferences, and their people. Use it to personalize your work; do not repeat it back unprompted.\n\n{text}\n"
-            )
-        })
-        .unwrap_or_default();
     let soul = if sandbox_available {
         let cli_section = if agent_cli_access {
             JUNE_SOUL_CLI_ALLOWED_MD
@@ -7892,137 +7880,13 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}{biography_section}"
+            "{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{biography_section}")
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
-}
-
-/// The biography file path (app data dir root). Optional user-context appended
-/// to `SOUL.md` at spawn.
-fn biography_path(app: &AppHandle) -> Result<PathBuf, AppError> {
-    let dir = crate::app_paths::app_data_dir(app)
-        .map_err(|error| AppError::new("biography_path_failed", error.to_string()))?;
-    Ok(dir.join("biography.md"))
-}
-
-/// Reads the stored biography markdown, or `None` if the user has not set one.
-fn load_biography(app: &AppHandle) -> Option<String> {
-    let path = biography_path(app).ok()?;
-    let text = std::fs::read_to_string(path).ok()?;
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(text)
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BiographyDto {
-    pub markdown: String,
-    pub updated_at: Option<String>,
-}
-
-#[tauri::command]
-pub fn biography_get(app: AppHandle) -> Result<Option<BiographyDto>, AppError> {
-    let path = biography_path(&app)?;
-    let Ok(markdown) = std::fs::read_to_string(&path) else {
-        return Ok(None);
-    };
-    if markdown.trim().is_empty() {
-        return Ok(None);
-    }
-    let updated_at = std::fs::metadata(&path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .map(system_time_to_iso);
-    Ok(Some(BiographyDto {
-        markdown,
-        updated_at,
-    }))
-}
-
-/// `markdown` is a discrete command argument (Tauri maps the JS camelCase key
-/// to this snake_case name), matching the `biography_set({ markdown })` shape
-/// the frontend invokes with. Returns the saved record so the caller can update
-/// its view without a follow-up read.
-#[tauri::command]
-pub async fn biography_set(app: AppHandle, markdown: String) -> Result<BiographyDto, AppError> {
-    let path = biography_path(&app)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| AppError::new("biography_write_failed", error.to_string()))?;
-    }
-    std::fs::write(&path, &markdown)
-        .map_err(|error| AppError::new("biography_write_failed", error.to_string()))?;
-    let updated_at = std::fs::metadata(&path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .map(system_time_to_iso);
-    refresh_june_soul_best_effort(&app).await;
-    Ok(BiographyDto {
-        markdown,
-        updated_at,
-    })
-}
-
-#[tauri::command]
-pub async fn biography_delete(app: AppHandle) -> Result<(), AppError> {
-    let path = biography_path(&app)?;
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(AppError::new("biography_delete_failed", error.to_string())),
-    }
-    refresh_june_soul_best_effort(&app).await;
-    Ok(())
-}
-
-/// Regenerate SOUL.md from the current biography and environment. Sessions read
-/// SOUL.md per session, so a biography change while Hermes is running takes
-/// effect on the next session once the file is refreshed, without a disruptive
-/// runtime restart. Only the biography section changes; the rest of the soul is
-/// recomputed from the same inputs the start-time write uses so the sandbox and
-/// connector sections stay accurate.
-async fn refresh_june_soul(app: &AppHandle) -> Result<(), AppError> {
-    let hermes_home = resolve_june_hermes_home(app)?;
-    // SOUL.md is shared across modes; describe the sandbox split by whether the
-    // jail would engage on this machine, matching the start-time write.
-    let sandbox_available = sandbox_would_engage(app, &hermes_home);
-    let agent_cli_access = agent_cli_access_enabled(app);
-    let connectors_registered = match crate::commands::repositories(app).await {
-        Ok(repos) => repos
-            .list_connector_accounts()
-            .await
-            .map(|accounts| {
-                accounts.iter().any(|account| {
-                    account.status == crate::connectors::ConnectorAccountStatus::Connected.as_str()
-                })
-            })
-            .unwrap_or(false),
-        Err(_) => false,
-    };
-    sync_june_soul(
-        &hermes_home,
-        sandbox_available,
-        agent_cli_access,
-        crate::feature_flags::VIDEO_GENERATION_ENABLED,
-        connectors_registered,
-        load_biography(app).as_deref(),
-    )
-}
-
-async fn refresh_june_soul_best_effort(app: &AppHandle) {
-    if let Err(error) = refresh_june_soul(app).await {
-        tracing::warn!(
-            error_code = %error.code,
-            "failed to refresh SOUL.md after a biography change"
-        );
-    }
 }
 
 struct FilesystemRootCandidate {
@@ -13226,7 +13090,7 @@ mcp_servers:
         )
         .expect("seed default soul");
 
-        sync_june_soul(home.path(), true, false, true, false, None).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -13249,7 +13113,7 @@ mcp_servers:
     fn sandboxed_soul_describes_the_write_jail() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, false, true, false, None).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Seatbelt"));
@@ -13274,7 +13138,7 @@ mcp_servers:
     fn june_soul_describes_local_context_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false, None).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_context"));
@@ -13290,7 +13154,7 @@ mcp_servers:
     fn june_soul_asks_for_clarification_before_costly_ambiguous_work() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false, None).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Clarifying questions"));
@@ -13304,7 +13168,7 @@ mcp_servers:
     fn june_soul_describes_web_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false, None).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_web"));
@@ -13317,14 +13181,14 @@ mcp_servers:
         let home = tempfile::tempdir().expect("tempdir");
 
         // Not registered: no connector stanza.
-        sync_june_soul(home.path(), false, false, true, false, None).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(!soul.contains("june_gmail"));
         assert!(!soul.contains("june_gcal"));
 
         // Registered: gmail/gcal toolsets, the untrusted-input warning, and the
         // approval note appear.
-        sync_june_soul(home.path(), false, false, true, true, None).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true).expect("sync soul");
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_gmail"));
         assert!(soul.contains("june_gcal"));
@@ -13335,32 +13199,10 @@ mcp_servers:
     }
 
     #[test]
-    fn june_soul_injects_biography_when_present() {
-        let home = tempfile::tempdir().expect("tempdir");
-
-        sync_june_soul(home.path(), false, false, true, false, None).expect("sync soul");
-        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
-        assert!(!soul.contains("maintains a biography"));
-
-        sync_june_soul(
-            home.path(),
-            false,
-            false,
-            true,
-            false,
-            Some("Ada is a night owl who prefers concise updates."),
-        )
-        .expect("sync soul");
-        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
-        assert!(soul.contains("maintains a biography"));
-        assert!(soul.contains("Ada is a night owl who prefers concise updates."));
-    }
-
-    #[test]
     fn june_soul_uses_image_settings_instead_of_pre_refusing() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, false, None).expect("sync soul");
+        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_image"));
@@ -13386,7 +13228,7 @@ mcp_servers:
     fn june_soul_describes_recorder_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, false, None).expect("sync soul");
+        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_recorder"));
@@ -13400,7 +13242,7 @@ mcp_servers:
     fn sandboxed_soul_with_cli_access_describes_the_grant() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, true, true, false, None).expect("sync soul");
+        sync_june_soul(home.path(), true, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("the user enabled Agent CLI access"));
@@ -13416,7 +13258,7 @@ mcp_servers:
     fn unsandboxed_soul_makes_no_sandbox_claims() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false, None).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -13428,7 +13270,7 @@ mcp_servers:
     fn june_soul_omits_video_tools_when_disabled() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, false, None).expect("sync soul");
+        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -13442,7 +13284,7 @@ mcp_servers:
     fn june_soul_includes_video_tools_when_enabled() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false, None).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_video"));

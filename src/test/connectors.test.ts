@@ -12,11 +12,9 @@ import {
   accountStatusMeta,
   autonomyProgressLabel,
   autonomyUnlockHint,
-  biographyPrompt,
   bundlesFromScopes,
   canSelectAutonomous,
   eventTriggerScheduleDraft,
-  extractBiographyMarkdown,
   grantedFeatureLabels,
   isConnectorNotConfiguredError,
   isCreditableRun,
@@ -290,35 +288,5 @@ describe("event triggers", () => {
     expect(triggerScopeWarning({ source: "schedule" }, [])).toBeNull();
     // No account connected: the picker owns the "connect an account" notice.
     expect(triggerScopeWarning({ source: "email_received" }, null)).toBeNull();
-  });
-});
-
-describe("biography", () => {
-  it("frames the prompt as local-only and read-only", () => {
-    const prompt = biographyPrompt();
-    expect(prompt).toContain("saved only on this Mac");
-    expect(prompt).toContain("june_context");
-    expect(prompt).toContain("gmail and gcal read tools");
-    expect(prompt).toContain("read tools only");
-    expect(prompt).toContain("```markdown");
-    expect(prompt).not.toMatch(/[–—]/);
-  });
-
-  it("extracts the fenced markdown block from a final message", () => {
-    const message = [
-      "Here is your profile.",
-      "```markdown",
-      "# About you",
-      "You lead the June desktop work.",
-      "```",
-      "Saved nothing yet.",
-    ].join("\n");
-    expect(extractBiographyMarkdown(message)).toBe("# About you\nYou lead the June desktop work.");
-  });
-
-  it("falls back to a bare fenced block and to null", () => {
-    expect(extractBiographyMarkdown("```\nplain block\n```")).toBe("plain block");
-    expect(extractBiographyMarkdown("no fences here")).toBeNull();
-    expect(extractBiographyMarkdown("```markdown\n\n```")).toBeNull();
   });
 });

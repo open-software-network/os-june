@@ -1961,11 +1961,6 @@ export type PendingConnectorApproval = {
   requestedAtMs: number;
 };
 
-export type Biography = {
-  markdown: string;
-  updatedAt: string;
-};
-
 /** Tauri event: the connected-accounts list changed (connect, disconnect, or
  * a reconnect_required transition). Payload carries no account data; listeners
  * re-fetch via connectorsList(). */
@@ -2093,16 +2088,4 @@ export async function connectorApprovalsRespondAll(input: {
     approve: input.approve,
     approvalIds: input.approvalIds,
   });
-}
-
-export async function biographyGet() {
-  return invoke<Biography | null>("biography_get");
-}
-
-export async function biographySet(input: { markdown: string }) {
-  return invoke<Biography>("biography_set", { markdown: input.markdown });
-}
-
-export async function biographyDelete() {
-  return invoke<void>("biography_delete");
 }

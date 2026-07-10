@@ -19,7 +19,7 @@ Town's architecture is their weakness: the whole product only works if you hand 
 ### Why we win this if we move
 
 - **We already own the hard part.** Local agent, routines engine, approval pipeline, TEE-attested backend, reproducible builds, `/verify`. Town would have to *rebuild their product* to match our architecture; we only have to *add connectors* to match their features.
-- **The agent already lives inside the user's context.** Town mirrors your life into their cloud to learn you; June is already sitting next to your notes, transcripts, and files. Our "biography" moment is cheaper, faster, and more complete than theirs.
+- **The agent already lives inside the user's context.** Town mirrors your life into their cloud to learn you; June already has the user's local notes, transcripts, and files available through its existing context tools, so connector routines can build on that foundation immediately.
 - **We unlock the customers Town structurally cannot serve** — lawyers, clinicians, finance, HR, journalists — professions where "your assistant reads everything" is only acceptable if nobody else can.
 
 ## 2. Who it's for
@@ -52,10 +52,6 @@ Triage, drafting in your voice, scheduling, invite responses — with **trust mo
 ### 3.3 Routines gallery — the retention engine
 
 Named, one-tap templates on the existing routines engine: **Morning briefing**, **Auto-inbox**, **Meeting prep** (which composes with our existing meeting notes: "here's what happened last time you met these people" — something Town cannot do without recording your meetings into their cloud). Activation bar: **first routine live within 10 minutes of connecting Gmail**, first run executes immediately so value is visible in the first session.
-
-### 3.4 The biography moment — the activation wow
-
-On first connect, June builds a profile from what's already on your Mac plus your mail and calendar, and shows it: *"Here's what I already know."* Editable, deletable, regenerable. This is Town's best onboarding beat, executed with a punchline they can't deliver. Claim discipline (per the threat-model page): the saved profile is stored only on the device, but building it is an agent task, so the copy does not claim the content it reads "never left your Mac" (inference follows the user's selected provider, the attested June API by default, like any routine). The shipped card says "stored only on this device," not an absolute local-only claim.
 
 ### Out of scope (v1)
 

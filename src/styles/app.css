@@ -24336,8 +24336,8 @@ input:focus-visible,
 
 /* ---------------------------------------------------------------------------
  * Private Google connectors (local mode): the Connectors settings page, the
- * routine trust picker, event triggers, and the biography card. Follows the
- * .settings-* / .routines-* conventions above.
+ * routine trust picker, and event triggers. Follows the .settings-* /
+ * .routines-* conventions above.
  * ------------------------------------------------------------------------- */
 
 /* Trust-mode badge on routine rows: same recipe as .routines-item-badge with
@@ -24524,52 +24524,6 @@ input:focus-visible,
   color: var(--foreground);
   font-size: var(--fs-sm);
   line-height: 1.45;
-}
-
-/* Biography ("Your profile") card. */
-.biography-empty,
-.biography-view,
-.biography-editor {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-4);
-}
-
-.biography-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-
-.biography-content {
-  margin: 0;
-  max-height: 320px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--fs-sm);
-  line-height: 1.55;
-}
-
-.biography-textarea {
-  min-height: 180px;
-  padding: var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--card);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--fs-sm);
-  line-height: 1.55;
-  resize: vertical;
-}
-
-.biography-textarea:focus {
-  outline: none;
-  border-color: var(--ring);
 }
 
 /* Connector approvals tray: a shell-level queue for parked action calls under

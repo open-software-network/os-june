@@ -17,8 +17,8 @@
 
 | Token | Who holds it | Where it lives | What it can do alone |
 |---|---|---|---|
-| App credential (Google client_id; PKCE native flow, no confidential secret) | OpenSoftware | Baked into app / June API config | Nothing — identifies the app, grants no data access |
-| User grant (refresh token + short-lived access tokens) | The user | macOS Keychain (default mode); sealed ciphertext (away-mode) | Effectively everything: Google native-app clients are public clients (the client_id is not a secret), so a stolen refresh token can be exchanged for access with public metadata alone |
+| App credential (Google Desktop client_id + client_secret; neither is confidential in an installed app) | OpenSoftware | Baked into app / release build config | Nothing — identifies the app, grants no user-data access |
+| User grant (refresh token + short-lived access tokens) | The user | macOS Keychain (default mode); sealed ciphertext (away-mode) | Effectively everything: the Desktop credential ships in the app and is not a security boundary, so a stolen refresh token can be exchanged for access with extractable app metadata alone |
 
 The user grant is therefore a **bearer secret** — Keychain custody (local mode)
 and the sealed vault (away-mode) are the real protections, not the token
@@ -102,18 +102,13 @@ Design rules: tools return compact structured summaries by default (subject/send
 
 ---
 
-## Phase 2 — Templates + biography onboarding (~2 weeks, overlaps Phase 1 wk 3+)
+## Phase 2 — Routine templates (~1 week, overlaps Phase 1 wk 3+)
 
 ### 2.1 Routine template gallery
 
 - Templates ship as parameterized skills in `~/.agents/skills` (existing mechanism), surfaced in a gallery UI in the routines view. Launch set: **Morning briefing** (calendar + unread summary + today's prep, scheduled), **Auto-inbox** (triage/label/draft on `email.received`), **Meeting prep** (brief 30 min before events with external attendees — joins beautifully with existing meeting notes: "here's what happened last time you met").
 - Install flow: pick template → connect account if needed (inline OAuth) → set 2–3 parameters (time, mailbox, style) → first run executes immediately in approval mode so value shows within a minute.
 - Each template's copy states its trust mode and exactly which tools it may call.
-
-### 2.2 Biography moment
-
-- On first connect, a one-shot local agent task builds a profile from `june_context` (notes, transcripts) + `june_gmail`/`june_gcal`: who you work with, active projects, meeting cadence, writing register. Rendered as an editable card ("Here's what I already know — and it never left your Mac"), stored locally, feeds the soul's context section.
-- Cost note: this is a real agent session (metered `agent_chat`); cap its budget and show progress. Fully deletable/regenerable in Settings.
 
 **Exit criteria for P1+P2 (rc channel):** team dogfood ≥2 weeks; ≥1 routine/day/dogfooder; zero token-material leaks in logs/issue reports (audited); approval UX reviewed for the 20-drafts-at-once case. A signed rc build must also pass the live-account matrix: first OAuth connect, app restart, access-token refresh, incremental scope escalation, reconnect after `invalid_grant`, disconnect, and server-side revoke. From a sandboxed agent session, both `/usr/bin/security` and a small `SecItemCopyMatching` probe must fail to read the connector item while the Rust host can still refresh and call Google.
 
@@ -180,7 +175,7 @@ Design rules: tools return compact structured summaries by default (subject/send
 |---|---|---|
 | 0 | Google Cloud project, consent screen, CASA lab engaged | — |
 | 1–4 | P1 connectors crate, MCP servers, triggers, trust modes | Google verification (6–12 wks, critical path) |
-| 3–5 | P2 templates + biography; dogfood on rc | — |
+| 3–4 | P2 templates; dogfood on rc | — |
 | 5–11 | P3 relay, vault, verifiability; external security review booked wk 8 | Audit report |
 | 9–11 | P4 build (Slack app review submitted wk 6) | Slack review |
 | ~12 | GA: connectors stable + away-mode beta | Google verification complete |
@@ -189,6 +184,5 @@ Design rules: tools return compact structured summaries by default (subject/send
 
 1. Gmail Pub/Sub economics and `users.watch` renewal handling at 10k+ users — needs a load model before P3 GA.
 2. Briefing generation model: default GLM 5.2 via private routing vs a smaller local model for cost — decide from dogfood credit data.
-3. Should the biography feed `june_context` retrievably or stay a soul-context blob? (Retrieval is more useful; more surface area.)
-4. Multi-Mac support timing (vault currently one device key per user).
-5. iOS companion kickoff — earliest post-P3; needs APNs + E2EE payload design doc of its own.
+3. Multi-Mac support timing (vault currently one device key per user).
+4. iOS companion kickoff — earliest post-P3; needs APNs + E2EE payload design doc of its own.

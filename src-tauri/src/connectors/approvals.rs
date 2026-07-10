@@ -13,8 +13,8 @@
 //!   fires, and the call blocks until the user approves or declines in the UI,
 //!   or a 600s timeout elapses.
 //!
-//! Interactive chat and biography sessions carry no job id, so they always
-//! park: an action call from chat prompts the user too.
+//! Interactive chat sessions carry no job id, so they always park: an action
+//! call from chat prompts the user too.
 //!
 //! Previews stored for the UI contain only mutation-target metadata assembled
 //! by the Rust proxy. Recipient addresses and object identifiers are preserved
@@ -48,8 +48,8 @@ pub enum ActionDecision {
 
 /// What the proxy hands to [`gate_action`] for one mutating call. `account_id`
 /// is the connected Google account email. `grant_token` is present only for a
-/// per-job earned-autonomy (auto) server; the base action servers, chat, and
-/// biography leave it `None`, so their calls always park.
+/// per-job earned-autonomy (auto) server; the base action servers and chat
+/// leave it `None`, so their calls always park.
 pub struct ActionRequest<'a> {
     pub grant_token: Option<&'a str>,
     pub account_id: &'a str,
@@ -85,10 +85,10 @@ fn registry() -> &'static Mutex<HashMap<String, PendingEntry>> {
 /// Decide whether a mutating connector action may run. The proxy is
 /// session-blind, so the ONLY autonomous signal is the grant token an auto
 /// server carries: a valid token whose grant covers this tool and account runs
-/// without parking. Everything else (the base action servers, chat, biography,
-/// a stale or mismatched token) parks until the user responds or the wait times
-/// out. Read-only enforcement lives at the toolset layer (a read-only routine
-/// never gets an action server), so there is no read-only branch here.
+/// without parking. Everything else (the base action servers, chat, or a stale
+/// or mismatched token) parks until the user responds or the wait times out.
+/// Read-only enforcement lives at the toolset layer (a read-only routine never
+/// gets an action server), so there is no read-only branch here.
 pub async fn gate_action(app: &AppHandle, request: ActionRequest<'_>) -> ActionDecision {
     if action_is_authorized(app, request.grant_token, request.account_id, request.tool).await {
         return ActionDecision::Allow;

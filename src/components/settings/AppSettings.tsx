@@ -101,7 +101,6 @@ import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
 import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
-import { BiographySection } from "./BiographySection";
 import { ConnectorsSection } from "./ConnectorsSection";
 import { ExternalDirsSection } from "./ExternalDirsSection";
 import { InstalledSkillsSection } from "./InstalledSkillsSection";
@@ -2129,12 +2128,7 @@ export function AppSettings({
           />
         ) : null}
 
-        {activeTab === "connectors" ? (
-          <>
-            <ConnectorsSection />
-            <BiographySection />
-          </>
-        ) : null}
+        {activeTab === "connectors" ? <ConnectorsSection /> : null}
 
         {activeTab === "skills" ? <InstalledSkillsSection onOpenSkill={setOpenSkill} /> : null}
         {activeTab === "external-dirs" ? <ExternalDirsSection /> : null}
