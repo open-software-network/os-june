@@ -498,6 +498,7 @@ export function TabBar({
           type="button"
           className="tab-close"
           tabIndex={-1}
+          aria-hidden="true"
           aria-label={`Close ${tab.title}`}
           onClick={(event) => {
             event.stopPropagation();
@@ -600,6 +601,7 @@ export function TabBar({
                   type="button"
                   className="tab-overflow-close"
                   tabIndex={-1}
+                  aria-hidden="true"
                   aria-label={`Close ${tab.title}`}
                   onClick={(event) => {
                     event.stopPropagation();

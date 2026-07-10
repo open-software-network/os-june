@@ -330,10 +330,12 @@ describe("TabBar", () => {
 
   it("offers a close control when only one tab is open", () => {
     const onlyTab = { id: "tab-1", title: "New session", icon: <span aria-hidden /> };
-    const { props } = renderTabBar({ tabs: [onlyTab] });
-    const close = screen.getByRole("button", { name: "Close New session" });
+    const { container, props } = renderTabBar({ tabs: [onlyTab] });
+    const close = container.querySelector<HTMLButtonElement>(".tab-close");
+    if (!close) throw new Error("Expected the sole tab close control");
 
     expect(close).toHaveAttribute("tabindex", "-1");
+    expect(close).toHaveAttribute("aria-hidden", "true");
     fireEvent.click(close);
 
     expect(props.onClose).toHaveBeenCalledWith("tab-1");
@@ -373,6 +375,7 @@ describe("TabBar", () => {
       expect(overflowCloses).toHaveLength(6);
       for (const close of overflowCloses) {
         expect(close).toHaveAttribute("tabindex", "-1");
+        expect(close).toHaveAttribute("aria-hidden", "true");
       }
     } finally {
       restoreWidth();
