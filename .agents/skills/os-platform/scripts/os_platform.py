@@ -1186,8 +1186,14 @@ def build_parser() -> argparse.ArgumentParser:
     issues_attach = leaf_parser(issues_sub, "attach", help="Attach an uploaded file to an Issue.")
     issues_attach.add_argument("refs", nargs="*", metavar="ref")
     attach_source = issues_attach.add_mutually_exclusive_group(required=True)
-    attach_source.add_argument("--file-id", help="Opaque fil_xxx id returned by files upload.")
-    attach_source.add_argument("--path", help="Upload this path privately, then attach it.")
+    attach_source.add_argument("--file-id", help="Opaque fil_xxx id of a PUBLIC upload (the platform rejects private attachments).")
+    attach_source.add_argument("--path", help="Upload this path, then attach it. Requires --public.")
+    issues_attach.add_argument(
+        "--public",
+        action="store_true",
+        dest="is_public",
+        help="Acknowledge the upload is public: anyone with the URL can download it. Required with --path.",
+    )
     issues_take = leaf_parser(issues_sub, "take", help="Move a todo Issue to in_progress after confirmation.")
     issues_take.add_argument("refs", nargs="*", metavar="ref")
     issues_take.add_argument("--yes", action="store_true", help="Skip confirmation prompt.")
@@ -1314,9 +1320,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             number = require_arg(args, "number", "issue number")
             file_id = args.file_id
             if args.path is not None:
+                if not args.is_public:
+                    raise OsPlatformError(
+                        "the platform only attaches public files (error 2015); "
+                        "re-run with --public to acknowledge anyone with the URL can download it"
+                    )
                 uploaded = upload_file(
                     args.path,
-                    is_public=False,
+                    is_public=True,
                     purpose="attachment",
                     base_url=base_url,
                     api_key=api_key,

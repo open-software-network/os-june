@@ -22,7 +22,7 @@ python3 scripts/os_platform.py issues assign open-software 123
 python3 scripts/os_platform.py issues status open-software 123 in_review
 python3 scripts/os_platform.py issues take open-software 123 --yes
 python3 scripts/os_platform.py files upload ./evidence.mp4 --purpose attachment
-python3 scripts/os_platform.py issues attach open-software 123 --path ./evidence.mp4
+python3 scripts/os_platform.py issues attach open-software 123 --path ./evidence.mp4 --public
 python3 scripts/os_platform.py comments add open-software 123 --body "Opened PR #456."
 ```
 
@@ -52,7 +52,7 @@ Use the user prompt first, then `os-platform.json`, then ask the user for missin
 - Keeping an owned Issue current: use `issues status <org> <number> <status>` with `proposed`, `todo`, `in_progress`, `in_review`, `completed`, or `cancelled`. It refuses another user's Issue unless `--force` is deliberate; terminal `completed` and `cancelled` transitions require `--yes`.
 - Taking a todo Issue: after the user confirms they want to work on it, use `issues take <org> <number>`; use `--yes` only when confirmation already happened in chat or another trusted workflow.
 - Uploading a file: use `files upload <path>` for a private attachment, add `--public` only when public download access is intended, and use `--purpose attachment|avatar` when the default `attachment` is not appropriate.
-- Attaching a file to an Issue: use `issues attach <org> <number> --file-id <fil_xxx>`, or `--path <path>` to upload it privately as an attachment first. The command preserves all existing attachments.
+- Attaching a file to an Issue: the platform only attaches PUBLIC files (error 2015 otherwise, verified live). Use `issues attach <org> <number> --file-id <fil_xxx>` with a public upload, or `--path <path> --public` to upload-then-attach; `--public` is required with `--path` and acknowledges that anyone with the URL can download the file. The command preserves all existing attachments.
 - Adding an Issue comment: use `comments add <org> <number> --body <body>`.
 - Reading Issue submissions, activity, or comments: use the scoped command with `<org>` and `<issue-number>`.
 - Contributors: use `contributors list <org>` or `contributors show <org> <user-handle>`.

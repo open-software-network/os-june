@@ -383,7 +383,7 @@ class RequestShapeTest(unittest.TestCase):
         self.assertIn("Authorization: Bearer secret", captured["input"])
         self.assertNotIn(API_KEY, captured["command"])
 
-    def test_attach_path_uploads_privately_before_attach(self):
+    def test_attach_path_requires_public_acknowledgement(self):
         argv = [
             "issues",
             "attach",
@@ -391,6 +391,25 @@ class RequestShapeTest(unittest.TestCase):
             "250",
             "--path",
             "/tmp/evidence.mp4",
+            "--api-key",
+            API_KEY,
+        ]
+        with mock.patch.object(os_platform, "load_project_config", return_value={}):
+            with mock.patch.object(os_platform, "upload_file") as upload:
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(os_platform.main(argv), 1)
+        upload.assert_not_called()
+        self.assertIn("--public", err.getvalue())
+
+    def test_attach_path_uploads_publicly_before_attach(self):
+        argv = [
+            "issues",
+            "attach",
+            "june",
+            "250",
+            "--path",
+            "/tmp/evidence.mp4",
+            "--public",
             "--api-key",
             API_KEY,
         ]
@@ -407,7 +426,7 @@ class RequestShapeTest(unittest.TestCase):
                         self.assertEqual(os_platform.main(argv), 0)
 
         self.assertEqual(upload.call_args.args, ("/tmp/evidence.mp4",))
-        self.assertFalse(upload.call_args.kwargs["is_public"])
+        self.assertTrue(upload.call_args.kwargs["is_public"])
         self.assertEqual(upload.call_args.kwargs["purpose"], "attachment")
         self.assertEqual(attach.call_args.args, ("june", "250", "fil_uploaded"))
 
