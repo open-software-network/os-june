@@ -35,7 +35,10 @@ def pnpm_install_with_package(seg):
 
 
 def check(command):
-    for raw in re.split(r"&&|\|\||;|\||&|[\n\r]+", command):
+    # Separators and substitution openers ($(, `, <(, >() all start a new
+    # segment, so a guarded command nested inside them still hits the
+    # anchored patterns below.
+    for raw in re.split(r"&&|\|\||;|\||&|[\n\r]+|\$\(|`|[<>]\(", command):
         seg = re.sub(r"^(?:\w+=\S*\s+)+", "", raw.strip())
         if seg.startswith("sfw "):
             continue
