@@ -116,7 +116,9 @@ impl Recorder {
             .suffix(".wav")
             .tempfile()?;
         let temp_path = temp_file.into_temp_path();
-        let writer = Arc::new(Mutex::new(Some(hound::WavWriter::create(&temp_path, spec)?)));
+        let writer = Arc::new(Mutex::new(Some(hound::WavWriter::create(
+            &temp_path, spec,
+        )?)));
         let observed_peak = Arc::new(Mutex::new(0.0));
         let latest_level = Arc::new(Mutex::new(0.0));
         let active = Arc::new(AtomicBool::new(true));

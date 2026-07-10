@@ -144,4 +144,3 @@ fn set_open_clipboard_text(text: &str) -> Result<()> {
 
     Ok(())
 }
-
