@@ -5747,7 +5747,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-2);
   min-height: var(--control-md);
-  padding: var(--sp-1) var(--sp-3);
+  padding: var(--sp-1) var(--sp-2);
   border: 0;
   border-radius: var(--r-lg);
   background: transparent;
@@ -5826,13 +5826,15 @@ input:focus-visible,
 
 /* The compact horizontal treatment from the original steering design: optional
    leading context, flexible message copy, then genuine actions at the end. */
+/* Taller rows so the 24px rail tile sits a perfectly even 6px from the row
+   card's left, top, and bottom edges (36 - 24 = 6 + 6; padding matches). */
 .agent-follow-up-row {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   flex-shrink: 0;
-  min-height: var(--control-lg);
-  padding: var(--sp-1) var(--sp-3);
+  min-height: var(--control-xl);
+  padding: var(--sp-1) var(--sp-2);
   border-radius: var(--r-lg);
   background: transparent;
   color: var(--foreground);
@@ -5954,17 +5956,8 @@ input:focus-visible,
 .agent-follow-up-actions {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-1);
   flex: 0 0 auto;
-  /* Rail height, not button height: the hover-hidden buttons still occupy
-     layout, and at their full control-md they'd quietly make attachment rows
-     taller than text rows. They overhang this box symmetrically instead. */
-  height: var(--follow-up-rail);
-  /* The transparent button boxes pad their glyphs by (control - icon) / 2, so
-     without correction the trailing glyph floats 7px shy of the row's right
-     edge. Pull the stack right by that inner padding so the last icon lands
-     on the same edge as the header's chevron. */
-  margin-right: calc((var(--control-md) - 14px) / -2);
   opacity: 0;
   transition: opacity var(--t-fast) var(--ease-out);
 }
@@ -5974,28 +5967,22 @@ input:focus-visible,
   opacity: 1;
 }
 
+/* Small rail-sized ghost squares: the 14px glyph gets ~5px of padding, and
+   at rail height they sit the same 6px from the row's top, bottom, and right
+   edges as the tile does from its left - one even inset all around. */
 .agent-follow-up-actions button {
-  position: relative;
   display: inline-grid;
   place-items: center;
-  width: var(--control-md);
-  height: var(--control-md);
+  width: var(--follow-up-rail);
+  height: var(--follow-up-rail);
   padding: 0;
   border: 0;
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
-}
-
-/* Quietly widen each hit target to the midpoint of the gap between buttons —
-   any further and adjacent targets would overlap. */
-.agent-follow-up-actions button::after {
-  content: "";
-  position: absolute;
-  inset: calc(var(--sp-2) / -2);
 }
 
 .agent-follow-up-actions button:hover:not(:disabled) {
