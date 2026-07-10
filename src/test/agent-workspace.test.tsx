@@ -1174,11 +1174,17 @@ describe("AgentWorkspace", () => {
     });
 
     const upNext = await screen.findByRole("region", { name: "Up next" });
-    expect(within(upNext).getByText("2")).toBeInTheDocument();
+    expect(within(upNext).getByText("4")).toBeInTheDocument();
     expect(within(upNext).getByText("Check the API boundary")).toBeInTheDocument();
+    expect(within(upNext).getByText("Keep the migration additive")).toBeInTheDocument();
     expect(within(upNext).queryByText("Steering current turn")).toBeNull();
     expect(within(upNext).getByText("Review this attachment next")).toBeInTheDocument();
     expect(within(upNext).getByText("reference.png")).toBeInTheDocument();
+    expect(within(upNext).getByText("Fold these findings into the report")).toBeInTheDocument();
+    // Mixed attachment types collapse to the generic file square plus a total
+    // count, so no individual filename shows on the multi row.
+    expect(within(upNext).queryByText("usability-findings.pdf")).toBeNull();
+    expect(within(upNext).getByText("3")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.steer", expect.anything());
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());

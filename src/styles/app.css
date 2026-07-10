@@ -5728,9 +5728,12 @@ input:focus-visible,
     0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
 }
 
-/* The whole header toggles the list; hover matches the row treatment below. */
+/* The whole header toggles the list; hover matches the row treatment below.
+   Grid hands the count pill the rows' leading-rail column, so the "Up next"
+   label sits on the rows' text edge without stretching the pill itself. */
 .agent-steer-queue-header {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--follow-up-rail) 1fr auto;
   align-items: center;
   gap: var(--sp-2);
   width: 100%;
@@ -5741,6 +5744,7 @@ input:focus-visible,
   background: transparent;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
+  text-align: left;
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
@@ -5755,8 +5759,7 @@ input:focus-visible,
    LATER in this flat stylesheet and silently wins the tie. Brand wash for a
    touch of the active theme. */
 .status-pill.agent-steer-queue-count {
-  justify-content: center;
-  min-width: var(--follow-up-rail);
+  justify-self: start;
   background: color-mix(in oklch, var(--brand) 12%, transparent);
   color: var(--warm-strong);
 }
@@ -5783,6 +5786,9 @@ input:focus-visible,
   display: flex;
   flex-direction: column;
   max-height: min(320px, 35vh);
+  /* Matches the queue card's own padding so the last row (and a corner count
+     badge hanging off its tile) sits properly inset from the bottom edge. */
+  padding-bottom: var(--sp-1);
   overflow-y: auto;
   /* Joins the detail-scroller scrollbar family (the ::-webkit lane + the
      scroll-driven thumb from attachScrollThumbFade): the opt-out lets the
@@ -5821,19 +5827,30 @@ input:focus-visible,
 }
 
 .agent-follow-up-attachments {
+  position: relative;
   display: flex;
   flex: 0 0 auto;
 }
 
-/* Overflow count for a multi-attachment message: a quiet pill at the row's
-   end so the leading rail stays a single tile and the text stays aligned. */
+/* Total count for a multi-attachment message, notched into the tile's
+   top-right corner: a card-colored ring carves the circle out of the tile
+   (avatar-stack style), the leading rail stays a single square, and the text
+   stays aligned. */
 .agent-follow-up-attachment-count {
-  flex: 0 0 auto;
-  padding: 1px var(--sp-2);
+  position: absolute;
+  top: calc(var(--sp-1) * -1);
+  right: calc(var(--sp-1) * -1);
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 var(--sp-1);
   border-radius: var(--r-pill);
-  background: var(--secondary);
+  background: var(--card);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
+  line-height: 1;
+  box-shadow: 0 0 0 2px var(--card);
 }
 
 .agent-follow-up-copy {
@@ -5869,8 +5886,17 @@ input:focus-visible,
 .agent-follow-up-actions {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   flex: 0 0 auto;
+  /* Rail height, not button height: the hover-hidden buttons still occupy
+     layout, and at their full control-md they'd quietly make attachment rows
+     taller than text rows. They overhang this box symmetrically instead. */
+  height: var(--follow-up-rail);
+  /* The transparent button boxes pad their glyphs by (control - icon) / 2, so
+     without correction the trailing glyph floats 7px shy of the row's right
+     edge. Pull the stack right by that inner padding so the last icon lands
+     on the same edge as the header's chevron. */
+  margin-right: calc((var(--control-md) - 14px) / -2);
   opacity: 0;
   transition: opacity var(--t-fast) var(--ease-out);
 }
@@ -5896,10 +5922,12 @@ input:focus-visible,
     color var(--t-fast) var(--ease-out);
 }
 
+/* Quietly widen each hit target to the midpoint of the gap between buttons —
+   any further and adjacent targets would overlap. */
 .agent-follow-up-actions button::after {
   content: "";
   position: absolute;
-  inset: calc((var(--sp-1) + var(--sp-2)) / -2);
+  inset: calc(var(--sp-2) / -2);
 }
 
 .agent-follow-up-actions button:hover:not(:disabled) {
@@ -6823,6 +6851,13 @@ input:focus-visible,
 .agent-follow-up-attachments .agent-attachment-file-icon {
   width: var(--attachment-tile-size);
   height: var(--attachment-tile-size);
+}
+
+/* The composer chip's 18px glyph crowds this smaller well until its strokes
+   read as a filled shape; sized down, the outline breathes again. */
+.agent-follow-up-attachments .agent-attachment-file-icon svg {
+  width: 14px;
+  height: 14px;
 }
 
 .agent-follow-up-attachments .agent-attachment-file-details {

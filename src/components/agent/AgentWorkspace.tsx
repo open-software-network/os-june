@@ -1571,36 +1571,70 @@ type QueuedAttachmentFollowUp = {
   error?: string;
 };
 
-function buildUpNextDemoFollowUp(): QueuedAttachmentFollowUp {
-  const name = "reference.png";
+const UP_NEXT_DEMO_IMAGE_PREVIEW =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='44'%3E%3Crect width='44' height='44' rx='8' fill='%23d8d5ee'/%3E%3Ccircle cx='17' cy='17' r='7' fill='%237a70ba'/%3E%3C/svg%3E";
+
+function buildUpNextDemoImageAttachment(id: string, name: string): AgentAttachment {
   return {
-    id: "attachment-follow-up-demo",
-    prepared: {
-      displayContent: "Review this attachment next",
-      runtimeContent: "Review this attachment next",
-      titleContent: "Review this attachment next",
-      typedMessage: "Review this attachment next",
+    id,
+    name,
+    path: `uploads/${name}`,
+    rootLabel: "Hermes workspace",
+    size: 24_576,
+    previewDataUrl: UP_NEXT_DEMO_IMAGE_PREVIEW,
+    attach: {
+      localId: id,
+      kind: "image",
+      displayName: name,
+      workspacePath: `uploads/${name}`,
+      status: "imported",
     },
-    attachments: [
-      {
-        id: "attachment-demo-image",
-        name,
-        path: "uploads/reference.png",
-        rootLabel: "Hermes workspace",
-        size: 24_576,
-        previewDataUrl:
-          "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='44'%3E%3Crect width='44' height='44' rx='8' fill='%23d8d5ee'/%3E%3Ccircle cx='17' cy='17' r='7' fill='%237a70ba'/%3E%3C/svg%3E",
-        attach: {
-          localId: "attachment-demo-image",
-          kind: "image",
-          displayName: name,
-          workspacePath: "uploads/reference.png",
-          status: "imported",
-        },
-      },
-    ],
-    status: "queued",
   };
+}
+
+function buildUpNextDemoFileAttachment(id: string, name: string): AgentAttachment {
+  return {
+    id,
+    name,
+    path: `uploads/${name}`,
+    rootLabel: "Hermes workspace",
+    size: 182_400,
+    attach: {
+      localId: id,
+      kind: "file",
+      displayName: name,
+      workspacePath: `uploads/${name}`,
+      status: "imported",
+    },
+  };
+}
+
+function buildUpNextDemoPrepared(text: string): PreparedComposerSubmission {
+  return { displayContent: text, runtimeContent: text, titleContent: text, typedMessage: text };
+}
+
+// Every follow-up shape the queue can hold: a single-image message and a
+// multi-attachment message led by a file, so the tile well, the thumbnail,
+// and the overflow count all render at once.
+function buildUpNextDemoFollowUps(): QueuedAttachmentFollowUp[] {
+  return [
+    {
+      id: "attachment-follow-up-demo",
+      prepared: buildUpNextDemoPrepared("Review this attachment next"),
+      attachments: [buildUpNextDemoImageAttachment("attachment-demo-image", "reference.png")],
+      status: "queued",
+    },
+    {
+      id: "attachment-follow-up-demo-multi",
+      prepared: buildUpNextDemoPrepared("Fold these findings into the report"),
+      attachments: [
+        buildUpNextDemoFileAttachment("attachment-demo-file", "usability-findings.pdf"),
+        buildUpNextDemoImageAttachment("attachment-demo-image-2", "session-notes.png"),
+        buildUpNextDemoImageAttachment("attachment-demo-image-3", "heatmap.png"),
+      ],
+      status: "queued",
+    },
+  ];
 }
 
 type ComposerInputSizeWarning = {
@@ -7602,6 +7636,14 @@ export function AgentWorkspace({
     );
     const locallyEditable = item.status !== "sending" && !hasAttachedImage;
     const editable = locallyEditable && !draft.trim() && attachments.length === 0;
+    // One square represents the whole message: same-type stacks lead with
+    // their first tile; mixed types fall back to the generic file glyph so no
+    // single type's tile claims the rest.
+    const attachmentTypes = new Set(
+      item.attachments.map((attachment) =>
+        attachment.previewDataUrl ? "image" : fileTypeIconComponent(attachment.name),
+      ),
+    );
     const statusLabel =
       item.status === "sending"
         ? "Sending"
@@ -7621,9 +7663,22 @@ export function AgentWorkspace({
         title={item.error ?? statusLabel}
       >
         <div className="agent-follow-up-attachments">
-          {item.attachments.slice(0, 1).map((attachment) => (
-            <AgentAttachmentTile key={attachment.id} attachment={attachment} />
-          ))}
+          {attachmentTypes.size > 1 ? (
+            <span className="agent-attachment-chip" data-kind="file" aria-hidden>
+              <span className="agent-attachment-file-icon">
+                <IconFileText size={18} />
+              </span>
+            </span>
+          ) : (
+            item.attachments
+              .slice(0, 1)
+              .map((attachment) => (
+                <AgentAttachmentTile key={attachment.id} attachment={attachment} />
+              ))
+          )}
+          {item.attachments.length > 1 ? (
+            <span className="agent-follow-up-attachment-count">{item.attachments.length}</span>
+          ) : null}
         </div>
         <div className="agent-follow-up-copy">
           <span className="agent-follow-up-text">{item.prepared.typedMessage || "Attachment"}</span>
@@ -7632,9 +7687,6 @@ export function AgentWorkspace({
           </span>
           {item.error ? <span className="agent-follow-up-announcement">{item.error}</span> : null}
         </div>
-        {item.attachments.length > 1 ? (
-          <span className="agent-follow-up-attachment-count">+{item.attachments.length - 1}</span>
-        ) : null}
         {item.status === "sending" ? null : (
           <div className="agent-follow-up-actions">
             {item.status === "failed" && firstInQueue ? (
@@ -7668,7 +7720,9 @@ export function AgentWorkspace({
                     if (options.demo) {
                       setUpNextDemoFollowUpsBySessionId((current) => ({
                         ...current,
-                        [sessionId]: [],
+                        [sessionId]: (current[sessionId] ?? []).filter(
+                          (followUp) => followUp.id !== item.id,
+                        ),
                       }));
                       draftRef.current = item.prepared.typedMessage;
                       setDraft(item.prepared.typedMessage);
@@ -7688,7 +7742,9 @@ export function AgentWorkspace({
                     options.demo
                       ? setUpNextDemoFollowUpsBySessionId((current) => ({
                           ...current,
-                          [sessionId]: [],
+                          [sessionId]: (current[sessionId] ?? []).filter(
+                            (followUp) => followUp.id !== item.id,
+                          ),
                         }))
                       : removeQueuedAttachmentFollowUp(sessionId, item.id)
                   }
@@ -8478,7 +8534,8 @@ export function AgentWorkspace({
 
   // Dev-only: preview the working-composer follow-up system without starting a
   // real turn. __steerSubmitDemo shows one submitted text steer; __upNextDemo
-  // adds the waiting attachment row too and parks the composer in steer state.
+  // shows every queue shape at once (two steers, a single-attachment message,
+  // a multi-attachment message) and parks the composer in steer state.
   useEffect(() => {
     if (!import.meta.env.DEV || typeof window === "undefined") return;
     const w = window as unknown as Record<string, unknown>;
@@ -8499,19 +8556,23 @@ export function AgentWorkspace({
         return "Open a real session first, then run __upNextDemo().";
       }
       setComposerSteerDemoDesired(show);
-      const id = "steer-up-next-demo";
-      setSteerCardsBySessionId((prev) => ({
-        ...prev,
-        [selectedHermesSessionId]: show
-          ? [
-              ...(prev[selectedHermesSessionId] ?? []).filter((card) => card.id !== id),
-              { id, text: "Check the API boundary" },
-            ]
-          : (prev[selectedHermesSessionId] ?? []).filter((card) => card.id !== id),
-      }));
+      const demoSteers = [
+        { id: "steer-up-next-demo", text: "Check the API boundary" },
+        { id: "steer-up-next-demo-2", text: "Keep the migration additive" },
+      ];
+      const demoSteerIds = new Set(demoSteers.map((card) => card.id));
+      setSteerCardsBySessionId((prev) => {
+        const others = (prev[selectedHermesSessionId] ?? []).filter(
+          (card) => !demoSteerIds.has(card.id),
+        );
+        return {
+          ...prev,
+          [selectedHermesSessionId]: show ? [...others, ...demoSteers] : others,
+        };
+      });
       setUpNextDemoFollowUpsBySessionId((current) => ({
         ...current,
-        [selectedHermesSessionId]: show ? [buildUpNextDemoFollowUp()] : [],
+        [selectedHermesSessionId]: show ? buildUpNextDemoFollowUps() : [],
       }));
       return show
         ? "Up next preview shown. Run __upNextDemo(false) to hide it."
