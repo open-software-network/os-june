@@ -8,6 +8,7 @@ import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
 import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { TELEMETRY_INFO_URL } from "../lib/p3a";
+import { DATE_FORMAT_STORAGE_KEY } from "../lib/date-format";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
@@ -188,6 +189,7 @@ function buildProviderSettings() {
     generationModel: localState.enabled ? localState.modelId : "zai-org-glm-5-2",
     remoteGenerationModel: "zai-org-glm-5-2",
     imageModel: "venice-sd35",
+    videoModel: "wan-2.2-a14b-text-to-video",
     veniceApiKeyConfigured: false,
     localGeneration: {
       baseUrl: localState.baseUrl,
@@ -254,6 +256,7 @@ describe("AppSettings", () => {
         generationModel: "zai-org-glm-5-2",
         remoteGenerationModel: "zai-org-glm-5-2",
         imageModel: "venice-sd35",
+        videoModel: "wan-2.2-a14b-text-to-video",
         veniceApiKeyConfigured: false,
         localGeneration: {
           baseUrl: "",
@@ -410,6 +413,7 @@ describe("AppSettings", () => {
       generationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
       remoteGenerationModel: mode === "generation" ? modelId : "zai-org-glm-5-2",
       imageModel: mode === "image" ? modelId : "venice-sd35",
+      videoModel: mode === "video" ? modelId : "wan-2.2-a14b-text-to-video",
       veniceApiKeyConfigured: false,
       localGeneration: {
         baseUrl: localState.baseUrl,
@@ -650,6 +654,9 @@ describe("AppSettings", () => {
         />,
       );
 
+      // Theme, accent, and text size live on their own Appearance tab.
+      fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+
       // The accessible name carries the current selection so screen readers
       // announce the active accent, not just the static "Accent color" label.
       const trigger = (label: string) =>
@@ -679,6 +686,31 @@ describe("AppSettings", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("changes the sidebar date format through the appearance picker", () => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    // Theme, accent, text size, and date format live on the Appearance tab.
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+
+    const trigger = screen.getByRole("button", { name: "Date format: System" });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("option", { name: "9 Jul" }));
+
+    expect(localStorage.getItem(DATE_FORMAT_STORAGE_KEY)).toBe("day-first");
+    expect(screen.getByRole("button", { name: "Date format: 9 Jul" })).toBeInTheDocument();
   });
 
   it("falls back to subscription plan credits when balance has no usage percentage", async () => {
@@ -2267,7 +2299,7 @@ describe("AppSettings", () => {
 
     // The primary pickers are visible, but advanced local controls are hidden
     // behind a collapsed "More options" disclosure by default.
-    const trigger = await screen.findByRole("button", { name: /More options/ });
+    const trigger = await screen.findByRole("button", { name: "More options for AI models" });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("switch", { name: "Use local text model" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
@@ -2329,7 +2361,7 @@ describe("AppSettings", () => {
     expect(await screen.findByRole("switch", { name: "Use local text model" })).toBeInTheDocument();
     expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
     expect(screen.getByLabelText("Model ID")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /More options/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "More options for AI models" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
@@ -2356,7 +2388,7 @@ describe("AppSettings", () => {
 
       await user.click(await screen.findByRole("tab", { name: "Models" }));
       // The local model config lives behind the "More options" disclosure.
-      await user.click(await screen.findByRole("button", { name: /More options/ }));
+      await user.click(await screen.findByRole("button", { name: "More options for AI models" }));
       await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
       await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
       await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
@@ -2645,7 +2677,7 @@ describe("AppSettings", () => {
     expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
     expect(
       await screen.findByText(
-        "This endpoint is not on this machine. Requests will leave your device. Confirm in the Local model section to enable it.",
+        "This endpoint is not on this machine. Requests will leave your device. Confirm in More options to enable it.",
       ),
     ).toBeInTheDocument();
     const confirm = await screen.findByRole("button", {
@@ -2679,7 +2711,7 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     // The local model config lives behind the "More options" disclosure.
-    await user.click(await screen.findByRole("button", { name: /More options/ }));
+    await user.click(await screen.findByRole("button", { name: "More options for AI models" }));
     await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
     await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
     await user.click(screen.getByRole("button", { name: "Test connection" }));
@@ -2714,7 +2746,7 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     // The local model config lives behind the "More options" disclosure.
-    await user.click(await screen.findByRole("button", { name: /More options/ }));
+    await user.click(await screen.findByRole("button", { name: "More options for AI models" }));
     await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
     await user.type(await screen.findByLabelText("Base URL"), "https://models.example.com/v1");
     await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
@@ -2768,7 +2800,7 @@ describe("AppSettings", () => {
     // The Venice API key lives behind "More options" so the average user never
     // has to reason about it. It should be hidden until the row is expanded.
     expect(screen.queryByLabelText("Venice API key")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /More options/ }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
 
     const input = await screen.findByLabelText("Venice API key");
     await user.type(input, "  vc_test_key  ");
@@ -2841,21 +2873,26 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
 
-    // #640 placement (restored, JUN-209): the image model lives inside the
-    // shared "AI models" card, not a standalone "Image generation" section.
-    expect(screen.queryByRole("heading", { name: "Image generation" })).toBeNull();
-    const modelsSection = screen.getByRole("heading", { name: "AI models" }).closest("section");
-    expect(modelsSection).not.toBeNull();
+    // Image and video share one section, each with its own model row; the Safe
+    // mode toggle (which governs both) lives behind that section's shared "More
+    // options" disclosure and defaults on.
+    const mediaSection = screen
+      .getByRole("heading", { name: "Image and video" })
+      .closest("section");
+    expect(mediaSection).not.toBeNull();
     expect(
-      within(modelsSection as HTMLElement).getByRole("button", { name: "Change image model" }),
+      within(mediaSection as HTMLElement).getByRole("button", { name: "Change image model" }),
     ).toBeInTheDocument();
-    expect(within(modelsSection as HTMLElement).getByText("Venice SD3.5")).toBeInTheDocument();
-    // Safe mode moved into the advanced "More options" disclosure (collapsed by
-    // default) and still defaults on (JUN-209).
     expect(
-      screen.queryByRole("switch", { name: "Blur adult content in images" }),
+      within(mediaSection as HTMLElement).getByRole("button", { name: "Change video model" }),
+    ).toBeInTheDocument();
+    expect(within(mediaSection as HTMLElement).getByText("Venice SD3.5")).toBeInTheDocument();
+    expect(
+      within(mediaSection as HTMLElement).queryByRole("switch", {
+        name: "Blur adult content in images",
+      }),
     ).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /More options/ }));
+    await user.click(screen.getByRole("button", { name: "More options for image and video" }));
     expect(screen.getByRole("switch", { name: "Blur adult content in images" })).toBeChecked();
 
     // The picker opens with the curated image options (no backend fetch) and,

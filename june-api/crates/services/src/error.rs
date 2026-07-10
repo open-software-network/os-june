@@ -18,6 +18,14 @@ pub enum ServiceError {
     MeteringProvider,
     #[error("invalid_input: {reason}")]
     InvalidInput { reason: String },
+    /// A video job id that is unknown, evicted, or whose Venice media expired.
+    #[error("job_not_found")]
+    JobNotFound,
+    /// Venice refused the video on content policy (`content_violation`, from a
+    /// 422) or consent grounds (`needs_consent`, from a 409), or the model is
+    /// region-blocked (`model_region_blocked`, from a 403). No charge is taken.
+    #[error("content_rejected: {reason}")]
+    ContentRejected { reason: String },
 }
 
 impl From<PricingError> for ServiceError {

@@ -193,9 +193,10 @@ investigation turn (the removed chip flow; old clients only).
 
 **Slash command**:
 A `/name arg` handled client-side before submit — builtin `/model`, `/file`,
-and `/image`, plus skill slash commands. `/image <prompt>` starts June's
-image generation fast path without invoking the model (kill switch:
-`IMAGE_GENERATION_ENABLED`).
+`/image`, and `/video`, plus skill slash commands. `/image <prompt>` starts
+June's image generation fast path without invoking the model (kill switch:
+`IMAGE_GENERATION_ENABLED`); `/video <prompt>` starts the video generation fast
+path (kill switch: `VIDEO_GENERATION_ENABLED`).
 _Avoid_: gateway command.
 
 **Steer**:
@@ -232,7 +233,7 @@ is UI; the reference is the token).
 **Skill / Toolset / MCP server**:
 A Skill is a bundled/installed capability pack; a Toolset is a togglable tool
 group; an MCP server is an external tool provider (June ships `june_context`,
-`june_web`, `june_image`, and `june_recorder`).
+`june_web`, `june_image`, `june_recorder`, and `june_video`).
 _Avoid_: using "tool" for all three.
 
 **Admin surface**:
@@ -282,7 +283,23 @@ a prior image (a generated one, by filename); never starts from a blank canvas.
 Distinct from **image generation**.
 _Avoid_: image-to-image jargon, regenerate (that's a fresh **image generation**).
 
-**Safe mode** (image):
+**Video generation**:
+Producing a new video from a text **prompt** (text-to-video), via Venice. Reached
+the same two ways as image generation — an explicit `/video` command (a fast,
+no-model shot) or the assistant calling it as a tool mid-conversation — but the
+Venice call is **asynchronous** (queue a job, poll until ready) and **priced per
+request** from a live quote, not flat per model. Distinct from **image-to-video**.
+See [ADR 0015](docs/adr/0015-video-generation-tools.md).
+_Avoid_: txt2vid jargon, rendering (say **video generation**).
+
+**Image-to-video**:
+Producing a video by animating an *existing* image plus a prompt, via Venice's
+image-to-video models. Always references a prior image (a generated one, by
+capability ref); the video-generation analog of **image editing**. Distinct from
+**video generation** (which starts from a text prompt only).
+_Avoid_: img2vid jargon, animate (unqualified — say **image-to-video**).
+
+**Safe mode**:
 The per-device toggle that asks Venice to blur adult content on generated and
 edited images (`safe_mode`). On by default; the user turns it off in Settings
 or via the **safe-mode consent dialog** June shows before or during a
@@ -292,9 +309,14 @@ agent path the gate is free (on-device wordlist plus the model's own
 `may_be_explicit` self-report in the tool call); on the /image path the
 wordlist short-circuits and otherwise a small metered model check classifies
 the prompt (language-agnostic, added after the English-only wordlist missed
-non-English prompts).
-See [ADR 0008](docs/adr/0008-image-generation-and-editing-tools.md).
-_Avoid_: NSFW filter/toggle (say **safe mode**), censorship.
+non-English prompts). It is ONE switch: **video generation** shares it rather
+than adding a second toggle, but Venice video has no `safe_mode` parameter, so
+for a potentially explicit /video prompt keeping safe mode on *skips* the
+generation (there is no blurred fallback), and turning it off proceeds.
+See [ADR 0008](docs/adr/0008-image-generation-and-editing-tools.md) and the
+[ADR 0015 addendum](docs/adr/0015-video-generation-tools.md).
+_Avoid_: NSFW filter/toggle (say **safe mode**), censorship, "video safe
+mode" (there is only one safe mode).
 
 **Credit price** (per upstream model):
 The number of OS Accounts credits June charges per unit of consumed work

@@ -43,6 +43,23 @@ export function makeTabId(): string {
   return `tab-${Math.random().toString(36).slice(2)}`;
 }
 
+// Apply a drag-reorder of the on-strip tabs. `orderedVisibleIds` is the strip's
+// visible tabs in their new left-to-right order; they become the leading prefix
+// of the full array (so re-layout reproduces the strip exactly, even when the
+// active tab had been pinned onto the strip from overflow), and the remaining
+// tabs follow in their existing relative order.
+export function reorderTabs(tabs: Tab[], orderedVisibleIds: string[]): Tab[] {
+  const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  const ordered = [...new Set(orderedVisibleIds)].filter((id) => byId.has(id));
+  const orderedSet = new Set(ordered);
+  const next = [
+    ...ordered.map((id) => byId.get(id)!),
+    ...tabs.filter((tab) => !orderedSet.has(tab.id)),
+  ];
+  if (next.every((tab, index) => tab === tabs[index])) return tabs;
+  return next;
+}
+
 function agentOriginEquals(a?: AgentOrigin, b?: AgentOrigin): boolean {
   if (a === b) return true;
   if (!a || !b) return false;

@@ -41,6 +41,15 @@
             "--brand-wash",
             accent[1],
           );
+          // Pre-paint text-size multiplier. Keep the id->multiplier map in sync
+          // with src/lib/font-scale.ts so a non-default size doesn't flash the
+          // base scale before the bundle runs.
+          var scale = localStorage.getItem("os-june:font-scale");
+          var scales = { default: 1, large: 1.1, larger: 1.2 };
+          document.documentElement.style.setProperty(
+            "--font-scale",
+            String(scales[scale] || 1),
+          );
         } catch (e) {}
       })();
     </script>

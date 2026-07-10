@@ -13,6 +13,7 @@ import { IconBuildingBlocks } from "central-icons/IconBuildingBlocks";
 import { IconElements } from "central-icons/IconElements";
 import { IconModelcontextprotocol } from "central-icons/IconModelcontextprotocol";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
+import { IconColorPalette } from "central-icons/IconColorPalette";
 import { IconCreditCard1 } from "central-icons/IconCreditCard1";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
@@ -75,6 +76,7 @@ import {
 import { errorCode, messageFromError } from "../../lib/errors";
 import { NOTE_DND_MIME } from "../../lib/dnd";
 import { useDismiss } from "../../lib/use-dismiss";
+import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { useRecordingPresenceBounds } from "../../lib/recording-presence-bounds";
@@ -93,6 +95,15 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
 import { DotSpinner } from "../DotSpinner";
 import { combineSourceAudioLevels, Waveform } from "../recorder/Waveform";
+import { RenameSessionDialog } from "../agent/RenameSessionDialog";
+import {
+  DATE_FORMAT_CHANGED_EVENT,
+  formatCalendarDate,
+  getStoredDateFormat,
+  normalizeDateFormatPreference,
+  type DateFormatChangedDetail,
+  type DateFormatPreference,
+} from "../../lib/date-format";
 
 const NO_AGENT_SESSIONS: HermesSessionInfo[] = [];
 
@@ -210,6 +221,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
         id: "general",
         label: "General",
         icon: <IconSettingsGear4 size={16} />,
+      },
+      {
+        id: "appearance",
+        label: "Appearance",
+        icon: <IconColorPalette size={16} />,
       },
       {
         id: "billing",
@@ -396,6 +412,7 @@ export function Sidebar({
   const [agentSessionToDelete, setAgentSessionToDelete] = useState<HermesSessionInfo | null>(null);
   const [agentSessionDeleteError, setAgentSessionDeleteError] = useState<string | null>(null);
   const [renamingAgentSessionId, setRenamingAgentSessionId] = useState<string | null>(null);
+  const [dateFormat, setDateFormat] = useState<DateFormatPreference>(() => getStoredDateFormat());
   const [deletingAgentSessionIds, setDeletingAgentSessionIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -427,6 +444,15 @@ export function Sidebar({
   useEffect(() => {
     writePinnedAgentSessionIds(pinnedAgentSessionIds);
   }, [pinnedAgentSessionIds]);
+
+  useEffect(() => {
+    const handleDateFormatChanged = (event: Event) => {
+      const detail = (event as CustomEvent<Partial<DateFormatChangedDetail>>).detail;
+      setDateFormat(normalizeDateFormatPreference(detail?.preference));
+    };
+    window.addEventListener(DATE_FORMAT_CHANGED_EVENT, handleDateFormatChanged);
+    return () => window.removeEventListener(DATE_FORMAT_CHANGED_EVENT, handleDateFormatChanged);
+  }, []);
 
   useEffect(() => {
     const openId = activeView === "agent" ? selectedAgentSessionId : undefined;
@@ -618,8 +644,9 @@ export function Sidebar({
         action: () => onChangeView("settings"),
       },
       // Per-tab settings jumps surface only once a query is typed so ten
-      // rows don't flood the default Quick actions list. The general tab
-      // hosts Appearance, so its search text carries those terms too.
+      // rows don't flood the default Quick actions list. General and
+      // Appearance carry their row-level terms so "theme" or "account"
+      // still finds the right tab.
       ...(normalized
         ? SETTINGS_TABS.filter(
             (tab) =>
@@ -631,8 +658,10 @@ export function Sidebar({
               icon: <IconSettingsGear4 size={15} />,
               searchText: normalizeCommandQuery(
                 tab.id === "general"
-                  ? "settings general appearance theme accent account"
-                  : `settings ${tab.label}`,
+                  ? "settings general account permissions privacy"
+                  : tab.id === "appearance"
+                    ? "settings appearance theme accent text size dark light mode"
+                    : `settings ${tab.label}`,
               ),
               action: () => {
                 onSettingsTabChange?.(tab.id);
@@ -1173,6 +1202,7 @@ export function Sidebar({
                     unread={unreadAgentSessionIds.has(session.id)}
                     deleting={deletingAgentSessionIds.has(session.id)}
                     renaming={renamingAgentSessionId === session.id}
+                    dateFormat={dateFormat}
                     menuOpen={menu?.kind === "agent-session" && menu.sessionId === session.id}
                     onSelect={() => {
                       setSelectedAgentSessionId(session.id);
@@ -1223,6 +1253,7 @@ export function Sidebar({
                       unread={unreadAgentSessionIds.has(session.id)}
                       deleting={deletingAgentSessionIds.has(session.id)}
                       renaming={renamingAgentSessionId === session.id}
+                      dateFormat={dateFormat}
                       menuOpen={menu?.kind === "agent-session" && menu.sessionId === session.id}
                       onSelect={() => {
                         setSelectedAgentSessionId(session.id);
@@ -1632,6 +1663,14 @@ function CommandPrompt({
 }) {
   const resultsRef = useRef<HTMLDivElement>(null);
   const fade = useScrollFade(resultsRef);
+  // Native-overlay scrollbar feel, same as the main content areas: the custom
+  // webkit thumb fades in on scroll/hover and back out when idle (see
+  // scroll-thumb-fade.ts and the --thumb-alpha rules in app.css).
+  useEffect(() => {
+    const el = resultsRef.current;
+    if (!el) return;
+    return attachScrollThumbFade(el);
+  }, []);
   // Re-measure the edge fades when the query or result groups change.
   useEffect(() => {
     fade.update();
@@ -1701,7 +1740,6 @@ function CommandPrompt({
     >
       <div className="command-prompt" role="dialog" aria-modal="true" aria-label="Search">
         <label className="command-prompt-search">
-          <IconMagnifyingGlass size={16} />
           <input
             ref={inputRef}
             type="text"
@@ -2032,6 +2070,7 @@ function AgentSessionRow({
   unread,
   deleting,
   renaming,
+  dateFormat,
   menuOpen,
   onSelect,
   onRename,
@@ -2045,6 +2084,7 @@ function AgentSessionRow({
   unread: boolean;
   deleting: boolean;
   renaming: boolean;
+  dateFormat: DateFormatPreference;
   menuOpen: boolean;
   onSelect: () => void;
   onRename: (title: string) => void;
@@ -2053,42 +2093,8 @@ function AgentSessionRow({
 }) {
   const title = session.title || session.preview || "Untitled session";
   const status = waiting ? "waitingForUser" : working ? "running" : undefined;
-  const time = formatSessionTime(sessionTimestamp(session));
+  const time = formatSessionTime(sessionTimestamp(session), dateFormat);
   const menuRef = useRef<HTMLButtonElement>(null);
-  const titleInputRef = useRef<HTMLInputElement | null>(null);
-  const titleEditFinalizedRef = useRef(false);
-  const [titleDraft, setTitleDraft] = useState(title);
-
-  useEffect(() => {
-    if (renaming && titleInputRef.current) {
-      titleEditFinalizedRef.current = false;
-      setTitleDraft(title);
-      titleInputRef.current.focus();
-      titleInputRef.current.select();
-    }
-  }, [renaming, title]);
-
-  useEffect(() => {
-    if (!renaming) setTitleDraft(title);
-  }, [renaming, title]);
-
-  function commitRename(value: string) {
-    if (titleEditFinalizedRef.current) return;
-    titleEditFinalizedRef.current = true;
-    onRenameEnd();
-    const next = value.trim();
-    if (!next || next === title) {
-      setTitleDraft(title);
-      return;
-    }
-    onRename(next);
-  }
-
-  function cancelRename() {
-    titleEditFinalizedRef.current = true;
-    setTitleDraft(title);
-    onRenameEnd();
-  }
 
   return (
     <article
@@ -2105,46 +2111,18 @@ function AgentSessionRow({
     >
       <div
         className="note-row-main"
-        role={renaming ? undefined : "button"}
-        tabIndex={renaming ? undefined : 0}
-        onClick={renaming ? undefined : onSelect}
-        onKeyDown={
-          renaming
-            ? undefined
-            : (event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  onSelect();
-                }
-              }
-        }
+        role="button"
+        tabIndex={0}
+        onClick={onSelect}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onSelect();
+          }
+        }}
       >
         <span className="note-row-title">
-          {renaming ? (
-            <input
-              ref={titleInputRef}
-              className="folder-note-title-input"
-              aria-label="Session name"
-              value={titleDraft}
-              onChange={(event) => setTitleDraft(event.currentTarget.value)}
-              onClick={(event) => event.stopPropagation()}
-              onMouseDown={(event) => event.stopPropagation()}
-              onBlur={(event) => commitRename(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                event.stopPropagation();
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  commitRename(event.currentTarget.value);
-                }
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  cancelRename();
-                }
-              }}
-            />
-          ) : (
-            <span className="note-row-title-text">{title}</span>
-          )}
+          <span className="note-row-title-text">{title}</span>
         </span>
       </div>
       {waiting ? (
@@ -2192,6 +2170,12 @@ function AgentSessionRow({
           <IconDotGrid1x3Vertical size={14} />
         </button>
       </span>
+      <RenameSessionDialog
+        open={renaming}
+        currentName={title}
+        onClose={onRenameEnd}
+        onRename={onRename}
+      />
     </article>
   );
 }
@@ -2265,7 +2249,7 @@ function AgentSessionContextMenu({
 // Compact trailing timestamp for agent session rows: "now", "5m", "3h", "2d"
 // while recent, then "May 2". sessionTimestamp falls back to the epoch when a
 // session has no dates at all, which we render as nothing rather than 1970.
-function formatSessionTime(iso: string): string {
+function formatSessionTime(iso: string, dateFormat: DateFormatPreference): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime()) || date.getTime() === 0) return "";
   const diffMs = Date.now() - date.getTime();
@@ -2276,10 +2260,7 @@ function formatSessionTime(iso: string): string {
   if (hours < 24) return `${hours}h`;
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d`;
-  return date.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
+  return formatCalendarDate(date, dateFormat);
 }
 
 function NoteContextMenu({
