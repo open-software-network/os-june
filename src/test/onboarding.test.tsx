@@ -382,6 +382,32 @@ describe("OnboardingFlow", () => {
     await screen.findByRole("heading", { name: "Let June listen and type" });
   });
 
+  it("keeps text typed before the character finishes loading", async () => {
+    const user = userEvent.setup();
+    let resolveLoad: (status: ReturnType<typeof characterStatus>) => void = () => {};
+    mocks.juneCharacter.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveLoad = resolve;
+        }),
+    );
+    setOnboardingResumeStep("character");
+    render(<OnboardingFlow {...flowProps()} />);
+
+    await screen.findByRole("heading", { name: "Give June a personality" });
+    const textarea = screen.getByRole("textbox", { name: "June's character" });
+    await user.type(textarea, "Be blunt.");
+
+    // The slow load must not clobber what the user already typed.
+    resolveLoad(characterStatus(DEFAULT_CHARACTER));
+    await waitFor(() => expect(mocks.juneCharacter).toHaveBeenCalled());
+    expect(textarea).toHaveValue("Be blunt.");
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(mocks.setJuneCharacter).toHaveBeenCalledWith("Be blunt."));
+    await screen.findByRole("heading", { name: "Let June listen and type" });
+  });
+
   it("continues without saving when the character is unchanged", async () => {
     const user = userEvent.setup();
     setOnboardingResumeStep("character");

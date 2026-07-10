@@ -24,7 +24,9 @@ export function CharacterStep({ onContinue }: { onContinue: () => void }) {
       .then((status) => {
         if (cancelled) return;
         setLoadedCharacter(status.character);
-        setDraft(status.character);
+        // Prefill only a pristine draft: never clobber text the user
+        // already typed while the load was in flight.
+        setDraft((current) => (current === "" ? status.character : current));
       })
       .catch(() => {
         // Leave the textarea empty; continue and skip still work, and any
