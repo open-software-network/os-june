@@ -16608,14 +16608,13 @@ input:focus-visible,
  * specificity than that rule so it stays a fixed square. */
 .select-trigger > .select-swatch:first-child {
   flex: none;
-  margin-right: var(--sp-2);
   overflow: visible;
 }
 
 /* Option rows gain a leading track for the swatch ahead of label + check. The
- * track matches the swatch (14px) and the sp-2 column gap mirrors the trigger
- * swatch's margin, so swatch and label both overlay their trigger twins when
- * the popover opens in place. */
+ * track matches the swatch (14px) and the sp-2 column gap mirrors the trigger,
+ * so swatch and label both overlay their trigger twins when the popover opens
+ * in place. */
 .select-popover button.has-swatch {
   grid-template-columns: 14px minmax(0, 1fr) 16px;
   column-gap: var(--sp-2);

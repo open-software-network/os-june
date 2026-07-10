@@ -89,6 +89,8 @@ export function SelectionControls() {
             <span className="sg-token-name">Select (color swatches)</span>
           </div>
           <Select
+            className="accent-select"
+            popoverWidth="trigger"
             value={accent}
             options={ACCENT_OPTIONS}
             placeholder="Choose an accent"
