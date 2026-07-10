@@ -7654,13 +7654,13 @@ export function AgentWorkspace({
         data-status={item.status}
         title={item.error ?? statusLabel}
       >
-        <div
-          className="agent-follow-up-attachments"
-          data-stacked={item.attachments.length > 1 || undefined}
-        >
+        <div className="agent-follow-up-attachments">
           {item.attachments.slice(0, 1).map((attachment) => (
             <AgentAttachmentTile key={attachment.id} attachment={attachment} />
           ))}
+          {item.attachments.length > 1 ? (
+            <span className="agent-follow-up-attachment-count">{item.attachments.length}</span>
+          ) : null}
         </div>
         <div className="agent-follow-up-copy">
           <span className="agent-follow-up-text">{item.prepared.typedMessage || "Attachment"}</span>

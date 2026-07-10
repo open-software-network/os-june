@@ -5717,7 +5717,9 @@ input:focus-visible,
   width: 100%;
   max-width: min(var(--chat-max), var(--content-max));
   margin-bottom: var(--sp-2);
-  padding: var(--sp-1);
+  /* A 6px frame all around; the washes inside follow concentrically
+     (r-xl minus this inset = r-md). */
+  padding: var(--sp-2);
   /* The composer box's surface recipe — solid card with the hairline ring
      folded into the shadow — so the queue reads at the same elevation. */
   border: 1px solid transparent;
@@ -5749,7 +5751,7 @@ input:focus-visible,
   min-height: var(--control-md);
   padding: var(--sp-1) var(--sp-2);
   border: 0;
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
@@ -5766,7 +5768,7 @@ input:focus-visible,
   height: var(--control-md);
   padding: 0;
   border: 0;
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--muted-foreground);
   transition:
@@ -5835,7 +5837,7 @@ input:focus-visible,
   flex-shrink: 0;
   min-height: var(--control-xl);
   padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--r-lg);
+  border-radius: var(--r-md);
   background: transparent;
   color: var(--foreground);
   font-size: var(--fs-lg);
@@ -5859,68 +5861,16 @@ input:focus-visible,
   flex: 0 0 auto;
 }
 
-/* A multi-attachment message reads as the reference pile: one full-size card
-   fanned to the LEFT behind the front tile, offset with a slight lean. A
-   single back card stays legible at rail size where a three-card fan turned
-   to mush, and its swing never leaves the row's left padding - so nothing
-   clips against the list and the text edge holds still. On row hover it
-   slides a little further apart to imply the rest. */
-.agent-follow-up-attachments[data-stacked] {
-  /* Isolate the raised chip so it layers against its own fan rather than
-     escaping into the scroller's fade overlays. */
-  z-index: 0;
-}
-
-.agent-follow-up-attachments[data-stacked]::before {
-  content: "";
+/* A multi-attachment message carries a super-small bare numeral in the
+   tile's top-right nook - no pill, no ring, just the count in the muted
+   voice. It floats in the row's own padding, so nothing else moves. */
+.agent-follow-up-attachment-count {
   position: absolute;
-  inset: 1px;
-  border-radius: var(--r-md);
-  background: var(--card);
-  box-shadow:
-    var(--shadow-sm),
-    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
-  translate: -3px 0;
-  rotate: -6deg;
-  transition:
-    translate var(--t-slow) var(--ease-spring),
-    rotate var(--t-slow) var(--ease-spring);
-}
-
-.agent-follow-up-row:hover .agent-follow-up-attachments[data-stacked]::before {
-  translate: -5px 0;
-  rotate: -9deg;
-}
-
-.agent-follow-up-attachments[data-stacked] .agent-attachment-chip {
-  position: relative;
-  z-index: 1;
-}
-
-/* The deck's front card: a file tile trades its inset gray well for the same
-   white card surface as the edges beneath it, so the whole deck reads as one
-   material. Images already read as photos. */
-.agent-follow-up-attachments[data-stacked] .agent-attachment-chip[data-kind="file"] {
-  background: var(--card);
-  box-shadow:
-    var(--shadow-sm),
-    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
-}
-
-.agent-follow-up-attachments[data-stacked]
-  .agent-attachment-chip[data-kind="file"]
-  .agent-attachment-file-icon {
-  background: transparent;
-}
-
-.agent-follow-up-attachments[data-stacked] .agent-attachment-chip[data-kind="image"] {
-  box-shadow: var(--shadow-sm);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .agent-follow-up-attachments[data-stacked]::before {
-    transition: none;
-  }
+  top: -5px;
+  right: -4px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1;
 }
 
 .agent-follow-up-copy {
