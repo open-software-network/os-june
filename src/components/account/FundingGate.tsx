@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { hasLiveSubscription, isOnMaxPlan } from "../../lib/account-gate";
 import { errorCode } from "../../lib/errors";
 import {
@@ -21,7 +21,7 @@ type Props = {
   onRefresh: () => Promise<AccountStatus | undefined>;
   onSignOut: () => void;
   presentation?: "page" | "dialog" | "banner";
-  onConfirmationOpenChange?: (open: boolean) => void;
+  onConfirmationOpenChange?: (open: boolean, close: () => void) => void;
 };
 
 type FundingGateDialogProps = Omit<Props, "presentation"> & {
@@ -132,7 +132,7 @@ export function FundingGate({
   }, [onRefresh]);
 
   useEffect(() => {
-    onConfirmationOpenChange?.(confirmingUpgrade);
+    onConfirmationOpenChange?.(confirmingUpgrade, () => setConfirmingUpgrade(false));
   }, [confirmingUpgrade, onConfirmationOpenChange]);
 
   async function handleOpenPortal(plan: SubscriptionPlan = chosenPlan) {
@@ -305,11 +305,21 @@ export function FundingGate({
  * behavior stays owned by FundingGate so this wrapper cannot drift from it. */
 export function FundingGateDialog({ onDismiss, ...props }: FundingGateDialogProps) {
   const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const closeConfirmationRef = useRef<() => void>(() => undefined);
+
+  const handleConfirmationOpenChange = useCallback((open: boolean, close: () => void) => {
+    closeConfirmationRef.current = close;
+    setConfirmationOpen(open);
+  }, []);
 
   const dismissFundingDialog = () => {
-    // FundingGate owns one nested confirmation. Let Escape close that layer
-    // first without making unrelated dialogs affect this dialog's dismissal.
-    if (!confirmationOpen) onDismiss();
+    // FundingGate owns one nested confirmation. Close that layer first without
+    // making unrelated dialogs affect this dialog's dismissal.
+    if (confirmationOpen) {
+      closeConfirmationRef.current();
+      return;
+    }
+    onDismiss();
   };
 
   return (
@@ -318,7 +328,7 @@ export function FundingGateDialog({ onDismiss, ...props }: FundingGateDialogProp
       onClose={dismissFundingDialog}
       title="Credits needed"
       footer={
-        <button type="button" className="primary-action" onClick={onDismiss}>
+        <button type="button" className="primary-action" onClick={dismissFundingDialog}>
           Not now
         </button>
       }
@@ -326,7 +336,7 @@ export function FundingGateDialog({ onDismiss, ...props }: FundingGateDialogProp
       <FundingGate
         {...props}
         presentation="dialog"
-        onConfirmationOpenChange={setConfirmationOpen}
+        onConfirmationOpenChange={handleConfirmationOpenChange}
       />
     </Dialog>
   );

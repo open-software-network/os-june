@@ -1584,6 +1584,12 @@ type AgentWorkspaceProps = {
   onTopUp?: () => void | Promise<void>;
   topUpLabel?: string;
   creditActionsDisabledReason?: string;
+  testOnlySlashCommandEntriesRef?: {
+    current: {
+      runImageSlashCommand: (argument: string, commandText: string) => Promise<void>;
+      runVideoSlashCommand: (argument: string, commandText: string) => Promise<void>;
+    } | null;
+  };
 };
 
 // Mid-run continuity across remounts. While June is working, a session has
@@ -2076,6 +2082,7 @@ export function AgentWorkspace({
   onTopUp,
   topUpLabel = "Upgrade",
   creditActionsDisabledReason,
+  testOnlySlashCommandEntriesRef,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   // Read once per mount (lazy initializer): the continuity snapshot the
@@ -4228,6 +4235,10 @@ export function AgentWorkspace({
   // the follow-up. The image generation model is still resolved server-side
   // from the saved image default.
   async function runImageSlashCommand(argument: string, commandText: string) {
+    if (creditActionsDisabledReason) {
+      setError(creditActionsDisabledReason);
+      return;
+    }
     const prompt = argument.trim();
     if (!prompt) {
       setError("Type a description after /image to generate an image.");
@@ -4677,6 +4688,10 @@ export function AgentWorkspace({
   }
 
   async function runVideoSlashCommand(argument: string, commandText: string) {
+    if (creditActionsDisabledReason) {
+      setError(creditActionsDisabledReason);
+      return;
+    }
     const prompt = argument.trim();
     if (!prompt) {
       setError("Type a description after /video to generate a video.");
@@ -4817,6 +4832,13 @@ export function AgentWorkspace({
       videoCreatedAt,
       model: pinnedModel,
     });
+  }
+
+  if (testOnlySlashCommandEntriesRef) {
+    testOnlySlashCommandEntriesRef.current = {
+      runImageSlashCommand,
+      runVideoSlashCommand,
+    };
   }
 
   async function runModelSlashCommand(argument: string, commandText: string) {

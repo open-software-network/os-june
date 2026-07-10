@@ -5335,6 +5335,51 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
   });
 
+  it.each([
+    {
+      command: "/image a red bicycle",
+      entry: "runImageSlashCommand" as const,
+      generationCall: () => mocks.generateImage,
+    },
+    {
+      command: "/video a red bicycle",
+      entry: "runVideoSlashCommand" as const,
+      generationCall: () => mocks.videoGenerate,
+    },
+  ])("blocks the direct $entry fast-path entry when credit actions are disabled", async (test) => {
+    const reason = "Add credits to send messages or generate images and videos.";
+    const slashCommandEntriesRef: {
+      current: {
+        runImageSlashCommand: (argument: string, commandText: string) => Promise<void>;
+        runVideoSlashCommand: (argument: string, commandText: string) => Promise<void>;
+      } | null;
+    } = { current: null };
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+
+    render(
+      <AgentWorkspace
+        creditActionsDisabledReason={reason}
+        testOnlySlashCommandEntriesRef={slashCommandEntriesRef}
+      />,
+    );
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    mocks.gatewayRequest.mockClear();
+    test.generationCall().mockClear();
+
+    const entries = slashCommandEntriesRef.current;
+    if (!entries) throw new Error("Agent workspace did not expose its slash-command entries.");
+    await act(async () => {
+      await entries[test.entry]("a red bicycle", test.command);
+    });
+
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(test.generationCall()).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(reason);
+  });
+
   it("stops a working session from the composer", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,

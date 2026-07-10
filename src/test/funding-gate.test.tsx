@@ -104,6 +104,32 @@ describe("FundingGate", () => {
     expect(onDismiss).not.toHaveBeenCalled();
   });
 
+  it("lets Not now close the nested plan confirmation before the funding dialog", async () => {
+    const user = userEvent.setup();
+    const onDismiss = vi.fn();
+    render(
+      <FundingGateDialog
+        account={{
+          ...baseAccount,
+          balance: { credits: -1, usdMillis: -1 },
+          subscription: { subscribed: true, status: "active", plan: "pro" },
+        }}
+        onRefresh={vi.fn(async () => baseAccount)}
+        onSignOut={vi.fn()}
+        onDismiss={onDismiss}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    expect(screen.getAllByRole("dialog")).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+
+    await waitFor(() => expect(screen.getAllByRole("dialog")).toHaveLength(1));
+    expect(screen.getByRole("dialog", { name: "Credits needed" })).toBeInTheDocument();
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
   it("dismisses independently when another app dialog is open", async () => {
     const user = userEvent.setup();
     const onDismiss = vi.fn();
