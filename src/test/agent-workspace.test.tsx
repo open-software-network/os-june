@@ -1095,7 +1095,7 @@ describe("AgentWorkspace", () => {
     );
 
     expect(screen.getByRole("region", { name: "Up next" })).toBeInTheDocument();
-    expect(screen.getByText("Steering current turn")).toBeInTheDocument();
+    expect(screen.queryByText("Steering current turn")).toBeNull();
     expect(screen.queryByText("Queued")).toBeNull();
     expect(screen.getByTitle("focus on the API boundary")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /revise steer/i })).toBeNull();
@@ -1152,9 +1152,11 @@ describe("AgentWorkspace", () => {
     const upNext = await screen.findByRole("region", { name: "Up next" });
     expect(within(upNext).getByText("2")).toBeInTheDocument();
     expect(within(upNext).getByText("check the API boundary")).toBeInTheDocument();
-    expect(within(upNext).getByText("Steering current turn")).toBeInTheDocument();
+    expect(within(upNext).queryByText("Steering current turn")).toBeNull();
     expect(within(upNext).getByText("review the brief next")).toBeInTheDocument();
-    expect(within(upNext).getByText("Waiting for June to finish")).toBeInTheDocument();
+    expect(within(upNext).getByText("Waiting for June to finish")).toHaveClass(
+      "agent-follow-up-announcement",
+    );
     expect(within(upNext).getByText("brief.pdf")).toBeInTheDocument();
     expect(screen.getAllByRole("region", { name: "Up next" })).toHaveLength(1);
     expect(screen.queryByText("Queued")).toBeNull();
@@ -1174,7 +1176,7 @@ describe("AgentWorkspace", () => {
     const upNext = await screen.findByRole("region", { name: "Up next" });
     expect(within(upNext).getByText("2")).toBeInTheDocument();
     expect(within(upNext).getByText("Check the API boundary")).toBeInTheDocument();
-    expect(within(upNext).getByText("Steering current turn")).toBeInTheDocument();
+    expect(within(upNext).queryByText("Steering current turn")).toBeNull();
     expect(within(upNext).getByText("Review this attachment next")).toBeInTheDocument();
     expect(within(upNext).getByText("reference.png")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();

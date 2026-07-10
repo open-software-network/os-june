@@ -7572,9 +7572,9 @@ export function AgentWorkspace({
     });
   }
 
-  // Submitted text and locally waiting attachment messages share one visual
-  // follow-up system. The quiet row status explains the delivery difference;
-  // session.steer has no recall primitive, so submitted text remains read-only.
+  // Submitted text and locally waiting attachment messages share one compact
+  // follow-up system. session.steer has no recall primitive, so submitted text
+  // remains read-only; transport state stays out of the visual scan line.
   function renderSteerCard(card: { id: string; text: string }) {
     return (
       <div key={card.id} className="agent-follow-up-row" data-kind="steer">
@@ -7585,7 +7585,6 @@ export function AgentWorkspace({
           <span className="agent-follow-up-text" title={card.text}>
             {card.text}
           </span>
-          <span className="agent-follow-up-status">Steering current turn</span>
         </span>
       </div>
     );
@@ -7619,6 +7618,7 @@ export function AgentWorkspace({
         className="agent-follow-up-row"
         data-kind="attachment"
         data-status={item.status}
+        title={item.error ?? statusLabel}
       >
         <div className="agent-follow-up-attachments">
           {item.attachments.slice(0, 1).map((attachment) => (
@@ -7630,10 +7630,10 @@ export function AgentWorkspace({
         </div>
         <div className="agent-follow-up-copy">
           <span className="agent-follow-up-text">{item.prepared.typedMessage || "Attachment"}</span>
-          <span className="agent-follow-up-status" aria-live="polite">
+          <span className="agent-follow-up-announcement" aria-live="polite">
             {statusLabel}
           </span>
-          {item.error ? <span className="agent-follow-up-error">{item.error}</span> : null}
+          {item.error ? <span className="agent-follow-up-announcement">{item.error}</span> : null}
         </div>
         {item.status === "sending" ? null : (
           <div className="agent-follow-up-actions">

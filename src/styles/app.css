@@ -5063,13 +5063,13 @@ input:focus-visible,
   min-width: 16ch;
   /* Centers a single line inside the control-height zone the badge and CTA
    * occupy; a wrapped second line grows downward from there. */
-  margin: calc((var(--control-md) - 1.5 * var(--fs-md)) / 2) 0 0;
+  margin: calc((var(--control-md) - 1.5 * var(--fs-sm)) / 2) 0 0;
   /* A shade under full foreground: present, but not competing with the
    * conversation. */
   color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
-  /* One step below the conversation text (.agent-markdown at --fs-lg): the
-   * notice annotates the chat, it doesn't speak in it. */
-  font-size: var(--fs-md);
+  /* Two steps below conversation text: this annotates the chat rather than
+   * competing with it, while the CTA remains the clear action at the right. */
+  font-size: var(--fs-sm);
   line-height: 1.5;
 }
 
@@ -5811,13 +5811,16 @@ input:focus-visible,
 }
 
 .agent-follow-up-attachments {
-  --attachment-tile-size: calc(var(--sp-12) + var(--sp-1));
   display: flex;
   flex: 0 1 auto;
   gap: var(--sp-1);
   min-width: 0;
   max-width: 45%;
   overflow: hidden;
+}
+
+.agent-follow-up-attachments .agent-attachment-chip {
+  --attachment-tile-size: var(--control-xl);
 }
 
 .agent-follow-up-attachment-count {
@@ -5852,17 +5855,16 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.agent-follow-up-status,
-.agent-follow-up-error {
+.agent-follow-up-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
   overflow: hidden;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  text-overflow: ellipsis;
+  clip: rect(0 0 0 0);
   white-space: nowrap;
-}
-
-.agent-follow-up-row[data-status="failed"] .agent-follow-up-status {
-  color: var(--destructive);
+  border: 0;
 }
 
 .agent-follow-up-actions {
@@ -6615,7 +6617,7 @@ input:focus-visible,
   height: var(--attachment-tile-size);
   padding: var(--sp-1);
   border-radius: var(--r-lg);
-  background: var(--surface-subtle);
+  background: oklch(100% 0 none);
   color: var(--foreground);
   font-size: var(--fs-sm);
   box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
@@ -6749,6 +6751,7 @@ input:focus-visible,
 }
 
 [data-theme="dark"] .agent-attachment-chip {
+  background: var(--card);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 10%);
 }
 
