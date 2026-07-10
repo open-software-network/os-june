@@ -210,16 +210,20 @@ export function Select({
     setOpen((current) => !current);
   }
 
-  const fixedStyle: CSSProperties | undefined = anchor
-    ? {
-        position: "fixed",
-        ...selectPopoverHorizontalStyle(
-          anchor,
-          popoverWidth === "trigger" ? anchor.width : POPOVER_MIN_WIDTH,
-        ),
-        ...fixedVerticalStyle(placement, Math.max(selectedIndex, 0), anchor),
-      }
+  const horizontalStyle = anchor
+    ? selectPopoverHorizontalStyle(
+        anchor,
+        popoverWidth === "trigger" ? Math.max(anchor.width, 1) : POPOVER_MIN_WIDTH,
+      )
     : undefined;
+  const fixedStyle: CSSProperties | undefined =
+    horizontalStyle && horizontalStyle.width !== 0 && anchor
+      ? {
+          position: "fixed",
+          ...horizontalStyle,
+          ...fixedVerticalStyle(placement, Math.max(selectedIndex, 0), anchor),
+        }
+      : undefined;
 
   return (
     <div className={`select-control${className ? ` ${className}` : ""}`} ref={wrapRef}>
@@ -241,7 +245,7 @@ export function Select({
         ) : null}
         <IconChevronDownSmall size={14} />
       </button>
-      {open && anchor
+      {open && fixedStyle
         ? createPortal(
             <ul
               ref={popoverRef}
