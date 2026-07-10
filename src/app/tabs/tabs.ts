@@ -43,6 +43,27 @@ export function makeTabId(): string {
   return `tab-${Math.random().toString(36).slice(2)}`;
 }
 
+// Apply a drag-reorder of the on-strip tabs. `orderedVisibleIds` is the strip's
+// visible tabs in their new left-to-right order; tabs folded into the overflow
+// popover keep their positions. The visible tabs' slots in the full array are
+// reassigned in the new order, so hidden tabs never move relative to the rest.
+export function reorderTabs(tabs: Tab[], orderedVisibleIds: string[]): Tab[] {
+  const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  const ordered = orderedVisibleIds.filter((id) => byId.has(id));
+  const slots: number[] = [];
+  const orderedSet = new Set(ordered);
+  tabs.forEach((tab, index) => {
+    if (orderedSet.has(tab.id)) slots.push(index);
+  });
+  if (slots.length !== ordered.length) return tabs;
+  if (ordered.every((id, i) => tabs[slots[i]]!.id === id)) return tabs;
+  const next = [...tabs];
+  ordered.forEach((id, i) => {
+    next[slots[i]!] = byId.get(id)!;
+  });
+  return next;
+}
+
 function agentOriginEquals(a?: AgentOrigin, b?: AgentOrigin): boolean {
   if (a === b) return true;
   if (!a || !b) return false;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultNav, navEquals, type TabNav } from "../app/tabs/tabs";
+import { defaultNav, navEquals, reorderTabs, type Tab, type TabNav } from "../app/tabs/tabs";
 
 describe("tab navigation snapshots", () => {
   it("a fresh tab lands on the agent hero (a new chat)", () => {
@@ -90,5 +90,32 @@ describe("tab navigation snapshots", () => {
     expect(
       navEquals({ view: "folders", folderId: "f1" }, { view: "folders", folderId: "f1" }),
     ).toBe(true);
+  });
+});
+
+describe("reorderTabs", () => {
+  const tab = (id: string): Tab => ({ id, nav: defaultNav() });
+  const ids = (tabs: Tab[]) => tabs.map((t) => t.id);
+
+  it("applies the new visible order", () => {
+    const tabs = [tab("a"), tab("b"), tab("c")];
+    expect(ids(reorderTabs(tabs, ["b", "c", "a"]))).toEqual(["b", "c", "a"]);
+  });
+
+  it("keeps overflowed (non-visible) tabs in their slots", () => {
+    // a, b, d are on the strip; c and e sit in the overflow popover. Swapping
+    // a and d must leave c and e exactly where they were.
+    const tabs = [tab("a"), tab("b"), tab("c"), tab("d"), tab("e")];
+    expect(ids(reorderTabs(tabs, ["d", "b", "a"]))).toEqual(["d", "b", "c", "a", "e"]);
+  });
+
+  it("returns the same array when the order is unchanged", () => {
+    const tabs = [tab("a"), tab("b")];
+    expect(reorderTabs(tabs, ["a", "b"])).toBe(tabs);
+  });
+
+  it("ignores ids that no longer exist", () => {
+    const tabs = [tab("a"), tab("b")];
+    expect(ids(reorderTabs(tabs, ["b", "gone", "a"]))).toEqual(["b", "a"]);
   });
 });

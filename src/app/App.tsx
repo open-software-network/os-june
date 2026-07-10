@@ -41,7 +41,7 @@ import { PermissionBanner } from "../components/permissions/PermissionBanner";
 import { AppSettings, SETTINGS_TABS, type SettingsTab } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import { TabBar, type TabItem } from "../components/tabs/TabBar";
-import { defaultNav, makeTabId, navEquals, type Tab, type TabNav } from "./tabs/tabs";
+import { defaultNav, makeTabId, navEquals, reorderTabs, type Tab, type TabNav } from "./tabs/tabs";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconBubble3 } from "central-icons/IconBubble3";
@@ -931,6 +931,12 @@ export function App() {
       setActiveTabId(id);
       applyNav(keep.nav);
     }
+  }
+
+  // Drag-reorder from the tab strip: the visible tabs land in their new order,
+  // overflow tabs stay put (see reorderTabs).
+  function handleReorderTabs(orderedVisibleIds: string[]) {
+    setTabs((prev) => reorderTabs(prev, orderedVisibleIds));
   }
 
   function cycleTab(delta: number) {
@@ -3159,6 +3165,7 @@ export function App() {
           onClose={closeTab}
           onCloseOthers={closeOtherTabs}
           onNew={openNewChatTab}
+          onReorder={handleReorderTabs}
           layoutFrozen={sidebarResizing}
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
