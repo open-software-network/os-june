@@ -1181,9 +1181,9 @@ describe("AgentWorkspace", () => {
     expect(within(upNext).getByText("Review this attachment next")).toBeInTheDocument();
     expect(within(upNext).getByText("reference.png")).toBeInTheDocument();
     expect(within(upNext).getByText("Fold these findings into the report")).toBeInTheDocument();
-    // Mixed attachment types collapse to the generic file square plus a total
-    // count, so no individual filename shows on the multi row.
-    expect(within(upNext).queryByText("usability-findings.pdf")).toBeNull();
+    // The multi-attachment row leads with its first tile and carries the
+    // total count in the corner badge.
+    expect(within(upNext).getByText("usability-findings.pdf")).toBeInTheDocument();
     expect(within(upNext).getByText("3")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.steer", expect.anything());

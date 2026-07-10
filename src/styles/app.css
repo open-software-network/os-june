@@ -5786,9 +5786,10 @@ input:focus-visible,
   display: flex;
   flex-direction: column;
   max-height: min(320px, 35vh);
-  /* Matches the queue card's own padding so the last row (and a corner count
-     badge hanging off its tile) sits properly inset from the bottom edge. */
-  padding-bottom: var(--sp-1);
+  /* The rows carry a few px of invisible overhang (widened hit targets, the
+     corner count badge), and overflow-y alone would let that pan the list
+     sideways, sliding rows out from under the card's insets. */
+  overflow-x: hidden;
   overflow-y: auto;
   /* Joins the detail-scroller scrollbar family (the ::-webkit lane + the
      scroll-driven thumb from attachScrollThumbFade): the opt-out lets the
@@ -5832,12 +5833,31 @@ input:focus-visible,
   flex: 0 0 auto;
 }
 
+/* A multi-attachment message reads as a small deck: the first attachment's
+   tile in front, a card sliver peeking out behind its right edge. The sliver
+   borrows the gap to the text, so the rail and the text edge hold still. */
+.agent-follow-up-attachments[data-stacked]::before {
+  content: "";
+  position: absolute;
+  inset: 3px -3px 3px 3px;
+  border-radius: var(--r-md);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+.agent-follow-up-attachments[data-stacked] .agent-attachment-chip {
+  position: relative;
+  z-index: 1;
+}
+
 /* Total count for a multi-attachment message, notched into the tile's
    top-right corner: a card-colored ring carves the circle out of the tile
    (avatar-stack style), the leading rail stays a single square, and the text
    stays aligned. */
 .agent-follow-up-attachment-count {
   position: absolute;
+  /* Same stacking level as the raised tile; later in the DOM, so it wins. */
+  z-index: 1;
   top: calc(var(--sp-1) * -1);
   right: calc(var(--sp-1) * -1);
   display: inline-grid;

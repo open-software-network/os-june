@@ -7636,14 +7636,6 @@ export function AgentWorkspace({
     );
     const locallyEditable = item.status !== "sending" && !hasAttachedImage;
     const editable = locallyEditable && !draft.trim() && attachments.length === 0;
-    // One square represents the whole message: same-type stacks lead with
-    // their first tile; mixed types fall back to the generic file glyph so no
-    // single type's tile claims the rest.
-    const attachmentTypes = new Set(
-      item.attachments.map((attachment) =>
-        attachment.previewDataUrl ? "image" : fileTypeIconComponent(attachment.name),
-      ),
-    );
     const statusLabel =
       item.status === "sending"
         ? "Sending"
@@ -7662,20 +7654,13 @@ export function AgentWorkspace({
         data-status={item.status}
         title={item.error ?? statusLabel}
       >
-        <div className="agent-follow-up-attachments">
-          {attachmentTypes.size > 1 ? (
-            <span className="agent-attachment-chip" data-kind="file" aria-hidden>
-              <span className="agent-attachment-file-icon">
-                <IconFileText size={18} />
-              </span>
-            </span>
-          ) : (
-            item.attachments
-              .slice(0, 1)
-              .map((attachment) => (
-                <AgentAttachmentTile key={attachment.id} attachment={attachment} />
-              ))
-          )}
+        <div
+          className="agent-follow-up-attachments"
+          data-stacked={item.attachments.length > 1 || undefined}
+        >
+          {item.attachments.slice(0, 1).map((attachment) => (
+            <AgentAttachmentTile key={attachment.id} attachment={attachment} />
+          ))}
           {item.attachments.length > 1 ? (
             <span className="agent-follow-up-attachment-count">{item.attachments.length}</span>
           ) : null}
