@@ -17,6 +17,8 @@ use std::{
     time::Duration,
 };
 
+const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(700);
+
 #[derive(Clone)]
 struct EventWriter {
     inner: Arc<Mutex<io::Stdout>>,
@@ -44,6 +46,7 @@ struct HelperApp {
     selected_microphone_id: Option<String>,
     pinned_target: Option<PinnedTarget>,
     hotkeys: Option<HotkeyManager>,
+    clipboard_restore: Option<thread::JoinHandle<()>>,
 }
 
 impl HelperApp {
@@ -116,6 +119,7 @@ impl HelperApp {
             selected_microphone_id: None,
             pinned_target: None,
             hotkeys,
+            clipboard_restore: None,
         }
     }
 
@@ -136,6 +140,10 @@ impl HelperApp {
             "list_microphones" => self.emit_microphones(),
             "set_microphone" => {
                 self.selected_microphone_id = command.id.or(command.name);
+                self.writer.emit(event(
+                    "microphone_selected",
+                    serde_json::json!({ "id": self.selected_microphone_id }),
+                ));
             }
             "set_shortcut" => {
                 if let Some(shortcut) = command.shortcut {
@@ -175,7 +183,10 @@ impl HelperApp {
             }
             "paste_text" => self.paste_text(command.text.unwrap_or_default()),
             "discard_recording" | "discard_mic_test" => self.discard_recording(),
-            "shutdown" => return false,
+            "shutdown" => {
+                self.writer.emit(simple_event("shutdown_ack"));
+                return false;
+            }
             other => self.writer.emit(error_event(
                 "unknown_command",
                 format!("Unknown dictation helper command: {other}"),
@@ -248,8 +259,8 @@ impl HelperApp {
                     "recording_ready",
                     serde_json::json!({
                         "path": summary.path.to_string_lossy(),
-                        "durationMs": summary.duration.as_millis().to_string(),
-                        "observedAudioLevel": format!("{:.4}", summary.observed_level),
+                        "durationMs": summary.duration.as_millis() as u64,
+                        "observedAudioLevel": summary.observed_level,
                         "targetProcessId": target.map(|target| target.pid()),
                         "targetWindowHandle": target.map(|target| target.hwnd_value()),
                         "targetWindowTitle": target.map(|target| target.title()),
@@ -263,43 +274,62 @@ impl HelperApp {
     }
 
     fn paste_text(&mut self, text: String) {
-        if let Err(error) = clipboard::set_text(&text) {
-            self.writer
-                .emit(error_event("clipboard_write_failed", error.to_string()));
-            return;
-        }
+        self.finish_clipboard_restore();
+        self.writer.emit(event(
+            "final_transcript",
+            serde_json::json!({ "text": text }),
+        ));
+        let previous_clipboard = match clipboard::replace_text(&text) {
+            Ok(previous) => previous,
+            Err(error) => {
+                self.writer
+                    .emit(error_event("clipboard_write_failed", error.to_string()));
+                return;
+            }
+        };
         let Some(target) = self.pinned_target.take() else {
-            self.writer.emit(event(
+            self.writer.emit(error_event(
                 "paste_target_unavailable",
-                serde_json::json!({
-                    "message": "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
-                }),
+                "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
             ));
             return;
         };
         if !focus::verify_foreground(target) {
-            self.writer.emit(event(
+            self.writer.emit(error_event(
                 "paste_target_restricted",
-                serde_json::json!({
-                    "message": "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
-                    "targetProcessId": target.pid(),
-                    "targetWindowHandle": target.hwnd_value(),
-                    "targetWindowTitle": target.title(),
-                }),
+                "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
             ));
             return;
         }
+        self.writer.emit(event(
+            "paste_target",
+            serde_json::json!({
+                "targetProcessId": target.pid(),
+                "targetWindowHandle": target.hwnd_value(),
+                "targetWindowTitle": target.title(),
+                "activated": true,
+            }),
+        ));
         if let Err(error) = focus::send_ctrl_v() {
-            self.writer.emit(event(
+            self.writer.emit(error_event(
                 "paste_target_restricted",
-                serde_json::json!({
-                    "message": "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
-                    "detail": error.to_string(),
-                }),
+                format!(
+                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it. ({error})"
+                ),
             ));
             return;
         }
-        self.writer.emit(simple_event("final_transcript"));
+        self.writer.emit(simple_event("paste_completed"));
+        self.clipboard_restore = Some(thread::spawn(move || {
+            thread::sleep(CLIPBOARD_RESTORE_DELAY);
+            let _ = clipboard::restore_text_if_unchanged(&text, previous_clipboard.as_deref());
+        }));
+    }
+
+    fn finish_clipboard_restore(&mut self) {
+        if let Some(restore) = self.clipboard_restore.take() {
+            let _ = restore.join();
+        }
     }
 
     fn discard_recording(&mut self) {
@@ -323,10 +353,7 @@ impl HelperApp {
             while active.load(std::sync::atomic::Ordering::SeqCst) {
                 thread::sleep(Duration::from_millis(80));
                 let level = latest_level.lock().map(|level| *level).unwrap_or_default();
-                writer.emit(event(
-                    "audio_level",
-                    serde_json::json!({ "level": format!("{level:.4}") }),
-                ));
+                writer.emit(event("audio_level", serde_json::json!({ "level": level })));
             }
         });
     }
@@ -334,6 +361,7 @@ impl HelperApp {
 
 impl Drop for HelperApp {
     fn drop(&mut self) {
+        self.finish_clipboard_restore();
         if let Some(recorder) = self.recorder.take() {
             if let Ok(summary) = recorder.stop() {
                 let _ = std::fs::remove_file(summary.path);
