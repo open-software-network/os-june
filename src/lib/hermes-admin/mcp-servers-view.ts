@@ -28,7 +28,6 @@ export const INTERNAL_MCP_SERVER_NAMES = [
   "june_context",
   "june_web",
   "june_image",
-  "june_video",
   "june_recorder",
 ] as const;
 
