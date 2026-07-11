@@ -25220,6 +25220,10 @@ input:focus-visible,
     margin: 18mm;
   }
 
+  :root {
+    color-scheme: light;
+  }
+
   html,
   body,
   #root,
