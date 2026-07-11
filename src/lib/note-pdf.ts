@@ -5,7 +5,26 @@
  * their equivalent PDF destination. `window.print()` blocks until that sheet
  * closes, so the app title can be restored immediately afterwards.
  */
-export function exportNoteAsPdf(noteTitle: string, print = () => window.print()) {
+type ExportNoteAsPdfOptions = {
+  showNotes?: () => void | Promise<void>;
+  waitForPaint?: () => void | Promise<void>;
+  print?: () => void;
+};
+
+export async function exportNoteAsPdf(
+  noteTitle: string,
+  {
+    showNotes,
+    waitForPaint = () =>
+      new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve())),
+    print = () => window.print(),
+  }: ExportNoteAsPdfOptions = {},
+) {
+  if (showNotes) {
+    await showNotes();
+    await waitForPaint();
+  }
+
   const previousTitle = document.title;
   document.title = noteTitle.trim() || "Meeting notes";
 

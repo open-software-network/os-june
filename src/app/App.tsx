@@ -711,6 +711,18 @@ export function App() {
   const noteChat = useNoteChat(
     selectedNote ? { id: selectedNote.id, title: selectedNote.title } : null,
   );
+  async function handleExportNotePdf() {
+    if (!selectedNote) return;
+    await exportNoteAsPdf(selectedNote.title, {
+      showNotes:
+        selectedNote.activeTab === "transcription"
+          ? async () => {
+              const note = await updateNote({ noteId: selectedNote.id, activeTab: "notes" });
+              dispatch({ type: "noteUpdated", note });
+            }
+          : undefined,
+    });
+  }
   const noteToolbarActions = selectedNote ? (
     <NoteHeaderActions
       noteId={selectedNote.id}
@@ -718,7 +730,7 @@ export function App() {
       askJuneOpen={noteChatOpen}
       askJuneWorking={noteChat.working}
       onAskJune={() => setNoteChatOpen((open) => !open)}
-      onExportPdf={() => exportNoteAsPdf(selectedNote.title)}
+      onExportPdf={() => void handleExportNotePdf()}
       onDelete={() => setConfirmDeleteNote(true)}
     />
   ) : null;
