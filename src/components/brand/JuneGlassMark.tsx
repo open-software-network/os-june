@@ -20,17 +20,6 @@ const GlassMarkCanvas = lazy(() => import("./glass-mark-canvas"));
 let webglSupport: boolean | undefined;
 function hasWebGL(): boolean {
   if (webglSupport !== undefined) return webglSupport;
-  // WebGL-less browsers and DOM implementations such as jsdom do not expose
-  // the context constructor. Bail out before calling getContext: jsdom reports
-  // unsupported canvas APIs to stderr instead of throwing, which otherwise
-  // makes every surface containing the mark emit noisy errors.
-  // Do not cache the server-side answer: hydration may run in a WebGL-capable
-  // browser after an SSR pass without a document.
-  if (typeof document === "undefined") return false;
-  if (typeof globalThis.WebGLRenderingContext === "undefined") {
-    webglSupport = false;
-    return webglSupport;
-  }
   try {
     const canvas = document.createElement("canvas");
     webglSupport = !!(
