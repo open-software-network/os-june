@@ -107,6 +107,7 @@ pub(crate) async fn generate(
         existing_generated_note: request.existing_generated_note,
         model_id: ModelId(model_id),
         provider_credentials,
+        cost_quality: request.cost_quality,
     };
 
     if stream {
@@ -222,6 +223,12 @@ fn error_event(
 
 impl GenerateRequest {
     fn validate(&self) -> Result<(), ApiError> {
+        if self
+            .cost_quality
+            .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+        {
+            return Err(ApiError::unprocessable("cost_quality_invalid"));
+        }
         validation::validate_optional_text_len(
             "note_id",
             self.note_id.as_deref(),
@@ -270,6 +277,7 @@ pub struct GenerateRequest {
     pub language: Option<String>,
     pub existing_generated_note: Option<String>,
     pub model: Option<String>,
+    pub cost_quality: Option<f64>,
     #[serde(default)]
     pub stream: bool,
 }

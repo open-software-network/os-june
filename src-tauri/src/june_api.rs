@@ -240,6 +240,7 @@ struct GenerateBody {
     language: Option<String>,
     existing_generated_note: Option<String>,
     model: String,
+    cost_quality: Option<f64>,
     stream: bool,
 }
 
@@ -343,6 +344,9 @@ pub async fn generate_note_from_transcript(
         language: request.language,
         existing_generated_note: request.existing_generated_note,
         model,
+        cost_quality: (crate::providers::generation_model()
+            == crate::providers::AUTO_GENERATION_MODEL)
+            .then(crate::providers::cost_quality),
         stream: true,
     };
     let response: GenerateResponse =
@@ -1134,6 +1138,16 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
         object.insert(
             "model".to_string(),
             serde_json::Value::String(crate::providers::generation_model()),
+        );
+    }
+    if object.get("model").and_then(serde_json::Value::as_str)
+        == Some(crate::providers::AUTO_GENERATION_MODEL)
+    {
+        object.insert(
+            "auto".to_string(),
+            serde_json::json!({
+                "cost_quality": crate::providers::cost_quality()
+            }),
         );
     }
     clamp_agent_chat_output_tokens(object, "max_tokens");
@@ -3261,6 +3275,19 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         assert_eq!(
             body["model"],
             serde_json::json!(crate::providers::generation_model())
+        );
+    }
+
+    #[test]
+    fn agent_proxy_injects_auto_cost_quality_preference() {
+        let mut body = serde_json::json!({
+            "model": crate::providers::AUTO_GENERATION_MODEL,
+            "messages": []
+        });
+        normalize_agent_chat_request_for_proxy(&mut body);
+        assert_eq!(
+            body["auto"]["cost_quality"],
+            serde_json::json!(crate::providers::cost_quality())
         );
     }
 

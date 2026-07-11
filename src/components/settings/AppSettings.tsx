@@ -28,6 +28,7 @@ import {
   setDictationMicrophone,
   setDictationShortcut,
   setImageSafeMode,
+  setCostQuality,
   setVeniceApiKey,
   setVeniceModel,
 } from "../../lib/tauri";
@@ -238,6 +239,7 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   // Mirrors DEFAULT_GENERATION_MODEL in the Rust providers module and the
   // leading Suggested pick in lib/suggested-models.ts.
   generationModel: "zai-org-glm-5-2",
+  costQuality: 50,
   remoteGenerationModel: "zai-org-glm-5-2",
   // Mirrors DEFAULT_IMAGE_MODEL in the Rust providers module.
   imageModel: DEFAULT_IMAGE_MODEL,
@@ -950,6 +952,16 @@ export function AppSettings({
               ? "Video model updated."
               : "Text model updated.",
       );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function saveCostQuality() {
+    try {
+      const next = await setCostQuality(providerSettings.costQuality);
+      setProviderSettings(next);
+      setStatus("Automatic model preference updated.");
     } catch (error) {
       setStatus(messageFromError(error));
     }
@@ -1838,6 +1850,35 @@ export function AppSettings({
                     onSearchChange={setModelSearch}
                     onSelect={(modelId) => selectModelFromPicker("generation", modelId)}
                   />
+                  {providerSettings.generationModel === "open-software/auto" ? (
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-row-title">Cost and quality</span>
+                        <span className="settings-row-description">
+                          Choose whether Auto favors lower cost or higher model quality.
+                        </span>
+                      </div>
+                      <div className="settings-row-control settings-auto-preference">
+                        <span>Cost</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={providerSettings.costQuality}
+                          aria-label="Automatic model cost and quality preference"
+                          onChange={(event) =>
+                            setProviderSettings((current) => ({
+                              ...current,
+                              costQuality: Number(event.target.value),
+                            }))
+                          }
+                          onPointerUp={() => void saveCostQuality()}
+                          onBlur={() => void saveCostQuality()}
+                        />
+                        <span>Quality</span>
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="settings-row-divider" aria-hidden />
                   <button
                     type="button"
