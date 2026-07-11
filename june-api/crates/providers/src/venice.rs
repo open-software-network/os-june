@@ -282,9 +282,6 @@ impl Generator for VeniceGenerator {
             .complete(
                 ChatCompletionRequest {
                     model: request.model.0,
-                    auto: request
-                        .cost_quality
-                        .map(|cost_quality| AutoPolicy { cost_quality }),
                     messages: vec![
                         ChatMessage::system(request.system_prompt),
                         ChatMessage::user(user_message),
@@ -404,7 +401,6 @@ impl Cleaner for VeniceCleaner {
             .complete(
                 ChatCompletionRequest {
                     model: request.model.0,
-                    auto: None,
                     messages: vec![
                         ChatMessage::system(request.system_prompt),
                         ChatMessage::user(user_message),
@@ -904,18 +900,11 @@ pub(crate) fn user_venice_key_auth_error(
 #[derive(Debug, Serialize)]
 struct ChatCompletionRequest {
     model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    auto: Option<AutoPolicy>,
     messages: Vec<ChatMessage>,
     /// Pinned for deterministic tasks (dictation cleanup); None keeps the
     /// provider default for creative generation.
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
-}
-
-#[derive(Debug, Serialize)]
-struct AutoPolicy {
-    cost_quality: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1511,7 +1500,6 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
-                cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
                 unmetered: false,
             })
@@ -1570,7 +1558,6 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
-                cost_quality: None,
                 provider_credentials: ProviderCredentials {
                     venice_api_key: Some("user_venice_key".to_string()),
                 },
@@ -1619,7 +1606,6 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
-                cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
                 unmetered: false,
             })
@@ -1667,7 +1653,6 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
-                cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
                 unmetered: false,
             })
@@ -1742,7 +1727,6 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
-                cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
                 unmetered: false,
             })
@@ -1782,7 +1766,6 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "system".to_string(),
-                cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
                 unmetered: false,
             })
@@ -2095,7 +2078,6 @@ mod tests {
                 existing_generated_note: None,
                 model: ModelId("zai-org-glm-5".to_string()),
                 system_prompt: "caller system prompt".to_string(),
-                cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
                 unmetered: false,
             })

@@ -225,7 +225,6 @@ pub struct GenerationRequest {
     pub existing_generated_note: Option<String>,
     pub model: ModelId,
     pub system_prompt: String,
-    pub cost_quality: Option<f64>,
     pub provider_credentials: ProviderCredentials,
     /// See `AgentChatRequest::unmetered`.
     pub unmetered: bool,

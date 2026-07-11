@@ -12303,18 +12303,6 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
-.settings-auto-preference {
-  gap: var(--sp-2);
-  min-width: 240px;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-}
-
-.settings-auto-preference input[type="range"] {
-  width: 140px;
-  accent-color: var(--primary);
-}
-
 .settings-row-stack {
   align-items: start;
 }

@@ -119,7 +119,6 @@ mod tests {
                 existing_generated_note: None,
                 model_id: ModelId("text-model".to_string()),
                 provider_credentials: ProviderCredentials::default(),
-                cost_quality: None,
             })
             .await
             .expect("generate succeeds with happy path");
@@ -577,7 +576,6 @@ mod tests {
             existing_generated_note: None,
             model_id: ModelId("text-model".to_string()),
             provider_credentials: ProviderCredentials::default(),
-            cost_quality: None,
         }
     }
 

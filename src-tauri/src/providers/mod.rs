@@ -20,8 +20,6 @@ pub const PROVIDER_VENICE: &str = "venice";
 pub const PROVIDER_LOCAL: &str = "local";
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
-pub const AUTO_GENERATION_MODEL: &str = "open-software/auto";
-pub const DEFAULT_COST_QUALITY: u8 = 50;
 pub const DEFAULT_IMAGE_MODEL: &str = "venice-sd35";
 pub const DEFAULT_VIDEO_MODEL: &str = "wan-2.2-a14b-text-to-video";
 /// Currently curated text-to-video model ids (mirrors `VIDEO_MODELS` in
@@ -69,8 +67,6 @@ pub struct ProviderModelSettings {
     pub transcription_model: String,
     #[serde(default = "default_generation_model")]
     pub generation_model: String,
-    #[serde(default = "default_cost_quality")]
-    pub cost_quality: u8,
     #[serde(default = "default_generation_model")]
     pub remote_generation_model: String,
     // Defaulted so provider-settings.json files written before image
@@ -123,7 +119,6 @@ pub struct ProviderModelSettingsDto {
     pub generation_provider: String,
     pub transcription_model: String,
     pub generation_model: String,
-    pub cost_quality: u8,
     pub remote_generation_model: String,
     pub image_model: String,
     pub video_model: String,
@@ -140,7 +135,6 @@ impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
             generation_provider: settings.generation_provider.clone(),
             transcription_model: settings.transcription_model.clone(),
             generation_model: settings.generation_model.clone(),
-            cost_quality: settings.cost_quality,
             remote_generation_model: settings.remote_generation_model.clone(),
             image_model: settings.image_model.clone(),
             video_model: settings.video_model.clone(),
@@ -166,12 +160,6 @@ pub struct ProviderModelSettingsResponse {
 pub struct SetVeniceModelRequest {
     pub mode: ModelMode,
     pub model_id: String,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SetCostQualityRequest {
-    pub value: u8,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -305,10 +293,6 @@ pub fn transcription_model() -> String {
 
 pub fn generation_model() -> String {
     current_settings().generation_model
-}
-
-pub fn cost_quality() -> f64 {
-    f64::from(current_settings().cost_quality.min(100)) / 100.0
 }
 
 pub fn generation_provider() -> String {
@@ -471,20 +455,6 @@ pub fn set_venice_model(
         ModelMode::Image => settings.image_model = model_id.to_string(),
         ModelMode::Video => settings.video_model = model_id.to_string(),
     })
-}
-
-#[tauri::command]
-pub fn set_cost_quality(
-    state: State<'_, ProviderSettingsState>,
-    request: SetCostQualityRequest,
-) -> Result<ProviderModelSettingsDto, AppError> {
-    if request.value > 100 {
-        return Err(AppError::new(
-            "cost_quality_invalid",
-            "Preference must be from 0 to 100.",
-        ));
-    }
-    update_settings(&state, |settings| settings.cost_quality = request.value)
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -1054,9 +1024,8 @@ fn default_settings() -> ProviderModelSettings {
         transcription_provider: PROVIDER_VENICE.to_string(),
         generation_provider: PROVIDER_VENICE.to_string(),
         transcription_model: DEFAULT_TRANSCRIPTION_MODEL.to_string(),
-        generation_model: default_generation_model_for_release(),
-        cost_quality: DEFAULT_COST_QUALITY,
-        remote_generation_model: default_generation_model_for_release(),
+        generation_model: DEFAULT_GENERATION_MODEL.to_string(),
+        remote_generation_model: DEFAULT_GENERATION_MODEL.to_string(),
         image_model: DEFAULT_IMAGE_MODEL.to_string(),
         video_model: DEFAULT_VIDEO_MODEL.to_string(),
         venice_api_key: None,
@@ -1081,22 +1050,6 @@ fn default_transcription_model() -> String {
 
 fn default_generation_model() -> String {
     DEFAULT_GENERATION_MODEL.to_string()
-}
-
-fn default_cost_quality() -> u8 {
-    DEFAULT_COST_QUALITY
-}
-
-fn default_generation_model_for_release() -> String {
-    let enabled = std::env::var("OS_JUNE_AUTO_MODE_DEFAULT")
-        .ok()
-        .or_else(|| option_env!("OS_JUNE_AUTO_MODE_DEFAULT").map(str::to_string))
-        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
-    if enabled {
-        AUTO_GENERATION_MODEL.to_string()
-    } else {
-        DEFAULT_GENERATION_MODEL.to_string()
-    }
 }
 
 fn default_image_model() -> String {
@@ -1176,7 +1129,6 @@ fn sanitize_settings(
         },
         transcription_model,
         generation_model,
-        cost_quality: settings.cost_quality.min(100),
         remote_generation_model,
         image_model: non_empty_or(settings.image_model, &defaults.image_model),
         video_model: sanitize_video_model(settings.video_model, &defaults.video_model),
@@ -1440,13 +1392,6 @@ impl ModelMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn legacy_settings_default_cost_quality_to_balanced() {
-        let settings: ProviderModelSettings =
-            serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(settings.cost_quality, 50);
-    }
 
     #[test]
     fn capabilities_include_vision_matches_normalized_supports_vision() {

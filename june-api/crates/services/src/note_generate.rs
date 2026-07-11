@@ -65,7 +65,6 @@ impl NoteGenerateService {
                     existing_generated_note: params.existing_generated_note,
                     model: params.model_id.clone(),
                     system_prompt: prompts::NOTE_GENERATE.to_string(),
-                    cost_quality: params.cost_quality,
                     provider_credentials: params.provider_credentials.clone(),
                     unmetered: true,
                 })
@@ -103,7 +102,6 @@ impl NoteGenerateService {
                 existing_generated_note: params.existing_generated_note,
                 model: params.model_id.clone(),
                 system_prompt: prompts::NOTE_GENERATE.to_string(),
-                cost_quality: params.cost_quality,
                 provider_credentials: params.provider_credentials.clone(),
                 unmetered: false,
             })
@@ -149,7 +147,6 @@ pub struct NoteGenerateParams {
     pub language: Option<String>,
     pub existing_generated_note: Option<String>,
     pub model_id: ModelId,
-    pub cost_quality: Option<f64>,
     pub provider_credentials: ProviderCredentials,
 }
 

@@ -261,7 +261,6 @@ pub fn run() {
             providers::provider_model_settings,
             providers::list_venice_models,
             providers::set_venice_model,
-            providers::set_cost_quality,
             providers::set_venice_api_key,
             providers::clear_venice_api_key,
             providers::set_image_safe_mode,
