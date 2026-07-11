@@ -60,6 +60,7 @@ Per-repo config the engineering skills read before acting (see the
 
 - [hermes-architecture.md](hermes-architecture.md) — the agent runtime: bridge, gateway, control plane, sessions, models
 - [hermes-gateway-gotchas.md](hermes-gateway-gotchas.md) — integration gotchas: restart discipline, config contract, MCP OAuth, event types, upstream tool-schema quirks
+- [local-agent-models.md](local-agent-models.md) — local OpenAI-compatible agent models, including tool-calling setup and live verification
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
 - [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
 - [telemetry.md](telemetry.md) — public overview of June telemetry, current behavior, and policies
