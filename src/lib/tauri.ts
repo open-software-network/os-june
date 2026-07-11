@@ -180,6 +180,7 @@ export type ProviderModelSettingsDto = {
   generationProvider: string;
   transcriptionModel: string;
   generationModel: string;
+  costQuality: number;
   remoteGenerationModel: string;
   imageModel: string;
   videoModel: string;
@@ -1731,6 +1732,12 @@ export async function listVeniceModels(mode: ProviderModelMode) {
 export async function setVeniceModel(mode: ProviderModelMode, modelId: string) {
   return invoke<ProviderModelSettingsDto>("set_venice_model", {
     request: { mode, modelId },
+  });
+}
+
+export async function setCostQuality(value: number) {
+  return invoke<ProviderModelSettingsDto>("set_cost_quality", {
+    request: { value },
   });
 }
 
