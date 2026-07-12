@@ -1060,9 +1060,12 @@ fn usage_from_chat_body(body: &[u8], content_type: &str) -> Result<TokenUsage, D
     if content_type.contains("text/event-stream") {
         return usage_from_sse(body);
     }
-    let parsed = serde_json::from_slice::<ChatCompletionResponse>(body)
+    let parsed = serde_json::from_slice::<serde_json::Value>(body)
         .map_err(|_| DomainError::UpstreamProvider)?;
-    parsed.usage_or_error()
+    parsed
+        .get("usage")
+        .and_then(token_usage_from_value)
+        .ok_or(DomainError::UpstreamProvider)
 }
 
 fn usage_from_sse(body: &[u8]) -> Result<TokenUsage, DomainError> {
@@ -1454,8 +1457,28 @@ mod tests {
         SAFETY_CONTEXT, STREAM_HEARTBEAT_INTERVAL, VeniceAgentChat, VeniceGenerator,
         VeniceModelsApiResponse, cleanup_generated_note_text, cleanup_source_text,
         generation_source_text, inject_safety_context, sanitize_tool_schemas,
-        strip_scaffolding_tags, venice_priced_model_items,
+        strip_scaffolding_tags, usage_from_chat_body, venice_priced_model_items,
     };
+
+    #[test]
+    fn non_streaming_tool_call_usage_allows_null_message_content() {
+        let body = serde_json::to_vec(&json!({
+            "choices": [{
+                "message": {"content": null, "tool_calls": [{"type": "function"}]},
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 7}
+        }))
+        .unwrap();
+
+        assert_eq!(
+            usage_from_chat_body(&body, "application/json"),
+            Ok(june_domain::TokenUsage {
+                prompt_tokens: 12,
+                completion_tokens: 7,
+            })
+        );
+    }
     use crate::http;
     use june_config::ModelType;
     use june_config::UpstreamConfig;
