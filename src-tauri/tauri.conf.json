@@ -128,7 +128,8 @@
     ],
     "resources": {
       "../.tauri-hermes/hermes": "native/hermes",
-      "resources/hermes-skills": "native/hermes-skills"
+      "resources/hermes-skills": "native/hermes-skills",
+      "resources/voice-playback": "native/voice-playback"
     }
   }
 }

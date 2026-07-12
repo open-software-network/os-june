@@ -952,6 +952,7 @@ pub async fn start_recording(
             ));
         }
     }
+    crate::voice_playback::stop_for_audio_capture(&app)?;
     finish_active_capture_before_start(&repos).await?;
     let capture_paths = paths.clone();
     let capture_note_id = note.id.clone();
@@ -1099,6 +1100,7 @@ pub async fn resume_recording(
     app: AppHandle,
     request: SessionRequest,
 ) -> Result<RecordingStatusDto, AppError> {
+    crate::voice_playback::stop_for_audio_capture(&app)?;
     let snapshot = resume_capture(&request.session_id)?;
     checkpoint_recording_recovery_snapshot(&app, &snapshot).await;
     Ok(snapshot.status)

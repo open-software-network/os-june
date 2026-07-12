@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import net from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readDevAuthPreflight } from "./tauri-dev-preflight.mjs";
 
 // A port is "free" when a connection is refused. Mirrors the probe in
 // tauri-before-dev.mjs so both scripts agree on which port to use.
@@ -41,10 +42,19 @@ async function resolveFrontendPort() {
 }
 
 const REPLAY_ONBOARDING_FLAG = "--replay-onboarding";
+const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const platformConfigs = {
   darwin: "src-tauri/tauri.macos.conf.json",
   win32: "src-tauri/tauri.windows.conf.json",
 };
+
+try {
+  const authGuidance = readDevAuthPreflight(rootDir);
+  if (authGuidance) console.error(authGuidance);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
 
 let replayOnboarding = false;
 const tauriArgs = [];
@@ -95,8 +105,7 @@ child.on("error", (error) => {
 });
 
 function tauriCommand() {
-  const scriptDir = dirname(fileURLToPath(import.meta.url));
   const binary = process.platform === "win32" ? "tauri.cmd" : "tauri";
-  const localBinary = resolve(scriptDir, "..", "node_modules", ".bin", binary);
+  const localBinary = resolve(rootDir, "node_modules", ".bin", binary);
   return existsSync(localBinary) ? localBinary : "tauri";
 }

@@ -19,6 +19,7 @@ pub mod providers;
 pub mod theme_icon;
 pub mod updates;
 pub mod video_download_url;
+pub mod voice_playback;
 
 use serde::Deserialize;
 use std::sync::Mutex;
@@ -274,6 +275,16 @@ pub fn run() {
             providers::save_local_generation_settings,
             providers::set_local_generation_enabled,
             providers::probe_local_generation_endpoint,
+            voice_playback::voice_playback_settings,
+            voice_playback::save_voice_playback_settings,
+            voice_playback::set_voice_playback_reference,
+            voice_playback::clear_voice_playback_reference,
+            voice_playback::voice_playback_status,
+            voice_playback::voice_playback_install,
+            voice_playback::voice_playback_warm,
+            voice_playback::voice_playback_synthesize,
+            voice_playback::voice_playback_play,
+            voice_playback::voice_playback_cancel,
             p3a::p3a_settings,
             p3a::p3a_question_catalog,
             p3a::set_p3a_enabled,
@@ -299,6 +310,7 @@ pub fn run() {
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             providers::setup(app);
+            voice_playback::setup(app);
             setup_video_asset_scope(app);
             p3a::setup(app);
             updates::setup(app);
@@ -319,6 +331,7 @@ pub fn run() {
             tauri::RunEvent::Exit => {
                 dictation::stop_helper(app);
                 hermes_bridge::shutdown(app);
+                voice_playback::shutdown(app);
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_main_window(app),

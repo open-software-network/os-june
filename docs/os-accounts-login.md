@@ -38,7 +38,9 @@ see [june-api-prd.md](june-api-prd.md). Implementation lives in
 short-circuit login to a fake signed-in account backed by a shared bearer token
 (`OS_JUNE_LOCAL_DEV_BEARER_TOKEN`), so a clone runs with no OS Accounts or
 billing. `OS_JUNE_USE_PROD_ACCOUNTS_TOKENS=1` opts a dev build back into real
-tokens.
+tokens. `pnpm tauri:dev` refuses to launch when the desktop and backend auth
+modes disagree. In real-auth mode it also prints the exact loopback callback
+that must be registered for the selected development OAuth client.
 
 ## Boundary
 

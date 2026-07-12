@@ -1912,6 +1912,73 @@ export function localVideoFileSrc(path: string) {
   return convertFileSrc(resolved);
 }
 
+export type VoicePlaybackMode = "click" | "streaming";
+
+export type VoicePlaybackReferenceDto = {
+  fileName: string;
+  durationMs: number;
+  transcript: string;
+};
+
+export type VoicePlaybackSettingsDto = {
+  playbackMode: VoicePlaybackMode;
+  modelUseAcknowledged: boolean;
+  referenceClip?: VoicePlaybackReferenceDto;
+};
+
+export type VoicePlaybackStatusDto =
+  | { state: "unavailable"; reason: string }
+  | { state: "notInstalled" }
+  | { state: "installing"; stage: string; progress?: number }
+  | { state: "idle" | "starting" | "ready" }
+  | { state: "error"; message: string };
+
+export const VOICE_PLAYBACK_STATUS_EVENT = "june://voice-playback-status";
+
+export async function voicePlaybackSettings() {
+  return invoke<VoicePlaybackSettingsDto>("voice_playback_settings");
+}
+
+export async function saveVoicePlaybackSettings(
+  request: Pick<VoicePlaybackSettingsDto, "playbackMode" | "modelUseAcknowledged">,
+) {
+  return invoke<VoicePlaybackSettingsDto>("save_voice_playback_settings", { request });
+}
+
+export async function setVoicePlaybackReference(sourcePath: string, transcript: string) {
+  return invoke<VoicePlaybackSettingsDto>("set_voice_playback_reference", {
+    request: { sourcePath, transcript },
+  });
+}
+
+export async function clearVoicePlaybackReference() {
+  return invoke<VoicePlaybackSettingsDto>("clear_voice_playback_reference");
+}
+
+export async function voicePlaybackStatus() {
+  return invoke<VoicePlaybackStatusDto>("voice_playback_status");
+}
+
+export async function voicePlaybackInstall() {
+  return invoke<void>("voice_playback_install");
+}
+
+export async function voicePlaybackWarm() {
+  return invoke<void>("voice_playback_warm");
+}
+
+export async function voicePlaybackSynthesize(text: string) {
+  return invoke<{ wavPath: string }>("voice_playback_synthesize", { request: { text } });
+}
+
+export async function voicePlaybackPlay(wavPath: string) {
+  return invoke<void>("voice_playback_play", { request: { wavPath } });
+}
+
+export async function voicePlaybackCancel(releaseModel: boolean) {
+  return invoke<void>("voice_playback_cancel", { request: { releaseModel } });
+}
+
 export async function dictationHotkeyStatus() {
   return invoke<DictationHelperEvent>("dictation_hotkey_status");
 }

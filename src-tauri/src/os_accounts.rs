@@ -399,10 +399,9 @@ impl Config {
                 "OS_ACCOUNTS_CLIENT_ID",
                 option_env!("OS_ACCOUNTS_CLIENT_ID"),
             ),
-            loopback_port: std::env::var("OS_ACCOUNTS_LOOPBACK_PORT")
-                .ok()
-                .and_then(|v| v.trim().parse().ok())
-                .unwrap_or(DEFAULT_LOOPBACK_PORT),
+            loopback_port: parse_loopback_port(
+                std::env::var("OS_ACCOUNTS_LOOPBACK_PORT").ok().as_deref(),
+            ),
         }
     }
 
@@ -426,6 +425,13 @@ impl Config {
             "osjune://auth/callback".to_string()
         }
     }
+}
+
+fn parse_loopback_port(value: Option<&str>) -> u16 {
+    value
+        .and_then(|value| value.trim().parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .unwrap_or(DEFAULT_LOOPBACK_PORT)
 }
 
 fn env_trimmed(key: &str) -> String {
@@ -1963,6 +1969,14 @@ fn browser_open_command(url: &str) -> std::process::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_port_rejects_zero_and_invalid_values() {
+        assert_eq!(parse_loopback_port(None), DEFAULT_LOOPBACK_PORT);
+        assert_eq!(parse_loopback_port(Some("0")), DEFAULT_LOOPBACK_PORT);
+        assert_eq!(parse_loopback_port(Some("70000")), DEFAULT_LOOPBACK_PORT);
+        assert_eq!(parse_loopback_port(Some("4317")), 4317);
+    }
 
     #[test]
     fn callback_validation_ignores_wrong_state() {

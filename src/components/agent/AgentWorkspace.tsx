@@ -7,6 +7,7 @@ import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconBolt } from "central-icons/IconBolt";
 import { IconBranchSimple } from "central-icons/IconBranchSimple";
+import { IconVolumeUp } from "central-icons/IconVolumeUp";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconCheckmark1Medium } from "central-icons/IconCheckmark1Medium";
@@ -205,6 +206,20 @@ import {
   type BranchSessionResult,
 } from "../../lib/hermes-session-branch";
 import { normalizeSteerText } from "../../lib/hermes-session-steer";
+import {
+  clearVoicePlaybackError,
+  isVoiceTurnPlaying,
+  speakVoiceTurn,
+  stopVoicePlayback,
+  subscribeVoicePlayback,
+  voicePlaybackAvailable,
+  voicePlaybackSetupError,
+  voicePlaybackState,
+} from "../../lib/voice-playback";
+import {
+  acceptAgentVoicePlaybackEvent,
+  useAgentVoicePlayback,
+} from "../../lib/use-agent-voice-playback";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
@@ -5630,6 +5645,7 @@ export function AgentWorkspace({
     }
     composerEditorRef.current?.focus();
     try {
+      await stopVoicePlayback({ releaseModel: true });
       await dictationHelperCommand({
         type: "toggle_listening",
         shortcut: "Dictation",
@@ -6024,6 +6040,7 @@ export function AgentWorkspace({
       // and the Stage B status helpers below.
       const classified = classifyHermesEvent(liveEvent);
       const storedClassified = withStoredHermesSessionId(classified, storedSessionId);
+      acceptAgentVoicePlaybackEvent(storedSessionId, storedClassified);
       // Feature 15: record every inbound frame (raw type + the kind it
       // classified to) into the bounded, sanitized trace buffer so the dev/debug
       // trace panel can reconstruct the session. recordInbound re-classifies and
@@ -8615,6 +8632,15 @@ export function AgentWorkspace({
         ...(videoTurnsBySession[selectedHermesSessionId] ?? []),
       ].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     : [];
+  // Read streaming replies aloud when the voice setting asks for it, and stop
+  // any playback when the user switches sessions or leaves the workspace.
+  useAgentVoicePlayback(selectedHermesSessionId);
+  const voicePlayback = useSyncExternalStore(subscribeVoicePlayback, voicePlaybackState);
+  useEffect(() => {
+    if (!voicePlayback.error) return;
+    toast.error(voicePlayback.error);
+    clearVoicePlaybackError();
+  }, [voicePlayback.error]);
   const taskTurns = selectedTask
     ? mergeThinkingTurns(
         buildAgentChatTurns(
@@ -11656,6 +11682,10 @@ function AgentChatTurnRow({
       </button>
     </HoverTip>
   ) : null;
+  const speakAction =
+    turn.role === "assistant" && copyText ? (
+      <SpeakTurnAction turnId={turn.id} markdown={copyText} />
+    ) : null;
   // Timestamp for the row. relativeDate returns "" for an unparseable value, so
   // we only render the <time> when there's a real date to show.
   const timestampLabel = relativeDate(turn.createdAt);
@@ -11681,6 +11711,7 @@ function AgentChatTurnRow({
            * assistant turns, so the icons always stay nearest the message. */}
           {turn.role === "user" ? timestampAction : null}
           {copyAction}
+          {speakAction}
           {branchAction}
           {turn.role === "user" ? null : timestampAction}
         </div>
@@ -13034,6 +13065,48 @@ function canRequestBranchFromTurnId(id: string) {
  * available yet instead of swallowing the click as a silent no-op (JUN-182).
  * The branch itself flows through the typed `branchSession` method via
  * `onBranch`. */
+/** Play (or stop) a spoken rendition of an assistant reply through the local
+ * voice worker. Rendered on assistant rows only; when voice playback isn't set
+ * up yet, the click points at the settings surface instead of failing silently. */
+export function SpeakTurnAction({ turnId, markdown }: { turnId: string; markdown: string }) {
+  const speech = useSyncExternalStore(subscribeVoicePlayback, voicePlaybackState);
+  const active = speech.turnId === turnId;
+  const preparing = active && speech.loading;
+  const tip = active ? "Stop speaking" : "Speak message";
+  return (
+    <HoverTip
+      compact
+      width={116}
+      delay={TURN_ACTION_TIP_DELAY_MS}
+      tip={tip}
+      className="agent-turn-action-tip"
+    >
+      <button
+        type="button"
+        className="agent-turn-action"
+        aria-label={tip}
+        aria-busy={preparing || undefined}
+        data-speaking={active ? "true" : undefined}
+        onClick={() => {
+          if (!voicePlaybackAvailable() && !isVoiceTurnPlaying(turnId)) {
+            toast.error(voicePlaybackSetupError() ?? "Voice playback is unavailable.");
+            return;
+          }
+          void speakVoiceTurn(turnId, markdown).catch(() => undefined);
+        }}
+      >
+        {preparing ? (
+          <DotSpinner className="agent-turn-action-spinner" />
+        ) : active ? (
+          <IconStop size={14} aria-hidden />
+        ) : (
+          <IconVolumeUp size={14} aria-hidden />
+        )}
+      </button>
+    </HoverTip>
+  );
+}
+
 export function BranchFromHereAction({
   messageId,
   onBranch,

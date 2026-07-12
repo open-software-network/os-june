@@ -1312,7 +1312,7 @@ function stripMediaImageReferences(value: string) {
   return stripMediaReferences(value);
 }
 
-function stripMediaReferences(value: string) {
+export function stripMediaReferences(value: string) {
   return value
     .replace(mediaImageReferencePattern(), "")
     .replace(mediaVideoReferencePattern(), "")

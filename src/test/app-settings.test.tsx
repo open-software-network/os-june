@@ -62,6 +62,18 @@ const mocks = vi.hoisted(() => ({
   reconcileToStable: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
+  clearVoicePlaybackReference: vi.fn(),
+  saveVoicePlaybackSettings: vi.fn(),
+  setVoicePlaybackReference: vi.fn(),
+  voicePlaybackCancel: vi.fn().mockResolvedValue(undefined),
+  voicePlaybackInstall: vi.fn(),
+  voicePlaybackSettings: vi
+    .fn()
+    .mockResolvedValue({ playbackMode: "click", modelUseAcknowledged: false }),
+  voicePlaybackSynthesize: vi.fn(),
+  voicePlaybackPlay: vi.fn(),
+  voicePlaybackStatus: vi.fn().mockResolvedValue({ state: "notInstalled" }),
+  voicePlaybackWarm: vi.fn(),
 }));
 
 vi.mock("../lib/updater", () => ({
@@ -125,6 +137,17 @@ vi.mock("../lib/tauri", () => ({
   deleteDictionaryEntry: mocks.deleteDictionaryEntry,
   juneOpenCommunityPage: mocks.juneOpenCommunityPage,
   juneOpenVerifyPage: mocks.juneOpenVerifyPage,
+  VOICE_PLAYBACK_STATUS_EVENT: "june://voice-playback-status",
+  clearVoicePlaybackReference: mocks.clearVoicePlaybackReference,
+  saveVoicePlaybackSettings: mocks.saveVoicePlaybackSettings,
+  setVoicePlaybackReference: mocks.setVoicePlaybackReference,
+  voicePlaybackCancel: mocks.voicePlaybackCancel,
+  voicePlaybackInstall: mocks.voicePlaybackInstall,
+  voicePlaybackSettings: mocks.voicePlaybackSettings,
+  voicePlaybackSynthesize: mocks.voicePlaybackSynthesize,
+  voicePlaybackPlay: mocks.voicePlaybackPlay,
+  voicePlaybackStatus: mocks.voicePlaybackStatus,
+  voicePlaybackWarm: mocks.voicePlaybackWarm,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({

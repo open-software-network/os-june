@@ -25,6 +25,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0013](adr/0013-stream-inference-responses-through-june-api.md) — inference responses stream through June API (SSE pass-through + keep-alive heartbeats); charges settle after the stream ends
 - [adr/0014](adr/0014-pinned-dictation-paste-target.md) — the dictation paste target is pinned when the recording stops, never re-resolved at paste time
 - [adr/0015](adr/0015-video-generation-tools.md) — video generation: `/video` fast path + LLM tools, async job + poll, quote-priced, via Venice
+- [adr/0016](adr/0016-local-voice-playback-python-sidecar.md) — local Apple Silicon voice playback through a pinned, verified OmniVoice Python sidecar, with production builds gated on license clearance
 
 ## Enforceable rules (spec/)
 
@@ -61,6 +62,7 @@ Per-repo config the engineering skills read before acting (see the
 - [hermes-architecture.md](hermes-architecture.md) — the agent runtime: bridge, gateway, control plane, sessions, models
 - [hermes-gateway-gotchas.md](hermes-gateway-gotchas.md) — integration gotchas: restart discipline, config contract, MCP OAuth, event types, upstream tool-schema quirks
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
+- [voice-playback.md](voice-playback.md) — local voice playback setup, storage, licensing gate, troubleshooting, and validation
 - [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
 - [telemetry.md](telemetry.md) — public overview of June telemetry, current behavior, and policies
 - [telemetry-p3a-prd.md](telemetry-p3a-prd.md) — June P3A: opt-in, privacy-preserving product telemetry

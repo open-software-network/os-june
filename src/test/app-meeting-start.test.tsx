@@ -62,6 +62,12 @@ vi.mock("../lib/recording-sounds", () => ({
 
 vi.mock("../lib/tauri", () => ({
   primeGeneratedVideoDir: vi.fn().mockResolvedValue(undefined),
+  VOICE_PLAYBACK_STATUS_EVENT: "june://voice-playback-status",
+  voicePlaybackSettings: vi
+    .fn()
+    .mockResolvedValue({ playbackMode: "click", modelUseAcknowledged: false }),
+  voicePlaybackStatus: vi.fn().mockResolvedValue({ state: "notInstalled" }),
+  voicePlaybackCancel: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,

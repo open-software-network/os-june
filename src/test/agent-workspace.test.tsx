@@ -38,6 +38,7 @@ const HERO_GREETING = new RegExp(
 const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
   createAgentTask: vi.fn(),
+  dictationHelperCommand: vi.fn().mockResolvedValue(undefined),
   editImage: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
   finalizeHermesBridgeBranch: vi.fn(),
@@ -81,6 +82,11 @@ const mocks = vi.hoisted(() => ({
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
+  voicePlaybackCancel: vi.fn().mockResolvedValue(undefined),
+  voicePlaybackSettings: vi
+    .fn()
+    .mockResolvedValue({ playbackMode: "click", modelUseAcknowledged: false }),
+  voicePlaybackStatus: vi.fn().mockResolvedValue({ state: "notInstalled" }),
   deleteHermesSession: vi.fn(),
   listHermesSessionMessages: vi.fn(),
   hermesAgentCliAccess: vi.fn(),
@@ -105,6 +111,7 @@ vi.mock("../lib/tauri", () => ({
   invoke: vi.fn(async () => []),
   cancelAgentTask: mocks.cancelAgentTask,
   createAgentTask: mocks.createAgentTask,
+  dictationHelperCommand: mocks.dictationHelperCommand,
   editImage: mocks.editImage,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
   finalizeHermesBridgeBranch: mocks.finalizeHermesBridgeBranch,
@@ -148,6 +155,10 @@ vi.mock("../lib/tauri", () => ({
   toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform: mocks.updateHermesBridgeMessagingPlatform,
+  VOICE_PLAYBACK_STATUS_EVENT: "june://voice-playback-status",
+  voicePlaybackCancel: mocks.voicePlaybackCancel,
+  voicePlaybackSettings: mocks.voicePlaybackSettings,
+  voicePlaybackStatus: mocks.voicePlaybackStatus,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({

@@ -85,6 +85,7 @@ import {
   type LiveTranscriptEventDto,
 } from "../lib/tauri";
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
+import { stopVoicePlayback } from "../lib/voice-playback";
 import { isMacLikePlatform, isPrimaryShortcut } from "../lib/platform";
 import { mergeSourceReadiness } from "../lib/source-readiness";
 import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
@@ -2528,6 +2529,7 @@ export function App() {
             ? "microphoneOnly"
             : requestedSourceMode;
 
+        await stopVoicePlayback({ releaseModel: true });
         const recording = await startRecording(noteId, effectiveMode);
         setRecordingNote(noteId);
         const status = recordingToStatus(recording);
@@ -2882,10 +2884,11 @@ export function App() {
   }, []);
 
   async function handleResumeRecording(sessionId: string) {
-    playRecordingSound("start");
     try {
+      await stopVoicePlayback({ releaseModel: true });
       const status = await resumeRecording(sessionId);
       dispatch({ type: "recordingStatusChanged", status });
+      playRecordingSound("start");
     } catch (err) {
       setError(messageFromError(err));
     }

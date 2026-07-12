@@ -123,6 +123,7 @@ import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
 import { PrivacySettingsSection } from "./PrivacySettingsSection";
+import { VoicePlaybackSection } from "./VoicePlaybackSection";
 import {
   getStoredDateFormat,
   setStoredDateFormat,
@@ -1778,6 +1779,8 @@ export function AppSettings({
             </div>
           </section>
         ) : null}
+
+        {activeTab === "audio" ? <VoicePlaybackSection /> : null}
 
         {activeTab === "models" ? (
           <>

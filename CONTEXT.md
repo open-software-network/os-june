@@ -257,6 +257,21 @@ v1, so the binary holds no upstream provider key.
 _Avoid_: speech-to-text (too generic — covers both dictation and note
 transcription).
 
+**Voice playback**:
+Reading an agent chat reply aloud with a locally synthesized voice. Two modes,
+chosen in settings: click-to-play from a per-message speaker action (default),
+or automatic sentence-by-sentence playback while the reply streams. Hidden
+reasoning, tool and protocol messages, code, and Markdown structure are never
+spoken. The voice is cloned from either June's generated default reference or
+an app-owned, validated WAV **reference clip** supplied with its transcript.
+Fully on-device: reply text and reference audio never go to June API, and
+playback is never metered or billed. Playback cancels when the agent chat
+session changes, recording or dictation starts, or the user stops it. Native
+voice playback supports Apple Silicon macOS only. See
+[ADR-0016](docs/adr/0016-local-voice-playback-python-sidecar.md).
+_Avoid_: TTS (say voice playback for the feature; TTS only for the model
+class), narration, read-aloud (unqualified — that is one of its two modes).
+
 **Note transcription**:
 June records a full meeting or capture session, then transcribes the saved
 audio as a single batch operation and runs **note generation** on the

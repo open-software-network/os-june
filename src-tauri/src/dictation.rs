@@ -587,6 +587,10 @@ impl DictationCommand {
             }),
         }
     }
+
+    fn starts_audio_capture(self) -> bool {
+        matches!(self, Self::StartListening | Self::ToggleListening)
+    }
 }
 
 impl DictationShortcutInput {
@@ -884,6 +888,10 @@ pub fn dictation_helper_command(
     state: State<'_, HelperState>,
     command: serde_json::Value,
 ) -> Result<(), AppError> {
+    if helper_command_starts_audio_capture(&command) {
+        crate::voice_playback::stop_for_audio_capture(&app)?;
+    }
+
     #[cfg(target_os = "macos")]
     if helper_command_resets_shortcut_activation(&command) {
         reset_shortcut_activation(&app);
@@ -906,6 +914,13 @@ fn helper_command_resets_shortcut_activation(command: &serde_json::Value) -> boo
     matches!(
         command.get("type").and_then(serde_json::Value::as_str),
         Some("stop_and_paste" | "discard_recording" | "toggle_listening")
+    )
+}
+
+fn helper_command_starts_audio_capture(command: &serde_json::Value) -> bool {
+    matches!(
+        command.get("type").and_then(serde_json::Value::as_str),
+        Some("start_listening" | "toggle_listening" | "start_mic_test")
     )
 }
 
@@ -1708,18 +1723,22 @@ fn update_shortcut_helper_finalizing(app: &AppHandle, finalizing: bool) {
 }
 
 fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_label: &str) {
-    // The start path needs a signed-in OS Accounts session for the
-    // transcription that follows, but the token check must not sit between
-    // the key press and the microphone: capture is local and the token is
-    // only consumed once the recording ends. Awaiting it here delayed every
-    // start by an executor hop, blocked on a network refresh whenever the
-    // cached token was stale, and could reorder a fast press-release so
-    // stop_and_paste reached the helper before start_listening. Start
-    // immediately and check in parallel; a signed-out session discards the
-    // moments-old local recording and lands on the same sign-in surface as
-    // before. ToggleListening can also start, but we can't tell
-    // start-from-stop without extra state; transcribe_recording_ready acts
-    // as the backstop there.
+    // Capture must not overlap voice playback. The native boundary owns this
+    // stop so menu actions, note chat, and global hotkeys all obey it. A
+    // failure leaves the microphone closed and surfaces the voice error.
+    if command.starts_audio_capture() {
+        if let Err(error) = crate::voice_playback::stop_for_audio_capture(app) {
+            emit_dictation_event_value(app, app_error_event(error));
+            reset_shortcut_activation(app);
+            return;
+        }
+    }
+
+    // Capture is local, so the token check still runs in parallel after the
+    // helper starts. A signed-out session discards the moments-old recording;
+    // transient account outages leave it intact for the end-of-recording
+    // backstop. The synchronous voice stop above cannot reorder a fast
+    // press-release because helper commands remain serialized here.
     let forwarded = forward_dictation_command(app, command, shortcut_label);
     if !forwarded && matches!(command, DictationCommand::ToggleListening) {
         reset_shortcut_activation(app);
@@ -4977,6 +4996,22 @@ mod tests {
         assert!(!helper_command_resets_shortcut_activation(
             &serde_json::json!({ "type": "start_shortcut_capture" })
         ));
+    }
+
+    #[test]
+    fn every_helper_capture_start_stops_voice_playback_first() {
+        for command_type in ["start_listening", "toggle_listening", "start_mic_test"] {
+            assert!(helper_command_starts_audio_capture(
+                &serde_json::json!({ "type": command_type })
+            ));
+        }
+        assert!(!helper_command_starts_audio_capture(
+            &serde_json::json!({ "type": "stop_and_paste" })
+        ));
+        assert!(DictationCommand::StartListening.starts_audio_capture());
+        assert!(DictationCommand::ToggleListening.starts_audio_capture());
+        assert!(!DictationCommand::StopAndPaste.starts_audio_capture());
+        assert!(!DictationCommand::DiscardListening.starts_audio_capture());
     }
 
     #[test]

@@ -23,6 +23,11 @@ If `127.0.0.1:1421` or `127.0.0.1:8080` is already listening, the script
 reuses the existing service. Set `VITE_PORT` or `JUNE_API_PORT` to choose a
 different port.
 
+Before launch, the script checks that the desktop and local June API select
+the same auth mode. It stops with an actionable error when only one side uses
+local mode. When both sides use real OS Accounts, it prints the exact loopback
+callback URI that the development OAuth client must allowlist.
+
 Replay first-run onboarding without wiping all app data:
 
 ```sh
