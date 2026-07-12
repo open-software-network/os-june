@@ -308,6 +308,8 @@ pub fn generation_model() -> String {
 }
 
 pub fn cost_quality() -> f64 {
+    // Keep the wire value safe even if a user manually edits the settings file
+    // after it has been loaded but before a future accessor refactor.
     f64::from(current_settings().cost_quality.min(100)) / 100.0
 }
 
@@ -1088,9 +1090,7 @@ fn default_cost_quality() -> u8 {
 }
 
 fn default_generation_model_for_release() -> String {
-    let enabled = std::env::var("OS_JUNE_AUTO_MODE_DEFAULT")
-        .ok()
-        .or_else(|| option_env!("OS_JUNE_AUTO_MODE_DEFAULT").map(str::to_string))
+    let enabled = option_env!("OS_JUNE_AUTO_MODE_DEFAULT")
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
     if enabled {
         AUTO_GENERATION_MODEL.to_string()

@@ -957,9 +957,9 @@ export function AppSettings({
     }
   }
 
-  async function saveCostQuality() {
+  async function saveCostQuality(value: number) {
     try {
-      const next = await setCostQuality(providerSettings.costQuality);
+      const next = await setCostQuality(value);
       setProviderSettings(next);
       setStatus("Automatic model preference updated.");
     } catch (error) {
@@ -1872,8 +1872,12 @@ export function AppSettings({
                               costQuality: Number(event.target.value),
                             }))
                           }
-                          onPointerUp={() => void saveCostQuality()}
-                          onBlur={() => void saveCostQuality()}
+                          onPointerUp={(event) =>
+                            void saveCostQuality(Number(event.currentTarget.value))
+                          }
+                          onKeyUp={(event) =>
+                            void saveCostQuality(Number(event.currentTarget.value))
+                          }
                         />
                         <span>Quality</span>
                       </div>
