@@ -179,6 +179,7 @@ async function cancelVoicePlayback(releaseModel: boolean) {
     pumpPromise = undefined;
     setState({ turnId: null, loading: false, error: null });
   } catch (error) {
+    pumpPromise = undefined;
     const message = messageFromError(error);
     setState({ loading: false, error: message });
     throw error;

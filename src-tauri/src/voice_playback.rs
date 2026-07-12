@@ -20,6 +20,7 @@ const PYTHON_VERSION: &str = "3.12";
 const MODEL_REPOSITORY: &str = "k2-fsa/OmniVoice";
 const MODEL_REVISION: &str = "c5fdb5ccb189668d56333f77ba2629f4cd7535f4";
 const RUNTIME_SOURCE_REVISION: &str = "3d2bd9d07bbe8d16c2439745b0ded450dc41e215";
+const RUNTIME_PACKAGE_FINGERPRINT: &str = env!("OS_JUNE_VOICE_SOURCE_FINGERPRINT");
 const WORKER_SOURCE: &str = include_str!("../resources/voice-playback/worker.py");
 const RUNTIME_LOCK: &str = include_str!("../resources/voice-playback/uv.lock");
 const DEFAULT_REFERENCE_TRANSCRIPT: &str =
@@ -302,6 +303,7 @@ fn install_fingerprint() -> String {
     digest.update(b"june-voice-playback-v2\0");
     digest.update(PYTHON_VERSION.as_bytes());
     digest.update(RUNTIME_SOURCE_REVISION.as_bytes());
+    digest.update(RUNTIME_PACKAGE_FINGERPRINT.as_bytes());
     digest.update(RUNTIME_LOCK.as_bytes());
     digest.update(WORKER_SOURCE.as_bytes());
     digest.update(MODEL_REVISION.as_bytes());
@@ -898,19 +900,19 @@ fn install_child_error(child: &mut Child, fallback: &str) -> AppError {
 }
 
 fn terminate_install_child(child: &mut Child) {
-    signal_install_process(child.id(), false);
+    signal_process_group(child.id(), false);
     for _ in 0..20 {
         if child.try_wait().ok().flatten().is_some() {
             return;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    signal_install_process(child.id(), true);
+    signal_process_group(child.id(), true);
     let _ = child.wait();
 }
 
 #[cfg(unix)]
-fn signal_install_process(pid: u32, force: bool) {
+fn signal_process_group(pid: u32, force: bool) {
     let signal = if force { "-KILL" } else { "-TERM" };
     let _ = Command::new("/bin/kill")
         .arg(signal)
@@ -919,7 +921,7 @@ fn signal_install_process(pid: u32, force: bool) {
 }
 
 #[cfg(not(unix))]
-fn signal_install_process(pid: u32, force: bool) {
+fn signal_process_group(pid: u32, force: bool) {
     let mut command = Command::new("taskkill");
     command.args(["/PID", &pid.to_string(), "/T"]);
     if force {
@@ -1212,29 +1214,41 @@ fn run_worker(
     set_phase(app, Phase::Starting);
     clean_temp_wavs();
     let base = base_dir(app)?;
-    let mut child = Command::new(runtime_python(&base))
+    let mut command = Command::new(runtime_python(&base));
+    command
         .arg(runtime_dir(&base).join("worker.py"))
         .arg("--model")
         .arg(model_dir(&base))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command
         .spawn()
         .map_err(|error| AppError::new("voice_playback_worker", error.to_string()))?;
     {
         let runtime = app.state::<VoicePlaybackRuntime>();
         let mut slot = runtime.worker.lock().expect("voice playback worker lock");
         if runtime.generation.load(Ordering::SeqCst) != start_generation || slot.token != token {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_worker_child(&mut child);
             return Err(cancelled());
         }
         slot.pid = Some(child.id());
     }
     let result = drive_worker(app, &mut child, receiver);
-    let _ = child.kill();
-    let _ = child.wait();
+    stop_worker_child(&mut child);
     result
+}
+
+fn stop_worker_child(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_none() {
+        signal_process_group(child.id(), true);
+        let _ = child.wait();
+    }
 }
 
 fn drive_worker(
@@ -1617,7 +1631,7 @@ fn stop_install(app: &AppHandle) -> Result<(), AppError> {
     }
     install.cancel_requested = true;
     if let Some(pid) = install.pid {
-        signal_install_process(pid, false);
+        signal_process_group(pid, false);
     }
     let (next, _) = runtime
         .install_exited
@@ -1626,7 +1640,7 @@ fn stop_install(app: &AppHandle) -> Result<(), AppError> {
     install = next;
     if install.running {
         if let Some(pid) = install.pid {
-            signal_install_process(pid, true);
+            signal_process_group(pid, true);
         }
         let (next, _) = runtime
             .install_exited
@@ -1675,9 +1689,7 @@ fn stop_playback_and_worker(app: &AppHandle, release_model: bool) -> Result<(), 
     slot.sender = None;
     let first_pid = slot.pid;
     if let Some(pid) = first_pid {
-        let _ = Command::new("/bin/kill")
-            .args(["-TERM", &pid.to_string()])
-            .status();
+        signal_process_group(pid, false);
     }
     let (next, _) = runtime
         .worker_exited
@@ -1686,9 +1698,7 @@ fn stop_playback_and_worker(app: &AppHandle, release_model: bool) -> Result<(), 
     slot = next;
     if slot.running {
         if let Some(pid) = slot.pid.or(first_pid) {
-            let _ = Command::new("/bin/kill")
-                .args(["-KILL", &pid.to_string()])
-                .status();
+            signal_process_group(pid, true);
         }
         let (next, _) = runtime
             .worker_exited

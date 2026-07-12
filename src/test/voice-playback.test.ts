@@ -98,14 +98,24 @@ describe("voice playback controller", () => {
     expect(mocks.synthesize).toHaveBeenLastCalledWith("Second reply.");
   });
 
-  it("keeps cancellation failures visible and rejects the stop", async () => {
-    await speakVoiceTurn("turn-1", "Reply.");
+  it("keeps cancellation failures visible without wedging the playback pump", async () => {
+    applyVoicePlaybackSettings({ playbackMode: "streaming", modelUseAcknowledged: true });
+    const staleSynthesis = deferred<{ wavPath: string }>();
+    mocks.synthesize.mockReturnValueOnce(staleSynthesis.promise);
+
+    await queueStreamedVoiceChunk("turn-1", "First sentence.");
     mocks.cancel.mockRejectedValueOnce(new Error("Could not stop local audio"));
 
     await expect(stopVoicePlayback({ releaseModel: true })).rejects.toThrow(
       "Could not stop local audio",
     );
     expect(voicePlaybackState().error).toBe("Could not stop local audio");
+
+    await queueStreamedVoiceChunk("turn-1", "Recovery sentence.");
+    await nextTask();
+    expect(mocks.synthesize).toHaveBeenCalledTimes(2);
+    expect(mocks.synthesize).toHaveBeenLastCalledWith("Recovery sentence.");
+    staleSynthesis.resolve({ wavPath: "/tmp/stale.wav" });
   });
 
   it("surfaces synthesis failures in shared state", async () => {

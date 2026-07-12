@@ -13,6 +13,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_API_URL");
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=JUNE_API_URL");
+    stamp_voice_playback_source();
     if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("macos") {
         println!("cargo:rustc-link-lib=framework=AVFoundation");
     }
@@ -21,6 +22,54 @@ fn main() {
     build_dictation_helper();
     ensure_bundled_hermes_dir();
     tauri_build::build();
+}
+
+fn stamp_voice_playback_source() {
+    use sha2::{Digest, Sha256};
+
+    let root = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    )
+    .join("resources/voice-playback");
+    println!("cargo:rerun-if-changed={}", root.display());
+
+    let mut files = Vec::new();
+    collect_files(&root, &mut files);
+    files.sort();
+    let mut digest = Sha256::new();
+    for path in files {
+        let relative = path
+            .strip_prefix(&root)
+            .expect("voice source should be below root");
+        digest.update(relative.to_string_lossy().as_bytes());
+        digest.update([0]);
+        digest.update(std::fs::read(&path).expect("voice source should be readable"));
+        digest.update([0]);
+    }
+    println!(
+        "cargo:rustc-env=OS_JUNE_VOICE_SOURCE_FINGERPRINT={:x}",
+        digest.finalize()
+    );
+}
+
+fn collect_files(directory: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("could not read {}: {error}", directory.display()))
+    {
+        let path = entry.expect("voice source entry should be readable").path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if matches!(name, ".ruff_cache" | "__pycache__") || name.ends_with(".pyc") {
+            continue;
+        }
+        if path.is_dir() {
+            collect_files(&path, files);
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
 }
 
 /// `tauri_build::build()` validates every `bundle.resources` source path at
