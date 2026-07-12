@@ -453,6 +453,8 @@ export function AppSettings({
   const modelPickerTriggerRef = useRef<HTMLButtonElement>(null);
   const modelPickerPopoverRef = useRef<HTMLDivElement>(null);
   const modelPickerSearchRef = useRef<HTMLInputElement>(null);
+  const costQualitySaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const latestCostQualitySaveRef = useRef(0);
   const [veniceApiKeyDraft, setVeniceApiKeyDraft] = useState("");
   const [showMoreModelOptions, setShowMoreModelOptions] = useState(false);
   const [showMoreImageOptions, setShowMoreImageOptions] = useState(false);
@@ -957,14 +959,27 @@ export function AppSettings({
     }
   }
 
-  async function saveCostQuality(value: number) {
-    try {
-      const next = await setCostQuality(value);
-      setProviderSettings(next);
-      setStatus("Automatic model preference updated.");
-    } catch (error) {
-      setStatus(messageFromError(error));
-    }
+  function saveCostQuality(value: number) {
+    const version = ++latestCostQualitySaveRef.current;
+    const save = costQualitySaveChainRef.current.then(() => setCostQuality(value));
+    costQualitySaveChainRef.current = save.then(
+      () => undefined,
+      () => undefined,
+    );
+    void save.then(
+      (next) => {
+        if (version !== latestCostQualitySaveRef.current) return;
+        setProviderSettings((current) => ({
+          ...current,
+          costQuality: next.costQuality,
+        }));
+        setStatus("Automatic model preference updated.");
+      },
+      (error) => {
+        if (version !== latestCostQualitySaveRef.current) return;
+        setStatus(messageFromError(error));
+      },
+    );
   }
 
   function closeModelPicker() {
@@ -1873,11 +1888,9 @@ export function AppSettings({
                             }))
                           }
                           onPointerUp={(event) =>
-                            void saveCostQuality(Number(event.currentTarget.value))
+                            saveCostQuality(Number(event.currentTarget.value))
                           }
-                          onKeyUp={(event) =>
-                            void saveCostQuality(Number(event.currentTarget.value))
-                          }
+                          onKeyUp={(event) => saveCostQuality(Number(event.currentTarget.value))}
                         />
                         <span>Quality</span>
                       </div>

@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   setVeniceApiKey: vi.fn(),
   clearVeniceApiKey: vi.fn(),
   setImageSafeMode: vi.fn(),
+  setCostQuality: vi.fn(),
   setImageSafeModePromptDismissed: vi.fn(),
   saveLocalGenerationSettings: vi.fn(),
   setLocalGenerationEnabled: vi.fn(),
@@ -91,6 +92,7 @@ vi.mock("../lib/tauri", () => ({
   setVeniceApiKey: mocks.setVeniceApiKey,
   clearVeniceApiKey: mocks.clearVeniceApiKey,
   setImageSafeMode: mocks.setImageSafeMode,
+  setCostQuality: mocks.setCostQuality,
   setImageSafeModePromptDismissed: mocks.setImageSafeModePromptDismissed,
   saveLocalGenerationSettings: mocks.saveLocalGenerationSettings,
   setLocalGenerationEnabled: mocks.setLocalGenerationEnabled,
@@ -204,6 +206,7 @@ function buildProviderSettings() {
     },
     imageSafeMode: true,
     imageSafeModePromptDismissed: false,
+    costQuality: 50,
   };
 }
 
@@ -271,6 +274,7 @@ describe("AppSettings", () => {
         },
         imageSafeMode: true,
         imageSafeModePromptDismissed: false,
+        costQuality: 50,
       },
     });
     mocks.p3aSettings.mockResolvedValue({
@@ -428,10 +432,15 @@ describe("AppSettings", () => {
       },
       imageSafeMode: true,
       imageSafeModePromptDismissed: false,
+      costQuality: 50,
     }));
     mocks.setImageSafeMode.mockImplementation(async (enabled: boolean) => ({
       ...buildProviderSettings(),
       imageSafeMode: enabled,
+    }));
+    mocks.setCostQuality.mockImplementation(async (costQuality: number) => ({
+      ...buildProviderSettings(),
+      costQuality,
     }));
     mocks.setVeniceApiKey.mockResolvedValue({
       ...buildProviderSettings(),
@@ -2284,6 +2293,70 @@ describe("AppSettings", () => {
     } finally {
       window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, modelChanged);
     }
+  });
+
+  it("serializes rapid keyboard saves and keeps the latest automatic preference", async () => {
+    const autoSettings = {
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      costQuality: 50,
+    };
+    mocks.providerModelSettings.mockResolvedValueOnce({ settings: autoSettings });
+    let resolveFirst!: (settings: typeof autoSettings) => void;
+    let resolveSecond!: (settings: typeof autoSettings) => void;
+    const first = new Promise<typeof autoSettings>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const second = new Promise<typeof autoSettings>((resolve) => {
+      resolveSecond = resolve;
+    });
+    mocks.setCostQuality.mockReset();
+    mocks.setCostQuality.mockImplementationOnce(() => first).mockImplementationOnce(() => second);
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("tab", { name: "Models" });
+    fireEvent.click(screen.getByRole("tab", { name: "Models" }));
+    const slider = await screen.findByRole("slider", {
+      name: "Automatic model cost and quality preference",
+    });
+    fireEvent.change(slider, { target: { value: "60" } });
+    fireEvent.keyUp(slider, { key: "ArrowRight" });
+    fireEvent.change(slider, { target: { value: "70" } });
+    fireEvent.keyUp(slider, { key: "ArrowRight" });
+
+    await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledTimes(1));
+    expect(mocks.setCostQuality).toHaveBeenNthCalledWith(1, 60);
+    expect(slider).toHaveValue("70");
+
+    await act(async () => {
+      resolveFirst({ ...autoSettings, costQuality: 60 });
+      await first;
+    });
+    await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledTimes(2));
+    expect(mocks.setCostQuality).toHaveBeenNthCalledWith(2, 70);
+    expect(slider).toHaveValue("70");
+
+    await act(async () => {
+      resolveSecond({ ...autoSettings, costQuality: 70 });
+      await second;
+    });
+    await waitFor(() =>
+      expect(screen.getByText("Automatic model preference updated.")).toBeInTheDocument(),
+    );
+    expect(slider).toHaveValue("70");
   });
 
   it("keeps local endpoint fields hidden until local setup starts", async () => {
