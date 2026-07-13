@@ -175,6 +175,11 @@ def check(command):
                 executable = tokens[0]
             elif command_name in COREPACK_GUARDED:
                 guarded = True
+        if executable in {"bun", "bunx", "yarn"}:
+            return (
+                "This repo is pnpm-only (no bun/npm/yarn lockfiles). Use "
+                "`sfw pnpm add <pkg>` instead; see spec/package-install-security.md."
+            )
         if executable == "pnpm":
             command_name, args = subcommand(tokens, PNPM_GLOBAL_VALUE_OPTIONS)
             guarded = guarded or command_name in PNPM_GUARDED
