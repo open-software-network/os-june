@@ -11,6 +11,7 @@
  */
 
 const STORAGE_KEY = "june.agent.manuallyTitledSessions";
+let volatileStore: Record<string, AgentSessionSettledTitleKind> = {};
 
 export type AgentSessionSettledTitleKind = "manual" | "exchange" | "rejected";
 
@@ -22,6 +23,8 @@ const ASSISTANT_DIALOGUE_PREFIXES = [
   "i can't",
   "i cannot",
   "i won't",
+  "i don't",
+  "i do not",
   "i found",
   "i fixed",
   "i updated",
@@ -90,6 +93,7 @@ export function isAgentSessionTitleCandidate(value: unknown): value is string {
   if (normalized.includes("?") || isRefusalLikeAgentSessionTitle(normalized)) return false;
   const [first = "", second = ""] = normalized.split(/\s+/, 2);
   return !(
+    first === "which" ||
     (QUESTION_WORDS.has(first) && QUESTION_AUXILIARIES.has(second)) ||
     (QUESTION_AUXILIARIES.has(first) && QUESTION_SUBJECTS.has(second))
   );
@@ -98,7 +102,7 @@ export function isAgentSessionTitleCandidate(value: unknown): value is string {
 function readStore(): Record<string, AgentSessionSettledTitleKind> {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
+    if (!raw) return { ...volatileStore };
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return {};
@@ -111,9 +115,9 @@ function readStore(): Record<string, AgentSessionSettledTitleKind> {
         store[sessionId] = value;
       }
     }
-    return store;
+    return { ...store, ...volatileStore };
   } catch {
-    return {};
+    return { ...volatileStore };
   }
 }
 
@@ -121,11 +125,15 @@ function writeStore(store: Record<string, AgentSessionSettledTitleKind>) {
   try {
     if (Object.keys(store).length === 0) {
       window.localStorage.removeItem(STORAGE_KEY);
+      volatileStore = {};
       return;
     }
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    volatileStore = {};
   } catch {
-    // Ignore; worst case a settled session can be auto-titled again.
+    // Keep the decision for this app process so a storage failure cannot turn
+    // deterministic rejection into a repeated metered request loop.
+    volatileStore = { ...store };
   }
 }
 
@@ -155,4 +163,8 @@ export function rememberSessionTitleRejected(sessionId: string) {
   if (store[sessionId] === "manual" || store[sessionId] === "exchange") return;
   store[sessionId] = "rejected";
   writeStore(store);
+}
+
+export function resetAgentSessionTitleVolatileStoreForTest() {
+  volatileStore = {};
 }

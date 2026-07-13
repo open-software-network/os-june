@@ -26,7 +26,12 @@ import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../li
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
 import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-activity-store";
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
-import { isAgentSessionTitleCandidate } from "../lib/agent-session-titles";
+import {
+  isAgentSessionTitleCandidate,
+  rememberSessionTitleRejected,
+  resetAgentSessionTitleVolatileStoreForTest,
+  sessionSettledTitleKind,
+} from "../lib/agent-session-titles";
 import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
 import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
@@ -395,6 +400,20 @@ describe("AgentWorkspace", () => {
     expect(isAgentSessionTitleCandidate("Surefire recovery plan")).toBe(true);
     expect(isAgentSessionTitleCandidate("I'm sorry, but I can't help with that")).toBe(false);
     expect(isAgentSessionTitleCandidate("What should I update")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Which email service should I use")).toBe(false);
+    expect(isAgentSessionTitleCandidate("I don't have email access")).toBe(false);
+  });
+
+  it("keeps a rejected title decision in memory when local storage fails", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+
+    rememberSessionTitleRejected("storage-failure-session");
+
+    expect(sessionSettledTitleKind("storage-failure-session")).toBe("rejected");
+    setItem.mockRestore();
+    resetAgentSessionTitleVolatileStoreForTest();
   });
 
   beforeEach(() => {
@@ -420,6 +439,7 @@ describe("AgentWorkspace", () => {
     }
     window.sessionStorage.clear();
     window.localStorage.clear();
+    resetAgentSessionTitleVolatileStoreForTest();
     mocks.openFileDialog.mockResolvedValue(null);
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
     mocks.providerModelSettings.mockResolvedValue({
@@ -4629,7 +4649,10 @@ describe("AgentWorkspace", () => {
       .mockResolvedValue([userMessage, assistantMessage]);
     mocks.suggestAgentSessionTitle
       .mockResolvedValueOnce({ title: "Failure summary" })
-      .mockResolvedValueOnce({ title: "I'm sorry, but I can't help with that" });
+      .mockRejectedValueOnce({
+        code: "agent_title_empty",
+        message: "Title generation returned an empty title.",
+      });
     hermesActivityStore.record(
       {
         kind: "lifecycle",

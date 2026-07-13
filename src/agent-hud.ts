@@ -486,19 +486,23 @@ function sessionStatus(session: HermesSessionInfo, record?: StatusRecord): HudSe
 }
 
 function sessionTitle(session: HermesSessionInfo, record?: StatusRecord) {
+  const storedTitle = session.title?.trim();
+  const settledTitleKind = sessionSettledTitleKind(session.id);
+  if (storedTitle && settledTitleKind && isHudStoredSessionTitleSafe(storedTitle, session.id)) {
+    return storedTitle;
+  }
   const recordTitle = record?.title?.trim();
   if (recordTitle) {
     if (isHudStatusTitleSafe(recordTitle, session.id)) return recordTitle;
-    const safeSessionTitle = session.title?.trim();
+    const safeSessionTitle = storedTitle;
     if (safeSessionTitle && isHudStoredSessionTitleSafe(safeSessionTitle, session.id)) {
       return safeSessionTitle;
     }
     return record?.prompt?.trim() || session.preview?.trim() || "Agent session";
   }
-  const sessionTitle = session.title?.trim();
-  if (sessionTitle) {
-    return isHudStoredSessionTitleSafe(sessionTitle, session.id)
-      ? sessionTitle
+  if (storedTitle) {
+    return isHudStoredSessionTitleSafe(storedTitle, session.id)
+      ? storedTitle
       : record?.prompt?.trim() || session.preview?.trim() || "Agent session";
   }
   return record?.prompt?.trim() || session.preview?.trim() || "Agent session";

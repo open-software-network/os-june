@@ -2064,6 +2064,8 @@ fn is_valid_agent_session_title_candidate(value: &str) -> bool {
         "i can't",
         "i cannot",
         "i won't",
+        "i don't",
+        "i do not",
         "i found",
         "i fixed",
         "i updated",
@@ -2107,7 +2109,8 @@ fn is_valid_agent_session_title_candidate(value: &str) -> bool {
         "might", "have", "has",
     ];
     let question_subjects = ["i", "you", "we", "june"];
-    !(question_words.contains(&first) && question_auxiliaries.contains(&second)
+    !(first == "which"
+        || question_words.contains(&first) && question_auxiliaries.contains(&second)
         || question_auxiliaries.contains(&first) && question_subjects.contains(&second))
 }
 
@@ -3092,6 +3095,11 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             None
         );
         assert_eq!(clean_agent_session_title("What should I update"), None);
+        assert_eq!(
+            clean_agent_session_title("Which email service should I use"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("I don't have email access"), None);
         assert_eq!(
             clean_agent_session_title("Could you clarify the target"),
             None

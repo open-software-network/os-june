@@ -291,6 +291,30 @@ describe("agent HUD", () => {
     expect(stackElement()).toHaveTextContent("Could you clarify this?");
   });
 
+  it("prefers a settled stored title over a stale status title", async () => {
+    localStorage.setItem(
+      "june.agent.manuallyTitledSessions",
+      JSON.stringify({ "session-1": "exchange" }),
+    );
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Persistence fix")],
+      workingSessionIds: ["session-1"],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "running",
+      title: "Summarize latest failures",
+      prompt: "Summarize latest failures",
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent("Persistence fix");
+    expect(stackElement()).not.toHaveTextContent("Summarize latest failures");
+  });
+
   it("stays collapsed after an explicit collapse while a session still needs input", async () => {
     await loadAgentHud();
 

@@ -261,6 +261,7 @@ import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPic
 import {
   HERMES_SERVER_ERROR_MESSAGE,
   describeHermesError,
+  errorCode,
   isHermesServerError,
   isHermesSessionsStartupRequestError,
   isTopUpRequiresMaxError,
@@ -10522,8 +10523,12 @@ async function agentSessionTitleForPrompt(prompt: string, response?: string) {
     return isAgentSessionTitleCandidate(title)
       ? { title, fromModel: true, rejected: false }
       : { title: titleFromPrompt(prompt), fromModel: false, rejected: true };
-  } catch {
-    return { title: titleFromPrompt(prompt), fromModel: false, rejected: false };
+  } catch (error) {
+    return {
+      title: titleFromPrompt(prompt),
+      fromModel: false,
+      rejected: errorCode(error) === "agent_title_empty",
+    };
   }
 }
 
