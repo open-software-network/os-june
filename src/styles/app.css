@@ -25688,9 +25688,10 @@ input:focus-visible,
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
   column-gap: var(--sp-3);
-  /* A hair past --sp-2: at exactly 8px the previous row's last line sat tight
-   * against the divider and a neighboring expanded row's wash. */
-  padding: calc(var(--sp-2) + 2px) var(--sp-3);
+  /* One geometry all the way around: the hover wash insets --sp-1/--sp-2 from
+   * the row bounds, and this padding keeps the content exactly --sp-2 inside
+   * the wash on every side (12 - 4 vertically, 16 - 8 horizontally). */
+  padding: var(--sp-3) var(--sp-4);
   border-top: 1px solid var(--detail-bar-border);
 }
 
@@ -25705,7 +25706,7 @@ input:focus-visible,
 .connector-approvals-item::before {
   content: "";
   position: absolute;
-  inset: 2px var(--sp-2);
+  inset: var(--sp-1) var(--sp-2);
   z-index: -1;
   border-radius: calc(var(--r-xl) - var(--sp-2));
   transition: background-color var(--t-fast) var(--ease-out);
@@ -25809,8 +25810,10 @@ button.connector-approvals-info {
  * detail grows below them. */
 .connector-approvals-actions {
   position: absolute;
-  top: 5px;
-  right: var(--sp-3);
+  /* On the same inner grid as the content: --sp-2 inside the wash's top and
+   * right edges, so the buttons read as perfectly inset in the washed row. */
+  top: var(--sp-3);
+  right: var(--sp-4);
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
