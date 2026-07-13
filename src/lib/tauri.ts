@@ -5,6 +5,10 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 // bindings use, rather than reaching into `@tauri-apps/api/core` directly.
 export { invoke };
 
+export async function printCurrentWebview() {
+  return invoke<void>("print_current_webview");
+}
+
 export type ProcessingStatus =
   | "draft"
   | "recording"

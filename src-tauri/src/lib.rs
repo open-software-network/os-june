@@ -138,6 +138,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             theme_icon::set_dock_icon,
+            print_current_webview,
             commands::bootstrap_app,
             commands::create_note,
             commands::list_notes,
@@ -551,6 +552,11 @@ fn main_window_focus_state(app: &tauri::AppHandle) -> Option<bool> {
 
 fn should_emit_close_tab_event(main_window_focused: Option<bool>) -> bool {
     main_window_focused == Some(true)
+}
+
+#[tauri::command]
+fn print_current_webview(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.print().map_err(|error| error.to_string())
 }
 
 #[tauri::command]

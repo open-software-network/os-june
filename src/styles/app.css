@@ -25212,3 +25212,106 @@ input:focus-visible,
 .app-shell[data-note-chat-resizing="true"] .note-chat-panel {
   transition: none;
 }
+
+/* PDF export uses the platform print sheet. Strip the application chrome and
+ * release every viewport-bound scroller so the full formatted note paginates. */
+@media print {
+  @page {
+    margin: 18mm;
+  }
+
+  :root {
+    color-scheme: light;
+  }
+
+  html,
+  body,
+  #root,
+  .app-shell,
+  .main-column,
+  .main-panel,
+  .main-panel-body,
+  .workspace,
+  .note-detail-scroll,
+  .note-editor,
+  .editor-content,
+  .note-body-stack {
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  .app-shell {
+    display: block !important;
+  }
+
+  .titlebar-drag,
+  .chrome-sidebar-toggle,
+  .sidebar,
+  .sidebar-resize-handle,
+  .tab-bar,
+  .permission-banner,
+  .error-banner,
+  .notice-banner,
+  .note-header-actions,
+  .segmented,
+  .editor-footer,
+  .note-chat-panel,
+  .note-chat-resize-handle,
+  .selection-toolbar,
+  .note-processing-progress {
+    display: none !important;
+  }
+
+  .main-panel,
+  .main-panel-body,
+  .workspace,
+  .note-editor {
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: white !important;
+    box-shadow: none !important;
+  }
+
+  .note-editor {
+    display: block !important;
+    color: black !important;
+  }
+
+  .editor-header {
+    margin-bottom: 10mm;
+  }
+
+  .note-title {
+    color: black !important;
+    -webkit-text-fill-color: black !important;
+  }
+
+  .note-overline,
+  .note-preview,
+  .note-preview h1,
+  .note-preview h2,
+  .note-preview p,
+  .note-preview ul {
+    color: black !important;
+  }
+
+  .note-body-stack,
+  .note-preview {
+    padding: 0 !important;
+  }
+
+  .note-preview {
+    caret-color: transparent;
+  }
+}
