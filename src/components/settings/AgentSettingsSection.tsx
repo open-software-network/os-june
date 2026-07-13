@@ -15,6 +15,7 @@ import {
   agentHudHide,
   agentHudShow,
   juneCharacter,
+  providerModelSettings,
   revealPath,
   setHermesAgentCliAccess,
   setJuneCharacter,
@@ -29,6 +30,7 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "../../lib/agent-hud-settings";
+import { saveShowThinking } from "../../lib/show-thinking-settings";
 import { withTimeout } from "../../lib/async-timeout";
 import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
@@ -74,6 +76,9 @@ export function AgentSettingsSection({
   // default for a setting with security weight.
   const [cliAccessEnabled, setCliAccessEnabled] = useState<boolean | null>(null);
   const [cliAccessSaving, setCliAccessSaving] = useState(false);
+  // null until provider settings load, so the switch never flashes a default.
+  const [showThinkingEnabled, setShowThinkingEnabled] = useState<boolean | null>(null);
+  const [showThinkingSaving, setShowThinkingSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -84,10 +89,30 @@ export function AgentSettingsSection({
       .catch((err: unknown) => {
         if (!cancelled) setError(messageFromError(err));
       });
+    providerModelSettings()
+      .then((response) => {
+        if (!cancelled) setShowThinkingEnabled(response.settings.showThinking);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(messageFromError(err));
+      });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  async function handleShowThinkingChange(enabled: boolean) {
+    setShowThinkingSaving(true);
+    try {
+      const settings = await saveShowThinking(enabled);
+      setShowThinkingEnabled(settings.showThinking);
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setShowThinkingSaving(false);
+    }
+  }
 
   async function handleCliAccessChange(enabled: boolean) {
     setCliAccessSaving(true);
@@ -338,6 +363,23 @@ export function AgentSettingsSection({
                   checked={agentHudEnabled}
                   onCheckedChange={(enabled) => void handleAgentHudEnabledChange(enabled)}
                   aria-label="Show sessions HUD"
+                />
+              </div>
+            </div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">Show thinking</h3>
+                <p className="settings-row-description">
+                  Show the model's thinking in agent chats. Hiding it only changes what you see, not
+                  how the model works.
+                </p>
+              </div>
+              <div className="settings-row-control">
+                <Switch
+                  checked={showThinkingEnabled === true}
+                  disabled={showThinkingEnabled === null || showThinkingSaving}
+                  onCheckedChange={(enabled) => void handleShowThinkingChange(enabled)}
+                  aria-label="Show thinking in agent chats"
                 />
               </div>
             </div>

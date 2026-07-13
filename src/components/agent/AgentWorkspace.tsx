@@ -242,6 +242,10 @@ import {
   MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
 } from "../../lib/hermes-model-switch";
 import {
+  SHOW_THINKING_CHANGED_EVENT,
+  type ShowThinkingChangedDetail,
+} from "../../lib/show-thinking-settings";
+import {
   LOCAL_GENERATION_OPTION_ID_PREFIX,
   isLoopbackUrl,
   localGenerationOptionId,
@@ -2437,6 +2441,9 @@ export function AgentWorkspace({
     () => continuity?.liveEvents ?? {},
   );
   const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
+  // Whether the chat displays the model's thinking (JUN-246). Display-only;
+  // synced from provider settings on load and live from the settings toggle.
+  const [showThinking, setShowThinkingState] = useState(true);
   const [workingTaskIds, setWorkingTaskIds] = useState<Set<string>>(() => new Set());
   const activityStoreVersion = useSyncExternalStore(
     hermesActivityStore.subscribe,
@@ -3582,6 +3589,7 @@ export function AgentWorkspace({
       setGenerationProvider(provider);
       defaultGenerationModelIdRef.current = selectedModelId;
       setDefaultGenerationModelId(selectedModelId);
+      setShowThinkingState(settings.showThinking ?? true);
       return selectedModelId;
     },
     [],
@@ -3652,6 +3660,17 @@ export function AgentWorkspace({
       );
     };
   }, [loadGenerationModel]);
+
+  useEffect(() => {
+    function handleShowThinkingChanged(event: Event) {
+      const detail = (event as CustomEvent<ShowThinkingChangedDetail>).detail;
+      if (detail) setShowThinkingState(detail.enabled);
+    }
+    window.addEventListener(SHOW_THINKING_CHANGED_EVENT, handleShowThinkingChanged);
+    return () => {
+      window.removeEventListener(SHOW_THINKING_CHANGED_EVENT, handleShowThinkingChanged);
+    };
+  }, []);
 
   useEffect(() => {
     if (composerModelLocked) setComposerModelOpen(false);
@@ -9620,6 +9639,7 @@ export function AgentWorkspace({
             onEnable: () => void enableCliAccessFromChat(),
           }}
           thinkingOpen={thinkingOpen}
+          showThinking={showThinking}
           onThinkingOpenChange={setThinkingOpen}
           onDownloadArtifact={downloadArtifact}
           onOpenArtifact={openArtifact}
@@ -9736,6 +9756,7 @@ export function AgentWorkspace({
               onEnable: () => void enableCliAccessFromChat(),
             }}
             thinkingOpen={thinkingOpen}
+            showThinking={showThinking}
             onThinkingOpenChange={setThinkingOpen}
             onDownloadArtifact={downloadArtifact}
             onOpenArtifact={openArtifact}
@@ -11473,6 +11494,7 @@ function AgentChatTurnRow({
   secretSubmitting,
   cliAccess,
   thinkingOpen,
+  showThinking = true,
   onApproval,
   onClarify,
   onSudo,
@@ -11503,6 +11525,9 @@ function AgentChatTurnRow({
    * Optional so the dev gallery can render rows without the live setting. */
   cliAccess?: AgentCliAccessCardProps;
   thinkingOpen: (key: string) => boolean;
+  /** Whether the Thinking disclosure renders at all (the user's display
+   * preference). Default on; the dev gallery omits it. */
+  showThinking?: boolean;
   onApproval: (
     part: Extract<AgentChatPart, { type: "approval" }>,
     choice: AgentApprovalChoice,
@@ -11595,6 +11620,14 @@ function AgentChatTurnRow({
     (part): part is Extract<AgentChatPart, { type: "context" }> => part.type === "context",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
+  // With the thinking display off, a reasoning-only turn has nothing visible:
+  // while running it shows the plain "Thinking…" shimmer instead (so the app
+  // never looks stalled mid-reasoning), and once finished it renders nothing.
+  const hiddenThinkingOnly =
+    !showThinking &&
+    textParts.length === 0 &&
+    nonTextParts.length > 0 &&
+    nonTextParts.every((part) => part.type === "reasoning");
   const concreteResponse = turnIsConcreteResponse(turn);
   const copyText = copyableTextForTurn(turn);
 
@@ -11727,7 +11760,7 @@ function AgentChatTurnRow({
   return (
     <article className="agent-assistant-turn" data-status={turn.status}>
       <div className="agent-assistant-turn-body">
-        {reasoningParts.length > 0 ? (
+        {showThinking && reasoningParts.length > 0 ? (
           <AgentThinkingGroup
             reasoning={reasoningParts}
             running={thinkingRunning}
@@ -11825,11 +11858,12 @@ function AgentChatTurnRow({
           onDownload={onDownloadArtifact}
           onOpen={onOpenArtifact}
         />
-        {textParts.length === 0 && nonTextParts.length === 0 ? (
+        {(textParts.length === 0 && nonTextParts.length === 0) ||
+        (hiddenThinkingOnly && thinkingRunning) ? (
           <p className="agent-assistant-empty">
             <span className="text-shimmer shimmer">Thinking…</span>
           </p>
-        ) : (
+        ) : hiddenThinkingOnly ? null : (
           // No actions on an empty/in-flight turn. There is nothing useful to
           // copy or fork from yet.
           turnActions
