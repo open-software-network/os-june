@@ -30,7 +30,7 @@ Add app-owned servers behind the connector token:
 | Server | Tools |
 | --- | --- |
 | `june_gdrive` | `search_files`, `get_file_metadata`, `read_file`, `list_recent_files`, `get_activity` |
-| `june_gdrive_actions` | `create_document`, `update_document`, `create_spreadsheet`, `update_range`, `move_file`, `share_file` |
+| `june_gdrive_actions` | `create_document`, `update_document`, `create_spreadsheet`, `update_range` |
 | `june_google_people` | `search_contacts`, `get_contact` |
 | `june_google_meet` | `get_meeting_space`, `list_recordings`, `list_transcripts`, `read_transcript` |
 
@@ -90,8 +90,7 @@ handle it.
 - `approval`: Drive/Docs/Sheets action calls park before the provider request.
 - `autonomous`: only explicitly granted tools and account may bypass parking
   after earned autonomy.
-- Sharing, deleting, moving across shared drives, and broad permission changes
-  remain approval-only in v1 even under autonomous mode.
+- Sharing, deleting, moving, and permission changes are not exposed in v1.
 - Send/update actions journal `pending`, `committed`, or `ambiguous`. Automatic
   retry requires a provider-supported idempotency key. After a response-loss
   timeout, June reconciles a stable action fingerprint against provider state;

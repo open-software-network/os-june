@@ -35,7 +35,7 @@ must be generated from that table rather than assuming all capabilities.
 | `june_outlook` | `search_mail`, `read_thread`, `list_calendars`, `list_events`, `find_meeting_times` |
 | `june_outlook_actions` | `create_draft`, `send_draft`, `create_event`, `update_event` |
 | `june_m365_files` | `search_files`, `get_file_metadata`, `read_file` |
-| `june_m365_files_actions` | `create_file`, `update_file`, `move_file`, `share_file` |
+| `june_m365_files_actions` | `create_file`, `update_file` |
 | `june_teams` | limited read tools established by the spike |
 
 Do not expose one kitchen-sink Graph server. Tool visibility follows granted
@@ -71,8 +71,9 @@ and drive/site ids so updates target the exact source.
 - Action servers park before the Graph request in `approval`.
 - Autonomous mode is deferred until provider-specific idempotency and earned
   autonomy are proven.
-- External recipient mail, send, event cancellation, sharing, permission
-  change, move across drives/sites, and deletion remain approval-only.
+- External recipient mail, send, and event cancellation remain approval-only.
+  Sharing, permission changes, moves across drives/sites, and deletion are not
+  exposed in v1.
 - Tenant and account ids are server-bound and ignored if supplied by the model.
 
 ## Delivery slices
