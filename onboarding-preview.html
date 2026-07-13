@@ -132,11 +132,6 @@
           };
         }
         const p3aEvents = [];
-        const p3aSettings = {
-          enabled: false,
-          consentVersion: 1,
-          consentedAtWeek: null,
-        };
 
         let account = step
           ? {
@@ -269,7 +264,7 @@
                       source: "system",
                       required: true,
                       ready,
-                      permissionState: ready ? "unknown" : "denied",
+                      permissionState: ready ? "granted" : "denied",
                       deviceAvailable: ready,
                       captureAvailable: ready,
                       recoveryAction: "openSystemAudioSettings",

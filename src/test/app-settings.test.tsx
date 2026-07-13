@@ -48,6 +48,9 @@ const mocks = vi.hoisted(() => ({
   agentHudHide: vi.fn(),
   hermesAgentCliAccess: vi.fn(),
   setHermesAgentCliAccess: vi.fn(),
+  juneCharacter: vi.fn(),
+  setJuneCharacter: vi.fn(),
+  revealPath: vi.fn(),
   listDictionaryEntries: vi.fn(),
   createDictionaryEntry: vi.fn(),
   updateDictionaryEntry: vi.fn(),
@@ -113,6 +116,9 @@ vi.mock("../lib/tauri", () => ({
   agentHudHide: mocks.agentHudHide,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
   setHermesAgentCliAccess: mocks.setHermesAgentCliAccess,
+  juneCharacter: mocks.juneCharacter,
+  setJuneCharacter: mocks.setJuneCharacter,
+  revealPath: mocks.revealPath,
   listDictionaryEntries: mocks.listDictionaryEntries,
   createDictionaryEntry: mocks.createDictionaryEntry,
   updateDictionaryEntry: mocks.updateDictionaryEntry,
@@ -460,6 +466,19 @@ describe("AppSettings", () => {
     mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
     mocks.setHermesAgentCliAccess.mockImplementation(async (enabled: boolean) => ({ enabled }));
+    mocks.juneCharacter.mockResolvedValue({
+      character: "You are helpful, knowledgeable, and direct.",
+      isCustom: false,
+      defaultCharacter: "You are helpful, knowledgeable, and direct.",
+      path: "/tmp/hermes/CHARACTER.md",
+    });
+    mocks.setJuneCharacter.mockImplementation(async (character: string) => ({
+      character: character || "You are helpful, knowledgeable, and direct.",
+      isCustom: character !== "",
+      defaultCharacter: "You are helpful, knowledgeable, and direct.",
+      path: "/tmp/hermes/CHARACTER.md",
+    }));
+    mocks.revealPath.mockResolvedValue(undefined);
     mocks.setDictationShortcut.mockImplementation(async (kind, shortcut) => ({
       ...baseSettings,
       ...(kind === "toggle" ? { toggleShortcut: shortcut } : { pushToTalkShortcut: shortcut }),
@@ -3284,6 +3303,49 @@ describe("AppSettings", () => {
     await user.click(hudSwitch);
     expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
     expect(mocks.agentHudShow).toHaveBeenCalledTimes(1);
+  });
+
+  it("edits June's character from Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    const editor = await screen.findByRole("textbox", { name: "June's character" });
+    await waitFor(() => expect(editor).toHaveValue("You are helpful, knowledgeable, and direct."));
+
+    // Save stays locked until the text actually changes.
+    const saveButton = screen.getByRole("button", { name: "Save character" });
+    expect(saveButton).toBeDisabled();
+
+    await user.clear(editor);
+    await user.type(editor, "Answer in haiku whenever possible.");
+    expect(saveButton).toBeEnabled();
+    await user.click(saveButton);
+
+    await waitFor(() =>
+      expect(mocks.setJuneCharacter).toHaveBeenCalledWith("Answer in haiku whenever possible."),
+    );
+    // A custom character offers the way back to the default.
+    const resetButton = await screen.findByRole("button", { name: "Reset to default" });
+    await user.click(resetButton);
+    await waitFor(() => expect(mocks.setJuneCharacter).toHaveBeenCalledWith(""));
+    await waitFor(() => expect(editor).toHaveValue("You are helpful, knowledgeable, and direct."));
+
+    // The direct-editing path stays available: the file button reveals
+    // CHARACTER.md on disk.
+    await user.click(screen.getByRole("button", { name: "Show file" }));
+    expect(mocks.revealPath).toHaveBeenCalledWith("/tmp/hermes/CHARACTER.md");
   });
 
   it("opts into agent CLI access from Agent settings", async () => {

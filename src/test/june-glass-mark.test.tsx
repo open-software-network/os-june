@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { JuneGlassMark } from "../components/brand/JuneGlassMark";
 
 // jsdom has no WebGL, so JuneGlassMark's WebGL probe fails and it renders the
@@ -8,8 +8,10 @@ import { JuneGlassMark } from "../components/brand/JuneGlassMark";
 // environment gets — renders a visible June mark with no thrown error.
 describe("JuneGlassMark", () => {
   it("renders the static fallback mark when WebGL is unavailable", () => {
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext");
     render(<JuneGlassMark />);
     // The fallback is the flat JuneGradientMark: an <svg> titled "June".
     expect(screen.getByTitle("June")).toBeInTheDocument();
+    expect(getContext).not.toHaveBeenCalled();
   });
 });

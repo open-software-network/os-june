@@ -4,6 +4,9 @@ port = 8080
 request_timeout_secs = 600
 max_audio_bytes = 26214400
 max_json_bytes = 524288
+# os-platform accepts 300 MiB attachments. The extra 1 MiB covers multipart
+# framing and report text while keeping a single total request budget.
+max_issue_report_bytes = 315621376
 max_image_edit_bytes = 69921452
 
 # Public facts shown on the /verify attestation page. source_commit is not

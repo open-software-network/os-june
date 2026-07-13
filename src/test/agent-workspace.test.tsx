@@ -10,6 +10,7 @@ import {
   AgentWorkspace,
   HERO_GREETINGS,
   SkillsToolsPanel,
+  composerInSteerStateFor,
   projectAgentActivityLevels,
   resetAgentSessionContinuity,
   seedAgentComposerDraftForTest,
@@ -60,6 +61,7 @@ const mocks = vi.hoisted(() => ({
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
   osAccountsUpgrade: vi.fn(),
+  openFileDialog: vi.fn(),
   setImageSafeMode: vi.fn(),
   setImageSafeModePromptDismissed: vi.fn(),
   setVeniceModel: vi.fn(),
@@ -74,6 +76,7 @@ const mocks = vi.hoisted(() => ({
   startHermesBridge: vi.fn(),
   submitIssueReport: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
+  titleFromPrompt: vi.fn((prompt: string) => prompt.trim() || "Untitled session"),
   explainAgentApproval: vi.fn(),
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
@@ -151,6 +154,10 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
 }));
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: mocks.openFileDialog,
+}));
+
 // Pin VIDEO_GENERATION_ENABLED on so the /video surfaces stay testable
 // regardless of the committed flag value.
 vi.mock("../lib/feature-flags", async (importOriginal) => ({
@@ -168,7 +175,7 @@ vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
   listHermesSessions: mocks.listHermesSessions,
   sessionTimestamp: (session: { last_active?: string; started_at?: string }) =>
     session.last_active ?? session.started_at ?? "",
-  titleFromPrompt: (prompt: string) => prompt.trim() || "Untitled session",
+  titleFromPrompt: mocks.titleFromPrompt,
 }));
 
 vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
@@ -403,6 +410,7 @@ describe("AgentWorkspace", () => {
     }
     window.sessionStorage.clear();
     window.localStorage.clear();
+    mocks.openFileDialog.mockResolvedValue(null);
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
@@ -547,6 +555,19 @@ describe("AgentWorkspace", () => {
     expect(second.workingSessionIds).toBe(first.workingSessionIds);
     expect(second.waitingSessionIds).toBe(first.waitingSessionIds);
     expect(second.toolCallSessionIds).toBe(first.toolCallSessionIds);
+  });
+
+  it("scopes an in-flight submit's steer state to its owning session", () => {
+    const base = {
+      provisional: false,
+      working: false,
+      submitting: true,
+      submittingSessionId: "session-1",
+      demo: false,
+    };
+
+    expect(composerInSteerStateFor({ ...base, selectedSessionId: "session-1" })).toBe(true);
+    expect(composerInSteerStateFor({ ...base, selectedSessionId: "session-2" })).toBe(false);
   });
 
   it("lets users cancel a clean skill editor without making changes", async () => {
@@ -863,6 +884,62 @@ describe("AgentWorkspace", () => {
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
   });
 
+  it("submits a large native-picker attachment from its original path", async () => {
+    const user = userEvent.setup();
+    const originalPath = "/Users/alex/Desktop/recording-over-50mb.mov";
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+    );
+    mocks.openFileDialog.mockResolvedValue([originalPath]);
+    mocks.submitIssueReport.mockResolvedValue({ received: true });
+
+    render(<AgentWorkspace />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Issue report" });
+    mocks.importHermesBridgeFile.mockClear();
+    mocks.importHermesBridgeFileBytes.mockClear();
+    mocks.hermesBridgeFilePreview.mockClear();
+    await user.click(within(dialog).getByRole("button", { name: "Add files" }));
+    expect(await within(dialog).findByText("recording-over-50mb.mov")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "Send report" }));
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "bug",
+        description: "No description was typed; see the attachments.",
+        attachmentNames: ["recording-over-50mb.mov"],
+        attachmentPaths: [originalPath],
+      }),
+    );
+    expect(mocks.importHermesBridgeFile).not.toHaveBeenCalled();
+    expect(mocks.importHermesBridgeFileBytes).not.toHaveBeenCalled();
+    expect(mocks.hermesBridgeFilePreview).not.toHaveBeenCalled();
+  });
+
+  it("imports all nine report files from a DOM drop", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), category: "bug" }),
+    );
+    const files = Array.from(
+      { length: 9 },
+      (_, index) => new File([`log-${index + 1}`], `report-${index + 1}.txt`),
+    );
+
+    render(<AgentWorkspace />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Issue report" });
+    mocks.importHermesBridgeFileBytes.mockClear();
+    const dropZone = dialog.querySelector(".report-dialog-drop");
+    expect(dropZone).not.toBeNull();
+    fireEvent.drop(dropZone as HTMLElement, { dataTransfer: { files } });
+
+    await waitFor(() => expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledTimes(9));
+    expect(await within(dialog).findByText("report-9.txt")).toBeInTheDocument();
+  });
+
   it("clears a stale new-session draft before opening a report dialog", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
@@ -956,6 +1033,649 @@ describe("AgentWorkspace", () => {
     await act(async () => {
       resolveSubmit?.();
     });
+  });
+
+  it("keeps Stop disabled until an existing-session send is actually running", async () => {
+    const user = userEvent.setup();
+    let resolveResume: (() => void) | undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return new Promise((resolve) => {
+          resolveResume = () => resolve({ session_id: "runtime-session-1" });
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "start carefully");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    const stopWhileStarting = await screen.findByRole("button", { name: "Stop June" });
+    expect(stopWhileStarting).toBeDisabled();
+    expect(stopWhileStarting).toHaveAttribute("title", "June is starting");
+    await user.click(stopWhileStarting);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.interrupt", expect.anything());
+
+    await act(async () => resolveResume?.());
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start carefully",
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Stop June" })).toBeEnabled();
+  });
+
+  it("renders submitted steers as read-only while retaining delivery tracking", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+
+    await user.type(composer, "focus on the API boundary");
+    await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+        session_id: "session-1",
+        text: "focus on the API boundary",
+      }),
+    );
+
+    expect(screen.getByRole("region", { name: "Up next" })).toBeInTheDocument();
+    expect(screen.queryByText("Steering current turn")).toBeNull();
+    expect(screen.queryByText("Queued")).toBeNull();
+    expect(screen.getByTitle("focus on the API boundary")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /revise steer/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /dismiss steer/i })).toBeNull();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "focus on the API boundary",
+      }),
+    );
+  });
+
+  it("combines steering text and waiting attachments in one Up next surface", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await user.type(composer, "check the API boundary");
+    await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+        session_id: "session-1",
+        text: "check the API boundary",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "review the brief next");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+
+    const upNext = await screen.findByRole("region", { name: "Up next" });
+    // The count numeral only shows while the queue is collapsed.
+    expect(within(upNext).queryByText("2")).toBeNull();
+    expect(within(upNext).getByText("check the API boundary")).toBeInTheDocument();
+    expect(within(upNext).queryByText("Steering current turn")).toBeNull();
+    expect(within(upNext).getByText("review the brief next")).toBeInTheDocument();
+    expect(within(upNext).getByText("Waiting for June to finish")).toHaveClass(
+      "agent-follow-up-announcement",
+    );
+    expect(within(upNext).getByText("brief.pdf")).toBeInTheDocument();
+    expect(screen.getAllByRole("region", { name: "Up next" })).toHaveLength(1);
+    expect(screen.queryByText("Queued")).toBeNull();
+  });
+
+  it("previews the unified Up next composer state without submitting a message", async () => {
+    render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const upNextDemo = (window as unknown as { __upNextDemo?: (show?: boolean) => string })
+      .__upNextDemo;
+    expect(upNextDemo).toBeTypeOf("function");
+    act(() => {
+      upNextDemo?.();
+    });
+
+    const upNext = await screen.findByRole("region", { name: "Up next" });
+    // The count numeral only shows while the queue is collapsed.
+    expect(within(upNext).queryByText("4")).toBeNull();
+    expect(within(upNext).getByText("Check the API boundary")).toBeInTheDocument();
+    expect(within(upNext).getByText("Keep the migration additive")).toBeInTheDocument();
+    expect(within(upNext).queryByText("Steering current turn")).toBeNull();
+    expect(within(upNext).getByText("Review this attachment next")).toBeInTheDocument();
+    expect(within(upNext).getByText("reference.png")).toBeInTheDocument();
+    expect(within(upNext).getByText("Fold these findings into the report")).toBeInTheDocument();
+    // A multi-attachment message shows the generic files tile, no filename
+    // and no count.
+    expect(within(upNext).queryByText("usability-findings.pdf")).toBeNull();
+    expect(within(upNext).queryByText("3")).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.steer", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+    act(() => {
+      upNextDemo?.(false);
+    });
+    expect(screen.queryByRole("region", { name: "Up next" })).toBeNull();
+  });
+
+  it("queues and genuinely removes an attachment follow-up while June is working", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+    await user.type(composer, "review the brief next");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+
+    expect(await screen.findByText("Up next")).toBeInTheDocument();
+    expect(screen.getByText("review the brief next")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove queued message" })).toBeInTheDocument();
+    expect(composer).toHaveTextContent("");
+    expect(
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+    ).toHaveLength(1);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.steer", expect.anything());
+
+    await user.click(screen.getByRole("button", { name: "Edit queued message" }));
+    expect(screen.queryByText("Up next")).toBeNull();
+    expect(composer).toHaveTextContent("review the brief next");
+    expect(screen.getByText("brief.pdf")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    expect(await screen.findByText("Up next")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Remove queued message" }));
+    expect(screen.queryByText("Up next")).toBeNull();
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)));
+    expect(
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+    ).toHaveLength(1);
+  });
+
+  it("keeps queued follow-up identities unique after continuity restores", async () => {
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace initialSession={existingSession} />);
+
+    let composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/first.pdf"] },
+    });
+    await user.type(composer, "first queued message");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    expect(await screen.findByText("first queued message")).toBeInTheDocument();
+
+    first.unmount();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    composer = await screen.findByRole("textbox", { name: "Message June" });
+    expect(await screen.findByText("first queued message")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/second.pdf"] },
+    });
+    await user.type(composer, "second queued message");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+
+    expect(await screen.findByText("second queued message")).toBeInTheDocument();
+    const removeButtons = screen.getAllByRole("button", { name: "Remove queued message" });
+    expect(removeButtons).toHaveLength(2);
+    await user.click(removeButtons[0]);
+    expect(screen.queryByText("first queued message")).toBeNull();
+    expect(screen.getByText("second queued message")).toBeInTheDocument();
+  });
+
+  it("sends a queued file follow-up after the current turn completes", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+    await user.type(composer, "review the brief next");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+
+    expect(
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+    ).toHaveLength(1);
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: expect.stringMatching(/review the brief next[\s\S]*uploads\/brief\.pdf/),
+      }),
+    );
+    expect(screen.queryByText("Up next")).toBeNull();
+  });
+
+  it("advances a completed turn once and keeps attachment follow-ups behind undrained steers", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await user.type(composer, "check the API boundary");
+    await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+        session_id: "session-1",
+        text: "check the API boundary",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "review the brief after that");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        const completed = {
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        };
+        handler(completed);
+        handler(completed);
+      }
+    });
+
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(
+          ([method, params]) =>
+            method === "prompt.submit" && params?.text === "check the API boundary",
+        ),
+      ).toHaveLength(1),
+    );
+    expect(
+      mocks.gatewayRequest.mock.calls.some(
+        ([method, params]) =>
+          method === "prompt.submit" && params?.text?.includes("review the brief after that"),
+      ),
+    ).toBe(false);
+    expect(screen.getByText("review the brief after that")).toBeInTheDocument();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: expect.stringContaining("review the brief after that"),
+      }),
+    );
+  });
+
+  it("attaches a queued image only after the current turn completes", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/reference.png"] },
+    });
+    expect(await screen.findByText("reference.png")).toBeInTheDocument();
+    await user.type(composer, "use this reference next");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+
+    expect(
+      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
+    ).toBe(false);
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: expect.stringContaining("use this reference next"),
+      }),
+    );
+    const methods = mocks.gatewayRequest.mock.calls.map(([method]) => method);
+    expect(methods.indexOf("image.attach_bytes")).toBeLessThan(
+      methods.lastIndexOf("prompt.submit"),
+    );
+  });
+
+  it("retains a failed queued attachment delivery for retry", async () => {
+    let queuedAttempts = 0;
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { text?: string }) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit" && params?.text?.includes("review the brief next")) {
+        queuedAttempts += 1;
+        return queuedAttempts === 1
+          ? Promise.reject(new Error("gateway unavailable"))
+          : Promise.resolve({});
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+    await user.type(composer, "review the brief next");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    const retry = await screen.findByRole("button", { name: "Retry queued message" });
+    expect(screen.getByText("Couldn't send")).toBeInTheDocument();
+    expect(screen.getByText("review the brief next")).toBeInTheDocument();
+    await user.click(retry);
+    await waitFor(() => expect(queuedAttempts).toBe(2));
+    expect(screen.queryByText("Up next")).toBeNull();
+  });
+
+  it("does not auto-send a failed queued follow-up after the turn completes", async () => {
+    let queuedAttempts = 0;
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { text?: string }) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit" && params?.text?.includes("review the brief next")) {
+        queuedAttempts += 1;
+        return Promise.reject(new Error("gateway unavailable"));
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+    await user.type(composer, "review the brief next");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+
+    // First completion drains the queue; the delivery fails, so the row flips
+    // to a retry affordance.
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    expect(await screen.findByRole("button", { name: "Retry queued message" })).toBeInTheDocument();
+    await waitFor(() => expect(queuedAttempts).toBe(1));
+
+    // A fresh turn re-arms the session and completes cleanly. Automatic
+    // advancement must stop at the failed head rather than silently resending
+    // it.
+    await user.type(composer, "keep going");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "keep going",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)));
+
+    expect(queuedAttempts).toBe(1);
+    expect(screen.getByRole("button", { name: "Retry queued message" })).toBeInTheDocument();
+    expect(screen.getByText("review the brief next")).toBeInTheDocument();
+  });
+
+  it("surfaces an error when queued follow-up preparation fails", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    expect(await screen.findByText("brief.pdf")).toBeInTheDocument();
+    // No skill is registered, so the slash command cannot resolve and
+    // preparation rejects before anything is enqueued.
+    await user.type(composer, "/nonexistent review the brief next");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+
+    expect(await screen.findByText("Could not find skill /nonexistent.")).toBeInTheDocument();
+    expect(screen.queryByText("Up next")).toBeNull();
+    const promptSubmits = mocks.gatewayRequest.mock.calls.filter(
+      ([method]) => method === "prompt.submit",
+    );
+    expect(promptSubmits).toHaveLength(1);
+    expect(composer).toHaveTextContent("review the brief next");
+    expect(screen.getByText("brief.pdf")).toBeInTheDocument();
+  });
+
+  it("does not offer edit or remove after an image was attached but its message failed", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { text?: string }) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "image.attach_bytes") {
+        return Promise.resolve({ attachment_id: "attached-image-1" });
+      }
+      if (method === "prompt.submit" && params?.text?.includes("use this reference next")) {
+        return Promise.reject(new Error("gateway unavailable"));
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/reference.png"] },
+    });
+    await user.type(composer, "use this reference next");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Image attached; message not sent")).toBeInTheDocument();
+    expect(screen.getByText("gateway unavailable")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry queued message" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit queued message" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove queued message" })).toBeNull();
   });
 
   it("opens report rows from the plus menu without inserting a chip", async () => {
@@ -3178,6 +3898,295 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("keeps the persisted first-exchange title after a follow-up and restart", async () => {
+    const user = userEvent.setup();
+    const rawTitle = "I need you to inspect the flaky tests";
+    let persistedTitle = rawTitle;
+    mocks.listHermesSessions.mockImplementation(async () => [
+      {
+        id: "session-follow-up-restart",
+        title: persistedTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "inspect the flaky tests",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "I traced the failure to stale timers and updated the regression test.",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+    mocks.suggestAgentSessionTitle.mockResolvedValue({ title: "Flaky Timer Fix" });
+    mocks.ensureHermesBridgeSession.mockImplementation(
+      async (input: { sessionId: string; title?: string }) => {
+        if (input.title) persistedTitle = input.title;
+        return {};
+      },
+    );
+
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Flaky Timer Fix")).toBeInTheDocument();
+    await waitFor(() => expect(persistedTitle).toBe("Flaky Timer Fix"));
+    await waitFor(() =>
+      expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBe(
+        JSON.stringify({ "session-follow-up-restart": "exchange" }),
+      ),
+    );
+
+    await user.type(screen.getByRole("textbox"), "Does this also fail in CI?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Does this also fail in CI?",
+      }),
+    );
+
+    first.unmount();
+    resetAgentSessionContinuity();
+    mocks.gatewayEventHandlers.clear();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Flaky Timer Fix")).toBeInTheDocument();
+    expect(screen.queryByText("Does this also fail in CI?")).toBeNull();
+  });
+
+  it("does not write a follow-up title while the first-exchange title is pending", async () => {
+    const user = userEvent.setup();
+    const rawTitle = "I need you to inspect the flaky tests";
+    let persistedTitle = rawTitle;
+    let resolveTitleSuggestion: ((value: { title: string }) => void) | undefined;
+    mocks.listHermesSessions.mockImplementation(async () => [
+      {
+        id: "session-follow-up-pending-title",
+        title: persistedTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "inspect the flaky tests",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "I traced the failure to stale timers and updated the regression test.",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+    mocks.suggestAgentSessionTitle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTitleSuggestion = resolve;
+        }),
+    );
+    mocks.ensureHermesBridgeSession.mockImplementation(
+      async (input: { sessionId: string; title?: string }) => {
+        if (input.title) persistedTitle = input.title;
+        return {};
+      },
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText(rawTitle)).toBeInTheDocument();
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1));
+    const titleDerivationsBeforeFollowUp = mocks.titleFromPrompt.mock.calls.length;
+
+    await user.type(screen.getByRole("textbox"), "Does this also fail in CI?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Does this also fail in CI?",
+      }),
+    );
+
+    expect(persistedTitle).toBe(rawTitle);
+    expect(mocks.titleFromPrompt).toHaveBeenCalledTimes(titleDerivationsBeforeFollowUp);
+
+    await act(async () => {
+      resolveTitleSuggestion?.({ title: "Flaky Timer Fix" });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(persistedTitle).toBe("Flaky Timer Fix"));
+    expect(await screen.findByText("Flaky Timer Fix")).toBeInTheDocument();
+  });
+
+  it("keeps a manual title after a follow-up and restart", async () => {
+    const user = userEvent.setup();
+    let persistedTitle = "Flaky Timer Fix";
+    window.localStorage.setItem(
+      "june.agent.manuallyTitledSessions",
+      JSON.stringify({ "session-manual-follow-up": "exchange" }),
+    );
+    mocks.listHermesSessions.mockImplementation(async () => [
+      {
+        id: "session-manual-follow-up",
+        title: persistedTitle,
+        preview: "inspect the flaky tests",
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "inspect the flaky tests",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "I traced the failure to stale timers and updated the regression test.",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+    mocks.ensureHermesBridgeSession.mockImplementation(
+      async (input: { sessionId: string; title?: string }) => {
+        if (input.title) persistedTitle = input.title;
+        return {};
+      },
+    );
+
+    const first = render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Flaky Timer Fix")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Session name" });
+    await user.clear(input);
+    await user.type(input, "Manual CI investigation{Enter}");
+    await waitFor(() => expect(persistedTitle).toBe("Manual CI investigation"));
+    expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBe(
+      JSON.stringify({ "session-manual-follow-up": "manual" }),
+    );
+    const titleDerivationsBeforeFollowUp = mocks.titleFromPrompt.mock.calls.length;
+
+    await user.type(screen.getByRole("textbox"), "Check the Windows runner too");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Check the Windows runner too",
+      }),
+    );
+
+    expect(persistedTitle).toBe("Manual CI investigation");
+    expect(mocks.titleFromPrompt).toHaveBeenCalledTimes(titleDerivationsBeforeFollowUp);
+
+    first.unmount();
+    resetAgentSessionContinuity();
+    mocks.gatewayEventHandlers.clear();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Manual CI investigation")).toBeInTheDocument();
+  });
+
+  it("uses the preview as the display title for a titleless existing-session follow-up", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    const preview = "Investigate the desktop release failure";
+    const titlelessSession = {
+      id: "session-preview-fallback",
+      title: "",
+      preview,
+      last_active: "2026-06-04T12:00:00Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([titlelessSession]);
+    const user = userEvent.setup();
+
+    try {
+      render(<AgentWorkspace initialSession={titlelessSession} />);
+
+      await user.type(
+        await screen.findByRole("textbox", { name: "Message June" }),
+        "Check the signing step too",
+      );
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "Check the signing step too",
+        }),
+      );
+      expect(statusDetails).toContainEqual(
+        expect.objectContaining({
+          sessionId: "session-preview-fallback",
+          status: "running",
+          title: preview,
+        }),
+      );
+      expect(statusDetails).not.toContainEqual(
+        expect.objectContaining({
+          sessionId: "session-preview-fallback",
+          title: "Untitled session",
+        }),
+      );
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    }
+  });
+
+  it("uses the prompt as the display title for a cold-start follow-up", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    mocks.listHermesSessions.mockResolvedValue([]);
+    const user = userEvent.setup();
+    const prompt = "Check the signing step too";
+
+    try {
+      render(<AgentWorkspace initialSessionId="session-cold-start" />);
+
+      await user.type(await screen.findByRole("textbox", { name: "Message June" }), prompt);
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: prompt,
+        }),
+      );
+      expect(mocks.titleFromPrompt).toHaveBeenCalledWith(prompt);
+      expect(statusDetails).toContainEqual(
+        expect.objectContaining({
+          sessionId: "session-cold-start",
+          status: "running",
+          title: prompt,
+        }),
+      );
+      expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-cold-start",
+          title: expect.any(String),
+        }),
+      );
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    }
+  });
+
   it("skips the durable exchange marker when title persistence fails", async () => {
     const rawTitle = "I need you to inspect the flaky tests";
     mocks.listHermesSessions.mockResolvedValue([
@@ -4015,6 +5024,34 @@ describe("AgentWorkspace", () => {
       }),
     );
     expect(await screen.findByText("Agent CLI access enabled")).toBeInTheDocument();
+  });
+
+  it("blocks the CLI-access follow-up at the shared paid dispatch boundary", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "a1",
+        role: "assistant",
+        content: "[REQUEST:AGENT_CLI_ACCESS]",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+    ]);
+    mocks.setHermesAgentCliAccess.mockResolvedValue({ enabled: true });
+    const user = userEvent.setup();
+
+    render(
+      <AgentWorkspace
+        initialSession={existingSession}
+        creditActionsDisabledReason="Add credits to send messages or generate images and videos."
+      />,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Enable Agent CLI access" }));
+
+    await waitFor(() => expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(true));
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+    expect(
+      screen.getAllByText("Add credits to send messages or generate images and videos.").length,
+    ).toBeGreaterThan(0);
   });
 
   it("shows the CLI access request as already granted when the setting is on", async () => {
@@ -5257,6 +6294,99 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Summarize Current Page")).toBeInTheDocument();
     expect(screen.queryByText("Untitled session")).toBeNull();
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
+  });
+
+  it.each([
+    ["routine description", "Set up a weekday summary of my unread notes"],
+    ["bundle chat", "/release-check prepare this repository for release"],
+  ])("preserves a blocked %s prompt as a draft", async (_entryPoint, prompt) => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt,
+      }),
+    );
+
+    render(
+      <AgentWorkspace creditActionsDisabledReason="Add credits to send messages or generate images and videos." />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(prompt),
+    );
+    expect(window.sessionStorage.getItem("june:agent:new-session-draft")).toContain(prompt);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+  });
+
+  it("preserves a blocked dictated prompt as a draft", async () => {
+    const prompt = "Summarize the launch plan";
+
+    render(
+      <AgentWorkspace creditActionsDisabledReason="Add credits to send messages or generate images and videos." />,
+    );
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: { prompt },
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(prompt),
+    );
+    expect(window.sessionStorage.getItem("june:agent:new-session-draft")).toContain(prompt);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+  });
+
+  it.each([
+    {
+      command: "/image a red bicycle",
+      entry: "runImageSlashCommand" as const,
+      generationCall: () => mocks.generateImage,
+    },
+    {
+      command: "/video a red bicycle",
+      entry: "runVideoSlashCommand" as const,
+      generationCall: () => mocks.videoGenerate,
+    },
+  ])("blocks the direct $entry fast-path entry when credit actions are disabled", async (test) => {
+    const reason = "Add credits to send messages or generate images and videos.";
+    const slashCommandEntriesRef: {
+      current: {
+        runImageSlashCommand: (argument: string, commandText: string) => Promise<void>;
+        runVideoSlashCommand: (argument: string, commandText: string) => Promise<void>;
+      } | null;
+    } = { current: null };
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+
+    render(
+      <AgentWorkspace
+        creditActionsDisabledReason={reason}
+        testOnlySlashCommandEntriesRef={slashCommandEntriesRef}
+      />,
+    );
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    mocks.gatewayRequest.mockClear();
+    test.generationCall().mockClear();
+
+    const entries = slashCommandEntriesRef.current;
+    if (!entries) throw new Error("Agent workspace did not expose its slash-command entries.");
+    await act(async () => {
+      await entries[test.entry]("a red bicycle", test.command);
+    });
+
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(test.generationCall()).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(reason);
   });
 
   it("stops a working session from the composer", async () => {
@@ -7341,6 +8471,56 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it.each([
+    {
+      name: "titles an attachments-only new session from the attachment name",
+      path: "/Users/alex/Desktop/quarterly—planning.PDF",
+      title: "Quarterly-planning",
+    },
+    {
+      name: "caps an attachments-only session title derived from a long filename",
+      path: "/Users/alex/Desktop/this-is-a-very-long-attachment-name-that-exceeds-the-forty-eight-character-title-limit.pdf",
+      title: "This-is-a-very-long-attachment-name-that-exceeds",
+    },
+    {
+      name: "collapses filename whitespace in an attachments-only session title",
+      path: "/Users/alex/Desktop/quarterly\n\tplanning\t notes.PDF",
+      title: "Quarterly planning notes",
+    },
+  ])("$name", async ({ path, title }) => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    act(() => {
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+    expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: {
+        paths: [path],
+      },
+    });
+
+    const startButton = screen.getByRole("button", { name: "Start session" });
+    await waitFor(() => expect(startButton).not.toBeDisabled());
+    await user.click(startButton);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "session.create",
+        expect.objectContaining({ title }),
+      ),
+    );
+    expect(mocks.suggestAgentSessionTitle).not.toHaveBeenCalled();
+    expect(await screen.findByText(title)).toBeInTheDocument();
+    expect(screen.queryByText("Untitled session")).toBeNull();
+  });
+
   it("imports typed file paths from the /file slash command", async () => {
     const user = userEvent.setup();
     render(<AgentWorkspace />);
@@ -7952,6 +9132,8 @@ describe("AgentWorkspace", () => {
     });
 
     expect(await screen.findByText("notes.txt")).toBeInTheDocument();
+    expect(screen.getByText("TXT")).toBeInTheDocument();
+    expect(document.querySelector(".agent-attachment-file-icon")).not.toBeNull();
     expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledWith(
       "notes.txt",
       expect.any(Uint8Array),
@@ -8287,6 +9469,43 @@ describe("AgentWorkspace", () => {
     expect(storedVideoSlashTurnsForTest()).toEqual([]);
   });
 
+  it("polls an already-paid video job after the last credit is spent", async () => {
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
+    mocks.videoGenerate.mockResolvedValueOnce({ jobId: "video-job-last-credit" });
+    mocks.videoStatus.mockRejectedValueOnce(new Error("video delivery unavailable"));
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(await screen.findByRole("textbox"), "/video a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    expect(await screen.findByText("video delivery unavailable")).toBeInTheDocument();
+    const firstRequestId = mocks.videoGenerate.mock.calls[0]?.[0]?.requestId;
+    expect(firstRequestId).toEqual(expect.any(String));
+
+    view.rerender(
+      <AgentWorkspace creditActionsDisabledReason="Add credits to use video generation." />,
+    );
+
+    mocks.videoStatus.mockResolvedValueOnce({
+      status: "completed",
+      path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/videos/generated-video-last-credit.mp4",
+      mimeType: "video/mp4",
+      sizeBytes: 5,
+      model: "wan-2.2-a14b-text-to-video",
+    });
+
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
+    expect(screen.getByText("Add credits to use video generation.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(await screen.findByRole("button", { name: "Download video" })).toBeInTheDocument();
+    expect(mocks.videoGenerate).toHaveBeenCalledOnce();
+    expect(mocks.videoGenerate.mock.calls[0]?.[0]?.requestId).toBe(firstRequestId);
+    expect(mocks.videoStatus).toHaveBeenLastCalledWith("video-job-last-credit");
+  });
+
   it("keeps the persisted /video pending turn when the submit poll budget expires", async () => {
     mockGlmCapabilities(["functionCalling"]);
     mockVideoSettings({ imageSafeMode: false, imageSafeModePromptDismissed: false });
@@ -8541,6 +9760,46 @@ describe("AgentWorkspace", () => {
     expect(mocks.generateImage).toHaveBeenCalledTimes(2);
     expect(mocks.generateImage.mock.calls[1]?.[2]).toBe(firstRequestId);
     expect(mocks.importHermesBridgeFileBytes).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays an already-paid image request after the last credit is spent", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    mocks.generateImage.mockResolvedValue({
+      imageBase64: "aGVsbG8=",
+      mimeType: "image/png",
+      model: "venice-sd35",
+      provider: "venice",
+    });
+    mocks.importHermesBridgeFileBytes
+      .mockRejectedValueOnce(new Error("image delivery unavailable"))
+      .mockResolvedValueOnce({
+        name: "generated-image.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
+        rootLabel: "Workspace",
+        size: 5,
+        previewDataUrl: "data:image/png;base64,preview",
+      });
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    expect(await screen.findByText("image delivery unavailable")).toBeInTheDocument();
+    const firstRequestId = mocks.generateImage.mock.calls[0]?.[2];
+    expect(firstRequestId).toEqual(expect.any(String));
+
+    view.rerender(
+      <AgentWorkspace creditActionsDisabledReason="Add credits to use image generation." />,
+    );
+
+    expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled();
+    expect(screen.getByText("Add credits to use image generation.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(mocks.generateImage).toHaveBeenCalledTimes(2);
+    expect(mocks.generateImage.mock.calls[1]?.[2]).toBe(firstRequestId);
   });
 
   it("replays the pinned image shape when settings change before retry", async () => {

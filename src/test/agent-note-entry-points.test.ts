@@ -167,6 +167,23 @@ describe("note header actions", () => {
     );
     await waitFor(() => expect(copyButton).toHaveAttribute("data-copied", "true"));
   });
+
+  it("exports the note from the actions menu", async () => {
+    const user = userEvent.setup();
+    const onExportPdf = vi.fn();
+    render(
+      createElement(NoteHeaderActions, {
+        noteId: "note-1",
+        noteTitle: "Launch plan",
+        onExportPdf,
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Note actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Export as PDF" }));
+
+    expect(onExportPdf).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("composer note reference trigger", () => {

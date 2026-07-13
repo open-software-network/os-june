@@ -1,5 +1,7 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconBubble3 } from "central-icons/IconBubble3";
+import { IconBubbleAnnotation3 } from "central-icons/IconBubbleAnnotation3";
+import { IconProjects } from "central-icons/IconProjects";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFolder1 } from "central-icons/IconFolder1";
@@ -661,7 +663,7 @@ function FolderDetail({
         onBack={folderBackTarget?.onBack ?? (() => onSelectFolder(undefined))}
         items={[
           { label: "Projects", onClick: () => onSelectFolder(undefined) },
-          { label: folder.name },
+          { label: folder.name, icon: <IconProjects size={13} /> },
         ]}
         actions={
           <button
@@ -1118,6 +1120,20 @@ function FolderAddMenu({
           {hasNotesElsewhere || hasSessionsElsewhere ? (
             <div className="context-menu-separator" role="separator" />
           ) : null}
+          {/* Session first, note second — matching the New items above. */}
+          {hasSessionsElsewhere ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onAddSessions();
+              }}
+            >
+              <IconBubbleAnnotation3 size={14} />
+              Add existing session
+            </button>
+          ) : null}
           {hasNotesElsewhere ? (
             <button
               type="button"
@@ -1129,19 +1145,6 @@ function FolderAddMenu({
             >
               <IconPageSearch size={14} />
               Add existing meeting note
-            </button>
-          ) : null}
-          {hasSessionsElsewhere ? (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                onAddSessions();
-              }}
-            >
-              <IconMoveFolder size={14} />
-              Add agent session
             </button>
           ) : null}
         </div>
@@ -1167,14 +1170,14 @@ function FolderEmptyActions({
 }) {
   return (
     <div className="folder-empty-actions">
+      {hasSessionsElsewhere ? (
+        <button type="button" className="primary-action" onClick={onAddSessions}>
+          Add existing session
+        </button>
+      ) : null}
       {hasNotesElsewhere ? (
         <button type="button" className="primary-action" onClick={onAddExisting}>
           Add existing meeting note
-        </button>
-      ) : null}
-      {hasSessionsElsewhere ? (
-        <button type="button" className="primary-action" onClick={onAddSessions}>
-          Add agent session
         </button>
       ) : null}
       <button type="button" className="primary-action" onClick={onCreateSession}>

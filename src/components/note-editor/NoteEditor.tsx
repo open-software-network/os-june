@@ -6,11 +6,14 @@ import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconMicrophone as IconMicrophoneLine } from "central-icons/IconMicrophone";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
+import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import type { ReactNode } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { FundingTier } from "../account/FundingNotice";
 import { Switch } from "../ui/Switch";
 import type {
   FolderDto,
@@ -24,10 +27,12 @@ import type {
 } from "../../lib/tauri";
 import { DotSpinner } from "../DotSpinner";
 import { InlineNotice } from "../ui/InlineNotice";
+import { HoverTip } from "../ui/HoverTip";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
 import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
 import { isMacLikePlatform } from "../../lib/platform";
+import { useDismiss } from "../../lib/use-dismiss";
 import { systemAudioAvailability } from "../../lib/source-readiness";
 import {
   isInvalidJuneResponseMessage,
@@ -41,6 +46,14 @@ type NoteEditorProps = {
   folders: FolderDto[];
   recordingStatus?: RecordingStatusDto;
   recordingDisabled?: boolean;
+  recordingBlockedReason?: string;
+  retryBlockedReason?: string;
+  /** The persistent out-of-credits notice, pre-wired by App. When present it
+   * replaces the plain record-blocked InlineNotice in the editor footer. */
+  fundingNotice?: ReactNode;
+  /** The user's current plan, for the failed-note banner's tier card. */
+  fundingTier?: FundingTier;
+  recoveryBlockedReason?: string;
   liveTranscript?: LiveTranscriptEventDto[];
   sourceMode: RecordingSourceMode;
   sourceReadiness?: RecordingSourceReadinessDto;
@@ -120,6 +133,11 @@ export function NoteEditor({
   folders,
   recordingStatus,
   recordingDisabled = false,
+  recordingBlockedReason,
+  retryBlockedReason,
+  fundingNotice,
+  fundingTier,
+  recoveryBlockedReason,
   liveTranscript = [],
   sourceMode,
   sourceReadiness,
@@ -246,7 +264,9 @@ export function NoteEditor({
   }, [consentReminderVisible]);
   const processingStatus = processingStageStatus(note.processingStatus);
   const processingLock = processingStatus !== null;
-  const recordButtonDisabled = recordingDisabled;
+  const recordButtonDisabled = recordingDisabled || Boolean(recordingBlockedReason);
+  // A funding block disables the record button but not the options chevron:
+  // choosing sources is free, so that setting stays reachable while gated.
   const recordOptionsDisabled = processingLock || recordingDisabled;
   // When generation finishes for the note you're looking at, reveal the fresh
   // notes with a top-down wipe instead of letting the text snap in. Only fires
@@ -336,6 +356,7 @@ export function NoteEditor({
             onRecover={onRecoverRecording}
             onDiscard={onDiscardRecording}
             disabled={processingLock}
+            recoverBlockedReason={recoveryBlockedReason}
           />
         ) : null}
         {note.processingStatus === "failed" ? (
@@ -345,6 +366,8 @@ export function NoteEditor({
             onRetry={onRetry}
             onTopUp={onTopUp}
             topUpLabel={topUpLabel}
+            retryBlockedReason={retryBlockedReason}
+            tier={fundingTier}
           />
         ) : null}
         {activeTab === "transcription" ? (
@@ -438,6 +461,21 @@ export function NoteEditor({
       </section>
 
       <div className="editor-footer">
+        {!recordingForNote
+          ? (fundingNotice ??
+            (recordingBlockedReason ? (
+              <InlineNotice
+                className="record-funding-blocked"
+                aria-label="Recording needs credits"
+                body={recordingBlockedReason}
+                actions={
+                  <button type="button" className="primary-action" onClick={onTopUp}>
+                    {topUpLabel ?? "Upgrade"}
+                  </button>
+                }
+              />
+            ) : null))
+          : null}
         {micDenied && !recordingForNote ? (
           <InlineNotice
             className="record-mic-blocked"
@@ -596,16 +634,34 @@ export function NoteEditor({
                       }}
                     >
                       <div className="record-idle">
-                        <button
-                          type="button"
-                          className="record-button"
-                          aria-label={recordingDisabled ? "Recording in progress" : "Record"}
-                          title={recordingDisabled ? "Recording in progress" : "Record"}
-                          disabled={recordButtonDisabled}
-                          onClick={onStartRecording}
-                        >
-                          <IconMicrophone size={20} />
-                        </button>
+                        {recordingBlockedReason ? (
+                          <HoverTip
+                            tip={recordingBlockedReason}
+                            className="record-button-tip"
+                            tabIndex={0}
+                          >
+                            <button
+                              type="button"
+                              className="record-button"
+                              aria-label="Recording needs credits"
+                              disabled={recordButtonDisabled}
+                              onClick={onStartRecording}
+                            >
+                              <IconMicrophone size={20} />
+                            </button>
+                          </HoverTip>
+                        ) : (
+                          <button
+                            type="button"
+                            className="record-button"
+                            aria-label={recordingDisabled ? "Recording in progress" : "Record"}
+                            title={recordingDisabled ? "Recording in progress" : "Record"}
+                            disabled={recordButtonDisabled}
+                            onClick={onStartRecording}
+                          >
+                            <IconMicrophone size={20} />
+                          </button>
+                        )}
                         {showRecordingOptions && !recordOptionsDisabled ? (
                           <button
                             type="button"
@@ -651,22 +707,12 @@ function FolderChip({
   const ref = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
+  useDismiss(ref, open, () => setOpen(false));
+
   useEffect(() => {
     if (!open) return;
     setQuery("");
-    function onClick(event: MouseEvent) {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
-    }
-    window.addEventListener("mousedown", onClick);
-    window.addEventListener("keydown", onKey);
     requestAnimationFrame(() => searchRef.current?.focus());
-    return () => {
-      window.removeEventListener("mousedown", onClick);
-      window.removeEventListener("keydown", onKey);
-    };
   }, [open]);
 
   const currentFolderId = folderIds[0];
@@ -726,24 +772,21 @@ function FolderChip({
                 }
               }}
             />
-          </div>
-          {showCreate ? (
-            <>
+            {query ? (
               <button
                 type="button"
-                className="move-to-folder-create"
+                className="search-clear"
+                aria-label="Clear search"
+                onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
-                  onCreateAndAssign(trimmed);
-                  setOpen(false);
+                  setQuery("");
+                  searchRef.current?.focus();
                 }}
               >
-                <IconPlusMedium size={14} />
-                <span className="move-to-folder-item-name">Create “{trimmed}”</span>
-                <span aria-hidden />
+                <IconCrossSmall size={13} />
               </button>
-              <div className="move-to-folder-divider" aria-hidden />
-            </>
-          ) : null}
+            ) : null}
+          </div>
           <div className="move-to-folder-list">
             {filtered.length > 0 ? (
               filtered.map((folder) => {
@@ -769,6 +812,25 @@ function FolderChip({
               <p className="move-to-folder-empty">No projects yet.</p>
             ) : null}
           </div>
+          {/* Create sits under the results: matches, if any, come first — the
+              common case is filing into an existing project. */}
+          {showCreate ? (
+            <>
+              {filtered.length > 0 ? <div className="move-to-folder-divider" aria-hidden /> : null}
+              <button
+                type="button"
+                className="move-to-folder-create"
+                onClick={() => {
+                  onCreateAndAssign(trimmed);
+                  setOpen(false);
+                }}
+              >
+                <IconPlusMedium size={14} />
+                <span className="move-to-folder-item-name">Create “{trimmed}”</span>
+                <span aria-hidden />
+              </button>
+            </>
+          ) : null}
         </div>
       ) : null}
     </div>

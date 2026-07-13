@@ -1,7 +1,8 @@
 import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
+import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconNoteText } from "central-icons/IconNoteText";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
 
@@ -24,6 +25,7 @@ export function AddNotesToFolderDialog({
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [submitting, setSubmitting] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -101,6 +103,7 @@ export function AddNotesToFolderDialog({
         <label className="add-notes-search">
           <IconMagnifyingGlass size={14} />
           <input
+            ref={searchRef}
             type="search"
             name="add-notes-search"
             placeholder="Search meeting notes"
@@ -108,6 +111,20 @@ export function AddNotesToFolderDialog({
             onChange={(event) => setQuery(event.currentTarget.value)}
             autoComplete="off"
           />
+          {query ? (
+            <button
+              type="button"
+              className="search-clear"
+              aria-label="Clear search"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                setQuery("");
+                searchRef.current?.focus();
+              }}
+            >
+              <IconCrossSmall size={13} />
+            </button>
+          ) : null}
         </label>
         {candidates.length > 0 ? (
           <ul className="add-notes-list" role="listbox" aria-multiselectable>

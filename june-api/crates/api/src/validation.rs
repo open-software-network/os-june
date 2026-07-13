@@ -14,7 +14,7 @@ pub(crate) const MAX_DICTATION_STYLE_CHARS: usize = 4_000;
 pub(crate) const MAX_ISSUE_DESCRIPTION_CHARS: usize = 20_000;
 pub(crate) const MAX_ISSUE_DIAGNOSIS_CHARS: usize = 50_000;
 pub(crate) const MAX_ISSUE_ATTACHMENTS: usize = 20;
-pub(crate) const MAX_ISSUE_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const MAX_ISSUE_ATTACHMENT_BYTES: usize = june_config::ISSUE_REPORT_ATTACHMENT_MAX_BYTES;
 // Abuse ceilings for an agent request body, NOT the model's context window.
 // The model enforces its own window; these only stop a runaway/malicious
 // request from reaching it. They must sit with real HEADROOM above the largest

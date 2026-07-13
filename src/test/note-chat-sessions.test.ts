@@ -1,15 +1,59 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   forgetNoteChatSession,
   noteChatSessionIdFor,
   rememberNoteChatSession,
 } from "../components/note-chat/noteChatSessions";
+import { useNoteChat } from "../components/note-chat/useNoteChat";
+
+const mocks = vi.hoisted(() => ({
+  gatewayRequest: vi.fn(),
+  hermesBridgeImageDataUrl: vi.fn(),
+  hermesBridgeSessionMessages: vi.fn(),
+  hermesBridgeStatus: vi.fn(),
+  startHermesBridge: vi.fn(),
+}));
+
+vi.mock("../lib/tauri", () => ({
+  hermesBridgeImageDataUrl: mocks.hermesBridgeImageDataUrl,
+  hermesBridgeSessionMessages: mocks.hermesBridgeSessionMessages,
+  hermesBridgeStatus: mocks.hermesBridgeStatus,
+  startHermesBridge: mocks.startHermesBridge,
+}));
+
+vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
+  HermesGatewayClient: class {
+    connect = vi.fn();
+    close = vi.fn();
+    onEvent = vi.fn();
+    onClose = vi.fn();
+    request = mocks.gatewayRequest;
+  },
+}));
 
 const STORAGE_KEY = "june.noteChat.sessionsByNote.v1";
 
 describe("note chat session map", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     window.localStorage.clear();
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
+    mocks.hermesBridgeSessionMessages.mockResolvedValue({ messages: [] });
+    mocks.startHermesBridge.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      return Promise.resolve({});
+    });
   });
 
   it("remembers and recalls the session for a note", () => {
@@ -51,5 +95,29 @@ describe("note chat session map", () => {
     // A write over corrupt storage heals it.
     rememberNoteChatSession("note-1", "sess-a");
     expect(noteChatSessionIdFor("note-1")).toBe("sess-a");
+  });
+
+  it("switches models on a reopened note chat", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    act(() => result.current.setSessionModel("kimi-k2-6"));
+
+    let accepted = false;
+    await act(async () => {
+      accepted = await result.current.submit("What remains blocked?");
+    });
+
+    expect(accepted).toBe(true);
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+      session_id: "stored-note-chat",
+      cols: 96,
+    });
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("command.dispatch", {
+      session_id: "runtime-note-chat",
+      command: "/model kimi-k2-6",
+    });
   });
 });

@@ -5,6 +5,10 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 // bindings use, rather than reaching into `@tauri-apps/api/core` directly.
 export { invoke };
 
+export async function printCurrentWebview() {
+  return invoke<void>("print_current_webview");
+}
+
 export type ProcessingStatus =
   | "draft"
   | "recording"
@@ -894,14 +898,17 @@ export type SubmitIssueReportRequest = {
   /** June's diagnostic assessment from the report session, when available. */
   agentDiagnosis?: string;
   attachmentNames: string[];
-  /** Workspace paths of the attached files; their bytes are uploaded with
-   * the report. */
+  /** Original local paths from the report picker or workspace paths created
+   * for DOM-dropped files; their bytes are sent with the report. */
   attachmentPaths: string[];
   sessionId?: string;
 };
 
 export type SubmitIssueReportResponse = {
   received: boolean;
+  /** Names of files that could not be attached to the report, either because
+   * the local file was unreadable or empty or Open Software rejected it. */
+  skippedAttachmentNames?: string[];
 };
 
 export async function submitIssueReport(request: SubmitIssueReportRequest) {
@@ -1006,6 +1013,31 @@ export async function hermesAgentCliAccess() {
 export async function setHermesAgentCliAccess(enabled: boolean) {
   return invoke<AgentCliAccessStatus>("set_hermes_agent_cli_access", {
     request: { enabled },
+  });
+}
+
+export type JuneCharacterStatus = {
+  /** The effective character text (the default when no custom one is set). */
+  character: string;
+  /** Whether the stored text differs from the app default. */
+  isCustom: boolean;
+  /** The app default, for "reset to default" affordances. */
+  defaultCharacter: string;
+  /** Absolute path of CHARACTER.md, for direct file editing. */
+  path: string;
+};
+
+/** June's editable character (personality) text, backed by CHARACTER.md in
+ * the June-managed agent home. */
+export async function juneCharacter() {
+  return invoke<JuneCharacterStatus>("june_character");
+}
+
+/** Persists the character text (blank resets to the default) and retires the
+ * agent runtimes so new sessions pick it up. */
+export async function setJuneCharacter(character: string) {
+  return invoke<JuneCharacterStatus>("set_june_character", {
+    request: { character },
   });
 }
 

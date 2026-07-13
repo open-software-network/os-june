@@ -508,6 +508,26 @@ mod tests {
         .expect("P3A submit succeeds");
     }
 
+    #[test]
+    fn p3a_sink_from_config_is_disabled_without_token() {
+        let mut config = june_config::AppConfig::default().os_accounts;
+        config.p3a_ingest_token = String::new();
+
+        assert!(OsAccountsP3aSink::from_config(http::default_client(), &config).is_none());
+
+        config.p3a_ingest_token = "   ".to_string();
+
+        assert!(OsAccountsP3aSink::from_config(http::default_client(), &config).is_none());
+    }
+
+    #[test]
+    fn p3a_sink_from_config_is_enabled_with_token() {
+        let mut config = june_config::AppConfig::default().os_accounts;
+        config.p3a_ingest_token = "p3a-token".to_string();
+
+        assert!(OsAccountsP3aSink::from_config(http::default_client(), &config).is_some());
+    }
+
     #[tokio::test]
     async fn authorize_maps_insufficient_credits_to_denied() {
         let server = MockServer::start().await;

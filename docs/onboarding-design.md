@@ -192,9 +192,11 @@ Progress bar: **Sign in -> Permissions -> Try it**
 
 ### Post-onboarding gates
 
-`AccountGate` blocks signed-out users. `FundingGate` blocks only accounts that
-are signed in, have a known zero credit balance, and do not have a live
-subscription. Unknown credit snapshots are allowed through so the metered
+`AccountGate` blocks signed-out users. Funding never blocks the shell: for
+accounts that are signed in, have a known zero credit balance, and do not have
+a live subscription, only credit-consuming actions are gated, and a persistent
+`FundingNotice` (above the chat composers, plus the sidebar `FundingChip`)
+offers the way out. Unknown credit snapshots are allowed through so the metered
 actions can make the final decision. Past-due billing opens the OS Accounts
 portal; zero-credit accounts open the same portal to add credits.
 

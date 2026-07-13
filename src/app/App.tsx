@@ -7,7 +7,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { AccountGate, JuneMark } from "../components/account/AccountGate";
-import { FundingGate } from "../components/account/FundingGate";
+import { FundingChip, FundingNotice, fundingTierOf } from "../components/account/FundingNotice";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
   AGENT_DELETE_SESSION_EVENT,
@@ -31,6 +31,7 @@ import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDi
 import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToProjectDialog";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
+import { exportNoteAsPdf } from "../lib/note-pdf";
 import { NoteChatPanel } from "../components/note-chat/NoteChatPanel";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
 import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
@@ -50,7 +51,6 @@ import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { Dialog } from "../components/ui/Dialog";
-import { Toaster } from "../components/ui/Toaster";
 import {
   assignNoteToFolder,
   assignSessionToFolder,
@@ -193,6 +193,14 @@ const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000
 const ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
+const COMPOSER_FUNDING_DISABLED_REASON =
+  "Add credits to send messages or generate images and videos.";
+const RECORDING_FUNDING_DISABLED_REASON =
+  "Add credits before starting a recording. You can still browse and edit.";
+const NOTE_RETRY_FUNDING_DISABLED_REASON = "Add credits before retrying note generation.";
+const RECOVERY_FUNDING_DISABLED_REASON =
+  "Add credits before recovering this recording. Your saved audio will stay available.";
+const ROUTINE_FUNDING_DISABLED_REASON = "Add credits before running a routine.";
 // Floor for the note card so the sidebar can't be dragged wide enough to
 // crush it into a sliver — it always keeps a usable width plus its gutters.
 const MAIN_PANEL_MIN_WIDTH = 420;
@@ -552,8 +560,38 @@ export function App() {
     !account.signedIn &&
     (accountLoading || !!accountError || !account.configured);
   const signInRequired = !devAccountsUnconfigured && shouldBlockOnSignIn(account);
-  const fundingRequired =
-    !devAccountsUnconfigured && !signInRequired && shouldBlockOnFunding(account);
+  // Dev console driver (window.__fundingDemo) that parks the out-of-credits
+  // surfaces (composer notice, sidebar chip) on a synthetic account snapshot
+  // so every funding branch can be inspected without a depleted account. The
+  // override bypasses the sign-in/unconfigured guards on purpose: the browser
+  // sandbox is rarely signed in, and the demo exists precisely there.
+  const [fundingDemoAccount, setFundingDemoAccountState] = useState<AccountStatus | null>(null);
+  const fundingDemoRef = useRef<AccountStatus | null>(null);
+  const setFundingDemoAccount = useCallback((next: AccountStatus | null) => {
+    fundingDemoRef.current = next;
+    setFundingDemoAccountState(next);
+  }, []);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/funding-demo").then(({ registerFundingDemo }) => {
+      if (cancelled) return;
+      ({ dispose } = registerFundingDemo({ setOverride: setFundingDemoAccount }));
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [setFundingDemoAccount]);
+  const fundingAccount = fundingDemoAccount ?? account;
+  const refreshFundingAccount = useCallback(async () => {
+    if (fundingDemoRef.current) return fundingDemoRef.current;
+    return refreshAccount();
+  }, [refreshAccount]);
+  const fundingRequired = fundingDemoAccount
+    ? shouldBlockOnFunding(fundingDemoAccount)
+    : !devAccountsUnconfigured && !signInRequired && shouldBlockOnFunding(account);
   const topUpLabel = depletedBalanceActionLabel(account);
   // Confirm gate for the Pro -> Max upgrade reached from depleted-balance
   // surfaces (note failure banner, agent workspace notice). The change
@@ -624,10 +662,10 @@ export function App() {
   // only blocks once the account snapshot positively reports no spendable
   // credits.
   const onboardingRequired = !accountLoading && !onboardingDone;
-  // Onboarding counts as blocked so bootstrap, update checks, and the eager
-  // permission probes hold off until the wizard finishes — the wizard owns
-  // the permission prompts while it's on screen.
-  const appBlocked = accountLoading || signInRequired || fundingRequired || onboardingRequired;
+  // Funding no longer blocks the shell or its read-only data. Onboarding still
+  // holds bootstrap, update checks, and eager permission probes because the
+  // wizard owns the permission prompts while it is on screen.
+  const appBlocked = accountLoading || signInRequired || onboardingRequired;
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
@@ -673,6 +711,18 @@ export function App() {
   const noteChat = useNoteChat(
     selectedNote ? { id: selectedNote.id, title: selectedNote.title } : null,
   );
+  async function handleExportNotePdf() {
+    if (!selectedNote) return;
+    await exportNoteAsPdf(selectedNote.title, {
+      showNotes:
+        selectedNote.activeTab === "transcription"
+          ? async () => {
+              const note = await updateNote({ noteId: selectedNote.id, activeTab: "notes" });
+              dispatch({ type: "noteUpdated", note });
+            }
+          : undefined,
+    });
+  }
   const noteToolbarActions = selectedNote ? (
     <NoteHeaderActions
       noteId={selectedNote.id}
@@ -680,6 +730,7 @@ export function App() {
       askJuneOpen={noteChatOpen}
       askJuneWorking={noteChat.working}
       onAskJune={() => setNoteChatOpen((open) => !open)}
+      onExportPdf={() => void handleExportNotePdf()}
       onDelete={() => setConfirmDeleteNote(true)}
     />
   ) : null;
@@ -690,6 +741,13 @@ export function App() {
     agentOrigin?.kind === "project"
       ? state.folders.find((folder) => folder.id === agentOrigin.folderId)
       : undefined;
+  // The active session's own project. Sessions opened outside a project (the
+  // Sessions view, the sidebar) still crumb to the project they're filed in,
+  // so membership is visible wherever the session was entered from — same as
+  // meeting notes showing their project up top.
+  const activeAgentSessionFolder = activeAgentSessionId
+    ? state.folders.find((folder) => folder.id === sessionFolders[activeAgentSessionId]?.[0])
+    : undefined;
   const recoveriesByNote = useMemo(() => {
     const map = new Map<string, (typeof state.activeRecoveries)[number]>();
     for (const recovery of state.activeRecoveries) {
@@ -1064,6 +1122,10 @@ export function App() {
   );
 
   function handleRecovery(sessionId: string, action: "validate" | "discard") {
+    if (action === "validate" && fundingRequired) {
+      setError(RECOVERY_FUNDING_DISABLED_REASON);
+      return;
+    }
     const recoveryNoteId = state.activeRecoveries.find(
       (recovery) => recovery.sessionId === sessionId,
     )?.noteId;
@@ -2110,12 +2172,17 @@ export function App() {
     }
   }
 
-  async function handleRemoveNoteFromFolder(noteId: string, folderId: string) {
+  async function handleRemoveNoteFromFolder(
+    noteId: string,
+    folderId: string,
+    options?: { rethrow?: boolean },
+  ) {
     try {
       const note = await removeNoteFromFolder(noteId, folderId);
       dispatch({ type: "noteUpdated", note });
     } catch (err) {
       setError(messageFromError(err));
+      if (options?.rethrow) throw err;
     }
   }
 
@@ -2171,7 +2238,11 @@ export function App() {
     }
   }
 
-  async function handleRemoveSessionFromFolder(sessionId: string, folderId: string) {
+  async function handleRemoveSessionFromFolder(
+    sessionId: string,
+    folderId: string,
+    options?: { rethrow?: boolean },
+  ) {
     try {
       await removeSessionFromFolder(sessionId, folderId);
       setSessionFolders((prev) => {
@@ -2183,6 +2254,7 @@ export function App() {
       });
     } catch (err) {
       setError(messageFromError(err));
+      if (options?.rethrow) throw err;
     }
   }
 
@@ -2214,15 +2286,6 @@ export function App() {
     }
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
-    // The agent view resolves the conversation by this id, so switch straight
-    // in. Backfill the bridge session-list registration in the background (best
-    // effort) so the session also shows in the agent history sidebar even if
-    // the note chat's own registration hadn't landed yet — never blocks the
-    // handoff, so a slow or failed registration can't stall or dead-end it.
-    void ensureHermesBridgeSession({
-      sessionId,
-      title: noteRef.title.trim() || "Note chat",
-    }).catch(() => undefined);
     setActiveAgentSession({ id: sessionId, title: noteRef.title.trim() || undefined });
     setActiveView("agent");
   }
@@ -2290,6 +2353,15 @@ export function App() {
   // Back target for sessions opened outside a project: the Agents view-all.
   function handleReturnToAgentsList() {
     setActiveView("agent-sessions");
+    setActiveAgentSession(undefined);
+    setAgentOrigin(undefined);
+  }
+
+  // Jumps from an open session to the project it's filed in (the crumb that
+  // shows even when the session was opened from the Sessions view).
+  function handleOpenSessionProject(folderId: string) {
+    setActiveView("folders");
+    dispatch({ type: "folderSelected", folderId });
     setActiveAgentSession(undefined);
     setAgentOrigin(undefined);
   }
@@ -2420,6 +2492,10 @@ export function App() {
       noteId: string,
       options: { startAlreadyClaimed?: boolean; sourceMode?: RecordingSourceMode } = {},
     ): Promise<boolean> => {
+      if (fundingRequired) {
+        setError(RECORDING_FUNDING_DISABLED_REASON);
+        return false;
+      }
       const startAlreadyClaimed = options.startAlreadyClaimed ?? false;
       const requestedSourceMode = options.sourceMode ?? sourceMode;
       if (
@@ -2489,7 +2565,7 @@ export function App() {
         setCheckingSourceReadiness(false);
       }
     },
-    [setRecordingNote, sourceMode],
+    [fundingRequired, setRecordingNote, sourceMode],
   );
 
   const handleStartRecording = useCallback(async () => {
@@ -2498,6 +2574,10 @@ export function App() {
   }, [handleStartRecordingForNote, selectedNoteId]);
 
   const handleStartMeetingDetectedRecording = useCallback(async () => {
+    if (fundingRequired) {
+      setError(RECORDING_FUNDING_DISABLED_REASON);
+      return;
+    }
     if (recordingStartInFlightRef.current || recordingStatusRef.current) return;
     recordingStartInFlightRef.current = true;
     const previousNoteId = selectedNoteId;
@@ -2536,10 +2616,13 @@ export function App() {
         recordingStartInFlightRef.current = false;
       }
     }
-  }, [handleStartRecordingForNote, selectedNoteId]);
+  }, [fundingRequired, handleStartRecordingForNote, selectedNoteId]);
 
   const handleStartAgentRecording = useCallback(
     async (requestedSourceMode: RecordingSourceMode) => {
+      if (fundingRequired) {
+        throw new Error(RECORDING_FUNDING_DISABLED_REASON);
+      }
       if (recordingStartInFlightRef.current || recordingStatusRef.current) {
         throw new Error(
           `A recording is already running for note ${recordingNoteIdRef.current ?? "unknown"}.`,
@@ -2594,7 +2677,7 @@ export function App() {
         }
       }
     },
-    [handleStartRecordingForNote, selectedNoteId],
+    [fundingRequired, handleStartRecordingForNote, selectedNoteId],
   );
 
   // Click the floating global recorder pill to jump back to the note the
@@ -2965,24 +3048,6 @@ export function App() {
     );
   }
 
-  if (fundingRequired) {
-    return (
-      <main className="account-gate-shell">
-        <div
-          className="titlebar-drag"
-          aria-hidden
-          data-tauri-drag-region
-          onPointerDown={handleTitlebarPointerDown}
-        />
-        <FundingGate
-          account={account}
-          onRefresh={refreshAccount}
-          onSignOut={() => void handleSignOut()}
-        />
-      </main>
-    );
-  }
-
   // The in-note RecorderBar covers the recording while you're looking at its
   // note. Elsewhere, the sidebar header carries a tiny recording presence; the
   // floating pill is only the collapsed-sidebar fallback.
@@ -3103,25 +3168,35 @@ export function App() {
           setActiveAgentSession(session);
           setActiveView("agent");
         }}
+        sessionFolderIds={sessionFolders}
+        onOpenSessionMoveDialog={(sessionId) => setMoveDialogSessionIds([sessionId])}
+        onRemoveSessionFromFolder={(sessionId, folderId) =>
+          void handleRemoveSessionFromFolder(sessionId, folderId)
+        }
         recoverableNoteIds={recoverableNoteIds}
         recordingStatus={sidebarRecorderStatus}
         recordingTitle={recordingNoteTitle}
         onOpenRecording={() => (pillIsDemo ? undefined : void handleOpenRecordingNote())}
         collapsed={sidebarCollapsed}
         footerAccessory={
-          <UpdateHub
-            readyUpdate={readyUpdate}
-            status={updateStatus}
-            preparing={preparingUpdate}
-            relaunching={relaunchingUpdate}
-            progress={updateProgress}
-            onDismissStatus={() => {
-              if (preparingUpdate) updateProgressHiddenRef.current = true;
-              setUpdateStatus(null);
-              if (!preparingUpdate) setUpdateProgress(null);
-            }}
-            onRelaunch={handleRelaunchUpdate}
-          />
+          <>
+            <UpdateHub
+              readyUpdate={readyUpdate}
+              status={updateStatus}
+              preparing={preparingUpdate}
+              relaunching={relaunchingUpdate}
+              progress={updateProgress}
+              onDismissStatus={() => {
+                if (preparingUpdate) updateProgressHiddenRef.current = true;
+                setUpdateStatus(null);
+                if (!preparingUpdate) setUpdateProgress(null);
+              }}
+              onRelaunch={handleRelaunchUpdate}
+            />
+            {fundingRequired ? (
+              <FundingChip account={fundingAccount} onRefresh={refreshFundingAccount} />
+            ) : null}
+          </>
         }
       />
       <div
@@ -3234,6 +3309,9 @@ export function App() {
                 />
               ) : activeView === "routines" ? (
                 <RoutinesView
+                  creditActionsDisabledReason={
+                    fundingRequired ? ROUTINE_FUNDING_DISABLED_REASON : undefined
+                  }
                   onCreateRoutine={(prompt) => {
                     // The agent workspace is unmounted while Routines is shown,
                     // so the pending marker alone is consumed on mount — no
@@ -3263,8 +3341,19 @@ export function App() {
                   initialSession={activeAgentSessionSeed}
                   initialSessionId={activeAgentSessionId}
                   onSessionSelected={setActiveAgentSession}
+                  creditActionsDisabledReason={
+                    fundingRequired ? COMPOSER_FUNDING_DISABLED_REASON : undefined
+                  }
+                  fundingNotice={
+                    fundingRequired ? (
+                      <FundingNotice account={fundingAccount} onRefresh={refreshFundingAccount} />
+                    ) : undefined
+                  }
+                  fundingTier={fundingTierOf(fundingAccount)}
                   topUpLabel={topUpLabel}
                   onTopUp={handleTopUp}
+                  sessionInProject={Boolean(activeAgentSessionFolder)}
+                  onMoveSessionToProject={(sessionId) => setMoveDialogSessionIds([sessionId])}
                   origin={
                     agentOriginFolder
                       ? {
@@ -3285,6 +3374,7 @@ export function App() {
                             },
                             {
                               label: agentOriginFolder.name,
+                              icon: <IconProjects size={13} />,
                               onClick: handleReturnToAgentOriginFolder,
                             },
                           ],
@@ -3300,16 +3390,32 @@ export function App() {
                               },
                             ],
                           }
-                        : {
-                            backLabel: "Back to sessions",
-                            onBack: handleReturnToAgentsList,
-                            crumbs: [
-                              {
-                                label: "Sessions",
-                                onClick: handleReturnToAgentsList,
-                              },
-                            ],
-                          }
+                        : activeAgentSessionFolder
+                          ? // Opened from the Sessions view or sidebar but filed in a
+                            // project: the crumb shows the session's home (back still
+                            // returns to where the user came from).
+                            {
+                              backLabel: "Back to sessions",
+                              onBack: handleReturnToAgentsList,
+                              crumbs: [
+                                {
+                                  label: activeAgentSessionFolder.name,
+                                  icon: <IconProjects size={13} />,
+                                  onClick: () =>
+                                    handleOpenSessionProject(activeAgentSessionFolder.id),
+                                },
+                              ],
+                            }
+                          : {
+                              backLabel: "Back to sessions",
+                              onBack: handleReturnToAgentsList,
+                              crumbs: [
+                                {
+                                  label: "Sessions",
+                                  onClick: handleReturnToAgentsList,
+                                },
+                              ],
+                            }
                   }
                 />
               ) : activeView === "agent-sessions" ? (
@@ -3458,6 +3564,7 @@ export function App() {
                       items={[
                         {
                           label: originFolder.name,
+                          icon: <IconProjects size={13} />,
                           onClick: () => {
                             setActiveView("folders");
                             dispatch({
@@ -3517,6 +3624,24 @@ export function App() {
                       recordingDisabled={Boolean(
                         state.recordingStatus && selectedNoteId !== recordingNoteId,
                       )}
+                      recordingBlockedReason={
+                        fundingRequired ? RECORDING_FUNDING_DISABLED_REASON : undefined
+                      }
+                      fundingNotice={
+                        fundingRequired ? (
+                          <FundingNotice
+                            account={fundingAccount}
+                            onRefresh={refreshFundingAccount}
+                          />
+                        ) : undefined
+                      }
+                      fundingTier={fundingTierOf(fundingAccount)}
+                      retryBlockedReason={
+                        fundingRequired ? NOTE_RETRY_FUNDING_DISABLED_REASON : undefined
+                      }
+                      recoveryBlockedReason={
+                        fundingRequired ? RECOVERY_FUNDING_DISABLED_REASON : undefined
+                      }
                       liveTranscript={
                         selectedNoteId === recordingNoteId ? liveTranscriptEvents : []
                       }
@@ -3549,6 +3674,10 @@ export function App() {
                       onFinishRecording={(sessionId) => void handleFinishRecording(sessionId)}
                       onRetry={async () => {
                         if (!selectedNote) return;
+                        if (fundingRequired) {
+                          setError(NOTE_RETRY_FUNDING_DISABLED_REASON);
+                          return;
+                        }
                         try {
                           const note = await retryProcessing(selectedNote.id);
                           dispatch({ type: "noteProcessingUpdated", note });
@@ -3630,6 +3759,14 @@ export function App() {
             note={{ id: selectedNote.id, title: selectedNote.title }}
             chat={noteChat}
             recordingActive={captureActive}
+            creditActionsDisabledReason={
+              fundingRequired ? COMPOSER_FUNDING_DISABLED_REASON : undefined
+            }
+            fundingNotice={
+              fundingRequired ? (
+                <FundingNotice account={fundingAccount} onRefresh={refreshFundingAccount} />
+              ) : undefined
+            }
             onClose={() => setNoteChatOpen(false)}
             onOpenInAgent={(sessionId) => {
               setNoteChatOpen(false);
@@ -3696,7 +3833,11 @@ export function App() {
             : []
         }
         folders={state.folders}
-        onSetFolder={(noteId, folderId) => handleSetNoteFolder(noteId, folderId)}
+        onSetFolder={(noteId, folderId) => handleSetNoteFolder(noteId, folderId, { rethrow: true })}
+        onCreateFolder={(name) => handleCreateFolder(name)}
+        onRemoveFolder={(noteId, folderId) =>
+          handleRemoveNoteFromFolder(noteId, folderId, { rethrow: true })
+        }
         onMoved={() => notesListRef.current?.resetSelection()}
       />
       <MoveSessionToProjectDialog
@@ -3711,7 +3852,13 @@ export function App() {
         }
         sessionFolderIds={sessionFolders}
         folders={state.folders}
-        onSetFolder={(sessionId, folderId) => handleSetSessionFolder(sessionId, folderId)}
+        onSetFolder={(sessionId, folderId) =>
+          handleSetSessionFolder(sessionId, folderId, { rethrow: true })
+        }
+        onCreateFolder={(name) => handleCreateFolder(name)}
+        onRemoveFolder={(sessionId, folderId) =>
+          handleRemoveSessionFromFolder(sessionId, folderId, { rethrow: true })
+        }
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
       />
       <ConfirmDialog
@@ -3723,9 +3870,6 @@ export function App() {
         confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />
-      {/* Global toast host. Mounted once beside the dialogs; sonner portals its
-          own list to document.body, so placement in the tree is immaterial. */}
-      <Toaster />
     </main>
   );
 }

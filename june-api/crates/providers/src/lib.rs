@@ -21,7 +21,7 @@ mod retry;
 mod transcription;
 
 pub use audio_probe::MultiFormatDurationProbe;
-pub use http::{client_with_timeout, default_client, jwks_client};
+pub use http::{client_with_timeout, default_client, issue_report_client, jwks_client};
 pub use issue_reports::{LogIssueReportSink, OsPlatformIssueReportSink};
 pub use jwks::{JwksTokenVerifier, JwksTokenVerifierParams};
 pub use local_dev::{LocalDevOsAccountsClient, LocalDevTokenVerifier};
