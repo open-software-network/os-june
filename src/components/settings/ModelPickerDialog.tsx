@@ -15,6 +15,12 @@ import { HoverTip } from "../ui/HoverTip";
 import { ModelPrivacyChip } from "../ui/ModelPrivacyChip";
 import { ProviderLogo } from "./ProviderLogo";
 
+const AUTO_MODEL_ID = "open-software/auto";
+
+function withJuneModelName(model: VeniceModelDto): VeniceModelDto {
+  return model.id === AUTO_MODEL_ID && model.name !== "Auto" ? { ...model, name: "Auto" } : model;
+}
+
 // Model catalog UI shared between Settings (the Models tab rows) and the
 // agent workspace (the session bar's model pill): the picker dialog itself
 // plus the meta line and option-list helpers it renders with. Moved out of
@@ -231,7 +237,7 @@ export function ModelPickerDialog({
 }
 
 export function selectedModel(options: VeniceModelDto[], value: string) {
-  return (
+  return withJuneModelName(
     options.find((model) => model.id === value) ?? {
       provider: "",
       id: value,
@@ -239,7 +245,7 @@ export function selectedModel(options: VeniceModelDto[], value: string) {
       modelType: "",
       traits: [],
       capabilities: [],
-    }
+    },
   );
 }
 
@@ -371,18 +377,19 @@ export function modelSpecEntries(model: VeniceModelDto): { label: string; value:
 
 export function modelOptions(models: VeniceModelDto[], selectedModel: string) {
   const modelId = selectedModel.trim();
-  if (!modelId || models.some((model) => model.id === modelId)) {
-    return models;
+  const namedModels = models.map(withJuneModelName);
+  if (!modelId || namedModels.some((model) => model.id === modelId)) {
+    return namedModels;
   }
   return [
-    {
+    withJuneModelName({
       provider: "",
       id: modelId,
       name: modelId,
       modelType: "",
       traits: [],
       capabilities: [],
-    },
-    ...models,
+    }),
+    ...namedModels,
   ];
 }
