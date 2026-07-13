@@ -86,6 +86,8 @@ export * from "./setup-import";
 export * from "./use-setup-snapshot";
 export * from "./external-dirs-view";
 export * from "./use-external-dirs";
+export * from "./access-grants-view";
+export * from "./use-access-grants";
 export * from "./skill-bundles-view";
 export * from "./use-skill-bundles";
 export * from "./integrations-health-view";

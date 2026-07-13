@@ -297,6 +297,17 @@ export type HermesAdminClient = {
      * read-merged client-side. Routes the write through Hermes' REST surface so
      * the jailed dashboard owns the `config.yaml` write (no June-side EPERM). */
     setValue(path: string, value: unknown): Promise<MutationOutcome<HermesConfigWriteResult>>;
+    /** Read-modify-writes a single dotted path with a TRANSFORM applied to the
+     * value read from the SAME fetched tree that is persisted. Use instead of
+     * `get()` + `setValue()` whenever the new value derives from the current
+     * one (e.g. pruning one entry from a list): a separately fetched snapshot
+     * can be stale by the time `setValue` re-reads the tree, and writing the
+     * precomputed value would silently revert a concurrent change to the same
+     * path. The transform must be pure and total (junk in, value out). */
+    updateValue(
+      path: string,
+      transform: (current: unknown) => unknown,
+    ): Promise<MutationOutcome<HermesConfigWriteResult>>;
     /** Segment-aware variant of {@link set}/{@link setValue}: writes `value` at
      * the exact path SEGMENTS, so a dynamic segment (a skill or MCP server name)
      * that itself contains a dot is written as ONE key, not mis-split into nested
@@ -737,6 +748,18 @@ function setConfigAtPath(tree: Record<string, unknown>, segments: string[], valu
   node[segments[segments.length - 1]!] = value;
 }
 
+/** Reads the value at the given path SEGMENTS from a config tree, or undefined
+ * when any segment is missing or not an object. The read half of
+ * `updateValue`'s single-snapshot read-modify-write. */
+function getConfigAtPath(tree: Record<string, unknown>, segments: string[]): unknown {
+  let node: unknown = tree;
+  for (const segment of segments) {
+    if (typeof node !== "object" || node === null || Array.isArray(node)) return undefined;
+    node = (node as Record<string, unknown>)[segment];
+  }
+  return node;
+}
+
 /** Deletes a value at the given path SEGMENTS from a config tree in place. No-op
  * if any segment is missing. Segment-based for the same dotted-name reason as
  * {@link setConfigAtPath}. */
@@ -791,6 +814,16 @@ function makeConfig(send: AdminTransport): HermesAdminClient["config"] {
       // manager to write the whole `skills.external_dirs` list (a static path).
       const segments = path.split(".");
       return writePath("config.set", path, (tree) => setConfigAtPath(tree, segments, value));
+    },
+    async updateValue(path, transform) {
+      // Derives the new value from the value in the SAME fetched tree that is
+      // persisted, so a concurrent write to this path between a caller's own
+      // earlier read and this write cannot be reverted by a stale precomputed
+      // value (the Access grants revoke prunes the allowlist this way).
+      const segments = path.split(".");
+      return writePath("config.set", path, (tree) =>
+        setConfigAtPath(tree, segments, transform(getConfigAtPath(tree, segments))),
+      );
     },
     async setValueAtSegments(segments, value) {
       // Segment-aware write: a skill or MCP server name may contain a dot, so a

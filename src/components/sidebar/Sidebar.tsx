@@ -10,6 +10,7 @@ import { IconAudio } from "central-icons/IconAudio";
 import { IconBox2 } from "central-icons/IconBox2";
 import { IconBrain2 } from "central-icons/IconBrain2";
 import { IconBuildingBlocks } from "central-icons/IconBuildingBlocks";
+import { IconKey1 } from "central-icons/IconKey1";
 import { IconElements } from "central-icons/IconElements";
 import { IconModelcontextprotocol } from "central-icons/IconModelcontextprotocol";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
@@ -265,6 +266,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
       },
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
       { id: "agent", label: "Agent", icon: <IconRobot2 size={16} /> },
+      {
+        id: "access-grants",
+        label: "Access grants",
+        icon: <IconKey1 size={16} />,
+      },
       {
         id: "skills",
         label: "Installed skills",
