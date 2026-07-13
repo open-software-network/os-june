@@ -1,7 +1,7 @@
 use june_config::IssueReportsConfig;
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, DomainError, IssueReport,
-    IssueReportSink, ModelId, ProviderCredentials,
+    IssueReportDelivery, IssueReportSink, ModelId, ProviderCredentials,
 };
 use serde::Deserialize;
 use std::{
@@ -63,7 +63,10 @@ impl IssueReportService {
         }
     }
 
-    pub async fn submit(&self, mut report: IssueReport) -> Result<(), DomainError> {
+    pub async fn submit(
+        &self,
+        mut report: IssueReport,
+    ) -> Result<IssueReportDelivery, DomainError> {
         if has_non_empty_diagnosis(&report) {
             return self.sink.deliver(report).await;
         }
@@ -282,7 +285,8 @@ mod tests {
     use june_config::IssueReportsConfig;
     use june_domain::{
         AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream, DomainError,
-        IssueReport, IssueReportAttachment, IssueReportSink, TokenUsage, UserId,
+        IssueReport, IssueReportAttachment, IssueReportDelivery, IssueReportSink, TokenUsage,
+        UserId,
     };
     use pretty_assertions::assert_eq;
     use rstest::rstest;
@@ -356,6 +360,24 @@ mod tests {
 
         assert_eq!(completer.call_count(), 0);
         assert_eq!(sink.delivered()[0].agent_diagnosis, None);
+    }
+
+    #[tokio::test]
+    async fn delivery_result_passes_through_from_the_sink() {
+        let sink = Arc::new(RecordingSink::with_delivery(IssueReportDelivery {
+            unattached_names: vec!["recording.mov".to_string()],
+        }));
+        let completer = Arc::new(RecordingCompleter::with_behavior(CompleterBehavior::Text(
+            "server diagnosis".to_string(),
+        )));
+        let service = service_with_model(sink, completer, None);
+
+        let delivery = service
+            .submit(report_without_diagnosis())
+            .await
+            .expect("report delivery succeeds");
+
+        assert_eq!(delivery.unattached_names, vec!["recording.mov"]);
     }
 
     #[rstest]
@@ -476,7 +498,7 @@ mod tests {
             attachments: vec![IssueReportAttachment {
                 name: "logs.txt".to_string(),
                 content_type: "text/plain".to_string(),
-                bytes: b"fake-bytes".to_vec(),
+                bytes: bytes::Bytes::from_static(b"fake-bytes"),
             }],
             session_id: Some("session-1".to_string()),
             app_version: Some("0.2.0".to_string()),
@@ -494,9 +516,17 @@ mod tests {
     #[derive(Default)]
     struct RecordingSink {
         delivered: Mutex<Vec<IssueReport>>,
+        delivery: IssueReportDelivery,
     }
 
     impl RecordingSink {
+        fn with_delivery(delivery: IssueReportDelivery) -> Self {
+            Self {
+                delivered: Mutex::new(Vec::new()),
+                delivery,
+            }
+        }
+
         fn delivered(&self) -> Vec<IssueReport> {
             self.delivered
                 .lock()
@@ -507,12 +537,12 @@ mod tests {
 
     #[async_trait]
     impl IssueReportSink for RecordingSink {
-        async fn deliver(&self, report: IssueReport) -> Result<(), DomainError> {
+        async fn deliver(&self, report: IssueReport) -> Result<IssueReportDelivery, DomainError> {
             self.delivered
                 .lock()
                 .map_err(|_| DomainError::UpstreamProvider)?
                 .push(report);
-            Ok(())
+            Ok(self.delivery.clone())
         }
     }
 

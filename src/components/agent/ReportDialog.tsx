@@ -24,6 +24,9 @@ export type ReportDialogAttachment = {
   previewDataUrl?: string | null;
 };
 
+const REPORT_DIALOG_DOM_DROP_MAX_BYTES = 50 * 1024 * 1024;
+const REPORT_DIALOG_MAX_ATTACHMENTS = 20;
+
 type ReportDialogProps = {
   category: ReportCategory;
   description: string;
@@ -55,16 +58,24 @@ export function ReportDialog({
   // Enter/leave fire for every child edge crossed; only depth zero means the
   // pointer truly left the drop zone (otherwise the overlay flickers).
   const dragDepthRef = useRef(0);
+  // State updates are not visible until React renders again. Reserve the DOM
+  // import slot synchronously so two drops in the same tick cannot both start.
+  const domImportPendingRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
   // Dropped-file imports resolve in the parent, and `importingFiles` only
   // reflects them a render later — count in-flight drops here too so a fast
   // "drop then send" cannot submit the report without the dropped file.
   const [dropsPending, setDropsPending] = useState(0);
   const [sent, setSent] = useState(false);
+  // Files that could not be attached to the report in Open Software are shown
+  // with the confirmation so a skipped file is never a silent drop.
+  const [skippedAttachmentNames, setSkippedAttachmentNames] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const descriptionId = useId();
   const trimmedDescription = description.trim();
-  const canSubmit = Boolean(trimmedDescription || attachments.length);
+  const excessAttachmentCount = Math.max(0, attachments.length - REPORT_DIALOG_MAX_ATTACHMENTS);
+  const canSubmit =
+    Boolean(trimmedDescription || attachments.length) && excessAttachmentCount === 0;
   const busy = submitting || importingFiles || dropsPending > 0;
   const categoryOptions = useMemo(
     () =>
@@ -87,7 +98,8 @@ export function ReportDialog({
     // React bubbles these events to the composer's own drop/paste importers
     // behind the modal — stop them here or attachments leak into the chat.
     event.stopPropagation();
-    event.dataTransfer.dropEffect = "copy";
+    event.dataTransfer.dropEffect =
+      sent || submitting || importingFiles || domImportPendingRef.current ? "none" : "copy";
   }
 
   function handleDragEnter() {
@@ -101,9 +113,42 @@ export function ReportDialog({
   }
 
   function queueFileImport(files: File[]) {
+    if (sent || submitting || importingFiles || domImportPendingRef.current) {
+      setError(
+        "Please wait for the current import or report submission to finish, then try again.",
+      );
+      return;
+    }
+    if (attachments.length + files.length > REPORT_DIALOG_MAX_ATTACHMENTS) {
+      setError(
+        "Reports can include up to 20 attachments. Remove attachments before adding these files.",
+      );
+      return;
+    }
+    if (files.some((file) => file.size > REPORT_DIALOG_DOM_DROP_MAX_BYTES)) {
+      setError(
+        "Files added by drop or paste must be 50 MB or smaller. Use Add files for videos up to 300 MB.",
+      );
+      return;
+    }
+    domImportPendingRef.current = true;
     setError(null);
     setDropsPending((count) => count + 1);
-    void Promise.resolve(onDropFiles(files)).finally(() => setDropsPending((count) => count - 1));
+    let importResult: unknown;
+    try {
+      importResult = onDropFiles(files);
+    } catch (err) {
+      domImportPendingRef.current = false;
+      setDropsPending((count) => count - 1);
+      setError(`The files could not be added. ${messageFromError(err)}`);
+      return;
+    }
+    void Promise.resolve(importResult)
+      .catch((err) => setError(`The files could not be added. ${messageFromError(err)}`))
+      .finally(() => {
+        domImportPendingRef.current = false;
+        setDropsPending((count) => count - 1);
+      });
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
@@ -124,7 +169,6 @@ export function ReportDialog({
   // a plain text paste falls through to the textarea untouched.
   function handlePaste(event: ClipboardEvent<HTMLDivElement>) {
     event.stopPropagation();
-    if (sent || busy) return;
     const files = clipboardImageFiles(event.clipboardData);
     if (!files.length) return;
     // Mixed payload (e.g. a copied web-page selection carrying both text and
@@ -142,13 +186,14 @@ export function ReportDialog({
     setSubmitting(true);
     setError(null);
     try {
-      await submitIssueReport({
+      const response = await submitIssueReport({
         category,
         description: trimmedDescription || ISSUE_REPORT_ATTACHMENTS_ONLY_DESCRIPTION,
         attachmentNames: attachments.map((attachment) => attachment.name),
         attachmentPaths: attachments.map((attachment) => attachment.path),
       });
       setSubmitting(false);
+      setSkippedAttachmentNames(response?.skippedAttachmentNames ?? []);
       setSent(true);
       onSent();
     } catch (err) {
@@ -198,9 +243,17 @@ export function ReportDialog({
       }
     >
       {sent ? (
-        <p className="report-dialog-sent" role="status">
-          Your report was sent to the June team. Thank you for helping improve June.
-        </p>
+        <>
+          <p className="report-dialog-sent" role="status">
+            Your report was sent to the June team. Thank you for helping improve June.
+          </p>
+          {skippedAttachmentNames.length ? (
+            <p className="report-dialog-error" role="alert">
+              These files could not be attached to the report in Open Software and were sent by name
+              only: {skippedAttachmentNames.join(", ")}.
+            </p>
+          ) : null}
+        </>
       ) : (
         <div
           className="dialog-body report-dialog-drop"
@@ -254,7 +307,12 @@ export function ReportDialog({
               ))}
             </ul>
           ) : null}
-          {error ? (
+          {excessAttachmentCount > 0 ? (
+            <p className="report-dialog-error" role="alert">
+              Reports can include up to 20 attachments. Remove at least {excessAttachmentCount}{" "}
+              {excessAttachmentCount === 1 ? "attachment" : "attachments"} before sending.
+            </p>
+          ) : error ? (
             <p className="report-dialog-error" role="alert">
               {error}
             </p>

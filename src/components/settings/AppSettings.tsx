@@ -1506,6 +1506,7 @@ export function AppSettings({
                   <div className="settings-row-control">
                     <Select
                       className="accent-select"
+                      popoverWidth="trigger"
                       value={brand}
                       options={BRAND_PRESETS.map((preset) => ({
                         value: preset.id,

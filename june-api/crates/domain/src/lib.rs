@@ -474,10 +474,10 @@ pub struct IssueReport {
     pub category: Option<String>,
     pub description: String,
     pub agent_diagnosis: Option<String>,
-    /// Names of everything the user attached, including files whose bytes
-    /// were too large or unreadable to upload.
+    /// Names of everything the user attached, including local files whose
+    /// bytes were unreadable or empty.
     pub attachment_names: Vec<String>,
-    /// The attachment files (typically screenshots) that were uploaded.
+    /// The readable attachment files, including screenshots and videos.
     pub attachments: Vec<IssueReportAttachment>,
     pub session_id: Option<String>,
     pub app_version: Option<String>,
@@ -488,11 +488,11 @@ pub struct IssueReport {
 pub struct IssueReportAttachment {
     pub name: String,
     pub content_type: String,
-    pub bytes: Vec<u8>,
+    pub bytes: bytes::Bytes,
 }
 
-/// Manual Debug: the bytes are image-sized payloads that must never be
-/// dumped into logs or error messages.
+/// Manual Debug: these can be large video payloads and must never be dumped
+/// into logs or error messages.
 impl std::fmt::Debug for IssueReportAttachment {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -502,6 +502,13 @@ impl std::fmt::Debug for IssueReportAttachment {
             .field("byte_len", &self.bytes.len())
             .finish()
     }
+}
+
+/// Outcome of delivering an issue report after June API accepted it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct IssueReportDelivery {
+    /// Names of files not attached to an issue in Open Software.
+    pub unattached_names: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -617,7 +624,7 @@ pub trait TokenVerifier: Send + Sync {
 
 #[async_trait]
 pub trait IssueReportSink: Send + Sync {
-    async fn deliver(&self, report: IssueReport) -> Result<(), DomainError>;
+    async fn deliver(&self, report: IssueReport) -> Result<IssueReportDelivery, DomainError>;
 }
 
 #[async_trait]

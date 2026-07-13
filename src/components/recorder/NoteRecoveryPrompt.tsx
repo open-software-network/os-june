@@ -7,6 +7,7 @@ type NoteRecoveryPromptProps = {
   onRecover: (sessionId: string) => void;
   onDiscard: (sessionId: string) => void;
   disabled?: boolean;
+  recoverBlockedReason?: string;
 };
 
 export function NoteRecoveryPrompt({
@@ -14,13 +15,24 @@ export function NoteRecoveryPrompt({
   onRecover,
   onDiscard,
   disabled,
+  recoverBlockedReason,
 }: NoteRecoveryPromptProps) {
   return (
     <InlineNotice
       className="note-recovery-prompt"
       aria-label="Recoverable recording"
       icon={<IconRecord size={14} aria-hidden />}
-      body={`This recording was interrupted. We saved ${formatBytes(recovery.bytesFound)} of audio.`}
+      body={
+        <>
+          This recording was interrupted. We saved {formatBytes(recovery.bytesFound)} of audio.
+          {recoverBlockedReason ? (
+            <>
+              {" "}
+              <span>{recoverBlockedReason}</span>
+            </>
+          ) : null}
+        </>
+      }
       actions={
         <>
           <button
@@ -34,7 +46,8 @@ export function NoteRecoveryPrompt({
           <button
             type="button"
             className="btn btn-secondary"
-            disabled={disabled}
+            disabled={disabled || Boolean(recoverBlockedReason)}
+            title={recoverBlockedReason}
             onClick={() => onRecover(recovery.sessionId)}
           >
             Recover

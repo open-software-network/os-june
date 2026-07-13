@@ -3,7 +3,38 @@ use june_services::{
     AgentChatService, DictateService, ImageService, IssueReportService, NoteGenerateService,
     NoteTranscribeService, P3aReportService, PricingTable, VideoService, WebAugmentService,
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
+use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
+use tokio::time::Instant;
+
+const ISSUE_REPORT_MAX_CONCURRENCY: usize = 1;
+
+/// Shared ownership keeps the one issue-report permit alive until both the
+/// delivery task and the HTTP response body have finished (or been dropped).
+pub(crate) struct IssueReportPermit {
+    _permit: OwnedSemaphorePermit,
+}
+
+/// One absolute request deadline shared by permit wait, multipart extraction,
+/// and streamed delivery. Copying it never resets the request budget.
+#[derive(Clone, Copy)]
+pub(crate) struct IssueReportDeadline(Instant);
+
+impl IssueReportDeadline {
+    pub(crate) fn from_now(timeout: Duration) -> Self {
+        Self(Instant::now() + timeout)
+    }
+
+    pub(crate) fn instant(self) -> Instant {
+        self.0
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct IssueReportRequestContext {
+    pub(crate) permit: Arc<IssueReportPermit>,
+    pub(crate) deadline: IssueReportDeadline,
+}
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -26,6 +57,7 @@ struct ApiStateInner {
     // then charge on the completing poll), held as a service like image.
     video: Arc<VideoService>,
     issue_reports: Arc<IssueReportService>,
+    issue_report_permits: Arc<Semaphore>,
     p3a_reports: Arc<P3aReportService>,
     limits: ApiLimits,
     attestation: AttestationInfo,
@@ -35,6 +67,7 @@ struct ApiStateInner {
 pub struct ApiLimits {
     pub max_audio_bytes: usize,
     pub max_json_bytes: usize,
+    pub max_issue_report_bytes: usize,
     pub max_image_edit_bytes: usize,
     pub request_timeout_secs: u64,
 }
@@ -80,6 +113,7 @@ impl ApiState {
                 image: params.image,
                 video: params.video,
                 issue_reports: params.issue_reports,
+                issue_report_permits: Arc::new(Semaphore::new(ISSUE_REPORT_MAX_CONCURRENCY)),
                 p3a_reports: params.p3a_reports,
                 limits: params.limits,
                 attestation: params.attestation,
@@ -125,6 +159,18 @@ impl ApiState {
 
     pub(crate) fn issue_reports(&self) -> &IssueReportService {
         &self.inner.issue_reports
+    }
+
+    pub(crate) async fn acquire_issue_report_permit(
+        &self,
+    ) -> Result<Arc<IssueReportPermit>, AcquireError> {
+        let permit = self
+            .inner
+            .issue_report_permits
+            .clone()
+            .acquire_owned()
+            .await?;
+        Ok(Arc::new(IssueReportPermit { _permit: permit }))
     }
 
     pub(crate) fn p3a_reports(&self) -> &P3aReportService {

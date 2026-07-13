@@ -169,6 +169,58 @@ describe("ReportDialog", () => {
     );
   });
 
+  // JUN-238: two videos attached, one registered. Every attached file's name
+  // and path must ride in the submit payload.
+  it("submits every attached file when multiple files are attached", async () => {
+    const user = userEvent.setup();
+    render(
+      <Harness
+        initialAttachments={[
+          {
+            id: "clip-a",
+            name: "clip-a.mov",
+            path: "/workspace/clip-a.mov",
+          },
+          {
+            id: "clip-b",
+            name: "clip-b.mp4",
+            path: "/workspace/clip-b.mp4",
+          },
+        ]}
+      />,
+    );
+
+    await user.type(screen.getByRole("textbox", { name: "Description" }), "Both videos matter");
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "bug",
+        description: "Both videos matter",
+        attachmentNames: ["clip-a.mov", "clip-b.mp4"],
+        attachmentPaths: ["/workspace/clip-a.mov", "/workspace/clip-b.mp4"],
+      }),
+    );
+  });
+
+  it("names files that could not be attached in Open Software", async () => {
+    const user = userEvent.setup();
+    mocks.submitIssueReport.mockResolvedValue({
+      received: true,
+      skippedAttachmentNames: ["huge.mov"],
+    });
+    render(<Harness initialDescription="Recorder bug" />);
+
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
+    expect(await screen.findByText(/Your report was sent to the June team/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /These files could not be attached to the report in Open Software and were sent by name only: huge.mov/,
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("routes dropped files through the provided import callback", () => {
     const onDropFiles = vi.fn();
     render(<Harness onDropFiles={onDropFiles} />);
@@ -179,6 +231,70 @@ describe("ReportDialog", () => {
     });
 
     expect(onDropFiles).toHaveBeenCalledWith([file]);
+  });
+
+  it("routes all nine valid dropped files through the provided import callback", () => {
+    const onDropFiles = vi.fn();
+    render(<Harness onDropFiles={onDropFiles} />);
+    const files = Array.from(
+      { length: 9 },
+      (_, index) => new File([`log-${index + 1}`], `june-${index + 1}.log`),
+    );
+
+    fireEvent.drop(screen.getByRole("textbox", { name: "Description" }), {
+      dataTransfer: { files },
+    });
+
+    expect(onDropFiles).toHaveBeenCalledWith(files);
+  });
+
+  it("rejects files that would exceed the 20-attachment report limit", () => {
+    const onDropFiles = vi.fn();
+    const existingAttachments = Array.from({ length: 19 }, (_, index) => ({
+      id: `existing-${index}`,
+      name: `existing-${index}.txt`,
+      path: `/workspace/existing-${index}.txt`,
+    }));
+    render(<Harness initialAttachments={existingAttachments} onDropFiles={onDropFiles} />);
+    const files = [new File(["a"], "a.txt"), new File(["b"], "b.txt")];
+
+    fireEvent.drop(screen.getByRole("textbox", { name: "Description" }), {
+      dataTransfer: { files },
+    });
+
+    expect(onDropFiles).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Reports can include up to 20 attachments. Remove attachments before adding these files.",
+    );
+  });
+
+  it("disables submission when a native selection contains more than 20 attachments", () => {
+    const attachments = Array.from({ length: 21 }, (_, index) => ({
+      id: `native-${index}`,
+      name: `native-${index}.mov`,
+      path: `/Users/alex/Desktop/native-${index}.mov`,
+    }));
+
+    render(<Harness initialAttachments={attachments} />);
+
+    expect(screen.getByRole("button", { name: "Send report" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Remove at least 1 attachment before sending.",
+    );
+  });
+
+  it("rejects oversized Finder drops before importing and points to Add files", () => {
+    const onDropFiles = vi.fn();
+    render(<Harness onDropFiles={onDropFiles} />);
+    const file = new File(["video"], "large.mov", { type: "video/quicktime" });
+    Object.defineProperty(file, "size", { value: 50 * 1024 * 1024 + 1 });
+
+    fireEvent.drop(screen.getByRole("textbox", { name: "Description" }), {
+      dataTransfer: { files: [file] },
+    });
+
+    expect(onDropFiles).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Use Add files for videos up to 300 MB.");
   });
 
   it("routes pasted images through the import callback and leaves text pastes alone", () => {
@@ -261,6 +377,44 @@ describe("ReportDialog", () => {
     resolveImport();
     await waitFor(() => expect(submit).toBeEnabled());
     expect(mocks.submitIssueReport).not.toHaveBeenCalled();
+  });
+
+  it("rejects a second drop while the first import batch is pending", () => {
+    const onDropFiles = vi.fn(() => new Promise<void>(() => {}));
+    render(<Harness initialDescription="Recorder bug" onDropFiles={onDropFiles} />);
+    const textarea = screen.getByRole("textbox", { name: "Description" });
+    const firstFile = new File(["first"], "first.log", { type: "text/plain" });
+    const secondFile = new File(["second"], "second.log", { type: "text/plain" });
+
+    fireEvent.drop(textarea, { dataTransfer: { files: [firstFile] } });
+    fireEvent.drop(textarea, { dataTransfer: { files: [secondFile] } });
+
+    expect(onDropFiles).toHaveBeenCalledTimes(1);
+    expect(onDropFiles).toHaveBeenCalledWith([firstFile]);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Please wait for the current import or report submission to finish, then try again.",
+    );
+    const dataTransfer = { files: [], dropEffect: "copy" };
+    fireEvent.dragOver(textarea, { dataTransfer });
+    expect(dataTransfer.dropEffect).toBe("none");
+  });
+
+  it("rejects a drop while report submission is pending", async () => {
+    const user = userEvent.setup();
+    const onDropFiles = vi.fn();
+    mocks.submitIssueReport.mockImplementationOnce(() => new Promise(() => {}));
+    render(<Harness initialDescription="Recorder bug" onDropFiles={onDropFiles} />);
+    const textarea = screen.getByRole("textbox", { name: "Description" });
+
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+    fireEvent.drop(textarea, {
+      dataTransfer: { files: [new File(["late"], "late.log", { type: "text/plain" })] },
+    });
+
+    expect(onDropFiles).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Please wait for the current import or report submission to finish, then try again.",
+    );
   });
 
   it("keeps the dialog open with the typed input after a submit failure", async () => {
