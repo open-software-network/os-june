@@ -25,6 +25,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0013](adr/0013-stream-inference-responses-through-june-api.md) — inference responses stream through June API (SSE pass-through + keep-alive heartbeats); charges settle after the stream ends
 - [adr/0014](adr/0014-pinned-dictation-paste-target.md) — the dictation paste target is pinned when the recording stops, never re-resolved at paste time
 - [adr/0015](adr/0015-video-generation-tools.md) — video generation: `/video` fast path + LLM tools, async job + poll, quote-priced, via Venice
+- [adr/0017](adr/0017-browser-use-via-june-extension.md) — browser use in the user's own browser via the June extension, two tracks behind one broker; computer use productizes the pinned toolset (0016 is reserved by the private-connectors PR)
 
 ## Enforceable rules (spec/)
 
@@ -60,6 +61,7 @@ Per-repo config the engineering skills read before acting (see the
 
 - [hermes-architecture.md](hermes-architecture.md) — the agent runtime: bridge, gateway, control plane, sessions, models
 - [hermes-gateway-gotchas.md](hermes-gateway-gotchas.md) — integration gotchas: restart discipline, config contract, MCP OAuth, event types, upstream tool-schema quirks
+- [browser-computer-use-prd.md](browser-computer-use-prd.md) — PRD: Browser use + Computer use plugins (JUN-278); extension in the user's browser + routines-only managed browser, phase-2 computer use
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
 - [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
 - [telemetry.md](telemetry.md) — public overview of June telemetry, current behavior, and policies
