@@ -818,6 +818,27 @@ async fn integration_note_transcribe_rejects_unsupported_audio() -> Result<(), B
 }
 
 #[tokio::test]
+async fn integration_dictate_routes_retired_asr_model_through_priced_fallback()
+-> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request(
+        "/v1/dictate",
+        multipart_body([
+            text_part("model", "retired-asr-model"),
+            text_part("sessionId", "session-stale-asr"),
+            text_part("utteranceId", "utterance-stale-asr"),
+            file_part("audio", "dictation.wav", valid_wav()),
+        ]),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["text"], "Transcribed audio");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_dictate_fills_language_when_provider_returns_none()
 -> Result<(), Box<dyn Error>> {
     // Venice ASR never returns a detected language, so the provider yields

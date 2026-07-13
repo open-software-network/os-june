@@ -348,6 +348,7 @@ pub(crate) fn require_priced_model(
 }
 
 const AUTO_TEXT_MODEL: &str = "open-software/auto";
+const DEFAULT_ASR_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 
 /// Older June clients may retain a Venice model that disappeared when the
 /// production catalog moved behind os-api. Preserve those sessions by routing
@@ -368,6 +369,42 @@ fn resolve_priced_text_model_kind(
         Err(PricingError::NotPriced | PricingError::MissingRate) => {
             require_priced_model_kind(pricing, AUTO_TEXT_MODEL, ModelKind::Text)?;
             Ok(AUTO_TEXT_MODEL.to_string())
+        }
+        Err(PricingError::WrongUnit) => Err(ApiError::unprocessable("model_type_invalid")),
+        Err(PricingError::Overflow) => Err(ApiError::unprocessable("price_overflow")),
+    }
+}
+
+/// Preserve dictation for clients with a retired ASR selection. Prefer June's
+/// default private transcription model, then any currently priced ASR model.
+/// A text-model selection remains a hard type error.
+pub(crate) fn resolve_priced_asr_model(
+    state: &ApiState,
+    requested_model_id: &str,
+) -> Result<String, ApiError> {
+    resolve_priced_asr_model_kind(state.pricing(), requested_model_id)
+}
+
+fn resolve_priced_asr_model_kind(
+    pricing: &PricingTable,
+    requested_model_id: &str,
+) -> Result<String, ApiError> {
+    match pricing.ensure_model_kind(requested_model_id, ModelKind::Asr) {
+        Ok(()) => Ok(requested_model_id.to_string()),
+        Err(PricingError::NotPriced | PricingError::MissingRate) => {
+            if pricing
+                .ensure_model_kind(DEFAULT_ASR_MODEL, ModelKind::Asr)
+                .is_ok()
+            {
+                return Ok(DEFAULT_ASR_MODEL.to_string());
+            }
+            pricing
+                .priced_models(Some(ModelKind::Asr))
+                .into_iter()
+                .map(|(model_id, _)| model_id)
+                .find(|model_id| pricing.ensure_model_kind(model_id, ModelKind::Asr).is_ok())
+                .cloned()
+                .ok_or_else(|| ApiError::unprocessable("model_not_priced"))
         }
         Err(PricingError::WrongUnit) => Err(ApiError::unprocessable("model_type_invalid")),
         Err(PricingError::Overflow) => Err(ApiError::unprocessable("price_overflow")),
@@ -397,7 +434,7 @@ fn parse_preview_flag(value: Option<&str>) -> bool {
 mod tests {
     use super::{
         AUTO_TEXT_MODEL, parse_preview_flag, require_priced_model_kind,
-        resolve_priced_text_model_kind,
+        resolve_priced_asr_model_kind, resolve_priced_text_model_kind,
     };
     use crate::ApiError;
     use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
@@ -476,6 +513,30 @@ mod tests {
         let resolved = resolve_priced_text_model_kind(&pricing_table(), "text-model")
             .expect("priced text model should remain explicit");
         assert_eq!(resolved, "text-model");
+    }
+
+    #[test]
+    fn stale_asr_model_falls_back_to_a_priced_asr_model() {
+        let resolved = resolve_priced_asr_model_kind(&pricing_table(), "retired-asr-model")
+            .expect("stale ASR model should remain usable");
+        assert_eq!(resolved, "asr-model");
+    }
+
+    #[test]
+    fn priced_asr_model_is_preserved() {
+        let resolved = resolve_priced_asr_model_kind(&pricing_table(), "asr-model")
+            .expect("priced ASR model should remain explicit");
+        assert_eq!(resolved, "asr-model");
+    }
+
+    #[test]
+    fn text_model_cannot_fall_back_into_asr() {
+        let error = resolve_priced_asr_model_kind(&pricing_table(), "text-model")
+            .expect_err("text model must not be accepted for transcription");
+        assert!(matches!(
+            error,
+            ApiError::Unprocessable { message, .. } if message == "model_type_invalid"
+        ));
     }
 
     #[test]
