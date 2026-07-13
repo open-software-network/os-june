@@ -60,10 +60,7 @@ services:
       - JUNE__OS_ACCOUNTS__P3A_INGEST_TOKEN=${JUNE__OS_ACCOUNTS__P3A_INGEST_TOKEN}
       - JUNE__UPSTREAMS__OPENAI__API_KEY=${JUNE__UPSTREAMS__OPENAI__API_KEY}
       - JUNE__UPSTREAMS__VENICE__API_KEY=${JUNE__UPSTREAMS__VENICE__API_KEY}
-      # Production routes text inference through os-api. Keep the existing
-      # sealed service credential: os-api authorizes it, so promotion never
-      # needs a risky full-replacement update of Phala's write-only env.
-      - JUNE__UPSTREAMS__VENICE__BASE_URL=https://api.opensoftware.co/v1
+      - JUNE__UPSTREAMS__VENICE__BASE_URL=${JUNE__UPSTREAMS__VENICE__BASE_URL:-https://api.venice.ai/api/v1}
       - JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY=${JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY}
 
 volumes:
