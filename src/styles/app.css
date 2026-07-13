@@ -25229,6 +25229,664 @@ input:focus-visible,
   transition: none;
 }
 
+/* ---------------------------------------------------------------------------
+ * Private Google connectors (local mode): the Connectors settings page, the
+ * routine trust picker, and event triggers. Follows the .settings-* /
+ * .routines-* conventions above.
+ * ------------------------------------------------------------------------- */
+
+/* Trust-mode badge on routine rows: same recipe as .routines-item-badge with
+ * the accent wash, so "Approval" / "Autonomous" reads as a capability, not an
+ * error. */
+.routines-item-badge-trust {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: color-mix(in oklch, var(--primary) 12%, transparent);
+  color: var(--primary);
+}
+
+/* Connector template cards: the tool summary under the description ("This
+ * routine can: read your mail, draft replies"). */
+.routines-template-tools {
+  margin: 2px 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.routines-template-trust {
+  color: var(--foreground);
+}
+
+/* The create page's template access summary above the sections. */
+.routines-tool-summary {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Trust-mode picker (read only / approval / autonomous). */
+.trust-mode-picker {
+  display: flex;
+  flex-direction: column;
+}
+
+.trust-mode-locked-hint {
+  color: var(--muted-foreground);
+}
+
+.trust-mode-grants {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.trust-mode-grants-legend {
+  padding: 0 var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.trust-mode-grant {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+/* Event-trigger picker: the "When" control's extra pieces beside the reused
+ * schedule-picker layout. */
+.trigger-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.trigger-picker-unit {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.trigger-picker-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+/* The house checkbox (ui/Checkbox): the notes list's rounded-square select
+ * box promoted to a shared primitive. The native input is invisible but
+ * stretched over the box so it stays the click target and keeps the
+ * semantics; the box carries the visual — outline unchecked, brand fill +
+ * checkmark checked. */
+.checkbox-control {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+}
+
+.checkbox-control input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.checkbox-control input:disabled {
+  cursor: default;
+}
+
+.checkbox-box {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--card);
+  color: var(--on-solid);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.checkbox-control:hover input:not(:disabled) + .checkbox-box {
+  border-color: color-mix(in oklch, var(--muted-foreground) 35%, var(--border));
+}
+
+.checkbox-control:has(input:checked) .checkbox-box {
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+.checkbox-control:has(input:focus-visible) .checkbox-box {
+  outline: 2px solid color-mix(in oklch, var(--ring) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.checkbox-control:has(input:disabled) {
+  opacity: 0.55;
+}
+
+/* Connectors settings page: a provider directory (Linear's connected-accounts
+ * pattern). Every provider is always listed — logo tile, name, one capability
+ * line — with the connection status pill and actions on the right. The row
+ * recipe mirrors .mcp-server-row so integration lists read the same across
+ * settings. */
+.connectors-card {
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.connectors-list {
+  display: grid;
+  gap: var(--sp-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.connector-row {
+  display: grid;
+  grid-template-columns: var(--control-lg) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.connector-row:hover {
+  background: var(--secondary);
+}
+
+/* Brand marks are monochrome (central-icons currentColor), so the tile keeps
+ * the quiet surface-subtle wash and the mark renders in foreground — no
+ * multicolor logo tiles. */
+.connector-logo {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.connector-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.connector-name {
+  overflow: hidden;
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-subtitle {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: max-content;
+}
+
+.connectors-bundle-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: var(--sp-2) 0 var(--sp-4);
+}
+
+.connectors-bundle-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  cursor: pointer;
+}
+
+.connectors-bundle-option .checkbox-control {
+  margin-top: 3px;
+}
+
+.connectors-bundle-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.connectors-bundle-label {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+}
+
+.connectors-bundle-description {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.connectors-revoke-option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-4);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+/* Connector approvals tray: a shell-level queue for parked action calls under
+   the approval trust mode. Fixed bottom-right — the only fixed occupant of
+   that corner, inset from it the way toasts are from the top-right (--sp-6) —
+   under the dialog layer (z 112) and the panel resize handles. Wears the
+   floating-surface recipe the steer queue and funding notice share (solid
+   card, hairline ring folded into the shadow), and collapses to its header
+   line so an unanswered batch stops covering the composer corner. */
+.connector-approvals {
+  position: fixed;
+  right: var(--sp-6);
+  bottom: var(--sp-6);
+  z-index: 60;
+  width: min(360px, calc(100vw - var(--sp-8)));
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  animation: connector-approvals-settle var(--t-med) var(--ease-out) both;
+}
+
+/* The funding notice's settle: a short rise as the tray appears. */
+@keyframes connector-approvals-settle {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connector-approvals {
+    animation: none;
+  }
+}
+
+.connector-approvals-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+/* The title doubles as the collapse trigger (the steer queue's fold): its
+ * hover wash hugs the button, and the count pill appears only while
+ * collapsed — expanded, the list itself carries the count. */
+.connector-approvals-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.connector-approvals-trigger:hover {
+  background: var(--secondary);
+}
+
+/* The queue's providers as an overlapping logo stack (the avatar-group
+ * treatment). The separation between marks is a true transparent cutout, not
+ * a painted ring: each mark carves away where the next one overlaps (the
+ * tiles are translucent surface-subtle, so a painted ring would let the
+ * underlying logo show through, and a card-colored ring would halo on the
+ * trigger's gray hover wash — the cutout lets whatever is behind show). */
+.connector-approvals-stack {
+  display: inline-flex;
+  align-items: center;
+}
+
+.connector-approvals-stack-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-pill);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.connector-approvals-stack-mark + .connector-approvals-stack-mark {
+  margin-left: -5px;
+}
+
+/* The next mark sits 3px right of this tile's right edge center (16px tile,
+ * -5px overlap → its center lands at x=19px); carving a 10px circle there
+ * leaves a 2px see-through gap around the overlapping mark. */
+.connector-approvals-stack-mark:not(:last-child) {
+  -webkit-mask: radial-gradient(circle 10px at 19px 50%, transparent 98%, #000 100%);
+  mask: radial-gradient(circle 10px at 19px 50%, transparent 98%, #000 100%);
+}
+
+.connector-approvals-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.connector-approvals-chevron-button {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.connector-approvals-chevron-button:hover {
+  background: var(--secondary);
+  color: var(--foreground);
+}
+
+/* Open, the chevron points down (fold the list away); collapsed it turns up,
+ * toward where the queue reopens. */
+.connector-approvals-chevron {
+  transition: rotate var(--t-med) var(--ease-out);
+}
+
+.connector-approvals-chevron[data-expanded="false"] {
+  rotate: 180deg;
+}
+
+.connector-approvals-bulk {
+  display: inline-flex;
+  gap: var(--sp-1);
+}
+
+/* Compact controls throughout: the tray is a floating queue, so its buttons
+ * sit at the small control height and body type size. */
+.connector-approvals .btn {
+  height: var(--control-sm);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+/* Deny is the quiet choice (the agent approval-card language): muted at rest,
+ * firming to the soft subtle-gray hover — never red, which stays reserved for
+ * genuinely destructive states. */
+.connector-approvals-deny {
+  color: var(--muted-foreground);
+}
+
+.connector-approvals .btn-ghost:hover:not(:disabled) {
+  background: var(--surface-subtle);
+}
+
+/* Bleeds to the tray edges so the row dividers run full width; the rows
+ * carry the matching inline inset themselves. */
+.connector-approvals-list {
+  list-style: none;
+  margin: 0 calc(-1 * var(--sp-2));
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: min(420px, 50vh);
+  overflow-y: auto;
+}
+
+/* One compact row per action (the Deel action-required mold): provider mark,
+ * summary + meta + one preview line, deny/approve icon buttons at the end.
+ * Dividers run the full tray width in the detail-bar edge weight (the
+ * breadcrumb bar's lighter hairline, not the standard border-subtle). */
+.connector-approvals-item {
+  position: relative;
+  display: grid;
+  /* Two columns only: the verdict buttons overlay the row's right edge (the
+   * tab-close treatment), so at rest the text runs the full width instead of
+   * reserving a blank gutter. */
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: var(--sp-3);
+  /* One geometry all the way around: the hover wash insets --sp-1/--sp-2 from
+   * the row bounds, and this padding keeps the content exactly --sp-2 inside
+   * the wash on every side (12 - 4 vertically, 16 - 8 horizontally). */
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--detail-bar-border);
+}
+
+.connector-approvals-item:first-child {
+  border-top: 0;
+}
+
+/* The row hover wash, inset and concentric with the tray: the rows bleed to
+ * the tray edges (full-width dividers), so the wash pulls back in by the
+ * tray's own frame (--sp-2) and its corners follow (r-xl minus that inset).
+ * Painted behind the row content on the tray's stacking context. */
+.connector-approvals-item::before {
+  content: "";
+  position: absolute;
+  inset: var(--sp-1) var(--sp-2);
+  z-index: -1;
+  border-radius: calc(var(--r-xl) - var(--sp-2));
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.connector-approvals-item:hover::before,
+.connector-approvals-item:focus-within::before,
+.connector-approvals-item[data-expanded]::before {
+  background: var(--secondary);
+}
+
+/* The provider's monochrome mark, optically aligned with the summary's first
+ * line (rows top-align so expanded detail grows downward from the mark). */
+.connector-approvals-mark {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 3px;
+  color: var(--muted-foreground);
+}
+
+/* When a row carries a preview the info block is a button (click opens the
+ * full request), so it resets the button chrome and keeps the text stack. */
+.connector-approvals-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+button.connector-approvals-info {
+  cursor: pointer;
+}
+
+.connector-approvals-summary {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--fs-md);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-approvals-meta {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* One line of the redacted args preview; clicking the row un-clamps it. */
+.connector-approvals-preview {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-approvals-item[data-expanded] .connector-approvals-preview {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* While the verdicts are shown, the top text lines fade out under them (the
+ * tab-label treatment: a mask fade on the right tail, with the buttons
+ * overlaid on the cleared patch). The expanded preview is exempt — it wraps
+ * below the buttons, so fading every wrapped line's tail would read broken. */
+.connector-approvals-item:hover .connector-approvals-summary,
+.connector-approvals-item:focus-within .connector-approvals-summary,
+.connector-approvals-item[data-expanded] .connector-approvals-summary,
+.connector-approvals-item:hover .connector-approvals-meta,
+.connector-approvals-item:focus-within .connector-approvals-meta,
+.connector-approvals-item[data-expanded] .connector-approvals-meta,
+.connector-approvals-item:hover:not([data-expanded]) .connector-approvals-preview,
+.connector-approvals-item:focus-within:not([data-expanded]) .connector-approvals-preview {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 88px),
+    transparent calc(100% - 58px)
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 88px), transparent calc(100% - 58px));
+}
+
+/* Verdicts overlay the row's right edge (the tab-close treatment) and reveal
+ * on hover, keyboard focus, or while the row's detail is open — not from
+ * every row at once. The swap is instant on purpose: a fade left outgoing
+ * rows' verdicts lingering, so quick pointer moves read as several rows
+ * hovered at once. Top-anchored on the summary's line so an expanded row's
+ * detail grows below them. */
+.connector-approvals-actions {
+  position: absolute;
+  /* On the same inner grid as the content: --sp-2 inside the wash's top and
+   * right edges, so the buttons read as perfectly inset in the washed row. */
+  top: var(--sp-3);
+  right: var(--sp-4);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.connector-approvals-item:hover .connector-approvals-actions,
+.connector-approvals-item:focus-within .connector-approvals-actions,
+.connector-approvals-item[data-expanded] .connector-approvals-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Per-row verdicts as compact icon buttons (Deny ✕ quiet, Approve ✓ filled),
+ * following the agent approval-card weighting: approve reads as primary by
+ * being filled, deny stays muted, neither shouts. */
+.connector-approvals-item-deny,
+.connector-approvals-item-approve {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* Both sit on the row's secondary wash when visible, so deny hovers with the
+ * tab-close ink wash and approve rests on card (a raised chip on the wash). */
+.connector-approvals-item-deny {
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.connector-approvals-item-deny:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+  color: var(--foreground);
+}
+
+.connector-approvals-item-approve {
+  background: var(--card);
+  color: var(--secondary-foreground);
+}
+
+.connector-approvals-item-approve:hover:not(:disabled) {
+  background: var(--muted);
+}
+
+.connector-approvals-item-deny:disabled,
+.connector-approvals-item-approve:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 /* PDF export uses the platform print sheet. Strip the application chrome and
  * release every viewport-bound scroller so the full formatted note paginates. */
 @media print {

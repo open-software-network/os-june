@@ -52,6 +52,16 @@ Provider keys and the OS Accounts App API key belong only in `june-api/.env`,
 never in the root desktop `.env`. Add `JUNE__UPSTREAMS__OPENAI__API_KEY` only
 if you want to use OpenAI transcription models.
 
+## Local connector OAuth
+
+Connector OAuth application identifiers belong in the root desktop `.env`.
+They identify the installed client but do not grant access to user data by
+themselves; user grants stay in Keychain.
+
+Create a Google Desktop OAuth client and set `GOOGLE_OAUTH_CLIENT_ID` and
+`GOOGLE_OAUTH_CLIENT_SECRET`. Restart `pnpm tauri:dev` after changing either
+value.
+
 ## Running against hosted June API
 
 Two ways to run the desktop app against a June API in a real TEE instead of

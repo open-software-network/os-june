@@ -1,4 +1,4 @@
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
@@ -29,6 +29,7 @@ import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPeople } from "central-icons/IconPeople";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconPin } from "central-icons/IconPin";
+import { IconPlugin1 } from "central-icons/IconPlugin1";
 import { IconGithub } from "central-icons/IconGithub";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconToolbox } from "central-icons/IconToolbox";
@@ -265,6 +266,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
       },
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
       { id: "agent", label: "Agent", icon: <IconRobot2 size={16} /> },
+      {
+        id: "connectors",
+        label: "Connectors",
+        icon: <IconPlugin1 size={16} />,
+      },
       {
         id: "skills",
         label: "Installed skills",
@@ -1911,7 +1917,7 @@ function ReferralDialog({
                   onFocus={(event) => event.currentTarget.select()}
                 />
                 <button type="button" className="referral-copy-inset" onClick={onCopy}>
-                  {copied ? <IconCheckmark1Small size={14} /> : <IconClipboard size={14} />}
+                  {copied ? <IconCheckmark2Small size={14} /> : <IconClipboard size={14} />}
                   {copied ? "Copied" : "Copy"}
                 </button>
               </div>

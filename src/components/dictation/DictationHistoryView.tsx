@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
@@ -384,7 +384,7 @@ function DictationHistoryRow({
           aria-label={copied ? "Copied" : "Copy"}
           onClick={onCopy}
         >
-          {copied ? <IconCheckmark1Small size={14} /> : <IconClipboard size={14} />}
+          {copied ? <IconCheckmark2Small size={14} /> : <IconClipboard size={14} />}
         </button>
         <button
           type="button"
@@ -405,7 +405,7 @@ function DictationHistoryRow({
         className="transcript-dialog"
         footer={
           <button type="button" className="btn btn-secondary" onClick={onCopy}>
-            {copied ? <IconCheckmark1Small size={14} /> : <IconClipboard size={14} />}
+            {copied ? <IconCheckmark2Small size={14} /> : <IconClipboard size={14} />}
             {copied ? "Copied" : "Copy"}
           </button>
         }

@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
@@ -803,7 +803,7 @@ function appendStatusIcon(parent: HTMLElement, status: HudSessionStatus) {
       appendIcon(parent, IconCircleQuestionmark, 14);
       return;
     case "completed":
-      appendIcon(parent, IconCheckmark1Small, 14);
+      appendIcon(parent, IconCheckmark2Small, 14);
       return;
     case "failed":
     case "cancelled":

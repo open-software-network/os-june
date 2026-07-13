@@ -5,7 +5,7 @@ use crate::domain::types::{
     ListDictationHistoryResponse, ListNotesResponse, NoteDto, NoteListItemDto, ProcessingStatus,
     RecordingSourceMode, RecordingState, SessionFolderDto, TranscriptCoverageDto, TranscriptDto,
 };
-use chrono::{Duration, SecondsFormat, Utc};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use sqlx::query::query;
 use sqlx::row::Row;
 use sqlx_sqlite::SqlitePool;
@@ -30,6 +30,61 @@ pub struct P3aPendingReport {
     pub epoch: String,
     pub raw_value: u64,
     pub reported_value: u64,
+}
+
+/// Non-secret connector account index row. Tokens are NEVER stored here;
+/// they live in the OS keychain (src/connectors/store.rs).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectorAccountRecord {
+    pub account_id: String,
+    pub provider: String,
+    pub email: String,
+    pub scopes: Vec<String>,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoutineTrustRecord {
+    pub job_id: String,
+    pub trust_mode: String,
+    pub approval_run_count: i64,
+    pub autonomous_tools: Vec<String>,
+    /// When the routine most recently entered approval mode (RFC 3339), or
+    /// `None` if it has never been in approval mode. Approval-run crediting
+    /// only counts runs that finished at or after this instant.
+    pub approval_since: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectorTriggerRecord {
+    pub id: String,
+    pub job_id: String,
+    pub kind: String,
+    pub account_id: String,
+    /// JSON object as text; the command layer parses it.
+    pub config: String,
+    pub created_at: String,
+}
+
+/// Per-job, per-provider autonomy grant. Minted when a routine is set to
+/// `autonomous`: the bridge registers a per-job auto MCP server carrying the
+/// `token` in its env, and the provider proxy authorizes a tool call by
+/// looking the token up and checking the tool is in `tools`. The token is a
+/// bearer secret; never log it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectorGrant {
+    pub job_id: String,
+    /// "gmail" | "gcal".
+    pub provider: String,
+    /// Deterministic per-job server name: `june_<provider>_auto_<jobid8>`.
+    pub server_name: String,
+    pub token: String,
+    /// Granted tool names for this provider.
+    pub tools: Vec<String>,
+    pub account_id: String,
 }
 
 impl Repositories {
@@ -156,6 +211,500 @@ impl Repositories {
                 }
             })
             .collect())
+    }
+
+    // --- Private connectors (Google) --------------------------------------
+    //
+    // Non-secret account index only: tokens live in the OS keychain
+    // (src/connectors/store.rs), never in SQLite.
+
+    pub async fn upsert_connector_account(
+        &self,
+        account_id: &str,
+        provider: &str,
+        email: &str,
+        scopes: &[String],
+        status: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        let scopes_json = string_vec_to_json(scopes);
+        query(
+            "INSERT INTO connector_accounts (account_id, provider, email, scopes, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(account_id) DO UPDATE SET
+               provider = excluded.provider,
+               email = excluded.email,
+               scopes = excluded.scopes,
+               status = excluded.status,
+               updated_at = excluded.updated_at",
+        )
+        .bind(account_id)
+        .bind(provider)
+        .bind(email)
+        .bind(&scopes_json)
+        .bind(status)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_connector_accounts(
+        &self,
+    ) -> Result<Vec<ConnectorAccountRecord>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT account_id, provider, email, scopes, status, created_at, updated_at
+             FROM connector_accounts ORDER BY created_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(connector_account_from_row).collect())
+    }
+
+    pub async fn get_connector_account(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<ConnectorAccountRecord>, sqlx::error::Error> {
+        let row = query(
+            "SELECT account_id, provider, email, scopes, status, created_at, updated_at
+             FROM connector_accounts WHERE account_id = ?",
+        )
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(connector_account_from_row))
+    }
+
+    pub async fn set_connector_account_status(
+        &self,
+        account_id: &str,
+        status: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        query("UPDATE connector_accounts SET status = ?, updated_at = ? WHERE account_id = ?")
+            .bind(status)
+            .bind(&now)
+            .bind(account_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Remove the account row plus everything keyed to it (triggers, polling
+    /// cursors, and autonomy grants) in one transaction. Clearing the grants
+    /// matters for security: without it, reconnecting the same email would
+    /// silently revive the per-job autonomous action servers the user granted
+    /// to the old connection.
+    pub async fn delete_connector_account(
+        &self,
+        account_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let mut tx = self.pool.begin().await?;
+        query("DELETE FROM connector_triggers WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM trigger_cursors WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM connector_grants WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM connector_accounts WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
+    pub async fn routine_trust_get(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<RoutineTrustRecord>, sqlx::error::Error> {
+        let row = query(
+            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, approval_since, updated_at
+             FROM routine_trust WHERE job_id = ?",
+        )
+        .bind(job_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(routine_trust_from_row))
+    }
+
+    /// Every routine currently in a given trust mode. Used to re-mint
+    /// autonomous grants after an account (re)connects: a disconnect deletes the
+    /// account's grants but keeps the `routine_trust` rows and the jobs' auto
+    /// toolsets, so without this the routines stay autonomous in name only (their
+    /// action servers never render again). Single-account mode makes "the
+    /// connected account" the unambiguous target for the re-mint.
+    pub async fn list_routine_trust_by_mode(
+        &self,
+        trust_mode: &str,
+    ) -> Result<Vec<RoutineTrustRecord>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, approval_since, updated_at
+             FROM routine_trust WHERE trust_mode = ?",
+        )
+        .bind(trust_mode)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(routine_trust_from_row).collect())
+    }
+
+    /// Set the trust mode (and autonomous tool grants) for a routine,
+    /// preserving its earned approval-run count.
+    pub async fn routine_trust_set(
+        &self,
+        job_id: &str,
+        trust_mode: &str,
+        autonomous_tools: &[String],
+    ) -> Result<RoutineTrustRecord, sqlx::error::Error> {
+        let now = timestamp();
+        let tools_json = string_vec_to_json(autonomous_tools);
+        let existing = self.routine_trust_get(job_id).await?;
+        // Stamp the approval window when the routine enters approval mode. An
+        // already-approval routine keeps its original stamp so re-affirming the
+        // mode does not restart the earned-autonomy count; leaving approval
+        // preserves the last stamp but it goes unused until approval returns.
+        let approval_since = if trust_mode == "approval" {
+            match &existing {
+                Some(record)
+                    if record.trust_mode == "approval" && record.approval_since.is_some() =>
+                {
+                    record.approval_since.clone()
+                }
+                _ => Some(now.clone()),
+            }
+        } else {
+            existing
+                .as_ref()
+                .and_then(|record| record.approval_since.clone())
+        };
+        query(
+            "INSERT INTO routine_trust (job_id, trust_mode, approval_run_count, autonomous_tools, approval_since, updated_at)
+             VALUES (?, ?, 0, ?, ?, ?)
+             ON CONFLICT(job_id) DO UPDATE SET
+               trust_mode = excluded.trust_mode,
+               autonomous_tools = excluded.autonomous_tools,
+               approval_since = excluded.approval_since,
+               updated_at = excluded.updated_at",
+        )
+        .bind(job_id)
+        .bind(trust_mode)
+        .bind(&tools_json)
+        .bind(&approval_since)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.routine_trust_get(job_id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    /// Credits one completed approval-mode run toward the autonomy threshold,
+    /// exactly once per `(job_id, run_id)`. A run counts only when the routine
+    /// is currently in approval mode and the run finished at or after the
+    /// routine entered that mode, so background runs still count on the next
+    /// observation while earlier read-only runs never do. Returns the current
+    /// trust record (updated when newly credited), or `None` when the routine
+    /// has no trust row.
+    pub async fn record_approval_run(
+        &self,
+        job_id: &str,
+        run_id: &str,
+        run_ended_at: &str,
+    ) -> Result<Option<RoutineTrustRecord>, sqlx::error::Error> {
+        let Some(record) = self.routine_trust_get(job_id).await? else {
+            return Ok(None);
+        };
+        if record.trust_mode != "approval" {
+            return Ok(Some(record));
+        }
+        if let Some(since) = &record.approval_since {
+            if run_finished_before(run_ended_at, since) {
+                return Ok(Some(record));
+            }
+        }
+        let now = timestamp();
+        let mut tx = self.pool.begin().await?;
+        let inserted = query(
+            "INSERT OR IGNORE INTO connector_credited_runs (job_id, run_id, created_at)
+             VALUES (?, ?, ?)",
+        )
+        .bind(job_id)
+        .bind(run_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        if inserted.rows_affected() == 0 {
+            // Already credited on an earlier observation; leave the count as is.
+            tx.commit().await?;
+            return Ok(Some(record));
+        }
+        query(
+            "UPDATE routine_trust SET approval_run_count = approval_run_count + 1, updated_at = ?
+             WHERE job_id = ?",
+        )
+        .bind(&now)
+        .bind(job_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.routine_trust_get(job_id).await
+    }
+
+    pub async fn list_connector_triggers(
+        &self,
+        job_id: Option<&str>,
+    ) -> Result<Vec<ConnectorTriggerRecord>, sqlx::error::Error> {
+        let rows = match job_id {
+            Some(job_id) => {
+                query(
+                    "SELECT id, job_id, kind, account_id, config, created_at
+                     FROM connector_triggers WHERE job_id = ? ORDER BY created_at ASC",
+                )
+                .bind(job_id)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            None => {
+                query(
+                    "SELECT id, job_id, kind, account_id, config, created_at
+                     FROM connector_triggers ORDER BY created_at ASC",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+        Ok(rows.into_iter().map(connector_trigger_from_row).collect())
+    }
+
+    /// Set the trigger for a routine. A routine has exactly one trigger, so any
+    /// existing trigger for the job (whatever its kind or account) is removed
+    /// first: without this, editing a routine from `email_received` to
+    /// `event_upcoming` (or to another account) would leave the old row behind,
+    /// and the daemon would fire the routine from both.
+    pub async fn set_connector_trigger(
+        &self,
+        job_id: &str,
+        kind: &str,
+        account_id: &str,
+        config_json: &str,
+    ) -> Result<ConnectorTriggerRecord, sqlx::error::Error> {
+        query("DELETE FROM connector_triggers WHERE job_id = ?")
+            .bind(job_id)
+            .execute(&self.pool)
+            .await?;
+        let id = Uuid::new_v4().to_string();
+        let now = timestamp();
+        query(
+            "INSERT INTO connector_triggers (id, job_id, kind, account_id, config, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(job_id)
+        .bind(kind)
+        .bind(account_id)
+        .bind(config_json)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        let row = query(
+            "SELECT id, job_id, kind, account_id, config, created_at
+             FROM connector_triggers WHERE id = ?",
+        )
+        .bind(&id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(connector_trigger_from_row(row))
+    }
+
+    pub async fn delete_connector_trigger(&self, id: &str) -> Result<bool, sqlx::error::Error> {
+        let result = query("DELETE FROM connector_triggers WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn trigger_cursor(
+        &self,
+        account_id: &str,
+        kind: &str,
+    ) -> Result<Option<String>, sqlx::error::Error> {
+        let row = query("SELECT cursor FROM trigger_cursors WHERE account_id = ? AND kind = ?")
+            .bind(account_id)
+            .bind(kind)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|row| row.get("cursor")))
+    }
+
+    pub async fn set_trigger_cursor(
+        &self,
+        account_id: &str,
+        kind: &str,
+        cursor: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        query(
+            "INSERT INTO trigger_cursors (account_id, kind, cursor, updated_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(account_id, kind) DO UPDATE SET
+               cursor = excluded.cursor,
+               updated_at = excluded.updated_at",
+        )
+        .bind(account_id)
+        .bind(kind)
+        .bind(cursor)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Remove the polling cursor for one account+kind so the next daemon poll
+    /// re-establishes a baseline. Used when a new subscription must not fire for
+    /// items that arrived before it existed (a fresh Gmail subscription reusing
+    /// a stale per-account history cursor left by a deleted routine).
+    pub async fn clear_trigger_cursor(
+        &self,
+        account_id: &str,
+        kind: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query("DELETE FROM trigger_cursors WHERE account_id = ? AND kind = ?")
+            .bind(account_id)
+            .bind(kind)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // --- Earned-autonomy grants -------------------------------------------
+    //
+    // Grant tokens are bearer secrets consumed by the bridge (auto-server
+    // env) and the provider proxy (authorization). Methods here return
+    // AppError so those callers get a stable code; the tokens themselves are
+    // never logged.
+
+    /// Every grant across all jobs. The bridge calls this to register a
+    /// per-job auto MCP server for each grant.
+    pub async fn list_connector_grants(&self) -> Result<Vec<ConnectorGrant>, AppError> {
+        let rows = query(
+            "SELECT job_id, provider, server_name, token, tools, account_id
+             FROM connector_grants ORDER BY job_id ASC, provider ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(connector_grant_from_row).collect())
+    }
+
+    /// Grants for a single job (used to compose the trust DTO's server list).
+    pub async fn connector_grants_for_job(
+        &self,
+        job_id: &str,
+    ) -> Result<Vec<ConnectorGrant>, AppError> {
+        let rows = query(
+            "SELECT job_id, provider, server_name, token, tools, account_id
+             FROM connector_grants WHERE job_id = ? ORDER BY provider ASC",
+        )
+        .bind(job_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(connector_grant_from_row).collect())
+    }
+
+    /// Look up a grant by its token. The provider proxy calls this to
+    /// authorize an incoming autonomous tool call.
+    pub async fn find_connector_grant_by_token(
+        &self,
+        token: &str,
+    ) -> Result<Option<ConnectorGrant>, AppError> {
+        let row = query(
+            "SELECT job_id, provider, server_name, token, tools, account_id
+             FROM connector_grants WHERE token = ?",
+        )
+        .bind(token)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(connector_grant_from_row))
+    }
+
+    /// Upsert one grant on its (job_id, provider) primary key.
+    pub async fn set_connector_grant(
+        &self,
+        grant: &ConnectorGrant,
+        created_at: &str,
+    ) -> Result<(), AppError> {
+        let tools_json = string_vec_to_json(&grant.tools);
+        query(
+            "INSERT INTO connector_grants (job_id, provider, server_name, token, tools, account_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(job_id, provider) DO UPDATE SET
+               server_name = excluded.server_name,
+               token = excluded.token,
+               tools = excluded.tools,
+               account_id = excluded.account_id,
+               created_at = excluded.created_at",
+        )
+        .bind(&grant.job_id)
+        .bind(&grant.provider)
+        .bind(&grant.server_name)
+        .bind(&grant.token)
+        .bind(&tools_json)
+        .bind(&grant.account_id)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Drop every grant for a job (routine left autonomous mode, or its
+    /// autonomous provider set shrank).
+    pub async fn delete_connector_grants(&self, job_id: &str) -> Result<(), AppError> {
+        query("DELETE FROM connector_grants WHERE job_id = ?")
+            .bind(job_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Remove every connector row keyed to a routine when the routine itself is
+    /// deleted: its triggers (so the poller stops firing a missing job), its
+    /// per-job event cursor, its trust row and credited-run ledger, and its
+    /// autonomy grants (so a deleted routine can never keep an auto MCP server
+    /// or a live grant token). Email cursors are per account, not per job, so
+    /// they are left for the account's own lifecycle.
+    pub async fn delete_routine_connector_state(
+        &self,
+        job_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let event_cursor_kind = format!("event_upcoming:{job_id}");
+        let mut tx = self.pool.begin().await?;
+        query("DELETE FROM connector_triggers WHERE job_id = ?")
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM trigger_cursors WHERE kind = ?")
+            .bind(&event_cursor_kind)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM connector_grants WHERE job_id = ?")
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM connector_credited_runs WHERE job_id = ?")
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM routine_trust WHERE job_id = ?")
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
     }
 
     pub async fn list_folders(&self) -> Result<Vec<FolderDto>, sqlx::error::Error> {
@@ -2805,6 +3354,72 @@ pub fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+/// True when `run_ended_at` is strictly before `approval_since`. Unparseable
+/// timestamps are treated as "not before" so a formatting quirk never silently
+/// drops a run from the earned-autonomy count.
+fn run_finished_before(run_ended_at: &str, approval_since: &str) -> bool {
+    match (
+        DateTime::parse_from_rfc3339(run_ended_at),
+        DateTime::parse_from_rfc3339(approval_since),
+    ) {
+        (Ok(ended), Ok(since)) => ended < since,
+        _ => false,
+    }
+}
+
+fn string_vec_to_json(values: &[String]) -> String {
+    serde_json::to_string(values).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn string_vec_from_json(raw: &str) -> Vec<String> {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
+fn connector_account_from_row(row: sqlx_sqlite::SqliteRow) -> ConnectorAccountRecord {
+    ConnectorAccountRecord {
+        account_id: row.get("account_id"),
+        provider: row.get("provider"),
+        email: row.get("email"),
+        scopes: string_vec_from_json(&row.get::<String, _>("scopes")),
+        status: row.get("status"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn routine_trust_from_row(row: sqlx_sqlite::SqliteRow) -> RoutineTrustRecord {
+    RoutineTrustRecord {
+        job_id: row.get("job_id"),
+        trust_mode: row.get("trust_mode"),
+        approval_run_count: row.get("approval_run_count"),
+        autonomous_tools: string_vec_from_json(&row.get::<String, _>("autonomous_tools")),
+        approval_since: row.get::<Option<String>, _>("approval_since"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn connector_trigger_from_row(row: sqlx_sqlite::SqliteRow) -> ConnectorTriggerRecord {
+    ConnectorTriggerRecord {
+        id: row.get("id"),
+        job_id: row.get("job_id"),
+        kind: row.get("kind"),
+        account_id: row.get("account_id"),
+        config: row.get("config"),
+        created_at: row.get("created_at"),
+    }
+}
+
+fn connector_grant_from_row(row: sqlx_sqlite::SqliteRow) -> ConnectorGrant {
+    ConnectorGrant {
+        job_id: row.get("job_id"),
+        provider: row.get("provider"),
+        server_name: row.get("server_name"),
+        token: row.get("token"),
+        tools: string_vec_from_json(&row.get::<String, _>("tools")),
+        account_id: row.get("account_id"),
+    }
+}
+
 fn folder_from_row(row: sqlx_sqlite::SqliteRow) -> FolderDto {
     FolderDto {
         id: row.get("id"),
@@ -2916,4 +3531,587 @@ fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
         .and_then(|summary| serde_json::from_str::<AudioValidationDto>(summary).ok())
         .map(|validation| validation.recorded_silence)
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Repositories;
+
+    async fn test_repositories() -> Repositories {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        Repositories::new(pool)
+    }
+
+    fn scopes(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn connector_account_upsert_list_and_status() {
+        let repos = test_repositories().await;
+        repos
+            .upsert_connector_account(
+                "user@example.com",
+                "google",
+                "user@example.com",
+                &scopes(&["openid", "email"]),
+                "connected",
+            )
+            .await
+            .expect("insert account");
+
+        let accounts = repos.list_connector_accounts().await.expect("list");
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].account_id, "user@example.com");
+        assert_eq!(accounts[0].scopes, scopes(&["openid", "email"]));
+        assert_eq!(accounts[0].status, "connected");
+
+        // Upsert widens scopes without duplicating the row.
+        repos
+            .upsert_connector_account(
+                "user@example.com",
+                "google",
+                "user@example.com",
+                &scopes(&[
+                    "openid",
+                    "email",
+                    "https://www.googleapis.com/auth/gmail.readonly",
+                ]),
+                "connected",
+            )
+            .await
+            .expect("upsert account");
+        let accounts = repos.list_connector_accounts().await.expect("list");
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].scopes.len(), 3);
+
+        repos
+            .set_connector_account_status("user@example.com", "reconnect_required")
+            .await
+            .expect("set status");
+        let account = repos
+            .get_connector_account("user@example.com")
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(account.status, "reconnect_required");
+        assert!(repos
+            .get_connector_account("other@example.com")
+            .await
+            .expect("get")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_connector_account_cascades_triggers_and_cursors() {
+        let repos = test_repositories().await;
+        repos
+            .upsert_connector_account(
+                "user@example.com",
+                "google",
+                "user@example.com",
+                &scopes(&["openid"]),
+                "connected",
+            )
+            .await
+            .expect("insert account");
+        repos
+            .set_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .await
+            .expect("set trigger");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received", "12345")
+            .await
+            .expect("set cursor");
+        repos
+            .set_connector_grant(
+                &super::ConnectorGrant {
+                    job_id: "job-1".to_string(),
+                    provider: "gmail".to_string(),
+                    server_name: "june_gmail_auto_job1".to_string(),
+                    token: "grant-token".to_string(),
+                    tools: scopes(&["send_email"]),
+                    account_id: "user@example.com".to_string(),
+                },
+                "2026-07-09T00:00:00.000Z",
+            )
+            .await
+            .expect("set grant");
+
+        repos
+            .delete_connector_account("user@example.com")
+            .await
+            .expect("delete");
+
+        assert!(repos
+            .get_connector_account("user@example.com")
+            .await
+            .expect("get")
+            .is_none());
+        assert!(repos
+            .list_connector_triggers(None)
+            .await
+            .expect("triggers")
+            .is_empty());
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received")
+            .await
+            .expect("cursor")
+            .is_none());
+        // Autonomy grants must not survive a disconnect; reconnecting the same
+        // email should require the user to re-earn autonomous access.
+        assert!(repos
+            .list_connector_grants()
+            .await
+            .expect("grants")
+            .is_empty());
+    }
+
+    // Far enough ahead that a recorded run always lands after the approval
+    // window that a test opens moments earlier.
+    const FUTURE_RUN_END: &str = "2999-01-01T00:00:00.000Z";
+
+    #[tokio::test]
+    async fn routine_trust_counts_runs_and_preserves_them_across_set() {
+        let repos = test_repositories().await;
+        // No trust row yet: recording a run is a no-op.
+        assert!(repos
+            .record_approval_run("job-1", "run-0", FUTURE_RUN_END)
+            .await
+            .expect("record with no row")
+            .is_none());
+
+        // Entering approval opens the crediting window.
+        let record = repos
+            .routine_trust_set("job-1", "approval", &[])
+            .await
+            .expect("set approval");
+        assert_eq!(record.trust_mode, "approval");
+        assert_eq!(record.approval_run_count, 0);
+        assert!(record.approval_since.is_some());
+
+        // Three distinct runs each count once.
+        for (index, run_id) in ["run-1", "run-2", "run-3"].iter().enumerate() {
+            let credited = repos
+                .record_approval_run("job-1", run_id, FUTURE_RUN_END)
+                .await
+                .expect("record run")
+                .expect("row exists");
+            assert_eq!(credited.approval_run_count, (index + 1) as i64);
+        }
+
+        // Re-reporting a counted run never double counts.
+        let again = repos
+            .record_approval_run("job-1", "run-3", FUTURE_RUN_END)
+            .await
+            .expect("record dup")
+            .expect("row");
+        assert_eq!(again.approval_run_count, 3);
+
+        // Changing the mode keeps the earned run count.
+        let record = repos
+            .routine_trust_set(
+                "job-1",
+                "autonomous",
+                &scopes(&["gmail.create_draft", "gmail.modify_labels"]),
+            )
+            .await
+            .expect("set trust");
+        assert_eq!(record.trust_mode, "autonomous");
+        assert_eq!(record.approval_run_count, 3);
+        assert_eq!(
+            record.autonomous_tools,
+            scopes(&["gmail.create_draft", "gmail.modify_labels"])
+        );
+    }
+
+    #[tokio::test]
+    async fn list_routine_trust_by_mode_returns_only_that_mode() {
+        let repos = test_repositories().await;
+        repos
+            .routine_trust_set("job-auto-1", "autonomous", &scopes(&["gmail.send_email"]))
+            .await
+            .expect("set autonomous 1");
+        repos
+            .routine_trust_set("job-auto-2", "autonomous", &scopes(&["gmail.create_draft"]))
+            .await
+            .expect("set autonomous 2");
+        repos
+            .routine_trust_set("job-approval", "approval", &[])
+            .await
+            .expect("set approval");
+        repos
+            .routine_trust_set("job-read", "read_only", &[])
+            .await
+            .expect("set read_only");
+
+        // Only autonomous rows come back: these are the routines a reconnect
+        // re-mints grants for.
+        let mut autonomous: Vec<String> = repos
+            .list_routine_trust_by_mode("autonomous")
+            .await
+            .expect("list autonomous")
+            .into_iter()
+            .map(|record| record.job_id)
+            .collect();
+        autonomous.sort();
+        assert_eq!(autonomous, vec!["job-auto-1", "job-auto-2"]);
+
+        let approval = repos
+            .list_routine_trust_by_mode("approval")
+            .await
+            .expect("list approval");
+        assert_eq!(approval.len(), 1);
+        assert_eq!(approval[0].job_id, "job-approval");
+    }
+
+    #[tokio::test]
+    async fn record_approval_run_gates_on_mode_and_window() {
+        let repos = test_repositories().await;
+        // A read-only routine never earns approval credit.
+        repos
+            .routine_trust_set("job-1", "read_only", &[])
+            .await
+            .expect("set read_only");
+        let record = repos
+            .record_approval_run("job-1", "run-1", FUTURE_RUN_END)
+            .await
+            .expect("record read_only")
+            .expect("row");
+        assert_eq!(record.approval_run_count, 0);
+
+        // Switching to approval opens the window at "now".
+        repos
+            .routine_trust_set("job-1", "approval", &[])
+            .await
+            .expect("set approval");
+
+        // A run that finished long before the window does not count.
+        let before = repos
+            .record_approval_run("job-1", "old-run", "2000-01-01T00:00:00.000Z")
+            .await
+            .expect("record old")
+            .expect("row");
+        assert_eq!(before.approval_run_count, 0);
+
+        // A run after the window counts.
+        let after = repos
+            .record_approval_run("job-1", "new-run", FUTURE_RUN_END)
+            .await
+            .expect("record new")
+            .expect("row");
+        assert_eq!(after.approval_run_count, 1);
+    }
+
+    #[tokio::test]
+    async fn delete_routine_connector_state_clears_all_job_rows() {
+        let repos = test_repositories().await;
+        repos
+            .upsert_connector_account(
+                "user@example.com",
+                "google",
+                "user@example.com",
+                &scopes(&["openid"]),
+                "connected",
+            )
+            .await
+            .expect("account");
+        repos
+            .set_connector_trigger("job-1", "event_upcoming", "user@example.com", "{}")
+            .await
+            .expect("trigger");
+        repos
+            .set_trigger_cursor("user@example.com", "event_upcoming:job-1", "{}")
+            .await
+            .expect("cursor");
+        repos
+            .routine_trust_set("job-1", "approval", &[])
+            .await
+            .expect("trust");
+        repos
+            .record_approval_run("job-1", "run-1", FUTURE_RUN_END)
+            .await
+            .expect("run");
+        repos
+            .set_connector_grant(
+                &super::ConnectorGrant {
+                    job_id: "job-1".to_string(),
+                    provider: "gmail".to_string(),
+                    server_name: "june_gmail_auto_job1".to_string(),
+                    token: "tok".to_string(),
+                    tools: scopes(&["send_email"]),
+                    account_id: "user@example.com".to_string(),
+                },
+                "2026-07-09T00:00:00.000Z",
+            )
+            .await
+            .expect("grant");
+
+        repos
+            .delete_routine_connector_state("job-1")
+            .await
+            .expect("delete state");
+
+        assert!(repos
+            .list_connector_triggers(Some("job-1"))
+            .await
+            .expect("triggers")
+            .is_empty());
+        assert!(repos
+            .trigger_cursor("user@example.com", "event_upcoming:job-1")
+            .await
+            .expect("cursor")
+            .is_none());
+        assert!(repos
+            .routine_trust_get("job-1")
+            .await
+            .expect("trust")
+            .is_none());
+        assert!(repos
+            .list_connector_grants()
+            .await
+            .expect("grants")
+            .is_empty());
+        // The account itself survives; only the per-job rows are cleared.
+        assert!(repos
+            .get_connector_account("user@example.com")
+            .await
+            .expect("account")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn connector_trigger_set_keeps_one_trigger_per_job() {
+        let repos = test_repositories().await;
+        let first = repos
+            .set_connector_trigger(
+                "job-1",
+                "email_received",
+                "user@example.com",
+                r#"{"query":"is:unread"}"#,
+            )
+            .await
+            .expect("set trigger");
+
+        // Changing the kind (or account) replaces the routine's single trigger
+        // rather than adding a second row the daemon would also fire.
+        let replaced = repos
+            .set_connector_trigger("job-1", "event_upcoming", "other@example.com", "{}")
+            .await
+            .expect("replace trigger");
+        assert_ne!(first.id, replaced.id);
+
+        let for_job = repos
+            .list_connector_triggers(Some("job-1"))
+            .await
+            .expect("list by job");
+        assert_eq!(for_job.len(), 1);
+        assert_eq!(for_job[0].kind, "event_upcoming");
+        assert_eq!(for_job[0].account_id, "other@example.com");
+
+        // The stale row is gone, so deleting the original id now no-ops.
+        assert!(!repos
+            .delete_connector_trigger(&first.id)
+            .await
+            .expect("delete stale idempotent"));
+        assert!(repos
+            .delete_connector_trigger(&replaced.id)
+            .await
+            .expect("delete current"));
+        assert!(repos
+            .list_connector_triggers(Some("job-1"))
+            .await
+            .expect("list after delete")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn connector_grant_set_list_find_and_delete_round_trip() {
+        let repos = test_repositories().await;
+        assert!(repos
+            .list_connector_grants()
+            .await
+            .expect("list")
+            .is_empty());
+
+        let gmail = super::ConnectorGrant {
+            job_id: "job-1".to_string(),
+            provider: "gmail".to_string(),
+            server_name: "june_gmail_auto_job1".to_string(),
+            token: "gmail-token".to_string(),
+            tools: scopes(&["create_draft", "send_email"]),
+            account_id: "user@example.com".to_string(),
+        };
+        let gcal = super::ConnectorGrant {
+            job_id: "job-1".to_string(),
+            provider: "gcal".to_string(),
+            server_name: "june_gcal_auto_job1".to_string(),
+            token: "gcal-token".to_string(),
+            tools: scopes(&["create_event"]),
+            account_id: "user@example.com".to_string(),
+        };
+        repos
+            .set_connector_grant(&gmail, "2026-07-09T00:00:00.000Z")
+            .await
+            .expect("set gmail");
+        repos
+            .set_connector_grant(&gcal, "2026-07-09T00:00:00.000Z")
+            .await
+            .expect("set gcal");
+
+        let all = repos.list_connector_grants().await.expect("list");
+        assert_eq!(all.len(), 2);
+        // Ordered gcal before gmail (provider ASC).
+        assert_eq!(all[0], gcal);
+        assert_eq!(all[1], gmail);
+
+        let for_job = repos
+            .connector_grants_for_job("job-1")
+            .await
+            .expect("for job");
+        assert_eq!(for_job.len(), 2);
+        assert!(repos
+            .connector_grants_for_job("job-2")
+            .await
+            .expect("other job")
+            .is_empty());
+
+        let found = repos
+            .find_connector_grant_by_token("gmail-token")
+            .await
+            .expect("find")
+            .expect("present");
+        assert_eq!(found, gmail);
+        assert!(repos
+            .find_connector_grant_by_token("nope")
+            .await
+            .expect("find")
+            .is_none());
+
+        // Upsert on (job, provider) replaces token + tools in place.
+        let gmail_v2 = super::ConnectorGrant {
+            token: "gmail-token-2".to_string(),
+            tools: scopes(&["create_draft", "send_email", "modify_labels"]),
+            ..gmail.clone()
+        };
+        repos
+            .set_connector_grant(&gmail_v2, "2026-07-09T01:00:00.000Z")
+            .await
+            .expect("upsert gmail");
+        let all = repos.list_connector_grants().await.expect("list");
+        assert_eq!(all.len(), 2);
+        assert!(repos
+            .find_connector_grant_by_token("gmail-token")
+            .await
+            .expect("find old")
+            .is_none());
+        assert_eq!(
+            repos
+                .find_connector_grant_by_token("gmail-token-2")
+                .await
+                .expect("find new")
+                .expect("present")
+                .tools,
+            scopes(&["create_draft", "send_email", "modify_labels"])
+        );
+
+        repos
+            .delete_connector_grants("job-1")
+            .await
+            .expect("delete");
+        assert!(repos
+            .list_connector_grants()
+            .await
+            .expect("list")
+            .is_empty());
+        // Idempotent.
+        repos
+            .delete_connector_grants("job-1")
+            .await
+            .expect("delete idempotent");
+    }
+
+    #[tokio::test]
+    async fn trigger_cursor_round_trips_and_overwrites() {
+        let repos = test_repositories().await;
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received")
+            .await
+            .expect("get")
+            .is_none());
+        repos
+            .set_trigger_cursor("user@example.com", "email_received", "100")
+            .await
+            .expect("set");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received", "200")
+            .await
+            .expect("overwrite");
+        repos
+            .set_trigger_cursor("user@example.com", "event_upcoming", "sync-token-1")
+            .await
+            .expect("set other kind");
+        assert_eq!(
+            repos
+                .trigger_cursor("user@example.com", "email_received")
+                .await
+                .expect("get")
+                .as_deref(),
+            Some("200")
+        );
+        assert_eq!(
+            repos
+                .trigger_cursor("user@example.com", "event_upcoming")
+                .await
+                .expect("get")
+                .as_deref(),
+            Some("sync-token-1")
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_trigger_cursor_removes_only_that_account_and_kind() {
+        let repos = test_repositories().await;
+        repos
+            .set_trigger_cursor("user@example.com", "email_received", "100")
+            .await
+            .expect("set email");
+        repos
+            .set_trigger_cursor("user@example.com", "event_upcoming", "sync-1")
+            .await
+            .expect("set event");
+
+        repos
+            .clear_trigger_cursor("user@example.com", "email_received")
+            .await
+            .expect("clear email");
+
+        // The mail cursor is gone, so the next poll reseeds a fresh baseline.
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received")
+            .await
+            .expect("get email")
+            .is_none());
+        // Other kinds are untouched.
+        assert_eq!(
+            repos
+                .trigger_cursor("user@example.com", "event_upcoming")
+                .await
+                .expect("get event")
+                .as_deref(),
+            Some("sync-1")
+        );
+        // Clearing an absent cursor is a no-op, not an error.
+        repos
+            .clear_trigger_cursor("user@example.com", "email_received")
+            .await
+            .expect("clear idempotent");
+    }
 }

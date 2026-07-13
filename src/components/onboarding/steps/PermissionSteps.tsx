@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconTextIndicator } from "central-icons/IconTextIndicator";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
@@ -37,7 +37,7 @@ function PermissionRow({
   return (
     <li className="onboarding-perm" data-granted={granted} data-probing={probing}>
       <span className="onboarding-perm-icon" aria-hidden>
-        {granted ? <IconCheckmark1Small size={15} /> : icon}
+        {granted ? <IconCheckmark2Small size={15} /> : icon}
       </span>
       <div className="onboarding-perm-copy">
         <h2>{title}</h2>

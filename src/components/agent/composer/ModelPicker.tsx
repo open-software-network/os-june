@@ -1,4 +1,4 @@
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
@@ -418,7 +418,7 @@ export function ComposerModelPopover({
             >
               <ComposerModelOptionText model={option} />
               {option.id === model.id ? (
-                <IconCheckmark1Small
+                <IconCheckmark2Small
                   size={14}
                   aria-hidden
                   className="agent-composer-model-row-check"
@@ -651,7 +651,7 @@ function ComposerModelOption({
     >
       <ComposerModelOptionText model={model} />
       {selected ? (
-        <IconCheckmark1Small size={14} aria-hidden className="agent-composer-model-row-check" />
+        <IconCheckmark2Small size={14} aria-hidden className="agent-composer-model-row-check" />
       ) : null}
       <ModelRowPrivacyBadge model={model} />
     </button>

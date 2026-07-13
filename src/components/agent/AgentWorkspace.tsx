@@ -9,8 +9,7 @@ import { IconBolt } from "central-icons/IconBolt";
 import { IconBranchSimple } from "central-icons/IconBranchSimple";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
-import { IconCheckmark1Medium } from "central-icons/IconCheckmark1Medium";
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Medium } from "central-icons/IconCheckmark2Medium";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
@@ -9543,7 +9542,7 @@ export function AgentWorkspace({
                   <span className="agent-sandbox-option-desc">{option.description}</span>
                 </span>
                 {fullModeDraft === option.unrestricted ? (
-                  <IconCheckmark1Small
+                  <IconCheckmark2Small
                     size={16}
                     aria-hidden
                     className="agent-sandbox-option-check"
@@ -11673,7 +11672,7 @@ function AgentChatTurnRow({
         {copied ? (
           // Medium checkmark: the small variant reads too slight as the only
           // confirmation left now that the label is gone.
-          <IconCheckmark1Medium size={14} aria-hidden />
+          <IconCheckmark2Medium size={14} aria-hidden />
         ) : (
           <IconClipboard size={14} aria-hidden />
         )}
@@ -12887,7 +12886,7 @@ export function ApprovalPart({
     // Submission in flight (status still pending): the in-progress line stays
     // in the card until the request actually resolves.
     <p className="agent-approval-result" data-choice={activeChoice}>
-      {activeChoice === "deny" ? <IconCrossMedium size={14} /> : <IconCheckmark1Small size={14} />}
+      {activeChoice === "deny" ? <IconCrossMedium size={14} /> : <IconCheckmark2Small size={14} />}
       {approvalChoiceLabel(activeChoice, submitting !== undefined)}
     </p>
   ) : (
@@ -13202,7 +13201,7 @@ export function SudoPart({
 
   const footer = showResult ? (
     <p className="agent-approval-result" data-choice={decided ? "once" : "deny"}>
-      {decided ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
+      {decided ? <IconCheckmark2Small size={14} /> : <IconCrossMedium size={14} />}
       {decided ? (submitting ? "Approving" : "Approved") : submitting ? "Denying" : "Denied"}
     </p>
   ) : (

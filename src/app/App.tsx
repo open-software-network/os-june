@@ -50,6 +50,7 @@ import { IconProjects } from "central-icons/IconProjects";
 import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
+import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
 import { Dialog } from "../components/ui/Dialog";
 import {
   assignNoteToFolder,
@@ -4036,6 +4037,9 @@ export function App() {
         confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />
+      {/* Connector action approvals (approval trust mode) can arrive from a
+          routine or chat in any view, so the tray is mounted at the shell. */}
+      <ConnectorApprovalsTray />
     </main>
   );
 }

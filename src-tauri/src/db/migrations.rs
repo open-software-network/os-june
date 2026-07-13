@@ -138,6 +138,28 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     )
     .await?;
     ensure_column(_pool, "p3a_counters", "reported_at", "TEXT").await?;
+    for statement in include_str!("../../migrations/011_connectors.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/012_connector_grants.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/013_connector_credited_runs.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    // Marks when a routine most recently entered approval mode; approval-run
+    // crediting only counts runs that finished at or after this instant, so
+    // earlier read-only runs never retroactively unlock autonomy.
+    ensure_column(_pool, "routine_trust", "approval_since", "TEXT").await?;
     Ok(())
 }
 
