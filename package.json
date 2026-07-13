@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@react-three/drei": "^9",
-    "@react-three/fiber": "^8",
+    "@react-three/fiber": "^9",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-deep-link": "^2.4.9",
     "@tauri-apps/plugin-dialog": "^2.7.1",
