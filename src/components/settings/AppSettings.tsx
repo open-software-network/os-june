@@ -191,6 +191,29 @@ const RELEASE_CHANNEL_OPTIONS: readonly {
   { value: "rc", label: "Release candidate" },
 ];
 
+type AutoPreference = "cost" | "balanced" | "quality";
+
+const AUTO_PREFERENCE_OPTIONS: readonly {
+  value: AutoPreference;
+  label: ReactNode;
+}[] = [
+  { value: "cost", label: "Lower cost" },
+  { value: "balanced", label: "Balanced" },
+  { value: "quality", label: "Higher quality" },
+];
+
+const AUTO_PREFERENCE_VALUES: Record<AutoPreference, number> = {
+  cost: 0,
+  balanced: 50,
+  quality: 100,
+};
+
+function autoPreferenceFromCostQuality(value: number): AutoPreference {
+  if (value < 34) return "cost";
+  if (value > 66) return "quality";
+  return "balanced";
+}
+
 const EMPTY_MODIFIERS: DictationShortcutModifiers = {
   command: false,
   control: false,
@@ -1868,31 +1891,25 @@ export function AppSettings({
                   {providerSettings.generationModel === "open-software/auto" ? (
                     <div className="settings-row">
                       <div className="settings-row-info">
-                        <span className="settings-row-title">Cost and quality</span>
+                        <span className="settings-row-title">Auto preference</span>
                         <span className="settings-row-description">
-                          Choose whether Auto favors lower cost or higher model quality.
+                          Choose how June balances model quality and usage cost.
                         </span>
                       </div>
-                      <div className="settings-row-control settings-auto-preference">
-                        <span>Cost</span>
-                        <input
-                          type="range"
-                          min="0"
-                          max="100"
-                          value={providerSettings.costQuality}
-                          aria-label="Automatic model cost and quality preference"
-                          onChange={(event) =>
+                      <div className="settings-row-control">
+                        <SegmentedControl<AutoPreference>
+                          aria-label="Auto preference"
+                          value={autoPreferenceFromCostQuality(providerSettings.costQuality)}
+                          options={AUTO_PREFERENCE_OPTIONS}
+                          onValueChange={(preference) => {
+                            const costQuality = AUTO_PREFERENCE_VALUES[preference];
                             setProviderSettings((current) => ({
                               ...current,
-                              costQuality: Number(event.target.value),
-                            }))
-                          }
-                          onPointerUp={(event) =>
-                            saveCostQuality(Number(event.currentTarget.value))
-                          }
-                          onKeyUp={(event) => saveCostQuality(Number(event.currentTarget.value))}
+                              costQuality,
+                            }));
+                            saveCostQuality(costQuality);
+                          }}
                         />
-                        <span>Quality</span>
                       </div>
                     </div>
                   ) : null}

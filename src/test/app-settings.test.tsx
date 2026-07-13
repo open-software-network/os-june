@@ -2295,7 +2295,7 @@ describe("AppSettings", () => {
     }
   });
 
-  it("serializes rapid keyboard saves and keeps the latest automatic preference", async () => {
+  it("serializes rapid preset saves and keeps the latest automatic preference", async () => {
     const autoSettings = {
       ...buildProviderSettings(),
       generationModel: "open-software/auto",
@@ -2329,34 +2329,40 @@ describe("AppSettings", () => {
 
     await screen.findByRole("tab", { name: "Models" });
     fireEvent.click(screen.getByRole("tab", { name: "Models" }));
-    const slider = await screen.findByRole("slider", {
-      name: "Automatic model cost and quality preference",
+    const preference = await screen.findByRole("group", {
+      name: "Auto preference",
     });
-    fireEvent.change(slider, { target: { value: "60" } });
-    fireEvent.keyUp(slider, { key: "ArrowRight" });
-    fireEvent.change(slider, { target: { value: "70" } });
-    fireEvent.keyUp(slider, { key: "ArrowRight" });
+    const lowerCost = within(preference).getByRole("button", { name: "Lower cost" });
+    const balanced = within(preference).getByRole("button", { name: "Balanced" });
+    const higherQuality = within(preference).getByRole("button", { name: "Higher quality" });
+    expect(balanced).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByText("Choose how June balances model quality and usage cost."),
+    ).toBeVisible();
+
+    fireEvent.click(lowerCost);
+    fireEvent.click(higherQuality);
 
     await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledTimes(1));
-    expect(mocks.setCostQuality).toHaveBeenNthCalledWith(1, 60);
-    expect(slider).toHaveValue("70");
+    expect(mocks.setCostQuality).toHaveBeenNthCalledWith(1, 0);
+    expect(higherQuality).toHaveAttribute("aria-pressed", "true");
 
     await act(async () => {
-      resolveFirst({ ...autoSettings, costQuality: 60 });
+      resolveFirst({ ...autoSettings, costQuality: 0 });
       await first;
     });
     await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledTimes(2));
-    expect(mocks.setCostQuality).toHaveBeenNthCalledWith(2, 70);
-    expect(slider).toHaveValue("70");
+    expect(mocks.setCostQuality).toHaveBeenNthCalledWith(2, 100);
+    expect(higherQuality).toHaveAttribute("aria-pressed", "true");
 
     await act(async () => {
-      resolveSecond({ ...autoSettings, costQuality: 70 });
+      resolveSecond({ ...autoSettings, costQuality: 100 });
       await second;
     });
     await waitFor(() =>
       expect(screen.getByText("Automatic model preference updated.")).toBeInTheDocument(),
     );
-    expect(slider).toHaveValue("70");
+    expect(higherQuality).toHaveAttribute("aria-pressed", "true");
   });
 
   it("keeps local endpoint fields hidden until local setup starts", async () => {
