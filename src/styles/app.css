@@ -6000,6 +6000,10 @@ input:focus-visible,
 }
 
 .agent-composer-model-trigger {
+  /* A touch above the toolbar's resting grey: the pill names the active
+   * model, so it reads as content, not chrome. Hover still lifts it to full
+   * foreground. */
+  color: color-mix(in oklch, var(--foreground) 40%, var(--muted-foreground));
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
@@ -6023,6 +6027,14 @@ input:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The Auto preference designation beside the pill's model name ("Auto
+ * Higher"): one step quieter than the name in every state — it stays at
+ * muted while hover lifts the name to full foreground. */
+.agent-composer-model-trigger-detail {
+  flex: 0 1 auto;
+  color: var(--muted-foreground);
 }
 
 .agent-composer-model-popover {
@@ -6203,8 +6215,11 @@ input:focus-visible,
   overflow: hidden;
   border: 1px solid var(--popover-border);
   border-radius: var(--r-md);
+  /* No background-clip here: the translucent border must blend over the
+   * surface's own fill, exactly like the root popover's, or the same token
+   * reads darker on flyouts (it would composite over the page and the
+   * neighboring panel's shadow halo instead). */
   background: var(--popover);
-  background-clip: padding-box;
   color: var(--popover-foreground);
   /* The surface owns the only elevation for this layer. Scroll fades and
    * search/list content are descendants clipped inside this rounded box, so

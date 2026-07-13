@@ -17,6 +17,19 @@ export type SuggestedModel = {
 const PREFERRED_VISION_FALLBACK_IDS = ["kimi-k2-6"];
 
 /**
+ * The composer pill's ghosted designation while Auto is selected ("Auto
+ * Higher"): one word, since the pill is a glance surface. The thresholds
+ * bucket any persisted cost-to-quality value onto the nearest of the three
+ * suggested presets (20 / 50 / 100).
+ */
+export function autoPillDesignation(costQuality: number | undefined): string | undefined {
+  if (costQuality === undefined) return undefined;
+  if (costQuality < 34) return "Lower";
+  if (costQuality > 66) return "Higher";
+  return "Balanced";
+}
+
+/**
  * Curated picks for the model picker's "Suggested" tab — the handful of
  * models we actually recommend, weighed on benchmark performance, price,
  * tool use, and privacy (June's agent needs tool calling, and June's pitch

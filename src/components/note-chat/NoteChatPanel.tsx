@@ -33,7 +33,8 @@ import {
   ComposerModelPopover,
   type ComposerModelFlyout,
 } from "../agent/composer/ModelPicker";
-import { modelOptions, selectedModel } from "../settings/ModelPickerDialog";
+import { autoPillDesignation } from "../../lib/suggested-models";
+import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import type { NoteChat, NoteChatAttachment } from "./useNoteChat";
 
 /** Note-tailored presets, shown as the main session view's preset chips (icon
@@ -546,6 +547,9 @@ export function NoteChatPanel({
                 <ComposerModelPicker
                   open={modelOpen}
                   model={model}
+                  detail={
+                    model?.id === AUTO_MODEL_ID ? autoPillDesignation(costQuality) : undefined
+                  }
                   triggerRef={modelTriggerRef}
                   onToggleOpen={() => {
                     setModelFlyout(null);

@@ -29,12 +29,16 @@ import { ModelPickerCardContent } from "../../settings/ModelPickerPopover";
 export function ComposerModelPicker({
   open,
   model,
+  detail,
   readOnly = false,
   triggerRef,
   onToggleOpen,
 }: {
   open: boolean;
   model?: VeniceModelDto;
+  /** Ghosted designation beside the name — the Auto routing preference
+   * ("Auto Higher"), quieter than the model name. */
+  detail?: string;
   readOnly?: boolean;
   triggerRef: RefObject<HTMLButtonElement>;
   onToggleOpen: () => void;
@@ -45,6 +49,7 @@ export function ComposerModelPicker({
       <div className="agent-composer-model" data-readonly="true">
         <span className="agent-composer-model-label">
           <span>{model.name}</span>
+          {detail ? <span className="agent-composer-model-trigger-detail">{detail}</span> : null}
         </span>
       </div>
     );
@@ -55,12 +60,13 @@ export function ComposerModelPicker({
         ref={triggerRef}
         type="button"
         className="agent-composer-model-trigger"
-        aria-label={`Model: ${model.name}`}
+        aria-label={`Model: ${model.name}${detail ? ` (${detail})` : ""}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={onToggleOpen}
       >
         <span>{model.name}</span>
+        {detail ? <span className="agent-composer-model-trigger-detail">{detail}</span> : null}
         <IconChevronDownSmall size={12} aria-hidden />
       </button>
     </div>

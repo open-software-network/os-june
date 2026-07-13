@@ -3702,7 +3702,8 @@ describe("AgentWorkspace", () => {
 
     await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledWith(20));
     expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "open-software/auto");
-    expect(await screen.findByRole("button", { name: "Model: Auto" })).toBeInTheDocument();
+    // The pill ghosts the active preset designation beside the model name.
+    expect(await screen.findByRole("button", { name: "Model: Auto (Lower)" })).toBeInTheDocument();
   });
 
   it("ignores a stale pending New Session marker left over from a reload", async () => {

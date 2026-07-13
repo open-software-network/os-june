@@ -15,7 +15,7 @@ import { HoverTip } from "../ui/HoverTip";
 import { ModelPrivacyChip } from "../ui/ModelPrivacyChip";
 import { ProviderLogo } from "./ProviderLogo";
 
-const AUTO_MODEL_ID = "open-software/auto";
+export const AUTO_MODEL_ID = "open-software/auto";
 
 type ModelPickerEntry = {
   key: string;

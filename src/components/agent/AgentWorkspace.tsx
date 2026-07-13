@@ -248,8 +248,12 @@ import {
   rawLocalGenerationModelId,
   withLocalGenerationOption,
 } from "../../lib/local-generation";
-import { preferredVisionFallbackModel } from "../../lib/suggested-models";
-import { modelOptions, selectedModel as selectedModelOption } from "../settings/ModelPickerDialog";
+import { autoPillDesignation, preferredVisionFallbackModel } from "../../lib/suggested-models";
+import {
+  AUTO_MODEL_ID,
+  modelOptions,
+  selectedModel as selectedModelOption,
+} from "../settings/ModelPickerDialog";
 import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import {
   HERMES_SERVER_ERROR_MESSAGE,
@@ -9337,6 +9341,11 @@ export function AgentWorkspace({
               <ComposerModelPicker
                 open={composerModelOpen}
                 model={generationModel}
+                detail={
+                  generationModel?.id === AUTO_MODEL_ID
+                    ? autoPillDesignation(generationCostQuality)
+                    : undefined
+                }
                 readOnly={composerModelLocked}
                 triggerRef={composerModelTriggerRef}
                 onToggleOpen={() => {
