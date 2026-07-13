@@ -6781,6 +6781,73 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Early reasoning before settings resolve.")).toBeNull();
   });
 
+  it("keeps a live toggle-off from being overwritten by a stale settings response", async () => {
+    // The mount-time settings fetch is held open past a live toggle: its stale
+    // showThinking:true must not clobber the newer opt-out the settings switch
+    // just broadcast after persisting.
+    let resolveSettings: (value: unknown) => void = () => {};
+    mocks.providerModelSettings.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "race the settings fetch",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "race the settings fetch",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Reasoning the user opted out of seeing." },
+        });
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: { text: "Done." },
+        });
+      }
+    });
+    expect(await screen.findByText("Done.")).toBeInTheDocument();
+
+    // The user turns thinking off while the mount fetch is still in flight.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent<ShowThinkingChangedDetail>(SHOW_THINKING_CHANGED_EVENT, {
+          detail: { enabled: false },
+        }),
+      );
+    });
+    expect(screen.queryByText("Thought")).toBeNull();
+
+    // The stale response (thinking on) lands afterwards and must lose.
+    await act(async () => {
+      resolveSettings({
+        settings: {
+          transcriptionProvider: "venice",
+          transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+          generationModel: "zai-org-glm-5-2",
+          showThinking: true,
+        },
+      });
+    });
+    expect(screen.queryByText("Thought")).toBeNull();
+    expect(screen.queryByText("Reasoning the user opted out of seeing.")).toBeNull();
+  });
+
   it("does not force the transcript to the bottom while subagent progress streams", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,

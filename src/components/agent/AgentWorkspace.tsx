@@ -2446,6 +2446,10 @@ export function AgentWorkspace({
   // null until the persisted value loads: reasoning stays hidden during that
   // window so a saved opt-out is never flashed before settings resolve.
   const [showThinkingSetting, setShowThinkingSetting] = useState<boolean | null>(null);
+  // True once the live settings-toggle event has delivered a value. That value
+  // comes from the persisted write that just completed, so it is strictly newer
+  // than any settings fetch already in flight - those must not overwrite it.
+  const showThinkingLiveRef = useRef(false);
   const showThinking = showThinkingSetting === true;
   const [workingTaskIds, setWorkingTaskIds] = useState<Set<string>>(() => new Set());
   const activityStoreVersion = useSyncExternalStore(
@@ -3592,7 +3596,9 @@ export function AgentWorkspace({
       setGenerationProvider(provider);
       defaultGenerationModelIdRef.current = selectedModelId;
       setDefaultGenerationModelId(selectedModelId);
-      setShowThinkingSetting(settings.showThinking ?? true);
+      if (!showThinkingLiveRef.current) {
+        setShowThinkingSetting(settings.showThinking ?? true);
+      }
       return selectedModelId;
     },
     [],
@@ -3670,7 +3676,9 @@ export function AgentWorkspace({
   useEffect(() => {
     function handleShowThinkingChanged(event: Event) {
       const detail = (event as CustomEvent<ShowThinkingChangedDetail>).detail;
-      if (detail) setShowThinkingSetting(detail.enabled);
+      if (!detail) return;
+      showThinkingLiveRef.current = true;
+      setShowThinkingSetting(detail.enabled);
     }
     window.addEventListener(SHOW_THINKING_CHANGED_EVENT, handleShowThinkingChanged);
     return () => {
