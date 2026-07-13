@@ -19,6 +19,20 @@ pub struct ClipboardBackup {
     original_text: String,
 }
 
+#[cfg(test)]
+impl ClipboardBackup {
+    pub(crate) fn original_text_is(&self, text: &str) -> bool {
+        self.original_text == text
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_text_for_test(original_text: impl Into<String>) -> Self {
+        Self {
+            original_text: original_text.into(),
+        }
+    }
+}
+
 pub fn replace_text(text: &str) -> Result<Option<ClipboardBackup>> {
     with_open_clipboard(|| {
         let mut format = 0;

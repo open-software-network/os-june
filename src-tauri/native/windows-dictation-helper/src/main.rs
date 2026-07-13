@@ -312,7 +312,7 @@ impl HelperApp {
     }
 
     fn paste_text(&mut self, text: String) {
-        self.finish_clipboard_restore(true);
+        self.finish_clipboard_restore(false);
         self.writer.emit(event(
             "final_transcript",
             serde_json::json!({ "text": text }),
@@ -370,16 +370,14 @@ impl HelperApp {
     }
 
     fn finish_clipboard_restore(&mut self, force: bool) {
-        let Some(mut restore) = self.delayed_clipboard_restore.take() else {
+        let Some(restore) = self.delayed_clipboard_restore.take() else {
             return;
         };
-        if clipboard::restore_clipboard_if_unchanged(&restore.text, &restore.backup).is_err()
-            && !force
-            && std::time::Instant::now() < restore.expires_at
-        {
-            restore.deadline = std::time::Instant::now() + CLIPBOARD_RESTORE_RETRY_DELAY;
-            self.delayed_clipboard_restore = Some(restore);
-        }
+        let now = std::time::Instant::now();
+        let restore_failed =
+            clipboard::restore_clipboard_if_unchanged(&restore.text, &restore.backup).is_err();
+        self.delayed_clipboard_restore =
+            next_clipboard_restore(restore, force, restore_failed, now);
     }
 
     fn cleanup_last_mic_test(&mut self) {
@@ -509,6 +507,20 @@ impl HelperApp {
     }
 }
 
+fn next_clipboard_restore(
+    mut restore: DelayedClipboardRestore,
+    force: bool,
+    restore_failed: bool,
+    now: std::time::Instant,
+) -> Option<DelayedClipboardRestore> {
+    if restore_failed && !force && now < restore.expires_at {
+        restore.deadline = now + CLIPBOARD_RESTORE_RETRY_DELAY;
+        Some(restore)
+    } else {
+        None
+    }
+}
+
 impl Drop for HelperApp {
     fn drop(&mut self) {
         self.finish_clipboard_restore(true);
@@ -526,6 +538,61 @@ impl Drop for HelperApp {
         if let Some(hotkeys) = &self.hotkeys {
             hotkeys.shutdown();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn restore_with_expiry(
+        now: std::time::Instant,
+        expires_at: std::time::Instant,
+    ) -> DelayedClipboardRestore {
+        DelayedClipboardRestore {
+            deadline: now,
+            expires_at,
+            text: "dictated text".to_string(),
+            backup: clipboard::ClipboardBackup::from_text_for_test("previous clipboard"),
+        }
+    }
+
+    #[test]
+    fn clipboard_restore_failure_keeps_backup_for_retry_before_expiry() {
+        let now = std::time::Instant::now();
+        let restore = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
+
+        let retry = next_clipboard_restore(restore, false, true, now)
+            .expect("retryable clipboard contention should keep backup");
+
+        assert_eq!(retry.text, "dictated text");
+        assert!(retry.backup.original_text_is("previous clipboard"));
+        assert!(retry.deadline > now);
+        assert!(retry.expires_at > now);
+    }
+
+    #[test]
+    fn clipboard_restore_success_drops_backup() {
+        let now = std::time::Instant::now();
+        let restore = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
+
+        assert!(next_clipboard_restore(restore, false, false, now).is_none());
+    }
+
+    #[test]
+    fn forced_clipboard_restore_failure_drops_backup_on_shutdown() {
+        let now = std::time::Instant::now();
+        let restore = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
+
+        assert!(next_clipboard_restore(restore, true, true, now).is_none());
+    }
+
+    #[test]
+    fn clipboard_restore_failure_drops_backup_after_expiry() {
+        let now = std::time::Instant::now();
+        let restore = restore_with_expiry(now, now);
+
+        assert!(next_clipboard_restore(restore, false, true, now).is_none());
     }
 }
 
