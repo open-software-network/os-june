@@ -92,8 +92,10 @@ handle it.
   after earned autonomy.
 - Sharing, deleting, moving across shared drives, and broad permission changes
   remain approval-only in v1 even under autonomous mode.
-- Send/update retries resume from the stable pending action id. They never
-  blindly replay a completed mutation.
+- Send/update actions journal `pending`, `committed`, or `ambiguous`. Automatic
+  retry requires a provider-supported idempotency key. After a response-loss
+  timeout, June reconciles a stable action fingerprint against provider state;
+  if it cannot prove the result, it blocks replay until the user confirms.
 
 ## Delivery slices
 

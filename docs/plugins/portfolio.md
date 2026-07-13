@@ -131,9 +131,11 @@ task-completion data exist.
 ### Reproducible scorecard
 
 Values are weighted points, not unweighted ratings. Each row sums to its total,
-so a reviewer can change one assumption without reconstructing the model.
-Grouped deferred rows use the highest-scoring member of that family, giving an
-omitted family its strongest reasonable case.
+so a reviewer can change one assumption without reconstructing the model. Every
+omitted candidate within ten points of the cutoff is scored individually. The
+remaining grouped rows are conservative family ceilings: their best member is
+at least 13 points below the cutoff, so member-level variance cannot change the
+top-ten decision without first changing the family's assumptions.
 
 | Candidate | Core /25 | Frequency /20 | Action /15 | Retention /15 | Privacy /15 | Delivery /10 | Total |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -147,24 +149,40 @@ omitted family its strongest reasonable case.
 | Linear | 18 | 12 | 13 | 11 | 8 | 7 | **69** |
 | Documents | 18 | 15 | 11 | 9 | 10 | 4 | **67** |
 | Spreadsheets | 17 | 13 | 12 | 9 | 8 | 5 | **64** |
-| CRM and sales: Salesforce, HubSpot, Pipedrive, Zoho CRM, Clay | 19 | 10 | 13 | 11 | 8 | 2 | 63 |
-| Project management: Aha!, Asana, Azure Boards, Basecamp, ClickUp, Teamwork.com | 17 | 10 | 11 | 10 | 8 | 5 | 61 |
-| File stores: Box, Dropbox | 16 | 11 | 8 | 9 | 9 | 7 | 60 |
-| Creative and design: Adobe, Canva, Figma | 14 | 8 | 12 | 9 | 7 | 6 | 56 |
-| Data and warehouses: Airtable, BigQuery, Databricks, Hex, Snowflake | 12 | 7 | 11 | 8 | 8 | 5 | 51 |
-| Support: Intercom, Help Scout, Zoho Desk | 14 | 7 | 10 | 8 | 7 | 4 | 50 |
-| Hosted sites and builders: Sites, Replit, Lovable | 12 | 6 | 13 | 8 | 5 | 4 | 48 |
+| HubSpot | 19 | 10 | 13 | 11 | 8 | 2 | 63 |
+| Salesforce | 19 | 9 | 13 | 11 | 8 | 2 | 62 |
+| Asana | 17 | 10 | 11 | 10 | 8 | 5 | 61 |
+| Box | 16 | 11 | 8 | 9 | 9 | 7 | 60 |
+| ClickUp | 16 | 10 | 11 | 9 | 8 | 5 | 59 |
+| Dropbox | 15 | 11 | 8 | 9 | 9 | 7 | 59 |
+| Pipedrive | 17 | 8 | 12 | 9 | 8 | 5 | 59 |
+| Azure Boards | 16 | 9 | 11 | 9 | 7 | 5 | 57 |
+| Canva | 14 | 8 | 12 | 9 | 7 | 6 | 56 |
+| Zoho CRM | 16 | 8 | 11 | 9 | 8 | 4 | 56 |
+| Aha! | 15 | 9 | 10 | 10 | 7 | 4 | 55 |
+| Basecamp | 15 | 9 | 10 | 9 | 7 | 5 | 55 |
+| Figma | 14 | 8 | 11 | 9 | 7 | 6 | 55 |
+| Teamwork.com | 14 | 8 | 10 | 9 | 7 | 6 | 54 |
+| Adobe | 13 | 8 | 11 | 8 | 7 | 6 | 53 |
+| Clay | 14 | 7 | 11 | 9 | 7 | 4 | 52 |
+| Data and warehouses family ceiling | 12 | 7 | 11 | 8 | 8 | 5 | 51 |
+| Support family ceiling | 14 | 7 | 10 | 8 | 7 | 4 | 50 |
+| Hosted sites and builders family ceiling | 12 | 6 | 13 | 8 | 5 | 4 | 48 |
 | Presentations and visualizations | 12 | 8 | 10 | 7 | 6 | 4 | 47 |
-| Role packages: six current role-specific bundles | 11 | 7 | 9 | 8 | 6 | 5 | 46 |
 | Remote infrastructure: DigitalOcean and remote workspaces | 8 | 4 | 11 | 6 | 4 | 4 | 37 |
 | Consumer and lifestyle directory apps | 5 | 4 | 8 | 4 | 3 | 6 | 30 |
 
-The closest omission is CRM and sales at 63, one point below Spreadsheets.
-Its meeting follow-through is strong, but June's current ICP encounters it less
-often, its best proactive workflows need administrator setup or away-mode
-events, and Salesforce-class distribution adds a difficult credential and
-review path. Customer evidence can change that decision; the threshold is now
-explicit.
+The closest omission is HubSpot at 63, one point below Spreadsheets. CRM meeting
+follow-through is strong, but June's current ICP encounters it less often, its
+best proactive workflows need administrator setup or away-mode events, and
+distribution adds a difficult credential and review path. Customer evidence
+can change that decision; the threshold is now explicit.
+
+The six role-specific plugins are not independently scored because they bundle
+skills and app integrations already represented by the capability candidates;
+including them would double-count the same value. They remain an important
+packaging pattern for future June skill collections, not a distinct connector
+or execution capability competing for an implementation slot.
 
 ## Sequencing
 
