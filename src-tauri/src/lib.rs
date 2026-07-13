@@ -215,6 +215,8 @@ pub fn run() {
             hermes_bridge::update_hermes_bridge_messaging_platform,
             hermes_bridge::hermes_agent_cli_access,
             hermes_bridge::set_hermes_agent_cli_access,
+            hermes_bridge::hermes_browser_access,
+            hermes_bridge::set_hermes_browser_access,
             hermes_bridge::june_character,
             hermes_bridge::set_june_character,
             hermes_bridge::open_hermes_tui_debug,

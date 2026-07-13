@@ -125,6 +125,14 @@ const JUNE_RECORDER_MCP_TOKEN_ENV: &str = "JUNE_RECORDER_PROXY_TOKEN";
 /// timeout stack (proxy lease < python client < this), pinned by
 /// `recorder_timeout_stack_ordering_holds`.
 const JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS: u64 = 620;
+const JUNE_BROWSER_MCP_SERVER_NAME: &str = "june_browser";
+const JUNE_BROWSER_MCP_SCRIPT_NAME: &str = "june_browser_mcp.py";
+const JUNE_BROWSER_MCP_SCRIPT: &str = include_str!("hermes/june_browser_mcp.py");
+/// Environment variable the `june_browser` MCP reads its loopback proxy token
+/// from. Kept out of argv so it does not appear in process listings. Distinct
+/// from the provider and recorder tokens: browser control must not be reachable
+/// with either.
+const JUNE_BROWSER_MCP_TOKEN_ENV: &str = "JUNE_BROWSER_PROXY_TOKEN";
 const AGENT_RECORDER_REQUEST_EVENT: &str = "june://agent-recorder-request";
 // The frontend start path can legitimately take minutes: readiness runs
 // twice (React probes before startRecording, then the command re-probes) and
@@ -300,6 +308,13 @@ fn environment_hint_for_spawn(full_mode: bool, sandbox_available: bool) -> Optio
 /// read it without async storage plumbing.
 const AGENT_CLI_ACCESS_FLAG_FILE: &str = "agent-cli-access";
 
+/// Flag file in the app data dir that records the Browser access grant (the
+/// stored grant behind Browser use). A presence flag like
+/// `AGENT_CLI_ACCESS_FLAG_FILE`, kept in the app data dir itself — outside every
+/// Hermes sandbox write root — so the jailed runtime can never grant itself
+/// browser access. Read synchronously on every spawn.
+const BROWSER_ACCESS_FLAG_FILE: &str = "browser-access";
+
 /// State locations of the agent CLIs the opt-in covers, relative to $HOME.
 /// Directories become `subpath` grants. Kept in sync with the SOUL.md
 /// sections above and the Settings copy.
@@ -393,6 +408,12 @@ pub struct HermesBridge {
     /// Recently delivered recorder request ids (see
     /// `recorder_request_recently_completed`).
     recorder_completed: Mutex<std::collections::VecDeque<String>>,
+    /// The in-process browser broker (JUN-286): the Browser access grant state
+    /// plus an in-memory session registry, shared with the provider proxy so
+    /// `/v1/browser/status` can read the grant and active session count. The
+    /// extension, native-messaging shim, and real browser actions are JUN-287's;
+    /// nothing here drives a browser.
+    browser_broker: Arc<BrowserBroker>,
 }
 
 struct HermesProcess {
@@ -401,10 +422,75 @@ struct HermesProcess {
     connection: HermesBridgeConnection,
 }
 
+/// Minimal browser broker skeleton (JUN-286). Owns the Browser access grant
+/// state and a registry of broker sessions, enough to refuse new commands and
+/// terminate every session on revoke. JUN-287 fleshes out extension pairing,
+/// the native-messaging shim, and per-tab debugger control; this slice adds no
+/// production session creation, only the grant gate and the terminable
+/// registry.
+#[derive(Default)]
+struct BrowserBroker {
+    state: Mutex<BrowserBrokerState>,
+}
+
+#[derive(Default)]
+struct BrowserBrokerState {
+    /// True while the Browser access grant is on. New broker commands are
+    /// refused when this is false.
+    enabled: bool,
+    /// Active broker sessions keyed by id. Only needs to be clearable on revoke
+    /// today; the value is a JUN-287 placeholder.
+    sessions: HashMap<String, BrowserSession>,
+}
+
+/// A tracked browser broker session. A placeholder in JUN-286 (JUN-287 fills it
+/// with the extension pairing and per-tab debugger handles); the registry only
+/// needs to be terminable on revoke today. Constructed only under test until
+/// JUN-287 lands real session creation.
+#[allow(dead_code)]
+#[derive(Default)]
+struct BrowserSession {}
+
+impl BrowserBroker {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BrowserBrokerState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Applies a grant transition to broker state. Enabling only flips the gate;
+    /// revoking first refuses new commands (the gate goes false) and then
+    /// terminates every session, so nothing survives the revoke. Extension
+    /// detach / native-messaging teardown is JUN-287's.
+    fn set_enabled(&self, enabled: bool) {
+        let mut state = self.lock();
+        state.enabled = enabled;
+        if !enabled {
+            state.sessions.clear();
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.lock().enabled
+    }
+
+    fn active_session_count(&self) -> usize {
+        self.lock().sessions.len()
+    }
+
+    #[cfg(test)]
+    fn insert_test_session(&self, id: &str) {
+        self.lock()
+            .sessions
+            .insert(id.to_string(), BrowserSession::default());
+    }
+}
+
 struct SharedProviderProxy {
     port: u16,
     token: String,
     recorder_token: String,
+    browser_token: String,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -415,6 +501,13 @@ struct ProviderProxyState {
     /// `june_recorder` MCP: microphone control must not be reachable with the
     /// general provider token every model call carries.
     recorder_token: String,
+    /// Browser routes require this dedicated secret, handed only to the
+    /// `june_browser` MCP: browser control must not be reachable with either the
+    /// general provider token or the recorder token.
+    browser_token: String,
+    /// The browser broker, shared with `HermesBridge`, so `/v1/browser/status`
+    /// reads the live Browser access grant and active session count.
+    browser_broker: Arc<BrowserBroker>,
     image_sources: ImageSourceCapabilities,
     videos_dir: PathBuf,
     video_generation_enabled: bool,
@@ -1033,6 +1126,14 @@ async fn start_hermes_bridge_inner(
         None
     };
     let june_recorder_mcp = sync_june_recorder_mcp(app, &command)?;
+    // Read the Browser access grant fresh every spawn and mirror it into the
+    // broker, so a restart reflects the persisted grant and the `june_browser`
+    // config `enabled` leaf follows it. The `june_browser` entry is ALWAYS
+    // rendered (command/args/token present regardless), so the grant flips only
+    // the `enabled` leaf.
+    let browser_access = browser_access_enabled(app);
+    bridge.browser_broker.set_enabled(browser_access);
+    let june_browser_mcp = sync_june_browser_mcp(app, &command, browser_access)?;
     // Resolved from the live catalog so Hermes' vision tools attach an image
     // straight to a vision-capable model's context instead of falling back to
     // the (unconfigured) auxiliary vision LLM. `provider: custom` hides the
@@ -1044,12 +1145,14 @@ async fn start_hermes_bridge_inner(
         provider_proxy.port,
         &provider_proxy.token,
         &provider_proxy.recorder_token,
+        &provider_proxy.browser_token,
         supports_vision,
         &june_context_mcp,
         &june_web_mcp,
         &june_image_mcp,
         june_video_mcp.as_ref(),
         &june_recorder_mcp,
+        &june_browser_mcp,
     )?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
@@ -1202,11 +1305,13 @@ async fn ensure_provider_proxy(
                 port: proxy.port,
                 token: proxy.token.clone(),
                 recorder_token: proxy.recorder_token.clone(),
+                browser_token: proxy.browser_token.clone(),
             });
         }
     }
     let token = random_token();
     let recorder_token = random_token();
+    let browser_token = random_token();
     let app_data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     let image_sources = ImageSourceCapabilities {
@@ -1217,6 +1322,8 @@ async fn ensure_provider_proxy(
     let started = start_june_provider_proxy(
         token.clone(),
         recorder_token.clone(),
+        browser_token.clone(),
+        Arc::clone(&bridge.browser_broker),
         image_sources,
         videos_dir,
         crate::feature_flags::VIDEO_GENERATION_ENABLED,
@@ -1234,12 +1341,14 @@ async fn ensure_provider_proxy(
         port: started.port,
         token: token.clone(),
         recorder_token: recorder_token.clone(),
+        browser_token: browser_token.clone(),
         shutdown: Some(started.shutdown),
     });
     Ok(SharedProviderProxyInfo {
         port: started.port,
         token,
         recorder_token,
+        browser_token,
     })
 }
 
@@ -1247,6 +1356,7 @@ struct SharedProviderProxyInfo {
     port: u16,
     token: String,
     recorder_token: String,
+    browser_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1280,6 +1390,16 @@ struct JuneVideoMcpConfig {
 struct JuneRecorderMcpConfig {
     command: String,
     script_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct JuneBrowserMcpConfig {
+    command: String,
+    script_path: PathBuf,
+    /// The stored Browser access grant, read every spawn. Rendered verbatim as
+    /// the `june_browser` entry's `enabled` leaf so the key June owns always
+    /// reflects the grant.
+    enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2262,6 +2382,68 @@ pub fn set_hermes_agent_cli_access(
     }
     stop_hermes_mode(&bridge, false)?;
     Ok(AgentCliAccessStatus {
+        enabled: request.enabled,
+    })
+}
+
+#[derive(Serialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserAccessStatus {
+    pub enabled: bool,
+}
+
+/// Whether the user granted Browser use (the stored Browser access grant).
+#[tauri::command]
+pub fn hermes_browser_access(app: AppHandle) -> BrowserAccessStatus {
+    BrowserAccessStatus {
+        enabled: browser_access_enabled(&app),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetBrowserAccessRequest {
+    pub enabled: bool,
+}
+
+/// Records (or clears) the Browser access grant and applies the transition to
+/// broker state at once. Revoke first refuses new broker commands (the gate
+/// flips false) and then terminates every broker session; extension detach and
+/// native-messaging teardown are JUN-287's, not this slice's. Both runtime modes
+/// are retired so the next spawn regenerates `config.yaml` with the
+/// `june_browser` `enabled` leaf following the new grant (the profile/config is
+/// applied at spawn and can't change on a live process).
+#[tauri::command]
+pub fn set_hermes_browser_access(
+    app: AppHandle,
+    bridge: State<'_, HermesBridge>,
+    request: SetBrowserAccessRequest,
+) -> Result<BrowserAccessStatus, AppError> {
+    let path = browser_access_flag_path(&app).ok_or_else(|| {
+        AppError::new(
+            "browser_access_unavailable",
+            "Could not resolve the app data directory.",
+        )
+    })?;
+    if request.enabled {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| AppError::new("browser_access_failed", error.to_string()))?;
+        }
+        std::fs::write(&path, b"1")
+            .map_err(|error| AppError::new("browser_access_failed", error.to_string()))?;
+    } else if let Err(error) = std::fs::remove_file(&path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            return Err(AppError::new("browser_access_failed", error.to_string()));
+        }
+    }
+    // Apply the grant transition to broker state immediately. On revoke this
+    // refuses new broker commands before clearing every session (see
+    // `BrowserBroker::set_enabled`).
+    bridge.browser_broker.set_enabled(request.enabled);
+    stop_hermes_mode(&bridge, false)?;
+    stop_hermes_mode(&bridge, true)?;
+    Ok(BrowserAccessStatus {
         enabled: request.enabled,
     })
 }
@@ -6294,6 +6476,18 @@ pub(crate) fn agent_cli_access_enabled(app: &AppHandle) -> bool {
     agent_cli_access_flag_path(app).is_some_and(|path| path.exists())
 }
 
+fn browser_access_flag_path(app: &AppHandle) -> Option<PathBuf> {
+    crate::app_paths::app_data_dir(app)
+        .ok()
+        .map(|dir| dir.join(BROWSER_ACCESS_FLAG_FILE))
+}
+
+/// Whether the user granted Browser use (the stored Browser access grant). A
+/// presence flag in the app data dir, outside every Hermes sandbox write root.
+pub(crate) fn browser_access_enabled(app: &AppHandle) -> bool {
+    browser_access_flag_path(app).is_some_and(|path| path.exists())
+}
+
 /// Whether a *sandboxed* spawn on this machine would actually engage the
 /// jail. Used by unrestricted spawns to keep the shared SOUL.md's sandbox
 /// section accurate without touching the profile on disk.
@@ -6698,6 +6892,32 @@ fn sync_june_recorder_mcp(
     })
 }
 
+/// Writes the `june_browser` MCP script into the managed Hermes home and returns
+/// its config. `enabled` carries the stored Browser access grant, read fresh on
+/// every spawn, so the rendered `june_browser` entry's `enabled` leaf follows
+/// the grant. The script and its config are always written regardless of the
+/// grant (only the `enabled` leaf reflects it).
+fn sync_june_browser_mcp(
+    app: &AppHandle,
+    hermes_command: &str,
+    enabled: bool,
+) -> Result<JuneBrowserMcpConfig, AppError> {
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_browser_mcp_failed", error.to_string()))?;
+    let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
+    fs::create_dir_all(&mcp_dir)
+        .map_err(|error| AppError::new("june_browser_mcp_failed", error.to_string()))?;
+    let script_path = mcp_dir.join(JUNE_BROWSER_MCP_SCRIPT_NAME);
+    fs::write(&script_path, JUNE_BROWSER_MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_browser_mcp_failed", error.to_string()))?;
+
+    Ok(JuneBrowserMcpConfig {
+        command: hermes_python_command(hermes_command),
+        script_path,
+        enabled,
+    })
+}
+
 fn remove_legacy_image_source_secret(hermes_home: &Path) -> Result<(), AppError> {
     let path = hermes_home.join(LEGACY_IMAGE_SOURCE_SECRET_FILE);
     match fs::remove_file(&path) {
@@ -6746,24 +6966,28 @@ fn sync_hermes_config(
     provider_proxy_port: u16,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
+    browser_proxy_token: &str,
     supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
     june_video_mcp: Option<&JuneVideoMcpConfig>,
     june_recorder_mcp: &JuneRecorderMcpConfig,
+    june_browser_mcp: &JuneBrowserMcpConfig,
 ) -> Result<(), AppError> {
     sync_hermes_config_with_external_dirs(
         hermes_home,
         provider_proxy_port,
         provider_proxy_token,
         recorder_proxy_token,
+        browser_proxy_token,
         supports_vision,
         june_context_mcp,
         june_web_mcp,
         june_image_mcp,
         june_video_mcp,
         june_recorder_mcp,
+        june_browser_mcp,
         &builtin_external_skill_dirs(app),
     )
 }
@@ -6774,12 +6998,14 @@ fn sync_hermes_config_with_external_dirs(
     provider_proxy_port: u16,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
+    browser_proxy_token: &str,
     supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
     june_video_mcp: Option<&JuneVideoMcpConfig>,
     june_recorder_mcp: &JuneRecorderMcpConfig,
+    june_browser_mcp: &JuneBrowserMcpConfig,
     default_external_skill_dirs: &[PathBuf],
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
@@ -6793,6 +7019,7 @@ fn sync_hermes_config_with_external_dirs(
         &base_url,
         provider_proxy_token,
         recorder_proxy_token,
+        browser_proxy_token,
         &CRON_SANDBOXED_TOOLSETS.join(", "),
         &external_skill_dirs,
         BuiltinMcpConfigs {
@@ -6801,6 +7028,7 @@ fn sync_hermes_config_with_external_dirs(
             image: Some(june_image_mcp),
             video: june_video_mcp,
             recorder: Some(june_recorder_mcp),
+            browser: Some(june_browser_mcp),
         },
     );
     // MERGE over the existing config, never replace it: the jailed dashboard
@@ -6859,6 +7087,7 @@ struct BuiltinMcpConfigs<'a> {
     image: Option<&'a JuneImageMcpConfig>,
     video: Option<&'a JuneVideoMcpConfig>,
     recorder: Option<&'a JuneRecorderMcpConfig>,
+    browser: Option<&'a JuneBrowserMcpConfig>,
 }
 
 fn effective_external_skill_dirs(hermes_home: &Path, default_dirs: &[PathBuf]) -> Vec<PathBuf> {
@@ -6980,6 +7209,7 @@ fn render_hermes_config(
     base_url: &str,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
+    browser_proxy_token: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
     mcp_configs: BuiltinMcpConfigs<'_>,
@@ -6998,6 +7228,7 @@ fn render_hermes_config(
         base_url,
         provider_proxy_token,
         recorder_proxy_token,
+        browser_proxy_token,
     );
     format!(
         r#"model:
@@ -7028,6 +7259,7 @@ fn render_mcp_servers_config(
     base_url: &str,
     proxy_token: &str,
     recorder_proxy_token: &str,
+    browser_proxy_token: &str,
 ) -> String {
     let mut entries = String::new();
     if let Some(config) = configs.context {
@@ -7047,6 +7279,13 @@ fn render_mcp_servers_config(
             config,
             base_url,
             recorder_proxy_token,
+        ));
+    }
+    if let Some(config) = configs.browser {
+        entries.push_str(&render_browser_mcp_entry(
+            config,
+            base_url,
+            browser_proxy_token,
         ));
     }
     if entries.is_empty() {
@@ -7191,6 +7430,40 @@ fn render_recorder_mcp_entry(
         script_path = yaml_string(&config.script_path.to_string_lossy()),
         base_url = yaml_string(base_url),
         token_env = JUNE_RECORDER_MCP_TOKEN_ENV,
+        token = yaml_string(proxy_token),
+    )
+}
+
+/// The `june_browser` entry is ALWAYS rendered; its `enabled` leaf exactly
+/// follows the stored Browser access grant (`false` when off). June owns this
+/// key, so a deep-merge omission would leave a stale or user-added `enabled:
+/// true` in place and fail to revoke — writing the leaf every spawn keeps the
+/// grant authoritative. It gets only the dedicated browser token via the
+/// environment (kept out of argv), never the provider or recorder secret.
+fn render_browser_mcp_entry(
+    config: &JuneBrowserMcpConfig,
+    base_url: &str,
+    proxy_token: &str,
+) -> String {
+    format!(
+        r#"  {server_name}:
+    enabled: {enabled}
+    command: {command}
+    args:
+      - {script_path}
+      - {base_url}
+    env:
+      PYTHONUNBUFFERED: "1"
+      {token_env}: {token}
+    timeout: 30
+    connect_timeout: 10
+"#,
+        server_name = JUNE_BROWSER_MCP_SERVER_NAME,
+        enabled = config.enabled,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        base_url = yaml_string(base_url),
+        token_env = JUNE_BROWSER_MCP_TOKEN_ENV,
         token = yaml_string(proxy_token),
     )
 }
@@ -7548,9 +7821,12 @@ fn yaml_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn start_june_provider_proxy(
     token: String,
     recorder_token: String,
+    browser_token: String,
+    browser_broker: Arc<BrowserBroker>,
     image_sources: ImageSourceCapabilities,
     videos_dir: PathBuf,
     video_generation_enabled: bool,
@@ -7574,6 +7850,8 @@ async fn start_june_provider_proxy(
         Arc::new(ProviderProxyState {
             token,
             recorder_token,
+            browser_token,
+            browser_broker,
             image_sources,
             videos_dir,
             video_generation_enabled,
@@ -7637,8 +7915,12 @@ async fn handle_june_provider_connection(
             return Ok(());
         }
     };
-    let required_token =
-        provider_proxy_required_token(&request.path, &state.token, &state.recorder_token);
+    let required_token = provider_proxy_required_token(
+        &request.path,
+        &state.token,
+        &state.recorder_token,
+        &state.browser_token,
+    );
     if !provider_proxy_authorized(&request, required_token) {
         write_json_response(
             &mut stream,
@@ -7812,6 +8094,9 @@ async fn handle_june_provider_connection(
         }
         ("GET", "/v1/recorder/status") => {
             write_json_response(&mut stream, 200, recorder_status_body()).await?;
+        }
+        ("GET", "/v1/browser/status") => {
+            handle_browser_status(&mut stream, &state).await?;
         }
         _ => {
             write_not_found_response(&mut stream).await?;
@@ -8021,6 +8306,40 @@ fn recorder_status_body() -> serde_json::Value {
     }
 }
 
+/// `GET /v1/browser/status`. Gated by the dedicated browser token upstream; here
+/// the Browser access grant is the second gate. With the grant off the broker
+/// refuses even the correct browser token (403), so `june_browser` never serves
+/// browser surface without the stored grant. With it on, it returns a small
+/// status describing the enabled state and active session count.
+async fn handle_browser_status(
+    stream: &mut tokio::net::TcpStream,
+    state: &ProviderProxyState,
+) -> io::Result<()> {
+    if !state.browser_broker.is_enabled() {
+        return write_json_response(
+            stream,
+            403,
+            serde_json::json!({
+                "success": false,
+                "message": "Browser use is not enabled.",
+                "errorCode": "browser_access_disabled",
+            }),
+        )
+        .await;
+    }
+    write_json_response(stream, 200, browser_status_body(state)).await
+}
+
+fn browser_status_body(state: &ProviderProxyState) -> serde_json::Value {
+    serde_json::json!({
+        "success": true,
+        "data": {
+            "enabled": true,
+            "activeSessions": state.browser_broker.active_session_count(),
+        }
+    })
+}
+
 struct HttpRequest {
     method: String,
     path: String,
@@ -8197,16 +8516,19 @@ fn provider_models_body(model: String, context_tokens: Option<i64>) -> serde_jso
     serde_json::json!({ "object": "list", "data": [entry] })
 }
 
-/// Recorder mutations require the recorder-scoped secret; every other route
-/// keeps the general provider token. Distinct secrets, so neither authorizes
-/// the other's surface.
+/// Recorder mutations require the recorder-scoped secret and browser routes the
+/// browser-scoped secret; every other route keeps the general provider token.
+/// Three distinct secrets, so none authorizes another's surface.
 fn provider_proxy_required_token<'a>(
     path: &str,
     provider_token: &'a str,
     recorder_token: &'a str,
+    browser_token: &'a str,
 ) -> &'a str {
     if path.starts_with("/v1/recorder/") {
         recorder_token
+    } else if path.starts_with("/v1/browser/") {
+        browser_token
     } else {
         provider_token
     }
@@ -9356,6 +9678,7 @@ fn http_status_reason(status: u16) -> &'static str {
         400 => "Bad Request",
         401 => "Unauthorized",
         402 => "Payment Required",
+        403 => "Forbidden",
         404 => "Not Found",
         429 => "Too Many Requests",
         500 => "Internal Server Error",
@@ -9482,6 +9805,8 @@ mod tests {
         let state = Arc::new(ProviderProxyState {
             token: "proxy-token".to_string(),
             recorder_token: "recorder-token".to_string(),
+            browser_token: "browser-token".to_string(),
+            browser_broker: Arc::new(BrowserBroker::default()),
             image_sources: ImageSourceCapabilities {
                 images_dir: home.path().join("images"),
                 secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
@@ -9971,7 +10296,7 @@ mod tests {
             "/v1/recorder/status",
         ] {
             assert_eq!(
-                provider_proxy_required_token(path, "provider-tok", "recorder-tok"),
+                provider_proxy_required_token(path, "provider-tok", "recorder-tok", "browser-tok"),
                 "recorder-tok"
             );
         }
@@ -9982,17 +10307,25 @@ mod tests {
             "/v1/recorder",
         ] {
             assert_eq!(
-                provider_proxy_required_token(path, "provider-tok", "recorder-tok"),
+                provider_proxy_required_token(path, "provider-tok", "recorder-tok", "browser-tok"),
                 "provider-tok"
             );
         }
 
         let provider_bearer = request_with_authorization("Bearer provider-tok");
         let recorder_bearer = request_with_authorization("Bearer recorder-tok");
-        let recorder_required =
-            provider_proxy_required_token("/v1/recorder/start", "provider-tok", "recorder-tok");
-        let provider_required =
-            provider_proxy_required_token("/v1/models", "provider-tok", "recorder-tok");
+        let recorder_required = provider_proxy_required_token(
+            "/v1/recorder/start",
+            "provider-tok",
+            "recorder-tok",
+            "browser-tok",
+        );
+        let provider_required = provider_proxy_required_token(
+            "/v1/models",
+            "provider-tok",
+            "recorder-tok",
+            "browser-tok",
+        );
         assert!(!provider_proxy_authorized(
             &provider_bearer,
             recorder_required
@@ -10009,6 +10342,198 @@ mod tests {
             &provider_bearer,
             provider_required
         ));
+    }
+
+    #[test]
+    fn browser_recorder_provider_token_scopes_are_mutually_isolated() {
+        // The three loopback secrets must be pairwise non-interchangeable:
+        // browser routes take the browser token, recorder routes the recorder
+        // token, and everything else the provider token — and a bearer minted
+        // for one scope must not authorize another's.
+        let required = |path: &str| {
+            provider_proxy_required_token(path, "provider-tok", "recorder-tok", "browser-tok")
+                .to_string()
+        };
+        assert_eq!(required("/v1/browser/status"), "browser-tok");
+        assert_eq!(required("/v1/recorder/status"), "recorder-tok");
+        // A path that merely shares the prefix without the trailing slash keeps
+        // the provider token (it is not a browser route).
+        assert_eq!(required("/v1/browser"), "provider-tok");
+
+        let browser = request_with_authorization("Bearer browser-tok");
+        let recorder = request_with_authorization("Bearer recorder-tok");
+        let provider = request_with_authorization("Bearer provider-tok");
+        // The browser token opens only the browser scope.
+        assert!(provider_proxy_authorized(&browser, "browser-tok"));
+        assert!(!provider_proxy_authorized(&browser, "recorder-tok"));
+        assert!(!provider_proxy_authorized(&browser, "provider-tok"));
+        // ...and neither of the other two opens the browser scope.
+        assert!(!provider_proxy_authorized(&recorder, "browser-tok"));
+        assert!(!provider_proxy_authorized(&provider, "browser-tok"));
+    }
+
+    async fn browser_status_response(grant_enabled: bool) -> String {
+        let home = tempfile::tempdir().expect("tempdir");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind proxy listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let broker = Arc::new(BrowserBroker::default());
+        broker.set_enabled(grant_enabled);
+        let state = Arc::new(ProviderProxyState {
+            token: "proxy-token".to_string(),
+            recorder_token: "recorder-token".to_string(),
+            browser_token: "browser-token".to_string(),
+            browser_broker: broker,
+            image_sources: ImageSourceCapabilities {
+                images_dir: home.path().join("images"),
+                secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
+            },
+            videos_dir: home.path().join("videos"),
+            video_generation_enabled: false,
+            app: None,
+            image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
+            recorder_requests: Arc::new(Mutex::new(HashMap::new())),
+        });
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            handle_june_provider_connection(stream, state)
+                .await
+                .expect("handle connection");
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect proxy");
+        // Always send the CORRECT browser token: the grant, not the token, is
+        // what the route gates on here.
+        let request = "GET /v1/browser/status HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer browser-token\r\nContent-Length: 0\r\n\r\n";
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .await
+            .expect("read response");
+        server.await.expect("server task");
+        response
+    }
+
+    #[tokio::test]
+    async fn browser_status_refuses_the_browser_token_while_grant_is_off() {
+        let response = browser_status_response(false).await;
+        assert!(
+            response.starts_with("HTTP/1.1 403 Forbidden"),
+            "grant off must refuse even the correct browser token: {response}"
+        );
+        assert!(response.contains("browser_access_disabled"));
+    }
+
+    #[tokio::test]
+    async fn browser_status_answers_while_grant_is_on() {
+        let response = browser_status_response(true).await;
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "grant on must answer: {response}"
+        );
+        assert!(response.contains("\"enabled\":true"));
+        assert!(response.contains("\"activeSessions\":0"));
+    }
+
+    #[test]
+    fn render_hermes_config_always_renders_june_browser_following_the_grant() {
+        // Grant off: the entry is STILL rendered with command/args/dedicated
+        // token; only `enabled` is false. June owns this key, so omitting it on
+        // revoke would leave stale/user-added state and fail to revoke.
+        let disabled = test_june_browser_mcp_config(false);
+        let config = render_hermes_config(
+            "glm",
+            false,
+            "http://127.0.0.1:9/v1",
+            "proxy-tok",
+            "recorder-proxy-tok",
+            "browser-proxy-tok",
+            "web",
+            &[],
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+                recorder: None,
+                browser: Some(&disabled),
+            },
+        );
+        assert!(config.contains("  june_browser:\n"));
+        assert!(config.contains("    enabled: false\n"));
+        assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_browser_mcp.py\"\n"));
+        assert!(config.contains("      - \"http://127.0.0.1:9/v1\"\n"));
+        // The dedicated browser token, never the provider or recorder secret.
+        assert!(config.contains("      JUNE_BROWSER_PROXY_TOKEN: \"browser-proxy-tok\"\n"));
+        assert!(!config.contains("JUNE_BROWSER_PROXY_TOKEN: \"proxy-tok\""));
+        assert!(!config.contains("JUNE_BROWSER_PROXY_TOKEN: \"recorder-proxy-tok\""));
+
+        // Grant on: the same entry with `enabled: true`.
+        let enabled = test_june_browser_mcp_config(true);
+        let config = render_hermes_config(
+            "glm",
+            false,
+            "http://127.0.0.1:9/v1",
+            "proxy-tok",
+            "recorder-proxy-tok",
+            "browser-proxy-tok",
+            "web",
+            &[],
+            BuiltinMcpConfigs {
+                context: None,
+                web: None,
+                image: None,
+                video: None,
+                recorder: None,
+                browser: Some(&enabled),
+            },
+        );
+        assert!(config.contains("  june_browser:\n"));
+        assert!(config.contains("    enabled: true\n"));
+        assert!(config.contains("      JUNE_BROWSER_PROXY_TOKEN: \"browser-proxy-tok\"\n"));
+    }
+
+    #[test]
+    fn revoking_browser_access_clears_injected_broker_sessions() {
+        let broker = BrowserBroker::default();
+        broker.set_enabled(true);
+        // Test-only fixture insertion; production session creation is JUN-287's.
+        broker.insert_test_session("sess-1");
+        broker.insert_test_session("sess-2");
+        assert_eq!(broker.active_session_count(), 2);
+        assert!(broker.is_enabled());
+
+        // Revoke: the gate flips false and every session is terminated.
+        broker.set_enabled(false);
+        assert!(!broker.is_enabled());
+        assert_eq!(broker.active_session_count(), 0);
+    }
+
+    #[test]
+    fn browser_mcp_script_advertises_only_the_status_tool() {
+        // The embedded script must expose exactly the zero-argument `status`
+        // tool and nothing that could act on a browser in this slice.
+        assert!(JUNE_BROWSER_MCP_SCRIPT.contains("\"name\": \"status\""));
+        for forbidden in [
+            "\"name\": \"open\"",
+            "\"name\": \"navigate\"",
+            "\"name\": \"click\"",
+            "start_recording",
+        ] {
+            assert!(
+                !JUNE_BROWSER_MCP_SCRIPT.contains(forbidden),
+                "browser MCP must not advertise {forbidden}"
+            );
+        }
+        // It reads its dedicated token env var, kept distinct from the others.
+        assert!(JUNE_BROWSER_MCP_SCRIPT.contains(JUNE_BROWSER_MCP_TOKEN_ENV));
     }
 
     #[test]
@@ -10681,6 +11206,7 @@ mcp_servers:
             "http://127.0.0.1:9/v1",
             "new-token",
             "recorder-token",
+            "browser-token",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -10689,6 +11215,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                browser: None,
             },
         );
         let merged = merge_hermes_config(&config_path, &rendered);
@@ -10916,12 +11443,14 @@ mcp_servers:
             4242,
             "proxy-token",
             "recorder-proxy-token",
+            "browser-proxy-token",
             false,
             &test_june_context_mcp_config(),
             &test_june_web_mcp_config(),
             &test_june_image_mcp_config(),
             None,
             &test_june_recorder_mcp_config(),
+            &test_june_browser_mcp_config(false),
             std::slice::from_ref(&default_dir),
         )
         .expect("sync config");
@@ -10965,6 +11494,7 @@ mcp_servers:
             "http://127.0.0.1:9/v1",
             "tok",
             "recorder-tok",
+            "browser-tok",
             "web, memory",
             &dirs,
             BuiltinMcpConfigs {
@@ -10973,6 +11503,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                browser: None,
             },
         );
 
@@ -11001,6 +11532,7 @@ mcp_servers:
             "http://127.0.0.1:9/v1",
             "tok",
             "recorder-tok",
+            "browser-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -11009,6 +11541,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                browser: None,
             },
         );
 
@@ -11046,6 +11579,14 @@ mcp_servers:
         }
     }
 
+    fn test_june_browser_mcp_config(enabled: bool) -> JuneBrowserMcpConfig {
+        JuneBrowserMcpConfig {
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            script_path: PathBuf::from("/tmp/june/hermes-mcp/june_browser_mcp.py"),
+            enabled,
+        }
+    }
+
     #[test]
     fn render_hermes_config_registers_june_context_mcp_server() {
         let context = test_june_context_mcp_config();
@@ -11059,6 +11600,7 @@ mcp_servers:
             "http://127.0.0.1:9/v1",
             "proxy-tok",
             "recorder-proxy-tok",
+            "browser-proxy-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -11067,6 +11609,7 @@ mcp_servers:
                 image: Some(&image),
                 video: Some(&video),
                 recorder: Some(&recorder),
+                browser: None,
             },
         );
 
@@ -11123,6 +11666,7 @@ mcp_servers:
             "http://127.0.0.1:9/v1",
             "proxy-tok",
             "recorder-proxy-tok",
+            "browser-proxy-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -11131,6 +11675,7 @@ mcp_servers:
                 image: Some(&image),
                 video: None,
                 recorder: None,
+                browser: None,
             },
         );
 
@@ -11150,6 +11695,7 @@ mcp_servers:
             "http://127.0.0.1:9/v1",
             "tok",
             "recorder-tok",
+            "browser-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -11158,6 +11704,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                browser: None,
             },
         );
 
@@ -11177,6 +11724,7 @@ mcp_servers:
             "http://127.0.0.1:9/v1",
             "proxy-token",
             "recorder-proxy-token",
+            "browser-proxy-token",
             "web, memory",
             &[],
             BuiltinMcpConfigs {
@@ -11185,6 +11733,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                browser: None,
             },
         );
         assert!(vision.contains("  supports_vision: true\n"));
@@ -11195,6 +11744,7 @@ mcp_servers:
             "http://127.0.0.1:9/v1",
             "proxy-token",
             "recorder-proxy-token",
+            "browser-proxy-token",
             "web, memory",
             &[],
             BuiltinMcpConfigs {
@@ -11203,6 +11753,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                browser: None,
             },
         );
         assert!(no_vision.contains("  supports_vision: false\n"));
@@ -11497,17 +12048,20 @@ mcp_servers:
         let image = test_june_image_mcp_config();
         let video = test_june_video_mcp_config();
         let recorder = test_june_recorder_mcp_config();
+        let browser = test_june_browser_mcp_config(false);
         sync_hermes_config_with_external_dirs(
             home.path(),
             4242,
             "proxy-token",
             "recorder-proxy-token",
+            "browser-proxy-token",
             false,
             &mcp,
             &web,
             &image,
             Some(&video),
             &recorder,
+            &browser,
             &[],
         )
         .expect("sync config");
