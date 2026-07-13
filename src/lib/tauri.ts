@@ -1672,7 +1672,7 @@ export async function osAccountsUpgrade(plan?: SubscriptionPlan) {
 }
 
 /** Opens a hosted billing-portal session for an existing subscriber to review
- * and confirm a prorated plan upgrade. */
+ * and confirm a full-price plan upgrade that restarts the billing cycle. */
 export async function osAccountsUpgradeSession(plan: SubscriptionPlan) {
   return invoke<void>("os_accounts_upgrade_session", { plan });
 }

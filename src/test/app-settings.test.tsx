@@ -999,7 +999,7 @@ describe("AppSettings", () => {
   }
 
   const MAX_CONFIRM_BODY =
-    "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.";
+    "Max is $100 per month. A secure Stripe page will open in your browser to review and confirm. Your billing cycle restarts today.";
 
   it("inherits a pending Max grant from another surface without claiming Max", async () => {
     const user = userEvent.setup();

@@ -41,7 +41,11 @@ function account(plan: string, credits: number): AccountStatus {
 describe("Max upgrade copy", () => {
   it("describes the secure browser confirmation without announcing Max before the grant", () => {
     expect(MAX_UPGRADE_CONFIRM_BODY).toContain("secure Stripe page");
-    expect(MAX_UPGRADE_CONFIRM_BODY).toContain("review and confirm the prorated charge");
+    expect(MAX_UPGRADE_CONFIRM_BODY).toContain("review and confirm");
+    // ADR-0027 (os-accounts): upgrades charge the full new plan price and
+    // reset the billing cycle - nothing prorates on either transport.
+    expect(MAX_UPGRADE_CONFIRM_BODY).not.toContain("prorated");
+    expect(MAX_UPGRADE_CONFIRM_BODY).toContain("billing cycle restarts today");
     expect(MAX_UPGRADE_CONFIRM_LABEL).toBe("Upgrade now");
     expect(MAX_UPGRADE_BUSY_LABEL).toBe("Upgrading...");
     expect(MAX_UPGRADE_BROWSER_STATUS).toBe("Waiting for you to confirm in the browser");

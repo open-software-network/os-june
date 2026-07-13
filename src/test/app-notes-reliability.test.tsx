@@ -967,7 +967,7 @@ describe("notes recording reliability", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Upgrade to Max" }));
     expect(
       await screen.findByText(
-        "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.",
+        "Max is $100 per month. A secure Stripe page will open in your browser to review and confirm. Your billing cycle restarts today.",
       ),
     ).toBeInTheDocument();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
@@ -1033,7 +1033,7 @@ describe("notes recording reliability", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Upgrade to Max" }));
     expect(
       await screen.findByText(
-        "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.",
+        "Max is $100 per month. A secure Stripe page will open in your browser to review and confirm. Your billing cycle restarts today.",
       ),
     ).toBeInTheDocument();
 
@@ -1053,7 +1053,7 @@ describe("notes recording reliability", () => {
     await waitFor(() =>
       expect(
         screen.queryByText(
-          "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.",
+          "Max is $100 per month. A secure Stripe page will open in your browser to review and confirm. Your billing cycle restarts today.",
         ),
       ).toBeNull(),
     );
@@ -1106,7 +1106,7 @@ describe("notes recording reliability", () => {
     ).toBeInTheDocument();
     expect(
       screen.queryByText(
-        "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.",
+        "Max is $100 per month. A secure Stripe page will open in your browser to review and confirm. Your billing cycle restarts today.",
       ),
     ).toBeNull();
     expect(mocks.osAccountsUpgradeSession).not.toHaveBeenCalled();

@@ -130,7 +130,7 @@ describe("FundingNotice", () => {
   });
 
   const MAX_CONFIRM_BODY =
-    "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.";
+    "Max is $100 per month. A secure Stripe page will open in your browser to review and confirm. Your billing cycle restarts today.";
   const CHARGE_NOW_BODY =
     "Max is $100 per month, charged to your saved card now. Your billing cycle restarts today.";
   const BROWSER_STATUS = "Waiting for you to confirm in the browser";

@@ -6,7 +6,7 @@ import { errorCode } from "./errors";
 // only the grant poll may advance the copy from waiting to active.
 export const MAX_UPGRADE_CONFIRM_TITLE = "Upgrade to Max?";
 export const MAX_UPGRADE_CONFIRM_BODY =
-  "Max is $100 per month. A secure Stripe page will open in your browser so you can review and confirm the prorated charge.";
+  "Max is $100 per month. A secure Stripe page will open in your browser to review and confirm. Your billing cycle restarts today.";
 // The PATCH transport charges the saved card without a browser review, so it
 // carries its own consent copy: consenting to the hosted (Stripe review)
 // wording never authorizes an immediate charge.
