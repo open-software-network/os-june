@@ -62,6 +62,7 @@ Per-repo config the engineering skills read before acting (see the
 
 - [hermes-architecture.md](hermes-architecture.md) — the agent runtime: bridge, gateway, control plane, sessions, models
 - [hermes-gateway-gotchas.md](hermes-gateway-gotchas.md) — integration gotchas: restart discipline, config contract, MCP OAuth, event types, upstream tool-schema quirks
+- [browser-computer-use-prd.md](browser-computer-use-prd.md) — PRD: Browser use + Computer use plugins (JUN-278); extension in the user's browser + routines-only managed browser, phase-2 computer use
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
 - [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
 - [telemetry.md](telemetry.md) — public overview of June telemetry, current behavior, and policies
@@ -72,7 +73,8 @@ Per-repo config the engineering skills read before acting (see the
 - [private-connectors-implementation-plan.md](private-connectors-implementation-plan.md) — implementation plan for private connectors phases (Phases 1-2 local mode implemented; see [adr/0016](adr/0016-private-connectors-local-mode.md))
 - [private-connectors-threat-model.md](private-connectors-threat-model.md) — local-mode threat model: the source of truth for all connector privacy copy (what OpenSoftware can and cannot see, the trust surface, agent protections, the known runtime limitation)
 - [configuration.md](configuration.md) — env + config reference (desktop client + June API)
-- [development.md](development.md) — local development: quick start, local data, permissions, agent skills, verification commands
+- [auto-model-rollout.md](auto-model-rollout.md) — canary, enablement, and rollback steps for automatic private model routing
+- [development.md](development.md) — local development: quick start, running against staging or an ephemeral Phala CVM, local data, permissions, agent skills, verification commands
 - [os-accounts-login.md](os-accounts-login.md) — Login with Open Software: PKCE, keychain, account gates
 - [onboarding-design.md](onboarding-design.md) — onboarding flow design (verify against what shipped)
 - ~~os-accounts-backend.md~~ — historical; superseded by `june-api-prd.md`

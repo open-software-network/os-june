@@ -2951,17 +2951,30 @@ pub async fn download_hermes_bridge_file(
     app: AppHandle,
     request: DownloadHermesFileRequest,
 ) -> Result<String, AppError> {
+    tracing::info!(requested_path = %request.path, "download_hermes_bridge_file started");
     let requested = validate_hermes_file_path(&app, &request.path)?;
     let _content_type = hermes_file_mime_type(&requested);
+    tracing::info!(requested_path = %request.path, source_path = %requested.display(), "download_hermes_bridge_file validated source path");
     let downloads_dir = app
         .path()
         .download_dir()
-        .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
+        .map_err(|error| {
+            tracing::warn!(requested_path = %request.path, %error, "download_hermes_bridge_file failed to resolve downloads directory");
+            AppError::new("hermes_file_download_failed", error.to_string())
+        })?;
+    tracing::info!(requested_path = %request.path, downloads_dir = %downloads_dir.display(), "download_hermes_bridge_file resolved downloads directory");
     fs::create_dir_all(&downloads_dir)
-        .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
+        .map_err(|error| {
+            tracing::warn!(requested_path = %request.path, downloads_dir = %downloads_dir.display(), %error, "download_hermes_bridge_file failed to create downloads directory");
+            AppError::new("hermes_file_download_failed", error.to_string())
+        })?;
     let destination = unique_download_path(&downloads_dir, &requested)?;
-    fs::copy(&requested, &destination)
-        .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
+    tracing::info!(requested_path = %request.path, source_path = %requested.display(), destination = %destination.display(), "download_hermes_bridge_file resolved destination path");
+    fs::copy(&requested, &destination).map_err(|error| {
+        tracing::warn!(requested_path = %request.path, source_path = %requested.display(), destination = %destination.display(), %error, "download_hermes_bridge_file failed to copy file");
+        AppError::new("hermes_file_download_failed", error.to_string())
+    })?;
+    tracing::info!(requested_path = %request.path, source_path = %requested.display(), destination = %destination.display(), "download_hermes_bridge_file completed");
     Ok(destination.to_string_lossy().into_owned())
 }
 
@@ -3118,44 +3131,55 @@ fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, App
     // check below still gates whatever we end up with.
     let resolved =
         resolve_bare_image_filename(&hermes_home, path).unwrap_or_else(|| PathBuf::from(path));
-    let requested = resolved
-        .canonicalize()
-        .map_err(|error| AppError::new("hermes_file_download_failed", error.to_string()))?;
+    let requested = resolved.canonicalize().map_err(|error| {
+        tracing::warn!(requested_path = %path, %error, "validate_hermes_file_path failed to canonicalize path");
+        AppError::new("hermes_file_download_failed", error.to_string())
+    })?;
     if !requested.is_file() {
+        tracing::warn!(requested_path = %path, resolved_path = %requested.display(), "validate_hermes_file_path rejected non-file path");
         return Err(AppError::new(
             "hermes_file_download_failed",
             "Only files in June's workspace, memory, or generated images can be downloaded.",
         ));
     }
     if is_hidden_secret_path(&requested) {
+        tracing::warn!("validate_hermes_file_path rejected hidden or sensitive path");
         return Err(AppError::new(
             "hermes_file_download_denied",
             "This June file is hidden or sensitive.",
         ));
     }
-    let mut allowed_roots = filesystem_roots(&hermes_home)?
+    let allowed_roots = filesystem_roots(&hermes_home)?
         .into_iter()
         .filter_map(|root| root.path.canonicalize().ok())
         .collect::<Vec<_>>();
+    let mut extended_allowed_roots = allowed_roots.clone();
     // "image_cache" is where the Hermes runtime copies tool-result images;
     // assistant MEDIA: references point at those copies, so dropping it breaks
     // inline rendering and download of every tool-generated image. Add both
     // video dirs now; QA must confirm the exact runtime cache dir for inline
     // generated-video rendering once the frontend/MCP chunks land.
-    allowed_roots.extend(
+    extended_allowed_roots.extend(
         ["images", "image_cache", "videos", "video_cache"]
             .into_iter()
             .filter_map(|relative| hermes_home.join(relative).canonicalize().ok()),
     );
-    let allowed = allowed_roots
-        .into_iter()
+    let allowed = extended_allowed_roots
+        .iter()
         .any(|root| requested.starts_with(root));
     if !allowed {
+        let allowed_roots_display = extended_allowed_roots
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        tracing::warn!(requested_path = %path, resolved_path = %requested.display(), allowed_roots = %allowed_roots_display, "validate_hermes_file_path rejected path outside allowed roots");
         return Err(AppError::new(
             "hermes_file_download_denied",
             "Only files in June's workspace, memory, or generated images can be downloaded.",
         ));
     }
+    tracing::info!(requested_path = %path, resolved_path = %requested.display(), "validate_hermes_file_path accepted path");
     Ok(requested)
 }
 

@@ -184,6 +184,7 @@ export type ProviderModelSettingsDto = {
   generationProvider: string;
   transcriptionModel: string;
   generationModel: string;
+  costQuality: number;
   remoteGenerationModel: string;
   imageModel: string;
   videoModel: string;
@@ -1050,7 +1051,9 @@ export async function hermesBridgeFilesystemSnapshot() {
 }
 
 export async function downloadHermesBridgeFile(path: string) {
-  return invoke<string>("download_hermes_bridge_file", { request: { path } });
+  return invoke<string>("download_hermes_bridge_file", {
+    request: { path },
+  });
 }
 
 export async function hermesBridgeFilePreview(path: string) {
@@ -1671,11 +1674,18 @@ export async function osAccountsUpgrade(plan?: SubscriptionPlan) {
   return invoke<void>("os_accounts_upgrade", { plan });
 }
 
+/** Opens a hosted billing-portal session for an existing subscriber to review
+ * and confirm a full-price plan upgrade that restarts the billing cycle. */
+export async function osAccountsUpgradeSession(plan: SubscriptionPlan) {
+  return invoke<void>("os_accounts_upgrade_session", { plan });
+}
+
 /** Changes the plan on the caller's existing subscription in place (Pro to
- * Max). OS Accounts prorates the charge and grants the new plan's credits
- * immediately, so there is no browser round-trip; the resolved subscription
- * reflects the new plan. Callers should refresh account status afterwards to
- * pick up the freshly granted balance. */
+ * Max), charging the saved card immediately with no browser review. This is
+ * the compatibility fallback for deployments without hosted upgrade
+ * sessions, and callers must only dispatch it behind the charge-now consent
+ * copy. Credits still arrive only through the invoice webhook, so callers
+ * poll account status until the grant lands. */
 export async function osAccountsChangePlan(plan: SubscriptionPlan) {
   return invoke<AccountSubscription>("os_accounts_change_plan", { plan });
 }
@@ -1735,6 +1745,12 @@ export async function listVeniceModels(mode: ProviderModelMode) {
 export async function setVeniceModel(mode: ProviderModelMode, modelId: string) {
   return invoke<ProviderModelSettingsDto>("set_venice_model", {
     request: { mode, modelId },
+  });
+}
+
+export async function setCostQuality(value: number) {
+  return invoke<ProviderModelSettingsDto>("set_cost_quality", {
+    request: { value },
   });
 }
 

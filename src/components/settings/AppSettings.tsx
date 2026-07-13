@@ -28,6 +28,7 @@ import {
   setDictationMicrophone,
   setDictationShortcut,
   setImageSafeMode,
+  setCostQuality,
   setVeniceApiKey,
   setVeniceModel,
 } from "../../lib/tauri";
@@ -191,6 +192,31 @@ const RELEASE_CHANNEL_OPTIONS: readonly {
   { value: "rc", label: "Release candidate" },
 ];
 
+type AutoPreference = "cost" | "balanced" | "quality";
+
+const AUTO_PREFERENCE_OPTIONS: readonly {
+  value: AutoPreference;
+  label: ReactNode;
+}[] = [
+  { value: "cost", label: "Lower cost" },
+  { value: "balanced", label: "Balanced" },
+  { value: "quality", label: "Higher quality" },
+];
+
+const AUTO_PREFERENCE_VALUES: Record<AutoPreference, number> = {
+  // Keep the cost-first preset above the lowest-quality routing tier. Live
+  // integration evals showed that tier dropping facts and inventing dates.
+  cost: 20,
+  balanced: 50,
+  quality: 100,
+};
+
+function autoPreferenceFromCostQuality(value: number): AutoPreference {
+  if (value < 34) return "cost";
+  if (value > 66) return "quality";
+  return "balanced";
+}
+
 const EMPTY_MODIFIERS: DictationShortcutModifiers = {
   command: false,
   control: false,
@@ -239,6 +265,8 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   // Mirrors DEFAULT_GENERATION_MODEL in the Rust providers module and the
   // leading Suggested pick in lib/suggested-models.ts.
   generationModel: "zai-org-glm-5-2",
+  // Mirrors DEFAULT_COST_QUALITY in the Rust providers module.
+  costQuality: 100,
   remoteGenerationModel: "zai-org-glm-5-2",
   // Mirrors DEFAULT_IMAGE_MODEL in the Rust providers module.
   imageModel: DEFAULT_IMAGE_MODEL,
@@ -454,6 +482,9 @@ export function AppSettings({
   const modelPickerTriggerRef = useRef<HTMLButtonElement>(null);
   const modelPickerPopoverRef = useRef<HTMLDivElement>(null);
   const modelPickerSearchRef = useRef<HTMLInputElement>(null);
+  const costQualitySaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const latestCostQualitySaveRef = useRef(0);
+  const confirmedCostQualityRef = useRef(DEFAULT_PROVIDER_MODELS.costQuality);
   const [veniceApiKeyDraft, setVeniceApiKeyDraft] = useState("");
   const [showMoreModelOptions, setShowMoreModelOptions] = useState(false);
   const [showMoreImageOptions, setShowMoreImageOptions] = useState(false);
@@ -624,10 +655,12 @@ export function AppSettings({
         if (cancelled) return;
         // Merge over defaults so a settings payload that predates a field
         // (e.g. imageModel from an older backend) still has every model set.
-        setProviderSettings({
+        const nextProviderSettings = {
           ...DEFAULT_PROVIDER_MODELS,
           ...modelResponse.settings,
-        });
+        };
+        confirmedCostQualityRef.current = nextProviderSettings.costQuality;
+        setProviderSettings(nextProviderSettings);
         await requestMicrophones();
         await Promise.all([
           requestVeniceModels("transcription"),
@@ -956,6 +989,34 @@ export function AppSettings({
     } catch (error) {
       setStatus(messageFromError(error));
     }
+  }
+
+  function saveCostQuality(value: number) {
+    const version = ++latestCostQualitySaveRef.current;
+    const save = costQualitySaveChainRef.current.then(() => setCostQuality(value));
+    costQualitySaveChainRef.current = save.then(
+      () => undefined,
+      () => undefined,
+    );
+    void save.then(
+      (next) => {
+        confirmedCostQualityRef.current = next.costQuality;
+        if (version !== latestCostQualitySaveRef.current) return;
+        setProviderSettings((current) => ({
+          ...current,
+          costQuality: next.costQuality,
+        }));
+        setStatus("Automatic model preference updated.");
+      },
+      (error) => {
+        if (version !== latestCostQualitySaveRef.current) return;
+        setProviderSettings((current) => ({
+          ...current,
+          costQuality: confirmedCostQualityRef.current,
+        }));
+        setStatus(messageFromError(error));
+      },
+    );
   }
 
   function closeModelPicker() {
@@ -1841,6 +1902,31 @@ export function AppSettings({
                     onSearchChange={setModelSearch}
                     onSelect={(modelId) => selectModelFromPicker("generation", modelId)}
                   />
+                  {providerSettings.generationModel === "open-software/auto" ? (
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-row-title">Auto preference</span>
+                        <span className="settings-row-description">
+                          Choose how June balances model quality and usage cost.
+                        </span>
+                      </div>
+                      <div className="settings-row-control">
+                        <SegmentedControl<AutoPreference>
+                          aria-label="Auto preference"
+                          value={autoPreferenceFromCostQuality(providerSettings.costQuality)}
+                          options={AUTO_PREFERENCE_OPTIONS}
+                          onValueChange={(preference) => {
+                            const costQuality = AUTO_PREFERENCE_VALUES[preference];
+                            setProviderSettings((current) => ({
+                              ...current,
+                              costQuality,
+                            }));
+                            saveCostQuality(costQuality);
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="settings-row-divider" aria-hidden />
                   <button
                     type="button"
