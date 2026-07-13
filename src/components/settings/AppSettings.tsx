@@ -203,7 +203,9 @@ const AUTO_PREFERENCE_OPTIONS: readonly {
 ];
 
 const AUTO_PREFERENCE_VALUES: Record<AutoPreference, number> = {
-  cost: 0,
+  // Keep the cost-first preset above the lowest-quality routing tier. Live
+  // integration evals showed that tier dropping facts and inventing dates.
+  cost: 20,
   balanced: 50,
   quality: 100,
 };

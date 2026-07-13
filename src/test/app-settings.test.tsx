@@ -2344,11 +2344,11 @@ describe("AppSettings", () => {
     fireEvent.click(higherQuality);
 
     await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledTimes(1));
-    expect(mocks.setCostQuality).toHaveBeenNthCalledWith(1, 0);
+    expect(mocks.setCostQuality).toHaveBeenNthCalledWith(1, 20);
     expect(higherQuality).toHaveAttribute("aria-pressed", "true");
 
     await act(async () => {
-      resolveFirst({ ...autoSettings, costQuality: 0 });
+      resolveFirst({ ...autoSettings, costQuality: 20 });
       await first;
     });
     await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledTimes(2));
