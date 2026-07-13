@@ -350,6 +350,11 @@ function trimNumber(value: number) {
 // Falls back to a single "Pricing" row when there is no clean input/output
 // credit split.
 export function modelSpecEntries(model: VeniceModelDto): { label: string; value: string }[] {
+  // Auto is a routing preference, not a concrete model. Its eventual model,
+  // price, and context window vary by request, so fixed catalog specs would be
+  // misleading even when the compatibility catalog provides placeholders.
+  if (model.id === "open-software/auto") return [];
+
   const entries: { label: string; value: string }[] = [];
   // Use June's billed credit price (with margin) for the input/output split.
   // The raw `pricing.*.usd` on the DTO is upstream provider metadata the backend

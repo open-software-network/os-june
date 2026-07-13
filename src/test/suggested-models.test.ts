@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { preferredVisionFallbackModel } from "../lib/suggested-models";
+import { preferredVisionFallbackModel, suggestedModelsForMode } from "../lib/suggested-models";
 import type { VeniceModelDto } from "../lib/tauri";
 
 const model = (id: string, name: string, capabilities: string[]): VeniceModelDto => ({
@@ -49,5 +49,42 @@ describe("preferredVisionFallbackModel", () => {
     const glm51 = model("zai-org-glm-5-1", "GLM 5.1", ["supportsFunctionCalling"]);
     expect(preferredVisionFallbackModel([glm52, glm51])).toBeUndefined();
     expect(preferredVisionFallbackModel([])).toBeUndefined();
+  });
+});
+
+describe("suggestedModelsForMode", () => {
+  it("replaces Auto's generic catalog description with preset-specific guidance", () => {
+    const auto = {
+      ...model("open-software/auto", "Auto", ["supportsFunctionCalling"]),
+      description: "Automatically selects an eligible private model",
+    };
+
+    const suggestions = suggestedModelsForMode("generation", [auto]);
+
+    expect(
+      suggestions.map(({ model: suggestion, costQuality }) => ({
+        name: suggestion.name,
+        description: suggestion.description,
+        costQuality,
+      })),
+    ).toEqual([
+      {
+        name: "Auto · Higher Quality",
+        description:
+          "Best for complex questions and important work where response quality matters most.",
+        costQuality: 100,
+      },
+      {
+        name: "Auto · Balanced",
+        description: "Best for everyday work when you want a strong balance of quality and cost.",
+        costQuality: 50,
+      },
+      {
+        name: "Auto · Lower Cost",
+        description: "Best for quick or routine tasks when keeping usage costs down matters most.",
+        costQuality: 20,
+      },
+    ]);
+    expect(suggestions.every(({ model: suggestion }) => suggestion.id === auto.id)).toBe(true);
   });
 });
