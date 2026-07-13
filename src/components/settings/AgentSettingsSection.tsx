@@ -10,6 +10,7 @@ import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { HoverTip } from "../ui/HoverTip";
 import {
   hermesAgentCliAccess,
+  hermesBrowserAccess,
   hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
   agentHudHide,
@@ -17,6 +18,7 @@ import {
   juneCharacter,
   revealPath,
   setHermesAgentCliAccess,
+  setHermesBrowserAccess,
   setJuneCharacter,
   updateHermesBridgeMessagingPlatform,
   type HermesMessagingPlatformInfo,
@@ -74,12 +76,28 @@ export function AgentSettingsSection({
   // default for a setting with security weight.
   const [cliAccessEnabled, setCliAccessEnabled] = useState<boolean | null>(null);
   const [cliAccessSaving, setCliAccessSaving] = useState(false);
+  const [browserAccessEnabled, setBrowserAccessEnabled] = useState<boolean | null>(null);
+  const [browserAccessSaving, setBrowserAccessSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     hermesAgentCliAccess()
       .then((status) => {
         if (!cancelled) setCliAccessEnabled(status.enabled);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(messageFromError(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    hermesBrowserAccess()
+      .then((status) => {
+        if (!cancelled) setBrowserAccessEnabled(status.enabled);
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(messageFromError(err));
@@ -99,6 +117,19 @@ export function AgentSettingsSection({
       setError(messageFromError(err));
     } finally {
       setCliAccessSaving(false);
+    }
+  }
+
+  async function handleBrowserAccessChange(enabled: boolean) {
+    setBrowserAccessSaving(true);
+    try {
+      const status = await setHermesBrowserAccess(enabled);
+      setBrowserAccessEnabled(status.enabled);
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setBrowserAccessSaving(false);
     }
   }
 
@@ -378,6 +409,22 @@ export function AgentSettingsSection({
                   disabled={cliAccessEnabled === null || cliAccessSaving}
                   onCheckedChange={(enabled) => void handleCliAccessChange(enabled)}
                   aria-label="Allow agent CLI access"
+                />
+              </div>
+            </div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">Browser use</h3>
+                <p className="settings-row-description">
+                  Let June operate tabs it opens and tabs you explicitly share.
+                </p>
+              </div>
+              <div className="settings-row-control">
+                <Switch
+                  checked={browserAccessEnabled === true}
+                  disabled={browserAccessEnabled === null || browserAccessSaving}
+                  onCheckedChange={(enabled) => void handleBrowserAccessChange(enabled)}
+                  aria-label="Allow browser use"
                 />
               </div>
             </div>

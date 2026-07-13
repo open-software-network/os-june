@@ -144,6 +144,7 @@ describe("mcp servers — view logic", () => {
 
   it("hides June-owned internal MCP servers from user-managed lists", () => {
     expect(INTERNAL_MCP_SERVER_NAMES).toContain("june_video");
+    expect(INTERNAL_MCP_SERVER_NAMES).toContain("june_browser");
     const servers = [
       ...INTERNAL_MCP_SERVER_NAMES.map((name) =>
         serverFromWire({

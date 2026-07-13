@@ -30,6 +30,7 @@ export const INTERNAL_MCP_SERVER_NAMES = [
   "june_image",
   "june_video",
   "june_recorder",
+  "june_browser",
 ] as const;
 
 const INTERNAL_MCP_SERVER_NAME_SET = new Set<string>(INTERNAL_MCP_SERVER_NAMES);

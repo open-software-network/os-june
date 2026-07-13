@@ -179,6 +179,12 @@ broker; consequential actions park for approval.
 _Avoid_: web browsing (that is `june_web` search/fetch), browser toolset
 (the upstream runtime feature June does not expose).
 
+**Browser access grant**:
+The stored, on-device opt-in that allows Browser use in attended sessions.
+Turning it off disables June's internal `june_browser` MCP server and ends
+active browser broker sessions.
+_Avoid_: browser permission, browser toggle.
+
 **Computer use**:
 The consent-gated capability (JUN-278 phase 2) that lets the agent operate
 Mac apps in the background - no cursor, focus, or Space theft - via the

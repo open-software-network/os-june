@@ -48,6 +48,8 @@ const mocks = vi.hoisted(() => ({
   agentHudHide: vi.fn(),
   hermesAgentCliAccess: vi.fn(),
   setHermesAgentCliAccess: vi.fn(),
+  hermesBrowserAccess: vi.fn(),
+  setHermesBrowserAccess: vi.fn(),
   juneCharacter: vi.fn(),
   setJuneCharacter: vi.fn(),
   revealPath: vi.fn(),
@@ -116,6 +118,8 @@ vi.mock("../lib/tauri", () => ({
   agentHudHide: mocks.agentHudHide,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
   setHermesAgentCliAccess: mocks.setHermesAgentCliAccess,
+  hermesBrowserAccess: mocks.hermesBrowserAccess,
+  setHermesBrowserAccess: mocks.setHermesBrowserAccess,
   juneCharacter: mocks.juneCharacter,
   setJuneCharacter: mocks.setJuneCharacter,
   revealPath: mocks.revealPath,
@@ -466,6 +470,8 @@ describe("AppSettings", () => {
     mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
     mocks.setHermesAgentCliAccess.mockImplementation(async (enabled: boolean) => ({ enabled }));
+    mocks.hermesBrowserAccess.mockResolvedValue({ enabled: false });
+    mocks.setHermesBrowserAccess.mockImplementation(async (enabled: boolean) => ({ enabled }));
     mocks.juneCharacter.mockResolvedValue({
       character: "You are helpful, knowledgeable, and direct.",
       isCustom: false,
@@ -3373,6 +3379,38 @@ describe("AppSettings", () => {
     await user.click(cliSwitch);
     await waitFor(() => expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(false));
     expect(cliSwitch).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("updates the Browser access grant from Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    const browserSwitch = await screen.findByRole("switch", {
+      name: "Allow browser use",
+    });
+
+    await waitFor(() => expect(browserSwitch).toBeEnabled());
+    expect(browserSwitch).toHaveAttribute("aria-checked", "false");
+
+    await user.click(browserSwitch);
+    await waitFor(() => expect(mocks.setHermesBrowserAccess).toHaveBeenCalledWith(true));
+    expect(browserSwitch).toHaveAttribute("aria-checked", "true");
+
+    await user.click(browserSwitch);
+    await waitFor(() => expect(mocks.setHermesBrowserAccess).toHaveBeenCalledWith(false));
+    expect(browserSwitch).toHaveAttribute("aria-checked", "false");
   });
 
   it("drills into a messaging platform as a pinned detail with bar actions", async () => {

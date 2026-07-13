@@ -1016,6 +1016,23 @@ export async function setHermesAgentCliAccess(enabled: boolean) {
   });
 }
 
+export type BrowserAccessStatus = {
+  enabled: boolean;
+};
+
+/** Whether the stored Browser access grant is enabled. */
+export async function hermesBrowserAccess() {
+  return invoke<BrowserAccessStatus>("hermes_browser_access");
+}
+
+/** Persists the Browser access grant and retires both runtime modes so the
+ * next sessions receive matching june_browser config. */
+export async function setHermesBrowserAccess(enabled: boolean) {
+  return invoke<BrowserAccessStatus>("set_hermes_browser_access", {
+    request: { enabled },
+  });
+}
+
 export type JuneCharacterStatus = {
   /** The effective character text (the default when no custom one is set). */
   character: string;
