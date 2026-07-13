@@ -94,37 +94,10 @@ describe("RecorderBar", () => {
     );
 
     expect(screen.queryByText(/silent/i)).not.toBeInTheDocument();
-  });
-
-  it("does not show a mic silence warning while the mic has signal", () => {
-    render(
-      <RecorderBar
-        status={{
-          sessionId: "session-1",
-          state: "recording",
-          elapsedMs: 15_000,
-          level: { peak: 0.7, rms: 0.3, recentPeaks: [0.4] },
-          silenceWarning: false,
-          sources: [
-            {
-              source: "microphone",
-              state: "recording",
-              elapsedMs: 15_000,
-              bytesWritten: 4096,
-              level: { peak: 0.7, rms: 0.3, recentPeaks: [0.4] },
-              silenceWarning: false,
-              pathFinalized: false,
-            },
-          ],
-          bytesWritten: 4096,
-        }}
-        onPause={vi.fn()}
-        onResume={vi.fn()}
-        onDone={vi.fn()}
-      />,
+    expect(screen.getByLabelText("Audio activity").parentElement).toHaveProperty(
+      "childElementCount",
+      2,
     );
-
-    expect(screen.queryByText(/silent/i)).not.toBeInTheDocument();
   });
 
   it("uses resume action when paused", async () => {
@@ -190,6 +163,10 @@ describe("RecorderBar", () => {
     );
 
     expect(screen.queryByText(/silent/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Audio activity").parentElement).toHaveProperty(
+      "childElementCount",
+      2,
+    );
   });
 
   it("drives the waveform from system audio when the mic is quiet", () => {
@@ -327,6 +304,13 @@ describe("GlobalRecorderPill", () => {
     expect(screen.getByRole("button", { name: "Open recording: Test note" })).toHaveAttribute(
       "title",
       "Open recording",
+    );
+    expect(screen.getByRole("button", { name: "Open recording: Test note" })).not.toHaveAttribute(
+      "data-warning",
+    );
+    expect(screen.getByRole("button", { name: "Open recording: Test note" })).toHaveProperty(
+      "childElementCount",
+      1,
     );
   });
 });
