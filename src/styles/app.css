@@ -25688,7 +25688,9 @@ input:focus-visible,
   grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
   column-gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
+  /* A hair past --sp-2: at exactly 8px the previous row's last line sat tight
+   * against the divider and a neighboring expanded row's wash. */
+  padding: calc(var(--sp-2) + 2px) var(--sp-3);
   border-top: 1px solid var(--detail-bar-border);
 }
 
@@ -25793,10 +25795,10 @@ button.connector-approvals-info {
 .connector-approvals-item:focus-within:not([data-expanded]) .connector-approvals-preview {
   -webkit-mask-image: linear-gradient(
     to right,
-    #000 calc(100% - 76px),
-    transparent calc(100% - 52px)
+    #000 calc(100% - 88px),
+    transparent calc(100% - 58px)
   );
-  mask-image: linear-gradient(to right, #000 calc(100% - 76px), transparent calc(100% - 52px));
+  mask-image: linear-gradient(to right, #000 calc(100% - 88px), transparent calc(100% - 58px));
 }
 
 /* Verdicts overlay the row's right edge (the tab-close treatment) and reveal
