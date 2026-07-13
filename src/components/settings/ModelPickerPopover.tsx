@@ -12,7 +12,10 @@ import {
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 import { modelAvailableForMode, modelIsPrivate, modelPrivacyBadge } from "../../lib/model-privacy";
-import { suggestedModelsForMode } from "../../lib/suggested-models";
+import {
+  DEFAULT_GENERATION_SUGGESTION_ID,
+  suggestedModelsForMode,
+} from "../../lib/suggested-models";
 import type { ProviderModelMode, VeniceModelDto } from "../../lib/tauri";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { rectFromElement, type HoverBridgeRect } from "../ui/hoverBridge";
@@ -323,12 +326,13 @@ export function ModelPickerPopover({
   // suggested pick (the default generation model) so the next step — choosing
   // an explicit model — is right there, one row away.
   // The concrete model toggling Auto off lands on: the leading suggested
-  // pick, else the first selectable catalog model. Undefined while the
-  // catalog is empty or unloaded — the switch renders disabled then, so it
-  // neither no-ops silently nor persists a model the catalog can't vouch for.
+  // pick, else the first selectable catalog model, else the curated default
+  // id — the factory default keeps the switch actionable while the catalog
+  // is empty or unloaded, and is safe to select sight-unseen.
   const autoOffTarget =
     suggested.find((item) => item.model.id !== AUTO_MODEL_ID)?.model.id ??
-    selectable.find((option) => option.id !== AUTO_MODEL_ID)?.id;
+    selectable.find((option) => option.id !== AUTO_MODEL_ID)?.id ??
+    DEFAULT_GENERATION_SUGGESTION_ID;
   const toggleAuto = useCallback(
     (on: boolean) => {
       onFlyoutChange(null);
@@ -336,7 +340,7 @@ export function ModelPickerPopover({
         onSelect(AUTO_MODEL_ID, undefined, { keepOpen: true });
         return;
       }
-      if (autoOffTarget) onSelect(autoOffTarget, undefined, { keepOpen: true });
+      onSelect(autoOffTarget, undefined, { keepOpen: true });
     },
     [autoOffTarget, onFlyoutChange, onSelect],
   );
@@ -521,15 +525,7 @@ export function ModelPickerPopover({
             <Switch
               checked={autoEnabled}
               onCheckedChange={toggleAuto}
-              // With Auto on and no concrete model loaded yet there is nothing
-              // to land on; a visibly disabled switch is honest about that and
-              // re-enables the moment the catalog arrives.
-              disabled={autoEnabled && !autoOffTarget}
-              aria-label={
-                autoEnabled && !autoOffTarget
-                  ? "Choose the model automatically (waiting for the model catalog)"
-                  : "Choose the model automatically"
-              }
+              aria-label="Choose the model automatically"
             />
           </div>
           {autoEnabled ? (

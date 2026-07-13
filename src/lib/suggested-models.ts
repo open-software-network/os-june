@@ -131,6 +131,12 @@ export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
   ],
 };
 
+// The Auto toggle's last-resort landing when the catalog is empty or still
+// loading: the leading curated pick, which mirrors DEFAULT_GENERATION_MODEL
+// in the Rust providers module — the factory default is safe to select
+// sight-unseen (the pill renders a name-only stub until the catalog arrives).
+export const DEFAULT_GENERATION_SUGGESTION_ID = SUGGESTED_MODELS.generation[0].id;
+
 /**
  * The model June switches to when the user attaches an image while a
  * non-vision model is active. The switch must land on a model that can both
