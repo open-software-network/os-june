@@ -205,6 +205,7 @@ import {
   type BranchSessionResult,
 } from "../../lib/hermes-session-branch";
 import { normalizeSteerText } from "../../lib/hermes-session-steer";
+import { recordPositiveFeedbackSent } from "../../lib/referral-nudge";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
@@ -5696,6 +5697,10 @@ export function AgentWorkspace({
       toast.success(issueReportSentMessage(response?.skippedAttachmentNames), {
         id: ISSUE_REPORT_SENT_TOAST_ID,
       });
+      // T4 of the referral delight nudge: positive feedback only. The
+      // error-report path deliberately doesn't record — a report sent from a
+      // failure is not a delight moment, whatever its category.
+      if (report.category === "feedback") recordPositiveFeedbackSent();
       return { sent: true };
     } catch (err) {
       const errorMessage = `The issue report could not be sent. ${messageFromError(err)}`;

@@ -4,6 +4,7 @@ import { type ClipboardEvent, type DragEvent, useId, useMemo, useRef, useState }
 
 import { clipboardImageFiles } from "../../lib/clipboard-files";
 import { messageFromError } from "../../lib/errors";
+import { recordPositiveFeedbackSent } from "../../lib/referral-nudge";
 import { submitIssueReport } from "../../lib/tauri";
 import { DotSpinner } from "../DotSpinner";
 import { Dialog, DialogField } from "../ui/Dialog";
@@ -195,6 +196,9 @@ export function ReportDialog({
       setSubmitting(false);
       setSkippedAttachmentNames(response?.skippedAttachmentNames ?? []);
       setSent(true);
+      // T4 of the referral delight nudge: positive feedback only, never bug
+      // reports or feature requests.
+      if (category === "feedback") recordPositiveFeedbackSent();
       onSent();
     } catch (err) {
       setSubmitting(false);

@@ -21060,6 +21060,232 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
+/* Referral delight nudge --------------------------------------------
+   A rare invite card parked bottom-left of the window at delight moments
+   (5th meeting note, first agent completion, 25th dictation). Fixed like
+   the connector approvals tray but in the opposite corner, so the two
+   never collide; under the dialog layer. Visually a small cousin of the
+   referral dialog above — the same terracotta hero recipe (gradient,
+   grain, June mark) — so the click-through feels continuous. */
+.referral-nudge {
+  position: fixed;
+  /* Window bottom-left (the Linear/Cursor corner), tucked to the same --sp-3
+     inset as the main-panel card so the two share a bottom line. Keep this a
+     static inset: anchoring to the animated --sidebar-w-current made the
+     compositor move a blend-mode + WebGL stack continuously, which read as
+     noise flashing on the hero. It overlaps the sidebar footer while parked;
+     Escape and the X both clear it. */
+  left: var(--sp-3);
+  bottom: var(--sp-3);
+  z-index: 60;
+  width: min(300px, calc(100vw - 2 * var(--sp-3)));
+  overflow: hidden;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  animation: referral-nudge-enter var(--t-med) var(--ease-out) both;
+  transition:
+    opacity var(--t-med) var(--ease-out),
+    transform var(--t-med) var(--ease-out);
+}
+
+/* Dismissing: drop the (filled) enter animation so the exit transition can
+   drive the same properties, then fade back down. */
+.referral-nudge[data-leaving] {
+  animation: none;
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+@keyframes referral-nudge-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .referral-nudge {
+    animation-name: referral-nudge-enter-reduced;
+  }
+
+  .referral-nudge[data-leaving] {
+    transform: none;
+  }
+}
+
+@keyframes referral-nudge-enter-reduced {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The dialog hero's gradient recipe, shrunk to a banner that carries the
+   title. Inset and concentric with the card (r-xl minus the --sp-2 frame
+   = r-md), the steer queue's 6px-frame recipe. */
+.referral-nudge-hero {
+  position: relative;
+  overflow: hidden;
+  /* Contain the grain's soft-light blend to this hero's own stacking context
+     so the compositor never reads back through the card/canvas layers. */
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  min-height: 128px;
+  margin: var(--sp-2) var(--sp-2) 0;
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  color: var(--on-solid);
+  background:
+    radial-gradient(
+      120% 120% at 12% 8%,
+      color-mix(in oklch, var(--brand) 82%, white),
+      transparent 55%
+    ),
+    linear-gradient(152deg, var(--brand) 0%, color-mix(in oklch, var(--brand) 68%, black) 100%);
+}
+
+/* The signature grain, as on the dialog hero. */
+.referral-nudge-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* The 3D glass June mark (the welcome surface's centerpiece) at gift scale,
+   centered above the title. The square box reserves identical space for the
+   canvas and its fallbacks, as .welcome-mark-glass does. */
+.referral-nudge-mark-glass {
+  /* Above the grain ::after — the soft-light blend must never paint over the
+     WebGL canvas (compositors alternate-rasterize that stack, which shows as
+     noise flashing on the mark). Same layering as .referral-hero > *. */
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 96px;
+  height: 96px;
+  line-height: 0;
+  /* The gradient-mark fallback derives its stops from --brand, which would
+     vanish brand-on-brand against this terracotta hero; remapping --brand to
+     the hero's ink renders it as the white mark instead. The WebGL palette
+     is JS-side and unaffected. */
+  --brand: var(--on-solid);
+}
+
+.referral-nudge-mark-glass svg {
+  display: block;
+  width: 48px;
+  height: auto;
+}
+
+/* The per-moment title lives in the hero (the dialog hero's title, one
+   type step down for the card's width). */
+.referral-nudge-title {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-medium);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+/* The system dismiss (.dialog-close's geometry and ghost hover), recolored
+   for the terracotta it floats over; its focus ring is on-solid rather
+   than the neutral --ring-focus for the same reason. */
+.referral-nudge-dismiss {
+  position: absolute;
+  top: var(--sp-4);
+  right: var(--sp-4);
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: color-mix(in oklch, var(--on-solid) 85%, transparent);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.referral-nudge-dismiss:hover {
+  background: color-mix(in oklch, var(--on-solid) 18%, transparent);
+  color: var(--on-solid);
+}
+
+.referral-nudge-dismiss:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--on-solid) 80%, transparent);
+  outline-offset: 2px;
+}
+
+/* Body and footer share the hero text's left edge (--sp-2 frame + --sp-4
+   hero padding). */
+.referral-nudge-body {
+  padding: var(--sp-4) var(--sp-6) 0;
+}
+
+.referral-nudge-copy {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.referral-nudge-footer {
+  display: flex;
+  justify-content: flex-start;
+  padding: var(--sp-4) var(--sp-6) var(--sp-5);
+}
+
+.referral-nudge-cta {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.referral-nudge-cta:hover {
+  background: color-mix(in oklch, var(--primary) 92%, var(--foreground));
+}
+
+.referral-nudge-cta:focus-visible {
+  outline: 2px solid var(--ring-focus);
+  outline-offset: 2px;
+}
+
 /* Generous padding (+ negative outer margin) so the inputs' focus
  * rings (3px outer box-shadow) can paint without being clipped by the
  * dialog-card or by overflow on inner scrollers. */
