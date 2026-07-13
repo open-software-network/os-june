@@ -2468,8 +2468,10 @@ fn request_accepts_venice_api_key(path: &str, model_accepts_venice_api_key: bool
 }
 
 fn model_accepts_venice_api_key(model: &str) -> bool {
-    crate::providers::transcription_provider_for_model(model.trim())
-        == crate::providers::PROVIDER_VENICE
+    let model = model.trim();
+    model != crate::providers::AUTO_GENERATION_MODEL
+        && crate::providers::transcription_provider_for_model(model)
+            == crate::providers::PROVIDER_VENICE
 }
 
 fn body_model_accepts_venice_api_key(body: &serde_json::Value) -> bool {
@@ -3289,6 +3291,7 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             body["auto"]["cost_quality"],
             serde_json::json!(crate::providers::cost_quality())
         );
+        assert!(!body_model_accepts_venice_api_key(&body));
     }
 
     #[test]
@@ -3304,6 +3307,10 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         assert!(!request_accepts_venice_api_key(
             "/v1/dictate",
             model_accepts_venice_api_key("whisper-1")
+        ));
+        assert!(!request_accepts_venice_api_key(
+            "/v1/notes/generate",
+            model_accepts_venice_api_key(crate::providers::AUTO_GENERATION_MODEL)
         ));
         assert!(!request_accepts_venice_api_key(
             "/v1/issue-reports",
