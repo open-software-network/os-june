@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
 # Delegate a task to Claude Code (headless `claude -p`, acceptEdits).
-# Usage: run-claude.sh -t <task-file> [-C <worktree>] [-g <gate>] [-c <constraints>] [-o <out>] [--dry-run]
+# Usage: run-claude.sh -t <task-file> [-C <worktree>] [-g <gate>] [-c <constraints>] [-o <out>]
+#                      [-m <model>] [--dry-run]
 #   Flags as in fill-prompt.sh, plus:
 #   -o <out>    file for the delegate's report; default: mktemp (path is printed)
+#   -m <model>  sonnet|opus|haiku (default: opus)
+#   -e <effort> low|medium|high|xhigh|max (default: medium — the brief already
+#               carries the hard thinking; bump to high for subtle defect
+#               fixes where the root cause isn't fully pinned)
 #   --allow-untracked  proceed despite untracked files in the worktree
 #   --dry-run   print the filled prompt instead of running Claude
+#
+# Token discipline: runs with --strict-mcp-config (no MCP servers — their tool
+# schemas would bloat every request), --setting-sources project (no user-level
+# skills/rules), and the Agent/Task tools denied (no subagent fan-out; the
+# prompt contract forbids it too).
 #
 # Enforcement is policy-level, not an OS sandbox: acceptEdits auto-approves
 # file edits (anywhere the session may write, not just the worktree), and the
@@ -12,13 +22,15 @@
 # the Codex runner when you want OS-level write confinement.
 set -euo pipefail
 
-usage() { sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 task_file=""
 worktree=$(pwd)
 gate=""
 constraints=""
 out=""
+model="opus"
+effort=""
 dry_run=0
 allow_untracked=0
 while [ $# -gt 0 ]; do
@@ -28,12 +40,22 @@ while [ $# -gt 0 ]; do
     -g) gate=$2; shift 2 ;;
     -c) constraints=$2; shift 2 ;;
     -o) out=$2; shift 2 ;;
+    -m) model=$2; shift 2 ;;
+    -e) effort=$2; shift 2 ;;
     --allow-untracked) allow_untracked=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage ;;
     *) echo "unknown argument: $1" >&2; usage ;;
   esac
 done
+
+case "$model" in sonnet|opus|haiku) ;;
+  *) echo "error: -m must be sonnet|opus|haiku (got: $model)" >&2; exit 2 ;;
+esac
+case "$effort" in ""|low|medium|high|xhigh|max) ;;
+  *) echo "error: -e must be low|medium|high|xhigh|max (got: $effort)" >&2; exit 2 ;;
+esac
+effort=${effort:-medium}
 
 fill="$(cd "$(dirname "$0")" && pwd)/fill-prompt.sh"
 prompt=$("$fill" -t "$task_file" -C "$worktree" \
@@ -76,6 +98,11 @@ harness_rc=0
 # gate script appears.
 printf '%s\n' "$prompt" | claude -p \
   --permission-mode acceptEdits \
+  --model "$model" \
+  --effort "$effort" \
+  --strict-mcp-config \
+  --setting-sources project \
+  --disallowedTools "Agent" "Task" \
   --allowedTools "Bash(pnpm check:*)" "Bash(pnpm typecheck:*)" "Bash(pnpm test:*)" \
     "Bash(pnpm test:rust:*)" "Bash(pnpm test:june-api:*)" "Bash(pnpm test:hermes-smoke:*)" \
     "Bash(pnpm install:*)" "Bash(pnpm build:*)" \

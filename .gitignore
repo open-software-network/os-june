@@ -36,3 +36,7 @@ coverage
 # Agent worktrees
 .claude/worktrees/
 .worktrees/
+
+# Per-machine Codex instructions (Codex reads AGENTS.override.md alongside
+# AGENTS.md — the CLAUDE.local.md equivalent)
+AGENTS.override.md
