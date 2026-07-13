@@ -108,13 +108,13 @@ function loadPlaywright(root) {
   ];
   for (const req of candidateRequires) {
     try {
-      return req("playwright-core");
+      return req("playwright");
     } catch {
       // Try the next location.
     }
   }
   throw new Error(
-    "playwright-core is required. Restore the repository's pinned dependencies with " +
+    "Playwright is required. Restore the repository's pinned dependencies with " +
       "`pnpm install --frozen-lockfile`.",
   );
 }

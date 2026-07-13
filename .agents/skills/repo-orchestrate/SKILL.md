@@ -27,7 +27,8 @@ publish mode pushes with your credentials and opens a PR. Two levels:
 
 - **Default (no `--publish`)**: build + validate + review, stop before any
   push. Codex runs in a `workspace-write` sandbox (network enabled for
-  `pnpm install`); Claude runs `acceptEdits` with a git/pnpm/cargo allowlist.
+  `pnpm install --frozen-lockfile`); Claude runs `acceptEdits` with a
+  git/pnpm/cargo allowlist.
   The caller inspects the worktree and publishes.
 - **`--publish`**: the orchestrator may `git push` and `gh pr create --draft`
   (never mark ready, never merge). On Codex this requires
@@ -70,8 +71,8 @@ output, and battery verdicts are the evidence.
 - Cross-harness review still applies one level down: the orchestrator
   dispatches the adversarial axis to a harness other than itself via
   `repo-review/scripts/run-*.sh`.
-- Fresh worktrees need `pnpm install`; the prompt says so, but budget for it
-  in runtime expectations.
+- Fresh worktrees need `pnpm install --frozen-lockfile`; the prompt says so,
+  but budget for it in runtime expectations.
 
 ## Extending
 

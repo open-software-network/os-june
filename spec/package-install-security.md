@@ -3,7 +3,8 @@
 **Rule.** `pnpm` is the only JS/TS package manager in this repo — never
 introduce bun/npm/yarn lockfiles. Every agent-issued command that brings new
 package code into the tree or executes registry code (`pnpm add`, `pnpm update`,
-`pnpm dlx`, `npx` / `npm exec`, `cargo add`, `cargo install`,
+`pnpm dlx` / `pnpm create`, mutable `pnpm install`, `npx` / `npm exec` /
+`npm create`, `cargo add`, `cargo install`,
 `cargo update`) runs through Socket Firewall:
 `sfw <command>`. Dependency versions younger than 7 days are refused by
 `minimumReleaseAge` in `pnpm-workspace.yaml`; cargo gets the same cooldown
@@ -33,6 +34,7 @@ build scripts are deny-by-default: read the script before approving it in
 (`name@<version>: true`) so a bumped version's script needs a fresh review.
 
 **Exceptions.** The one-time `npm i -g sfw` bootstrap cannot wrap itself.
-Lockfile-respecting restores (`pnpm install` with no package
-argument, `--frozen-lockfile` in CI, `cargo build`/`cargo fetch` against a
-committed `Cargo.lock`) resolve nothing new and need no wrapper.
+Explicitly immutable restores (`pnpm install --frozen-lockfile`,
+`cargo build`/`cargo fetch` against a committed `Cargo.lock`) resolve nothing
+new and need no wrapper. A plain `pnpm install` can update a stale lockfile, so
+agents must run it through `sfw`.

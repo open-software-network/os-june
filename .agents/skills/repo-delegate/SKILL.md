@@ -85,8 +85,8 @@ orchestrating model (see repo-build-pr's model orchestration rules).
   the delegate — inherent to a writable worktree, and the standard flow
   copies `.env` in deliberately. Keep unrecoverable local state out of
   delegated worktrees; re-copy `.env` from the main checkout if damaged.
-- Fresh worktrees need `pnpm install` before the gate can pass; say so in the
-  brief or run it first.
+- Fresh worktrees need `pnpm install --frozen-lockfile` before the gate can
+  pass; say so in the brief or run it first.
 - `codex exec` is synchronous — no job babysitting. If dispatching many
   briefs, run them as background shell tasks and read the `-o` files.
 - The delegate reports what it *claims* it did; the diff is the truth.
