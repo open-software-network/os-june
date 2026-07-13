@@ -1970,10 +1970,28 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         .trim()
         .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
         .replace(['\r', '\n'], " ");
-    let prefixes = [
-        "Title:",
-        "Session title:",
-        "Request:",
+    let label_prefixes = ["Title:", "Session title:", "Request:"];
+    loop {
+        let mut changed = false;
+        for prefix in label_prefixes {
+            if title.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                title = title[prefix.len()..].trim_start().to_string();
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    title = title
+        .trim()
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
+        .trim()
+        .to_string();
+    if !is_valid_agent_session_title_candidate(&title) {
+        return None;
+    }
+    let request_prefixes = [
         "Please ",
         "Can you ",
         "Could you ",
@@ -1991,7 +2009,7 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
     ];
     loop {
         let mut changed = false;
-        for prefix in prefixes {
+        for prefix in request_prefixes {
             if title.to_lowercase().starts_with(&prefix.to_lowercase()) {
                 title = title[prefix.len()..].trim_start().to_string();
                 changed = true;
@@ -3074,6 +3092,14 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             None
         );
         assert_eq!(clean_agent_session_title("What should I update"), None);
+        assert_eq!(
+            clean_agent_session_title("Could you clarify the target"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("Session title: \"Could you clarify the target\""),
+            None
+        );
     }
 
     #[test]

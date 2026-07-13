@@ -210,6 +210,41 @@ describe("agent HUD", () => {
     expect(stackElement()).not.toHaveTextContent(refusal);
   });
 
+  it("keeps the prompt across an inactive sessions snapshot", async () => {
+    const prompt = "Review the session naming behavior";
+    const refusal = "I'm sorry, but I can't help with that";
+    const session = { ...sessionFixture("session-1", refusal), preview: "Earlier preview" };
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [session],
+      workingSessionIds: ["session-1"],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "running",
+      prompt,
+      summary: "June is working.",
+    });
+    emitSessionsChanged({
+      sessions: [session],
+      workingSessionIds: [],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "waitingForUser",
+      title: refusal,
+      summary: "June has a question.",
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent(prompt);
+    expect(stackElement()).toHaveTextContent("June has a question.");
+    expect(stackElement()).not.toHaveTextContent(refusal);
+  });
+
   it("keeps a valid session title when only the status title is refusal-like", async () => {
     const refusal = "I'm sorry, but I can't help with that";
     await loadAgentHud();
@@ -230,6 +265,30 @@ describe("agent HUD", () => {
 
     expect(stackElement()).toHaveTextContent("Session naming review");
     expect(stackElement()).not.toHaveTextContent(refusal);
+  });
+
+  it("keeps question-shaped prompt and manual titles", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Why is the microphone muted?")],
+      workingSessionIds: ["session-1"],
+      waitingSessionIds: [],
+    });
+    await flushPromises();
+    expect(stackElement()).toHaveTextContent("Why is the microphone muted?");
+
+    localStorage.setItem(
+      "june.agent.manuallyTitledSessions",
+      JSON.stringify({ "session-1": "manual" }),
+    );
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Could you clarify this?")],
+      workingSessionIds: ["session-1"],
+      waitingSessionIds: [],
+    });
+    await flushPromises();
+    expect(stackElement()).toHaveTextContent("Could you clarify this?");
   });
 
   it("stays collapsed after an explicit collapse while a session still needs input", async () => {

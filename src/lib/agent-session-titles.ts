@@ -12,7 +12,7 @@
 
 const STORAGE_KEY = "june.agent.manuallyTitledSessions";
 
-export type AgentSessionSettledTitleKind = "manual" | "exchange";
+export type AgentSessionSettledTitleKind = "manual" | "exchange" | "rejected";
 
 const ASSISTANT_DIALOGUE_PREFIXES = [
   "i'm sorry",
@@ -74,15 +74,20 @@ function startsWithPhrase(value: string, phrase: string) {
   return next === undefined || /[\s,:;.!]/.test(next);
 }
 
+export function isRefusalLikeAgentSessionTitle(value: unknown): boolean {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const normalized = value.trim().replace(/[‘’]/g, "'").toLowerCase();
+  if (ASSISTANT_DIALOGUE_PREFIXES.some((prefix) => startsWithPhrase(normalized, prefix))) {
+    return true;
+  }
+  return /\b(?:can't|cannot)\s+(?:help|assist)\b/.test(normalized);
+}
+
 /** Whether model output is safe to use as a concise session title. */
 export function isAgentSessionTitleCandidate(value: unknown): value is string {
   if (typeof value !== "string" || !value.trim()) return false;
   const normalized = value.trim().replace(/[‘’]/g, "'").toLowerCase();
-  if (normalized.includes("?")) return false;
-  if (ASSISTANT_DIALOGUE_PREFIXES.some((prefix) => startsWithPhrase(normalized, prefix))) {
-    return false;
-  }
-  if (/\b(?:can't|cannot)\s+(?:help|assist)\b/.test(normalized)) return false;
+  if (normalized.includes("?") || isRefusalLikeAgentSessionTitle(normalized)) return false;
   const [first = "", second = ""] = normalized.split(/\s+/, 2);
   return !(
     (QUESTION_WORDS.has(first) && QUESTION_AUXILIARIES.has(second)) ||
@@ -102,8 +107,8 @@ function readStore(): Record<string, AgentSessionSettledTitleKind> {
     for (const [sessionId, value] of Object.entries(parsed)) {
       if (value === true || value === "manual") {
         store[sessionId] = "manual";
-      } else if (value === "exchange") {
-        store[sessionId] = "exchange";
+      } else if (value === "exchange" || value === "rejected") {
+        store[sessionId] = value;
       }
     }
     return store;
@@ -142,5 +147,12 @@ export function rememberSessionExchangeTitled(sessionId: string) {
   const store = readStore();
   if (store[sessionId] === "manual") return;
   store[sessionId] = "exchange";
+  writeStore(store);
+}
+
+export function rememberSessionTitleRejected(sessionId: string) {
+  const store = readStore();
+  if (store[sessionId] === "manual" || store[sessionId] === "exchange") return;
+  store[sessionId] = "rejected";
   writeStore(store);
 }

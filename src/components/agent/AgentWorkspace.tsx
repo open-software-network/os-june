@@ -194,6 +194,7 @@ import {
   isAgentSessionTitleCandidate,
   rememberSessionExchangeTitled,
   rememberSessionManuallyTitled,
+  rememberSessionTitleRejected,
   sessionSettledTitleKind,
 } from "../../lib/agent-session-titles";
 import {
@@ -8396,7 +8397,8 @@ export function AgentWorkspace({
       source === "manual" ||
       source === "exchange" ||
       settledTitleKind === "manual" ||
-      settledTitleKind === "exchange"
+      settledTitleKind === "exchange" ||
+      settledTitleKind === "rejected"
     ) {
       return;
     }
@@ -8437,6 +8439,7 @@ export function AgentWorkspace({
       const suggestion = await agentSessionTitleForPrompt(prompt, hasReply ? reply : undefined);
       if (titleSuggestionSessionIdsRef.current.has(sessionId)) return;
       if (!suggestion.fromModel && sessionTitleOverridesRef.current[sessionId]) {
+        if (suggestion.rejected && hasReply) rememberSessionTitleRejected(sessionId);
         return;
       }
       const title = suggestion.title;
@@ -8457,6 +8460,7 @@ export function AgentWorkspace({
       // stored: marking first and failing the PATCH would freeze a stale
       // stored title as settled on the next launch.
       const settleExchangeAfterPersist = suggestion.fromModel && nextSource === "exchange";
+      const settleRejectionAfterPersist = suggestion.rejected && hasReply;
       setHermesSessionItems((current) =>
         current.map((item) => (item.id === sessionId ? { ...item, title } : item)),
       );
@@ -8473,6 +8477,7 @@ export function AgentWorkspace({
             return;
           }
           if (settleExchangeAfterPersist) rememberSessionExchangeTitled(sessionId);
+          if (settleRejectionAfterPersist) rememberSessionTitleRejected(sessionId);
         })
         .catch(() => {});
     } finally {
@@ -10506,10 +10511,10 @@ async function agentSessionTitleForPrompt(prompt: string, response?: string) {
     );
     const title = suggestion.title.trim();
     return isAgentSessionTitleCandidate(title)
-      ? { title, fromModel: true }
-      : { title: titleFromPrompt(prompt), fromModel: false };
+      ? { title, fromModel: true, rejected: false }
+      : { title: titleFromPrompt(prompt), fromModel: false, rejected: true };
   } catch {
-    return { title: titleFromPrompt(prompt), fromModel: false };
+    return { title: titleFromPrompt(prompt), fromModel: false, rejected: false };
   }
 }
 

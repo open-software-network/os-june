@@ -4657,7 +4657,14 @@ describe("AgentWorkspace", () => {
       sessionId: "session-invalid-exchange-title",
       title: "I'm sorry, but I can't help with that",
     });
-    expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBeNull();
+    expect(
+      JSON.parse(window.localStorage.getItem("june.agent.manuallyTitledSessions") ?? "{}"),
+    ).toEqual({ "session-invalid-exchange-title": "rejected" });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2);
   }, 10_000);
 
   it("keeps a failed fresh title fallback retry to a later natural refresh", async () => {

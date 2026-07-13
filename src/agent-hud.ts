@@ -21,7 +21,11 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "./lib/agent-hud-settings";
-import { isAgentSessionTitleCandidate } from "./lib/agent-session-titles";
+import {
+  isAgentSessionTitleCandidate,
+  isRefusalLikeAgentSessionTitle,
+  sessionSettledTitleKind,
+} from "./lib/agent-session-titles";
 import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import type { HermesSessionInfo } from "./lib/tauri";
@@ -86,6 +90,7 @@ const state = {
   workingSessionIds: new Set<string>(),
   waitingSessionIds: new Set<string>(),
   statusBySessionId: new Map<string, StatusRecord>(),
+  promptBySessionId: new Map<string, string>(),
   pendingStatuses: [] as StatusRecord[],
   // Transient auto-expand triggered when an entry newly needs input. Unlike
   // `expanded` it is not persisted to EXPANDED_KEY: it grabs attention once,
@@ -115,6 +120,11 @@ function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
   state.waitingSessionIds = new Set(detail.waitingSessionIds ?? []);
   const activeSessionIds = new Set([...state.workingSessionIds, ...state.waitingSessionIds]);
   const knownSessionIds = new Set(state.sessions.map((session) => session.id));
+  for (const sessionId of state.promptBySessionId.keys()) {
+    if (!knownSessionIds.has(sessionId) && !activeSessionIds.has(sessionId)) {
+      state.promptBySessionId.delete(sessionId);
+    }
+  }
   for (const [sessionId, record] of state.statusBySessionId) {
     if (
       knownSessionIds.has(sessionId) &&
@@ -138,9 +148,17 @@ function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
 function applyStatus(detail?: AgentSessionStatusDetail) {
   if (!detail) return;
   const previous = detail.sessionId ? state.statusBySessionId.get(detail.sessionId) : undefined;
+  const prompt =
+    detail.prompt ??
+    (detail.sessionId
+      ? (previous?.prompt ?? state.promptBySessionId.get(detail.sessionId))
+      : undefined);
+  if (detail.sessionId && prompt) {
+    state.promptBySessionId.set(detail.sessionId, prompt);
+  }
   const record: StatusRecord = {
     ...detail,
-    prompt: detail.prompt ?? previous?.prompt,
+    prompt,
     receivedAt: Date.now(),
   };
   if (detail.sessionId) {
@@ -470,16 +488,16 @@ function sessionStatus(session: HermesSessionInfo, record?: StatusRecord): HudSe
 function sessionTitle(session: HermesSessionInfo, record?: StatusRecord) {
   const recordTitle = record?.title?.trim();
   if (recordTitle) {
-    if (isAgentSessionTitleCandidate(recordTitle)) return recordTitle;
+    if (isHudStatusTitleSafe(recordTitle, session.id)) return recordTitle;
     const safeSessionTitle = session.title?.trim();
-    if (safeSessionTitle && isAgentSessionTitleCandidate(safeSessionTitle)) {
+    if (safeSessionTitle && isHudStoredSessionTitleSafe(safeSessionTitle, session.id)) {
       return safeSessionTitle;
     }
     return record?.prompt?.trim() || session.preview?.trim() || "Agent session";
   }
   const sessionTitle = session.title?.trim();
   if (sessionTitle) {
-    return isAgentSessionTitleCandidate(sessionTitle)
+    return isHudStoredSessionTitleSafe(sessionTitle, session.id)
       ? sessionTitle
       : record?.prompt?.trim() || session.preview?.trim() || "Agent session";
   }
@@ -510,9 +528,19 @@ function sessionTimestamp(session: HermesSessionInfo, record?: StatusRecord) {
 
 function statusTitle(record: StatusRecord) {
   const title = record.title?.trim();
-  return title && isAgentSessionTitleCandidate(title)
+  return title && isHudStatusTitleSafe(title, record.sessionId)
     ? title
     : record.prompt?.trim() || "Agent session";
+}
+
+function isHudStatusTitleSafe(title: string, sessionId?: string) {
+  return sessionSettledTitleKind(sessionId) === "exchange"
+    ? isAgentSessionTitleCandidate(title)
+    : !isRefusalLikeAgentSessionTitle(title);
+}
+
+function isHudStoredSessionTitleSafe(title: string, sessionId: string) {
+  return sessionSettledTitleKind(sessionId) === "manual" || isHudStatusTitleSafe(title, sessionId);
 }
 
 function statusSummary(record: StatusRecord) {
