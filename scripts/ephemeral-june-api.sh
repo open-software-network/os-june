@@ -44,19 +44,23 @@ die() {
 }
 
 # The state file is the only record of the CVM name and its bearer token.
+# Written atomically (temp + rename): a truncate-in-place could leave empty
+# JSON if jq dies mid-write, losing the teardown handle of a live CVM.
 write_state() {
-  local name="$1" url="$2" token="$3" image="$4" git_sha="$5" created="$6"
-  : >"$STATE_FILE"
-  chmod 600 "$STATE_FILE"
+  local name="$1" uuid="$2" url="$3" token="$4" image="$5" git_sha="$6" created="$7" tmp
+  tmp="$(mktemp "${STATE_FILE}.XXXXXX")"
+  chmod 600 "$tmp"
   jq -n \
     --arg name "$name" \
+    --arg uuid "$uuid" \
     --arg url "$url" \
     --arg token "$token" \
     --arg image "$image" \
     --arg git_sha "$git_sha" \
     --arg created "$created" \
-    '{name: $name, url: $url, token: $token, image: $image, git_sha: $git_sha, created: $created}' \
-    >"$STATE_FILE"
+    '{name: $name, uuid: $uuid, url: $url, token: $token, image: $image, git_sha: $git_sha, created: $created}' \
+    >"$tmp"
+  mv "$tmp" "$STATE_FILE"
 }
 
 read_state() {
@@ -96,7 +100,9 @@ cmd_up() {
   local git_sha image name token created
   git_sha="$(git rev-parse HEAD)"
   image="ttl.sh/june-api-eph-$(uuidgen | perl -ne 'print lc'):4h"
-  name="june-api-eph-$(whoami | perl -pe 'chomp; $_ = lc; s/[^a-z0-9]+/-/g')-$(openssl rand -hex 2)"
+  # 32 bits of suffix entropy: teardown deletes by name until the UUID is
+  # captured, so a cross-session name collision must be negligible.
+  name="june-api-eph-$(whoami | perl -pe 'chomp; $_ = lc; s/[^a-z0-9]+/-/g')-$(openssl rand -hex 4)"
   token="$(openssl rand -hex 32)"
   created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -133,7 +139,7 @@ cmd_up() {
   # `down` able to delete it, and a deploy that dies halfway can still have left
   # a billing CVM behind. Arm the `dev` teardown on the same line of reasoning,
   # and only here, so an early guard failure never deletes a pre-existing CVM.
-  write_state "$name" "" "$token" "$image" "$git_sha" "$created"
+  write_state "$name" "" "" "$token" "$image" "$git_sha" "$created"
   if [[ "$DEV_MODE" == "1" ]]; then
     TEARDOWN_CVM=1
   fi
@@ -154,11 +160,15 @@ cmd_up() {
   # public-endpoint field is API-version dependent: `public_urls` (v2025-10-28)
   # or `endpoints` (default), both arrays of {app, instance}. Walk every nested
   # object and take the first .app URL so either shape works.
-  local url
-  url="$(phala cvms get "$name" --json \
+  local detail url uuid
+  detail="$(phala cvms get "$name" --json)" || detail=""
+  url="$(printf '%s' "$detail" \
     | jq -r 'first((.. | objects | .app? | select(type == "string" and startswith("http")))) // empty')" || url=""
+  # The immutable VM UUID makes teardown collision-proof: names are only
+  # unique by convention, and `phala cvms delete` accepts either.
+  uuid="$(printf '%s' "$detail" | jq -r '.vm_uuid // .id // empty')" || uuid=""
   [[ -n "$url" ]] || die "Could not resolve a public URL for $name. Inspect it with: phala cvms get $name"
-  write_state "$name" "$url" "$token" "$image" "$git_sha" "$created"
+  write_state "$name" "$uuid" "$url" "$token" "$image" "$git_sha" "$created"
 
   echo "Waiting for $url/healthz ..."
   local code=""
@@ -214,8 +224,14 @@ cmd_down() {
     return 0
   fi
 
+  # Delete by immutable UUID when the state has one (post-deploy it always
+  # does); the name is a pre-deploy fallback and only unique by convention.
+  local target
+  target="$(read_state uuid)"
+  [[ -n "$target" ]] || target="$name"
+
   echo "Deleting CVM $name ..."
-  if ! phala cvms delete "$name" --force; then
+  if ! phala cvms delete "$target" --force; then
     # A failed delete may mean already-gone, never-created (deploy failed),
     # OR a transient auth/network/API failure - and the same outage that
     # broke delete usually breaks a probe too. The state file is the only
