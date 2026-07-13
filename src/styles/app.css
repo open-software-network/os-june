@@ -25680,8 +25680,12 @@ input:focus-visible,
  * Dividers run the full tray width in the detail-bar edge weight (the
  * breadcrumb bar's lighter hairline, not the standard border-subtle). */
 .connector-approvals-item {
+  position: relative;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  /* Two columns only: the verdict buttons overlay the row's right edge (the
+   * tab-close treatment), so at rest the text runs the full width instead of
+   * reserving a blank gutter. */
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: start;
   column-gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
@@ -25690,6 +25694,25 @@ input:focus-visible,
 
 .connector-approvals-item:first-child {
   border-top: 0;
+}
+
+/* The row hover wash, inset and concentric with the tray: the rows bleed to
+ * the tray edges (full-width dividers), so the wash pulls back in by the
+ * tray's own frame (--sp-2) and its corners follow (r-xl minus that inset).
+ * Painted behind the row content on the tray's stacking context. */
+.connector-approvals-item::before {
+  content: "";
+  position: absolute;
+  inset: 2px var(--sp-2);
+  z-index: -1;
+  border-radius: calc(var(--r-xl) - var(--sp-2));
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.connector-approvals-item:hover::before,
+.connector-approvals-item:focus-within::before,
+.connector-approvals-item[data-expanded]::before {
+  background: var(--secondary);
 }
 
 /* The provider's monochrome mark, optically aligned with the summary's first
@@ -25756,22 +25779,48 @@ button.connector-approvals-info {
   word-break: break-word;
 }
 
-/* Verdicts reveal on row hover (or keyboard focus, or while the row's detail
- * is open) rather than shouting from every row at once. The swap is instant
- * on purpose: a fade left outgoing rows' verdicts lingering, so quick pointer
- * moves read as several rows hovered at once. Opacity (not display) keeps
- * their layout slot so nothing reflows. */
+/* While the verdicts are shown, the top text lines fade out under them (the
+ * tab-label treatment: a mask fade on the right tail, with the buttons
+ * overlaid on the cleared patch). The expanded preview is exempt — it wraps
+ * below the buttons, so fading every wrapped line's tail would read broken. */
+.connector-approvals-item:hover .connector-approvals-summary,
+.connector-approvals-item:focus-within .connector-approvals-summary,
+.connector-approvals-item[data-expanded] .connector-approvals-summary,
+.connector-approvals-item:hover .connector-approvals-meta,
+.connector-approvals-item:focus-within .connector-approvals-meta,
+.connector-approvals-item[data-expanded] .connector-approvals-meta,
+.connector-approvals-item:hover:not([data-expanded]) .connector-approvals-preview,
+.connector-approvals-item:focus-within:not([data-expanded]) .connector-approvals-preview {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 76px),
+    transparent calc(100% - 52px)
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 76px), transparent calc(100% - 52px));
+}
+
+/* Verdicts overlay the row's right edge (the tab-close treatment) and reveal
+ * on hover, keyboard focus, or while the row's detail is open — not from
+ * every row at once. The swap is instant on purpose: a fade left outgoing
+ * rows' verdicts lingering, so quick pointer moves read as several rows
+ * hovered at once. Top-anchored on the summary's line so an expanded row's
+ * detail grows below them. */
 .connector-approvals-actions {
+  position: absolute;
+  top: 5px;
+  right: var(--sp-3);
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
   opacity: 0;
+  pointer-events: none;
 }
 
 .connector-approvals-item:hover .connector-approvals-actions,
 .connector-approvals-item:focus-within .connector-approvals-actions,
 .connector-approvals-item[data-expanded] .connector-approvals-actions {
   opacity: 1;
+  pointer-events: auto;
 }
 
 /* Per-row verdicts as compact icon buttons (Deny ✕ quiet, Approve ✓ filled),
@@ -25790,17 +25839,20 @@ button.connector-approvals-info {
   transition: background-color var(--t-fast) var(--ease-out);
 }
 
+/* Both sit on the row's secondary wash when visible, so deny hovers with the
+ * tab-close ink wash and approve rests on card (a raised chip on the wash). */
 .connector-approvals-item-deny {
   background: transparent;
   color: var(--muted-foreground);
 }
 
 .connector-approvals-item-deny:hover:not(:disabled) {
-  background: var(--surface-subtle);
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+  color: var(--foreground);
 }
 
 .connector-approvals-item-approve {
-  background: var(--surface-subtle);
+  background: var(--card);
   color: var(--secondary-foreground);
 }
 
