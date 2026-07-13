@@ -37,6 +37,14 @@ pinned runtime passes no socket argument and the driver has no socket env
 resource plus a binary-path override pointing at the wrapper; the upstream
 network installer never runs because nothing in June's spawn path invokes it.
 
+One constraint falls straight out of that verified jailed `connect()`, and it
+gates the phase-2 design: because the jail does not govern socket connects, the
+agent runtime can reach the privileged daemon's socket directly, so June's
+approval boundary cannot live at the runtime's tool-dispatch layer. It has to be
+a broker-owned, approval-enforcing transport between the runtime and the daemon,
+per ADR 0017's broker-choke-point principle. See "The approval boundary cannot be
+the tool-dispatch layer" below.
+
 ## What the driver is (provenance and pin)
 
 The pinned Hermes runtime (`HERMES_AGENT_INSTALL_COMMIT`
@@ -301,6 +309,19 @@ tracking driver-internal state paths across driver versions. Concretely:
    should carry regression tests that preload hostile `CUA_DRIVER_RS_*` values
    before constructing BOTH the daemon command and the client wrapper env and
    prove they are stripped.
+
+   The same hygiene applies one level up, to the runtime's own backend
+   selector. `HERMES_COMPUTER_USE_BACKEND` chooses which computer-use backend
+   the runtime loads (`cua` is the default). June must set it explicitly for
+   computer-use-enabled spawns rather than inherit whatever is in the
+   environment, in `apply_isolated_hermes_env()` alongside the other `HERMES_*`
+   variables, so an inherited value cannot select a different backend and route
+   around the wrapper and proxy invariant entirely. An external review round
+   reported that a `noop` backend exists at the pin which reports actions as
+   successful without contacting the driver at all; whether or not that specific
+   backend exists, pinning the selector rather than inheriting it is the correct
+   default, and JUN-293 should confirm the available backends at the pin and
+   include the selector in the hostile-preload coverage.
 3. The in-jail runtime keeps spawning its stdio client as upstream does, but
    `HERMES_CUA_DRIVER_CMD` points at a small June-bundled wrapper, not at the
    driver binary directly. The wrapper is needed because the pinned backend
@@ -340,6 +361,48 @@ This keeps the agent runtime itself under the write jail. The one privileged
 process (the daemon) is out of the jail by construction, with a bounded,
 auditable trust surface, which is the same trade already accepted for the
 dictation helper and the gateway daemon.
+
+### The approval boundary cannot be the tool-dispatch layer (gates JUN-293)
+
+The topology above hands the agent runtime a working connection to the
+privileged daemon's socket, and this spike verified that the write jail does
+not govern unix-socket `connect()`. June's action approvals, however, are
+planned at the runtime's `computer_use` tool-dispatch layer (approval cards).
+Those two facts do not compose: an approval gate that sits at the tool-dispatch
+layer holds only while the runtime routes its privileged work through that
+layer, and the runtime is the model-controlled process. That is precisely the
+arrangement ADR 0017 rules out - "policy decisions are made in Rust at the
+broker choke point, never by prompting the model" (the connectors precedent).
+
+So the enforcement point must be structural, and it must sit between the
+runtime and the daemon:
+
+- JUN-293 must not treat the runtime's tool dispatch as the approval boundary.
+  The broker owns the boundary: the runtime reaches the daemon only through a
+  broker-owned, approval-enforcing transport, and the real daemon socket is not
+  independently reachable from the jailed runtime.
+- Making it unreachable needs an actual mechanism. Socket placement is not one:
+  the jail's file-write rules do not stop a connect, as verified above. The
+  candidates are a sandbox rule that denies the runtime the connect, a socket in
+  a namespace the jailed process cannot name, or broker-mediated descriptor
+  passing so the runtime never holds the daemon endpoint at all. Determining
+  which of these actually holds under the app's profile is an open question that
+  gates the JUN-293 design, not an implementation detail.
+- The daemon's own socket authentication model at the pin (does it authenticate
+  or validate its peer at all, and if it does, where would that credential live
+  such that the jailed runtime cannot read it?) must be established and recorded
+  before the topology is relied on. This spike did not establish it. An external
+  review round reported the pinned daemon accepts unauthenticated requests on
+  that socket; that report is unverified here and is exactly what JUN-293 must
+  confirm at the pin, because the answer decides whether socket-level trust can
+  carry any weight or none.
+- Regression coverage to carry: a client running under the runtime's own sandbox
+  profile cannot get a mutating action executed by the daemon except through the
+  broker's approval-enforcing path.
+
+This does not change the recommended out-of-jail topology, which stands on
+identity, lifecycle, and precedent. It constrains how the runtime is allowed to
+reach it.
 
 ### Alternative if the daemon is ever kept in-jail
 
