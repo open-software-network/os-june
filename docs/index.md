@@ -67,7 +67,7 @@ Per-repo config the engineering skills read before acting (see the
 - [telemetry-p3a-implementation-plan.md](telemetry-p3a-implementation-plan.md) — implementation plan for June P3A phases
 - [telemetry-questions.md](telemetry-questions.md) — public P3A question catalog and buckets
 - [configuration.md](configuration.md) — env + config reference (desktop client + June API)
-- [development.md](development.md) — local development: quick start, local data, permissions, agent skills, verification commands
+- [development.md](development.md) — local development: quick start, running against staging or an ephemeral Phala CVM, local data, permissions, agent skills, verification commands
 - [os-accounts-login.md](os-accounts-login.md) — Login with Open Software: PKCE, keychain, account gates
 - [onboarding-design.md](onboarding-design.md) — onboarding flow design (verify against what shipped)
 - ~~os-accounts-backend.md~~ — historical; superseded by `june-api-prd.md`

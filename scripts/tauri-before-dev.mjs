@@ -10,6 +10,7 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const apiDir = path.join(rootDir, "june-api");
 const frontendPort = Number.parseInt(process.env.VITE_PORT ?? "1421", 10);
 const apiPort = Number.parseInt(process.env.JUNE_API_PORT ?? "8080", 10);
+const skipLocalApi = process.env.JUNE_DEV_SKIP_LOCAL_API === "1";
 const shell = process.platform === "win32";
 
 let apiChild = null;
@@ -66,20 +67,24 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => exitFromChild(0, signal));
 }
 
-if (!fs.existsSync(path.join(apiDir, "Cargo.toml"))) {
-  console.error(`Could not find june-api/Cargo.toml under ${rootDir}`);
-  process.exit(1);
-}
-
-if (await portIsOpen(apiPort)) {
-  console.error(`June API port ${apiPort} is already in use. Reusing it for Tauri dev.`);
+if (skipLocalApi) {
+  console.error("Skipping local June API because JUNE_DEV_SKIP_LOCAL_API=1.");
 } else {
-  apiChild = spawnManaged("june-api", "cargo", ["run", "-p", "june", "--", "serve"], apiDir);
-  apiChild.on("exit", (code, signal) => {
-    if (shuttingDown) return;
-    console.error(`june-api exited with ${signal ?? code}`);
-    exitFromChild(code, signal);
-  });
+  if (!fs.existsSync(path.join(apiDir, "Cargo.toml"))) {
+    console.error(`Could not find june-api/Cargo.toml under ${rootDir}`);
+    process.exit(1);
+  }
+
+  if (await portIsOpen(apiPort)) {
+    console.error(`June API port ${apiPort} is already in use. Reusing it for Tauri dev.`);
+  } else {
+    apiChild = spawnManaged("june-api", "cargo", ["run", "-p", "june", "--", "serve"], apiDir);
+    apiChild.on("exit", (code, signal) => {
+      if (shuttingDown) return;
+      console.error(`june-api exited with ${signal ?? code}`);
+      exitFromChild(code, signal);
+    });
+  }
 }
 
 if (await portIsOpen(frontendPort)) {

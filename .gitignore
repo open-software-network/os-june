@@ -41,3 +41,7 @@ coverage
 # AGENTS.md; Claude Code reads CLAUDE.local.md alongside CLAUDE.md
 AGENTS.override.md
 CLAUDE.local.md
+
+# Ephemeral Phala CVM state (holds a per-run bearer token; mode 600).
+# The glob also covers write_state's atomic-rename temps (.json.XXXXXX).
+.ephemeral-june-api.json*

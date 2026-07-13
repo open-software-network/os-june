@@ -128,9 +128,9 @@ jobs:
           image-ref: ${{ env.IMAGE }}:${{ steps.image.outputs.sha_short }}
           api-key: ${{ secrets.PHALA_CLOUD_API_KEY }}
 
-      # The public endpoint is the only place the dstack-ingress container can
-      # be exercised (staging has no ingress), so check it before accepting
-      # the promote: a broken ingress boot would otherwise surface only via
+      # Staging exercises the same ingress stack before promote, but production
+      # must still pass its own public endpoint check before accepting the
+      # promote: a broken production ingress boot would otherwise surface via
       # the 30-minute watchdog. Runs before the retag/record steps so a
       # failure fails the promotion and leaves :production on the last-good
       # digest. Deeper checks (e.g. body-size probes after an ingress change)
