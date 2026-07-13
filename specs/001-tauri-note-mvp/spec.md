@@ -121,7 +121,7 @@ A user does not lose a recording if the app is closed, crashes, or loses network
 - **RR-001**: Recording MUST NOT be considered successful until an audio file has been finalized and verified as readable.
 - **RR-002**: The app MUST record session checkpoints at start, pause, resume, done, validation, transcription, generation, and completion.
 - **RR-003**: The app MUST compare expected elapsed recording time with actual saved audio duration and flag mismatches above tolerance.
-- **RR-004**: The app MUST detect sustained silence during active recording and make that state visible to the user before Done.
+- **RR-004**: The app MUST detect sustained silence for recording validation without showing a live silence prompt; unusable audio is explained after Done through validation or recovery UI.
 - **RR-005**: The app MUST support retrying transcription/generation from saved audio without requiring a new recording.
 - **RR-006**: The app MUST make it visually obvious when it is listening, paused, validating, transcribing, generating, failed, or ready.
 

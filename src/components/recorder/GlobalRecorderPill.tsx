@@ -2,7 +2,6 @@ import { useRef } from "react";
 import type { RecordingStatusDto } from "../../lib/tauri";
 import { combineSourceAudioLevels, Waveform } from "./Waveform";
 import { useRecordingPresenceBounds } from "../../lib/recording-presence-bounds";
-import { hasMicrophoneSilenceWarning } from "./RecorderBar";
 
 type GlobalRecorderPillProps = {
   status: RecordingStatusDto;
@@ -20,7 +19,6 @@ type GlobalRecorderPillProps = {
 export function GlobalRecorderPill({ status, title, onOpen }: GlobalRecorderPillProps) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const recording = status.state === "recording";
-  const microphoneSilent = hasMicrophoneSilenceWarning(status);
   useRecordingPresenceBounds(buttonRef);
   // status.level is mic-only; status.sources carries mic+system when available.
   const meterLevel =
@@ -36,11 +34,9 @@ export function GlobalRecorderPill({ status, title, onOpen }: GlobalRecorderPill
       data-state={status.state}
       onClick={onOpen}
       aria-label={`Open recording: ${title}`}
-      title={microphoneSilent ? "Mic looks silent" : "Open recording"}
-      data-warning={microphoneSilent ? "silence" : undefined}
+      title="Open recording"
     >
       <Waveform level={meterLevel} active={recording} />
-      {microphoneSilent ? <span className="global-recorder-warning">Mic looks silent</span> : null}
     </button>
   );
 }

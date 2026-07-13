@@ -60,7 +60,7 @@ describe("RecorderBar", () => {
     expect(onDone).toHaveBeenCalledWith("session-1");
   });
 
-  it("shows the mic silence warning when the microphone source reports it", () => {
+  it("does not surface a live silence prompt when the microphone source reports one", () => {
     render(
       <RecorderBar
         status={{
@@ -88,10 +88,10 @@ describe("RecorderBar", () => {
       />,
     );
 
-    expect(screen.getByText("Mic looks silent")).toBeInTheDocument();
+    expect(screen.queryByText(/silent/i)).not.toBeInTheDocument();
   });
 
-  it("does not show the mic silence warning while the mic has signal", () => {
+  it("does not show a mic silence warning while the mic has signal", () => {
     render(
       <RecorderBar
         status={{
@@ -119,7 +119,7 @@ describe("RecorderBar", () => {
       />,
     );
 
-    expect(screen.queryByText("Mic looks silent")).not.toBeInTheDocument();
+    expect(screen.queryByText(/silent/i)).not.toBeInTheDocument();
   });
 
   it("uses resume action when paused", async () => {
@@ -184,7 +184,7 @@ describe("RecorderBar", () => {
       />,
     );
 
-    expect(screen.queryByText("Microphone input appears silent")).not.toBeInTheDocument();
+    expect(screen.queryByText(/silent/i)).not.toBeInTheDocument();
   });
 
   it("drives the waveform from system audio when the mic is quiet", () => {
