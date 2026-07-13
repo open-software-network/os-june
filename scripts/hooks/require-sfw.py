@@ -36,7 +36,7 @@ CARGO_GLOBAL_VALUE_OPTIONS = {"--color", "--config", "-C"}
 COREPACK_GUARDED = {"install", "prepare", "up", "use"}
 COREPACK_VALUE_OPTIONS = {"--install-directory"}
 NPM_INSTALL_COMMANDS = {"i", "install", "ci", "add"}
-NPM_REGISTRY_COMMANDS = {"create", "init", "exec"}
+NPM_REGISTRY_COMMANDS = {"create", "init", "exec", "x"}
 NPM_GLOBAL_VALUE_OPTIONS = {
     "--cache",
     "--location",
@@ -49,6 +49,7 @@ NPM_GLOBAL_VALUE_OPTIONS = {
 }
 NPM_GLOBAL_FLAGS = {"-g", "--global", "--location=global"}
 NPM_INSTALL_VALUE_OPTIONS = NPM_GLOBAL_VALUE_OPTIONS | {"--location"}
+PNPM_EXEC_PACKAGE_OPTIONS = {"-p", "--package"}
 
 
 def command_tokens(seg):
@@ -66,7 +67,19 @@ def command_tokens(seg):
         tokens.pop(0)
         while tokens:
             if tokens[0] in {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}:
-                del tokens[:2]
+                option = tokens.pop(0)
+                if option in {"-S", "--split-string"} and tokens:
+                    try:
+                        tokens = shlex.split(tokens.pop(0)) + tokens
+                    except ValueError:
+                        return []
+                elif option not in {"-S", "--split-string"}:
+                    del tokens[:1]
+            elif tokens[0].startswith("--split-string="):
+                try:
+                    tokens = shlex.split(tokens.pop(0).split("=", 1)[1]) + tokens
+                except ValueError:
+                    return []
             elif tokens[0].startswith("-") or re.fullmatch(
                 r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[0]
             ):
@@ -170,8 +183,9 @@ def check(command):
             )
         if executable == "corepack":
             command_name, args = subcommand(tokens, COREPACK_VALUE_OPTIONS)
-            if command_name in {"pnpm", "npm", "yarn", "bun", "bunx"}:
-                tokens = [command_name, *args]
+            manager = command_name.split("@", 1)[0] if command_name else None
+            if manager in {"pnpm", "npm", "yarn", "bun", "bunx"}:
+                tokens = [manager, *args]
                 executable = tokens[0]
             elif command_name in COREPACK_GUARDED:
                 guarded = True
@@ -190,6 +204,14 @@ def check(command):
                 command_name == "audit"
                 and any(
                     token == "--fix" or token.startswith("--fix=")
+                    for token in args
+                )
+            )
+            guarded = guarded or (
+                command_name == "exec"
+                and any(
+                    token in PNPM_EXEC_PACKAGE_OPTIONS
+                    or token.startswith("--package=")
                     for token in args
                 )
             )
