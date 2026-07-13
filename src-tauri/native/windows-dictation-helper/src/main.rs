@@ -360,6 +360,8 @@ impl HelperApp {
         self.writer.emit(simple_event("paste_completed"));
         if let Some(backup) = previous_clipboard {
             let now = std::time::Instant::now();
+            let backup =
+                backup_for_next_clipboard_restore(backup, self.delayed_clipboard_restore.take());
             self.delayed_clipboard_restore = Some(DelayedClipboardRestore {
                 deadline: now + CLIPBOARD_RESTORE_DELAY,
                 expires_at: now + CLIPBOARD_RESTORE_RETRY_WINDOW,
@@ -521,6 +523,16 @@ fn next_clipboard_restore(
     }
 }
 
+fn backup_for_next_clipboard_restore(
+    backup: clipboard::ClipboardBackup,
+    pending: Option<DelayedClipboardRestore>,
+) -> clipboard::ClipboardBackup {
+    match pending {
+        Some(pending) if backup.original_text_is(&pending.text) => pending.backup,
+        _ => backup,
+    }
+}
+
 impl Drop for HelperApp {
     fn drop(&mut self) {
         self.finish_clipboard_restore(true);
@@ -577,6 +589,28 @@ mod tests {
         let restore = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
 
         assert!(next_clipboard_restore(restore, false, false, now).is_none());
+    }
+
+    #[test]
+    fn second_paste_chains_pending_restore_backup_when_clipboard_still_has_previous_text() {
+        let now = std::time::Instant::now();
+        let pending = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
+        let second_backup = clipboard::ClipboardBackup::from_text_for_test("dictated text");
+
+        let backup = backup_for_next_clipboard_restore(second_backup, Some(pending));
+
+        assert!(backup.original_text_is("previous clipboard"));
+    }
+
+    #[test]
+    fn second_paste_keeps_new_backup_when_clipboard_changed_after_previous_paste() {
+        let now = std::time::Instant::now();
+        let pending = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
+        let second_backup = clipboard::ClipboardBackup::from_text_for_test("user copied text");
+
+        let backup = backup_for_next_clipboard_restore(second_backup, Some(pending));
+
+        assert!(backup.original_text_is("user copied text"));
     }
 
     #[test]
