@@ -7,7 +7,8 @@
 
 ## Technical objective
 
-Extend the shipped Gmail + Calendar connector without weakening ADR-0016.
+Extend the shipped Gmail + Calendar connector while preserving its implemented
+local-mode security properties and resolving ADR-0016's proposed status.
 Drive, Contacts, Docs, Sheets, and Meet calls must reuse Keychain custody, the
 on-device provider proxy, the read/action MCP split, explicit account binding,
 trust modes, and the approval journal.
@@ -152,5 +153,6 @@ latency, approval, denial, and provider error buckets.
 
 - Google OAuth verification and test Workspace tenant.
 - A settled scope expansion behavior from Slice 0.
-- No new ADR if the work follows ADR-0016. A new ADR is required before any
-  cloud index, domain-wide delegation, or backend-held provider credential.
+- Resolve ADR-0016's proposed status before treating its local-mode shape as an
+  accepted constraint. A new or superseding ADR is required before any cloud
+  index, domain-wide delegation, or backend-held provider credential.

@@ -112,6 +112,7 @@ matrix and conditional-access troubleshooting runbook.
 
 ## ADR threshold
 
-Delegated tokens on-device and direct Graph calls extend ADR-0016's pattern. An
+Delegated tokens on-device and direct Graph calls can extend the local-mode
+pattern proposed by ADR-0016 once that decision is accepted or superseded. An
 ADR is required before application permissions, a public webhook relay, tenant-
 wide deployment, or backend-held Microsoft credentials.

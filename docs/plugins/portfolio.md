@@ -74,30 +74,41 @@ approval cards already cover the higher-value parts of the job.
 ### Candidate census reviewed
 
 The directory is dynamic and varies by plan, workspace, role, region, and
-supported surface. This census covers every candidate family named by the
-current official directory, plugin use-case guide, app help, and workspace
-release notes available during the 2026-07-13 review. It is not a claim that
+supported surface. This census covers the complete product surface and every
+candidate or family specifically named by the official directory, sync
+catalog, plugin use-case guide, app help, and workspace release notes available
+during the 2026-07-13 review. OpenAI describes 66 single-app plugins without
+publishing one stable, account-independent list, so this is not a claim that
 every account sees every listing.
 
 | Candidate family | Named current examples reviewed | Portfolio disposition |
 | --- | --- | --- |
 | Google work graph | Gmail, Calendar, Drive, Docs, Sheets, Slides, Meet, Contacts, BigQuery | Google Workspace selected; BigQuery and Slides deferred |
 | Microsoft work graph | Outlook Email, Outlook Calendar, OneDrive, SharePoint, Teams | Microsoft 365 selected as one capability-granular plugin |
-| Team communication and knowledge | Slack, Notion, Asana, Intercom | Slack and Notion selected; Asana and Intercom deferred |
-| Software delivery | GitHub, GitHub Enterprise template, Linear, Replit, Lovable | GitHub and Linear selected; hosted builders deferred |
+| Team communication and knowledge | Slack, Notion | Slack and Notion selected |
+| Project and product management | Aha!, Asana, Azure Boards, Basecamp, ClickUp, Linear, Teamwork.com | Linear selected; the rest scored as alternatives |
+| Software delivery | GitHub, GitHub Enterprise template, GitLab Issues, Replit, Lovable | GitHub selected; GitLab and hosted builders deferred |
 | File stores | Dropbox, Box | Deferred behind ecosystem file access and local artifacts |
-| CRM, structured data, and warehouses | HubSpot, Airtable, Databricks template, Snowflake template | Deferred for narrower ICP and admin/away-mode complexity |
+| CRM and sales | Salesforce, HubSpot, Pipedrive, Zoho CRM, Clay | Scored below the top ten; revisit when sales workflows are a primary ICP |
+| Customer support | Intercom, Help Scout, Zoho Desk | Scored below the top ten; narrower than June's current ICP |
+| Structured data and warehouses | Airtable, Databricks, Hex, Snowflake, BigQuery | Deferred for narrower ICP and admin/data-model complexity |
 | Creative work | Adobe, Canva, Figma | Deferred until the local artifact foundation proves itself |
 | Consumer and lifestyle | AllTrails, Apple Music, Booking.com, Expedia, Instacart, Spotify, Target, Tripadvisor, Zillow | Outside June's private work focus |
 | Agent execution | Browser interaction and computer interaction | Browser use and Computer use selected |
 | Local work products | Documents, spreadsheets, PDFs, presentations, visualizations, sites | Documents and Spreadsheets selected; adjacent formats follow the shared artifact broker |
+| Hosted and remote execution | ChatGPT Sites, DigitalOcean Droplet Workspace, Codex Remote | Deferred; June should first prove local artifacts and execution |
+| Role packages | Sales, Data Analytics, Product Design, Creative Production, Investment Banking, Public Equity Investing | Evaluated as packaging patterns; the underlying jobs score below the first ten |
 
 The census also reviewed the cross-cutting surfaces around each listing:
 directory discovery, search and categories, explicit and model-suggested
 invocation, interactive UI, live search, deep research, pre-indexed sync, write
 actions, per-action confirmation, role access, domain restriction, connection,
-disconnect, developer-mode custom apps, public review, and app templates. June's
-shared product contract below records which of those surfaces it should adopt.
+disconnect, developer-mode custom apps, public review, app templates, locally
+built plugins, workspace sharing, role packages, Sites, remote workspaces,
+record-and-replay skill creation, RBAC, analytics, and organization policy.
+June's shared product contract below records which of those surfaces it should
+adopt. Local-plugin sharing and a third-party marketplace are platform choices,
+not candidates in the end-user top-ten ranking.
 
 ## Ranking method
 
@@ -116,6 +127,44 @@ core loop and private architecture over directory visibility.
 Scores reflect evidence available on 2026-07-13, not permanent market facts.
 They should be revisited after 30-day activation, weekly use, approval, and
 task-completion data exist.
+
+### Reproducible scorecard
+
+Values are weighted points, not unweighted ratings. Each row sums to its total,
+so a reviewer can change one assumption without reconstructing the model.
+Grouped deferred rows use the highest-scoring member of that family, giving an
+omitted family its strongest reasonable case.
+
+| Candidate | Core /25 | Frequency /20 | Action /15 | Retention /15 | Privacy /15 | Delivery /10 | Total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Google Workspace | 24 | 20 | 14 | 14 | 14 | 8 | **94** |
+| Browser use | 23 | 18 | 15 | 15 | 12 | 8 | **91** |
+| Slack | 22 | 18 | 14 | 14 | 12 | 6 | **86** |
+| Microsoft 365 | 23 | 18 | 13 | 13 | 12 | 5 | **84** |
+| Computer use | 22 | 17 | 15 | 14 | 10 | 3 | **81** |
+| Notion | 20 | 15 | 12 | 13 | 11 | 6 | **77** |
+| GitHub | 19 | 13 | 13 | 12 | 9 | 7 | **73** |
+| Linear | 18 | 12 | 13 | 11 | 8 | 7 | **69** |
+| Documents | 18 | 15 | 11 | 9 | 10 | 4 | **67** |
+| Spreadsheets | 17 | 13 | 12 | 9 | 8 | 5 | **64** |
+| CRM and sales: Salesforce, HubSpot, Pipedrive, Zoho CRM, Clay | 19 | 10 | 13 | 11 | 8 | 2 | 63 |
+| Project management: Aha!, Asana, Azure Boards, Basecamp, ClickUp, Teamwork.com | 17 | 10 | 11 | 10 | 8 | 5 | 61 |
+| File stores: Box, Dropbox | 16 | 11 | 8 | 9 | 9 | 7 | 60 |
+| Creative and design: Adobe, Canva, Figma | 14 | 8 | 12 | 9 | 7 | 6 | 56 |
+| Data and warehouses: Airtable, BigQuery, Databricks, Hex, Snowflake | 12 | 7 | 11 | 8 | 8 | 5 | 51 |
+| Support: Intercom, Help Scout, Zoho Desk | 14 | 7 | 10 | 8 | 7 | 4 | 50 |
+| Hosted sites and builders: Sites, Replit, Lovable | 12 | 6 | 13 | 8 | 5 | 4 | 48 |
+| Presentations and visualizations | 12 | 8 | 10 | 7 | 6 | 4 | 47 |
+| Role packages: six current role-specific bundles | 11 | 7 | 9 | 8 | 6 | 5 | 46 |
+| Remote infrastructure: DigitalOcean and remote workspaces | 8 | 4 | 11 | 6 | 4 | 4 | 37 |
+| Consumer and lifestyle directory apps | 5 | 4 | 8 | 4 | 3 | 6 | 30 |
+
+The closest omission is CRM and sales at 63, one point below Spreadsheets.
+Its meeting follow-through is strong, but June's current ICP encounters it less
+often, its best proactive workflows need administrator setup or away-mode
+events, and Salesforce-class distribution adds a difficult credential and
+review path. Customer evidence can change that decision; the threshold is now
+explicit.
 
 ## Sequencing
 
@@ -153,9 +202,12 @@ permit shipping multiple one-off OAuth stacks.
 
 Every launch plugin must satisfy the same contract:
 
-1. The listing states what the plugin can read, what it can change, what leaves
-   the device for inference, and whether OpenSoftware is in the connector data
-   path.
+1. The listing states what the plugin can read and change; which June note,
+   conversation, memory, device, IP-address, and approximate-location context
+   can reach the provider; what leaves the device for inference; whether
+   OpenSoftware is in the connector data path; and links the provider's privacy
+   and retention policy. The approval preview identifies the June-originated
+   content disclosed by that specific action.
 2. Install, connect, grant, trust mode, and runtime mode are separate states.
 3. The Plugins tile, Settings control, and contextual in-chat suggestion point
    to one source of truth.
@@ -170,8 +222,11 @@ Every launch plugin must satisfy the same contract:
    carry injection warnings, while the broker remains the enforcement point.
 8. Routines receive explicit toolsets and an explicit account binding. No
    routine silently selects the first account.
-9. Every action has a stable idempotency key or a local action journal before
-   retries are allowed.
+9. Automatic write retries require a provider-supported idempotency key. A
+   local journal records `pending`, `committed`, or `ambiguous`, but cannot by
+   itself make a provider mutation idempotent. After an ambiguous timeout June
+   must reconcile provider state using a stable action fingerprint, or block
+   replay and ask the user to confirm.
 10. No plugin introduces an upstream provider key into the desktop binary or
     routes provider content through June API unless a separately approved
     away-mode design requires it.
@@ -205,9 +260,15 @@ these shared metrics.
 - **Dropbox, Box, OneDrive-only, and SharePoint-only plugins:** valuable file
   access, but Google Workspace, Microsoft 365, Notion, and local Documents cover
   the dominant jobs first. Provider-specific file stores remain candidates.
-- **HubSpot and other CRMs:** strong meeting follow-through but narrower than
-  the first ten and likely to need an away-mode webhook path for the best
-  proactive experience.
+- **Salesforce, HubSpot, Pipedrive, Zoho CRM, Clay, and other CRM/sales tools:**
+  strong meeting follow-through and the closest ranked omission, but narrower
+  than the first ten and likely to need admin setup or an away-mode webhook
+  path for the best proactive experience.
+- **Aha!, Asana, Azure Boards, Basecamp, ClickUp, GitLab Issues, and
+  Teamwork.com:** credible planning alternatives, but Linear and GitHub cover
+  the first product/engineering wedge without multiplying overlapping setup.
+- **Intercom, Help Scout, and Zoho Desk:** useful support context, deferred
+  until support teams are a validated primary segment.
 - **Figma, Canva, and presentation creation:** compelling output, but June
   should prove the shared artifact broker with Documents and Spreadsheets
   before adding remote design surfaces or a presentation renderer.
@@ -216,6 +277,10 @@ these shared metrics.
   in the public app directory but outside June's private work focus.
 - **A third-party plugin marketplace:** the security, signing, update, and
   policy model is a separate product. The first ten are first-party bundles.
+- **Role-specific plugin packs, local-plugin sharing, and ChatGPT Sites:** useful
+  packaging and platform benchmarks, but not additional account connectors.
+  June should revisit them after the first-party manifest, artifact broker,
+  and organization model exist.
 - **Cloud sync of entire provider corpora:** conflicts with the local-mode
   trust story. Live, scoped reads come first; away mode requires its own
   accepted threat model.
@@ -230,6 +295,7 @@ days before this document was written.
 - [Plugin use cases and prompts](https://help.openai.com/en/articles/12084614-app-use-cases-and-prompts) - current work categories and supported app examples.
 - [ChatGPT release notes](https://help.openai.com/en/articles/6825453-chatgpt-release-notes) - current Google, Microsoft, Box, Dropbox, Notion, and Linear action expansion.
 - [ChatGPT Business release notes](https://help.openai.com/en/articles/11391654) - current Slack, Asana, Intercom, Google, Microsoft, and workspace plugin changes.
+- [Apps with sync](https://help.openai.com/en/collections/15507678-apps-with-sync) - current named sync catalog across knowledge, planning, code, CRM, and support tools.
 - [ChatGPT public app directory](https://chatgpt.com/apps/) - public featured, productivity, and lifestyle inventory.
 - [Apps SDK tool design](https://developers.openai.com/apps-sdk/plan/tools) - focused tools, predictable structured output, read/write separation, and discovery metadata.
 - [Apps SDK guidelines](https://developers.openai.com/apps-sdk/app-guidelines) - action annotations, data minimization, reliability, and review expectations.

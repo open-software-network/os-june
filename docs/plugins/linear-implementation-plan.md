@@ -28,7 +28,7 @@ mutations.
 
 | Server | Tools |
 | --- | --- |
-| `june_linear` | `list_teams`, `list_projects`, `list_cycles`, `list_initiatives`, `search_issues`, `get_issue`, `list_project_updates` |
+| `june_linear` | `list_teams`, `list_users`, `list_projects`, `list_cycles`, `list_initiatives`, `search_issues`, `get_issue`, `list_issue_comments`, `list_project_updates` |
 | `june_linear_actions` | `create_issue`, `update_issue`, `add_comment`, `create_project_update` |
 
 Generate fixed GraphQL documents in Rust. Do not accept arbitrary GraphQL from
@@ -46,7 +46,9 @@ priority, assignee, timestamps, and bounded text.
 ## Action safety
 
 - `create_issue`: exact team and optional project preview; stable local action
-  id and post-response journal.
+  id and response journal. If Linear does not accept a provider idempotency
+  key, an ambiguous timeout blocks automatic replay until a recent-object
+  fingerprint reconciles the mutation or the user approves another attempt.
 - `update_issue`: allow only title, description, status, priority, assignee,
   project, and cycle in V1; approval shows field diff.
 - `add_comment` and `create_project_update`: rendered content preview.
@@ -64,8 +66,8 @@ delivery id, then fetch current state rather than trusting payload content.
 
 1. **Connection + teams (1 week).** OAuth, Keychain, selected teams, health,
    revoke.
-2. **Planning reads (1-2 weeks).** Projects, cycles, initiatives, issue search
-   and detail.
+2. **Planning reads (1-2 weeks).** Users, projects, cycles, initiatives, issue
+   search/detail/comments, and project updates.
 3. **Approved issue flow (1 week).** Create/update/comment with conflict and
    idempotency handling.
 4. **Project updates (1 week).** Read/create status updates.
@@ -91,5 +93,6 @@ to the current provider API.
 
 ## ADR threshold
 
-Local token custody/direct API calls can extend ADR-0016. A confidential token
+Local token custody/direct API calls can extend the local-mode pattern proposed
+by ADR-0016 once that decision is accepted or superseded. A confidential token
 exchange, app credential, or webhook relay requires an explicit ADR.

@@ -31,7 +31,7 @@ user, and the existing approval broker.
 
 | Server | Tools |
 | --- | --- |
-| `june_github` | `list_repositories`, `search_code`, `read_file`, `list_commits`, `list_issues`, `get_issue`, `list_pull_requests`, `get_pull_request`, `get_pull_request_diff`, `list_checks` |
+| `june_github` | `list_repositories`, `search_code`, `read_file`, `list_commits`, `list_issues`, `get_issue`, `list_pull_requests`, `get_pull_request`, `get_pull_request_diff`, `list_checks`, `list_discussions`, `get_discussion` |
 | `june_github_actions` | `create_issue`, `comment_on_issue`, `comment_on_pull_request`, `submit_review` |
 
 Each result includes owner, repository, stable node/database id, number or SHA,
@@ -51,8 +51,10 @@ and support explicit continuation.
 
 - Every write parks with exact repository, object, title/body or review diff,
   and source note references.
-- Issue/comment creation uses a stable local action id and provider response
-  journal to avoid duplicates.
+- Issue/comment creation uses a stable local action id and response journal.
+  Because that journal cannot make GitHub mutations idempotent, an ambiguous
+  timeout blocks automatic replay until June reconciles a stable fingerprint
+  against recent provider objects or the user explicitly approves another try.
 - Review submission revalidates pull-request head SHA before commit.
 - Merge, close, branch, content, workflow, release, secret, and administration
   operations do not exist in the server schema.
@@ -64,7 +66,8 @@ and support explicit continuation.
    selected-repository lifecycle.
 2. **Connection shell (1 week):** installation state, Keychain, health,
    repository selection updates, revoke.
-3. **Delivery reads (2 weeks):** issues, PRs, diffs, commits, checks.
+3. **Delivery reads (2 weeks):** issues, PRs, diffs, commits, checks, and
+   discussions.
 4. **Code reads (1 week):** search/file content bounds and binary handling.
 5. **Approved writes (1 week):** issue, comment, review with journal/preflight.
 6. **Skills and rc (1 week):** standup, risk, release notes, pilot.

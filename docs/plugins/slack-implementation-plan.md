@@ -71,6 +71,10 @@ away-mode design, not a quiet exception in local mode.
 - `autonomous`: deferred. The first release does not permit unattended posts.
 - Channel allowlist applies in every mode and cannot be widened by tool input.
 - Cross-workspace and Slack Connect channel identity is explicit in approvals.
+- Automatic retry is enabled only where Slack honors the stable client message
+  id as an idempotency key. Otherwise an ambiguous timeout is reconciled
+  against recent channel history by action fingerprint, or replay is blocked
+  until the user confirms; the local journal alone is insufficient.
 
 ## Delivery slices after Phase 0
 
@@ -106,6 +110,7 @@ without deleting the user's local notes.
 
 ## Architecture decision gate
 
-Following ADR-0016 without a backend credential or event path needs no new ADR.
-Any exception to local token custody or on-device provider calls satisfies the
-repo's ADR threshold and must be recorded before implementation.
+The local-mode shape proposed by ADR-0016 is the starting hypothesis, not an
+accepted decision while that ADR remains proposed. Accept or supersede it
+before implementation depends on the boundary. Any backend credential or event
+path independently satisfies the repo's ADR threshold and must be recorded.
