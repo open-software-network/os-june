@@ -7844,7 +7844,7 @@ export function AgentWorkspace({
     void downloadHermesBridgeFile(path)
       .then((destination) => {
         if (selectedHermesSessionIdRef.current === requestSessionId) {
-          toast.success(`Downloaded ${displayName}`, {
+          toast.success(<DownloadToastMessage action="Downloaded" fileName={displayName} />, {
             id: DOWNLOAD_TOAST_ID,
             action: {
               label: "Show file",
@@ -7888,7 +7888,9 @@ export function AgentWorkspace({
       link.click();
       link.remove();
       if (selectedHermesSessionIdRef.current === requestSessionId) {
-        toast(`Download started: ${fileName}`, { id: DOWNLOAD_TOAST_ID });
+        toast(<DownloadToastMessage action="Download started" fileName={fileName} />, {
+          id: DOWNLOAD_TOAST_ID,
+        });
       }
     }
   };
@@ -7902,9 +7904,7 @@ export function AgentWorkspace({
   };
   const downloadGeneratedVideo = (part: Extract<AgentChatPart, { type: "video" }>) => {
     if (!part.path) return;
-    void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
-      setError(messageFromError(err)),
-    );
+    downloadPathBackedArtifact(part.path, part.name?.trim() || "Generated video");
   };
 
   // Feature 14: open an artifact from the drawer's timeline. The timeline's
@@ -13651,6 +13651,18 @@ function taskActivitySummary(task: AgentTaskDto) {
     default:
       return "";
   }
+}
+
+function DownloadToastMessage({ action, fileName }: { action: string; fileName: string }) {
+  const label = `${action} ${fileName}`;
+  return (
+    <span className="june-download-toast-message" aria-label={label}>
+      <span>{action}</span>
+      <span className="june-download-toast-file" title={fileName}>
+        {fileName}
+      </span>
+    </span>
+  );
 }
 
 function ensureDownloadFileExtension(fileName: string, fallbackExtension: string) {

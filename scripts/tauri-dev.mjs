@@ -99,8 +99,8 @@ function tauriCommand() {
   if (process.platform === "win32") {
     return process.execPath;
   }
-  const localBinary = resolve(SCRIPT_DIR, "..", "node_modules", ".bin", "tauri");
-  return existsSync(localBinary) ? localBinary : "tauri";
+  const localBinary = findNodeModulesPath(".bin", "tauri");
+  return localBinary ?? "tauri";
 }
 
 function tauriCommandArgs(args) {
@@ -111,9 +111,26 @@ function tauriCommandArgs(args) {
 }
 
 function tauriJsEntryPoint() {
-  const tauriJs = resolve(SCRIPT_DIR, "..", "node_modules", "@tauri-apps", "cli", "tauri.js");
-  if (!existsSync(tauriJs)) {
-    throw new Error(`Tauri CLI entry point not found at "${tauriJs}". Run pnpm install first.`);
+  const tauriJs = findNodeModulesPath("@tauri-apps", "cli", "tauri.js");
+  if (!tauriJs) {
+    throw new Error(
+      `Tauri CLI entry point not found from "${SCRIPT_DIR}". Run pnpm install first.`,
+    );
   }
   return tauriJs;
+}
+
+function findNodeModulesPath(...segments) {
+  let current = resolve(SCRIPT_DIR, "..");
+  while (true) {
+    const candidate = resolve(current, "node_modules", ...segments);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+    const parent = resolve(current, "..");
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
 }

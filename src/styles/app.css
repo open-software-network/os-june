@@ -4958,21 +4958,6 @@ input:focus-visible,
   justify-content: center;
 }
 
-.agent-composer-notice-message {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  min-width: 0;
-  max-width: 100%;
-}
-
-.agent-composer-notice-file {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .agent-composer-notice-button {
   appearance: none;
   display: inline-flex;
@@ -5094,6 +5079,21 @@ input:focus-visible,
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
   line-height: 1.5;
+}
+
+.june-download-toast-message {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.june-download-toast-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Tone accents: the leading glyph only. */
