@@ -78,6 +78,9 @@ export function useReferralNudgeTriggers({
       probingRef.current = true;
       osAccountsReferralSummary()
         .then(() => {
+          // The gates can flip while the probe is in flight (a recording
+          // starts, the user signs out) — re-check before showing.
+          if (!enabledRef.current) return;
           markReferralNudgeShown();
           onShowRef.current(moment);
         })

@@ -73,11 +73,15 @@ function loadState(): ReferralNudgeState {
   }
 }
 
-function saveState(state: ReferralNudgeState) {
+/** Returns false when storage is full or unavailable. Callers fail CLOSED on
+ *  that: a moment we cannot record must never show, or an install with broken
+ *  storage would re-nudge on every trigger, ignoring the caps entirely. */
+function saveState(state: ReferralNudgeState): boolean {
   try {
     window.localStorage.setItem(REFERRAL_NUDGE_STORAGE_KEY, JSON.stringify(state));
+    return true;
   } catch {
-    // Storage full or unavailable: the nudge quietly never fires.
+    return false;
   }
 }
 
@@ -100,8 +104,8 @@ function fireMoment(
   if (state.consumed.includes(moment)) return null;
   state.consumed.push(moment);
   const allowed = capsAllow(state, now);
-  saveState(state);
-  if (!allowed) return null;
+  const persisted = saveState(state);
+  if (!allowed || !persisted) return null;
   window.dispatchEvent(new CustomEvent(REFERRAL_NUDGE_EVENT, { detail: { moment } }));
   return moment;
 }

@@ -117,4 +117,20 @@ describe("referral nudge frequency caps", () => {
     window.localStorage.setItem(REFERRAL_NUDGE_STORAGE_KEY, "{not json");
     expect(recordAgentTaskCompleted(T0)).toBe("agent");
   });
+
+  it("fails closed when storage writes fail (never shows what it cannot record)", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError");
+    });
+    try {
+      expect(recordAgentTaskCompleted(T0)).toBeNull();
+      expect(announced).toEqual([]);
+    } finally {
+      setItem.mockRestore();
+    }
+    // Storage recovers: the moment was never persisted as consumed, so the
+    // caps stay intact and it can fire properly now.
+    expect(recordAgentTaskCompleted(T0)).toBe("agent");
+    expect(announced).toEqual(["agent"]);
+  });
 });
