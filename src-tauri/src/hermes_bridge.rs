@@ -129,9 +129,10 @@ const JUNE_BROWSER_MCP_SERVER_NAME: &str = "june_browser";
 const JUNE_BROWSER_MCP_SCRIPT_NAME: &str = "june_browser_mcp.py";
 const JUNE_BROWSER_MCP_SCRIPT: &str = include_str!("hermes/june_browser_mcp.py");
 /// Environment variable the `june_browser` MCP reads its loopback proxy token
-/// from. Kept out of argv so it does not appear in process listings. Distinct
-/// from the provider and recorder tokens: browser control must not be reachable
-/// with either.
+/// from. Kept out of argv so it does not appear in process listings. The
+/// distinct token prevents cross-talk between MCP subprocesses; it is not an
+/// authorization boundary against the agent, which can read its own config.
+/// The Browser access grant, re-checked by the broker, authorizes browser use.
 const JUNE_BROWSER_MCP_TOKEN_ENV: &str = "JUNE_BROWSER_PROXY_TOKEN";
 const AGENT_RECORDER_REQUEST_EVENT: &str = "june://agent-recorder-request";
 // The frontend start path can legitimately take minutes: readiness runs
@@ -312,7 +313,10 @@ const AGENT_CLI_ACCESS_FLAG_FILE: &str = "agent-cli-access";
 /// stored grant behind Browser use). A presence flag like
 /// `AGENT_CLI_ACCESS_FLAG_FILE`, kept in the app data dir itself — outside every
 /// Hermes sandbox write root — so the jailed runtime can never grant itself
-/// browser access. Read synchronously on every spawn.
+/// browser access. An unrestricted runtime has no Seatbelt profile and can
+/// create this file, so grant integrity against that mode remains a shared
+/// follow-up with Agent CLI access. Read synchronously on every spawn and by the
+/// broker for every browser request.
 const BROWSER_ACCESS_FLAG_FILE: &str = "browser-access";
 
 /// State locations of the agent CLIs the opt-in covers, relative to $HOME.
@@ -408,11 +412,11 @@ pub struct HermesBridge {
     /// Recently delivered recorder request ids (see
     /// `recorder_request_recently_completed`).
     recorder_completed: Mutex<std::collections::VecDeque<String>>,
-    /// The in-process browser broker (JUN-286): the Browser access grant state
-    /// plus an in-memory session registry, shared with the provider proxy so
-    /// `/v1/browser/status` can read the grant and active session count. The
-    /// extension, native-messaging shim, and real browser actions are JUN-287's;
-    /// nothing here drives a browser.
+    /// The in-process browser broker (JUN-286): the persisted Browser access
+    /// grant lookup plus an in-memory session registry, shared with the
+    /// provider proxy so `/v1/browser/status` can read the grant and active
+    /// session count. The extension, native-messaging shim, and real browser
+    /// actions are JUN-287's; nothing here drives a browser.
     browser_broker: Arc<BrowserBroker>,
 }
 
@@ -422,12 +426,12 @@ struct HermesProcess {
     connection: HermesBridgeConnection,
 }
 
-/// Minimal browser broker skeleton (JUN-286). Owns the Browser access grant
-/// state and a registry of broker sessions, enough to refuse new commands and
-/// terminate every session on revoke. JUN-287 fleshes out extension pairing,
-/// the native-messaging shim, and per-tab debugger control; this slice adds no
-/// production session creation, only the grant gate and the terminable
-/// registry.
+/// Minimal browser broker skeleton (JUN-286). Reads the Browser access grant
+/// from its persisted flag for every command and owns a registry of broker
+/// sessions, enough to refuse new commands and terminate every session on
+/// revoke. JUN-287 fleshes out extension pairing, the native-messaging shim,
+/// and per-tab debugger control; this slice adds no production session
+/// creation, only the grant gate and the terminable registry.
 #[derive(Default)]
 struct BrowserBroker {
     state: Mutex<BrowserBrokerState>,
@@ -435,9 +439,12 @@ struct BrowserBroker {
 
 #[derive(Default)]
 struct BrowserBrokerState {
-    /// True while the Browser access grant is on. New broker commands are
-    /// refused when this is false.
-    enabled: bool,
+    /// Persisted Browser access grant consulted for every broker command.
+    /// `None` fails closed until the app data path is configured.
+    access_flag_path: Option<PathBuf>,
+    /// Short-lived deny override used while a revoke removes the persisted
+    /// grant. This is transition ordering, not cached consent.
+    transition_blocked: bool,
     /// Active broker sessions keyed by id. Only needs to be clearable on revoke
     /// today; the value is a JUN-287 placeholder.
     sessions: HashMap<String, BrowserSession>,
@@ -458,20 +465,29 @@ impl BrowserBroker {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Applies a grant transition to broker state. Enabling only flips the gate;
-    /// revoking first refuses new commands (the gate goes false) and then
-    /// terminates every session, so nothing survives the revoke. Extension
-    /// detach / native-messaging teardown is JUN-287's.
+    fn set_access_flag_path(&self, path: PathBuf) {
+        self.lock().access_flag_path = Some(path);
+    }
+
+    /// Applies the in-memory half of a grant transition. This never stores an
+    /// enabled grant: authorization always comes from the flag file. Revoking
+    /// temporarily blocks commands before persistence and terminates every
+    /// session; enabling releases that transition block after persistence.
     fn set_enabled(&self, enabled: bool) {
         let mut state = self.lock();
-        state.enabled = enabled;
+        state.transition_blocked = !enabled;
         if !enabled {
             state.sessions.clear();
         }
     }
 
     fn is_enabled(&self) -> bool {
-        self.lock().enabled
+        let state = self.lock();
+        !state.transition_blocked
+            && state
+                .access_flag_path
+                .as_ref()
+                .is_some_and(|path| path.exists())
     }
 
     fn active_session_count(&self) -> usize {
@@ -526,13 +542,13 @@ impl BrowserProxyToken {
 #[derive(Clone)]
 struct ProviderProxyState {
     token: String,
-    /// Recorder routes require this dedicated secret, handed only to the
-    /// `june_recorder` MCP: microphone control must not be reachable with the
-    /// general provider token every model call carries.
+    /// Recorder routes require this dedicated secret, handed to the
+    /// `june_recorder` MCP to prevent cross-talk from other MCP subprocesses.
+    /// This is not a boundary against the agent, which can read its own config.
     recorder_token: String,
-    /// Browser routes require this dedicated secret, handed only to the
-    /// `june_browser` MCP: browser control must not be reachable with either the
-    /// general provider token or the recorder token.
+    /// Browser routes require this dedicated secret, handed to the
+    /// `june_browser` MCP to prevent cross-talk from other MCP subprocesses.
+    /// The Browser access grant in the broker is the authorization boundary.
     browser_token: BrowserProxyToken,
     /// The browser broker, shared with `HermesBridge`, so `/v1/browser/status`
     /// reads the live Browser access grant and active session count.
@@ -1155,13 +1171,10 @@ async fn start_hermes_bridge_inner(
         None
     };
     let june_recorder_mcp = sync_june_recorder_mcp(app, &command)?;
-    // Read the Browser access grant fresh every spawn and mirror it into the
-    // broker, so a restart reflects the persisted grant and the `june_browser`
-    // config `enabled` leaf follows it. The `june_browser` entry is ALWAYS
-    // rendered (command/args/token present regardless), so the grant flips only
-    // the `enabled` leaf.
+    // Read the Browser access grant fresh for the rendered `june_browser`
+    // `enabled` leaf. Broker authorization does not use this spawn snapshot: it
+    // re-reads the persisted flag for every `/v1/browser/*` request.
     let browser_access = browser_access_enabled(app);
-    bridge.browser_broker.set_enabled(browser_access);
     let june_browser_mcp = sync_june_browser_mcp(app, &command, browser_access)?;
     // Resolved from the live catalog so Hermes' vision tools attach an image
     // straight to a vision-capable model's context instead of falling back to
@@ -1325,6 +1338,11 @@ async fn ensure_provider_proxy(
     bridge: &HermesBridge,
     hermes_home: &Path,
 ) -> Result<SharedProviderProxyInfo, AppError> {
+    let app_data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
+    bridge
+        .browser_broker
+        .set_access_flag_path(app_data_dir.join(BROWSER_ACCESS_FLAG_FILE));
     {
         let guard = bridge.provider_proxy.lock().map_err(|_| {
             AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
@@ -1341,8 +1359,6 @@ async fn ensure_provider_proxy(
     let token = random_token();
     let recorder_token = random_token();
     let browser_token = BrowserProxyToken::new(random_token());
-    let app_data_dir = crate::app_paths::app_data_dir(app)
-        .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     let image_sources = ImageSourceCapabilities {
         images_dir: hermes_home.join(JUNE_IMAGE_MCP_IMAGES_DIR_NAME),
         secret: load_or_create_image_source_capability_secret(&app_data_dir)?,
@@ -2438,10 +2454,11 @@ pub struct SetBrowserAccessRequest {
 /// Records (or clears) the Browser access grant and applies the transition to
 /// broker state at once. Revoke first refuses new broker commands (the gate
 /// flips false) and then terminates every broker session; extension detach and
-/// native-messaging teardown are JUN-287's, not this slice's. Both runtime modes
-/// are retired so the next spawn regenerates `config.yaml` with the
-/// `june_browser` `enabled` leaf following the new grant (the profile/config is
-/// applied at spawn and can't change on a live process).
+/// native-messaging teardown are JUN-287's, not this slice's. Both currently
+/// registered runtime mode slots are retired so the next spawn regenerates
+/// `config.yaml` with the `june_browser` `enabled` leaf following the new grant.
+/// An in-flight spawn that registers after teardown may keep its spawn-time
+/// config, but the broker re-checks the persisted grant on every request.
 #[tauri::command]
 pub fn set_hermes_browser_access(
     app: AppHandle,
@@ -2454,6 +2471,7 @@ pub fn set_hermes_browser_access(
             "Could not resolve the app data directory.",
         )
     })?;
+    bridge.browser_broker.set_access_flag_path(path.clone());
     apply_browser_access_transition(
         &bridge.browser_broker,
         request.enabled,
@@ -2500,6 +2518,10 @@ fn apply_browser_access_transition(
         browser_broker.set_enabled(false);
         persist()?;
         rotate_token()?;
+        // The persisted flag is now the steady-state gate. Release the
+        // transition-only deny override so any later explicit grant is read
+        // directly from disk without requiring a respawn.
+        browser_broker.set_enabled(true);
     }
     Ok(())
 }
@@ -6557,8 +6579,9 @@ fn browser_access_flag_path(app: &AppHandle) -> Option<PathBuf> {
         .map(|dir| dir.join(BROWSER_ACCESS_FLAG_FILE))
 }
 
-/// Whether the user granted Browser use (the stored Browser access grant). A
-/// presence flag in the app data dir, outside every Hermes sandbox write root.
+/// Whether the user granted Browser use (the stored Browser access grant). The
+/// flag is outside every jailed Hermes write root, but an unrestricted runtime
+/// can write it; integrity-binding both this and Agent CLI access is deferred.
 pub(crate) fn browser_access_enabled(app: &AppHandle) -> bool {
     browser_access_flag_path(app).is_some_and(|path| path.exists())
 }
@@ -7538,13 +7561,26 @@ fn render_recorder_mcp_entry(
 /// follows the stored Browser access grant (`false` when off). June owns this
 /// key, so a deep-merge omission would leave a stale or user-added `enabled:
 /// true` in place and fail to revoke — writing the leaf every spawn keeps the
-/// grant authoritative. It gets only the dedicated browser token via the
-/// environment (kept out of argv), never the provider or recorder secret.
+/// grant authoritative. While enabled it gets the dedicated browser token via
+/// the environment (kept out of argv), never the provider or recorder token;
+/// while disabled no browser token is rendered. The distinct tokens prevent
+/// MCP subprocess cross-talk, but the readable config makes them no boundary
+/// against the agent itself. Broker enforcement of the Browser access grant is
+/// the authorization gate.
 fn render_browser_mcp_entry(
     config: &JuneBrowserMcpConfig,
     base_url: &str,
     proxy_token: &str,
 ) -> String {
+    let token_entry = if config.enabled {
+        format!(
+            "      {token_env}: {token}\n",
+            token_env = JUNE_BROWSER_MCP_TOKEN_ENV,
+            token = yaml_string(proxy_token),
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"  {server_name}:
     enabled: {enabled}
@@ -7554,8 +7590,7 @@ fn render_browser_mcp_entry(
       - {base_url}
     env:
       PYTHONUNBUFFERED: "1"
-      {token_env}: {token}
-    timeout: 30
+{token_entry}    timeout: 30
     connect_timeout: 10
 "#,
         server_name = JUNE_BROWSER_MCP_SERVER_NAME,
@@ -7563,8 +7598,6 @@ fn render_browser_mcp_entry(
         command = yaml_string(&config.command),
         script_path = yaml_string(&config.script_path.to_string_lossy()),
         base_url = yaml_string(base_url),
-        token_env = JUNE_BROWSER_MCP_TOKEN_ENV,
-        token = yaml_string(proxy_token),
     )
 }
 
@@ -8407,11 +8440,12 @@ fn recorder_status_body() -> serde_json::Value {
     }
 }
 
-/// `GET /v1/browser/status`. Gated by the dedicated browser token upstream; here
-/// the Browser access grant is the second gate. With the grant off the broker
-/// refuses even the correct browser token (403), so `june_browser` never serves
-/// browser surface without the stored grant. With it on, it returns a small
-/// status describing the enabled state and active session count.
+/// `GET /v1/browser/status`. The dedicated token upstream prevents MCP
+/// subprocess cross-talk; the Browser access grant checked here is the
+/// authorization gate. With the grant off the broker refuses even the correct
+/// browser token (403), so `june_browser` never serves browser surface without
+/// the stored grant. With it on, it returns a small status describing the
+/// enabled state and active session count.
 async fn handle_browser_status(
     stream: &mut tokio::net::TcpStream,
     state: &ProviderProxyState,
@@ -8617,9 +8651,12 @@ fn provider_models_body(model: String, context_tokens: Option<i64>) -> serde_jso
     serde_json::json!({ "object": "list", "data": [entry] })
 }
 
-/// Recorder mutations require the recorder-scoped secret and browser routes the
-/// browser-scoped secret; every other route keeps the general provider token.
-/// Three distinct secrets, so none authorizes another's surface.
+/// Recorder mutations require the recorder-scoped token and browser routes the
+/// browser-scoped token; every other route keeps the general provider token.
+/// The distinct tokens prevent cross-talk between MCP subprocesses. They are
+/// readable from the agent's config and therefore do not authorize the agent;
+/// the Browser access grant enforced in the broker is the sole authorization
+/// gate for `/v1/browser/*`.
 fn provider_proxy_required_token<'a>(
     path: &str,
     provider_token: &'a str,
@@ -10473,14 +10510,18 @@ mod tests {
         assert!(!provider_proxy_authorized(&provider, "browser-tok"));
     }
 
-    async fn browser_status_response(grant_enabled: bool) -> String {
+    fn broker_for_access_flag(path: &Path) -> Arc<BrowserBroker> {
+        let broker = Arc::new(BrowserBroker::default());
+        broker.set_access_flag_path(path.to_path_buf());
+        broker
+    }
+
+    async fn browser_status_response_with_broker(broker: Arc<BrowserBroker>) -> String {
         let home = tempfile::tempdir().expect("tempdir");
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind proxy listener");
         let addr = listener.local_addr().expect("listener addr");
-        let broker = Arc::new(BrowserBroker::default());
-        broker.set_enabled(grant_enabled);
         let state = Arc::new(ProviderProxyState {
             token: "proxy-token".to_string(),
             recorder_token: "recorder-token".to_string(),
@@ -10522,6 +10563,15 @@ mod tests {
         response
     }
 
+    async fn browser_status_response(grant_enabled: bool) -> String {
+        let home = tempfile::tempdir().expect("tempdir");
+        let access_flag = home.path().join(BROWSER_ACCESS_FLAG_FILE);
+        if grant_enabled {
+            std::fs::write(&access_flag, b"1").expect("write browser access flag");
+        }
+        browser_status_response_with_broker(broker_for_access_flag(&access_flag)).await
+    }
+
     #[tokio::test]
     async fn browser_status_refuses_the_browser_token_while_grant_is_off() {
         let response = browser_status_response(false).await;
@@ -10543,11 +10593,29 @@ mod tests {
         assert!(response.contains("\"activeSessions\":0"));
     }
 
+    #[tokio::test]
+    async fn browser_status_refuses_after_the_persisted_grant_is_removed_without_a_respawn() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let access_flag = home.path().join(BROWSER_ACCESS_FLAG_FILE);
+        std::fs::write(&access_flag, b"1").expect("write browser access flag");
+        let broker = broker_for_access_flag(&access_flag);
+
+        std::fs::remove_file(&access_flag).expect("remove browser access flag");
+        let response = browser_status_response_with_broker(broker).await;
+
+        assert!(
+            response.starts_with("HTTP/1.1 403 Forbidden"),
+            "the broker must read the persisted grant for every request: {response}"
+        );
+        assert!(response.contains("browser_access_disabled"));
+    }
+
     #[test]
     fn render_hermes_config_always_renders_june_browser_following_the_grant() {
-        // Grant off: the entry is STILL rendered with command/args/dedicated
-        // token; only `enabled` is false. June owns this key, so omitting it on
-        // revoke would leave stale/user-added state and fail to revoke.
+        // Grant off: the entry is STILL rendered with command/args and an
+        // explicit `enabled: false`. June owns this key, so omitting it on
+        // revoke would leave stale/user-added state and fail to revoke. The
+        // disabled entry must not carry a live browser credential.
         let disabled = test_june_browser_mcp_config(false);
         let config = render_hermes_config(
             "glm",
@@ -10571,12 +10639,13 @@ mod tests {
         assert!(config.contains("    enabled: false\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_browser_mcp.py\"\n"));
         assert!(config.contains("      - \"http://127.0.0.1:9/v1\"\n"));
-        // The dedicated browser token, never the provider or recorder secret.
-        assert!(config.contains("      JUNE_BROWSER_PROXY_TOKEN: \"browser-proxy-tok\"\n"));
+        assert!(!config.contains("browser-proxy-tok"));
+        assert!(!config.contains(JUNE_BROWSER_MCP_TOKEN_ENV));
         assert!(!config.contains("JUNE_BROWSER_PROXY_TOKEN: \"proxy-tok\""));
         assert!(!config.contains("JUNE_BROWSER_PROXY_TOKEN: \"recorder-proxy-tok\""));
 
-        // Grant on: the same entry with `enabled: true`.
+        // Grant on: the same entry with `enabled: true` and the dedicated
+        // browser token, never the provider or recorder secret.
         let enabled = test_june_browser_mcp_config(true);
         let config = render_hermes_config(
             "glm",
@@ -10641,8 +10710,10 @@ mod tests {
 
     #[test]
     fn revoking_browser_access_clears_injected_broker_sessions() {
-        let broker = BrowserBroker::default();
-        broker.set_enabled(true);
+        let home = tempfile::tempdir().expect("tempdir");
+        let access_flag = home.path().join(BROWSER_ACCESS_FLAG_FILE);
+        std::fs::write(&access_flag, b"1").expect("write browser access flag");
+        let broker = broker_for_access_flag(&access_flag);
         // Test-only fixture insertion; production session creation is JUN-287's.
         broker.insert_test_session("sess-1");
         broker.insert_test_session("sess-2");
@@ -10657,8 +10728,10 @@ mod tests {
 
     #[test]
     fn revoking_browser_access_closes_the_gate_before_removing_persisted_state() {
-        let broker = BrowserBroker::default();
-        broker.set_enabled(true);
+        let home = tempfile::tempdir().expect("tempdir");
+        let access_flag = home.path().join(BROWSER_ACCESS_FLAG_FILE);
+        std::fs::write(&access_flag, b"1").expect("write browser access flag");
+        let broker = broker_for_access_flag(&access_flag);
         let mut gate_was_closed_during_persist = false;
 
         apply_browser_access_transition(
@@ -10666,6 +10739,8 @@ mod tests {
             false,
             || {
                 gate_was_closed_during_persist = !broker.is_enabled();
+                std::fs::remove_file(&access_flag)
+                    .map_err(|error| AppError::new("browser_access_failed", error.to_string()))?;
                 Ok(())
             },
             || Ok(()),
@@ -10675,6 +10750,26 @@ mod tests {
         assert!(
             gate_was_closed_during_persist,
             "new broker commands must be refused before persisted grant removal begins"
+        );
+    }
+
+    #[test]
+    fn a_spawn_registering_after_revoke_cannot_restore_browser_access() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let access_flag = home.path().join(BROWSER_ACCESS_FLAG_FILE);
+        std::fs::write(&access_flag, b"1").expect("write browser access flag");
+        let broker = broker_for_access_flag(&access_flag);
+        assert!(broker.is_enabled());
+
+        std::fs::remove_file(&access_flag).expect("remove browser access flag");
+        // Simulate an in-flight spawn publishing the stale value it read before
+        // the revoke removed the flag.
+        broker.set_enabled(true);
+
+        assert!(!access_flag.exists());
+        assert!(
+            !broker.is_enabled(),
+            "a stale spawn decision must not override the persisted grant"
         );
     }
 
