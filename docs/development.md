@@ -112,9 +112,11 @@ deploys a `tdx.small` CVM, and polls `/healthz` for up to 10 minutes. On
 timeout it exits non-zero and leaves the CVM up and billing, so tear it down
 by hand. `dev-with-ephemeral-api` deploys a fresh CVM, runs `pnpm tauri:dev`
 against it, and always deletes it on exit, whether you quit cleanly, hit
-Ctrl-C, or the run fails after the CVM came up. That is the invariant worth
-remembering: only `dev-with-ephemeral-api` cleans up after itself.
-`ephemeral-api` leaves the CVM running until `ephemeral-api-down`.
+Ctrl-C, close the terminal, or the run fails after the CVM came up. A hard
+kill or power loss can still skip cleanup; `make ephemeral-api-down` recovers
+from the state file, so run it if a session ended abnormally. That is the
+invariant worth remembering: only `dev-with-ephemeral-api` cleans up after
+itself. `ephemeral-api` leaves the CVM running until `ephemeral-api-down`.
 
 Prerequisites: Docker running, the `phala` CLI installed and authenticated
 (`phala auth login`), and a `june-api/.env` holding the upstream provider

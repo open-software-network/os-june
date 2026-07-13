@@ -37,6 +37,10 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# Closing the terminal delivers SIGHUP; untrapped it is fatal WITHOUT the
+# EXIT trap, which would skip teardown. SIGKILL/power loss remain uncoverable:
+# `make ephemeral-api-down` recovers from the state file.
+trap 'exit 129' HUP
 
 die() {
   echo "$*" >&2
@@ -49,6 +53,9 @@ die() {
 write_state() {
   local name="$1" uuid="$2" url="$3" token="$4" image="$5" git_sha="$6" created="$7" tmp
   tmp="$(mktemp "${STATE_FILE}.XXXXXX")"
+  # Register for cleanup: a crash between write and rename must not leave a
+  # token-bearing temp behind (rm -f after a successful mv is a no-op).
+  TMP_FILES+=("$tmp")
   chmod 600 "$tmp"
   jq -n \
     --arg name "$name" \
@@ -65,6 +72,24 @@ write_state() {
 
 read_state() {
   jq -r --arg key "$1" '.[$key] // empty' "$STATE_FILE"
+}
+
+# Tri-state existence probe via the /apps listing (same shape the CI
+# phala-deploy action uses): "listed", "absent" (the API answered and does
+# not know the name), or "ambiguous" (probe failed / non-JSON).
+probe_cvm_listed() {
+  local name="$1" apps
+  if apps="$(phala api /apps --json -f page=1 -f page_size=100 -f "search=${name}" 2>/dev/null)" \
+    && printf '%s' "$apps" | jq -e . >/dev/null 2>&1; then
+    if printf '%s' "$apps" \
+      | jq -e --arg n "$name" 'any(.dstack_apps[]?; .current_cvm.name? == $n)' >/dev/null; then
+      echo listed
+    else
+      echo absent
+    fi
+  else
+    echo ambiguous
+  fi
 }
 
 # Copy a key from june-api/.env verbatim. A missing or empty key is copied as
@@ -240,21 +265,27 @@ cmd_down() {
     # contain this name (covers tombstoned and never-created alike; a
     # `cvms get` probe cannot, it 404s on both). A failed or non-JSON
     # listing is ambiguous and keeps the state.
-    local apps
-    if apps="$(phala api /apps --json -f page=1 -f page_size=100 -f "search=${name}" 2>/dev/null)" \
-      && printf '%s' "$apps" | jq -e . >/dev/null 2>&1; then
-      if printf '%s' "$apps" \
-        | jq -e --arg n "$name" 'any(.dstack_apps[]?; .current_cvm.name? == $n)' >/dev/null; then
+    local listed
+    listed="$(probe_cvm_listed "$name")"
+    # An interrupt before the uuid was captured can race server-side
+    # registration: an aborted create may not be listed YET. Absence at one
+    # instant is not absence forever - re-probe once before trusting it.
+    if [[ "$listed" == "absent" && -z "$(read_state uuid)" ]]; then
+      sleep 10
+      listed="$(probe_cvm_listed "$name")"
+    fi
+    case "$listed" in
+      listed)
         echo "Could not delete $name and it still exists; keeping $STATE_FILE." >&2
         echo "Retry with: make ephemeral-api-down" >&2
-        return 1
-      fi
-      echo "Delete reported failure but the API no longer lists $name; dropping the state file." >&2
-    else
-      echo "Could not delete $name and could not confirm it is gone; keeping $STATE_FILE." >&2
-      echo "Retry with: make ephemeral-api-down" >&2
-      return 1
-    fi
+        return 1 ;;
+      absent)
+        echo "Delete reported failure but the API no longer lists $name; dropping the state file." >&2 ;;
+      *)
+        echo "Could not delete $name and could not confirm it is gone; keeping $STATE_FILE." >&2
+        echo "Retry with: make ephemeral-api-down" >&2
+        return 1 ;;
+    esac
   fi
   rm -f "$STATE_FILE"
   echo "Ephemeral June API torn down."
