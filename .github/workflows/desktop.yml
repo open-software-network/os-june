@@ -11,6 +11,7 @@ on:
       - "index.html"
       - "meeting-hud.html"
       - "biome.json"
+      - "extension/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
@@ -29,6 +30,7 @@ on:
       - "index.html"
       - "meeting-hud.html"
       - "biome.json"
+      - "extension/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
@@ -139,7 +141,7 @@ jobs:
           changed_files="$(git diff --name-only "$BASE" HEAD)"
           # Frontend checks (biome, typecheck, vitest) read src/ and scripts/, never
           # src-tauri/, so a src-tauri-only diff skips them and vice versa.
-          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.github/workflows/desktop\.yml$|biome\.json$|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|public/|scripts/|src/|tsconfig\.json$|vite\.config\.ts$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.github/workflows/desktop\.yml$|biome\.json$|extension/|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|public/|scripts/|src/|tsconfig\.json$|vite\.config\.ts$)'; then
             echo "frontend=true" >> "$GITHUB_OUTPUT"
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
