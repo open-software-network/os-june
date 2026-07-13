@@ -19,7 +19,6 @@ pub struct ClipboardBackup {
     original_text: String,
 }
 
-#[cfg(test)]
 impl ClipboardBackup {
     pub(crate) fn original_text_is(&self, text: &str) -> bool {
         self.original_text == text
