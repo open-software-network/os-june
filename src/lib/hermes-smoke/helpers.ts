@@ -160,32 +160,18 @@ export function parseRpcFrame(raw: string): HermesInboundFrame {
 }
 
 /**
- * The lowest JSON-RPC code that is still an APPLICATION-level Hermes error
- * (rather than a transport/protocol error). JSON-RPC reserves the band from
- * -32768 to -32000 for protocol errors (e.g. -32601 method-not-found); Hermes
- * raises its own controlled responses with positive codes in the 4xxx range
- * (e.g. 4009 "session busy", 4018 "not a quick/plugin/skill command"). The
- * smoke gate treats only these positive application codes as an acceptable
- * outcome for a bare `/model` dispatch.
- */
-export const HERMES_APP_ERROR_CODE_FLOOR = 4000;
-
-/**
- * Whether a rejection from `command.dispatch /model` is a CONTROLLED,
- * application-level Hermes error — the only rejection the smoke gate may treat
- * as a PASS. A bare `/model` legitimately comes back as a controlled refusal
- * (e.g. 4018 "not a quick/plugin/skill command", or 4009 "session busy"), which
- * proves the gateway is alive and speaking the protocol.
+ * Whether a rejection from session-scoped model `config.set` is the one
+ * controlled outcome the protocol smoke may treat as a PASS. Hermes returns
+ * 4009 when a session is still running because mutating the live agent model
+ * would race with the in-flight response.
  *
- * Returns false for everything that signals a real regression — a missing or
- * non-numeric `code`, or a JSON-RPC protocol error (the reserved band at or
- * below -32000, e.g. -32601 method-not-found) — so a changed error shape, an
- * auth/session failure, or a vanished method FAILS the gate instead of passing.
+ * Every other error fails the gate. In particular, 4018 means a request was
+ * sent through `command.dispatch` as an unknown command; accepting it used to
+ * let a broken model-switch RPC pass the live smoke test.
  */
-export function isControlledModelDispatchError(error: unknown): boolean {
+export function isControlledModelConfigSetError(error: unknown): boolean {
   const code = (error as { code?: unknown } | null | undefined)?.code;
-  if (typeof code !== "number" || !Number.isFinite(code)) return false;
-  return code >= HERMES_APP_ERROR_CODE_FLOOR;
+  return code === 4009;
 }
 
 /** Where a resolved Hermes command came from, for log clarity. `env_override`

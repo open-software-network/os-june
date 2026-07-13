@@ -89,6 +89,7 @@ export type RawHermesMethodName =
   | "session.branch"
   | "session.compress"
   | "session.usage"
+  | "config.set"
   | "command.dispatch"
   | "sudo.respond"
   | "secret.respond"

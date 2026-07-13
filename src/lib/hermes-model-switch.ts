@@ -2,14 +2,14 @@
  * User-facing notices for the composer model control.
  *
  * June lets the composer choose the text-model default before a Hermes session
- * exists. Once a session exists, the model is fixed for that thread; the
- * composer renders the current model as passive status instead of offering a
- * picker.
+ * exists. Once a session exists, a new choice is session-local and applies to
+ * the next user message. An active response keeps the model it started with.
  */
 
 /** No session was running, so only the default changed. */
 export const MODEL_SWITCH_DEFAULT_ONLY_NOTICE =
   "Default model updated. It applies to new sessions.";
 
-/** Existing sessions are model-locked; switch by starting a fresh session. */
-export const MODEL_CHANGE_LOCKED_NOTICE = "Start a new session to change models.";
+/** An existing session queued the choice for its next user message. */
+export const MODEL_SWITCH_NEXT_MESSAGE_NOTICE =
+  "Model changed. It will be used for your next message.";

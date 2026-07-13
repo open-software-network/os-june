@@ -47,9 +47,12 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
 3. `gateway.request("session.create")` returns **both** a `stored_session_id`
    (June's persistent id) and a `session_id` (the live runtime id);
    `ensureHermesBridgeSession` persists the mapping.
-4. Images are attached via `image.attach_bytes` (bytes read at attach time,
+4. If the session has a queued model choice, June applies it to the idle live
+   session with `config.set` before submitting anything. A failed switch blocks
+   the send and leaves the choice queued.
+5. Images are attached via `image.attach_bytes` (bytes read at attach time,
    never stored on state/trace/artifacts).
-5. `gateway.request("prompt.submit")` (ack-style) → live `event` frames →
+6. `gateway.request("prompt.submit")` (ack-style) → live `event` frames →
    `classifyHermesEvent` → `agent-chat-runtime` builds turns → React renders.
 
 ## Key concepts
@@ -66,10 +69,24 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
 - **Admin traffic goes server-side.** All admin/dashboard calls (skills, MCP,
   toolsets, env, cron) route through the Rust `hermes_admin_request` proxy — the
   webview is cross-origin to the Hermes dashboard and must never hold its token.
-- **Model switching is a `/model` dispatch trusting only the gateway ack.**
-  `hermes-model-switch.ts` encodes exactly three honest outcomes
-  (`active-session-switched` / `default-changed` / `switch-failed`); it never
-  claims a running session moved unless the dispatch acked.
+- **A model choice applies to the next user message, never the current
+  response.** The picker records the latest session-local choice immediately,
+  including while June is responding. Send snapshots one choice before any
+  asynchronous preparation. The active agent run, including tool and goal
+  continuations, keeps the model it started with. Before the next agent run,
+  June waits for true idle and sends `config.set` with the live runtime session
+  id, `key: "model"`, and `value: "<model> --session"`, then `prompt.submit`
+  under one stored-session dispatch lock shared with Note Chat. The `--session`
+  flag prevents Hermes from changing its process-wide default. The gateway ack
+  is the source of truth; if Hermes rejects the mutation, June does not submit
+  the prompt and keeps both the choice and message recoverable. See
+  [ADR-0018](adr/0018-session-model-changes-apply-at-agent-run-boundaries.md).
+- **Hermes model ids preserve route provenance.** Concrete remote, Auto, and
+  local choices use reserved internal ids while stored in Hermes. The Bridge's
+  `/v1/models` response advertises those aliases, and the on-device agent proxy
+  decodes them before forwarding. This keeps a local model and remote model with
+  the same raw id unambiguous and prevents a settings change from rerouting an
+  active agent run.
 - **Model capabilities come from the live Venice catalog, never traits** — see
   [ADR-0007](adr/0007-model-capability-source-of-truth.md). The model catalog is
   Rust-side (`src-tauri/src/providers/mod.rs`, backed by June API's Venice
@@ -87,7 +104,8 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
 Builtin composer slash commands are **`/model`**, **`/file`**, and
 **`/image`** — the last gated off behind `IMAGE_GENERATION_ENABLED`
 (`src/lib/agent-composer-slash-commands.ts`) — plus **skill** slash commands
-(`skill-slash-commands.ts`).
+(`skill-slash-commands.ts`). In an existing session, `/model` queues the same
+next-message choice as the picker; it does not mutate the running response.
 
 ## Key Tauri commands
 

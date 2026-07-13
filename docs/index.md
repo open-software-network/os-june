@@ -27,6 +27,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0015](adr/0015-video-generation-tools.md) — video generation: `/video` fast path + LLM tools, async job + poll, quote-priced, via Venice
 - [adr/0016](adr/0016-private-connectors-local-mode.md) — private connectors (local mode): Keychain-only token custody, app-proxied MCP calls straight to Google, trust modes enforced in the Rust proxy, earned autonomy, event-trigger daemon
 - [adr/0017](adr/0017-browser-use-via-june-extension.md) — browser use in the user's own browser via the June extension, two tracks behind one broker; computer use productizes the pinned toolset
+- [adr/0018](adr/0018-session-model-changes-apply-at-agent-run-boundaries.md) — session model changes are staged at Send and applied only at the next idle agent-run boundary
 
 ## Enforceable rules (spec/)
 

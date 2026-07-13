@@ -8,6 +8,18 @@ import { createHermesMethods } from "../../lib/hermes-control-plane/methods";
 import { isTerminalHermesEvent, type JuneHermesEvent } from "../../lib/hermes-control-plane/events";
 import { isHermesFeatureSupported } from "../../lib/hermes-control-plane/compatibility/support";
 import { HermesGatewayClient, isSessionBusyError } from "../../lib/hermes-gateway";
+import { applySessionModelWhenIdle } from "../../lib/hermes-next-prompt-model";
+import { withHermesSessionDispatchLock } from "../../lib/hermes-session-dispatch-mutex";
+import {
+  hasPendingSessionModelSelection,
+  hermesModelIdForSelection,
+  markSessionModelSelectionApplied,
+  readSessionModelSelections,
+  rememberAppliedSessionModelSelection,
+  stageSessionModelSelection,
+  subscribeSessionModelSelections,
+  type SessionModelSelection,
+} from "../../lib/hermes-session-model-selection";
 import {
   attachImageToSession,
   pendingImageAttachments,
@@ -133,6 +145,13 @@ function sessionMessagesFrom(response: {
   return response.messages ?? response.items ?? response.data ?? [];
 }
 
+function sameSessionModelSelection(
+  left: SessionModelSelection,
+  right: SessionModelSelection,
+): boolean {
+  return left.modelId === right.modelId && left.costQuality === right.costQuality;
+}
+
 export type NoteChat = {
   /** The rendered conversation: persisted turns + the live streaming tail. */
   turns: AgentChatTurn[];
@@ -154,8 +173,10 @@ export type NoteChat = {
    * interrupt RPC follows best-effort, like the workspace's stop. */
   stop: () => void;
   /** Chooses the model for this chat: applied at session.create for a fresh
-   * chat, or as a /model switch ahead of the next message on a live one. */
-  setSessionModel: (modelId: string) => void;
+   * chat, or as a session-scoped switch ahead of the next message on a live
+   * one. A change made while working remains queued for the following run. */
+  modelSelection: SessionModelSelection | undefined;
+  setSessionModel: (selection: SessionModelSelection) => void;
 };
 
 /** A note-scoped chat with June, powered by the same Hermes runtime as the
@@ -173,14 +194,19 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   const [working, setWorking] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [modelSelection, setModelSelection] = useState<SessionModelSelection | undefined>(() => {
+    const sessionId = noteId ? noteChatSessionIdFor(noteId) : undefined;
+    return sessionId ? readSessionModelSelections()[sessionId]?.selection : undefined;
+  });
 
   const storedSessionIdRef = useRef<string>();
   const runtimeSessionIdRef = useRef<string>();
   // The model the user picked in the panel vs the one the live session runs.
-  // They converge at session.create (fresh chat) or via a /model dispatch
-  // right before the next prompt (existing chat) — never mid-turn.
-  const pendingModelIdRef = useRef<string>();
-  const appliedModelIdRef = useRef<string>();
+  // They converge at session.create (fresh chat) or via a session-scoped
+  // config update right before the next prompt (existing chat) — never
+  // mid-turn.
+  const pendingModelSelectionRef = useRef<SessionModelSelection>();
+  const appliedHermesModelIdRef = useRef<string>();
   // Synchronous in-flight guard: React batches setWorking(true), so a rapid
   // double send (double-click, or Enter racing the send button) could both
   // pass the state-based check and each create a session / append a turn.
@@ -195,8 +221,11 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     const sessionId = noteId ? noteChatSessionIdFor(noteId) : undefined;
     storedSessionIdRef.current = sessionId;
     runtimeSessionIdRef.current = undefined;
-    pendingModelIdRef.current = undefined;
-    appliedModelIdRef.current = undefined;
+    const rememberedSelection = sessionId
+      ? readSessionModelSelections()[sessionId]?.selection
+      : undefined;
+    pendingModelSelectionRef.current = rememberedSelection;
+    appliedHermesModelIdRef.current = undefined;
     submittingRef.current = false;
     setStoredSessionId(sessionId);
     setMessages([]);
@@ -204,6 +233,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     setPendingUserTurns([]);
     setWorking(false);
     setError(null);
+    setModelSelection(rememberedSelection);
     if (!sessionId) {
       setLoading(false);
       return;
@@ -233,6 +263,18 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       stale = true;
     };
   }, [noteId]);
+
+  useEffect(
+    () =>
+      subscribeSessionModelSelections((store) => {
+        const sessionId = storedSessionIdRef.current;
+        if (!sessionId) return;
+        const nextSelection = store[sessionId]?.selection;
+        pendingModelSelectionRef.current = nextSelection;
+        setModelSelection(nextSelection);
+      }),
+    [],
+  );
 
   const refreshTranscript = useCallback(async () => {
     const sessionId = storedSessionIdRef.current;
@@ -289,7 +331,17 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       if (submittingRef.current) return false;
       submittingRef.current = true;
       setError(null);
-      const isFirstMessage = !storedSessionIdRef.current;
+      const startingStoredSessionId = storedSessionIdRef.current;
+      const isFirstMessage = !startingStoredSessionId;
+      // Capture before the first await. A picker change after this point is for
+      // the following run, even if session creation/resume is still pending.
+      const capturedModelSelection = pendingModelSelectionRef.current;
+      const capturedModelEntry = startingStoredSessionId
+        ? readSessionModelSelections()[startingStoredSessionId]
+        : undefined;
+      const capturedHermesModelId = capturedModelSelection
+        ? hermesModelIdForSelection(capturedModelSelection)
+        : undefined;
       const base = isFirstMessage
         ? `${noteReferenceToken({ id: noteId, title: noteTitle })} ${question}`
         : question;
@@ -310,20 +362,29 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         if (!gateway) throw new Error("Hermes gateway is not connected.");
         let sessionId = storedSessionIdRef.current;
         let runtimeSessionId = runtimeSessionIdRef.current;
-        const modelId = pendingModelIdRef.current;
         if (!sessionId) {
           const created = await gateway.request<HermesRuntimeSessionResponse>("session.create", {
             title: noteTitle.trim() || "Note chat",
             cols: 96,
-            ...(modelId ? { model: modelId } : {}),
+            ...(capturedHermesModelId ? { model: capturedHermesModelId } : {}),
           });
           sessionId = created.stored_session_id ?? created.session_id;
           if (!sessionId) throw new Error("Hermes did not create a session.");
           runtimeSessionId = created.session_id;
-          appliedModelIdRef.current = modelId;
+          appliedHermesModelIdRef.current = capturedHermesModelId;
           storedSessionIdRef.current = sessionId;
           setStoredSessionId(sessionId);
           rememberNoteChatSession(noteId, sessionId);
+          const latestSelection = pendingModelSelectionRef.current;
+          if (
+            latestSelection &&
+            (!capturedModelSelection ||
+              !sameSessionModelSelection(latestSelection, capturedModelSelection))
+          ) {
+            stageSessionModelSelection(sessionId, latestSelection);
+          } else if (capturedModelSelection) {
+            rememberAppliedSessionModelSelection(sessionId, capturedModelSelection);
+          }
         }
         if (!runtimeSessionId) {
           const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
@@ -334,42 +395,63 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           if (!runtimeSessionId) throw new Error("Hermes did not resume the session.");
         }
         runtimeSessionIdRef.current = runtimeSessionId;
-        if (modelId && modelId !== appliedModelIdRef.current) {
-          // A picked model on an existing session applies as the same /model
-          // dispatch the workspace uses, ahead of the prompt so this turn
-          // already runs on it. Failure surfaces like any submit error —
-          // sending on the wrong model silently would betray the picker.
-          await createHermesMethods(gateway).switchActiveSessionModel({
-            mode: "sandboxed",
-            sessionId: runtimeSessionId,
-            model: modelId,
-          });
-          appliedModelIdRef.current = modelId;
-        }
-        // Images go to the model as first-class inputs before the prompt,
-        // like the workspace's feature-19 flow. A failed attach throws so the
-        // prompt is never sent with a silently-missing image; an unsupported
-        // runtime keeps the image imported and the path block still carries it.
-        const pendingImages = pendingImageAttachments(
-          attachments.map((attachment) => attachment.attach),
-        );
-        if (pendingImages.length) {
-          const methods = createHermesMethods(gateway);
-          const deps = {
-            attachImage: methods.attachImage,
-            readImageData: (path: string) => hermesBridgeImageDataUrl(path),
-            isSupported: () => isHermesFeatureSupported("image.attach_bytes"),
-          };
-          for (const image of pendingImages) {
-            const result = await attachImageToSession(image, runtimeSessionId, deps);
-            if (result.state.status === "failed") {
-              throw new Error(result.error ?? `Could not attach ${image.displayName}.`);
+        await withHermesSessionDispatchLock(sessionId, async () => {
+          // Re-read under the shared lock. AgentWorkspace can dispatch the same
+          // session from its still-mounted surface, so its accepted send may
+          // have changed the live model after this NoteChat send was captured.
+          const currentModelEntry = readSessionModelSelections()[sessionId];
+          const currentStoredModelId = currentModelEntry
+            ? hermesModelIdForSelection(currentModelEntry.selection)
+            : undefined;
+          if (
+            capturedHermesModelId &&
+            (hasPendingSessionModelSelection(capturedModelEntry) ||
+              capturedHermesModelId !== appliedHermesModelIdRef.current ||
+              (currentStoredModelId !== undefined &&
+                currentStoredModelId !== capturedHermesModelId))
+          ) {
+            // Apply only after the session is idle/resumed and immediately ahead
+            // of the prompt. Failure blocks the send; silently using the prior
+            // model would betray the picker.
+            await applySessionModelWhenIdle(() =>
+              createHermesMethods(gateway).switchActiveSessionModel({
+                mode: "sandboxed",
+                sessionId: runtimeSessionId,
+                model: capturedHermesModelId,
+              }),
+            );
+            appliedHermesModelIdRef.current = capturedHermesModelId;
+            if (capturedModelEntry) {
+              markSessionModelSelectionApplied(sessionId, capturedModelEntry.revision);
+            } else if (capturedModelSelection && !readSessionModelSelections()[sessionId]) {
+              rememberAppliedSessionModelSelection(sessionId, capturedModelSelection);
             }
           }
-        }
-        await gateway.request("prompt.submit", {
-          session_id: runtimeSessionId,
-          text: content,
+          // Images go to the model as first-class inputs before the prompt,
+          // like the workspace's feature-19 flow. A failed attach throws so the
+          // prompt is never sent with a silently-missing image; an unsupported
+          // runtime keeps the image imported and the path block still carries it.
+          const pendingImages = pendingImageAttachments(
+            attachments.map((attachment) => attachment.attach),
+          );
+          if (pendingImages.length) {
+            const methods = createHermesMethods(gateway);
+            const deps = {
+              attachImage: methods.attachImage,
+              readImageData: (path: string) => hermesBridgeImageDataUrl(path),
+              isSupported: () => isHermesFeatureSupported("image.attach_bytes"),
+            };
+            for (const image of pendingImages) {
+              const result = await attachImageToSession(image, runtimeSessionId, deps);
+              if (result.state.status === "failed") {
+                throw new Error(result.error ?? `Could not attach ${image.displayName}.`);
+              }
+            }
+          }
+          await gateway.request("prompt.submit", {
+            session_id: runtimeSessionId,
+            text: content,
+          });
         });
         return true;
       } catch (err) {
@@ -408,8 +490,11 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     })();
   }, [refreshTranscript]);
 
-  const setSessionModel = useCallback((modelId: string) => {
-    pendingModelIdRef.current = modelId;
+  const setSessionModel = useCallback((selection: SessionModelSelection) => {
+    pendingModelSelectionRef.current = selection;
+    setModelSelection(selection);
+    const sessionId = storedSessionIdRef.current;
+    if (sessionId) stageSessionModelSelection(sessionId, selection);
   }, []);
 
   const turns = useMemo(() => {
@@ -424,6 +509,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     loading,
     error,
     storedSessionId,
+    modelSelection,
     submit,
     stop,
     setSessionModel,

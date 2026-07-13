@@ -8332,9 +8332,24 @@ async fn handle_june_provider_connection(
     }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/v1/models") => {
+            let selected_model = crate::providers::generation_model();
+            let catalog = crate::june_api::list_models("text")
+                .await
+                .unwrap_or_default();
+            let selected_context_tokens = catalog
+                .iter()
+                .find(|model| model.id == selected_model)
+                .and_then(|model| model.context_tokens);
+            let selected_context_tokens = match selected_context_tokens {
+                Some(context_tokens) => Some(context_tokens),
+                None => crate::providers::generation_model_context_tokens().await,
+            };
             let body = provider_models_body(
-                crate::providers::generation_model(),
-                crate::providers::generation_model_context_tokens().await,
+                selected_model,
+                selected_context_tokens,
+                &catalog,
+                &crate::providers::local_generation_settings(),
+                crate::providers::cost_quality(),
             );
             write_json_response(&mut stream, 200, body).await?;
         }
@@ -9524,17 +9539,93 @@ fn translate_context_overflow_error(body: &[u8]) -> Option<serde_json::Value> {
 /// by bouncing off the backend's prompt_too_long rejection. When the window
 /// is unknown the field is omitted and Hermes falls back to its own probing,
 /// exactly the previous behavior.
-fn provider_models_body(model: String, context_tokens: Option<i64>) -> serde_json::Value {
-    let mut entry = serde_json::json!({
-        "id": model,
-        "object": "model",
-        "created": 0,
-        "owned_by": "june"
-    });
-    if let Some(context_tokens) = context_tokens {
-        entry["context_length"] = serde_json::json!(context_tokens);
+fn provider_models_body(
+    selected_model: String,
+    selected_context_tokens: Option<i64>,
+    catalog: &[crate::june_api::ModelDto],
+    local_settings: &crate::providers::LocalGenerationSettings,
+    cost_quality: f64,
+) -> serde_json::Value {
+    const AUTO_MODEL_ID: &str = "open-software/auto";
+    const AUTO_PREFIX: &str = "__june_auto_generation__:";
+    const REMOTE_PREFIX: &str = "__june_remote_generation__:";
+    const LOCAL_PREFIX: &str = "__june_local_generation__:";
+
+    fn encode_uri_component(value: &str) -> String {
+        let mut encoded = String::with_capacity(value.len());
+        for byte in value.as_bytes() {
+            if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(byte) {
+                encoded.push(char::from(*byte));
+            } else {
+                use std::fmt::Write as _;
+                let _ = write!(encoded, "%{byte:02X}");
+            }
+        }
+        encoded
     }
-    serde_json::json!({ "object": "list", "data": [entry] })
+
+    fn entry(id: &str, context_tokens: Option<i64>) -> serde_json::Value {
+        let mut model = serde_json::json!({
+            "id": id,
+            "object": "model",
+            "created": 0,
+            "owned_by": "june"
+        });
+        if let Some(context_tokens) = context_tokens {
+            model["context_length"] = serde_json::json!(context_tokens);
+        }
+        model
+    }
+
+    let mut data = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push = |id: String, context_tokens: Option<i64>| {
+        if !id.is_empty() && seen.insert(id.clone()) {
+            data.push(entry(&id, context_tokens));
+        }
+    };
+
+    push(selected_model.clone(), selected_context_tokens);
+    if selected_model != AUTO_MODEL_ID {
+        push(
+            format!("{REMOTE_PREFIX}{}", encode_uri_component(&selected_model)),
+            selected_context_tokens,
+        );
+    }
+    for model in catalog {
+        push(model.id.clone(), model.context_tokens);
+        if model.id != AUTO_MODEL_ID {
+            push(
+                format!("{REMOTE_PREFIX}{}", encode_uri_component(&model.id)),
+                model.context_tokens,
+            );
+        }
+    }
+
+    let auto_context_tokens = catalog
+        .iter()
+        .find(|model| model.id == AUTO_MODEL_ID)
+        .and_then(|model| model.context_tokens)
+        .or(if selected_model == AUTO_MODEL_ID {
+            selected_context_tokens
+        } else {
+            None
+        });
+    let current_auto_preference = (cost_quality.clamp(0.0, 1.0) * 100.0).round() as u8;
+    for preference in [20, 50, 100, current_auto_preference] {
+        push(format!("{AUTO_PREFIX}{preference}"), auto_context_tokens);
+    }
+
+    let local_model = local_settings.model_id.trim();
+    if !local_settings.base_url.trim().is_empty() && !local_model.is_empty() {
+        push(local_model.to_string(), None);
+        push(
+            format!("{LOCAL_PREFIX}{}", encode_uri_component(local_model)),
+            None,
+        );
+    }
+
+    serde_json::json!({ "object": "list", "data": data })
 }
 
 /// Recorder mutations require the recorder-scoped secret; connector routes
@@ -11990,7 +12081,13 @@ mod tests {
 
     #[test]
     fn models_listing_advertises_the_context_window_when_known() {
-        let body = provider_models_body("zai-org-glm-5".to_string(), Some(202_752));
+        let body = provider_models_body(
+            "zai-org-glm-5".to_string(),
+            Some(202_752),
+            &[],
+            &crate::providers::LocalGenerationSettings::default(),
+            1.0,
+        );
 
         let entry = &body["data"][0];
         assert_eq!(entry["id"], "zai-org-glm-5");
@@ -12004,11 +12101,68 @@ mod tests {
         // Offline or signed out: the listing must still serve (hermes needs
         // it to enumerate the model at all) and just skip the window, which
         // returns hermes to its own probing.
-        let body = provider_models_body("zai-org-glm-5".to_string(), None);
+        let body = provider_models_body(
+            "zai-org-glm-5".to_string(),
+            None,
+            &[],
+            &crate::providers::LocalGenerationSettings::default(),
+            1.0,
+        );
 
         let entry = &body["data"][0];
         assert_eq!(entry["id"], "zai-org-glm-5");
         assert!(entry.get("context_length").is_none());
+    }
+
+    #[test]
+    fn models_listing_advertises_tagged_remote_auto_and_local_routes() {
+        let catalog = vec![crate::june_api::ModelDto {
+            provider: "venice".to_string(),
+            id: "vendor/model:latest".to_string(),
+            name: "Model".to_string(),
+            model_type: "text".to_string(),
+            description: None,
+            privacy: None,
+            pricing: None,
+            context_tokens: Some(64_000),
+            traits: Vec::new(),
+            capabilities: Vec::new(),
+            price_unit: String::new(),
+            price_description: String::new(),
+            credits_per_million_seconds: None,
+            input_credits_per_million_tokens: None,
+            output_credits_per_million_tokens: None,
+        }];
+        let local = crate::providers::LocalGenerationSettings {
+            base_url: "http://localhost:11434/v1".to_string(),
+            model_id: "llama3.1:8b".to_string(),
+            api_key: String::new(),
+        };
+
+        let body = provider_models_body(
+            "vendor/model:latest".to_string(),
+            Some(64_000),
+            &catalog,
+            &local,
+            0.73,
+        );
+        let ids = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["id"].as_str())
+            .collect::<Vec<_>>();
+
+        assert!(ids.contains(&"__june_remote_generation__:vendor%2Fmodel%3Alatest"));
+        assert!(ids.contains(&"__june_auto_generation__:73"));
+        assert!(ids.contains(&"__june_local_generation__:llama3.1%3A8b"));
+        let tagged_remote = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "__june_remote_generation__:vendor%2Fmodel%3Alatest")
+            .unwrap();
+        assert_eq!(tagged_remote["context_length"], 64_000);
     }
 
     #[test]

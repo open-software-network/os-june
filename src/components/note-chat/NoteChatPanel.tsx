@@ -16,13 +16,20 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type { AgentChatPart, AgentChatTurn } from "../../lib/agent-chat-runtime";
 import { messageFromError } from "../../lib/errors";
 import { attachmentStateFrom } from "../../lib/hermes-image-attach";
+import {
+  isLoopbackUrl,
+  LOCAL_GENERATION_OPTION_ID_PREFIX,
+  localGenerationOptionId,
+  unavailableLocalGenerationOption,
+  withLocalGenerationOption,
+} from "../../lib/local-generation";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import {
   dictationHelperCommand,
   importHermesBridgeFile,
   listVeniceModels,
   providerModelSettings,
-  setCostQuality,
+  type LocalGenerationSettingsDto,
   type VeniceModelDto,
 } from "../../lib/tauri";
 import { FileTypeIcon } from "../agent/FileTypeIcon";
@@ -33,11 +40,6 @@ import {
   ComposerModelPopover,
   type ComposerModelFlyout,
 } from "../agent/composer/ModelPicker";
-import {
-  dispatchProviderModelSettingsChanged,
-  PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
-  type ProviderModelSettingsChangedDetail,
-} from "../../lib/model-privacy";
 import { autoPillDesignation } from "../../lib/suggested-models";
 import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import type { NoteChat, NoteChatAttachment } from "./useNoteChat";
@@ -168,7 +170,17 @@ export function NoteChatPanel({
   onClose: () => void;
   onOpenInAgent: (sessionId: string | undefined) => void;
 }) {
-  const { turns, working, loading, error, storedSessionId, submit, stop, setSessionModel } = chat;
+  const {
+    turns,
+    working,
+    loading,
+    error,
+    storedSessionId,
+    modelSelection,
+    submit,
+    stop,
+    setSessionModel,
+  } = chat;
   // Block escalation only during the pure first-send race — the session is
   // being created and there's no id to hand off yet. Once an id exists the
   // agent view resolves the conversation by it, so opening is always safe.
@@ -236,8 +248,13 @@ export function NoteChatPanel({
 
   // Model picking: the exact trigger + popover the agent composer uses,
   // loaded from the same catalog. Selection routes through the hook (applied
-  // at session.create or as a /model switch before the next message).
+  // at session.create or as a session-scoped switch before the next message).
   const [models, setModels] = useState<VeniceModelDto[]>([]);
+  const [localGeneration, setLocalGeneration] = useState<LocalGenerationSettingsDto>({
+    baseUrl: "",
+    modelId: "",
+    apiKey: "",
+  });
   const [modelId, setModelId] = useState("");
   const [costQuality, setCostQualityState] = useState<number | undefined>();
   const [modelOpen, setModelOpen] = useState(false);
@@ -246,6 +263,9 @@ export function NoteChatPanel({
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
   const modelSearchRef = useRef<HTMLInputElement>(null);
+  const modelSelectionRef = useRef(modelSelection);
+  const localEnableConfirmArmedForRef = useRef<string | null>(null);
+  modelSelectionRef.current = modelSelection;
   useEffect(() => {
     let stale = false;
     void (async () => {
@@ -254,48 +274,78 @@ export function NoteChatPanel({
         listVeniceModels("generation"),
       ]);
       if (stale) return;
-      setModels(catalog.models);
-      setModelId(settings.settings.generationModel || catalog.selectedModel);
-      setCostQualityState(settings.settings.costQuality);
+      const local = settings.settings.localGeneration ?? {
+        baseUrl: "",
+        modelId: "",
+        apiKey: "",
+      };
+      setLocalGeneration(local);
+      setModels(withLocalGenerationOption(catalog.models, local));
+      const fallbackModelId =
+        settings.settings.generationProvider === "local" && local.modelId.trim()
+          ? localGenerationOptionId(local.modelId)
+          : settings.settings.generationModel || catalog.selectedModel;
+      const initialSelection = modelSelectionRef.current ?? {
+        modelId: fallbackModelId,
+        ...(fallbackModelId === AUTO_MODEL_ID && settings.settings.costQuality !== undefined
+          ? { costQuality: settings.settings.costQuality }
+          : {}),
+      };
+      setModelId(initialSelection.modelId);
+      setCostQualityState(
+        initialSelection.modelId === AUTO_MODEL_ID
+          ? (initialSelection.costQuality ?? settings.settings.costQuality)
+          : settings.settings.costQuality,
+      );
+      if (!modelSelectionRef.current && !storedSessionId) setSessionModel(initialSelection);
     })().catch(() => {
       // No catalog (bridge down, browser preview): the picker simply hides.
     });
     return () => {
       stale = true;
     };
-  }, []);
-  // The Auto designation mirrors the app-wide preference, which the workspace
-  // and Settings pickers can change while this panel stays mounted — re-read
-  // it whenever a generation model change is announced. The session's model
-  // choice itself stays local on purpose.
+  }, [setSessionModel, storedSessionId]);
+
+  // The hook owns the durable queued/applied choice. Reflect note switches and
+  // changes made while a response is running without consulting the mutable
+  // app-wide default.
   useEffect(() => {
-    function handleSettingsChanged(event: Event) {
-      const detail = (event as CustomEvent<ProviderModelSettingsChangedDetail>).detail;
-      if (detail?.mode !== "generation") return;
-      void providerModelSettings()
-        .then((settings) => setCostQualityState(settings.settings.costQuality))
-        .catch(() => {
-          // No settings (bridge down, browser preview): keep the last value.
-        });
+    if (!modelSelection) return;
+    setModelId(modelSelection.modelId);
+    if (modelSelection.modelId === AUTO_MODEL_ID && modelSelection.costQuality !== undefined) {
+      setCostQualityState(modelSelection.costQuality);
     }
-    window.addEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, handleSettingsChanged);
-    return () =>
-      window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, handleSettingsChanged);
-  }, []);
-  const model = modelId ? selectedModel(models, modelId) : undefined;
+  }, [modelSelection]);
+  const model = modelId
+    ? models.some((candidate) => candidate.id === modelId)
+      ? selectedModel(models, modelId)
+      : (unavailableLocalGenerationOption(modelId) ?? selectedModel(models, modelId))
+    : undefined;
 
   async function selectModel(nextModelId: string, nextCostQuality?: number) {
     try {
-      if (nextCostQuality !== undefined) {
-        const next = await setCostQuality(nextCostQuality);
-        setCostQualityState(next.costQuality);
-        // The preference is app-wide even though the model choice is
-        // session-local: announce it so the workspace pill's designation
-        // refreshes (the mirror of the listener above).
-        dispatchProviderModelSettingsChanged({ mode: "generation", modelId: nextModelId });
+      if (nextModelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) {
+        const baseUrl = localGeneration.baseUrl.trim();
+        if (!isLoopbackUrl(baseUrl)) {
+          if (localEnableConfirmArmedForRef.current !== baseUrl) {
+            localEnableConfirmArmedForRef.current = baseUrl;
+            setComposerError(
+              "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
+            );
+            setModelOpen(false);
+            return;
+          }
+        }
       }
+      localEnableConfirmArmedForRef.current = null;
+      const selectedCostQuality =
+        nextModelId === AUTO_MODEL_ID ? (nextCostQuality ?? costQuality) : undefined;
       setModelId(nextModelId);
-      setSessionModel(nextModelId);
+      if (selectedCostQuality !== undefined) setCostQualityState(selectedCostQuality);
+      setSessionModel({
+        modelId: nextModelId,
+        ...(selectedCostQuality !== undefined ? { costQuality: selectedCostQuality } : {}),
+      });
       setModelOpen(false);
       setComposerError(null);
     } catch (err) {

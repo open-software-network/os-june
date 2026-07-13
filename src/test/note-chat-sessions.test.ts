@@ -9,6 +9,7 @@ import { useNoteChat } from "../components/note-chat/useNoteChat";
 
 const mocks = vi.hoisted(() => ({
   gatewayRequest: vi.fn(),
+  gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
   hermesBridgeImageDataUrl: vi.fn(),
   hermesBridgeSessionMessages: vi.fn(),
   hermesBridgeStatus: vi.fn(),
@@ -27,7 +28,10 @@ vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
   HermesGatewayClient: class {
     connect = vi.fn();
     close = vi.fn();
-    onEvent = vi.fn();
+    onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
+      mocks.gatewayEventHandlers.add(handler);
+      return () => mocks.gatewayEventHandlers.delete(handler);
+    });
     onClose = vi.fn();
     request = mocks.gatewayRequest;
   },
@@ -103,7 +107,7 @@ describe("note chat session map", () => {
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
 
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
-    act(() => result.current.setSessionModel("kimi-k2-6"));
+    act(() => result.current.setSessionModel({ modelId: "kimi-k2-6" }));
 
     let accepted = false;
     await act(async () => {
@@ -115,9 +119,65 @@ describe("note chat session map", () => {
       session_id: "stored-note-chat",
       cols: 96,
     });
-    expect(mocks.gatewayRequest).toHaveBeenCalledWith("command.dispatch", {
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
       session_id: "runtime-note-chat",
-      command: "/model kimi-k2-6",
+      key: "model",
+      value: "__june_remote_generation__:kimi-k2-6 --session",
+      confirm_expensive_model: true,
     });
+  });
+
+  it("queues a model picked while responding for the next turn", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+
+    await act(async () => {
+      expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+    });
+    expect(result.current.working).toBe(true);
+
+    mocks.gatewayRequest.mockClear();
+    act(() => result.current.setSessionModel({ modelId: "kimi-k2-6" }));
+
+    expect(result.current.modelSelection).toEqual({ modelId: "kimi-k2-6" });
+    expect(mocks.gatewayRequest).not.toHaveBeenCalled();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-note-chat",
+          payload: { status: "success" },
+        });
+      }
+    });
+    expect(result.current.working).toBe(false);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalled();
+
+    await act(async () => {
+      expect(await result.current.submit("What should we do next?")).toBe(true);
+    });
+
+    expect(mocks.gatewayRequest.mock.calls).toEqual([
+      [
+        "config.set",
+        {
+          session_id: "runtime-note-chat",
+          key: "model",
+          value: "__june_remote_generation__:kimi-k2-6 --session",
+          confirm_expensive_model: true,
+        },
+      ],
+      [
+        "prompt.submit",
+        {
+          session_id: "runtime-note-chat",
+          text: "What should we do next?",
+        },
+      ],
+    ]);
   });
 });

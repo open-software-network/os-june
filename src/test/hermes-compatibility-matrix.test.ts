@@ -52,6 +52,7 @@ describe("hermes compatibility matrix — required keys", () => {
       "session.branch",
       "session.compress",
       "session.usage",
+      "config.set",
       "command.dispatch",
       "subagent.interrupt",
       "image.attach",
@@ -177,12 +178,13 @@ describe("isHermesFeatureSupported — honest support gate", () => {
     expect(isHermesFeatureSupported("secret.respond")).toBe(true);
   });
 
-  it("reports feature 10's command.dispatch as supported once shipped", () => {
-    // Feature 10 shipped the typed switchActiveSessionModel seam
-    // (/model via command.dispatch). The composer now keeps existing
-    // sessions model-locked, but the protocol seam remains supported.
-    expect(getFeatureStatus("command.dispatch")).toBe("supported");
-    expect(isHermesFeatureSupported("command.dispatch")).toBe(true);
+  it("reports feature 10's config.set model seam as supported once shipped", () => {
+    // The typed switchActiveSessionModel seam uses session-scoped config.set.
+    // command.dispatch remains a typed generic stub but has no shipping caller.
+    expect(getFeatureStatus("config.set")).toBe("supported");
+    expect(isHermesFeatureSupported("config.set")).toBe(true);
+    expect(getFeatureStatus("command.dispatch")).toBe("planned");
+    expect(isHermesFeatureSupported("command.dispatch")).toBe(false);
   });
 
   it("reports feature 08's session.compress as supported once shipped", () => {

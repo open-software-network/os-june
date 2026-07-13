@@ -193,6 +193,14 @@ per-resume id. `session.create` returns both; conflating them attaches
 traces/artifacts to the wrong identity.
 _Avoid_: "the session id" (always say which).
 
+**Agent run**:
+The user-initiated Hermes execution that starts with `prompt.submit` and ends
+only when the session is truly idle, including its tool loop and automatic goal
+continuations. One agent run keeps one captured model. A later picker choice is
+applied at the next agent-run boundary, never inside the active run.
+_Avoid_: response (only the visible text), turn (ambiguous with transcript and
+conversation turns).
+
 **Composer**:
 The ProseMirror chat input with slash commands and attachment chips.
 _Avoid_: textbox.

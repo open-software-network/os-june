@@ -97,8 +97,10 @@ pnpm test:hermes-smoke
 Two phases, gated independently:
 
 - Protocol smoke (default; no provider key): start, status, ws connect,
-  `session.create`, `session.active_list`, `command.dispatch /model` (accepted
-  or a known controlled error), `session.interrupt`. No model tokens are spent.
+  `session.create`, `session.active_list`, session-scoped model `config.set`
+  (accepted or the documented 4009 busy guard), `session.interrupt`. A local
+  `/v1/models` stub validates a switch from the configured model to an alternate
+  listed model; no model tokens are spent.
 - Model smoke (opt-in): set `HERMES_SMOKE_MODEL=1` and ensure the runtime config
   has a real provider key. This adds a minimal no-tool `prompt.submit` and waits
   for a completion. It costs provider tokens, so it is off by default.
