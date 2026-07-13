@@ -103,6 +103,7 @@ distinct from the `specs/` Spec Kit feature specs.)
 - [font-families](spec/font-families.md) — sans is the voice; serif for headings/display, mono for code
 - [control-sizes](spec/control-sizes.md) — control heights from `--control-*`, no raw min/max-heights
 - [scroll-fade](spec/scroll-fade.md) — clipped scrollers use the shared `useScrollFade` + `.scroll-fade` / `.scroll-fade-mask` primitive
+- [package-install-security](spec/package-install-security.md) — pnpm-only; new package installs go through `sfw`; 7-day `minimumReleaseAge` cooldown
 
 ## PR and description conventions
 
@@ -168,8 +169,13 @@ See `docs/agents/collaboration.md` for the map.
 
 ## Build, test, lint
 
-Package manager: `pnpm` (a `bun.lock` also exists; the scripts are
-runner-agnostic).
+Package manager: `pnpm`, the only package manager for this repo, pinned by the
+`packageManager` field in `package.json` (CI's `pnpm/action-setup` reads the
+same pin — bump it in one place, to the newest release at least 7 days old).
+Supply-chain rules — the `sfw` install
+wrapper, the 7-day `minimumReleaseAge` cooldown, and deny-by-default dependency
+build scripts in `pnpm-workspace.yaml` — live in
+[spec/package-install-security.md](spec/package-install-security.md).
 
 - **Run the app:** `pnpm tauri:dev` (builds `src-tauri` and launches the native
   app; the first build is slow). `pnpm dev` runs the Vite frontend only.

@@ -5,7 +5,7 @@
 // Exits non-zero if any step fails to render. Console/page errors are printed
 // (they're where the real bugs surface) but don't fail the run by default.
 //
-// Requires: pnpm add -D playwright && pnpm exec playwright install chromium
+// Requires: pnpm install --frozen-lockfile && pnpm exec playwright install chromium
 
 import { chromium } from "playwright";
 import { mkdir } from "node:fs/promises";

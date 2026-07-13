@@ -106,21 +106,16 @@ function loadPlaywright(root) {
     createRequire(import.meta.url),
     createRequire(join(root, "package.json")),
   ];
-  const tempPackage = join(root, ".tmp/playwright-tools/package.json");
-  const tempModulePackage = join(root, ".tmp/playwright-tools/node_modules/playwright-core/package.json");
-  if (existsSync(tempPackage)) candidateRequires.push(createRequire(tempPackage));
-  if (existsSync(tempModulePackage)) candidateRequires.push(createRequire(tempModulePackage));
-
   for (const req of candidateRequires) {
     try {
-      return req("playwright-core");
+      return req("playwright");
     } catch {
       // Try the next location.
     }
   }
   throw new Error(
-    "playwright-core is required. Install it temporarily with " +
-      "`npm install --prefix .tmp/playwright-tools playwright-core@latest`.",
+    "Playwright is required. Restore the repository's pinned dependencies with " +
+      "`pnpm install --frozen-lockfile`.",
   );
 }
 

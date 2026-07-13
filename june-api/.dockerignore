@@ -4,3 +4,9 @@ target
 deploy
 **/*.md
 !crates/services/src/prompts/*.md
+# Local env files hold real provider keys. CI checkouts have none, but local
+# `make ephemeral-api` builds do, and the chef/planner stages `COPY . .` -
+# without this they land in the builder cache. Secrets reach a CVM only via
+# Phala sealed env, never via the image.
+.env
+.env.*

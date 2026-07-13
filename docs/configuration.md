@@ -22,7 +22,7 @@ built-in fallback ← `config.toml` ← the **live Venice catalog at boot**.
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `JUNE_API_URL` | Backend base URL the app calls | `http://127.0.0.1:8080` |
+| `JUNE_API_URL` | June API base URL the app calls | `https://june-api.opensoftware.co` in code; `.env` (from `.env.example`) sets `http://127.0.0.1:8080` for local dev |
 | `OS_JUNE_LOCAL_DEV` | Use a local bearer token instead of Login with Open Software | `1` (example) |
 | `OS_JUNE_LOCAL_DEV_BEARER_TOKEN` / `_USER_ID` | The local-mode identity | `local-dev-token` / `usr_local_dev` |
 | `OS_ACCOUNTS_URL` / `OS_ACCOUNTS_API_URL` | OS Accounts portal + API (optional in local mode) | unset |

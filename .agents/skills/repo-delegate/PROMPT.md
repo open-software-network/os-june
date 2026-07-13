@@ -32,6 +32,8 @@ improvising around them.
 - Keep edits scoped to the task and nearby supporting tests.
 - Do NOT commit, push, tag, or otherwise mutate git state — read-only git is
   fine. The caller reviews the diff and commits.
+- Do not spawn subagents; do the work in this session, unless the brief
+  explicitly says otherwise.
 - Extra constraints from the caller: {{CONSTRAINTS}}
 </constraints>
 
@@ -45,6 +47,8 @@ it, not the exit code.
 </validation>
 
 <output_contract>
+Once the gate passes and the brief's scope is covered, stop and write the
+report — do not keep polishing, refactoring, or expanding scope.
 Return a compact markdown report, nothing else:
 - `## Changes` — what changed and why, per file.
 - `## Validation` — each command run and its real result.

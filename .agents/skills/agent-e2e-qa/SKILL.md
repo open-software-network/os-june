@@ -98,9 +98,9 @@ captured.
   The helper starts an isolated tokenized Hermes dashboard using the local
   Hermes config, opens the Vite app in headless Chrome, records Playwright video
   under `.tmp/qa-recordings/`, shims only the Tauri shell calls needed by the web
-  surface, and waits for a visible assistant completion. If `playwright-core` is
-  not already available, install it outside repo dependencies with
-  `npm install --prefix .tmp/playwright-tools playwright-core@latest`.
+  surface, and waits for a visible assistant completion. Playwright comes
+  from the repository's pinned `playwright` dev dependency; if it is
+  unavailable, restore dependencies with `pnpm install --frozen-lockfile`.
 - Do not record microphone audio unless the user explicitly requests and
   approves it; `screencapture -g` uses the default input and may capture private
   speech or room audio.

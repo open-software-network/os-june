@@ -30,3 +30,7 @@ authoritative, reviewable version.
 ## Frontend — controls
 
 - [control-sizes](control-sizes.md) — control heights from `--control-*`, no raw min/max-heights
+
+## Tooling — dependencies
+
+- [package-install-security](package-install-security.md) — pnpm-only; new package installs go through `sfw`; 7-day `minimumReleaseAge` cooldown

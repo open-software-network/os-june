@@ -161,7 +161,8 @@ map, [CONTEXT.md](CONTEXT.md) for the domain glossary, and
 
 ## Build from source
 
-You need Node.js with pnpm 9 and a Rust toolchain.
+You need Node.js with pnpm 11 and a Rust toolchain. The exact pnpm version is
+pinned in `package.json`.
 
 ```sh
 git clone https://github.com/open-software-network/os-june

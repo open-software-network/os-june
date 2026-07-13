@@ -3,13 +3,14 @@
 # `make verify` locally should mean green CI. Use `make dev` to run june-api
 # and the desktop app together locally; production builds use `pnpm tauri:build`.
 .PHONY: help install \
-	dev dev-api \
+	dev dev-staging dev-api \
+	ephemeral-api ephemeral-api-down dev-with-ephemeral-api \
 	check format typecheck test-web \
 	tauri-fmt tauri-fmt-check tauri-lint tauri-test \
 	june-api-fmt june-api-fmt-check june-api-lint june-api-test \
 	fmt fmt-check lint test verify \
 	local-ci signoff-pr signoff-frontend signoff-rust-macos \
-	skills-update skills-restore skills-sync
+	skills-update skills-restore skills-sync sfw-check
 
 .DEFAULT_GOAL := help
 
@@ -31,8 +32,31 @@ install:  ## Install frontend deps (Rust builds via cargo)
 dev:  ## Run the desktop app + june-api together (Ctrl-C stops both)
 	pnpm tauri:dev
 
+# Uses real staging OS Accounts login; the local-dev bearer does not work against staging.
+dev-staging:  ## Run the desktop app against staging June API (real OS Accounts login)
+	JUNE_API_URL=https://june-api-staging.opensoftware.co \
+		OS_JUNE_LOCAL_DEV=0 \
+		OS_ACCOUNTS_URL=https://os-accounts-portal-staging.up.railway.app \
+		OS_ACCOUNTS_API_URL=https://os-accounts-api-staging.up.railway.app \
+		JUNE_DEV_SKIP_LOCAL_API=1 \
+		pnpm tauri:dev
+
 dev-api:  ## Run only june-api locally on :8080 (loads june-api/.env)
 	cd june-api && cargo run
+
+# Ephemeral Phala CVM: the working-tree june-api inside a real TEE, on demand.
+# Cost model: tdx.small bills $0.058/hr from creation until you delete it, and
+# the ttl.sh image tag expires after 4h (the CVM keeps running, but a restart
+# past expiry cannot re-pull the image). `dev-with-ephemeral-api` always deletes
+# the CVM on exit; the other two leave it up, so remember `ephemeral-api-down`.
+ephemeral-api:  ## Deploy the working-tree june-api to a disposable Phala CVM
+	./scripts/ephemeral-june-api.sh up
+
+ephemeral-api-down:  ## Delete the ephemeral CVM
+	./scripts/ephemeral-june-api.sh down
+
+dev-with-ephemeral-api:  ## Run the app against a fresh ephemeral CVM; deletes it on exit
+	./scripts/ephemeral-june-api.sh dev
 
 # --- Frontend (src/, scripts/) ---
 check:  ## Biome check (format + lint, incl. the lucide ban)
@@ -55,10 +79,10 @@ tauri-fmt-check:  ## rustfmt (check only)
 	cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
 tauri-lint:  ## clippy (warnings = errors)
-	cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+	cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 
 tauri-test:  ## cargo test
-	cargo test --manifest-path src-tauri/Cargo.toml
+	cargo test --manifest-path src-tauri/Cargo.toml --locked
 
 # --- June API backend (june-api/) ---
 june-api-fmt:  ## rustfmt (write)
@@ -74,14 +98,21 @@ june-api-test:  ## cargo test
 	cd june-api && cargo test --all-targets --all-features --locked
 
 # --- Skills (.agents/skills is the source of truth; .claude/skills are symlinks) ---
-skills-update:  ## Update project skills to latest (npx skills)
-	npx -y skills update --project --yes
+# The runner executes registry code, so it is version-pinned and wrapped in
+# Socket Firewall per spec/package-install-security.md.
+SKILLS_CLI := skills@1.5.15
 
-skills-restore:  ## Restore skills from the lockfile (npx skills)
-	npx -y skills experimental_install
+sfw-check:
+	@command -v sfw >/dev/null 2>&1 || { echo "Socket Firewall (sfw) is required: npm i -g sfw (see spec/package-install-security.md)" >&2; exit 1; }
 
-skills-sync:  ## Re-link skills into .claude/skills (npx skills)
-	npx -y skills experimental_sync --yes
+skills-update: sfw-check  ## Update project skills to latest (sfw npx skills)
+	sfw npx -y $(SKILLS_CLI) update --project --yes
+
+skills-restore: sfw-check  ## Restore skills from the lockfile (sfw npx skills)
+	sfw npx -y $(SKILLS_CLI) experimental_install
+
+skills-sync: sfw-check  ## Re-link skills into .claude/skills (sfw npx skills)
+	sfw npx -y $(SKILLS_CLI) experimental_sync --yes
 
 # --- Aggregates ---
 fmt: format tauri-fmt june-api-fmt  ## Format everything (biome + both cargo fmt)

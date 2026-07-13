@@ -6,12 +6,14 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - ".github/workflows/desktop.yml"
+      - ".github/actions/setup-pnpm/**"
       - "hud.html"
       - "index.html"
       - "meeting-hud.html"
       - "biome.json"
       - "package.json"
       - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - "public/**"
       - "scripts/**"
       - "src/**"
@@ -22,12 +24,14 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/desktop.yml"
+      - ".github/actions/setup-pnpm/**"
       - "hud.html"
       - "index.html"
       - "meeting-hud.html"
       - "biome.json"
       - "package.json"
       - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - "public/**"
       - "scripts/**"
       - "src/**"
@@ -55,10 +59,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 9.15.4
-          run_install: false
+        uses: ./.github/actions/setup-pnpm
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -90,10 +91,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 9.15.4
-          run_install: false
+        uses: ./.github/actions/setup-pnpm
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -141,7 +139,7 @@ jobs:
           changed_files="$(git diff --name-only "$BASE" HEAD)"
           # Frontend checks (biome, typecheck, vitest) read src/ and scripts/, never
           # src-tauri/, so a src-tauri-only diff skips them and vice versa.
-          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/workflows/desktop\.yml$|biome\.json$|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|public/|scripts/|src/|tsconfig\.json$|vite\.config\.ts$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.github/workflows/desktop\.yml$|biome\.json$|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|public/|scripts/|src/|tsconfig\.json$|vite\.config\.ts$)'; then
             echo "frontend=true" >> "$GITHUB_OUTPUT"
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
@@ -151,7 +149,7 @@ jobs:
           else
             echo "rust=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/workflows/desktop\.yml$|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|public/|scripts/|src/|src-tauri/|tsconfig\.json$|vite\.config\.ts$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.github/workflows/desktop\.yml$|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|public/|scripts/|src/|src-tauri/|tsconfig\.json$|vite\.config\.ts$)'; then
             echo "desktop_bundle=true" >> "$GITHUB_OUTPUT"
           else
             echo "desktop_bundle=false" >> "$GITHUB_OUTPUT"
@@ -232,10 +230,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 9.15.4
-          run_install: false
+        uses: ./.github/actions/setup-pnpm
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0

@@ -58,9 +58,50 @@ orchestrating model (see repo-build-pr's model orchestration rules).
    `pnpm check && pnpm typecheck && pnpm test`):
 
    ```bash
-   scripts/run-codex.sh  -t <brief.md> [-C <worktree>] [-g "<gate>"] [-c "<extra constraints>"] [-o <out>]
-   scripts/run-claude.sh -t <brief.md> [same flags]
+   scripts/run-codex.sh  -t <brief.md> [-C <worktree>] [-g "<gate>"] [-c "<extra constraints>"] [-o <out>] \
+                         [-m <model>] [-e <effort>] [-S <tier>]
+   scripts/run-claude.sh -t <brief.md> [same flags, minus -S; -m takes
+                         sonnet|opus|haiku (default opus), -e takes
+                         low|medium|high|xhigh|max (default medium — the
+                         brief carries the hard thinking; bump for subtle
+                         defect fixes)]
    ```
+
+   **Codex model/effort/speed** (defaults come from `~/.codex/config.toml`;
+   only pass a flag when the user asked for something specific):
+
+   Allowed models (for now): `gpt-5.6-sol` (config default; main work),
+   `gpt-5.6-terra` (quick review/feedback passes), `gpt-5.6-luna` (cheap fast
+   bulk; not a primary pick) — the script rejects anything else.
+
+   | User says | Flag |
+   |---|---|
+   | "sol" / "terra" / "luna" | `-m gpt-5.6-sol` / `-m gpt-5.6-terra` / `-m gpt-5.6-luna` |
+   | "think hard" | `-e high` |
+   | "max effort" | `-e xhigh` (rarely needed — high covers almost everything) |
+   | "quick pass" / "low effort" | `-e low` (or `minimal`/`none`) |
+   | "fast" | `-S fast` (bills ~2.5x credits — see below) |
+   | "standard speed" | `-S standard` (the script's default) |
+
+   Effort is `none|minimal|low|medium|high|xhigh` (validated client-side; the
+   API only rejects a bad value after the session has started). Calibration:
+   medium is the workhorse, high for genuinely hard briefs, xhigh almost
+   never — 5.6 at medium/high already runs long and completes tasks
+   end-to-end.
+
+   Speed maps to Codex's `service_tier` config: fast = `priority`, standard =
+   `default` — the only two tiers the gpt-5.6 models advertise; anything else
+   is silently dropped by Codex, so the script fails closed on other values.
+   **The script defaults to standard**, overriding the user config's
+   `priority`: fast bills ~2.5x credits, and 5.6's long autonomous runs make
+   the burn unpredictable. Delegations are background work; only pass
+   `-S fast` when the user explicitly asks.
+
+   After the run the script prints the Codex **session id**; follow up in the
+   same session with `codex exec resume <id> "<prompt>"`. Sessions cannot be
+   named at dispatch (`/rename` is TUI-only as of codex 0.144) — the id is
+   the handle. Resume only for short follow-ups: gpt-5.6 input past ~272k
+   tokens bills 2x, so a fresh scoped brief beats resuming a long session.
 
    `--dry-run` on either prints the filled prompt. `run-codex.sh` uses
    `codex exec -s workspace-write` (OS sandbox caps writes to the worktree);
@@ -85,8 +126,8 @@ orchestrating model (see repo-build-pr's model orchestration rules).
   the delegate — inherent to a writable worktree, and the standard flow
   copies `.env` in deliberately. Keep unrecoverable local state out of
   delegated worktrees; re-copy `.env` from the main checkout if damaged.
-- Fresh worktrees need `pnpm install` before the gate can pass; say so in the
-  brief or run it first.
+- Fresh worktrees need `pnpm install --frozen-lockfile` before the gate can
+  pass; say so in the brief or run it first.
 - `codex exec` is synchronous — no job babysitting. If dispatching many
   briefs, run them as background shell tasks and read the `-o` files.
 - The delegate reports what it *claims* it did; the diff is the truth.

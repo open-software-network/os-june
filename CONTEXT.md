@@ -169,6 +169,24 @@ write-jail, default) or `unrestricted`. Opt-in is per session; June keeps one
 gateway per mode so an unrestricted session can't un-sandbox others.
 _Avoid_: permission, profile.
 
+**Browser use**:
+The consent-gated capability (JUN-278, ADR 0017) that lets the agent operate
+a live browser. Attended sessions drive the user's own Chromium-family
+browser through the June extension, in task-owned or explicitly user-shared
+tabs; sandboxed routines get a June-managed, anonymous, ephemeral headless
+browser limited to the public web. All actions flow through the Rust browser
+broker; consequential actions park for approval.
+_Avoid_: web browsing (that is `june_web` search/fetch), browser toolset
+(the upstream runtime feature June does not expose).
+
+**Computer use**:
+The consent-gated capability (JUN-278 phase 2) that lets the agent operate
+Mac apps in the background - no cursor, focus, or Space theft - via the
+pinned runtime's computer-use toolset and a June-bundled pinned cua-driver.
+Every mutating action requires approval; requires a vision-capable model.
+_Avoid_: desktop automation (vague), computer_use toolset (that is the
+upstream mechanism, not the June capability).
+
 **Stored session id** vs **runtime session id**:
 The persistent id June keys all UI and history on, versus the live process's
 per-resume id. `session.create` returns both; conflating them attaches
