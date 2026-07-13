@@ -1429,6 +1429,67 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("advances the remaining follow-up queue when the submitted item completes immediately", async () => {
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { text?: string }) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit" && params?.text?.includes("first queued message")) {
+        for (const handler of [...mocks.gatewayEventHandlers]) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-1",
+            payload: { status: "success" },
+          });
+        }
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+
+    for (const [path, message] of [
+      ["/Users/alex/Desktop/first.pdf", "first queued message"],
+      ["/Users/alex/Desktop/second.pdf", "second queued message"],
+    ]) {
+      mocks.eventHandlers.get("tauri://drag-drop")?.({ payload: { paths: [path] } });
+      expect(await screen.findByText(path.split("/").at(-1) ?? path)).toBeInTheDocument();
+      await user.type(composer, message);
+      await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    }
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: expect.stringContaining("second queued message"),
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Up next" })).toBeNull());
+  });
+
   it("attaches a queued image only after the current turn completes", async () => {
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
     const user = userEvent.setup();
@@ -12116,7 +12177,12 @@ describe("AgentWorkspace", () => {
 
       await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
       const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
-      await user.click(within(dialog).getByRole("option", { name: /Auto · Lower Cost/ }));
+      await user.click(
+        within(dialog).getByRole("switch", { name: "Choose the model automatically" }),
+      );
+      expect(dialog).toBeInTheDocument();
+      await user.click(within(dialog).getByRole("button", { name: /Preference/ }));
+      await user.click(await screen.findByRole("menuitemradio", { name: /Lower cost/ }));
 
       expect(mocks.setCostQuality).not.toHaveBeenCalled();
       expect(mocks.setVeniceModel).not.toHaveBeenCalled();
@@ -12136,6 +12202,45 @@ describe("AgentWorkspace", () => {
         session_id: "runtime-session-1",
         text: "Use lower-cost Auto next",
       });
+    });
+
+    it("can turn Auto off for a session before an empty model catalog loads", async () => {
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "open-software/auto",
+        models: [],
+      });
+      const user = userEvent.setup();
+      render(
+        <AgentWorkspace
+          initialSession={{ ...existingSession, model: "__june_auto_generation__:100" }}
+        />,
+      );
+
+      await user.click(await screen.findByRole("button", { name: "Model: Auto (Higher)" }));
+      const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      const autoSwitch = within(dialog).getByRole("switch", {
+        name: "Choose the model automatically",
+      });
+      expect(autoSwitch).toBeChecked();
+      await user.click(autoSwitch);
+
+      expect(dialog).toBeInTheDocument();
+      expect(mocks.setCostQuality).not.toHaveBeenCalled();
+      expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Use the factory fallback next");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+          session_id: "runtime-session-1",
+          key: "model",
+          value: "__june_remote_generation__:zai-org-glm-5-2 --session",
+          confirm_expensive_model: true,
+        }),
+      );
     });
 
     it("changes only the default when no session is active and does not dispatch", async () => {
@@ -12215,7 +12320,7 @@ describe("AgentWorkspace", () => {
       await act(async () => finishModelSave?.());
     });
 
-    it("captures the Auto preference when a new session starts", async () => {
+    it("uses a newly chosen Auto preference before its settings save finishes", async () => {
       window.sessionStorage.setItem(
         AGENT_NEW_SESSION_PENDING_KEY,
         JSON.stringify({ createdAt: Date.now() }),
@@ -12225,7 +12330,7 @@ describe("AgentWorkspace", () => {
           transcriptionProvider: "venice",
           transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
           generationModel: "open-software/auto",
-          costQuality: 20,
+          costQuality: 100,
         },
       });
       mocks.listVeniceModels.mockResolvedValue({
@@ -12244,11 +12349,29 @@ describe("AgentWorkspace", () => {
           },
         ],
       });
+      let finishCostQualitySave: (() => void) | undefined;
+      mocks.setCostQuality.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finishCostQualitySave = () =>
+              resolve({
+                transcriptionProvider: "venice",
+                transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+                generationModel: "open-software/auto",
+                costQuality: 20,
+              });
+          }),
+      );
       const user = userEvent.setup();
       render(<AgentWorkspace />);
 
       const composer = await screen.findByRole("textbox", { name: "Message June" });
-      await screen.findByRole("button", { name: "Model: Auto (Lower)" });
+      await user.click(await screen.findByRole("button", { name: "Model: Auto (Higher)" }));
+      const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: /Preference/ }));
+      await user.click(await screen.findByRole("menuitemradio", { name: /Lower cost/ }));
+      expect(mocks.setCostQuality).toHaveBeenCalledWith(20);
+      expect(finishCostQualitySave).toBeDefined();
       await user.type(composer, "Start with this Auto preference");
       await user.click(screen.getByRole("button", { name: "Start session" }));
 
@@ -12258,6 +12381,7 @@ describe("AgentWorkspace", () => {
           expect.objectContaining({ model: "__june_auto_generation__:20" }),
         ),
       );
+      await act(async () => finishCostQualitySave?.());
     });
 
     it.each([
@@ -12588,6 +12712,51 @@ describe("AgentWorkspace", () => {
       const methods = mocks.gatewayRequest.mock.calls.map(([method]) => method);
       expect(methods.indexOf("config.set")).toBeLessThan(methods.indexOf("prompt.submit"));
       expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
+    });
+
+    it("keeps an explicit remote model remote when its raw id matches the local model", async () => {
+      mockRemoteWithLocalConfigured();
+      const collidingRemoteModel = {
+        provider: "venice",
+        id: localGeneration.modelId,
+        name: "Remote Llama",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      };
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: [...remoteCatalog, collidingRemoteModel],
+      });
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+      const panel = await openAllModels(user);
+      await user.click(within(panel).getByRole("option", { name: /Remote Llama/ }));
+
+      expect(
+        await screen.findByRole("button", { name: "Model: Remote Llama" }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Model: Local: llama3.1:8b" })).toBeNull();
+
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Keep this route remote");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+          session_id: "runtime-session-1",
+          key: "model",
+          value: "__june_remote_generation__:llama3.1%3A8b --session",
+          confirm_expensive_model: true,
+        }),
+      );
+      expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
+      expect(mocks.setVeniceModel).not.toHaveBeenCalled();
     });
 
     it("keeps an open local session model switchable", async () => {

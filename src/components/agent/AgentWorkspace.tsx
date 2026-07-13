@@ -2560,8 +2560,13 @@ export function AgentWorkspace({
     ),
   );
   // Completion is observable through the live gateway and both message-refresh
-  // paths. Only one of them may advance queued follow-ups for a finished turn.
-  const continuingCompletedTurnSessionIdsRef = useRef(new Set<string>());
+  // paths. Only one of them may advance queued follow-ups for a finished agent
+  // run. Gateway listeners carry a unique source token: duplicate terminal
+  // frames from one listener are ignored, while a terminal frame from the
+  // follow-up being submitted is remembered until the current queue mutation
+  // finishes.
+  const continuingCompletedTurnSourcesRef = useRef(new Map<string, symbol | undefined>());
+  const pendingCompletedTurnSourcesRef = useRef(new Map<string, symbol>());
   // The steer queue shows all rows by default; the header collapses the list
   // to itself. Reset (back open) per session below.
   const [steerQueueOpen, setSteerQueueOpen] = useState(true);
@@ -3040,15 +3045,16 @@ export function AgentWorkspace({
     selectedHermesSessionId && !newSessionMode
       ? sessionModelSelections[selectedHermesSessionId]
       : undefined;
-  const selectedSessionPersistedSelection = selectedHermesSession?.model?.trim()
-    ? decodeHermesModelSelection(selectedHermesSession.model)
+  const selectedSessionPersistedHermesModelId = selectedHermesSession?.model?.trim();
+  const selectedSessionPersistedSelection = selectedSessionPersistedHermesModelId
+    ? decodeHermesModelSelection(selectedSessionPersistedHermesModelId)
     : undefined;
   const selectedSessionModelSelection =
     selectedSessionModelEntry?.selection ?? selectedSessionPersistedSelection;
-  // A configured local model gets the synthetic catalog id for display even
-  // when it is not the app-wide default. Routing is session-scoped now: an
-  // existing local session remains local while a different new-session
-  // default (or another session) is remote.
+  // New session choices already carry explicit local/remote provenance. Only
+  // an untagged legacy session needs the configured-model equality heuristic;
+  // applying it to a tagged or durable remote choice would mislabel a remote
+  // model as local when both catalogs expose the same raw id.
   const localOptionId =
     localGeneration.modelId.trim().length > 0
       ? localGenerationOptionId(localGeneration.modelId)
@@ -3057,9 +3063,16 @@ export function AgentWorkspace({
     selectedHermesSessionId && !newSessionMode
       ? selectedSessionModelSelection?.modelId || defaultGenerationModelId
       : defaultGenerationModelId;
-  const selectedConfiguredLocalModel =
-    localOptionId && sessionOrDefaultModelId === localGeneration.modelId.trim();
-  const activeGenerationModelId = selectedConfiguredLocalModel
+  const selectedLegacyRawLocalModel = Boolean(
+    selectedHermesSessionId &&
+      !newSessionMode &&
+      !selectedSessionModelEntry &&
+      selectedSessionPersistedHermesModelId &&
+      !selectedSessionPersistedHermesModelId.startsWith("__june_") &&
+      localOptionId &&
+      selectedSessionPersistedHermesModelId === localGeneration.modelId.trim(),
+  );
+  const activeGenerationModelId = selectedLegacyRawLocalModel
     ? localOptionId
     : sessionOrDefaultModelId;
   const activeGenerationCostQuality =
@@ -3866,9 +3879,10 @@ export function AgentWorkspace({
       }
       localEnableConfirmArmedForRef.current = null;
     }
-    const storedSessionId = options && "targetStoredSessionId" in options
-      ? (options.targetStoredSessionId ?? undefined)
-      : storedSessionIdForComposerModelSelection();
+    const storedSessionId =
+      options && "targetStoredSessionId" in options
+        ? (options.targetStoredSessionId ?? undefined)
+        : storedSessionIdForComposerModelSelection();
     if (storedSessionId) {
       queueComposerSessionModelSelection(storedSessionId, { modelId: selectedModelId });
       return true;
@@ -3974,9 +3988,10 @@ export function AgentWorkspace({
       setError(`${chosen.name} can't run June's tools, so it can't be used for the agent.`);
       return false;
     }
-    const storedSessionId = options && "targetStoredSessionId" in options
-      ? (options.targetStoredSessionId ?? undefined)
-      : storedSessionIdForComposerModelSelection();
+    const storedSessionId =
+      options && "targetStoredSessionId" in options
+        ? (options.targetStoredSessionId ?? undefined)
+        : storedSessionIdForComposerModelSelection();
     if (storedSessionId) {
       const selectedCostQuality =
         modelId === AUTO_MODEL_ID
@@ -6396,6 +6411,7 @@ export function AgentWorkspace({
     storedSessionId: string;
   }) {
     sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
+    const agentRunCompletionSource = Symbol(storedSessionId);
     let unlisten = () => {};
     const removeListener = gateway.onEvent((event) => {
       if (event.session_id !== runtimeSessionId && event.session_id !== storedSessionId) return;
@@ -6504,7 +6520,7 @@ export function AgentWorkspace({
           // attachment follow-up. Each accepted follow-up installs its own
           // terminal listener, which advances the attachment FIFO one turn at
           // a time.
-          continueAfterCompletedTurn(storedSessionId);
+          continueAfterCompletedTurn(storedSessionId, agentRunCompletionSource);
         } else {
           // Submitted text steers cannot be recalled and are retired on a
           // failed/cancelled run. Local attachment follow-ups remain available
@@ -8094,20 +8110,34 @@ export function AgentWorkspace({
     }
   }
 
-  function continueAfterCompletedTurn(sessionId: string) {
-    if (continuingCompletedTurnSessionIdsRef.current.has(sessionId)) return;
-    continuingCompletedTurnSessionIdsRef.current.add(sessionId);
-    const unconsumedSteers = pendingSteerBySessionIdRef.current[sessionId]?.filter(
+  function continueAfterCompletedTurn(storedSessionId: string, source?: symbol) {
+    const continuingSources = continuingCompletedTurnSourcesRef.current;
+    if (continuingSources.has(storedSessionId)) {
+      const continuingSource = continuingSources.get(storedSessionId);
+      if (source && source !== continuingSource) {
+        pendingCompletedTurnSourcesRef.current.set(storedSessionId, source);
+      }
+      return;
+    }
+    continuingSources.set(storedSessionId, source);
+    const finishContinuation = () => {
+      continuingSources.delete(storedSessionId);
+      const pendingSource = pendingCompletedTurnSourcesRef.current.get(storedSessionId);
+      if (!pendingSource) return;
+      pendingCompletedTurnSourcesRef.current.delete(storedSessionId);
+      continueAfterCompletedTurn(storedSessionId, pendingSource);
+    };
+    const unconsumedSteers = pendingSteerBySessionIdRef.current[storedSessionId]?.filter(
       (entry) => !(entry.accepted && entry.toolDrained),
     );
-    clearSubmittedSteers(sessionId);
+    clearSubmittedSteers(storedSessionId);
     window.setTimeout(async () => {
       if (unconsumedSteers?.length) {
         const followUpSession = hermesSessionItemsRef.current.find(
-          (session) => session.id === sessionId,
+          (session) => session.id === storedSessionId,
         );
         if (!followUpSession) {
-          continuingCompletedTurnSessionIdsRef.current.delete(sessionId);
+          finishContinuation();
           return;
         }
         // Each Send captured its own model. A single concatenated prompt could
@@ -8129,22 +8159,24 @@ export function AgentWorkspace({
             status: "queued" as const,
           };
         });
-        updateQueuedAttachmentFollowUps(sessionId, (items) => [...steerFollowUps, ...items]);
+        updateQueuedAttachmentFollowUps(storedSessionId, (items) => [...steerFollowUps, ...items]);
         try {
-          await deliverQueuedAttachmentFollowUp(sessionId, steerFollowUps[0]?.id, {
+          await deliverQueuedAttachmentFollowUp(storedSessionId, steerFollowUps[0]?.id, {
             afterCompletion: true,
           });
         } catch (err) {
-          setError(messageFromError(err), { sessionId });
+          setError(messageFromError(err), { sessionId: storedSessionId });
         } finally {
-          continuingCompletedTurnSessionIdsRef.current.delete(sessionId);
+          finishContinuation();
         }
         return;
       }
       try {
-        await deliverQueuedAttachmentFollowUp(sessionId, undefined, { afterCompletion: true });
+        await deliverQueuedAttachmentFollowUp(storedSessionId, undefined, {
+          afterCompletion: true,
+        });
       } finally {
-        continuingCompletedTurnSessionIdsRef.current.delete(sessionId);
+        finishContinuation();
       }
     }, 0);
   }

@@ -171,11 +171,11 @@ async function main(): Promise<void> {
       title: "Release-gate smoke",
       cols: 96,
     });
-    const sessionId = sessionIdFrom(created);
-    if (!sessionId) {
-      throw new Error(`session.create returned no session id: ${safeJson(created)}`);
+    const runtimeSessionId = runtimeSessionIdFrom(created);
+    if (!runtimeSessionId) {
+      throw new Error(`session.create returned no runtime session id: ${safeJson(created)}`);
     }
-    record(`hermes-smoke: PASS session.create -> ${sessionId}`);
+    record(`hermes-smoke: PASS session.create -> ${runtimeSessionId}`);
 
     // session.active_list — June polls this as ground truth for what runs.
     const active = await rpc.request("session.active_list", {});
@@ -186,11 +186,11 @@ async function main(): Promise<void> {
 
     // Session-scoped Hermes model setting via config.set. Busy is retryable,
     // but the release gate passes only after the mutation is accepted.
-    await setSessionModel(rpc, sessionId, record);
+    await setSessionModel(rpc, runtimeSessionId, record);
 
     // MODEL phase: only when explicitly opted in (spends provider tokens).
     if (RUN_MODEL_PHASE) {
-      await runModelPhase(rpc, sessionId, record);
+      await runModelPhase(rpc, runtimeSessionId, record);
     } else {
       record(
         "hermes-smoke: SKIP model phase (prompt.submit). Set HERMES_SMOKE_MODEL=1 " +
@@ -201,7 +201,7 @@ async function main(): Promise<void> {
     // session.interrupt — halting a turn must be accepted by the gateway. After
     // the model phase a turn may be settling; in protocol-only mode the session
     // is idle, and interrupting an idle session is still a valid, accepted call.
-    await rpc.request("session.interrupt", { session_id: sessionId });
+    await rpc.request("session.interrupt", { session_id: runtimeSessionId });
     record("hermes-smoke: PASS session.interrupt accepted");
 
     record("hermes-smoke: all selected phases passed");
@@ -524,14 +524,14 @@ function makeRpcClient(socket: WebSocket): RpcClient {
  * is retried within the RPC budget; it never counts as acceptance. */
 async function setSessionModel(
   rpc: RpcClient,
-  sessionId: string,
+  runtimeSessionId: string,
   record: (line: string) => void,
 ): Promise<void> {
   try {
     await retryModelConfigSetUntilAccepted(
       () =>
         rpc.request("config.set", {
-          session_id: sessionId,
+          session_id: runtimeSessionId,
           key: "model",
           value: "smoke-model-alt --session",
           confirm_expensive_model: true,
@@ -552,7 +552,7 @@ async function setSessionModel(
  * stream to complete. Skipped unless HERMES_SMOKE_MODEL=1. */
 async function runModelPhase(
   rpc: RpcClient,
-  sessionId: string,
+  runtimeSessionId: string,
   record: (line: string) => void,
 ): Promise<void> {
   record("hermes-smoke: running model phase (prompt.submit, spends tokens)");
@@ -572,7 +572,7 @@ async function runModelPhase(
     });
   });
   await rpc.request("prompt.submit", {
-    session_id: sessionId,
+    session_id: runtimeSessionId,
     text: "Reply with the single word: ok",
   });
   await completed;
@@ -597,14 +597,13 @@ function writeArtifact(log: string[]): string {
   return path;
 }
 
-function sessionIdFrom(result: unknown): string | undefined {
+function runtimeSessionIdFrom(result: unknown): string | undefined {
   if (!result || typeof result !== "object") return undefined;
   const record = result as Record<string, unknown>;
-  for (const key of ["session_id", "stored_session_id", "id"]) {
-    const value = record[key];
-    if (typeof value === "string" && value.length > 0) return value;
-  }
-  return undefined;
+  const runtimeSessionId = record.session_id;
+  return typeof runtimeSessionId === "string" && runtimeSessionId.length > 0
+    ? runtimeSessionId
+    : undefined;
 }
 
 function delay(ms: number): Promise<void> {

@@ -17,6 +17,7 @@ import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 
 const mocks = vi.hoisted(() => ({
   gatewayRequest: vi.fn(),
+  gatewayConnect: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
   hermesBridgeImageDataUrl: vi.fn(),
   hermesBridgeSessionMessages: vi.fn(),
@@ -55,7 +56,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
   HermesGatewayClient: class {
-    connect = vi.fn();
+    connect = mocks.gatewayConnect;
     close = vi.fn();
     onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
       mocks.gatewayEventHandlers.add(handler);
@@ -159,6 +160,7 @@ describe("note chat session map", () => {
       }
       return Promise.resolve({});
     });
+    mocks.gatewayConnect.mockResolvedValue(undefined);
   });
 
   it("remembers and recalls the session for a note", () => {
@@ -207,22 +209,62 @@ describe("note chat session map", () => {
     mocks.listHermesSessions.mockResolvedValue([
       {
         id: "stored-note-chat",
-        model: "__june_remote_generation__:kimi-k2-6",
+        model: "kimi-k2-6",
       },
     ]);
 
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
 
-    await waitFor(() =>
-      expect(result.current.appliedHermesModelId).toBe("__june_remote_generation__:kimi-k2-6"),
-    );
-    expect(result.current.modelSelection).toBeUndefined();
+    await waitFor(() => expect(result.current.appliedHermesModelId).toBe("kimi-k2-6"));
+    expect(result.current.modelSelection).toEqual({ modelId: "kimi-k2-6" });
+
+    await act(async () => {
+      expect(await result.current.submit("Use the upgraded route.")).toBe(true);
+    });
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+      session_id: "runtime-note-chat",
+      key: "model",
+      value: "__june_remote_generation__:kimi-k2-6 --session",
+      confirm_expensive_model: true,
+    });
   });
 
-  it("prefers Hermes session metadata to a stale applied-selection acknowledgement", async () => {
+  it("upgrades a legacy configured-local session without treating it as remote", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const defaults = await mocks.providerModelSettings();
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        ...defaults.settings,
+        localGeneration: {
+          baseUrl: "http://localhost:11434/v1",
+          modelId: "llama3.1:8b",
+          apiKey: "",
+        },
+      },
+    });
+    mocks.listHermesSessions.mockResolvedValue([{ id: "stored-note-chat", model: "llama3.1:8b" }]);
+
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+
+    await waitFor(() =>
+      expect(result.current.modelSelection).toEqual({
+        modelId: "__june_local_generation__:llama3.1%3A8b",
+      }),
+    );
+    await act(async () => {
+      expect(await result.current.submit("Keep this local.")).toBe(true);
+    });
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+      "config.set",
+      expect.objectContaining({
+        value: "__june_local_generation__:llama3.1%3A8b --session",
+      }),
+    );
+  });
+
+  it("keeps Hermes metadata authoritative across unrelated selection writes", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     rememberAppliedSessionModelSelection("stored-note-chat", { modelId: "zai-org-glm-5-2" });
-    stageSessionModelSelection("stored-note-chat", { modelId: "kimi-k2-6" });
     mocks.listHermesSessions.mockResolvedValue([
       {
         id: "stored-note-chat",
@@ -235,7 +277,18 @@ describe("note chat session map", () => {
     await waitFor(() =>
       expect(result.current.appliedHermesModelId).toBe("__june_remote_generation__:kimi-k2-6"),
     );
-    expect(result.current.modelSelection).toEqual({ modelId: "kimi-k2-6" });
+    stageSessionModelSelection("another-session", { modelId: "kimi-k2-6" });
+    expect(result.current.appliedHermesModelId).toBe("__june_remote_generation__:kimi-k2-6");
+
+    await act(async () => {
+      expect(await result.current.submit("Keep my queued GLM choice.")).toBe(true);
+    });
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+      session_id: "runtime-note-chat",
+      key: "model",
+      value: "__june_remote_generation__:zai-org-glm-5-2 --session",
+      confirm_expensive_model: true,
+    });
   });
 
   it("updates the app-wide generation default before a note chat session exists", async () => {
@@ -255,14 +308,19 @@ describe("note chat session map", () => {
 
     await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
     const picker = screen.getByRole("dialog", { name: "Choose text model" });
-    await user.click(within(picker).getByText("Auto · Balanced"));
+    await user.click(within(picker).getByRole("button", { name: "All models" }));
+    await user.click(
+      within(screen.getByRole("group", { name: "All text models" })).getByRole("option", {
+        name: /^Auto /,
+      }),
+    );
 
     expect(chat.setSessionModel).toHaveBeenCalledWith({
       modelId: "open-software/auto",
-      costQuality: 50,
+      costQuality: 100,
     });
     await waitFor(() => {
-      expect(mocks.setCostQuality).toHaveBeenCalledWith(50);
+      expect(mocks.setCostQuality).toHaveBeenCalledWith(100);
       expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "open-software/auto");
       expect(settingsChanged).toHaveBeenCalledTimes(1);
     });
@@ -375,5 +433,55 @@ describe("note chat session map", () => {
         },
       ],
     ]);
+  });
+
+  it("never retargets an in-flight send or its failure after switching notes", async () => {
+    rememberNoteChatSession("note-a", "stored-a");
+    rememberNoteChatSession("note-b", "stored-b");
+    rememberAppliedSessionModelSelection("stored-a", { modelId: "kimi-k2-6" });
+    rememberAppliedSessionModelSelection("stored-b", { modelId: "zai-org-glm-5-2" });
+    let releaseConnection: (() => void) | undefined;
+    const connection = new Promise<void>((resolve) => {
+      releaseConnection = resolve;
+    });
+    mocks.gatewayConnect.mockReturnValue(connection);
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { session_id?: string }) => {
+      if (method === "session.resume") {
+        return Promise.resolve({
+          session_id: params?.session_id === "stored-a" ? "runtime-a" : "runtime-b",
+        });
+      }
+      if (method === "prompt.submit" && params?.session_id === "runtime-a") {
+        return Promise.reject(new Error("Note A failed"));
+      }
+      return Promise.resolve({});
+    });
+
+    const { result, rerender } = renderHook(
+      ({ id }) => useNoteChat({ id, title: id === "note-a" ? "Note A" : "Note B" }),
+      { initialProps: { id: "note-a" } },
+    );
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-a"));
+    const noteASubmit = result.current.submit("Question for A");
+    await waitFor(() => expect(mocks.gatewayConnect).toHaveBeenCalled());
+
+    rerender({ id: "note-b" });
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-b"));
+    const noteBSubmit = result.current.submit("Question for B");
+    await act(async () => releaseConnection?.());
+
+    await expect(noteASubmit).resolves.toBe(false);
+    await expect(noteBSubmit).resolves.toBe(true);
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+      session_id: "stored-a",
+      cols: 96,
+    });
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-b",
+      text: "Question for B",
+    });
+    expect(result.current.storedSessionId).toBe("stored-b");
+    expect(result.current.working).toBe(true);
+    expect(result.current.error).toBeNull();
   });
 });

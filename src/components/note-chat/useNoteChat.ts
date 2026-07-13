@@ -12,6 +12,8 @@ import { HermesGatewayClient, isSessionBusyError } from "../../lib/hermes-gatewa
 import { applySessionModelWhenIdle } from "../../lib/hermes-next-prompt-model";
 import { withHermesSessionDispatchLock } from "../../lib/hermes-session-dispatch-mutex";
 import {
+  AUTO_MODEL_ID,
+  decodeHermesModelSelection,
   hasPendingSessionModelSelection,
   hermesModelIdForSelection,
   markSessionModelSelectionApplied,
@@ -21,6 +23,7 @@ import {
   subscribeSessionModelSelections,
   type SessionModelSelection,
 } from "../../lib/hermes-session-model-selection";
+import { localGenerationOptionId } from "../../lib/local-generation";
 import {
   attachImageToSession,
   pendingImageAttachments,
@@ -30,6 +33,7 @@ import {
   hermesBridgeImageDataUrl,
   hermesBridgeSessionMessages,
   hermesBridgeStatus,
+  providerModelSettings,
   startHermesBridge,
   type HermesSessionMessage,
   type ImportedHermesFile,
@@ -153,6 +157,58 @@ function sameSessionModelSelection(
   return left.modelId === right.modelId && left.costQuality === right.costQuality;
 }
 
+function selectionFromStoredHermesModel(
+  hermesModelId: string,
+  settings: Awaited<ReturnType<typeof providerModelSettings>>["settings"] | undefined,
+): SessionModelSelection {
+  const configuredLocalModelId = settings?.localGeneration.modelId.trim();
+  if (
+    !hermesModelId.startsWith("__june_") &&
+    configuredLocalModelId &&
+    hermesModelId === configuredLocalModelId
+  ) {
+    return { modelId: localGenerationOptionId(configuredLocalModelId) };
+  }
+  const selection = decodeHermesModelSelection(hermesModelId);
+  return selection.modelId === AUTO_MODEL_ID &&
+    selection.costQuality === undefined &&
+    settings?.costQuality !== undefined
+    ? { ...selection, costQuality: settings.costQuality }
+    : selection;
+}
+
+async function reconcileStoredSessionModelMetadata(storedSessionId: string): Promise<
+  | {
+      appliedHermesModelId: string;
+      selection: SessionModelSelection;
+    }
+  | undefined
+> {
+  const [sessions, settingsResponse] = await Promise.all([
+    listHermesSessions({ archived: "include", minMessages: 0 }).catch(() => []),
+    providerModelSettings().catch(() => undefined),
+  ]);
+  const appliedHermesModelId =
+    sessions.find((session) => session.id === storedSessionId)?.model?.trim() || undefined;
+  if (!appliedHermesModelId) return undefined;
+
+  const selection = selectionFromStoredHermesModel(
+    appliedHermesModelId,
+    settingsResponse?.settings,
+  );
+  let store = rememberAppliedSessionModelSelection(storedSessionId, selection);
+  // Raw ids from older June builds do not carry provider provenance. Retain
+  // the metadata model as the live baseline, but force one session-scoped
+  // config.set before the next prompt to upgrade Hermes to the tagged alias.
+  if (
+    hermesModelIdForSelection(selection) !== appliedHermesModelId &&
+    !hasPendingSessionModelSelection(store[storedSessionId])
+  ) {
+    store = stageSessionModelSelection(storedSessionId, store[storedSessionId].selection);
+  }
+  return { appliedHermesModelId, selection };
+}
+
 export type NoteChat = {
   /** The rendered conversation: persisted turns + the live streaming tail. */
   turns: AgentChatTurn[];
@@ -222,10 +278,11 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   const pendingModelSelectionRef = useRef<SessionModelSelection>();
   const appliedHermesModelIdRef = useRef<string>();
   const storedSessionMetadataHydratedRef = useRef(false);
+  const noteGenerationRef = useRef(0);
   // Synchronous in-flight guard: React batches setWorking(true), so a rapid
   // double send (double-click, or Enter racing the send button) could both
   // pass the state-based check and each create a session / append a turn.
-  const submittingRef = useRef(false);
+  const activeSubmissionRef = useRef<symbol>();
   const liveEventsRef = useRef<JuneHermesEvent[]>([]);
   const pendingUserTurnsRef = useRef<AgentChatTurn[]>([]);
   liveEventsRef.current = liveEvents;
@@ -233,6 +290,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
 
   // Rebind to the note's session whenever the panel switches notes.
   useEffect(() => {
+    const noteGeneration = ++noteGenerationRef.current;
     const noteStoredSessionId = noteId ? noteChatSessionIdFor(noteId) : undefined;
     storedSessionIdRef.current = noteStoredSessionId;
     runtimeSessionIdRef.current = undefined;
@@ -249,7 +307,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     // so an early Send performs one safe repairing config.set.
     appliedHermesModelIdRef.current = undefined;
     storedSessionMetadataHydratedRef.current = !noteStoredSessionId;
-    submittingRef.current = false;
+    activeSubmissionRef.current = undefined;
     setStoredSessionId(noteStoredSessionId);
     setMessages([]);
     setLiveEvents([]);
@@ -274,21 +332,19 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         setLoading(false);
         return;
       }
-      const [response, sessions] = await Promise.all([
+      const [response, metadata] = await Promise.all([
         hermesBridgeSessionMessages(noteStoredSessionId).catch(() => undefined),
-        listHermesSessions({ archived: "include", minMessages: 0 }).catch(() => []),
+        reconcileStoredSessionModelMetadata(noteStoredSessionId),
       ]);
-      if (stale) return;
+      if (stale || noteGenerationRef.current !== noteGeneration) return;
       if (response) setMessages(sessionMessagesFrom(response));
       const currentEntry = readSessionModelSelections()[noteStoredSessionId];
       // Hermes session metadata is the conservative live baseline even when
       // an entry exists: config.set can succeed just before June crashes while
       // persisting its acknowledgement. Reapplying the desired model once is
       // safe; trusting a stale appliedSelection as newer than Hermes is not.
-      const fetchedHermesModelId =
-        sessions.find((session) => session.id === noteStoredSessionId)?.model?.trim() || undefined;
       const currentAppliedHermesModelId =
-        fetchedHermesModelId ??
+        metadata?.appliedHermesModelId ??
         (currentEntry?.appliedSelection
           ? hermesModelIdForSelection(currentEntry.appliedSelection)
           : undefined);
@@ -379,20 +435,27 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       if ((!question && !attachments.length) || !noteId) return false;
       // Reject a second send that races the first before setWorking(true)
       // commits — otherwise both could create a session and submit the prompt.
-      if (submittingRef.current) return false;
-      submittingRef.current = true;
+      if (activeSubmissionRef.current) return false;
+      const submissionToken = Symbol("note-chat-submit");
+      activeSubmissionRef.current = submissionToken;
+      const noteGeneration = noteGenerationRef.current;
+      const submissionIsCurrent = () =>
+        noteGenerationRef.current === noteGeneration &&
+        activeSubmissionRef.current === submissionToken;
       setError(null);
       const startingStoredSessionId = storedSessionIdRef.current;
+      const startingRuntimeSessionId = runtimeSessionIdRef.current;
       const isFirstMessage = !startingStoredSessionId;
       // Capture before the first await. A picker change after this point is for
       // the following run, even if session creation/resume is still pending.
-      const capturedModelSelection = pendingModelSelectionRef.current;
+      let capturedModelSelection = pendingModelSelectionRef.current;
       const capturedModelEntry = startingStoredSessionId
         ? readSessionModelSelections()[startingStoredSessionId]
         : undefined;
-      const capturedHermesModelId = capturedModelSelection
+      let capturedHermesModelId = capturedModelSelection
         ? hermesModelIdForSelection(capturedModelSelection)
         : undefined;
+      let capturedAppliedHermesModelId = appliedHermesModelIdRef.current;
       const base = isFirstMessage
         ? `${noteReferenceToken({ id: noteId, title: noteTitle })} ${question}`
         : question;
@@ -411,8 +474,21 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       try {
         const gateway = await connectGateway(true);
         if (!gateway) throw new Error("Hermes gateway is not connected.");
-        let activeStoredSessionId = storedSessionIdRef.current;
-        let runtimeSessionId = runtimeSessionIdRef.current;
+        let activeStoredSessionId = startingStoredSessionId;
+        let runtimeSessionId = startingRuntimeSessionId;
+        if (activeStoredSessionId && !capturedModelSelection) {
+          const metadata = await reconcileStoredSessionModelMetadata(activeStoredSessionId);
+          if (metadata) {
+            capturedModelSelection = metadata.selection;
+            capturedHermesModelId = hermesModelIdForSelection(metadata.selection);
+            capturedAppliedHermesModelId = metadata.appliedHermesModelId;
+            if (submissionIsCurrent()) {
+              appliedHermesModelIdRef.current = metadata.appliedHermesModelId;
+              storedSessionMetadataHydratedRef.current = true;
+              setAppliedHermesModelId(metadata.appliedHermesModelId);
+            }
+          }
+        }
         if (!activeStoredSessionId) {
           const created = await gateway.request<HermesRuntimeSessionResponse>("session.create", {
             title: noteTitle.trim() || "Note chat",
@@ -422,13 +498,18 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           activeStoredSessionId = created.stored_session_id ?? created.session_id;
           if (!activeStoredSessionId) throw new Error("Hermes did not create a session.");
           runtimeSessionId = created.session_id;
-          appliedHermesModelIdRef.current = capturedHermesModelId;
-          storedSessionMetadataHydratedRef.current = true;
-          setAppliedHermesModelId(capturedHermesModelId);
-          storedSessionIdRef.current = activeStoredSessionId;
-          setStoredSessionId(activeStoredSessionId);
+          capturedAppliedHermesModelId = capturedHermesModelId;
+          if (submissionIsCurrent()) {
+            appliedHermesModelIdRef.current = capturedHermesModelId;
+            storedSessionMetadataHydratedRef.current = true;
+            setAppliedHermesModelId(capturedHermesModelId);
+            storedSessionIdRef.current = activeStoredSessionId;
+            setStoredSessionId(activeStoredSessionId);
+          }
           rememberNoteChatSession(noteId, activeStoredSessionId);
-          const latestSelection = pendingModelSelectionRef.current;
+          const latestSelection = submissionIsCurrent()
+            ? pendingModelSelectionRef.current
+            : capturedModelSelection;
           if (capturedModelSelection) {
             rememberAppliedSessionModelSelection(activeStoredSessionId, capturedModelSelection);
           }
@@ -448,7 +529,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           runtimeSessionId = resumed.session_id;
           if (!runtimeSessionId) throw new Error("Hermes did not resume the session.");
         }
-        runtimeSessionIdRef.current = runtimeSessionId;
+        if (submissionIsCurrent()) runtimeSessionIdRef.current = runtimeSessionId;
         await withHermesSessionDispatchLock(activeStoredSessionId, async () => {
           // Re-read under the shared lock. AgentWorkspace can dispatch the same
           // session from its still-mounted surface, so its accepted send may
@@ -458,13 +539,13 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             ? hermesModelIdForSelection(currentModelEntry.appliedSelection)
             : currentModelEntry
               ? undefined
-              : appliedHermesModelIdRef.current;
+              : capturedAppliedHermesModelId;
+          const modelToApply = capturedHermesModelId;
           if (
-            capturedHermesModelId &&
+            modelToApply &&
             (hasPendingSessionModelSelection(capturedModelEntry) ||
-              capturedHermesModelId !== appliedHermesModelIdRef.current ||
-              (currentStoredModelId !== undefined &&
-                currentStoredModelId !== capturedHermesModelId))
+              modelToApply !== capturedAppliedHermesModelId ||
+              (currentStoredModelId !== undefined && currentStoredModelId !== modelToApply))
           ) {
             // Apply only after the session is idle/resumed and immediately ahead
             // of the prompt. Failure blocks the send; silently using the prior
@@ -473,22 +554,22 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
               createHermesMethods(gateway).switchActiveSessionModel({
                 mode: "sandboxed",
                 sessionId: runtimeSessionId,
-                model: capturedHermesModelId,
+                model: modelToApply,
               }),
             );
-            appliedHermesModelIdRef.current = capturedHermesModelId;
-            storedSessionMetadataHydratedRef.current = true;
-            setAppliedHermesModelId(capturedHermesModelId);
+            capturedAppliedHermesModelId = modelToApply;
+            if (submissionIsCurrent()) {
+              appliedHermesModelIdRef.current = modelToApply;
+              storedSessionMetadataHydratedRef.current = true;
+              setAppliedHermesModelId(modelToApply);
+            }
             if (capturedModelEntry && capturedModelSelection) {
               markSessionModelSelectionApplied(
                 activeStoredSessionId,
                 capturedModelEntry.revision,
                 capturedModelSelection,
               );
-            } else if (
-              capturedModelSelection &&
-              !readSessionModelSelections()[activeStoredSessionId]
-            ) {
+            } else if (capturedModelSelection) {
               rememberAppliedSessionModelSelection(activeStoredSessionId, capturedModelSelection);
             }
           }
@@ -518,18 +599,22 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             text: content,
           });
         });
-        return true;
+        return submissionIsCurrent();
       } catch (err) {
-        setPendingUserTurns((current) => current.filter((turn) => turn !== optimistic));
-        setWorking(false);
-        setError(
-          isSessionBusyError(err)
-            ? "June is still working on the previous message."
-            : messageFromError(err),
-        );
+        if (submissionIsCurrent()) {
+          setPendingUserTurns((current) => current.filter((turn) => turn !== optimistic));
+          setWorking(false);
+          setError(
+            isSessionBusyError(err)
+              ? "June is still working on the previous message."
+              : messageFromError(err),
+          );
+        }
         return false;
       } finally {
-        submittingRef.current = false;
+        if (activeSubmissionRef.current === submissionToken) {
+          activeSubmissionRef.current = undefined;
+        }
       }
     },
     [noteId, noteTitle],
