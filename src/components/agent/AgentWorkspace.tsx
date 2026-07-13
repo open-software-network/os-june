@@ -2443,7 +2443,10 @@ export function AgentWorkspace({
   const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
   // Whether the chat displays the model's thinking (JUN-246). Display-only;
   // synced from provider settings on load and live from the settings toggle.
-  const [showThinking, setShowThinkingState] = useState(true);
+  // null until the persisted value loads: reasoning stays hidden during that
+  // window so a saved opt-out is never flashed before settings resolve.
+  const [showThinkingSetting, setShowThinkingSetting] = useState<boolean | null>(null);
+  const showThinking = showThinkingSetting === true;
   const [workingTaskIds, setWorkingTaskIds] = useState<Set<string>>(() => new Set());
   const activityStoreVersion = useSyncExternalStore(
     hermesActivityStore.subscribe,
@@ -3589,7 +3592,7 @@ export function AgentWorkspace({
       setGenerationProvider(provider);
       defaultGenerationModelIdRef.current = selectedModelId;
       setDefaultGenerationModelId(selectedModelId);
-      setShowThinkingState(settings.showThinking ?? true);
+      setShowThinkingSetting(settings.showThinking ?? true);
       return selectedModelId;
     },
     [],
@@ -3620,6 +3623,9 @@ export function AgentWorkspace({
         defaultGenerationModelIdRef.current = "";
         generationModelsRef.current = [];
         setDefaultGenerationModelId("");
+        // The persisted preference is unreadable; fall back to the product
+        // default (thinking shown) rather than hiding reasoning forever.
+        setShowThinkingSetting((current) => current ?? true);
       }
       return null;
     }
@@ -3664,7 +3670,7 @@ export function AgentWorkspace({
   useEffect(() => {
     function handleShowThinkingChanged(event: Event) {
       const detail = (event as CustomEvent<ShowThinkingChangedDetail>).detail;
-      if (detail) setShowThinkingState(detail.enabled);
+      if (detail) setShowThinkingSetting(detail.enabled);
     }
     window.addEventListener(SHOW_THINKING_CHANGED_EVENT, handleShowThinkingChanged);
     return () => {

@@ -6715,6 +6715,72 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
   });
 
+  it("never flashes reasoning that streams before a saved opt-out resolves", async () => {
+    // The settings load is held open so reasoning arrives while the persisted
+    // preference is still unknown; the disclosure must not appear in that
+    // window, and the late showThinking:false keeps it hidden.
+    let resolveSettings: (value: unknown) => void = () => {};
+    mocks.providerModelSettings.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "think before settings load",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "think before settings load",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Early reasoning before settings resolve." },
+        });
+      }
+    });
+
+    // While the preference is unresolved, only the plain shimmer shows.
+    await waitFor(() => expect(screen.getByText("Thinking…")).toBeInTheDocument());
+    expect(screen.queryByText("Thinking")).toBeNull();
+    expect(screen.queryByText("Early reasoning before settings resolve.")).toBeNull();
+
+    act(() => {
+      resolveSettings({
+        settings: {
+          transcriptionProvider: "venice",
+          transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+          generationModel: "zai-org-glm-5-2",
+          showThinking: false,
+        },
+      });
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: { text: "Done." },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Done.")).toBeInTheDocument();
+    expect(screen.queryByText("Thought")).toBeNull();
+    expect(screen.queryByText("Early reasoning before settings resolve.")).toBeNull();
+  });
+
   it("does not force the transcript to the bottom while subagent progress streams", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
