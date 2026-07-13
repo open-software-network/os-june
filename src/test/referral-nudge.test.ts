@@ -11,6 +11,7 @@ import {
   recordDictationFinished,
   recordMeetingNoteGenerated,
   recordPositiveFeedbackSent,
+  resetReferralNudgeSessionLatchForTests,
 } from "../lib/referral-nudge";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -23,6 +24,7 @@ const onNudge = (event: Event) => {
 
 beforeEach(() => {
   window.localStorage.clear();
+  resetReferralNudgeSessionLatchForTests();
   announced = [];
   window.addEventListener(REFERRAL_NUDGE_EVENT, onNudge);
 });
@@ -128,9 +130,40 @@ describe("referral nudge frequency caps", () => {
     } finally {
       setItem.mockRestore();
     }
-    // Storage recovers: the moment was never persisted as consumed, so the
-    // caps stay intact and it can fire properly now.
+    // A failed write also latches the session closed; clear it to verify the
+    // moment itself was never persisted as consumed.
+    resetReferralNudgeSessionLatchForTests();
     expect(recordAgentTaskCompleted(T0)).toBe("agent");
     expect(announced).toEqual(["agent"]);
+  });
+
+  it("latches the session closed when a post-show write fails", () => {
+    expect(recordAgentTaskCompleted(T0)).toBe("agent");
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError");
+    });
+    try {
+      markReferralNudgeShown(T0);
+    } finally {
+      setItem.mockRestore();
+    }
+    // The show was never persisted (no lastShownAt, no shownCount), but the
+    // latch still suppresses every later moment this session.
+    const later = T0 + REFERRAL_NUDGE_MIN_INTERVAL_MS + DAY_MS;
+    expect(recordPositiveFeedbackSent(later)).toBeNull();
+    expect(announced).toEqual(["agent"]);
+  });
+
+  it("latches the session closed when the click-through opt-out cannot be saved", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("QuotaExceededError");
+    });
+    try {
+      markReferralNudgeClickedThrough();
+    } finally {
+      setItem.mockRestore();
+    }
+    expect(recordAgentTaskCompleted(T0)).toBeNull();
+    expect(announced).toEqual([]);
   });
 });

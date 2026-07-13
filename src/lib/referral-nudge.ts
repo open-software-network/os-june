@@ -73,6 +73,19 @@ function loadState(): ReferralNudgeState {
   }
 }
 
+/** One failed write latches the module fail-closed until restart. The
+ *  post-show writes (markReferralNudgeShown, markReferralNudgeClickedThrough)
+ *  have no caller that can retry or undo the show, so a show or opt-out we
+ *  could not record must suppress everything for the rest of the session;
+ *  the next launch re-reads whatever state last persisted and fireMoment's
+ *  own fail-closed check covers storage that is still broken. */
+let writeFailedThisSession = false;
+
+/** Test-only: clears the session fail-closed latch. */
+export function resetReferralNudgeSessionLatchForTests() {
+  writeFailedThisSession = false;
+}
+
 /** Returns false when storage is full or unavailable. Callers fail CLOSED on
  *  that: a moment we cannot record must never show, or an install with broken
  *  storage would re-nudge on every trigger, ignoring the caps entirely. */
@@ -81,11 +94,13 @@ function saveState(state: ReferralNudgeState): boolean {
     window.localStorage.setItem(REFERRAL_NUDGE_STORAGE_KEY, JSON.stringify(state));
     return true;
   } catch {
+    writeFailedThisSession = true;
     return false;
   }
 }
 
 function capsAllow(state: ReferralNudgeState, now: number): boolean {
+  if (writeFailedThisSession) return false;
   if (state.clickedThrough) return false;
   if (state.shownCount >= REFERRAL_NUDGE_LIFETIME_MAX) return false;
   if (state.lastShownAt !== null && now - state.lastShownAt < REFERRAL_NUDGE_MIN_INTERVAL_MS) {
