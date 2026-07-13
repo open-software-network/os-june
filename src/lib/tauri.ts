@@ -1050,7 +1050,9 @@ export async function hermesBridgeFilesystemSnapshot() {
 }
 
 export async function downloadHermesBridgeFile(path: string) {
-  return invoke<string>("download_hermes_bridge_file", { request: { path } });
+  return invoke<string>("download_hermes_bridge_file", {
+    request: { path },
+  });
 }
 
 export async function hermesBridgeFilePreview(path: string) {

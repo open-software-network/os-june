@@ -5209,6 +5209,7 @@ input:focus-visible,
   appearance: none;
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: var(--sp-1);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
@@ -5325,6 +5326,21 @@ input:focus-visible,
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
   line-height: 1.5;
+}
+
+.june-download-toast-message {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.june-download-toast-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Tone accents: the leading glyph only. */

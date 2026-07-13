@@ -383,6 +383,7 @@ const MODEL_SWITCH_TOAST_ID = "agent-model-switch";
 // confirmation rather than stacking.
 const BRANCH_TOAST_ID = "agent-branch";
 const ISSUE_REPORT_SENT_TOAST_ID = "agent-issue-report-sent";
+const DOWNLOAD_TOAST_ID = "agent-download";
 
 function isSessionGoneError(message: string): boolean {
   return message.toLowerCase().includes("session not found");
@@ -8645,10 +8646,27 @@ export function AgentWorkspace({
   // Every file the conversation has surfaced, in turn order — the session
   // bar's files button keeps them reachable after their cards scroll away.
   const surfacedArtifacts = [...turnArtifacts.values()].flat().concat(devArtifacts);
-  const downloadArtifact = (artifact: AgentArtifact) =>
-    void downloadHermesBridgeFile(artifact.path).catch((err: unknown) =>
-      setError(messageFromError(err)),
-    );
+  const downloadPathBackedArtifact = (path: string, displayName: string) => {
+    const requestSessionId = selectedHermesSessionIdRef.current;
+    void downloadHermesBridgeFile(path)
+      .then((destination) => {
+        if (selectedHermesSessionIdRef.current === requestSessionId) {
+          toast.success(<DownloadToastMessage action="Downloaded" fileName={displayName} />, {
+            id: DOWNLOAD_TOAST_ID,
+            action: {
+              label: "Show file",
+              onClick: () => void revealPath(destination),
+            },
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        setError(messageFromError(err), { sessionId: requestSessionId ?? null });
+      });
+  };
+  const downloadArtifact = (artifact: AgentArtifact) => {
+    downloadPathBackedArtifact(artifact.path, artifact.name);
+  };
   const openArtifact = (artifact: AgentArtifact) => setArtifactPanel({ view: "file", artifact });
 
   // A `/image` result reuses the artifact view/download flow: download saves the
@@ -8661,18 +8679,26 @@ export function AgentWorkspace({
     // no June-workspace path — its bytes live only in the inline data url, so
     // save those directly via an anchor download.
     if (part.path) {
-      void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
-        setError(messageFromError(err)),
-      );
+      downloadPathBackedArtifact(part.path, part.name?.trim() || "Generated image");
       return;
     }
     if (part.dataUrl) {
+      const requestSessionId = selectedHermesSessionIdRef.current;
+      const fileName = ensureDownloadFileExtension(
+        part.name?.trim() || "generated-image.png",
+        "png",
+      );
       const link = document.createElement("a");
       link.href = part.dataUrl;
-      link.download = part.name?.trim() || "generated-image.png";
+      link.download = fileName;
       document.body.appendChild(link);
       link.click();
       link.remove();
+      if (selectedHermesSessionIdRef.current === requestSessionId) {
+        toast(<DownloadToastMessage action="Download started" fileName={fileName} />, {
+          id: DOWNLOAD_TOAST_ID,
+        });
+      }
     }
   };
   const openGeneratedImage = (part: Extract<AgentChatPart, { type: "image" }>) => {
@@ -8685,9 +8711,7 @@ export function AgentWorkspace({
   };
   const downloadGeneratedVideo = (part: Extract<AgentChatPart, { type: "video" }>) => {
     if (!part.path) return;
-    void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
-      setError(messageFromError(err)),
-    );
+    downloadPathBackedArtifact(part.path, part.name?.trim() || "Generated video");
   };
 
   // Feature 14: open an artifact from the drawer's timeline. The timeline's
@@ -14639,6 +14663,25 @@ function taskActivitySummary(task: AgentTaskDto) {
     default:
       return "";
   }
+}
+
+function DownloadToastMessage({ action, fileName }: { action: string; fileName: string }) {
+  const label = `${action} ${fileName}`;
+  return (
+    <span className="june-download-toast-message" aria-label={label}>
+      <span>{action}</span>
+      <span className="june-download-toast-file" title={fileName}>
+        {fileName}
+      </span>
+    </span>
+  );
+}
+
+function ensureDownloadFileExtension(fileName: string, fallbackExtension: string) {
+  const trimmed = fileName.trim();
+  if (!trimmed) return `download.${fallbackExtension}`;
+  if (/\.[^./\\]+$/.test(trimmed)) return trimmed;
+  return `${trimmed}.${fallbackExtension}`;
 }
 
 function relativeDate(value: string) {

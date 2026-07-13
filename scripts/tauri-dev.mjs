@@ -6,6 +6,8 @@ import net from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+
 // A port is "free" when a connection is refused. Mirrors the probe in
 // tauri-before-dev.mjs so both scripts agree on which port to use.
 function portIsFree(port) {
@@ -75,13 +77,12 @@ tauriArgs.push(
   JSON.stringify({ build: { devUrl: `http://127.0.0.1:${frontendPort}` } }),
 );
 
-const child = spawn(tauriCommand(), ["dev", ...tauriArgs], {
+const child = spawn(tauriCommand(), tauriCommandArgs(["dev", ...tauriArgs]), {
   env: {
     ...process.env,
     VITE_PORT: String(frontendPort),
     ...(replayOnboarding ? { VITE_JUNE_REPLAY_ONBOARDING: "1" } : {}),
   },
-  shell: process.platform === "win32",
   stdio: "inherit",
 });
 
@@ -95,8 +96,41 @@ child.on("error", (error) => {
 });
 
 function tauriCommand() {
-  const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const binary = process.platform === "win32" ? "tauri.cmd" : "tauri";
-  const localBinary = resolve(scriptDir, "..", "node_modules", ".bin", binary);
-  return existsSync(localBinary) ? localBinary : "tauri";
+  if (process.platform === "win32") {
+    return process.execPath;
+  }
+  const localBinary = findNodeModulesPath(".bin", "tauri");
+  return localBinary ?? "tauri";
+}
+
+function tauriCommandArgs(args) {
+  if (process.platform !== "win32") {
+    return args;
+  }
+  return [tauriJsEntryPoint(), ...args];
+}
+
+function tauriJsEntryPoint() {
+  const tauriJs = findNodeModulesPath("@tauri-apps", "cli", "tauri.js");
+  if (!tauriJs) {
+    throw new Error(
+      `Tauri CLI entry point not found from "${SCRIPT_DIR}". Run pnpm install first.`,
+    );
+  }
+  return tauriJs;
+}
+
+function findNodeModulesPath(...segments) {
+  let current = resolve(SCRIPT_DIR, "..");
+  while (true) {
+    const candidate = resolve(current, "node_modules", ...segments);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+    const parent = resolve(current, "..");
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
 }
