@@ -21069,12 +21069,12 @@ input:focus-visible,
    grain, June mark) — so the click-through feels continuous. */
 .referral-nudge {
   position: fixed;
-  /* Window bottom-left (the Linear/Cursor corner), tucked to the same --sp-3
-     inset as the main-panel card so the two share a bottom line. Keep this a
-     static inset: anchoring to the animated --sidebar-w-current made the
-     compositor move a blend-mode + WebGL stack continuously, which read as
-     noise flashing on the hero. It overlaps the sidebar footer while parked;
-     Escape and the X both clear it. */
+  /* Window bottom-left, on the main-panel card's --sp-3 inset so the two
+     share a bottom line (a near-miss offset here reads as misalignment).
+     Keep this a static inset: anchoring to the animated --sidebar-w-current
+     made the compositor move a blend-mode + WebGL stack continuously, which
+     read as noise flashing on the hero. It overlaps the sidebar footer while
+     parked; Escape and the X both clear it. */
   left: var(--sp-3);
   bottom: var(--sp-3);
   z-index: 60;
@@ -21249,41 +21249,21 @@ input:focus-visible,
   padding: var(--sp-4) var(--sp-6) 0;
 }
 
+/* Same size as .funding-notice-body — the other floating card in this
+   region — so the two surfaces read as one family. */
 .referral-nudge-copy {
   margin: 0;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   line-height: 1.5;
 }
 
+/* The action is the stock solid primary button (.primary-action
+   .primary-solid), so only the footer's frame lives here. */
 .referral-nudge-footer {
   display: flex;
   justify-content: flex-start;
   padding: var(--sp-4) var(--sp-6) var(--sp-5);
-}
-
-.referral-nudge-cta {
-  display: inline-flex;
-  align-items: center;
-  min-height: var(--control-md);
-  padding: 0 var(--sp-3);
-  border: 0;
-  border-radius: var(--r-md);
-  background: var(--primary);
-  color: var(--primary-foreground);
-  font-size: var(--fs-sm);
-  font-weight: 400;
-  cursor: pointer;
-  transition: background-color var(--t-fast) var(--ease-out);
-}
-
-.referral-nudge-cta:hover {
-  background: color-mix(in oklch, var(--primary) 92%, var(--foreground));
-}
-
-.referral-nudge-cta:focus-visible {
-  outline: 2px solid var(--ring-focus);
-  outline-offset: 2px;
 }
 
 /* Generous padding (+ negative outer margin) so the inputs' focus

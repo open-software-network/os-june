@@ -101,7 +101,12 @@ export function ReferralNudge({
         <p className="referral-nudge-copy">{copy.body}</p>
       </div>
       <div className="referral-nudge-footer">
-        <button type="button" className="referral-nudge-cta" onClick={onInvite} disabled={leaving}>
+        <button
+          type="button"
+          className="primary-action primary-solid"
+          onClick={onInvite}
+          disabled={leaving}
+        >
           Invite friends
         </button>
       </div>
