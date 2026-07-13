@@ -85,6 +85,20 @@ describe("ConnectorApprovalsTray", () => {
     expect(await screen.findByText("Send reply to Dana")).toBeInTheDocument();
   });
 
+  it("expands a row to the full request detail on click", async () => {
+    tauriMocks.connectorApprovalsPending.mockResolvedValue([approval()]);
+    render(<ConnectorApprovalsTray />);
+    await screen.findByText("Send reply to Dana");
+
+    const info = screen.getByRole("button", { name: /^Send reply to Dana/ });
+    expect(info).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(info);
+    expect(info).toHaveAttribute("aria-expanded", "true");
+    expect(info.closest("li")).toHaveAttribute("data-expanded");
+    await userEvent.click(info);
+    expect(info).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("approves a single item and refreshes", async () => {
     tauriMocks.connectorApprovalsPending.mockResolvedValueOnce([approval()]).mockResolvedValue([]);
     render(<ConnectorApprovalsTray />);

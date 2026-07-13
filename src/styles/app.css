@@ -25682,8 +25682,8 @@ input:focus-visible,
 .connector-approvals-item {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: var(--sp-2);
+  align-items: start;
+  column-gap: var(--sp-3);
   padding: var(--sp-2) var(--sp-3);
   border-top: 1px solid var(--detail-bar-border);
 }
@@ -25692,18 +25692,33 @@ input:focus-visible,
   border-top: 0;
 }
 
-/* The provider's monochrome mark, left-aligned on the shared rail. */
+/* The provider's monochrome mark, optically aligned with the summary's first
+ * line (rows top-align so expanded detail grows downward from the mark). */
 .connector-approvals-mark {
   display: inline-flex;
   align-items: center;
+  margin-top: 3px;
   color: var(--muted-foreground);
 }
 
+/* When a row carries a preview the info block is a button (click opens the
+ * full request), so it resets the button chrome and keeps the text stack. */
 .connector-approvals-info {
   display: flex;
   flex-direction: column;
   gap: 1px;
   min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+button.connector-approvals-info {
+  cursor: pointer;
 }
 
 .connector-approvals-summary {
@@ -25724,7 +25739,7 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-/* One line of the redacted args preview; the row tooltip holds the rest. */
+/* One line of the redacted args preview; clicking the row un-clamps it. */
 .connector-approvals-preview {
   margin: 0;
   overflow: hidden;
@@ -25734,18 +25749,28 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-/* Verdicts reveal on row hover (or keyboard focus) rather than shouting from
- * every row at once; opacity keeps their layout slot so nothing reflows. */
+.connector-approvals-item[data-expanded] .connector-approvals-preview {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Verdicts reveal on row hover (or keyboard focus, or while the row's detail
+ * is open) rather than shouting from every row at once. The swap is instant
+ * on purpose: a fade left outgoing rows' verdicts lingering, so quick pointer
+ * moves read as several rows hovered at once. Opacity (not display) keeps
+ * their layout slot so nothing reflows. */
 .connector-approvals-actions {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
   opacity: 0;
-  transition: opacity var(--t-fast) var(--ease-out);
 }
 
 .connector-approvals-item:hover .connector-approvals-actions,
-.connector-approvals-item:focus-within .connector-approvals-actions {
+.connector-approvals-item:focus-within .connector-approvals-actions,
+.connector-approvals-item[data-expanded] .connector-approvals-actions {
   opacity: 1;
 }
 

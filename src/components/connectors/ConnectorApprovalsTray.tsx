@@ -31,6 +31,9 @@ export function ConnectorApprovalsTray() {
   // fold), so a batch the user isn't ready to answer stops covering the
   // composer corner. A fresh batch re-expands: new approvals demand eyes.
   const [collapsed, setCollapsed] = useState(false);
+  // Rows whose full request detail is open (clicking a row toggles it); the
+  // clamped one-line preview un-clamps to the whole redacted payload.
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(new Set());
   const previousCount = useRef(0);
   const mounted = useRef(true);
   // The list clips to a max-height once a batch is long; the shared scroll
@@ -216,13 +219,26 @@ export function ConnectorApprovalsTray() {
           {pending.map((item) => {
             const provider = providerFromServer(item.server);
             const summary = item.summary || actionToolLabel(item.tool);
+            const expanded = expandedIds.has(item.approvalId);
+            const info = (
+              <>
+                <span className="connector-approvals-summary">{summary}</span>
+                <span className="connector-approvals-meta">
+                  {actionToolLabel(item.tool)} · {item.accountEmail}
+                </span>
+                {item.argsPreview ? (
+                  <span className="connector-approvals-preview">{item.argsPreview}</span>
+                ) : null}
+              </>
+            );
             return (
               // The redacted args preview (redaction happens in Rust) shows as
-              // one ellipsized line; the row tooltip carries the full text.
+              // one ellipsized line; clicking the row un-clamps it to the full
+              // request detail.
               <li
                 key={item.approvalId}
                 className="connector-approvals-item"
-                title={item.argsPreview || undefined}
+                data-expanded={expanded || undefined}
               >
                 <span className="connector-approvals-mark" aria-hidden>
                   {provider ? (
@@ -231,15 +247,26 @@ export function ConnectorApprovalsTray() {
                     <IconChecklist size={14} aria-hidden />
                   )}
                 </span>
-                <div className="connector-approvals-info">
-                  <p className="connector-approvals-summary">{summary}</p>
-                  <p className="connector-approvals-meta">
-                    {actionToolLabel(item.tool)} · {item.accountEmail}
-                  </p>
-                  {item.argsPreview ? (
-                    <p className="connector-approvals-preview">{item.argsPreview}</p>
-                  ) : null}
-                </div>
+                {item.argsPreview ? (
+                  <button
+                    type="button"
+                    className="connector-approvals-info"
+                    aria-expanded={expanded}
+                    title={expanded ? undefined : "Show the full request"}
+                    onClick={() =>
+                      setExpandedIds((current) => {
+                        const next = new Set(current);
+                        if (next.has(item.approvalId)) next.delete(item.approvalId);
+                        else next.add(item.approvalId);
+                        return next;
+                      })
+                    }
+                  >
+                    {info}
+                  </button>
+                ) : (
+                  <div className="connector-approvals-info">{info}</div>
+                )}
                 <div className="connector-approvals-actions">
                   <button
                     type="button"
