@@ -105,9 +105,20 @@ a vision-capable model.
   other internal servers so users cannot edit or remove it, and its config
   entry renders an explicit disabled state when the grant is off, because
   config deep-merge means omission would not reliably revoke.
-- Granting or revoking restarts both runtime modes and retries the turn;
-  revoking also terminates all browser sessions and deletes ephemeral
-  profiles.
+- Granting restarts both runtime modes and retries the turn. A turn is
+  retried only when its blocking call never executed (the request-card
+  path); a grant change never re-issues a call that already ran. Parked
+  consequential actions are journaled in the broker with a stable action id,
+  and a retried turn resumes at the parked call instead of re-running
+  completed ones, so enabling or revoking access cannot duplicate a
+  submission.
+- Revocation is an ordered handshake, not a teardown race: the broker first
+  refuses new commands, then has the extension detach debugger control from
+  every task tab and drop task markings, then invalidates the shim's socket
+  credentials and any parked approvals, and only then terminates sessions
+  and deletes ephemeral profiles. If the app or broker dies instead, the
+  native-messaging disconnect is the extension's own signal to detach from
+  all tabs and clear task state.
 - The upstream runtime's own browser and computer-use toolsets stay disabled
   regardless of the grant; June exposes capability only through its own
   contract.
@@ -145,8 +156,13 @@ a vision-capable model.
 - Consequential actions (submit, send, publish, purchase, delete, and other
   state-committing operations on a signed-in site) park in the broker for a
   chat approval card, reusing the connector approval surface. The card also
-  offers "approve all on this site for this task"; that allowance dies with
-  the task and nothing persistent is stored. Typing into password, one-time
+  offers "approve all on this site for this task". A site is a normalized
+  origin (scheme, host, and port; exact match, no subdomain or URL-prefix
+  matching), evaluated by the broker against the canonicalized URL of the
+  page performing the action. The allowance lives only in broker memory and
+  is cleared on task completion, task cancellation, session close, revoke,
+  and app exit; an action arriving after cleanup parks again. Nothing
+  persistent is stored. Typing into password, one-time
   code, or payment fields is never automated; the user is asked to take
   over.
 
@@ -156,9 +172,13 @@ a vision-capable model.
   Chromium-family browser (Chrome, then Edge, then Brave, then stock
   Chromium) headless with a fresh ephemeral profile under app-controlled
   temporary storage.
-- Public-web-only policy: non-HTTP schemes, loopback, link-local, and
-  private-network destinations are blocked before navigation and re-checked
-  after redirects.
+- Public-web-only policy enforced at connection time, not only at
+  navigation: non-HTTP schemes, loopback, link-local, and private-network
+  destinations are blocked. The broker resolves each hostname itself,
+  validates every resolved address, and pins the browser to the validated
+  addresses, so a hostname cannot pass the check publicly and then
+  re-resolve to a private address when the browser connects (DNS
+  rebinding). Redirects re-enter the same resolve-validate-pin path.
 - Consequential-action classes are hard-blocked (nobody is present to
   approve), and browser access is a per-routine opt-in, not a global side
   effect of the attended grant.
