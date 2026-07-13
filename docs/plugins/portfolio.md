@@ -153,6 +153,7 @@ top-ten decision without first changing the family's assumptions.
 | Salesforce | 19 | 9 | 13 | 11 | 8 | 2 | 62 |
 | Asana | 17 | 10 | 11 | 10 | 8 | 5 | 61 |
 | Box | 16 | 11 | 8 | 9 | 9 | 7 | 60 |
+| GitLab Issues | 17 | 9 | 10 | 10 | 8 | 6 | 60 |
 | ClickUp | 16 | 10 | 11 | 9 | 8 | 5 | 59 |
 | Dropbox | 15 | 11 | 8 | 9 | 9 | 7 | 59 |
 | Pipedrive | 17 | 8 | 12 | 9 | 8 | 5 | 59 |
@@ -183,6 +184,10 @@ skills and app integrations already represented by the capability candidates;
 including them would double-count the same value. They remain an important
 packaging pattern for future June skill collections, not a distinct connector
 or execution capability competing for an implementation slot.
+
+Provider deployment variants such as the GitHub Enterprise app template are
+folded into the parent capability score. They affect delivery and rollout, but
+do not represent an additional user job or portfolio slot.
 
 ## Sequencing
 
