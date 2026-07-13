@@ -94,8 +94,11 @@ import {
 import { ProviderLogo } from "./ProviderLogo";
 import { modelOptions, selectedModel } from "./ModelPickerDialog";
 import {
+  AUTO_PREFERENCE_VALUES,
+  autoPreferenceFromCostQuality,
   ModelPickerCardContent,
   ModelPickerPopover,
+  type AutoPreference,
   type ModelPickerFlyout,
 } from "./ModelPickerPopover";
 import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
@@ -192,8 +195,6 @@ const RELEASE_CHANNEL_OPTIONS: readonly {
   { value: "rc", label: "Release candidate" },
 ];
 
-type AutoPreference = "cost" | "balanced" | "quality";
-
 const AUTO_PREFERENCE_OPTIONS: readonly {
   value: AutoPreference;
   label: ReactNode;
@@ -202,20 +203,6 @@ const AUTO_PREFERENCE_OPTIONS: readonly {
   { value: "balanced", label: "Balanced" },
   { value: "quality", label: "Higher quality" },
 ];
-
-const AUTO_PREFERENCE_VALUES: Record<AutoPreference, number> = {
-  // Keep the cost-first preset above the lowest-quality routing tier. Live
-  // integration evals showed that tier dropping facts and inventing dates.
-  cost: 20,
-  balanced: 50,
-  quality: 100,
-};
-
-function autoPreferenceFromCostQuality(value: number): AutoPreference {
-  if (value < 34) return "cost";
-  if (value > 66) return "quality";
-  return "balanced";
-}
 
 const EMPTY_MODIFIERS: DictationShortcutModifiers = {
   command: false,
@@ -1025,18 +1012,31 @@ export function AppSettings({
     setModelSearch("");
   }
 
-  function selectModelFromPicker(mode: ProviderModelMode, modelId: string, costQuality?: number) {
+  // Optimistic apply + persisted save, shared by the Models row's segmented
+  // control and the model picker popover's Auto section.
+  function applyCostQuality(costQuality: number) {
+    setProviderSettings((current) => ({ ...current, costQuality }));
+    saveCostQuality(costQuality);
+  }
+
+  function selectModelFromPicker(
+    mode: ProviderModelMode,
+    modelId: string,
+    costQuality?: number,
+    options?: { keepOpen?: boolean },
+  ) {
     const picked = modelOptionsForMode(mode).find((model) => model.id === modelId);
     if (mode === "generation" && costQuality !== undefined) {
-      setProviderSettings((current) => ({ ...current, costQuality }));
-      saveCostQuality(costQuality);
+      applyCostQuality(costQuality);
     }
     if (mode === "generation" && picked?.provider === "local") {
       enableLocalGenerationFromPicker();
     } else {
       void selectVeniceModel(mode, modelId);
     }
-    closeModelPicker();
+    // The Auto toggle switches models mid-flow, so it asks to keep the picker
+    // open; a row pick is a final choice and closes it.
+    if (!options?.keepOpen) closeModelPicker();
   }
 
   // True when the draft matches what's persisted, so enabling can skip a
@@ -1905,9 +1905,10 @@ export function AppSettings({
                     }
                     onFlyoutChange={setModelPickerFlyout}
                     onSearchChange={setModelSearch}
-                    onSelect={(modelId, costQuality) =>
-                      selectModelFromPicker("generation", modelId, costQuality)
+                    onSelect={(modelId, costQuality, options) =>
+                      selectModelFromPicker("generation", modelId, costQuality, options)
                     }
+                    onCostQualityChange={applyCostQuality}
                   />
                   {providerSettings.generationModel === "open-software/auto" ? (
                     <div className="settings-row">
@@ -1922,14 +1923,9 @@ export function AppSettings({
                           aria-label="Auto preference"
                           value={autoPreferenceFromCostQuality(providerSettings.costQuality)}
                           options={AUTO_PREFERENCE_OPTIONS}
-                          onValueChange={(preference) => {
-                            const costQuality = AUTO_PREFERENCE_VALUES[preference];
-                            setProviderSettings((current) => ({
-                              ...current,
-                              costQuality,
-                            }));
-                            saveCostQuality(costQuality);
-                          }}
+                          onValueChange={(preference) =>
+                            applyCostQuality(AUTO_PREFERENCE_VALUES[preference])
+                          }
                         />
                       </div>
                     </div>
@@ -2620,6 +2616,7 @@ function ModelRow({
   onFlyoutChange,
   onSearchChange,
   onSelect,
+  onCostQualityChange,
   summarySuppressed,
 }: {
   mode: ProviderModelMode;
@@ -2637,7 +2634,8 @@ function ModelRow({
   onToggle: () => void;
   onFlyoutChange: (flyout: ModelPickerFlyout) => void;
   onSearchChange: (value: string) => void;
-  onSelect: (modelId: string, costQuality?: number) => void;
+  onSelect: (modelId: string, costQuality?: number, options?: { keepOpen?: boolean }) => void;
+  onCostQualityChange?: (value: number) => void;
   summarySuppressed?: boolean;
 }) {
   const model = selectedModel(options, value);
@@ -2689,6 +2687,7 @@ function ModelRow({
             onFlyoutChange={onFlyoutChange}
             onSearchChange={onSearchChange}
             onSelect={onSelect}
+            onCostQualityChange={onCostQualityChange}
           />
         ) : null}
       </div>

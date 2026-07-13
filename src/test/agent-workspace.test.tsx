@@ -3675,7 +3675,7 @@ describe("AgentWorkspace", () => {
     });
   });
 
-  it("offers the three Auto presets and persists the selected routing preference", async () => {
+  it("switches Auto on from the picker toggle and persists the drilled-in preference", async () => {
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listHermesSessions.mockResolvedValue([]);
     mocks.setVeniceModel.mockImplementation(async () => {
@@ -3688,22 +3688,42 @@ describe("AgentWorkspace", () => {
       mocks.providerModelSettings.mockResolvedValue({ settings });
       return settings;
     });
+    mocks.setCostQuality.mockImplementation(async (costQuality: number) => {
+      const settings = {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "open-software/auto",
+        costQuality,
+      };
+      mocks.providerModelSettings.mockResolvedValue({ settings });
+      return settings;
+    });
     const user = userEvent.setup();
 
     render(<AgentWorkspace />);
 
     await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
     const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
-    expect(within(dialog).getByRole("option", { name: /Auto · Higher Quality/ })).toBeVisible();
-    expect(within(dialog).getByRole("option", { name: /Auto · Balanced/ })).toBeVisible();
-    expect(within(dialog).getByRole("option", { name: /Auto · Lower Cost/ })).toBeVisible();
+    // Suggested rows stay concrete models; Auto lives in the pinned toggle.
+    expect(within(dialog).getByRole("option", { name: /GLM 5\.2/ })).toBeVisible();
+    const autoSwitch = within(dialog).getByRole("switch", {
+      name: "Choose the model automatically",
+    });
+    expect(autoSwitch).not.toBeChecked();
 
-    await user.click(within(dialog).getByRole("option", { name: /Auto · Lower Cost/ }));
-
-    await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledWith(20));
-    expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "open-software/auto");
+    // Toggling on selects the router and keeps the popover open.
+    await user.click(autoSwitch);
+    await waitFor(() =>
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "open-software/auto"),
+    );
     // The pill ghosts the active preset designation beside the model name.
     expect(await screen.findByRole("button", { name: "Model: Auto (Lower)" })).toBeInTheDocument();
+
+    // The Preference drill-in persists a new preset and updates the pill.
+    await user.click(within(dialog).getByRole("button", { name: /Preference/ }));
+    await user.click(await screen.findByRole("menuitemradio", { name: /Higher quality/ }));
+    await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledWith(100));
+    expect(await screen.findByRole("button", { name: "Model: Auto (Higher)" })).toBeInTheDocument();
   });
 
   it("ignores a stale pending New Session marker left over from a reload", async () => {

@@ -6536,6 +6536,74 @@ input:focus-visible,
   line-height: 1.3;
 }
 
+/* Automatic-routing section pinned above the suggested rows in the root
+ * popover: the Auto label + switch on the shared content gutter, and the
+ * Preference drill-in row underneath while Auto is on. The hairline splits
+ * the section from the model list, running the popover's full width. */
+.agent-composer-model-auto {
+  display: flex;
+  flex-direction: column;
+  margin: 0 calc(-1 * var(--sp-2)) var(--sp-1);
+  padding: 0 var(--sp-2) var(--sp-1);
+  border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
+}
+
+/* The filter recipe's bleed/padding are tuned for the flyout surface; re-seat
+ * the toggle row on the root popover's gutter (title text at --sp-3, switch on
+ * the rows' --sp-2 inset) and drop the recipe's own hairline — the section
+ * draws one for the whole block. */
+.agent-composer-model-auto .agent-composer-model-auto-toggle {
+  margin: 0;
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  border-bottom: 0;
+}
+
+/* The Preference drill-in row while Auto is on: label left, the active preset
+ * as a quiet value beside the chevron. The auto margin sits on the value, so
+ * the chevron's own auto margin has to stand down or the pair splits apart. */
+.agent-composer-model-auto-value {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-composer-model-auto-row .agent-composer-model-row-chevron {
+  margin-left: 0;
+}
+
+/* The preference flyout hangs off the popover's top edge (its trigger row
+ * lives in the pinned Auto section) instead of the bottom like the catalog. */
+.agent-composer-model-flyout.agent-composer-model-auto-panel {
+  top: -1px;
+  bottom: auto;
+  width: 248px;
+}
+
+/* Same inset as the catalog panel: an --sp-1 gutter between the surface
+ * border and the option rows, so hover fills never touch the edge. */
+.agent-composer-model-auto-panel .agent-composer-model-surface {
+  gap: 0;
+  width: 248px;
+  padding: var(--sp-1);
+}
+
+.agent-composer-model-pref-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-composer-model-pref-desc {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+  white-space: normal;
+}
+
 /* Catalog list scroller. Fades come from the shared `.scroll-fade` primitive
  * (contained overlays, WKWebView-safe for this popover); only the fade size is
  * tuned here so rows melt into the popover surface at the boundary. */

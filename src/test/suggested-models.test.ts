@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { preferredVisionFallbackModel, suggestedModelsForMode } from "../lib/suggested-models";
+import {
+  autoPillDesignation,
+  preferredVisionFallbackModel,
+  suggestedModelsForMode,
+} from "../lib/suggested-models";
 import type { VeniceModelDto } from "../lib/tauri";
 
 const model = (id: string, name: string, capabilities: string[]): VeniceModelDto => ({
@@ -53,39 +57,27 @@ describe("preferredVisionFallbackModel", () => {
 });
 
 describe("suggestedModelsForMode", () => {
-  it("replaces Auto's generic catalog description with preset-specific guidance", () => {
-    const auto = {
-      ...model("open-software/auto", "Auto", ["supportsFunctionCalling"]),
-      description: "Automatically selects an eligible private model",
-    };
+  it("returns the curated concrete picks present in the catalog, in curated order", () => {
+    // Auto is not a suggested row — it lives in the picker's pinned toggle
+    // section — so the catalog's Auto entry never surfaces here.
+    const auto = model("open-software/auto", "Auto", ["supportsFunctionCalling"]);
+    const suggestions = suggestedModelsForMode("generation", [auto, kimi, glm52]);
 
-    const suggestions = suggestedModelsForMode("generation", [auto]);
-
-    expect(
-      suggestions.map(({ model: suggestion, costQuality }) => ({
-        name: suggestion.name,
-        description: suggestion.description,
-        costQuality,
-      })),
-    ).toEqual([
-      {
-        name: "Auto · Higher Quality",
-        description:
-          "Best for complex questions and important work where response quality matters most.",
-        costQuality: 100,
-      },
-      {
-        name: "Auto · Balanced",
-        description:
-          "Best for everyday work when you want a practical balance of quality and credit use.",
-        costQuality: 50,
-      },
-      {
-        name: "Auto · Lower Cost",
-        description: "Best for quick or routine tasks when minimizing credit use matters most.",
-        costQuality: 20,
-      },
+    expect(suggestions.map(({ model: suggestion }) => suggestion.id)).toEqual([
+      "zai-org-glm-5-2",
+      "kimi-k2-6",
     ]);
-    expect(suggestions.every(({ model: suggestion }) => suggestion.id === auto.id)).toBe(true);
+  });
+});
+
+describe("autoPillDesignation", () => {
+  it("buckets the persisted cost-to-quality value onto the preset designations", () => {
+    expect(autoPillDesignation(20)).toBe("Lower");
+    expect(autoPillDesignation(50)).toBe("Balanced");
+    expect(autoPillDesignation(100)).toBe("Higher");
+    // Off-preset values (a hand-edited settings file) land on the nearest tier.
+    expect(autoPillDesignation(0)).toBe("Lower");
+    expect(autoPillDesignation(67)).toBe("Higher");
+    expect(autoPillDesignation(undefined)).toBeUndefined();
   });
 });

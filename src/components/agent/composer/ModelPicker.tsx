@@ -77,7 +77,13 @@ export function ComposerModelPicker({
 // lists the curated suggested models as plain rows, and a flyout panel
 // opens beside it — hover details for a suggested row, or the searchable
 // full catalog behind the "All models" row.
-export type ComposerModelFlyout = { kind: "model"; id: string } | { kind: "all" } | null;
+// "auto" matches the shared hover-bridge union; this popover has no Auto
+// section yet, so it never sets the kind itself.
+export type ComposerModelFlyout =
+  | { kind: "model"; id: string }
+  | { kind: "all" }
+  | { kind: "auto" }
+  | null;
 
 // Row hovers should feel quick while moving through models, but still keep a
 // tiny intent delay so a pointer sweep does not flash every card open. Click
