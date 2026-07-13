@@ -63,6 +63,17 @@ Per-repo config the engineering skills read before acting (see the
 - [hermes-architecture.md](hermes-architecture.md) — the agent runtime: bridge, gateway, control plane, sessions, models
 - [hermes-gateway-gotchas.md](hermes-gateway-gotchas.md) — integration gotchas: restart discipline, config contract, MCP OAuth, event types, upstream tool-schema quirks
 - [browser-computer-use-prd.md](browser-computer-use-prd.md) — PRD: Browser use + Computer use plugins (JUN-278); extension in the user's browser + routines-only managed browser, phase-2 computer use
+- [plugins/portfolio.md](plugins/portfolio.md) — JUN-309 portfolio: current ChatGPT plugin surface inventory, ranking rubric, June's top 10, shared product contract, sequencing, metrics, and explicit deferrals
+  - [Google Workspace](plugins/google-workspace-prd.md) — [implementation plan](plugins/google-workspace-implementation-plan.md)
+  - [Browser use](plugins/browser-use-prd.md) — [implementation plan](plugins/browser-use-implementation-plan.md)
+  - [Slack](plugins/slack-prd.md) — [implementation plan](plugins/slack-implementation-plan.md)
+  - [Microsoft 365](plugins/microsoft-365-prd.md) — [implementation plan](plugins/microsoft-365-implementation-plan.md)
+  - [Computer use](plugins/computer-use-prd.md) — [implementation plan](plugins/computer-use-implementation-plan.md)
+  - [Notion](plugins/notion-prd.md) — [implementation plan](plugins/notion-implementation-plan.md)
+  - [GitHub](plugins/github-prd.md) — [implementation plan](plugins/github-implementation-plan.md)
+  - [Linear](plugins/linear-prd.md) — [implementation plan](plugins/linear-implementation-plan.md)
+  - [Documents](plugins/documents-prd.md) — [implementation plan](plugins/documents-implementation-plan.md)
+  - [Spreadsheets](plugins/spreadsheets-prd.md) — [implementation plan](plugins/spreadsheets-implementation-plan.md)
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
 - [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
 - [telemetry.md](telemetry.md) — public overview of June telemetry, current behavior, and policies
