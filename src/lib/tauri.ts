@@ -1941,3 +1941,31 @@ export async function latestDictationEvent() {
   const payload = await invoke<string | undefined>("latest_dictation_event");
   return payload ? (JSON.parse(payload) as DictationHelperEvent) : undefined;
 }
+
+// --- Browser extension pairing (JUN-287) ---
+
+export type ExtensionPairingStatus = {
+  paired: boolean;
+  listenerRunning: boolean;
+  extensionVersion?: string;
+  protocolVersion?: number;
+};
+
+/** Emitted by the extension host whenever pairing state changes. */
+export const EXTENSION_PAIRING_CHANGED_EVENT = "june://extension-pairing-changed";
+
+export async function extensionPairingStatus() {
+  return invoke<ExtensionPairingStatus>("extension_pairing_status");
+}
+
+export type RegisterBrowserExtensionHostResult = {
+  manifestPath: string;
+  shimPath: string;
+};
+
+/** Writes the Chrome native messaging host manifest pinning the June
+ * extension id to the bundled shim, so a load-unpacked extension can
+ * connect. */
+export async function registerBrowserExtensionHost() {
+  return invoke<RegisterBrowserExtensionHostResult>("register_browser_extension_host");
+}

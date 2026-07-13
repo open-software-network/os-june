@@ -5,6 +5,7 @@ pub mod commands;
 pub mod db;
 pub mod dictation;
 pub mod domain;
+pub mod extension_host;
 pub mod feature_flags;
 pub mod hermes_bridge;
 pub mod image_safety;
@@ -290,6 +291,8 @@ pub fn run() {
             os_accounts::os_accounts_change_plan,
             os_accounts::os_accounts_open_portal,
             os_accounts::os_accounts_referral_summary,
+            extension_host::extension_pairing_status,
+            extension_host::register_browser_extension_host,
             updates::get_release_channel,
             updates::set_release_channel,
             updates::fetch_update,
@@ -298,6 +301,7 @@ pub fn run() {
         .manage(RecordingPresenceBoundsState::default())
         .manage(hermes_bridge::HermesBridge::default())
         .manage(os_accounts::LoginFlow::default())
+        .manage(extension_host::ExtensionHost::default())
         .setup(|app| {
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
@@ -310,6 +314,7 @@ pub fn run() {
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);
+            extension_host::setup(app);
             meeting_hud::setup(app);
             os_accounts::setup_deep_link(app);
             #[cfg(target_os = "macos")]

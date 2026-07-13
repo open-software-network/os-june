@@ -6,6 +6,9 @@ authors = ["Open Software Network"]
 license = "MIT"
 edition = "2021"
 rust-version = "1.80.0"
+# Two binaries below; `cargo run` (tauri dev via scripts/cargo-os-june-runner.sh)
+# must keep launching the app.
+default-run = "os-june"
 
 [lib]
 name = "os_june_lib"
@@ -14,6 +17,13 @@ crate-type = ["rlib"]
 [[bin]]
 name = "os-june"
 path = "src/main.rs"
+
+# The native messaging shim Chrome spawns for the June extension (JUN-287).
+# Not auto-bundled: scripts/bundle-nm-shim.sh copies and signs it into
+# .tauri-helper/ before bundling (see tauri.macos.conf.json).
+[[bin]]
+name = "june-nm-shim"
+path = "src/bin/june_nm_shim.rs"
 
 [build-dependencies]
 tauri-build = { version = "2.4.0", features = [] }

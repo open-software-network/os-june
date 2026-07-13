@@ -38,6 +38,7 @@ import {
 } from "../../lib/hermes-messaging";
 import { Switch } from "../ui/Switch";
 import { SettingsPageHeader } from "./AppSettings";
+import { BrowserExtensionGroup } from "./BrowserExtensionSettings";
 
 type AgentSettingsPanel = "messaging" | "files";
 
@@ -433,6 +434,7 @@ export function AgentSettingsSection({
         {error ? <p className="settings-row-error">{error}</p> : null}
       </section>
       <CharacterGroup />
+      <BrowserExtensionGroup />
       <MessagingGroup
         loading={loading}
         platforms={platforms}

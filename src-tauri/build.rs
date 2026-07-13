@@ -20,7 +20,41 @@ fn main() {
     build_system_audio_helper();
     build_dictation_helper();
     ensure_bundled_hermes_dir();
+    ensure_nm_shim_placeholder();
     tauri_build::build();
+}
+
+/// `tauri_build::build()` validates every `bundle.resources` source path at
+/// compile time, but the native messaging shim is a sibling `[[bin]]` of this
+/// crate — it does not exist yet while build.rs runs. This placeholder keeps
+/// the mapping valid for every cargo invocation; `scripts/bundle-nm-shim.sh`
+/// (the macOS `beforeBundleCommand`) replaces it with the real signed binary
+/// after compilation and fails the bundle if it cannot.
+fn ensure_nm_shim_placeholder() {
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("macos") {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    let Some(helper_dir) = manifest_dir
+        .parent()
+        .map(|repo_dir| repo_dir.join(".tauri-helper"))
+    else {
+        return;
+    };
+    let shim = helper_dir.join("june-nm-shim");
+    if shim.exists() {
+        return;
+    }
+    if let Err(error) = std::fs::create_dir_all(&helper_dir).and_then(|_| {
+        std::fs::write(
+            &shim,
+            b"placeholder: replaced by scripts/bundle-nm-shim.sh\n",
+        )
+    }) {
+        println!("cargo:warning=could not create nm shim placeholder: {error}");
+    }
 }
 
 /// `tauri_build::build()` validates every `bundle.resources` source path at

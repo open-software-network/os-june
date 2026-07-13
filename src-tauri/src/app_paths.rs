@@ -68,7 +68,13 @@ fn use_prod_data_dir() -> bool {
     std::env::var_os(USE_PROD_DATA_DIR_ENV).is_some()
 }
 
-fn app_data_dir_for_build(data_dir: PathBuf, debug_assertions: bool, use_prod: bool) -> PathBuf {
+/// Public because the native messaging shim (`extension_host::shim_data_dir`)
+/// has no AppHandle and must rebuild the same dev/prod split from scratch.
+pub fn app_data_dir_for_build(
+    data_dir: PathBuf,
+    debug_assertions: bool,
+    use_prod: bool,
+) -> PathBuf {
     if !debug_assertions || use_prod {
         return data_dir;
     }
