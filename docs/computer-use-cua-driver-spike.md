@@ -303,7 +303,14 @@ tracking driver-internal state paths across driver versions. Concretely:
    the broker's pre-started daemon and hard-fails if the daemon is absent
    (surfacing a broker bug instead of degrading). `CUA_DRIVER_RS_MCP_NO_RELAUNCH`
    must not be set: the driver checks it before `FORCE_PROXY`, so combining them
-   selects in-process execution. Because the broker pre-starts the daemon, the
+   selects in-process execution. "Must not be set" has to be enforced, not
+   assumed - an inherited `CUA_DRIVER_RS_MCP_NO_RELAUNCH=1` from the user's
+   environment would silently defeat the guard, so the wrapper explicitly
+   unsets it (and the whole `CUA_DRIVER_RS_*` namespace it does not
+   deliberately set) before exec, `apply_isolated_hermes_env()` strips it from
+   the runtime spawn env, and the JUN-293 build should carry a regression test
+   that starts with the variable pre-set and proves the client still proxies.
+   Because the broker pre-starts the daemon, the
    client's auto-launch path never runs. The jailed client does no privileged
    work; it relays to the daemon. (A jailed client's `connect()` was verified
    against a broker-started daemon: `status --socket` answered "daemon is
