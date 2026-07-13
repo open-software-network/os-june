@@ -14,7 +14,7 @@ function waitFor(delayMs: number): Promise<void> {
 }
 
 /**
- * Hermes emits message.complete before all post-turn work releases the
+ * Hermes emits message.complete before all post-run work releases the
  * session's busy guard. Retry only that documented 4009 race; every other
  * error is a real switch failure and must block the prompt immediately.
  *

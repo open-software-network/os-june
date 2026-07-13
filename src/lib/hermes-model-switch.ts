@@ -3,7 +3,7 @@
  *
  * June lets the composer choose the text-model default before a Hermes session
  * exists. Once a session exists, a new choice is session-local and applies to
- * the next user message. An active response keeps the model it started with.
+ * the next user message. An active agent run keeps the model it started with.
  */
 
 /** No session was running, so only the default changed. */

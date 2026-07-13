@@ -24,9 +24,9 @@
  * Two phases, gated independently:
  * - PROTOCOL smoke (always, when a binary exists; no provider key needed):
  *   start, status, ws connect, session.create, session.active_list,
- *   session.interrupt, and session-scoped model config.set (accepted or a 4009
- *   busy response). These exercise the gateway contract without spending model
- *   tokens.
+ *   session.interrupt, and an accepted session-scoped Hermes model setting via
+ *   config.set. A 4009 busy response is retried, never counted as a pass. These
+ *   exercise the gateway contract without spending model tokens.
  * - MODEL smoke (opt-in via HERMES_SMOKE_MODEL=1, requires a provider key in
  *   the runtime's config): additionally runs prompt.submit with a minimal
  *   no-tool prompt and waits for a streamed completion.
@@ -62,9 +62,9 @@ import {
   buildStatusUrl,
   buildWsUrl,
   generateSessionToken,
-  isControlledModelConfigSetError,
   parseReadinessBody,
   parseRpcFrame,
+  retryModelConfigSetUntilAccepted,
   resolveHermesCommand,
   type HermesInboundFrame,
 } from "../src/lib/hermes-smoke/helpers.ts";
@@ -184,7 +184,8 @@ async function main(): Promise<void> {
     }
     record("hermes-smoke: PASS session.active_list returned a sessions list");
 
-    // Session-scoped model config.set — accepted, or a 4009 busy response.
+    // Session-scoped Hermes model setting via config.set. Busy is retryable,
+    // but the release gate passes only after the mutation is accepted.
     await setSessionModel(rpc, sessionId, record);
 
     // MODEL phase: only when explicitly opted in (spends provider tokens).
@@ -518,35 +519,31 @@ function makeRpcClient(socket: WebSocket): RpcClient {
   };
 }
 
-/** Session-scoped model config.set: the release gate must confirm the runtime
- * accepts the exact mutation June uses, or returns the documented 4009 busy
- * guard. Any other rejection fails the gate. In particular, 4018 used to pass
- * even though it meant `/model` had been sent to the wrong RPC method. */
+/** Session-scoped Hermes model setting: the release gate must confirm the
+ * runtime accepts the exact mutation June uses. The documented 4009 busy guard
+ * is retried within the RPC budget; it never counts as acceptance. */
 async function setSessionModel(
   rpc: RpcClient,
   sessionId: string,
   record: (line: string) => void,
 ): Promise<void> {
   try {
-    await rpc.request("config.set", {
-      session_id: sessionId,
-      key: "model",
-      value: "smoke-model-alt --session",
-      confirm_expensive_model: true,
-    });
-    record("hermes-smoke: PASS session-scoped model config.set accepted");
+    await retryModelConfigSetUntilAccepted(
+      () =>
+        rpc.request("config.set", {
+          session_id: sessionId,
+          key: "model",
+          value: "smoke-model-alt --session",
+          confirm_expensive_model: true,
+        }),
+      { timeoutMs: RPC_TIMEOUT_MS, wait: delay },
+    );
+    record("hermes-smoke: PASS session-scoped Hermes model setting accepted");
   } catch (error) {
-    if (!isControlledModelConfigSetError(error)) {
-      const code = (error as { code?: unknown }).code;
-      throw new Error(
-        `session-scoped model config.set failed with an uncontrolled error ` +
-          `(code=${code ?? "none"}): ${describeError(error)}`,
-      );
-    }
-    const code = (error as { code?: number }).code;
-    record(
-      `hermes-smoke: PASS session-scoped model config.set returned the 4009 busy guard ` +
-        `(code=${code ?? "none"}: ${describeError(error)})`,
+    const code = (error as { code?: unknown }).code;
+    throw new Error(
+      `session-scoped Hermes model setting was not accepted ` +
+        `(code=${code ?? "none"}): ${describeError(error)}`,
     );
   }
 }

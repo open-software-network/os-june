@@ -98,7 +98,7 @@ Two phases, gated independently:
 
 - Protocol smoke (default; no provider key): start, status, ws connect,
   `session.create`, `session.active_list`, session-scoped model `config.set`
-  (accepted or the documented 4009 busy guard), `session.interrupt`. A local
+  (4009 busy is retried, but only acceptance passes), `session.interrupt`. A local
   `/v1/models` stub validates a switch from the configured model to an alternate
   listed model; no model tokens are spent.
 - Model smoke (opt-in): set `HERMES_SMOKE_MODEL=1` and ensure the runtime config

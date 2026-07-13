@@ -29,9 +29,12 @@ export type SessionModelSelection = {
 };
 
 export type SessionModelSelectionEntry = {
+  /** Latest picker choice for the next user-initiated agent run. */
   selection: SessionModelSelection;
   revision: number;
   appliedRevision: number;
+  /** Model Hermes is actually configured to use after the last acknowledged write. */
+  appliedSelection?: SessionModelSelection;
 };
 
 export type SessionModelSelectionMap = Record<string, SessionModelSelectionEntry>;
@@ -65,10 +68,10 @@ function normalizedRevision(value: unknown, allowZero: boolean): number | null {
 
 function defineEntry(
   store: SessionModelSelectionMap,
-  sessionId: string,
+  storedSessionId: string,
   entry: SessionModelSelectionEntry,
 ): void {
-  Object.defineProperty(store, sessionId, {
+  Object.defineProperty(store, storedSessionId, {
     configurable: true,
     enumerable: true,
     value: entry,
@@ -81,31 +84,39 @@ function sanitizedMap(value: unknown): SessionModelSelectionMap {
   if (!value || typeof value !== "object" || Array.isArray(value)) return store;
 
   for (const [rawSessionId, rawEntry] of Object.entries(value)) {
-    const sessionId = rawSessionId.trim();
-    if (!sessionId || !rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+    const storedSessionId = rawSessionId.trim();
+    if (!storedSessionId || !rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
       continue;
     }
     const candidate = rawEntry as {
       selection?: unknown;
       revision?: unknown;
       appliedRevision?: unknown;
+      appliedSelection?: unknown;
     };
     const selection = normalizedSelection(candidate.selection);
+    const explicitAppliedSelection = normalizedSelection(candidate.appliedSelection);
     const revision = normalizedRevision(candidate.revision, false);
     const appliedRevision = normalizedRevision(candidate.appliedRevision, true);
     if (!selection || revision === null || appliedRevision === null) continue;
+    const boundedAppliedRevision = Math.min(appliedRevision, revision);
 
-    defineEntry(store, sessionId, {
+    defineEntry(store, storedSessionId, {
       selection,
       revision,
-      appliedRevision: Math.min(appliedRevision, revision),
+      appliedRevision: boundedAppliedRevision,
+      // A pre-appliedSelection record cannot prove Hermes' live route: older
+      // cross-surface sends could finish out of order while the counters still
+      // looked fully acknowledged. Leave it unknown so the next Send performs
+      // one repairing config.set instead of blessing potentially stale state.
+      ...(explicitAppliedSelection ? { appliedSelection: explicitAppliedSelection } : {}),
     });
   }
   return store;
 }
 
-function sessionIdOrNull(sessionId: string): string | null {
-  const normalized = sessionId.trim();
+function storedSessionIdOrNull(storedSessionId: string): string | null {
+  const normalized = storedSessionId.trim();
   return normalized || null;
 }
 
@@ -179,11 +190,11 @@ function updateSessionModelSelections(
 
 /** Stage a choice for the next prompt. Repeated calls are synchronous and latest-wins. */
 export function stageSessionModelSelection(
-  sessionId: string,
+  storedSessionId: string,
   selection: SessionModelSelection,
 ): SessionModelSelectionMap {
   return updateSessionModelSelections((store) => {
-    const key = sessionIdOrNull(sessionId);
+    const key = storedSessionIdOrNull(storedSessionId);
     const normalized = normalizedSelection(selection);
     if (!key || !normalized) return;
     const current = store[key];
@@ -191,6 +202,7 @@ export function stageSessionModelSelection(
       selection: normalized,
       revision: (current?.revision ?? 0) + 1,
       appliedRevision: current?.appliedRevision ?? 0,
+      ...(current?.appliedSelection ? { appliedSelection: current.appliedSelection } : {}),
     });
   });
 }
@@ -200,18 +212,29 @@ export function stageSessionModelSelection(
  * The entry is fully applied but still retained for stable display and reloads.
  */
 export function rememberAppliedSessionModelSelection(
-  sessionId: string,
+  storedSessionId: string,
   selection: SessionModelSelection,
 ): SessionModelSelectionMap {
   return updateSessionModelSelections((store) => {
-    const key = sessionIdOrNull(sessionId);
+    const key = storedSessionIdOrNull(storedSessionId);
     const normalized = normalizedSelection(selection);
     if (!key || !normalized) return;
-    const revision = (store[key]?.revision ?? 0) + 1;
+    const current = store[key];
+    if (current) {
+      const desiredIsApplied = sameSessionModelSelection(current.selection, normalized);
+      defineEntry(store, key, {
+        ...current,
+        appliedRevision: desiredIsApplied ? current.revision : current.appliedRevision,
+        appliedSelection: normalized,
+      });
+      return;
+    }
+    const revision = 1;
     defineEntry(store, key, {
       selection: normalized,
       revision,
       appliedRevision: revision,
+      appliedSelection: normalized,
     });
   });
 }
@@ -221,24 +244,23 @@ export function rememberAppliedSessionModelSelection(
  * staged while that request was in flight, its selection remains pending.
  */
 export function markSessionModelSelectionApplied(
-  sessionId: string,
+  storedSessionId: string,
   revision: number,
+  appliedSelection: SessionModelSelection,
 ): SessionModelSelectionMap {
   return updateSessionModelSelections((store) => {
-    const key = sessionIdOrNull(sessionId);
+    const key = storedSessionIdOrNull(storedSessionId);
     const acknowledgedRevision = normalizedRevision(revision, false);
-    if (!key || acknowledgedRevision === null) return;
+    const normalizedAppliedSelection = normalizedSelection(appliedSelection);
+    if (!key || acknowledgedRevision === null || !normalizedAppliedSelection) return;
     const current = store[key];
-    if (
-      !current ||
-      acknowledgedRevision <= current.appliedRevision ||
-      acknowledgedRevision > current.revision
-    ) {
+    if (!current || acknowledgedRevision > current.revision) {
       return;
     }
     defineEntry(store, key, {
       ...current,
-      appliedRevision: acknowledgedRevision,
+      appliedRevision: Math.max(current.appliedRevision, acknowledgedRevision),
+      appliedSelection: normalizedAppliedSelection,
     });
   });
 }
@@ -246,25 +268,37 @@ export function markSessionModelSelectionApplied(
 export function hasPendingSessionModelSelection(
   entry: SessionModelSelectionEntry | undefined,
 ): boolean {
-  return Boolean(entry && entry.appliedRevision < entry.revision);
+  return Boolean(
+    entry &&
+      (entry.appliedRevision < entry.revision ||
+        !entry.appliedSelection ||
+        !sameSessionModelSelection(entry.selection, entry.appliedSelection)),
+  );
+}
+
+function sameSessionModelSelection(
+  left: SessionModelSelection,
+  right: SessionModelSelection,
+): boolean {
+  return left.modelId === right.modelId && left.costQuality === right.costQuality;
 }
 
 /** Remove all remembered model state for a deleted stored session. */
-export function forgetSessionModelSelection(sessionId: string): SessionModelSelectionMap {
+export function forgetSessionModelSelection(storedSessionId: string): SessionModelSelectionMap {
   return updateSessionModelSelections((store) => {
-    const key = sessionIdOrNull(sessionId);
+    const key = storedSessionIdOrNull(storedSessionId);
     if (key) delete store[key];
   });
 }
 
 /** Move a provisional stored-session key to its durable replacement. */
 export function migrateSessionModelSelection(
-  fromSessionId: string,
-  toSessionId: string,
+  fromStoredSessionId: string,
+  toStoredSessionId: string,
 ): SessionModelSelectionMap {
   return updateSessionModelSelections((store) => {
-    const fromKey = sessionIdOrNull(fromSessionId);
-    const toKey = sessionIdOrNull(toSessionId);
+    const fromKey = storedSessionIdOrNull(fromStoredSessionId);
+    const toKey = storedSessionIdOrNull(toStoredSessionId);
     if (!fromKey || !toKey || fromKey === toKey) return;
     const entry = store[fromKey];
     if (!entry) return;
@@ -286,6 +320,11 @@ export function migrateSessionModelSelection(
       appliedRevision: pending
         ? Math.min(revision - 1, Math.max(entry.appliedRevision, destination.appliedRevision))
         : revision,
+      ...(entry.appliedSelection
+        ? { appliedSelection: entry.appliedSelection }
+        : destination.appliedSelection
+          ? { appliedSelection: destination.appliedSelection }
+          : {}),
     });
   });
 }

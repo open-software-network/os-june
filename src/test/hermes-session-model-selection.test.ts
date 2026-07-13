@@ -58,6 +58,7 @@ describe("session model selections", () => {
         appliedRevision: 3,
       },
     });
+    expect(hasPendingSessionModelSelection(readSessionModelSelections().valid)).toBe(true);
   });
 
   it("stages synchronously with a monotonic revision and latest selection wins", () => {
@@ -96,15 +97,20 @@ describe("session model selections", () => {
     const applyingRevision = first["session-1"].revision;
     stageSessionModelSelection("session-1", { modelId: "model-b" });
 
-    const afterStaleAck = markSessionModelSelectionApplied("session-1", applyingRevision);
+    const afterStaleAck = markSessionModelSelectionApplied("session-1", applyingRevision, {
+      modelId: "model-a",
+    });
     expect(afterStaleAck["session-1"]).toEqual({
       selection: { modelId: "model-b" },
       revision: 2,
       appliedRevision: 1,
+      appliedSelection: { modelId: "model-a" },
     });
     expect(hasPendingSessionModelSelection(afterStaleAck["session-1"])).toBe(true);
 
-    const afterCurrentAck = markSessionModelSelectionApplied("session-1", 2);
+    const afterCurrentAck = markSessionModelSelectionApplied("session-1", 2, {
+      modelId: "model-b",
+    });
     expect(afterCurrentAck["session-1"].appliedRevision).toBe(2);
     expect(hasPendingSessionModelSelection(afterCurrentAck["session-1"])).toBe(false);
   });
@@ -119,11 +125,14 @@ describe("session model selections", () => {
 
     expect(second["session-1"].revision).toBe(firstRevision + 1);
     expect(second["session-1"].selection.modelId).toBe("model-b");
-    const afterStaleAck = markSessionModelSelectionApplied("session-1", firstRevision);
+    const afterStaleAck = markSessionModelSelectionApplied("session-1", firstRevision, {
+      modelId: "model-a",
+    });
     expect(afterStaleAck["session-1"]).toEqual({
       selection: { modelId: "model-b" },
       revision: firstRevision + 1,
       appliedRevision: firstRevision,
+      appliedSelection: { modelId: "model-a" },
     });
 
     // Let the canonical map flush successfully so later tests can observe
@@ -134,7 +143,9 @@ describe("session model selections", () => {
 
   it("ignores an acknowledgement beyond the current revision", () => {
     const staged = stageSessionModelSelection("session-1", { modelId: "model-a" });
-    const afterImpossibleAck = markSessionModelSelectionApplied("session-1", 99);
+    const afterImpossibleAck = markSessionModelSelectionApplied("session-1", 99, {
+      modelId: "model-a",
+    });
     expect(afterImpossibleAck).toEqual(staged);
     expect(hasPendingSessionModelSelection(afterImpossibleAck["session-1"])).toBe(true);
   });
@@ -148,6 +159,7 @@ describe("session model selections", () => {
       selection: { modelId: AUTO_MODEL_ID, costQuality: 20 },
       revision: 1,
       appliedRevision: 1,
+      appliedSelection: { modelId: AUTO_MODEL_ID, costQuality: 20 },
     });
     expect(hasPendingSessionModelSelection(remembered["session-1"])).toBe(false);
 
@@ -181,14 +193,43 @@ describe("session model selections", () => {
     expect(migrated.provisional).toBeUndefined();
     expect(migrated["stored-session"]).toEqual({
       selection: { modelId: "newer-model" },
-      revision: 3,
-      appliedRevision: 2,
+      revision: 2,
+      appliedRevision: 1,
+      appliedSelection: { modelId: "older-model" },
     });
     expect(hasPendingSessionModelSelection(migrated["stored-session"])).toBe(true);
   });
+
+  it("tracks the actual live model when older captured sends apply out of order", () => {
+    const first = stageSessionModelSelection("session-1", { modelId: "model-a" });
+    const firstRevision = first["session-1"].revision;
+    const second = stageSessionModelSelection("session-1", { modelId: "model-b" });
+    const secondRevision = second["session-1"].revision;
+
+    const afterSecond = markSessionModelSelectionApplied("session-1", secondRevision, {
+      modelId: "model-b",
+    });
+    expect(hasPendingSessionModelSelection(afterSecond["session-1"])).toBe(false);
+
+    const afterFirst = markSessionModelSelectionApplied("session-1", firstRevision, {
+      modelId: "model-a",
+    });
+    expect(afterFirst["session-1"]).toEqual({
+      selection: { modelId: "model-b" },
+      revision: secondRevision,
+      appliedRevision: secondRevision,
+      appliedSelection: { modelId: "model-a" },
+    });
+    expect(hasPendingSessionModelSelection(afterFirst["session-1"])).toBe(true);
+
+    const restored = markSessionModelSelectionApplied("session-1", secondRevision, {
+      modelId: "model-b",
+    });
+    expect(hasPendingSessionModelSelection(restored["session-1"])).toBe(false);
+  });
 });
 
-describe("turn-scoped Hermes model ids", () => {
+describe("agent-run-scoped Hermes model ids", () => {
   it("round-trips Auto with an integer, clamped cost-quality preference", () => {
     const lower = hermesModelIdForSelection({ modelId: AUTO_MODEL_ID, costQuality: -4 });
     const rounded = hermesModelIdForSelection({ modelId: AUTO_MODEL_ID, costQuality: 72.6 });

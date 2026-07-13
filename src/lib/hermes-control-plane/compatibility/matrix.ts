@@ -136,7 +136,7 @@ const methods: HermesCompatibilitySection = {
   "config.set": {
     status: "supported",
     rationale:
-      "Before the next user message, AgentWorkspace applies a queued session model with session-scoped config.set; Hermes rejects the mutation with 4009 while the current response is running.",
+      "Before the next user message, AgentWorkspace applies a queued session model with session-scoped config.set; Hermes rejects the mutation with 4009 while the agent run is active.",
     since: PIN,
   },
   "command.dispatch": {

@@ -8,6 +8,7 @@ import {
   isControlledModelConfigSetError,
   parseReadinessBody,
   parseRpcFrame,
+  retryModelConfigSetUntilAccepted,
   resolveHermesCommand,
 } from "../lib/hermes-smoke/helpers";
 
@@ -102,8 +103,8 @@ describe("parseReadinessBody — mirrors the /api/status gateway_running read", 
   });
 });
 
-describe("isControlledModelConfigSetError — gates the model config smoke PASS", () => {
-  it("treats 4009 session-busy as controlled", () => {
+describe("isControlledModelConfigSetError - identifies retryable model-setting errors", () => {
+  it("treats 4009 session-busy as retryable", () => {
     expect(isControlledModelConfigSetError({ code: 4009 })).toBe(true);
   });
 
@@ -129,6 +130,80 @@ describe("isControlledModelConfigSetError — gates the model config smoke PASS"
   it("does not throw on null/undefined input", () => {
     expect(isControlledModelConfigSetError(null)).toBe(false);
     expect(isControlledModelConfigSetError(undefined)).toBe(false);
+  });
+});
+
+describe("retryModelConfigSetUntilAccepted", () => {
+  it("returns only after config.set is accepted", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+
+    await expect(
+      retryModelConfigSetUntilAccepted(
+        async () => {
+          attempts += 1;
+          if (attempts < 3) throw Object.assign(new Error("session busy"), { code: 4009 });
+          return { accepted: true };
+        },
+        {
+          timeoutMs: 1_000,
+          wait: async (delayMs) => {
+            waits.push(delayMs);
+          },
+        },
+      ),
+    ).resolves.toEqual({ accepted: true });
+
+    expect(attempts).toBe(3);
+    expect(waits).toEqual([50, 100]);
+  });
+
+  it("fails when 4009 remains busy for the full retry budget", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+
+    const result = retryModelConfigSetUntilAccepted(
+      async () => {
+        attempts += 1;
+        throw Object.assign(new Error("session busy"), { code: 4009 });
+      },
+      {
+        timeoutMs: 100,
+        wait: async (delayMs) => {
+          waits.push(delayMs);
+        },
+      },
+    );
+
+    await expect(result).rejects.toThrow("remained busy for 100ms and was not accepted");
+    await expect(result).rejects.toMatchObject({ code: 4009 });
+
+    expect(attempts).toBe(3);
+    expect(waits).toEqual([50, 50]);
+  });
+
+  it("fails immediately on a non-busy rejection", async () => {
+    let attempts = 0;
+    let waits = 0;
+    const rejection = Object.assign(new Error("method missing"), { code: -32601 });
+
+    await expect(
+      retryModelConfigSetUntilAccepted(
+        async () => {
+          attempts += 1;
+          throw rejection;
+        },
+        {
+          timeoutMs: 1_000,
+          wait: async () => {
+            waits += 1;
+          },
+        },
+      ),
+    ).rejects.toBe(rejection);
+
+    expect(attempts).toBe(1);
+    expect(waits).toBe(0);
   });
 });
 

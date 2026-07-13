@@ -59,7 +59,7 @@ default and affect unrelated sessions.
 
 **Model `config.set` is idle-only.** Hermes returns 4009 while that session is
 running because changing the agent's model, provider, endpoint, and client in
-place would race with the current response. A mid-response picker change is
+place would race with the active agent run. A picker change during that run is
 therefore June state only. On the next Send, apply its captured choice
 immediately before `prompt.submit`. `message.complete` can precede true idle,
 and automatic goal continuations are still part of the same agent run, so retry
@@ -72,7 +72,7 @@ from separate gateway clients.
 **Internal model ids carry provider provenance.** June stores reserved aliases
 for concrete remote, Auto, and local choices in Hermes. Advertise every alias
 Hermes may validate from the Bridge's `/v1/models` response, decide the route
-before stripping its prefix in the agent proxy, and decode it before forwarding
+before stripping its prefix in the on-device provider proxy, and decode it before forwarding
 to June API or a local endpoint. Never infer a new session's provider from raw
 model-id equality: local and remote catalogs can expose the same id.
 

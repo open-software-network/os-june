@@ -160,10 +160,10 @@ export function parseRpcFrame(raw: string): HermesInboundFrame {
 }
 
 /**
- * Whether a rejection from session-scoped model `config.set` is the one
- * controlled outcome the protocol smoke may treat as a PASS. Hermes returns
- * 4009 when a session is still running because mutating the live agent model
- * would race with the in-flight response.
+ * Whether a rejection from session-scoped model `config.set` is retryable.
+ * Hermes returns 4009 when a session is still running because mutating the live
+ * agent model would race with the active agent run. The protocol smoke may wait
+ * and retry this response, but it only passes after `config.set` is accepted.
  *
  * Every other error fails the gate. In particular, 4018 means a request was
  * sent through `command.dispatch` as an unknown command; accepting it used to
@@ -172,6 +172,52 @@ export function parseRpcFrame(raw: string): HermesInboundFrame {
 export function isControlledModelConfigSetError(error: unknown): boolean {
   const code = (error as { code?: unknown } | null | undefined)?.code;
   return code === 4009;
+}
+
+export type RetryModelConfigSetOptions = {
+  timeoutMs: number;
+  wait?: (delayMs: number) => Promise<void>;
+};
+
+const INITIAL_MODEL_CONFIG_RETRY_DELAY_MS = 50;
+const MAX_MODEL_CONFIG_RETRY_DELAY_MS = 1_000;
+
+function waitFor(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+/**
+ * Retry session-scoped model `config.set` while Hermes reports the documented
+ * 4009 busy guard. A busy response never counts as success: the helper either
+ * returns an accepted RPC result or fails once the retry budget is exhausted.
+ */
+export async function retryModelConfigSetUntilAccepted(
+  apply: () => Promise<unknown>,
+  options: RetryModelConfigSetOptions,
+): Promise<unknown> {
+  const timeoutMs = Math.max(0, options.timeoutMs);
+  const wait = options.wait ?? waitFor;
+  let waitedMs = 0;
+  let retryDelayMs = INITIAL_MODEL_CONFIG_RETRY_DELAY_MS;
+
+  while (true) {
+    try {
+      return await apply();
+    } catch (error) {
+      if (!isControlledModelConfigSetError(error)) throw error;
+      if (waitedMs >= timeoutMs) {
+        const timeoutError = new Error(
+          `session-scoped model config.set remained busy for ${timeoutMs}ms and was not accepted`,
+        ) as Error & { code: number };
+        timeoutError.code = 4009;
+        throw timeoutError;
+      }
+      const nextDelayMs = Math.min(retryDelayMs, timeoutMs - waitedMs);
+      await wait(nextDelayMs);
+      waitedMs += nextDelayMs;
+      retryDelayMs = Math.min(retryDelayMs * 2, MAX_MODEL_CONFIG_RETRY_DELAY_MS);
+    }
+  }
 }
 
 /** Where a resolved Hermes command came from, for log clarity. `env_override`

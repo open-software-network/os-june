@@ -471,6 +471,11 @@ struct ProviderProxyState {
     /// of the same request replays the same shape even if the user flipped
     /// the toggle in between (June API bills a changed shape as a new call).
     image_safe_mode_pins: Arc<Mutex<VecDeque<(String, bool)>>>,
+    /// Last non-empty June API text-model catalog. Hermes validates every
+    /// session-scoped model change against `/v1/models`; a transient offline or
+    /// signed-out fetch must not make previously advertised session models
+    /// disappear until the app restarts.
+    model_catalog_cache: Arc<Mutex<Vec<crate::june_api::ModelDto>>>,
     recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
 }
 
@@ -8257,6 +8262,7 @@ async fn start_june_provider_proxy(
             video_generation_enabled,
             app,
             image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
+            model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
             recorder_requests,
         }),
         shutdown_rx,
@@ -8333,9 +8339,10 @@ async fn handle_june_provider_connection(
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/v1/models") => {
             let selected_model = crate::providers::generation_model();
-            let catalog = crate::june_api::list_models("text")
-                .await
-                .unwrap_or_default();
+            let catalog = model_catalog_with_fallback(
+                &state.model_catalog_cache,
+                crate::june_api::list_models("text").await,
+            );
             let selected_context_tokens = catalog
                 .iter()
                 .find(|model| model.id == selected_model)
@@ -8349,7 +8356,6 @@ async fn handle_june_provider_connection(
                 selected_context_tokens,
                 &catalog,
                 &crate::providers::local_generation_settings(),
-                crate::providers::cost_quality(),
             );
             write_json_response(&mut stream, 200, body).await?;
         }
@@ -9544,7 +9550,6 @@ fn provider_models_body(
     selected_context_tokens: Option<i64>,
     catalog: &[crate::june_api::ModelDto],
     local_settings: &crate::providers::LocalGenerationSettings,
-    cost_quality: f64,
 ) -> serde_json::Value {
     const AUTO_MODEL_ID: &str = "open-software/auto";
     const AUTO_PREFIX: &str = "__june_auto_generation__:";
@@ -9611,8 +9616,11 @@ fn provider_models_body(
         } else {
             None
         });
-    let current_auto_preference = (cost_quality.clamp(0.0, 1.0) * 100.0).round() as u8;
-    for preference in [20, 50, 100, current_auto_preference] {
+    // Session-scoped Auto selections survive app-wide preference changes and
+    // restarts. Hermes validates config.set model ids against this listing, so
+    // every preference the persisted session contract accepts must remain
+    // advertised independently of the current global default.
+    for preference in 0..=100 {
         push(format!("{AUTO_PREFIX}{preference}"), auto_context_tokens);
     }
 
@@ -9626,6 +9634,36 @@ fn provider_models_body(
     }
 
     serde_json::json!({ "object": "list", "data": data })
+}
+
+fn model_catalog_with_fallback(
+    cache: &Mutex<Vec<crate::june_api::ModelDto>>,
+    fetched: Result<Vec<crate::june_api::ModelDto>, AppError>,
+) -> Vec<crate::june_api::ModelDto> {
+    match fetched {
+        Ok(catalog) if !catalog.is_empty() => {
+            if let Ok(mut cached) = cache.lock() {
+                *cached = catalog.clone();
+            }
+            catalog
+        }
+        Ok(catalog) => cache
+            .lock()
+            .ok()
+            .filter(|cached| !cached.is_empty())
+            .map(|cached| cached.clone())
+            .unwrap_or(catalog),
+        Err(error) => {
+            eprintln!(
+                "June provider proxy model catalog fetch failed; using last successful catalog: {}",
+                error.message
+            );
+            cache
+                .lock()
+                .map(|cached| cached.clone())
+                .unwrap_or_default()
+        }
+    }
 }
 
 /// Recorder mutations require the recorder-scoped secret; connector routes
@@ -10930,6 +10968,7 @@ mod tests {
             video_generation_enabled,
             app: None,
             image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
+            model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
             recorder_requests: Arc::new(Mutex::new(HashMap::new())),
         });
         let server = tokio::spawn(async move {
@@ -12086,7 +12125,6 @@ mod tests {
             Some(202_752),
             &[],
             &crate::providers::LocalGenerationSettings::default(),
-            1.0,
         );
 
         let entry = &body["data"][0];
@@ -12106,7 +12144,6 @@ mod tests {
             None,
             &[],
             &crate::providers::LocalGenerationSettings::default(),
-            1.0,
         );
 
         let entry = &body["data"][0];
@@ -12144,7 +12181,6 @@ mod tests {
             Some(64_000),
             &catalog,
             &local,
-            0.73,
         );
         let ids = body["data"]
             .as_array()
@@ -12163,6 +12199,64 @@ mod tests {
             .find(|entry| entry["id"] == "__june_remote_generation__:vendor%2Fmodel%3Alatest")
             .unwrap();
         assert_eq!(tagged_remote["context_length"], 64_000);
+    }
+
+    #[test]
+    fn model_catalog_keeps_last_successful_listing_during_fetch_failures() {
+        let cache = Mutex::new(Vec::new());
+        let catalog = vec![crate::june_api::ModelDto {
+            provider: "venice".to_string(),
+            id: "durable-model".to_string(),
+            name: "Durable model".to_string(),
+            model_type: "text".to_string(),
+            description: None,
+            privacy: None,
+            pricing: None,
+            context_tokens: Some(64_000),
+            traits: Vec::new(),
+            capabilities: Vec::new(),
+            price_unit: String::new(),
+            price_description: String::new(),
+            credits_per_million_seconds: None,
+            input_credits_per_million_tokens: None,
+            output_credits_per_million_tokens: None,
+        }];
+
+        assert_eq!(
+            model_catalog_with_fallback(&cache, Ok(catalog.clone())),
+            catalog
+        );
+        assert_eq!(
+            model_catalog_with_fallback(
+                &cache,
+                Err(AppError::new("offline", "catalog unavailable")),
+            ),
+            catalog
+        );
+        assert_eq!(model_catalog_with_fallback(&cache, Ok(Vec::new())), catalog);
+    }
+
+    #[test]
+    fn models_listing_keeps_every_durable_auto_preference_valid() {
+        let body = provider_models_body(
+            "vendor/model".to_string(),
+            None,
+            &[],
+            &crate::providers::LocalGenerationSettings::default(),
+        );
+        let auto_ids = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["id"].as_str())
+            .filter(|id| id.starts_with("__june_auto_generation__:"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(auto_ids.len(), 101);
+        for preference in 0..=100 {
+            let expected = format!("__june_auto_generation__:{preference}");
+            assert!(auto_ids.contains(&expected.as_str()), "missing {expected}");
+        }
     }
 
     #[test]

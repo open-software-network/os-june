@@ -29,6 +29,7 @@ import { hermesArtifactStore } from "../lib/hermes-artifact-store";
 import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
 import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
+import { readSessionModelSelections } from "../lib/hermes-session-model-selection";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -3445,6 +3446,68 @@ describe("AgentWorkspace", () => {
     });
     const methods = mocks.gatewayRequest.mock.calls.map(([method]) => method);
     expect(methods.indexOf("config.set")).toBeLessThan(methods.indexOf("prompt.submit"));
+  });
+
+  it("keeps a cold /model lookup scoped to the session where Send was pressed", async () => {
+    const catalog = [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-2",
+        name: "GLM 5.2",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+      {
+        provider: "venice",
+        id: "kimi-k2-6",
+        name: "Kimi K2.6",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+    ];
+    let finishCatalogLoad: ((value: Record<string, unknown>) => void) | undefined;
+    const catalogLoad = new Promise<Record<string, unknown>>((resolve) => {
+      finishCatalogLoad = resolve;
+    });
+    mocks.listVeniceModels.mockReturnValue(catalogLoad);
+    const user = userEvent.setup();
+    const { rerender } = render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/model kimi");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(mocks.listVeniceModels).toHaveBeenCalled());
+
+    rerender(
+      <AgentWorkspace
+        initialSession={{
+          ...existingSession,
+          id: "session-2",
+          title: "Other session",
+          model: "zai-org-glm-5-2",
+        }}
+      />,
+    );
+    await act(async () => {
+      finishCatalogLoad?.({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: catalog,
+      });
+      await catalogLoad;
+    });
+
+    await waitFor(() =>
+      expect(readSessionModelSelections()["session-1"]?.selection).toEqual({
+        modelId: "kimi-k2-6",
+      }),
+    );
+    expect(readSessionModelSelections()["session-2"]).toBeUndefined();
   });
 
   it("shows each existing chat's stored model as its picker selection", async () => {
@@ -11641,7 +11704,7 @@ describe("AgentWorkspace", () => {
       expect(await screen.findByRole("dialog", { name: "Choose text model" })).toBeInTheDocument();
     });
 
-    it("does not switch the active response and applies the latest choice before the next prompt", async () => {
+    it("does not switch the active agent run and applies the latest choice before the next prompt", async () => {
       mocks.listVeniceModels.mockResolvedValue({
         mode: "generation",
         modelType: "text",
@@ -11715,12 +11778,12 @@ describe("AgentWorkspace", () => {
       render(<AgentWorkspace initialSession={existingSession} />);
 
       const composer = await screen.findByRole("textbox", { name: "Message June" });
-      await user.type(composer, "Start the active response");
+      await user.type(composer, "Start the active agent run");
       await user.click(screen.getByRole("button", { name: "Send message" }));
       await waitFor(() =>
         expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
           session_id: "runtime-session-1",
-          text: "Start the active response",
+          text: "Start the active agent run",
         }),
       );
       mocks.gatewayRequest.mockClear();
@@ -11788,6 +11851,92 @@ describe("AgentWorkspace", () => {
           "__june_remote_generation__:zai-org-glm-5-2 --session",
         ]);
       });
+    });
+
+    it("keeps multiple steer fallbacks on their individual Send-time models", async () => {
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Start the active agent run");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "Start the active agent run",
+        }),
+      );
+      mocks.gatewayRequest.mockClear();
+
+      await user.click(screen.getByRole("button", { name: "Model: GLM 5.2" }));
+      let dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
+      let panel = await screen.findByRole("group", { name: "All text models" });
+      await user.click(within(panel).getByRole("option", { name: /Kimi K2\.6/ }));
+      await user.type(composer, "First fallback uses Kimi");
+      await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+
+      await user.click(screen.getByRole("button", { name: "Model: Kimi K2.6" }));
+      dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
+      panel = await screen.findByRole("group", { name: "All text models" });
+      await user.click(within(panel).getByRole("option", { name: /GLM 5\.2/ }));
+      await user.type(composer, "Second fallback uses GLM");
+      await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+      await waitFor(() =>
+        expect(
+          mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.steer"),
+        ).toHaveLength(2),
+      );
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-1",
+            payload: { status: "success" },
+          });
+        }
+      });
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "First fallback uses Kimi",
+        }),
+      );
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Second fallback uses GLM",
+      });
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-1",
+            payload: { status: "success" },
+          });
+        }
+      });
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "Second fallback uses GLM",
+        }),
+      );
+      const modelValues = mocks.gatewayRequest.mock.calls
+        .filter(([method]) => method === "config.set")
+        .map(([, params]) => params?.value);
+      expect(modelValues).toEqual([
+        "__june_remote_generation__:kimi-k2-6 --session",
+        "__june_remote_generation__:zai-org-glm-5-2 --session",
+      ]);
     });
 
     it("keeps a failed switch pending and never submits on the previous model", async () => {
@@ -11899,6 +12048,66 @@ describe("AgentWorkspace", () => {
         }),
       );
       expect(composer).toHaveTextContent("Keep this newer draft");
+    });
+
+    it("keeps a failed new-session message retryable without replacing a newer draft", async () => {
+      window.sessionStorage.setItem(
+        AGENT_NEW_SESSION_PENDING_KEY,
+        JSON.stringify({ createdAt: Date.now() }),
+      );
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      let rejectFirstCreate: (reason?: unknown) => void = () => undefined;
+      const firstCreate = new Promise<never>((_resolve, reject) => {
+        rejectFirstCreate = reject;
+      });
+      let createAttempts = 0;
+      mocks.gatewayRequest.mockImplementation((method: string) => {
+        if (method === "session.create") {
+          createAttempts += 1;
+          if (createAttempts === 1) return firstCreate;
+          return Promise.resolve({
+            session_id: "runtime-session-2",
+            stored_session_id: "session-2",
+          });
+        }
+        if (method === "session.resume") {
+          return Promise.resolve({ session_id: "runtime-session-2" });
+        }
+        return Promise.resolve({});
+      });
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      let composer = await screen.findByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Original new-session message");
+      await user.click(screen.getByRole("button", { name: "Start session" }));
+      await waitFor(() => expect(createAttempts).toBe(1));
+
+      composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Newer draft stays here");
+      await act(async () => {
+        rejectFirstCreate(new Error("Session creation unavailable"));
+      });
+
+      expect(await screen.findByText("Original new-session message")).toBeInTheDocument();
+      expect(screen.getByRole("region", { name: "Up next" })).toBeInTheDocument();
+      composer = screen.getByRole("textbox", { name: "Message June" });
+      expect(composer).toHaveTextContent("Newer draft stays here");
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+      await user.click(screen.getByRole("button", { name: "Retry queued message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-2",
+          text: "Original new-session message",
+        }),
+      );
+      expect(composer).toHaveTextContent("Newer draft stays here");
     });
 
     it("captures an Auto preference in the session model without changing the global setting", async () => {
@@ -12116,7 +12325,7 @@ describe("AgentWorkspace", () => {
       await user.type(composer, command);
       fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
 
-      // The media turn owns the model that was selected at Send, even though
+      // The media agent run owns the model that was selected at Send, even though
       // session persistence is deliberately held open below.
       await waitFor(() =>
         expect(mocks.gatewayRequest).toHaveBeenCalledWith(
@@ -12130,7 +12339,7 @@ describe("AgentWorkspace", () => {
 
       // This happens after session.create, but before skipPrompt selects and
       // returns the stored session. It must become that session's pending
-      // next-turn model rather than rewriting the media turn.
+      // next-run model rather than rewriting the media agent run.
       await user.click(screen.getByRole("button", { name: "Model: GLM 5.2" }));
       const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
       await user.click(within(dialog).getByRole("button", { name: "All models" }));

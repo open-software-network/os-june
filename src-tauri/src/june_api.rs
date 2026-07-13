@@ -45,10 +45,10 @@ const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
 /// Internal Hermes model id used to carry a per-run Auto preference through
 /// the model-only command surface. The proxy rewrites it before forwarding,
 /// so June API never sees this implementation detail.
-const TURN_AUTO_MODEL_PREFIX: &str = "__june_auto_generation__:";
+const AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__june_auto_generation__:";
 /// Internal Hermes model id that preserves an explicitly remote selection
 /// even when a configured local endpoint exposes the same raw model id.
-const TURN_REMOTE_MODEL_PREFIX: &str = "__june_remote_generation__:";
+const AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__june_remote_generation__:";
 /// The frontend's synthetic catalog id prefix for the local model option
 /// (`LOCAL_GENERATION_OPTION_ID_PREFIX` in `src/lib/local-generation.ts`).
 const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
@@ -1147,7 +1147,10 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
         .map(str::trim)
         .unwrap_or_default()
         .to_string();
-    for prefix in [TURN_REMOTE_MODEL_PREFIX, LOCAL_GENERATION_OPTION_ID_PREFIX] {
+    for prefix in [
+        AGENT_RUN_REMOTE_MODEL_PREFIX,
+        LOCAL_GENERATION_OPTION_ID_PREFIX,
+    ] {
         if request_model.starts_with(prefix) {
             if let Some(decoded) = decode_tagged_model(&request_model, prefix) {
                 request_model = decoded;
@@ -1160,7 +1163,7 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
         }
     }
     let auto_cost_quality =
-        if let Some(encoded) = request_model.strip_prefix(TURN_AUTO_MODEL_PREFIX) {
+        if let Some(encoded) = request_model.strip_prefix(AGENT_RUN_AUTO_MODEL_PREFIX) {
             Some(
                 encoded
                     .parse::<u8>()
@@ -1237,8 +1240,8 @@ fn agent_generation_route(
         }
         return Ok(AgentGenerationRoute::Local);
     }
-    if requested_model.starts_with(TURN_REMOTE_MODEL_PREFIX) {
-        decode_tagged_model(requested_model, TURN_REMOTE_MODEL_PREFIX).ok_or_else(|| {
+    if requested_model.starts_with(AGENT_RUN_REMOTE_MODEL_PREFIX) {
+        decode_tagged_model(requested_model, AGENT_RUN_REMOTE_MODEL_PREFIX).ok_or_else(|| {
             AppError::new(
                 "remote_model_invalid",
                 "The model selected for this session is invalid. Choose the model again.",
@@ -1246,7 +1249,7 @@ fn agent_generation_route(
         })?;
         return Ok(AgentGenerationRoute::Remote);
     }
-    if requested_model.starts_with(TURN_AUTO_MODEL_PREFIX)
+    if requested_model.starts_with(AGENT_RUN_AUTO_MODEL_PREFIX)
         || requested_model == crate::providers::AUTO_GENERATION_MODEL
     {
         return Ok(AgentGenerationRoute::Remote);

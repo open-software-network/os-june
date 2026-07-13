@@ -1589,7 +1589,7 @@ type PreparedComposerSubmission = {
 
 type CapturedSessionModelTarget = {
   /** Null means this Send starts a new session. */
-  targetSessionId: string | null;
+  targetStoredSessionId: string | null;
   existingHermesModelId?: string;
   selection: SessionModelSelection;
   hermesModelId: string;
@@ -1664,7 +1664,7 @@ function buildUpNextDemoPrepared(text: string): PreparedComposerSubmission {
 }
 
 const UP_NEXT_DEMO_MODEL_TARGET: CapturedSessionModelTarget = {
-  targetSessionId: null,
+  targetStoredSessionId: null,
   selection: { modelId: AUTO_MODEL_ID, costQuality: 100 },
   hermesModelId: hermesModelIdForSelection({ modelId: AUTO_MODEL_ID, costQuality: 100 }),
   shouldApply: false,
@@ -1816,6 +1816,7 @@ type IssueReportFollowUpSubmitFailedDetail = {
 
 let sessionContinuity: AgentSessionContinuity | null = null;
 const NEW_SESSION_DRAFT_KEY = "new-session";
+const NEW_SESSION_RECOVERY_QUEUE_KEY = "new-session-recovery";
 const NEW_SESSION_DRAFT_STORAGE_KEY = "june:agent:new-session-draft";
 const REVIEWABLE_ISSUE_REPORTS_STORAGE_KEY = "june:agent:reviewable-issue-reports";
 const IMAGE_SLASH_TURNS_STORAGE_KEY = "june:agent:image-slash-turns";
@@ -1865,6 +1866,14 @@ function forgetComposerDraft(key: string | null) {
   if (!key) return;
   agentComposerDrafts.delete(key);
   if (key === NEW_SESSION_DRAFT_KEY) removeStoredNewSessionDraft();
+}
+
+function moveComposerDraft(fromKey: string | null, toKey: string | null) {
+  if (!fromKey || !toKey || fromKey === toKey) return;
+  const snapshot = readComposerDraft(fromKey);
+  if (!snapshot) return;
+  rememberComposerDraft(toKey, snapshot.text, snapshot.category, snapshot.attachments ?? []);
+  forgetComposerDraft(fromKey);
 }
 
 function readComposerDraft(key: string | null) {
@@ -3231,8 +3240,13 @@ export function AgentWorkspace({
   const selectedSteerCards = selectedHermesSessionId
     ? (steerCardsBySessionId[selectedHermesSessionId] ?? [])
     : [];
-  const selectedQueuedAttachmentFollowUps = selectedHermesSessionId
-    ? (queuedAttachmentFollowUps[selectedHermesSessionId] ?? [])
+  const visibleFollowUpQueueKey = selectedHermesSessionId
+    ? selectedHermesSessionId
+    : heroMode
+      ? NEW_SESSION_RECOVERY_QUEUE_KEY
+      : undefined;
+  const selectedQueuedAttachmentFollowUps = visibleFollowUpQueueKey
+    ? (queuedAttachmentFollowUps[visibleFollowUpQueueKey] ?? [])
     : [];
   const selectedUpNextDemoFollowUps = selectedHermesSessionId
     ? (upNextDemoFollowUpsBySessionId[selectedHermesSessionId] ?? [])
@@ -3732,13 +3746,16 @@ export function AgentWorkspace({
     setSessionModelSelections(next);
   }
 
-  function sessionIdForComposerModelSelection() {
-    const sessionId = selectedHermesSessionIdRef.current;
-    return sessionId && !newSessionModeRef.current ? sessionId : undefined;
+  function storedSessionIdForComposerModelSelection() {
+    const storedSessionId = selectedHermesSessionIdRef.current;
+    return storedSessionId && !newSessionModeRef.current ? storedSessionId : undefined;
   }
 
-  function queueComposerSessionModelSelection(sessionId: string, selection: SessionModelSelection) {
-    commitSessionModelSelections(stageSessionModelSelection(sessionId, selection));
+  function queueComposerSessionModelSelection(
+    storedSessionId: string,
+    selection: SessionModelSelection,
+  ) {
+    commitSessionModelSelections(stageSessionModelSelection(storedSessionId, selection));
     setError(null);
     toast(MODEL_SWITCH_NEXT_MESSAGE_NOTICE, { id: MODEL_SWITCH_TOAST_ID });
   }
@@ -3747,17 +3764,19 @@ export function AgentWorkspace({
     explicitSession?: HermesSessionInfo,
   ): CapturedSessionModelTarget {
     const selectedSessionId = selectedHermesSessionIdRef.current;
-    const targetSessionId = explicitSession?.id
+    const targetStoredSessionId = explicitSession?.id
       ? explicitSession.id
       : newSessionModeRef.current
         ? undefined
         : selectedSessionId;
-    const listedSession = targetSessionId
-      ? hermesSessionItemsRef.current.find((session) => session.id === targetSessionId)
+    const listedSession = targetStoredSessionId
+      ? hermesSessionItemsRef.current.find((session) => session.id === targetStoredSessionId)
       : undefined;
     const existingHermesModelId =
       explicitSession?.model?.trim() || listedSession?.model?.trim() || undefined;
-    const entry = targetSessionId ? sessionModelSelectionsRef.current[targetSessionId] : undefined;
+    const entry = targetStoredSessionId
+      ? sessionModelSelectionsRef.current[targetStoredSessionId]
+      : undefined;
     let persistedSelection = existingHermesModelId
       ? decodeHermesModelSelection(existingHermesModelId)
       : undefined;
@@ -3773,7 +3792,7 @@ export function AgentWorkspace({
       // session to the collision-proof tagged form on its next Send.
       persistedSelection = { modelId: localGenerationOptionId(configuredLocalModelId) };
     }
-    const fallbackModelId = targetSessionId
+    const fallbackModelId = targetStoredSessionId
       ? existingHermesModelId || defaultGenerationModelIdRef.current
       : defaultGenerationModelIdRef.current;
     const baseSelection: SessionModelSelection = entry?.selection ??
@@ -3786,13 +3805,13 @@ export function AgentWorkspace({
         : baseSelection;
     const hermesModelId = selection.modelId ? hermesModelIdForSelection(selection) : "";
     return {
-      targetSessionId: targetSessionId ?? null,
+      targetStoredSessionId: targetStoredSessionId ?? null,
       existingHermesModelId,
       selection,
       hermesModelId,
       revision: entry?.revision,
       shouldApply: Boolean(
-        targetSessionId &&
+        targetStoredSessionId &&
           hermesModelId &&
           (hasPendingSessionModelSelection(entry) || existingHermesModelId !== hermesModelId),
       ),
@@ -3826,7 +3845,10 @@ export function AgentWorkspace({
     return save;
   }
 
-  async function selectLocalGeneration() {
+  async function selectLocalGeneration(options?: {
+    keepOpen?: boolean;
+    targetStoredSessionId?: string | null;
+  }) {
     const localModelId = localGenerationRef.current.modelId.trim();
     const selectedModelId = localModelId ? localGenerationOptionId(localModelId) : "";
     // An off-device endpoint takes a deliberate second step, same invariant as
@@ -3844,9 +3866,11 @@ export function AgentWorkspace({
       }
       localEnableConfirmArmedForRef.current = null;
     }
-    const sessionId = sessionIdForComposerModelSelection();
-    if (sessionId) {
-      queueComposerSessionModelSelection(sessionId, { modelId: selectedModelId });
+    const storedSessionId = options && "targetStoredSessionId" in options
+      ? (options.targetStoredSessionId ?? undefined)
+      : storedSessionIdForComposerModelSelection();
+    if (storedSessionId) {
+      queueComposerSessionModelSelection(storedSessionId, { modelId: selectedModelId });
       return true;
     }
     const intentRevision = ++generationSelectionIntentRevisionRef.current;
@@ -3881,7 +3905,7 @@ export function AgentWorkspace({
   // selection: an existing session stages its next agent run, while the hero
   // updates the app-wide default for future sessions.
   function handleCostQualityChange(value: number) {
-    const storedSessionId = sessionIdForComposerModelSelection();
+    const storedSessionId = storedSessionIdForComposerModelSelection();
     if (storedSessionId) {
       queueComposerSessionModelSelection(storedSessionId, {
         modelId: AUTO_MODEL_ID,
@@ -3928,7 +3952,7 @@ export function AgentWorkspace({
   async function handleSelectGenerationModel(
     modelId: string,
     costQuality?: number,
-    options?: { keepOpen?: boolean },
+    options?: { keepOpen?: boolean; targetStoredSessionId?: string | null },
   ) {
     // The Auto toggle switches models mid-flow, so it asks to keep the picker
     // open; a row pick is a final choice and closes it.
@@ -3937,7 +3961,7 @@ export function AgentWorkspace({
     // Local is a synthetic catalog option (prefixed id), so it routes through
     // the provider switch rather than a remote model set.
     if (modelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) {
-      return selectLocalGeneration();
+      return selectLocalGeneration(options);
     }
     // Picking anything else stands down a pending off-device confirm: the
     // next local selection warns afresh instead of enabling in one step.
@@ -3950,13 +3974,15 @@ export function AgentWorkspace({
       setError(`${chosen.name} can't run June's tools, so it can't be used for the agent.`);
       return false;
     }
-    const sessionId = sessionIdForComposerModelSelection();
-    if (sessionId) {
+    const storedSessionId = options && "targetStoredSessionId" in options
+      ? (options.targetStoredSessionId ?? undefined)
+      : storedSessionIdForComposerModelSelection();
+    if (storedSessionId) {
       const selectedCostQuality =
         modelId === AUTO_MODEL_ID
           ? (costQuality ?? activeGenerationCostQuality ?? generationCostQuality)
           : undefined;
-      queueComposerSessionModelSelection(sessionId, {
+      queueComposerSessionModelSelection(storedSessionId, {
         modelId,
         ...(selectedCostQuality !== undefined ? { costQuality: selectedCostQuality } : {}),
       });
@@ -4493,7 +4519,7 @@ export function AgentWorkspace({
     if (!parsed) return false;
 
     if (parsed.name === "model") {
-      await runModelSlashCommand(parsed.argument, commandText);
+      await runModelSlashCommand(parsed.argument, commandText, modelTarget);
       return true;
     }
 
@@ -5335,7 +5361,11 @@ export function AgentWorkspace({
     };
   }
 
-  async function runModelSlashCommand(argument: string, commandText: string) {
+  async function runModelSlashCommand(
+    argument: string,
+    commandText: string,
+    modelTarget?: CapturedSessionModelTarget,
+  ) {
     const query = argument.trim();
     if (!query) {
       clearComposerCommandDraft(commandText);
@@ -5355,7 +5385,11 @@ export function AgentWorkspace({
       return;
     }
 
-    const selected = await handleSelectGenerationModel(resolution.model.id);
+    const selected = await handleSelectGenerationModel(
+      resolution.model.id,
+      undefined,
+      modelTarget ? { targetStoredSessionId: modelTarget.targetStoredSessionId } : undefined,
+    );
     if (selected) clearComposerCommandDraft(commandText);
   }
 
@@ -5414,6 +5448,7 @@ export function AgentWorkspace({
     // title generation, and session resume can all await; a picker change
     // during any of them belongs to the following run.
     const sentModelTarget = captureSessionModelTarget();
+    const sentStartedNewSession = sentModelTarget.targetStoredSessionId === null;
     if (message && (await handleBuiltinComposerSlashCommand(message, sentModelTarget))) return;
     const attachmentQueueSessionId =
       attachments.length > 0 &&
@@ -5646,15 +5681,23 @@ export function AgentWorkspace({
       // it eventually fails. Keep that newer input untouched and retain the
       // failed submission as an explicit, retryable Up next item instead.
       if (clearedDraft) {
+        const retainedStoredSessionId = sentModelTarget.targetStoredSessionId;
+        const failedQueueKey = sentStartedNewSession
+          ? retainedStoredSessionId &&
+            !newSessionModeRef.current &&
+            selectedHermesSessionIdRef.current === retainedStoredSessionId
+            ? retainedStoredSessionId
+            : NEW_SESSION_RECOVERY_QUEUE_KEY
+          : retainedStoredSessionId;
         if (
           composerHasNewInput &&
-          sentModelTarget.targetSessionId &&
+          failedQueueKey &&
           preparedForRecovery &&
           !reportCategory &&
           !clearedIssueReportReview
         ) {
           enqueueFailedComposerFollowUp(
-            sentModelTarget.targetSessionId,
+            failedQueueKey,
             preparedForRecovery,
             submittedAttachments,
             sentModelTarget,
@@ -5663,7 +5706,12 @@ export function AgentWorkspace({
           recoveredInFollowUpQueue = true;
         } else if (!composerHasNewInput && (composerEditorRef.current?.isEmpty() ?? true)) {
           composerEditorRef.current?.setContent(message, reportCategory);
-          rememberComposerDraft(submittedDraftKey, message, reportCategory, attachments);
+          rememberComposerDraft(
+            composerDraftKeyRef.current ?? submittedDraftKey,
+            message,
+            reportCategory,
+            attachments,
+          );
         }
       }
       if (clearedAttachments && !recoveredInFollowUpQueue) {
@@ -6153,6 +6201,7 @@ export function AgentWorkspace({
     title: string;
   }) {
     const sessionId = makeProvisionalHermesSessionId();
+    moveComposerDraft(NEW_SESSION_DRAFT_KEY, sessionComposerDraftKey(sessionId));
     const createdAt = new Date().toISOString();
     const userMessage: HermesSessionMessage = {
       id: `pending:user:${Date.now()}`,
@@ -6212,6 +6261,7 @@ export function AgentWorkspace({
     toSessionId: string;
   }) {
     if (fromSessionId === toSessionId) return;
+    moveComposerDraft(sessionComposerDraftKey(fromSessionId), sessionComposerDraftKey(toSessionId));
     commitSessionModelSelections(migrateSessionModelSelection(fromSessionId, toSessionId));
     setHermesSessionItems((current) => {
       const replacement: HermesSessionInfo = {
@@ -6258,6 +6308,10 @@ export function AgentWorkspace({
         Boolean(sessionId),
       ),
     );
+    for (const id of ids) {
+      moveComposerDraft(sessionComposerDraftKey(id), NEW_SESSION_DRAFT_KEY);
+    }
+    composerDraftKeyRef.current = NEW_SESSION_DRAFT_KEY;
     setHermesSessionItems((current) => current.filter((session) => !ids.has(session.id)));
     setHermesSessionMessages((current) => {
       let next = current;
@@ -6283,12 +6337,38 @@ export function AgentWorkspace({
       // A picker change after Send was staged against the provisional session.
       // If creation rolls back, carry that intent into the restored new-session
       // composer instead of reverting to the model the failed run captured.
+      const intentRevision = ++generationSelectionIntentRevisionRef.current;
       defaultGenerationModelIdRef.current = retrySelection.modelId;
       setDefaultGenerationModelId(retrySelection.modelId);
       if (retrySelection.modelId === AUTO_MODEL_ID) {
         generationCostQualityRef.current = retrySelection.costQuality;
         setGenerationCostQuality(retrySelection.costQuality);
       }
+      // The provisional selection was session-local while creation was alive.
+      // Rollback turns it into the next new-session default, so persist the same
+      // transition instead of leaving the pill and Rust provider settings split.
+      void saveGenerationSelection(async () => {
+        if (retrySelection.modelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) {
+          await setLocalGenerationEnabled(true);
+        } else {
+          if (
+            retrySelection.modelId === AUTO_MODEL_ID &&
+            retrySelection.costQuality !== undefined
+          ) {
+            await setCostQuality(retrySelection.costQuality);
+          }
+          await setVeniceModel("generation", retrySelection.modelId);
+        }
+      })
+        .then(() => {
+          if (generationSelectionIntentRevisionRef.current === intentRevision) {
+            dispatchProviderModelSettingsChanged({
+              mode: "generation",
+              modelId: retrySelection.modelId,
+            });
+          }
+        })
+        .catch(() => undefined);
     }
     let nextSessionModelSelections = sessionModelSelectionsRef.current;
     for (const id of ids) {
@@ -6506,7 +6586,7 @@ export function AgentWorkspace({
         .replace(/^([a-z])/, (match) => match.toUpperCase());
     }
     const modelTarget = options?.modelTarget ?? captureSessionModelTarget(explicitSession);
-    const targetSessionId = modelTarget.targetSessionId ?? undefined;
+    const targetStoredSessionId = modelTarget.targetStoredSessionId ?? undefined;
     const targetSessionModelSelection = modelTarget.selection;
     const targetSessionModelId = modelTarget.hermesModelId;
     const targetSessionModelRevision = modelTarget.revision;
@@ -6517,21 +6597,21 @@ export function AgentWorkspace({
     // (`/image`) path itself — that would flush a prior image with no following
     // prompt (the semantics ADR 0003 decision 2 deliberately avoids).
     const heldFastPathImages =
-      options?.skipPrompt || !targetSessionId
+      options?.skipPrompt || !targetStoredSessionId
         ? []
         : uniqueAttachmentsByWorkspacePath([
-            ...(pendingFastPathImagesRef.current[targetSessionId] ?? []),
-            ...storedPendingImageSlashAttachments(targetSessionId),
+            ...(pendingFastPathImagesRef.current[targetStoredSessionId] ?? []),
+            ...storedPendingImageSlashAttachments(targetStoredSessionId),
           ]);
     // The video counterpart of the fold above, gated the same way (never on
     // the skipPrompt fast path itself, only on a real follow-up prompt).
     const heldVideoContexts =
-      options?.skipPrompt || !targetSessionId
+      options?.skipPrompt || !targetStoredSessionId
         ? []
-        : storedPendingVideoSlashContexts(targetSessionId);
-    const turnAttachments = [...(options?.attachments ?? []), ...heldFastPathImages];
+        : storedPendingVideoSlashContexts(targetStoredSessionId);
+    const agentRunAttachments = [...(options?.attachments ?? []), ...heldFastPathImages];
     const pendingImages = pendingImageAttachments(
-      turnAttachments.map((attachment) => attachment.attach),
+      agentRunAttachments.map((attachment) => attachment.attach),
     );
     // Resolve strictly from the catalog: selectedModelOption synthesizes a
     // zero-capability stub for an unknown id, which would read as non-vision and
@@ -6568,15 +6648,15 @@ export function AgentWorkspace({
     // Issue reports skip title suggestion: the content is the wrapped
     // investigation prompt, which would title the session after the wrapper.
     const titlePromise =
-      targetSessionId || options?.issueReport
+      targetStoredSessionId || options?.issueReport
         ? undefined
         : attachmentOnlyTitle
           ? Promise.resolve(attachmentOnlyTitle)
           : agentSessionTitleForPrompt(titleContent).then((suggestion) => suggestion.title);
-    const listedTargetSession = targetSessionId
-      ? hermesSessionItemsRef.current.find((session) => session.id === targetSessionId)
+    const listedTargetSession = targetStoredSessionId
+      ? hermesSessionItemsRef.current.find((session) => session.id === targetStoredSessionId)
       : undefined;
-    const fallbackSessionTitle = targetSessionId
+    const fallbackSessionTitle = targetStoredSessionId
       ? explicitSession?.title?.trim() ||
         explicitSession?.preview?.trim() ||
         listedTargetSession?.title?.trim() ||
@@ -6586,7 +6666,7 @@ export function AgentWorkspace({
         ? "Issue report"
         : attachmentOnlyTitle || titleFromPrompt(titleContent);
     const optimisticSession =
-      targetSessionId || options?.skipPrompt
+      targetStoredSessionId || options?.skipPrompt
         ? undefined
         : startOptimisticHermesSession({
             displayContent,
@@ -6608,11 +6688,13 @@ export function AgentWorkspace({
     const { created, gateway, sessionTitle, storedSessionId } = await (async () => {
       const [nextGateway, nextSessionTitle] = await Promise.all([
         ensureHermesGateway(
-          targetSessionId ? sessionUnrestricted(targetSessionId) : fullModeDraftRef.current,
+          targetStoredSessionId
+            ? sessionUnrestricted(targetStoredSessionId)
+            : fullModeDraftRef.current,
         ),
         titlePromise ?? Promise.resolve(undefined),
       ]);
-      const nextCreated = targetSessionId
+      const nextCreated = targetStoredSessionId
         ? undefined
         : await nextGateway.request<HermesRuntimeSessionResponse>("session.create", {
             title: nextSessionTitle ?? fallbackSessionTitle,
@@ -6620,7 +6702,7 @@ export function AgentWorkspace({
             ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
           });
       const nextStoredSessionId =
-        targetSessionId ?? nextCreated?.stored_session_id ?? nextCreated?.session_id;
+        targetStoredSessionId ?? nextCreated?.stored_session_id ?? nextCreated?.session_id;
       if (!nextStoredSessionId) {
         throw new Error("Hermes did not create a session.");
       }
@@ -6632,8 +6714,15 @@ export function AgentWorkspace({
       };
     })().catch(rollbackOptimisticBeforePrompt);
     storedSessionIdForRollback = storedSessionId;
+    // Once session.create returns, this Send's captured target is no longer a
+    // provisional "new session". If a later attach or prompt step fails after
+    // the user has started another draft, recovery can now retain the original
+    // message as an Up next item on the durable session.
+    if (!modelTarget.targetStoredSessionId) {
+      modelTarget.targetStoredSessionId = storedSessionId;
+    }
     const queuedIssueReport = options?.issueReport;
-    if (queuedIssueReport && targetSessionId) {
+    if (queuedIssueReport && targetStoredSessionId) {
       queuedIssueReport.diagnosisStartedAt = new Date().toISOString();
     }
     const clearQueuedIssueReport = () => {
@@ -6647,14 +6736,14 @@ export function AgentWorkspace({
     if (options?.issueReport) {
       pendingIssueReportsRef.current.set(storedSessionId, options.issueReport);
     }
-    if (!targetSessionId) {
+    if (!targetStoredSessionId) {
       rememberSessionMode(storedSessionId, fullModeDraftRef.current);
     }
     const sessionDisplayTitle = sessionTitle || fallbackSessionTitle;
     const ensureStoredHermesSession = () =>
       ensureHermesBridgeSession({
         sessionId: storedSessionId,
-        ...(!targetSessionId ? { title: sessionDisplayTitle } : {}),
+        ...(!targetStoredSessionId ? { title: sessionDisplayTitle } : {}),
         ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
       });
     if (optimisticSession) {
@@ -6668,11 +6757,7 @@ export function AgentWorkspace({
         toSessionId: storedSessionId,
       });
     }
-    if (
-      !targetSessionId &&
-      !options?.skipPrompt &&
-      !sessionModelSelectionsRef.current[storedSessionId]
-    ) {
+    if (!targetStoredSessionId && !options?.skipPrompt) {
       const latestDefaultSelection: SessionModelSelection = {
         modelId: defaultGenerationModelIdRef.current,
         ...(defaultGenerationModelIdRef.current === AUTO_MODEL_ID &&
@@ -6684,10 +6769,16 @@ export function AgentWorkspace({
         modelTarget.globalIntentRevision !== generationSelectionIntentRevisionRef.current &&
         latestDefaultSelection.modelId &&
         !sameSessionModelSelection(latestDefaultSelection, targetSessionModelSelection);
+      if (defaultChangedAfterSend && !sessionModelSelectionsRef.current[storedSessionId]) {
+        commitSessionModelSelections(
+          stageSessionModelSelection(storedSessionId, latestDefaultSelection),
+        );
+      }
+      // session.create already fixed the live route to the Send-time snapshot.
+      // Preserve any newer staged picker choice while recording that actual
+      // live route separately.
       commitSessionModelSelections(
-        defaultChangedAfterSend
-          ? stageSessionModelSelection(storedSessionId, latestDefaultSelection)
-          : rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
+        rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
       );
     }
     if (sessionTitle) {
@@ -6735,12 +6826,15 @@ export function AgentWorkspace({
       // this same stored session and changed its live model after this Send was
       // captured; if so, restore the captured route before accepting the prompt.
       const currentModelEntry = readSessionModelSelections()[storedSessionId];
-      const currentStoredModelId = currentModelEntry
-        ? hermesModelIdForSelection(currentModelEntry.selection)
+      const currentStoredModelId = currentModelEntry?.appliedSelection
+        ? hermesModelIdForSelection(currentModelEntry.appliedSelection)
         : undefined;
       const mustApplyCapturedModel =
-        shouldApplySessionModel ||
-        (currentStoredModelId !== undefined && currentStoredModelId !== targetSessionModelId);
+        !options?.skipPrompt &&
+        (shouldApplySessionModel ||
+          (Boolean(targetStoredSessionId) &&
+            currentStoredModelId !== undefined &&
+            currentStoredModelId !== targetSessionModelId));
       if (mustApplyCapturedModel) {
         try {
           await applySessionModelWhenIdle(() =>
@@ -6756,9 +6850,13 @@ export function AgentWorkspace({
         }
         if (targetSessionModelRevision !== undefined) {
           commitSessionModelSelections(
-            markSessionModelSelectionApplied(storedSessionId, targetSessionModelRevision),
+            markSessionModelSelectionApplied(
+              storedSessionId,
+              targetSessionModelRevision,
+              targetSessionModelSelection,
+            ),
           );
-        } else if (!sessionModelSelectionsRef.current[storedSessionId]) {
+        } else {
           commitSessionModelSelections(
             rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
           );
@@ -6782,7 +6880,7 @@ export function AgentWorkspace({
             gateway,
             runtimeSessionId,
             storedSessionId,
-            turnAttachments,
+            agentRunAttachments,
           );
           options?.onAttachmentsUpdated?.(updatedAttachments);
         } catch (err) {
@@ -6796,10 +6894,10 @@ export function AgentWorkspace({
         [storedSessionId]: runtimeSessionId,
       }));
       if (!optimisticSession) {
-        if (!targetSessionId && options?.skipPrompt) {
+        if (!targetStoredSessionId && options?.skipPrompt) {
           // Media commands do not have an optimistic session id to receive a
           // picker change while session.create/ensure/resume is in flight. Keep
-          // the Send-time model on the media turn, then take one final snapshot
+          // the Send-time model on the media agent run, then take one final snapshot
           // of the new-session default immediately before the stored session
           // becomes active. From that point onward the picker stages changes
           // directly against the stored id.
@@ -6814,10 +6912,13 @@ export function AgentWorkspace({
             modelTarget.globalIntentRevision !== generationSelectionIntentRevisionRef.current &&
             latestDefaultSelection.modelId &&
             !sameSessionModelSelection(latestDefaultSelection, targetSessionModelSelection);
+          if (defaultChangedAfterSend) {
+            commitSessionModelSelections(
+              stageSessionModelSelection(storedSessionId, latestDefaultSelection),
+            );
+          }
           commitSessionModelSelections(
-            defaultChangedAfterSend
-              ? stageSessionModelSelection(storedSessionId, latestDefaultSelection)
-              : rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
+            rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
           );
         }
         if (options?.selectSession !== false) {
@@ -6839,7 +6940,7 @@ export function AgentWorkspace({
         setHermesSessionItems((current) => {
           const existingSession = current.find((session) => session.id === storedSessionId);
           if (existingSession) {
-            const mergedSession: HermesSessionInfo = targetSessionId
+            const mergedSession: HermesSessionInfo = targetStoredSessionId
               ? {
                   ...existingSession,
                   title: existingSession.title?.trim()
@@ -6923,7 +7024,7 @@ export function AgentWorkspace({
         // accepts, so a rejected submit retries with the same video context.
         markStoredVideoSlashContextsSent(
           storedSessionId,
-          heldVideoContexts.map((turn) => turn.id),
+          heldVideoContexts.map((videoContext) => videoContext.id),
         );
         await loadHermesSessions({
           suppressStartupRequestError: !hermesSessionsHydratedRef.current,
@@ -6953,7 +7054,7 @@ export function AgentWorkspace({
           return next;
         });
         if (isSessionBusyError(err)) {
-          // The gateway rejected this prompt because the previous turn is still
+          // The gateway rejected this prompt because the previous agent run is still
           // running — the session itself is healthy, so keep the listener and
           // working state. Callers translate this into the composer notice.
           throw err;
@@ -6971,7 +7072,6 @@ export function AgentWorkspace({
       return undefined;
     };
 
-    if (options?.skipPrompt) return dispatchPreparedSession();
     return withHermesSessionDispatchLock(storedSessionId, dispatchPreparedSession);
   }
 
@@ -7550,11 +7650,22 @@ export function AgentWorkspace({
   // send respawns it with the CLI state folders writable and hands the
   // conversation back to June to retry.
   async function enableCliAccessFromChat() {
+    const targetStoredSessionId = selectedHermesSessionIdRef.current;
+    const targetSession = targetStoredSessionId
+      ? hermesSessionItemsRef.current.find((session) => session.id === targetStoredSessionId)
+      : undefined;
+    const modelTarget = captureSessionModelTarget(targetSession);
     setCliAccessSubmitting(true);
     try {
       await setHermesAgentCliAccess(true);
       setCliAccessEnabled(true);
-      await submitHermesSession(AGENT_CLI_ACCESS_ENABLED_MESSAGE);
+      if (!targetSession) {
+        throw new Error("This session is no longer available.");
+      }
+      await submitHermesSession(AGENT_CLI_ACCESS_ENABLED_MESSAGE, targetSession, {
+        modelTarget,
+        selectSession: false,
+      });
       setError(null);
     } catch (err) {
       setError(messageFromError(err));
@@ -7818,15 +7929,15 @@ export function AgentWorkspace({
   }
 
   function updateQueuedAttachmentFollowUps(
-    sessionId: string,
+    queueKey: string,
     update: (items: QueuedAttachmentFollowUp[]) => QueuedAttachmentFollowUp[],
   ) {
-    const nextItems = update(queuedAttachmentFollowUpsRef.current[sessionId] ?? []);
+    const nextItems = update(queuedAttachmentFollowUpsRef.current[queueKey] ?? []);
     const next = { ...queuedAttachmentFollowUpsRef.current };
     if (nextItems.length) {
-      next[sessionId] = nextItems;
+      next[queueKey] = nextItems;
     } else {
-      delete next[sessionId];
+      delete next[queueKey];
     }
     writeQueuedAttachmentFollowUps(next);
   }
@@ -7849,7 +7960,7 @@ export function AgentWorkspace({
   }
 
   function enqueueFailedComposerFollowUp(
-    sessionId: string,
+    queueKey: string,
     prepared: PreparedComposerSubmission,
     queuedAttachments: AgentAttachment[],
     modelTarget: CapturedSessionModelTarget,
@@ -7864,23 +7975,30 @@ export function AgentWorkspace({
       status: "failed",
       error,
     };
-    updateQueuedAttachmentFollowUps(sessionId, (items) => [...items, item]);
+    updateQueuedAttachmentFollowUps(queueKey, (items) => [...items, item]);
   }
 
-  function removeQueuedAttachmentFollowUp(sessionId: string, itemId: string) {
-    updateQueuedAttachmentFollowUps(sessionId, (items) =>
+  function removeQueuedAttachmentFollowUp(queueKey: string, itemId: string) {
+    updateQueuedAttachmentFollowUps(queueKey, (items) =>
       items.filter((item) => item.id !== itemId || item.status === "sending"),
     );
   }
 
-  function editQueuedAttachmentFollowUp(sessionId: string, itemId: string) {
-    if (sessionId !== selectedHermesSessionIdRef.current) return;
+  function editQueuedAttachmentFollowUp(queueKey: string, itemId: string) {
+    const isNewSessionRecovery = queueKey === NEW_SESSION_RECOVERY_QUEUE_KEY;
+    if (
+      isNewSessionRecovery
+        ? !newSessionModeRef.current
+        : queueKey !== selectedHermesSessionIdRef.current
+    ) {
+      return;
+    }
     if (draftRef.current.trim() || attachmentsRef.current.length) return;
-    const item = queuedAttachmentFollowUpsRef.current[sessionId]?.find(
+    const item = queuedAttachmentFollowUpsRef.current[queueKey]?.find(
       (candidate) => candidate.id === itemId,
     );
     if (!item || item.status === "sending") return;
-    removeQueuedAttachmentFollowUp(sessionId, itemId);
+    removeQueuedAttachmentFollowUp(queueKey, itemId);
     draftRef.current = item.prepared.typedMessage;
     categoryRef.current = null;
     attachmentsRef.current = item.attachments;
@@ -7897,12 +8015,19 @@ export function AgentWorkspace({
   }
 
   async function deliverQueuedAttachmentFollowUp(
-    sessionId: string,
+    queueKey: string,
     itemId?: string,
     options: { afterCompletion?: boolean } = {},
   ) {
-    if (!options.afterCompletion && workingSessionIdsRef.current.has(sessionId)) return false;
-    const queued = queuedAttachmentFollowUpsRef.current[sessionId] ?? [];
+    const isNewSessionRecovery = queueKey === NEW_SESSION_RECOVERY_QUEUE_KEY;
+    if (
+      !isNewSessionRecovery &&
+      !options.afterCompletion &&
+      workingSessionIdsRef.current.has(queueKey)
+    ) {
+      return false;
+    }
+    const queued = queuedAttachmentFollowUpsRef.current[queueKey] ?? [];
     const item = itemId ? queued.find((candidate) => candidate.id === itemId) : queued[0];
     if (!item || item.status === "sending") return false;
     // Automatic advancement (no itemId) stops at a failed head rather than
@@ -7910,9 +8035,11 @@ export function AgentWorkspace({
     // a message the user watched fail - possibly with an image already
     // attached - is worse than holding the queue until they decide.
     if (!itemId && item.status === "failed") return false;
-    const session = hermesSessionItemsRef.current.find((candidate) => candidate.id === sessionId);
-    if (!session) {
-      updateQueuedAttachmentFollowUps(sessionId, (items) =>
+    const session = isNewSessionRecovery
+      ? undefined
+      : hermesSessionItemsRef.current.find((candidate) => candidate.id === queueKey);
+    if (!isNewSessionRecovery && !session) {
+      updateQueuedAttachmentFollowUps(queueKey, (items) =>
         items.map((candidate) =>
           candidate.id === item.id
             ? { ...candidate, status: "failed", error: "This session is no longer available." }
@@ -7921,7 +8048,7 @@ export function AgentWorkspace({
       );
       return false;
     }
-    updateQueuedAttachmentFollowUps(sessionId, (items) =>
+    updateQueuedAttachmentFollowUps(queueKey, (items) =>
       items.map((candidate) =>
         candidate.id === item.id
           ? { ...candidate, status: "sending", error: undefined }
@@ -7933,23 +8060,25 @@ export function AgentWorkspace({
         displayContent: item.prepared.displayContent,
         titleContent: item.prepared.titleContent,
         attachments: item.attachments,
-        modelTarget: item.modelTarget,
-        selectSession: false,
+        modelTarget: isNewSessionRecovery
+          ? { ...item.modelTarget, targetStoredSessionId: null }
+          : item.modelTarget,
+        ...(isNewSessionRecovery ? {} : { selectSession: false }),
         onAttachmentsUpdated: (nextAttachments) => {
-          updateQueuedAttachmentFollowUps(sessionId, (items) =>
+          updateQueuedAttachmentFollowUps(queueKey, (items) =>
             items.map((candidate) =>
               candidate.id === item.id ? { ...candidate, attachments: nextAttachments } : candidate,
             ),
           );
         },
       });
-      updateQueuedAttachmentFollowUps(sessionId, (items) =>
+      updateQueuedAttachmentFollowUps(queueKey, (items) =>
         items.filter((candidate) => candidate.id !== item.id),
       );
       return true;
     } catch (err) {
       const failedAttachments = err instanceof AttachBlockedError ? err.attachments : undefined;
-      updateQueuedAttachmentFollowUps(sessionId, (items) =>
+      updateQueuedAttachmentFollowUps(queueKey, (items) =>
         items.map((candidate) =>
           candidate.id === item.id
             ? {
@@ -7981,12 +8110,29 @@ export function AgentWorkspace({
           continuingCompletedTurnSessionIdsRef.current.delete(sessionId);
           return;
         }
-        const followUpText = unconsumedSteers.map((entry) => entry.text).join("\n");
-        const followUpModelTarget = unconsumedSteers[unconsumedSteers.length - 1]?.modelTarget;
+        // Each Send captured its own model. A single concatenated prompt could
+        // only run on one of those snapshots, so retain every undrained steer as
+        // its own serialized follow-up. The normal completion path advances the
+        // queue one agent run at a time.
+        const steerFollowUps = unconsumedSteers.map((entry) => {
+          queuedAttachmentFollowUpSeqRef.current += 1;
+          return {
+            id: `attachment-follow-up-${queuedAttachmentFollowUpSeqRef.current}`,
+            prepared: {
+              displayContent: entry.text,
+              runtimeContent: entry.text,
+              titleContent: entry.text,
+              typedMessage: entry.text,
+            },
+            attachments: [],
+            modelTarget: entry.modelTarget,
+            status: "queued" as const,
+          };
+        });
+        updateQueuedAttachmentFollowUps(sessionId, (items) => [...steerFollowUps, ...items]);
         try {
-          await submitHermesSession(followUpText, followUpSession, {
-            selectSession: false,
-            ...(followUpModelTarget ? { modelTarget: followUpModelTarget } : {}),
+          await deliverQueuedAttachmentFollowUp(sessionId, steerFollowUps[0]?.id, {
+            afterCompletion: true,
           });
         } catch (err) {
           setError(messageFromError(err), { sessionId });
@@ -8059,12 +8205,14 @@ export function AgentWorkspace({
   }
 
   function renderQueuedAttachmentFollowUp(
-    sessionId: string,
+    queueKey: string,
     item: QueuedAttachmentFollowUp,
     options: { demo?: boolean } = {},
   ) {
-    const sessionWorking = options.demo || workingSessionIds.has(sessionId);
-    const firstInQueue = queuedAttachmentFollowUpsRef.current[sessionId]?.[0]?.id === item.id;
+    const sessionWorking =
+      options.demo ||
+      (queueKey !== NEW_SESSION_RECOVERY_QUEUE_KEY && workingSessionIds.has(queueKey));
+    const firstInQueue = queuedAttachmentFollowUpsRef.current[queueKey]?.[0]?.id === item.id;
     const hasAttachedImage = item.attachments.some(
       (attachment) => attachment.attach.kind === "image" && attachment.attach.status === "attached",
     );
@@ -8124,7 +8272,7 @@ export function AgentWorkspace({
                 aria-label="Retry queued message"
                 title="Retry"
                 disabled={sessionWorking}
-                onClick={() => void deliverQueuedAttachmentFollowUp(sessionId, item.id)}
+                onClick={() => void deliverQueuedAttachmentFollowUp(queueKey, item.id)}
               >
                 <IconArrowRotateClockwise size={14} />
               </button>
@@ -8133,7 +8281,7 @@ export function AgentWorkspace({
                 type="button"
                 aria-label="Send queued message"
                 title="Send now"
-                onClick={() => void deliverQueuedAttachmentFollowUp(sessionId, item.id)}
+                onClick={() => void deliverQueuedAttachmentFollowUp(queueKey, item.id)}
               >
                 <IconArrowUp size={14} />
               </button>
@@ -8149,7 +8297,7 @@ export function AgentWorkspace({
                     if (options.demo) {
                       setUpNextDemoFollowUpsBySessionId((current) => ({
                         ...current,
-                        [sessionId]: (current[sessionId] ?? []).filter(
+                        [queueKey]: (current[queueKey] ?? []).filter(
                           (followUp) => followUp.id !== item.id,
                         ),
                       }));
@@ -8158,7 +8306,7 @@ export function AgentWorkspace({
                       composerEditorRef.current?.setContent(item.prepared.typedMessage);
                       return;
                     }
-                    editQueuedAttachmentFollowUp(sessionId, item.id);
+                    editQueuedAttachmentFollowUp(queueKey, item.id);
                   }}
                 >
                   <IconPencil size={14} />
@@ -8171,11 +8319,11 @@ export function AgentWorkspace({
                     options.demo
                       ? setUpNextDemoFollowUpsBySessionId((current) => ({
                           ...current,
-                          [sessionId]: (current[sessionId] ?? []).filter(
+                          [queueKey]: (current[queueKey] ?? []).filter(
                             (followUp) => followUp.id !== item.id,
                           ),
                         }))
-                      : removeQueuedAttachmentFollowUp(sessionId, item.id)
+                      : removeQueuedAttachmentFollowUp(queueKey, item.id)
                   }
                 >
                   <IconTrashCan size={14} />
@@ -8255,10 +8403,12 @@ export function AgentWorkspace({
     });
     setSubmittingHermesSessionId(null);
     setSubmitting(true);
+    // The seeded text is now the submitted message, not a composer draft. Clear
+    // it before the optimistic session migrates draft storage to its durable id;
+    // otherwise the same text reappears in the composer below its user bubble.
+    clearComposerDraft(NEW_SESSION_DRAFT_KEY);
     try {
       await submitHermesSession(initialPrompt);
-      composerEditorRef.current?.clear();
-      forgetComposerDraft(NEW_SESSION_DRAFT_KEY);
       setError(null);
     } catch (err) {
       composerEditorRef.current?.setContent(initialPrompt);
@@ -9511,7 +9661,7 @@ export function AgentWorkspace({
             </motion.div>
           ) : null}
         </AnimatePresence>
-        {selectedHermesSessionId && selectedFollowUpCount ? (
+        {visibleFollowUpQueueKey && selectedFollowUpCount ? (
           // One surface for the user's single intent: follow up while June is
           // working. Text may steer the current turn while attachments wait,
           // but that transport distinction belongs in row status, not in two
@@ -9551,10 +9701,10 @@ export function AgentWorkspace({
                 <div ref={steerCardsListRef} className="agent-steer-cards-list">
                   {selectedSteerCards.map((card) => renderSteerCard(card))}
                   {selectedQueuedAttachmentFollowUps.map((item) =>
-                    renderQueuedAttachmentFollowUp(selectedHermesSessionId, item),
+                    renderQueuedAttachmentFollowUp(visibleFollowUpQueueKey, item),
                   )}
                   {selectedUpNextDemoFollowUps.map((item) =>
-                    renderQueuedAttachmentFollowUp(selectedHermesSessionId, item, { demo: true }),
+                    renderQueuedAttachmentFollowUp(visibleFollowUpQueueKey, item, { demo: true }),
                   )}
                 </div>
               </div>
