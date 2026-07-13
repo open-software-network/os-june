@@ -75,6 +75,11 @@ def command_tokens(seg):
                         return []
                 elif option not in {"-S", "--split-string"}:
                     del tokens[:1]
+            elif tokens[0].startswith("-S") and len(tokens[0]) > 2:
+                try:
+                    tokens = shlex.split(tokens.pop(0)[2:]) + tokens
+                except ValueError:
+                    return []
             elif tokens[0].startswith("--split-string="):
                 try:
                     tokens = shlex.split(tokens.pop(0).split("=", 1)[1]) + tokens
@@ -86,6 +91,8 @@ def command_tokens(seg):
                 tokens.pop(0)
             else:
                 break
+    if tokens and tokens[0] in {"command", "env"}:
+        return command_tokens(" ".join(shlex.quote(token) for token in tokens))
     return tokens
 
 
@@ -211,6 +218,7 @@ def check(command):
                 command_name == "exec"
                 and any(
                     token in PNPM_EXEC_PACKAGE_OPTIONS
+                    or token.startswith("-p")
                     or token.startswith("--package=")
                     for token in args
                 )
