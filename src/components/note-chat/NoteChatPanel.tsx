@@ -233,7 +233,7 @@ export function NoteChatPanel({
   // at session.create or as a /model switch before the next message).
   const [models, setModels] = useState<VeniceModelDto[]>([]);
   const [modelId, setModelId] = useState("");
-  const [costQuality, setCurrentCostQuality] = useState(100);
+  const [costQuality, setCostQualityState] = useState<number | undefined>();
   const [modelOpen, setModelOpen] = useState(false);
   const [modelFlyout, setModelFlyout] = useState<ComposerModelFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
@@ -250,7 +250,7 @@ export function NoteChatPanel({
       if (stale) return;
       setModels(catalog.models);
       setModelId(settings.settings.generationModel || catalog.selectedModel);
-      setCurrentCostQuality(settings.settings.costQuality);
+      setCostQualityState(settings.settings.costQuality);
     })().catch(() => {
       // No catalog (bridge down, browser preview): the picker simply hides.
     });
@@ -264,7 +264,7 @@ export function NoteChatPanel({
     try {
       if (nextCostQuality !== undefined) {
         const next = await setCostQuality(nextCostQuality);
-        setCurrentCostQuality(next.costQuality);
+        setCostQualityState(next.costQuality);
       }
       setModelId(nextModelId);
       setSessionModel(nextModelId);

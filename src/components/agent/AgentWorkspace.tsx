@@ -2533,7 +2533,7 @@ export function AgentWorkspace({
   // each chat's stored model. A selection missing from the catalog still
   // shows as a name-only stub so the pill never goes blank while configured.
   const [defaultGenerationModelId, setDefaultGenerationModelId] = useState("");
-  const [generationCostQuality, setGenerationCostQuality] = useState(100);
+  const [generationCostQuality, setGenerationCostQuality] = useState<number | undefined>();
   const defaultGenerationModelIdRef = useRef("");
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>([]);
   const generationModelsRef = useRef<VeniceModelDto[]>([]);
