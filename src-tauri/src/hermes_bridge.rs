@@ -6778,6 +6778,29 @@ const CRON_SANDBOXED_TOOLSETS: &[&str] = &[
     "context_engine",
 ];
 
+/// Upstream toolsets June never exposes, in any session, under any grant.
+///
+/// June's browser and computer-use capabilities are reached only through
+/// June's own `june_browser` contract, where the Rust broker is the policy
+/// choke point (ADR 0017). The runtime ships its own `browser` and
+/// `computer_use` toolsets that would bypass that choke point entirely: the
+/// upstream browser toolset is attach-only with no policy layer, and the
+/// upstream computer-use toolset would run its own network installer to fetch
+/// a driver June deliberately bundles and pins. Neither is gated by the
+/// Browser access grant, so this list is unconditional: the grant governs
+/// `june_browser`, never these.
+///
+/// Interactive sessions carry no `enabled_toolsets`, so they would otherwise
+/// receive the runtime's full default toolset set. `agent.disabled_toolsets`
+/// is applied by the runtime as an unconditional subtraction after toolset
+/// resolution (`_compute_tool_definitions` in model_tools.py: "Always apply
+/// disabled toolsets as a subtraction step at the end"), so it strips these
+/// even out of composite toolsets. Routines are gated separately by
+/// `CRON_SANDBOXED_TOOLSETS` (which already omits both) and, for the
+/// Unrestricted opt-in, by per-job `enabled_toolsets`; this subtraction
+/// applies on top of either.
+const UPSTREAM_DISABLED_TOOLSETS: &[&str] = &["browser", "computer_use"];
+
 fn sync_june_context_mcp(
     app: &AppHandle,
     hermes_command: &str,
@@ -7240,6 +7263,7 @@ fn render_hermes_config(
   supports_vision: {supports_vision}
 agent:
   max_turns: 90
+  disabled_toolsets: [{upstream_disabled_toolsets}]
 display:
   skin: mono
 platform_toolsets:
@@ -7249,6 +7273,7 @@ skills:
         model = yaml_string(model),
         base_url = yaml_string(base_url),
         provider_proxy_token = yaml_string(provider_proxy_token),
+        upstream_disabled_toolsets = &UPSTREAM_DISABLED_TOOLSETS.join(", "),
     )
 }
 
@@ -10498,6 +10523,44 @@ mod tests {
         assert!(config.contains("  june_browser:\n"));
         assert!(config.contains("    enabled: true\n"));
         assert!(config.contains("      JUNE_BROWSER_PROXY_TOKEN: \"browser-proxy-tok\"\n"));
+    }
+
+    #[test]
+    fn upstream_browser_and_computer_use_toolsets_are_disabled_regardless_of_the_grant() {
+        // June exposes browser and computer use only through its own
+        // `june_browser` contract, where the broker is the policy choke point
+        // (ADR 0017). The runtime's own `browser` / `computer_use` toolsets
+        // bypass that choke point, so they are off unconditionally: the grant
+        // governs `june_browser`, never these. Interactive sessions carry no
+        // `enabled_toolsets`, so without this they would get the runtime's full
+        // default set.
+        for grant in [false, true] {
+            let browser = test_june_browser_mcp_config(grant);
+            let config = render_hermes_config(
+                "glm",
+                false,
+                "http://127.0.0.1:9/v1",
+                "proxy-tok",
+                "recorder-proxy-tok",
+                "browser-proxy-tok",
+                "web",
+                &[],
+                BuiltinMcpConfigs {
+                    context: None,
+                    web: None,
+                    image: None,
+                    video: None,
+                    recorder: None,
+                    browser: Some(&browser),
+                },
+            );
+            assert!(
+                config.contains("  disabled_toolsets: [browser, computer_use]\n"),
+                "grant={grant}: upstream toolsets must be disabled in the rendered config"
+            );
+            // The gate is unconditional; it must not track the grant.
+            assert!(config.contains(&format!("    enabled: {grant}\n")));
+        }
     }
 
     #[test]
