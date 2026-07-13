@@ -2,6 +2,10 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
+import {
+  resetActiveHermesProfileForTests,
+  setActiveHermesProfileName,
+} from "../lib/active-hermes-profile";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import type {
   AccountStatus,
@@ -29,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   assignNoteToFolder: vi.fn(),
   removeNoteFromFolder: vi.fn(),
   listNotes: vi.fn(),
+  listFolders: vi.fn(),
   getNote: vi.fn(),
   deleteNote: vi.fn(),
   deleteNotes: vi.fn(),
@@ -89,6 +94,7 @@ vi.mock("../lib/tauri", () => ({
   removeSessionFromFolder: vi.fn(async () => undefined),
   removeNoteFromFolder: mocks.removeNoteFromFolder,
   listNotes: mocks.listNotes,
+  listFolders: mocks.listFolders,
   getNote: mocks.getNote,
   deleteNote: mocks.deleteNote,
   deleteNotes: mocks.deleteNotes,
@@ -210,6 +216,8 @@ describe("notes recording reliability", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.listeners.clear();
+    resetActiveHermesProfileForTests();
+    mocks.listFolders.mockResolvedValue([]);
 
     const payload: BootstrapResponse = {
       folders: [],
@@ -329,6 +337,27 @@ describe("notes recording reliability", () => {
       expect(mocks.startRecording).toHaveBeenCalledWith("note-1", "microphonePlusSystem");
     });
   }
+
+  it("swaps meeting notes to the new profile's list when the active profile switches", async () => {
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    const workNote = note({ id: "note-work", title: "Work profile note" });
+    mocks.listNotes.mockResolvedValue({ items: [workNote] });
+    mocks.getNote.mockResolvedValue(workNote);
+    const listCallsBefore = mocks.listNotes.mock.calls.length;
+
+    await act(async () => {
+      setActiveHermesProfileName("work");
+    });
+
+    await waitFor(() =>
+      expect(mocks.listNotes.mock.calls.length).toBeGreaterThan(listCallsBefore),
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    expect(await screen.findByText("Work profile note")).toBeInTheDocument();
+    expect(screen.queryByText("First note")).toBeNull();
+  });
 
   it("stays on meeting notes after deleting the last note", async () => {
     mocks.bootstrapApp.mockResolvedValue({
