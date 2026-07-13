@@ -23,10 +23,11 @@
     "hermes:upgrade-check": "node --disable-warning=ExperimentalWarning --experimental-strip-types scripts/hermes-upgrade-check.ts",
     "version:bump": "node scripts/bump-version.mjs",
     "icons": "node scripts/generate-icons.mjs",
+    "extension:build": "pnpm --filter june-extension build",
     "check": "biome check .",
     "check:write": "biome check --write .",
     "format": "biome format --write .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p extension"
   },
   "dependencies": {
     "@react-three/drei": "^9",
