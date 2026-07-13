@@ -51,6 +51,13 @@ import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
+import {
+  OPEN_REFERRAL_DIALOG_EVENT,
+  ReferralNudge,
+  type ReferralNudgeMoment,
+} from "../components/referral/ReferralNudge";
+import { markReferralNudgeClickedThrough, recordDictationFinished } from "../lib/referral-nudge";
+import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import { Dialog } from "../components/ui/Dialog";
 import {
   assignNoteToFolder,
@@ -535,6 +542,31 @@ export function App() {
       dispose?.();
     };
   }, []);
+  // The referral delight nudge (bottom-left card). Real shows come from the
+  // trigger layer (useReferralNudgeTriggers below); the dev console driver
+  // (window.__referralNudge) parks the card without touching the persisted
+  // caps, which is why the source is tracked — only trigger-shown cards may
+  // record a click-through.
+  const [referralNudgeMoment, setReferralNudgeMoment] = useState<ReferralNudgeMoment | null>(null);
+  const referralNudgeSourceRef = useRef<"trigger" | "demo">("trigger");
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/referral-nudge-demo").then(({ registerReferralNudgeDemo }) => {
+      if (cancelled) return;
+      ({ dispose } = registerReferralNudgeDemo({
+        setMoment: (moment) => {
+          referralNudgeSourceRef.current = "demo";
+          setReferralNudgeMoment(moment);
+        },
+      }));
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
   // Dev console driver for the sidebar "Relaunch to update" card
   // (window.__updateCard). Pushes synthetic values into the real update state
   // so the card's styling can be parked and inspected without a live update.
@@ -817,6 +849,21 @@ export function App() {
   // holds bootstrap, update checks, and eager permission probes because the
   // wizard owns the permission prompts while it is on screen.
   const appBlocked = accountLoading || signInRequired || onboardingRequired;
+  // The referral delight nudge's trigger layer: counts the moments (5th note,
+  // first agent completion, 25th dictation) and surfaces the card when the
+  // caps and gates allow. T4 (positive feedback) records from the report flow
+  // directly.
+  // Gated on captureActive too: a growth card sliding in mid-meeting is the
+  // one timing guaranteed to annoy. A moment that fires during a recording is
+  // consumed without showing (the caps never queue).
+  useReferralNudgeTriggers({
+    notes: state.notes,
+    enabled: account.signedIn && !account.localDev && onboardingDone && !captureActive,
+    onShow: (moment) => {
+      referralNudgeSourceRef.current = "trigger";
+      setReferralNudgeMoment(moment);
+    },
+  });
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
@@ -1817,6 +1864,12 @@ export function App() {
     void listen<string>("dictation-event", (event) => {
       const helperEvent = parseDictationHelperEvent(event.payload);
       if (!helperEvent) return;
+      if (helperEvent.type === "final_transcript") {
+        // T3 of the referral delight nudge: a dictation landed (often while
+        // June is backgrounded; the card waits to be found).
+        recordDictationFinished();
+        return;
+      }
       if (helperEvent.type === "agent_session_prompt") {
         const prompt = stringPayloadValue(helperEvent.payload?.prompt) ?? "";
         dispatchAgentSessionStatus({
@@ -4040,6 +4093,22 @@ export function App() {
       {/* Connector action approvals (approval trust mode) can arrive from a
           routine or chat in any view, so the tray is mounted at the shell. */}
       <ConnectorApprovalsTray />
+      {/* The referral delight nudge floats bottom-left at the shell so it can
+          appear over any view; click-through opens the sidebar-owned referral
+          dialog by event. */}
+      {referralNudgeMoment ? (
+        <ReferralNudge
+          moment={referralNudgeMoment}
+          onInvite={() => {
+            // Ends all future nudging, per the frequency rules — but only for
+            // real trigger shows; demo cards must not poison the caps.
+            if (referralNudgeSourceRef.current === "trigger") markReferralNudgeClickedThrough();
+            setReferralNudgeMoment(null);
+            window.dispatchEvent(new Event(OPEN_REFERRAL_DIALOG_EVENT));
+          }}
+          onDismiss={() => setReferralNudgeMoment(null)}
+        />
+      ) : null}
     </main>
   );
 }

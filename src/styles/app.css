@@ -6580,6 +6580,74 @@ input:focus-visible,
   line-height: 1.3;
 }
 
+/* Automatic-routing section pinned above the suggested rows in the root
+ * popover: the Auto label + switch on the shared content gutter, and the
+ * Preference drill-in row underneath while Auto is on. The hairline splits
+ * the section from the model list, running the popover's full width. */
+.agent-composer-model-auto {
+  display: flex;
+  flex-direction: column;
+  margin: 0 calc(-1 * var(--sp-2)) var(--sp-1);
+  padding: 0 var(--sp-2) var(--sp-1);
+  border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
+}
+
+/* The filter recipe's bleed/padding are tuned for the flyout surface; re-seat
+ * the toggle row on the root popover's gutter (title text at --sp-3, switch on
+ * the rows' --sp-2 inset) and drop the recipe's own hairline — the section
+ * draws one for the whole block. */
+.agent-composer-model-auto .agent-composer-model-auto-toggle {
+  margin: 0;
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  border-bottom: 0;
+}
+
+/* The Preference drill-in row while Auto is on: label left, the active preset
+ * as a quiet value beside the chevron. The auto margin sits on the value, so
+ * the chevron's own auto margin has to stand down or the pair splits apart. */
+.agent-composer-model-auto-value {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-composer-model-auto-row .agent-composer-model-row-chevron {
+  margin-left: 0;
+}
+
+/* The preference flyout hangs off the popover's top edge (its trigger row
+ * lives in the pinned Auto section) instead of the bottom like the catalog. */
+.agent-composer-model-flyout.agent-composer-model-auto-panel {
+  top: -1px;
+  bottom: auto;
+  width: 248px;
+}
+
+/* Same inset as the catalog panel: an --sp-1 gutter between the surface
+ * border and the option rows, so hover fills never touch the edge. */
+.agent-composer-model-auto-panel .agent-composer-model-surface {
+  gap: 0;
+  width: 248px;
+  padding: var(--sp-1);
+}
+
+.agent-composer-model-pref-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-composer-model-pref-desc {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+  white-space: normal;
+}
+
 /* Catalog list scroller. Fades come from the shared `.scroll-fade` primitive
  * (contained overlays, WKWebView-safe for this popover); only the fade size is
  * tuned here so rows melt into the popover surface at the boundary. */
@@ -21116,6 +21184,212 @@ input:focus-visible,
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
+}
+
+/* Referral delight nudge --------------------------------------------
+   A rare invite card parked bottom-left of the window at delight moments
+   (5th meeting note, first agent completion, 25th dictation). Fixed like
+   the connector approvals tray but in the opposite corner, so the two
+   never collide; under the dialog layer. Visually a small cousin of the
+   referral dialog above — the same terracotta hero recipe (gradient,
+   grain, June mark) — so the click-through feels continuous. */
+.referral-nudge {
+  position: fixed;
+  /* Window bottom-left, on the main-panel card's --sp-3 inset so the two
+     share a bottom line (a near-miss offset here reads as misalignment).
+     Keep this a static inset: anchoring to the animated --sidebar-w-current
+     made the compositor move a blend-mode + WebGL stack continuously, which
+     read as noise flashing on the hero. It overlaps the sidebar footer while
+     parked; Escape and the X both clear it. */
+  left: var(--sp-3);
+  bottom: var(--sp-3);
+  z-index: 60;
+  width: min(300px, calc(100vw - 2 * var(--sp-3)));
+  overflow: hidden;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  animation: referral-nudge-enter var(--t-med) var(--ease-out) both;
+  transition:
+    opacity var(--t-med) var(--ease-out),
+    transform var(--t-med) var(--ease-out);
+}
+
+/* Dismissing: drop the (filled) enter animation so the exit transition can
+   drive the same properties, then fade back down. */
+.referral-nudge[data-leaving] {
+  animation: none;
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+@keyframes referral-nudge-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .referral-nudge {
+    animation-name: referral-nudge-enter-reduced;
+  }
+
+  .referral-nudge[data-leaving] {
+    transform: none;
+  }
+}
+
+@keyframes referral-nudge-enter-reduced {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The dialog hero's gradient recipe, shrunk to a banner that carries the
+   title. Inset and concentric with the card (r-xl minus the --sp-2 frame
+   = r-md), the steer queue's 6px-frame recipe. */
+.referral-nudge-hero {
+  position: relative;
+  overflow: hidden;
+  /* Contain the grain's soft-light blend to this hero's own stacking context
+     so the compositor never reads back through the card/canvas layers. */
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  min-height: 128px;
+  margin: var(--sp-2) var(--sp-2) 0;
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  color: var(--on-solid);
+  background:
+    radial-gradient(
+      120% 120% at 12% 8%,
+      color-mix(in oklch, var(--brand) 82%, white),
+      transparent 55%
+    ),
+    linear-gradient(152deg, var(--brand) 0%, color-mix(in oklch, var(--brand) 68%, black) 100%);
+}
+
+/* The signature grain, as on the dialog hero. */
+.referral-nudge-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* The 3D glass June mark (the welcome surface's centerpiece) at gift scale,
+   centered above the title. The square box reserves identical space for the
+   canvas and its fallbacks, as .welcome-mark-glass does. */
+.referral-nudge-mark-glass {
+  /* Above the grain ::after — the soft-light blend must never paint over the
+     WebGL canvas (compositors alternate-rasterize that stack, which shows as
+     noise flashing on the mark). Same layering as .referral-hero > *. */
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 96px;
+  height: 96px;
+  line-height: 0;
+  /* The gradient-mark fallback derives its stops from --brand, which would
+     vanish brand-on-brand against this terracotta hero; remapping --brand to
+     the hero's ink renders it as the white mark instead. The WebGL palette
+     is JS-side and unaffected. */
+  --brand: var(--on-solid);
+}
+
+.referral-nudge-mark-glass svg {
+  display: block;
+  width: 48px;
+  height: auto;
+}
+
+/* The per-moment title lives in the hero (the dialog hero's title, one
+   type step down for the card's width). */
+.referral-nudge-title {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-medium);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+/* The system dismiss (.dialog-close's geometry and ghost hover), recolored
+   for the terracotta it floats over; its focus ring is on-solid rather
+   than the neutral --ring-focus for the same reason. */
+.referral-nudge-dismiss {
+  position: absolute;
+  top: var(--sp-4);
+  right: var(--sp-4);
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: color-mix(in oklch, var(--on-solid) 85%, transparent);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.referral-nudge-dismiss:hover {
+  background: color-mix(in oklch, var(--on-solid) 18%, transparent);
+  color: var(--on-solid);
+}
+
+.referral-nudge-dismiss:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--on-solid) 80%, transparent);
+  outline-offset: 2px;
+}
+
+/* Body and footer share the hero text's left edge (--sp-2 frame + --sp-4
+   hero padding). */
+.referral-nudge-body {
+  padding: var(--sp-4) var(--sp-6) 0;
+}
+
+/* Same size as .funding-notice-body — the other floating card in this
+   region — so the two surfaces read as one family. */
+.referral-nudge-copy {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+/* The action is the stock solid primary button (.primary-action
+   .primary-solid), so only the footer's frame lives here. */
+.referral-nudge-footer {
+  display: flex;
+  justify-content: flex-start;
+  padding: var(--sp-4) var(--sp-6) var(--sp-5);
 }
 
 /* Generous padding (+ negative outer margin) so the inputs' focus

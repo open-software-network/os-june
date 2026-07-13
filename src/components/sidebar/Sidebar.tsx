@@ -91,6 +91,7 @@ import type {
 } from "../../lib/tauri";
 import { osAccountsReferralSummary } from "../../lib/tauri";
 import { JuneMark } from "../account/AccountGate";
+import { OPEN_REFERRAL_DIALOG_EVENT } from "../referral/ReferralNudge";
 import { SETTINGS_TABS, type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
@@ -545,6 +546,19 @@ export function Sidebar({
       void loadReferralSummary();
     }
   }
+
+  // Shell surfaces outside the sidebar (the referral delight nudge) open the
+  // referral dialog by window event, since the dialog lives here. Re-attached
+  // every render (the command-prompt keydown pattern below) so the handler
+  // never closes over stale account state.
+  useEffect(() => {
+    function onOpenReferralDialog() {
+      openReferralDialog();
+    }
+
+    window.addEventListener(OPEN_REFERRAL_DIALOG_EVENT, onOpenReferralDialog);
+    return () => window.removeEventListener(OPEN_REFERRAL_DIALOG_EVENT, onOpenReferralDialog);
+  });
 
   async function copyReferralLink() {
     if (!referralSummary) return;

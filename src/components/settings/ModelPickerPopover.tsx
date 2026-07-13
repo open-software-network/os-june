@@ -12,17 +12,68 @@ import {
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 import { modelAvailableForMode, modelIsPrivate, modelPrivacyBadge } from "../../lib/model-privacy";
-import { suggestedModelsForMode } from "../../lib/suggested-models";
+import {
+  DEFAULT_GENERATION_SUGGESTION_ID,
+  suggestedModelsForMode,
+} from "../../lib/suggested-models";
 import type { ProviderModelMode, VeniceModelDto } from "../../lib/tauri";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { rectFromElement, type HoverBridgeRect } from "../ui/hoverBridge";
 import { useCatalogHoverBridge, useModelDetailHoverBridge } from "../ui/useModelHoverBridge";
 import { ModelPrivacyChip, ModelRowPrivacyBadge } from "../ui/ModelPrivacyChip";
 import { Switch } from "../ui/Switch";
-import { modelSpecEntries } from "./ModelPickerDialog";
+import { AUTO_MODEL_ID, modelSpecEntries } from "./ModelPickerDialog";
 import { ProviderLogo } from "./ProviderLogo";
 
-export type ModelPickerFlyout = { kind: "model"; id: string } | { kind: "all" } | null;
+export type ModelPickerFlyout =
+  | { kind: "model"; id: string }
+  | { kind: "all" }
+  | { kind: "auto" }
+  | null;
+
+// The automatic router's cost-to-quality preference, shared by this popover's
+// Auto section and the Settings "Auto preference" row so both surfaces read
+// and write the same three presets.
+export type AutoPreference = "cost" | "balanced" | "quality";
+
+export const AUTO_PREFERENCE_VALUES: Record<AutoPreference, number> = {
+  // Keep the cost-first preset above the lowest-quality routing tier. Live
+  // integration evals showed that tier dropping facts and inventing dates.
+  cost: 20,
+  balanced: 50,
+  quality: 100,
+};
+
+export function autoPreferenceFromCostQuality(value: number): AutoPreference {
+  if (value < 34) return "cost";
+  if (value > 66) return "quality";
+  return "balanced";
+}
+
+// The Preference flyout's option rows: each preset carries a one-line
+// explanation, which is the point of drilling in rather than showing bare
+// values.
+const AUTO_PREFERENCE_DETAILS: readonly {
+  value: AutoPreference;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "cost",
+    label: "Lower cost",
+    description: "Favors cheaper models to stretch your credits.",
+  },
+  {
+    value: "balanced",
+    label: "Balanced",
+    description: "Weighs quality against cost on every request.",
+  },
+  {
+    value: "quality",
+    label: "Higher quality",
+    description: "Routes to the strongest model for the job.",
+  },
+];
 
 // Row hovers should feel quick while moving through models, but still keep a
 // tiny intent delay so a pointer sweep does not flash every card open.
@@ -49,6 +100,7 @@ export function ModelPickerPopover({
   onFlyoutChange,
   onSearchChange,
   onSelect,
+  onCostQualityChange,
 }: {
   mode: ProviderModelMode;
   flyout: ModelPickerFlyout;
@@ -65,7 +117,13 @@ export function ModelPickerPopover({
   allModelsLabel?: string;
   onFlyoutChange: (flyout: ModelPickerFlyout) => void;
   onSearchChange: (value: string) => void;
-  onSelect: (modelId: string, costQuality?: number) => void;
+  /** `keepOpen` asks the host to leave the popover mounted (used by the Auto
+   * toggle, where switching is a mid-flow adjustment, not a final pick). */
+  onSelect: (modelId: string, costQuality?: number, options?: { keepOpen?: boolean }) => void;
+  /** Enables the pinned Auto section (generation surfaces): a toggle that
+   * swaps the selection to/from the Auto router, plus the Preference
+   * drill-in writing through this callback while Auto is on. */
+  onCostQualityChange?: (value: number) => void;
 }) {
   const flyoutRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -250,10 +308,42 @@ export function ModelPickerPopover({
 
   const query = search.trim().toLowerCase();
   const selectable = useMemo(
-    () => options.filter((option) => modelAvailableForMode(mode, option)),
-    [mode, options],
+    () =>
+      options.filter(
+        (option) =>
+          modelAvailableForMode(mode, option) &&
+          // With the Auto section shown, the toggle is the router's one home;
+          // keep the catalog's Auto entry out of the lists so it doesn't
+          // double up as a row.
+          !(onCostQualityChange && option.id === AUTO_MODEL_ID),
+      ),
+    [mode, onCostQualityChange, options],
   );
   const suggested = useMemo(() => suggestedModelsForMode(mode, selectable), [mode, selectable]);
+  const autoEnabled = onCostQualityChange !== undefined && model?.id === AUTO_MODEL_ID;
+  const autoPreference = autoPreferenceFromCostQuality(costQuality ?? 100);
+  // Toggling stays inside the popover: turning Auto off lands on the leading
+  // suggested pick (the default generation model) so the next step — choosing
+  // an explicit model — is right there, one row away.
+  // The concrete model toggling Auto off lands on: the leading suggested
+  // pick, else the first selectable catalog model, else the curated default
+  // id — the factory default keeps the switch actionable while the catalog
+  // is empty or unloaded, and is safe to select sight-unseen.
+  const autoOffTarget =
+    suggested.find((item) => item.model.id !== AUTO_MODEL_ID)?.model.id ??
+    selectable.find((option) => option.id !== AUTO_MODEL_ID)?.id ??
+    DEFAULT_GENERATION_SUGGESTION_ID;
+  const toggleAuto = useCallback(
+    (on: boolean) => {
+      onFlyoutChange(null);
+      if (on) {
+        onSelect(AUTO_MODEL_ID, undefined, { keepOpen: true });
+        return;
+      }
+      onSelect(autoOffTarget, undefined, { keepOpen: true });
+    },
+    [autoOffTarget, onFlyoutChange, onSelect],
+  );
   const privacyFiltered = privateOnly ? selectable.filter(modelIsPrivate) : selectable;
   const filteredOptions = query
     ? privacyFiltered.filter((option) => modelMatchesQuery(option, query))
@@ -428,6 +518,57 @@ export function ModelPickerPopover({
       }}
     >
       <p className="agent-composer-model-title">{title}</p>
+      {onCostQualityChange ? (
+        <div className="agent-composer-model-auto">
+          <div className="agent-composer-model-filter agent-composer-model-auto-toggle">
+            <span>Auto</span>
+            <Switch
+              checked={autoEnabled}
+              onCheckedChange={toggleAuto}
+              aria-label="Choose the model automatically"
+            />
+          </div>
+          {autoEnabled ? (
+            <button
+              type="button"
+              className="agent-composer-model-row agent-composer-model-auto-row"
+              aria-haspopup="true"
+              aria-expanded={flyout?.kind === "auto"}
+              data-active={flyout?.kind === "auto" || undefined}
+              onMouseEnter={() => {
+                if (modelBridge.isActive()) {
+                  return;
+                }
+                const open = () => onFlyoutChange({ kind: "auto" });
+                if (flyout) {
+                  cancelHoverIntent();
+                  open();
+                } else {
+                  hoverIntent(open);
+                }
+              }}
+              onFocus={() => {
+                cancelHoverIntent();
+                onFlyoutChange({ kind: "auto" });
+              }}
+              onClick={() => {
+                cancelHoverIntent();
+                onFlyoutChange({ kind: "auto" });
+              }}
+            >
+              <span className="agent-composer-model-row-name">Preference</span>
+              <span className="agent-composer-model-auto-value">
+                {AUTO_PREFERENCE_DETAILS.find((option) => option.value === autoPreference)?.label}
+              </span>
+              <IconChevronRightSmall
+                size={16}
+                aria-hidden
+                className="agent-composer-model-row-chevron"
+              />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="agent-composer-model-menu" role="listbox" aria-label={suggestedListLabel}>
         {suggested.length ? (
           suggested.map(({ key, model: option, costQuality: presetCostQuality }) => (
@@ -550,6 +691,43 @@ export function ModelPickerPopover({
           }}
         >
           <div className="agent-composer-model-surface">{catalogList(allModelsLabel)}</div>
+        </div>
+      ) : null}
+      {onCostQualityChange && flyout?.kind === "auto" ? (
+        <div
+          ref={flyoutRef}
+          className="agent-composer-model-flyout agent-composer-model-auto-panel"
+          role="group"
+          aria-label="Auto preference"
+          onPointerLeave={() => {
+            cancelHoverIntent();
+            setBridging(false);
+          }}
+        >
+          <div className="agent-composer-model-surface">
+            {AUTO_PREFERENCE_DETAILS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className="agent-composer-model-row agent-composer-model-pref-option"
+                role="menuitemradio"
+                aria-checked={option.value === autoPreference}
+                onClick={() => onCostQualityChange(AUTO_PREFERENCE_VALUES[option.value])}
+              >
+                <span className="agent-composer-model-pref-copy">
+                  <span className="agent-composer-model-row-name">{option.label}</span>
+                  <span className="agent-composer-model-pref-desc">{option.description}</span>
+                </span>
+                {option.value === autoPreference ? (
+                  <IconCheckmark2Small
+                    size={14}
+                    aria-hidden
+                    className="agent-composer-model-row-check"
+                  />
+                ) : null}
+              </button>
+            ))}
+          </div>
         </div>
       ) : null}
       {flyout?.kind === "all" && catalogHover && portalTarget

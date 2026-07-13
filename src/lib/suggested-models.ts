@@ -36,9 +36,20 @@ export function autoPillDesignation(costQuality: number | undefined): string | u
  * is zero-retention privacy, so every text pick here is a "private" catalog
  * model that supports tools).
  *
- * Text suggestions are the three useful ways to run Auto. Auto selects the
- * best currently available private model for each request; these presets tune
- * that routing decision without making people understand the provider catalog.
+ * Auto lives in the picker's pinned toggle section, not in these rows: the
+ * suggested rows stay concrete models so they double as the landing spots
+ * when Auto is switched off (the first pick is the toggle-off fallback).
+ *
+ * Curation snapshot (June 2026), from the live Venice catalog plus public
+ * benchmarks (SWE-bench agentic coding, Artificial Analysis intelligence
+ * index):
+ * - GLM 5.2: latest GLM flagship and June's default text model, with
+ *   reasoning effort controls, tool use, 200K context, $1.75/$5.50 per 1M
+ *   tokens.
+ * - Kimi K2.6: leads the open-weights intelligence rankings, built for long
+ *   agentic tool runs, 256K context, $0.85/$4.66.
+ * - GLM 5.1: previous GLM flagship, top-tier agentic coding and tool use
+ *   among open models, 200K context, $1.75/$5.50 per 1M tokens.
  * - Parakeet: fast, accurate everyday dictation at the lowest price tier.
  * - Whisper Large v3: best multilingual accuracy at the same low price.
  *
@@ -52,22 +63,19 @@ export function autoPillDesignation(costQuality: number | undefined): string | u
 export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
   generation: [
     {
-      id: "open-software/auto",
-      label: "Auto · Higher Quality",
-      costQuality: 100,
-      reason: "Best for complex questions and important work where response quality matters most.",
+      id: "zai-org-glm-5-2",
+      reason:
+        "Default pick: latest GLM flagship with strong reasoning, tool use, structured output, and zero data retention.",
     },
     {
-      id: "open-software/auto",
-      label: "Auto · Balanced",
-      costQuality: 50,
-      reason: "Best for everyday work when you want a practical balance of quality and credit use.",
+      id: "kimi-k2-6",
+      reason:
+        "Best alternate: leads independent intelligence rankings and excels at long tool-driven tasks, with zero data retention.",
     },
     {
-      id: "open-software/auto",
-      label: "Auto · Lower Cost",
-      costQuality: 20,
-      reason: "Best for quick or routine tasks when minimizing credit use matters most.",
+      id: "zai-org-glm-5-1",
+      reason:
+        "Stable GLM alternate: previous GLM flagship with top-tier agentic coding, tool use, and zero data retention.",
     },
   ],
   transcription: [
@@ -122,6 +130,12 @@ export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
     },
   ],
 };
+
+// The Auto toggle's last-resort landing when the catalog is empty or still
+// loading: the leading curated pick, which mirrors DEFAULT_GENERATION_MODEL
+// in the Rust providers module — the factory default is safe to select
+// sight-unseen (the pill renders a name-only stub until the catalog arrives).
+export const DEFAULT_GENERATION_SUGGESTION_ID = SUGGESTED_MODELS.generation[0].id;
 
 /**
  * The model June switches to when the user attaches an image while a

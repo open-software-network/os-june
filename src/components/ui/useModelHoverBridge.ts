@@ -11,8 +11,14 @@ import {
 
 // The picker flyout state, shared verbatim by the composer and settings pickers
 // (both declare a structurally identical alias). A row's detail card is open
-// when `kind === "model"`; the searchable catalog when `kind === "all"`.
-export type ModelHoverFlyout = { kind: "model"; id: string } | { kind: "all" } | null;
+// when `kind === "model"`; the searchable catalog when `kind === "all"`; the
+// Auto preference panel when `kind === "auto"` (the bridge itself only ever
+// traverses to "model" cards, so it ignores that kind).
+export type ModelHoverFlyout =
+  | { kind: "model"; id: string }
+  | { kind: "all" }
+  | { kind: "auto" }
+  | null;
 
 // Reports whether a safe-polygon traversal is currently anchored, so the rows
 // can suppress their own hover-intent while the pointer is bridging to a card.

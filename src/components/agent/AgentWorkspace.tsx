@@ -205,6 +205,7 @@ import {
   type BranchSessionResult,
 } from "../../lib/hermes-session-branch";
 import { normalizeSteerText } from "../../lib/hermes-session-steer";
+import { recordPositiveFeedbackSent } from "../../lib/referral-nudge";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
@@ -2539,6 +2540,14 @@ export function AgentWorkspace({
   // shows as a name-only stub so the pill never goes blank while configured.
   const [defaultGenerationModelId, setDefaultGenerationModelId] = useState("");
   const [generationCostQuality, setGenerationCostQuality] = useState<number | undefined>();
+  // Preference saves from the picker's drill-in: writes are chained so they
+  // persist in click order, and versioned so only the newest call's outcome
+  // touches the UI (mirrors Settings' saveCostQuality discipline). Rollback
+  // targets the last CONFIRMED value (persisted read or successful save) —
+  // never an optimistic value a still-in-flight click painted.
+  const costQualitySaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const latestCostQualitySaveRef = useRef(0);
+  const confirmedCostQualityRef = useRef<number | undefined>(undefined);
   const defaultGenerationModelIdRef = useRef("");
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>([]);
   const generationModelsRef = useRef<VeniceModelDto[]>([]);
@@ -3589,6 +3598,7 @@ export function AgentWorkspace({
       setGenerationProvider(provider);
       defaultGenerationModelIdRef.current = selectedModelId;
       setDefaultGenerationModelId(selectedModelId);
+      confirmedCostQualityRef.current = settings.costQuality;
       setGenerationCostQuality(settings.costQuality);
       return selectedModelId;
     },
@@ -3738,12 +3748,52 @@ export function AgentWorkspace({
     return true;
   }
 
+  // The Auto section's Preference drill-in writes the app-wide preference
+  // without changing the model; announce it so other surfaces (Settings, the
+  // note chat panel) refresh their designation.
+  function handleCostQualityChange(value: number) {
+    // Rapid preset clicks overlap: the chain keeps the writes ordered so the
+    // last click is what persists, and the version gate makes sure only the
+    // newest call's outcome (success or rollback) touches the UI — the same
+    // discipline as Settings' saveCostQuality.
+    const version = ++latestCostQualitySaveRef.current;
+    setGenerationCostQuality(value);
+    const save = costQualitySaveChainRef.current.then(() => setCostQuality(value));
+    costQualitySaveChainRef.current = save.then(
+      () => undefined,
+      () => undefined,
+    );
+    void save.then(
+      (next) => {
+        confirmedCostQualityRef.current = next.costQuality;
+        if (version !== latestCostQualitySaveRef.current) return;
+        setGenerationCostQuality(next.costQuality);
+        dispatchProviderModelSettingsChanged({
+          mode: "generation",
+          modelId: defaultGenerationModelIdRef.current,
+        });
+        setError(null);
+      },
+      (err) => {
+        if (version !== latestCostQualitySaveRef.current) return;
+        setGenerationCostQuality(confirmedCostQualityRef.current);
+        setError(messageFromError(err));
+      },
+    );
+  }
+
   // Switching the model from the composer is only allowed before a thread
   // exists. It writes the app-wide text-model default (Settings' model rows and
   // this pill refresh through the same changed event), and new sessions inherit
   // that choice at creation time.
-  async function handleSelectGenerationModel(modelId: string, costQuality?: number) {
-    setComposerModelOpen(false);
+  async function handleSelectGenerationModel(
+    modelId: string,
+    costQuality?: number,
+    options?: { keepOpen?: boolean },
+  ) {
+    // The Auto toggle switches models mid-flow, so it asks to keep the picker
+    // open; a row pick is a final choice and closes it.
+    if (!options?.keepOpen) setComposerModelOpen(false);
     if (composerModelSelectionLocked()) {
       showComposerModelLockedNotice();
       return false;
@@ -5701,6 +5751,10 @@ export function AgentWorkspace({
       toast.success(issueReportSentMessage(response?.skippedAttachmentNames), {
         id: ISSUE_REPORT_SENT_TOAST_ID,
       });
+      // T4 of the referral delight nudge: positive feedback only. The
+      // error-report path deliberately doesn't record — a report sent from a
+      // failure is not a delight moment, whatever its category.
+      if (report.category === "feedback") recordPositiveFeedbackSent();
       return { sent: true };
     } catch (err) {
       const errorMessage = `The issue report could not be sent. ${messageFromError(err)}`;
@@ -9536,9 +9590,10 @@ export function AgentWorkspace({
             searchRef={composerModelSearchRef}
             onFlyoutChange={setComposerModelFlyout}
             onSearchChange={setModelSearch}
-            onSelect={(modelId, costQuality) =>
-              void handleSelectGenerationModel(modelId, costQuality)
+            onSelect={(modelId, costQuality, options) =>
+              void handleSelectGenerationModel(modelId, costQuality, options)
             }
+            onCostQualityChange={handleCostQualityChange}
           />
         ) : null}
         {heroMode && sandboxMenuOpen ? (

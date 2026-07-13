@@ -3215,22 +3215,20 @@ describe("AppSettings", () => {
     await user.click(await screen.findByRole("button", { name: "Change text model" }));
 
     // Suggested is the default view: only the curated picks present in the
-    // catalog show in the compact root menu.
-    expect(
-      await screen.findByRole("option", { name: /Auto · Higher Quality/ }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /Auto · Balanced/ })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: /Auto · Lower Cost/ })).toBeInTheDocument();
+    // catalog show in the compact root menu. Auto lives in the pinned toggle
+    // section, not the suggested rows.
+    expect(await screen.findByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /GLM 5\.1/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Kimi K2\.6/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Auto/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Venice Uncensored/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "All models" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("option", { name: /Auto · Balanced/ }));
-    await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledWith(50));
+    // The toggle selects the router and keeps the popover open.
+    await user.click(screen.getByRole("switch", { name: "Choose the model automatically" }));
     await waitFor(() =>
       expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "open-software/auto"),
     );
-
-    await user.click(await screen.findByRole("button", { name: "Change text model" }));
 
     // All models shows the full available catalog in the flyout.
     await user.click(screen.getByRole("button", { name: "All models" }));
