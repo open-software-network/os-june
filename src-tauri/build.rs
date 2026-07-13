@@ -342,11 +342,10 @@ fn sign_windows_helper_if_configured(manifest_dir: &std::path::Path, helper: &st
     };
     let script = repo_dir.join("scripts").join("windows-sign.ps1");
     if !script.exists() {
-        println!(
-            "cargo:warning=Windows signing requested but {} is missing",
+        panic!(
+            "Windows signing requested but {} is missing",
             script.display()
         );
-        return;
     }
     let status = std::process::Command::new("powershell.exe")
         .arg("-NoLogo")
@@ -356,10 +355,16 @@ fn sign_windows_helper_if_configured(manifest_dir: &std::path::Path, helper: &st
         .arg("-File")
         .arg(&script)
         .arg(helper)
-        .status();
-    if !matches!(status, Ok(status) if status.success()) {
-        println!(
-            "cargo:warning=Windows dictation helper {} could not be signed",
+        .status()
+        .unwrap_or_else(|error| {
+            panic!(
+                "Windows dictation helper signing command could not start for {}: {error}",
+                helper.display()
+            )
+        });
+    if !status.success() {
+        panic!(
+            "Windows dictation helper {} signing failed with status {status}",
             helper.display()
         );
     }

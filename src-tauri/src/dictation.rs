@@ -1836,8 +1836,8 @@ fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_l
                 DictationAuthGate::Proceed => {}
                 // A transient outage at the key press must not kill a live
                 // dictation: let it record. The recording_ready backstop
-                // re-checks at the end and, if still unavailable, keeps the
-                // audio and shows a retriable error.
+                // re-checks at the end and, if still unavailable, cleans up
+                // the finalized audio and shows a retriable error.
                 DictationAuthGate::Unavailable(_) => {}
                 DictationAuthGate::SignedOut => {
                     forward_dictation_command(&app, DictationCommand::DiscardListening, &label);
@@ -2558,9 +2558,11 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     match classify_dictation_auth(&crate::os_accounts::access_token().await) {
         DictationAuthGate::Proceed => {}
         DictationAuthGate::Unavailable(error) => {
-            // OS Accounts is temporarily unreachable. Keep the finalized WAV
-            // so a retry can reuse the intact capture instead of discarding
-            // user speech because of a transient network or service failure.
+            // OS Accounts is temporarily unreachable. The helper has already
+            // finalized this capture to a temp WAV, and there is no retained
+            // retry handle after recording_ready, so remove it before
+            // surfacing the retriable auth error.
+            remove_windows_dictation_audio(&recording.audio_path);
             emit_dictation_event_value(&app, app_error_event(error));
             return;
         }
