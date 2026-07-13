@@ -191,6 +191,7 @@ import {
 } from "../../lib/hermes-image-attach";
 import { parseSessionUsage, type SessionUsage } from "../../lib/hermes-session-usage";
 import {
+  isAgentSessionTitleCandidate,
   rememberSessionExchangeTitled,
   rememberSessionManuallyTitled,
   sessionSettledTitleKind,
@@ -10504,7 +10505,7 @@ async function agentSessionTitleForPrompt(prompt: string, response?: string) {
       AGENT_TITLE_TIMEOUT_MS,
     );
     const title = suggestion.title.trim();
-    return title
+    return isAgentSessionTitleCandidate(title)
       ? { title, fromModel: true }
       : { title: titleFromPrompt(prompt), fromModel: false };
   } catch {

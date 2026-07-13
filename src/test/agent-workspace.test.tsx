@@ -26,6 +26,7 @@ import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../li
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
 import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-activity-store";
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
+import { isAgentSessionTitleCandidate } from "../lib/agent-session-titles";
 import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
 import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
@@ -389,6 +390,13 @@ async function settleUnderFakeTimers(
 }
 
 describe("AgentWorkspace", () => {
+  it("accepts concise topic titles without treating their first word as dialogue", () => {
+    expect(isAgentSessionTitleCandidate("How to deploy June")).toBe(true);
+    expect(isAgentSessionTitleCandidate("Surefire recovery plan")).toBe(true);
+    expect(isAgentSessionTitleCandidate("I'm sorry, but I can't help with that")).toBe(false);
+    expect(isAgentSessionTitleCandidate("What should I update")).toBe(false);
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.suggestAgentSessionTitle.mockReset();
@@ -4592,6 +4600,64 @@ describe("AgentWorkspace", () => {
 
     await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(3));
     expect(await screen.findByText("Persistence Fix")).toBeInTheDocument();
+  }, 10_000);
+
+  it("keeps a prompt title when the first-exchange suggestion is assistant dialogue", async () => {
+    const rawTitle = "I want you to summarize latest failures";
+    const userMessage = {
+      id: "u1",
+      role: "user",
+      content: "summarize latest failures",
+      timestamp: "2026-06-04T12:00:00Z",
+    };
+    const assistantMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "Could you clarify which failures you mean?",
+      timestamp: "2026-06-04T12:00:01Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-invalid-exchange-title",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages
+      .mockResolvedValueOnce([userMessage])
+      .mockResolvedValue([userMessage, assistantMessage]);
+    mocks.suggestAgentSessionTitle
+      .mockResolvedValueOnce({ title: "Failure summary" })
+      .mockResolvedValueOnce({ title: "I'm sorry, but I can't help with that" });
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-invalid-exchange-title",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:00Z",
+      },
+      "sandboxed",
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Failure summary")).toBeInTheDocument();
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Failure summary")).toBeInTheDocument();
+    expect(screen.queryByText("I'm sorry, but I can't help with that")).toBeNull();
+    expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
+      sessionId: "session-invalid-exchange-title",
+      title: "I'm sorry, but I can't help with that",
+    });
+    expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBeNull();
   }, 10_000);
 
   it("keeps a failed fresh title fallback retry to a later natural refresh", async () => {

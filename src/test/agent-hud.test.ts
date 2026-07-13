@@ -176,6 +176,62 @@ describe("agent HUD", () => {
     expect(document.querySelector(".agent-hud-chevron svg")).toBeTruthy();
   });
 
+  it("keeps the prompt when a waiting status carries a refusal-like title", async () => {
+    const prompt = "Review the session naming behavior";
+    const refusal = "I'm sorry, but I can't help with that";
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [
+        {
+          ...sessionFixture("session-1", refusal),
+          preview: prompt,
+        },
+      ],
+      workingSessionIds: [],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "running",
+      prompt,
+      summary: "June is working.",
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "waitingForUser",
+      title: refusal,
+      summary: "June has a question.",
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent(prompt);
+    expect(stackElement()).toHaveTextContent("June has a question.");
+    expect(stackElement()).not.toHaveTextContent(refusal);
+  });
+
+  it("keeps a valid session title when only the status title is refusal-like", async () => {
+    const refusal = "I'm sorry, but I can't help with that";
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Session naming review")],
+      workingSessionIds: [],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "waitingForUser",
+      title: refusal,
+      prompt: "Review the session naming behavior",
+      summary: "June has a question.",
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent("Session naming review");
+    expect(stackElement()).not.toHaveTextContent(refusal);
+  });
+
   it("stays collapsed after an explicit collapse while a session still needs input", async () => {
     await loadAgentHud();
 
@@ -592,8 +648,9 @@ function emitStatus(detail: {
   activeCount?: number;
   sessionId?: string;
   status: string;
-  title: string;
-  summary: string;
+  title?: string;
+  prompt?: string;
+  summary?: string;
 }) {
   window.dispatchEvent(new CustomEvent(AGENT_SESSION_STATUS_EVENT, { detail }));
 }

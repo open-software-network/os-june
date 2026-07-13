@@ -2030,7 +2030,77 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
             .trim_end()
             .to_string();
     }
-    (!title.is_empty()).then_some(title)
+    is_valid_agent_session_title_candidate(&title).then_some(title)
+}
+
+fn is_valid_agent_session_title_candidate(value: &str) -> bool {
+    let normalized = value.trim().replace(['‘', '’'], "'").to_lowercase();
+    if normalized.is_empty() || normalized.contains('?') {
+        return false;
+    }
+    let dialogue_prefixes = [
+        "i'm sorry",
+        "i am sorry",
+        "i'm unable",
+        "i am unable",
+        "i can't",
+        "i cannot",
+        "i won't",
+        "i found",
+        "i fixed",
+        "i updated",
+        "i created",
+        "i completed",
+        "i finished",
+        "i wrote",
+        "i added",
+        "i removed",
+        "i changed",
+        "i checked",
+        "i reviewed",
+        "i traced",
+        "sorry",
+        "as an ai",
+        "sure",
+        "certainly",
+        "of course",
+        "here's",
+        "here is",
+        "here are",
+        "unable to help",
+        "unable to assist",
+        "unable to comply",
+    ];
+    if dialogue_prefixes
+        .iter()
+        .any(|prefix| starts_with_title_phrase(&normalized, prefix))
+        || ["can't help", "cannot help", "can't assist", "cannot assist"]
+            .iter()
+            .any(|phrase| normalized.contains(phrase))
+    {
+        return false;
+    }
+    let mut words = normalized.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    let second = words.next().unwrap_or_default();
+    let question_words = ["who", "what", "when", "where", "why", "how"];
+    let question_auxiliaries = [
+        "can", "could", "would", "should", "do", "does", "did", "is", "are", "am", "will", "may",
+        "might", "have", "has",
+    ];
+    let question_subjects = ["i", "you", "we", "june"];
+    !(question_words.contains(&first) && question_auxiliaries.contains(&second)
+        || question_auxiliaries.contains(&first) && question_subjects.contains(&second))
+}
+
+fn starts_with_title_phrase(value: &str, phrase: &str) -> bool {
+    value.strip_prefix(phrase).is_some_and(|suffix| {
+        suffix.is_empty()
+            || suffix
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_whitespace() || ",:;.!".contains(character))
+    })
 }
 
 async fn post_json<T, B>(path: &str, body: &B, send_venice_api_key: bool) -> Result<T, AppError>
@@ -2987,6 +3057,47 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             Some("界".repeat(AGENT_TITLE_MAX_CHARS))
         );
         assert_eq!(clean_agent_session_title("   "), None);
+    }
+
+    #[test]
+    fn rejects_assistant_dialogue_and_questions_as_agent_session_titles() {
+        assert_eq!(
+            clean_agent_session_title("I'm sorry, but I can't help with that"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("I’m sorry, but I can’t help with that"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("Could you clarify the target?"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("What should I update"), None);
+    }
+
+    #[test]
+    fn retains_concise_topic_agent_session_titles() {
+        assert_eq!(
+            clean_agent_session_title("Clarification handling").as_deref(),
+            Some("Clarification handling")
+        );
+        assert_eq!(
+            clean_agent_session_title("Assistant refusal guard").as_deref(),
+            Some("Assistant refusal guard")
+        );
+        assert_eq!(
+            clean_agent_session_title("Open GarageBand").as_deref(),
+            Some("Open GarageBand")
+        );
+        assert_eq!(
+            clean_agent_session_title("How to deploy June").as_deref(),
+            Some("How to deploy June")
+        );
+        assert_eq!(
+            clean_agent_session_title("Surefire recovery plan").as_deref(),
+            Some("Surefire recovery plan")
+        );
     }
 
     #[test]

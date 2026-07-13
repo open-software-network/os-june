@@ -14,6 +14,82 @@ const STORAGE_KEY = "june.agent.manuallyTitledSessions";
 
 export type AgentSessionSettledTitleKind = "manual" | "exchange";
 
+const ASSISTANT_DIALOGUE_PREFIXES = [
+  "i'm sorry",
+  "i am sorry",
+  "i'm unable",
+  "i am unable",
+  "i can't",
+  "i cannot",
+  "i won't",
+  "i found",
+  "i fixed",
+  "i updated",
+  "i created",
+  "i completed",
+  "i finished",
+  "i wrote",
+  "i added",
+  "i removed",
+  "i changed",
+  "i checked",
+  "i reviewed",
+  "i traced",
+  "sorry",
+  "as an ai",
+  "sure",
+  "certainly",
+  "of course",
+  "here's",
+  "here is",
+  "here are",
+  "unable to help",
+  "unable to assist",
+  "unable to comply",
+] as const;
+
+const QUESTION_WORDS = new Set(["who", "what", "when", "where", "why", "how"]);
+const QUESTION_AUXILIARIES = new Set([
+  "can",
+  "could",
+  "would",
+  "should",
+  "do",
+  "does",
+  "did",
+  "is",
+  "are",
+  "am",
+  "will",
+  "may",
+  "might",
+  "have",
+  "has",
+]);
+const QUESTION_SUBJECTS = new Set(["i", "you", "we", "june"]);
+
+function startsWithPhrase(value: string, phrase: string) {
+  if (!value.startsWith(phrase)) return false;
+  const next = value[phrase.length];
+  return next === undefined || /[\s,:;.!]/.test(next);
+}
+
+/** Whether model output is safe to use as a concise session title. */
+export function isAgentSessionTitleCandidate(value: unknown): value is string {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const normalized = value.trim().replace(/[‘’]/g, "'").toLowerCase();
+  if (normalized.includes("?")) return false;
+  if (ASSISTANT_DIALOGUE_PREFIXES.some((prefix) => startsWithPhrase(normalized, prefix))) {
+    return false;
+  }
+  if (/\b(?:can't|cannot)\s+(?:help|assist)\b/.test(normalized)) return false;
+  const [first = "", second = ""] = normalized.split(/\s+/, 2);
+  return !(
+    (QUESTION_WORDS.has(first) && QUESTION_AUXILIARIES.has(second)) ||
+    (QUESTION_AUXILIARIES.has(first) && QUESTION_SUBJECTS.has(second))
+  );
+}
+
 function readStore(): Record<string, AgentSessionSettledTitleKind> {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);

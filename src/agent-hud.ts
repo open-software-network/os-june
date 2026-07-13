@@ -21,6 +21,7 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "./lib/agent-hud-settings";
+import { isAgentSessionTitleCandidate } from "./lib/agent-session-titles";
 import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import type { HermesSessionInfo } from "./lib/tauri";
@@ -136,7 +137,12 @@ function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
 
 function applyStatus(detail?: AgentSessionStatusDetail) {
   if (!detail) return;
-  const record: StatusRecord = { ...detail, receivedAt: Date.now() };
+  const previous = detail.sessionId ? state.statusBySessionId.get(detail.sessionId) : undefined;
+  const record: StatusRecord = {
+    ...detail,
+    prompt: detail.prompt ?? previous?.prompt,
+    receivedAt: Date.now(),
+  };
   if (detail.sessionId) {
     if (detail.status === "completed" || detail.status === "cancelled") {
       state.workingSessionIds.delete(detail.sessionId);
@@ -462,9 +468,22 @@ function sessionStatus(session: HermesSessionInfo, record?: StatusRecord): HudSe
 }
 
 function sessionTitle(session: HermesSessionInfo, record?: StatusRecord) {
-  return (
-    record?.title?.trim() || session.title?.trim() || session.preview?.trim() || "Agent session"
-  );
+  const recordTitle = record?.title?.trim();
+  if (recordTitle) {
+    if (isAgentSessionTitleCandidate(recordTitle)) return recordTitle;
+    const safeSessionTitle = session.title?.trim();
+    if (safeSessionTitle && isAgentSessionTitleCandidate(safeSessionTitle)) {
+      return safeSessionTitle;
+    }
+    return record?.prompt?.trim() || session.preview?.trim() || "Agent session";
+  }
+  const sessionTitle = session.title?.trim();
+  if (sessionTitle) {
+    return isAgentSessionTitleCandidate(sessionTitle)
+      ? sessionTitle
+      : record?.prompt?.trim() || session.preview?.trim() || "Agent session";
+  }
+  return record?.prompt?.trim() || session.preview?.trim() || "Agent session";
 }
 
 function sessionSummary(
@@ -490,7 +509,10 @@ function sessionTimestamp(session: HermesSessionInfo, record?: StatusRecord) {
 }
 
 function statusTitle(record: StatusRecord) {
-  return record.title?.trim() || record.prompt?.trim() || "Agent session";
+  const title = record.title?.trim();
+  return title && isAgentSessionTitleCandidate(title)
+    ? title
+    : record.prompt?.trim() || "Agent session";
 }
 
 function statusSummary(record: StatusRecord) {
