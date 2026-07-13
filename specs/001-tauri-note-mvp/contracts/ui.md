@@ -65,7 +65,7 @@ Idle/draft:
 
 Recording:
 - UI shows active state, elapsed time, live waveform/level movement, and reachable `Pause` and `Done`.
-- Sustained silence or no bytes written produces a visible warning before Done.
+- Sustained silence does not add live warning copy. After Done, validation explains unusable audio before note generation.
 - `Pause` toggles to resume behavior without losing previously recorded audio.
 
 Done/finalizing:

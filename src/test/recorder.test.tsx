@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
 import { RecorderBar } from "../components/recorder/RecorderBar";
 import {
   combineAudioLevels,
@@ -8,6 +9,10 @@ import {
   SOURCE_VISUAL_GAIN,
   visualPeakScale,
 } from "../components/recorder/Waveform";
+
+vi.mock("../lib/recording-presence-bounds", () => ({
+  useRecordingPresenceBounds: vi.fn(),
+}));
 
 describe("RecorderBar", () => {
   it("shows elapsed time, waveform evidence, and pause/done actions while recording", () => {
@@ -287,5 +292,41 @@ describe("RecorderBar", () => {
     expect(loud).toBeLessThan(0.95);
     // A genuine peak still reaches (effectively) full height.
     expect(visualPeakScale(0.9)).toBeGreaterThanOrEqual(0.99);
+  });
+});
+
+describe("GlobalRecorderPill", () => {
+  it("does not surface a live silence prompt", () => {
+    render(
+      <GlobalRecorderPill
+        status={{
+          sessionId: "session-1",
+          state: "recording",
+          elapsedMs: 15_000,
+          level: { peak: 0, rms: 0, recentPeaks: [] },
+          silenceWarning: true,
+          sources: [
+            {
+              source: "microphone",
+              state: "recording",
+              elapsedMs: 15_000,
+              bytesWritten: 4096,
+              level: { peak: 0, rms: 0, recentPeaks: [] },
+              silenceWarning: true,
+              pathFinalized: false,
+            },
+          ],
+          bytesWritten: 4096,
+        }}
+        title="Test note"
+        onOpen={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(/silent/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open recording: Test note" })).toHaveAttribute(
+      "title",
+      "Open recording",
+    );
   });
 });
