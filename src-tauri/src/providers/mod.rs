@@ -21,7 +21,7 @@ pub const PROVIDER_LOCAL: &str = "local";
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
 pub const AUTO_GENERATION_MODEL: &str = "open-software/auto";
-pub const DEFAULT_COST_QUALITY: u8 = 50;
+pub const DEFAULT_COST_QUALITY: u8 = 100;
 pub const DEFAULT_IMAGE_MODEL: &str = "venice-sd35";
 pub const DEFAULT_VIDEO_MODEL: &str = "wan-2.2-a14b-text-to-video";
 /// Currently curated text-to-video model ids (mirrors `VIDEO_MODELS` in
@@ -1442,10 +1442,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_settings_default_cost_quality_to_balanced() {
+    fn legacy_settings_default_cost_quality_to_higher_quality() {
         let settings: ProviderModelSettings =
             serde_json::from_value(serde_json::json!({})).unwrap();
-        assert_eq!(settings.cost_quality, 50);
+        assert_eq!(settings.cost_quality, 100);
     }
 
     #[test]

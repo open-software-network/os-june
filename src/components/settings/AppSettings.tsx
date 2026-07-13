@@ -264,7 +264,8 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   // Mirrors DEFAULT_GENERATION_MODEL in the Rust providers module and the
   // leading Suggested pick in lib/suggested-models.ts.
   generationModel: "zai-org-glm-5-2",
-  costQuality: 50,
+  // Mirrors DEFAULT_COST_QUALITY in the Rust providers module.
+  costQuality: 100,
   remoteGenerationModel: "zai-org-glm-5-2",
   // Mirrors DEFAULT_IMAGE_MODEL in the Rust providers module.
   imageModel: DEFAULT_IMAGE_MODEL,
