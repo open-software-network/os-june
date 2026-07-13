@@ -77,8 +77,10 @@ No arbitrary code, SQL, formula language extensions, macros, or raw OOXML.
   charts, operations, and preview size.
 - Large analysis uses local streaming/profile operations and sends only selected
   ranges/statistics to the model.
-- Detect formula injection when exporting CSV/TSV and neutralize only when the
-  user chooses a safe-text export mode; otherwise warn without corrupting data.
+- CSV/TSV export defaults to safe text: neutralize cells beginning with `=`,
+  `+`, `-`, or `@` using the documented target-compatible escape. Raw formula
+  export is a separate explicit override with a warning and native confirmation;
+  it is never selected implicitly or reused from a prior export.
 
 ## Version and export model
 
