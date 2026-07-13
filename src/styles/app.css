@@ -4899,7 +4899,9 @@ input:focus-visible,
   gap: var(--sp-2) var(--sp-3);
   width: 100%;
   max-width: min(var(--chat-max), var(--content-max));
-  margin: 0 auto var(--sp-3);
+  /* sp-2 below, like every card docked on the composer box (the steer queue,
+   * the image warning), so a stacked column keeps one even rhythm. */
+  margin: 0 auto var(--sp-2);
   padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
   /* Ring-in-shadow like the composer box: the transparent border only holds
    * the layout box (see --composer-ring). */
@@ -5072,13 +5074,14 @@ input:focus-visible,
   min-width: 16ch;
   /* Centers a single line inside the control-height zone the badge and CTA
    * occupy; a wrapped second line grows downward from there. */
-  margin: calc((var(--control-md) - 1.5 * var(--fs-sm)) / 2) 0 0;
+  margin: calc((var(--control-md) - 1.5 * var(--fs-md)) / 2) 0 0;
   /* A shade under full foreground: present, but not competing with the
    * conversation. */
   color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
-  /* Two steps below conversation text: this annotates the chat rather than
-   * competing with it, while the CTA remains the clear action at the right. */
-  font-size: var(--fs-sm);
+  /* One step below conversation text: this annotates the chat rather than
+   * competing with it, while the CTA remains the clear action at the right.
+   * (Shared with the composer image warning — move them together.) */
+  font-size: var(--fs-md);
   line-height: 1.5;
 }
 
@@ -6587,15 +6590,76 @@ input:focus-visible,
   padding: var(--sp-1) var(--sp-1) 0;
 }
 
-/* Non-vision model + image attachment: a quiet inline row between the chips and
- * the editor. The active model can't read the image, so warn before send and
- * offer a one-tap switch to an image-capable model (the send-time fallback in
- * unsupportedImageInputPrompt still degrades gracefully if the user sends
- * anyway). */
-.agent-composer-image-warning,
+/* Non-vision model + image attachment: docks above the composer box in the
+ * FundingNotice family — the same row anatomy (leading glyph, fs-sm body,
+ * trailing CTA) on the composer box's own surface recipe (card,
+ * ring-in-shadow, --shadow-md) so the pair reads as one floating unit. The
+ * warm triangle carries the caution tone; the one-tap switch is the way out
+ * (the send-time fallback in unsupportedImageInputPrompt still degrades
+ * gracefully if the user sends anyway). */
+.agent-composer-image-warning {
+  pointer-events: auto;
+  display: flex;
+  flex-wrap: wrap;
+  /* First-line anchoring, like the funding notice: the glyph and the CTA pin
+   * to the first text line instead of floating centered if the body wraps. */
+  align-items: flex-start;
+  gap: var(--sp-2) var(--sp-3);
+  width: 100%;
+  max-width: min(var(--chat-max), var(--content-max));
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+}
+
+/* Track the hero box's deliberate 640px cap so their edges align. */
+.agent-composer[data-hero="true"] .agent-composer-image-warning {
+  max-width: 640px;
+}
+
+.agent-composer-image-warning-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  /* CTA-height zone so the glyph centers on the first text line. */
+  height: var(--control-md);
+  color: var(--warm-strong);
+}
+
+.agent-composer-image-warning-text {
+  flex: 1;
+  min-width: 16ch;
+  /* Centers a single line inside the control-height zone the glyph and CTA
+   * occupy; a wrapped second line grows downward from there. */
+  margin: calc((var(--control-md) - 1.5 * var(--fs-md)) / 2) 0 0;
+  color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
+  /* One step below conversation text, matching .funding-notice-body — the
+   * two dock on the same surface, so their bodies move together. */
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.agent-composer-image-warning-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  margin-left: auto;
+}
+
+.agent-composer-image-warning-actions .btn {
+  white-space: nowrap;
+}
+
+/* Oversize draft: a quiet inline row between the chips and the editor. */
 .agent-composer-size-warning {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: var(--sp-1);
   margin: var(--sp-1) var(--sp-1) 0;
   padding: var(--sp-1) var(--sp-2);
@@ -6605,23 +6669,13 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-.agent-composer-size-warning {
-  align-items: flex-start;
-  flex-wrap: wrap;
-}
-
-.agent-composer-image-warning-icon,
 .agent-composer-size-warning-icon {
   flex: 0 0 auto;
   color: var(--muted-foreground);
 }
 
-.agent-composer-image-warning-text,
 .agent-composer-size-warning-text {
   min-width: 0;
-}
-
-.agent-composer-size-warning-text {
   flex: 1 1 240px;
 }
 
@@ -6631,11 +6685,6 @@ input:focus-visible,
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--sp-1);
-  margin-left: auto;
-}
-
-.agent-composer-image-warning-action {
-  flex: 0 0 auto;
   margin-left: auto;
 }
 

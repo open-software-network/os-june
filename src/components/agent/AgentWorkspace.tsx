@@ -9143,6 +9143,48 @@ export function AgentWorkspace({
             ) : null}
           </section>
         ) : null}
+        <AnimatePresence>
+          {showImageModelWarning ? (
+            // Docked above the box in the FundingNotice family — same surface
+            // recipe, so the pair reads as one floating unit. The warm triangle
+            // carries the caution tone.
+            <motion.section
+              key="image-model-warning"
+              className="agent-composer-image-warning"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <span className="agent-composer-image-warning-icon" aria-hidden>
+                <IconExclamationTriangle size={14} />
+              </span>
+              <p className="agent-composer-image-warning-text">{imageModelWarningText}</p>
+              {preferredVisionModel && !composerModelLocked ? (
+                <div className="agent-composer-image-warning-actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() =>
+                      // Switch straight to the preferred image-capable model. The
+                      // label promises a one-tap fix, and the generic model picker
+                      // isn't vision-scoped — opening it for the multi-candidate
+                      // case would drop the user into an unfiltered list that
+                      // doesn't surface the eligible models. preferredVisionModel
+                      // is pre-filtered to image + tool support and prefers a
+                      // suggested pick. This only appears before a thread
+                      // exists, where model changes still update the default.
+                      void handleSelectGenerationModel(preferredVisionModel.id)
+                    }
+                  >
+                    Switch to {preferredVisionModel.name}
+                  </button>
+                </div>
+              ) : null}
+            </motion.section>
+          ) : null}
+        </AnimatePresence>
         <div ref={composerBoxRef} className="agent-composer-box">
           {attachments.length ? (
             <div className="agent-composer-attachments">
@@ -9153,35 +9195,6 @@ export function AgentWorkspace({
                   onRemove={() => removeAttachment(attachment.id)}
                 />
               ))}
-            </div>
-          ) : null}
-          {showImageModelWarning ? (
-            <div className="agent-composer-image-warning" role="status">
-              <IconExclamationTriangle
-                size={14}
-                aria-hidden
-                className="agent-composer-image-warning-icon"
-              />
-              <span className="agent-composer-image-warning-text">{imageModelWarningText}</span>
-              {preferredVisionModel && !composerModelLocked ? (
-                <button
-                  type="button"
-                  className="agent-composer-notice-button agent-composer-image-warning-action"
-                  onClick={() =>
-                    // Switch straight to the preferred image-capable model. The
-                    // label promises a one-tap fix, and the generic model picker
-                    // isn't vision-scoped — opening it for the multi-candidate
-                    // case would drop the user into an unfiltered list that
-                    // doesn't surface the eligible models. preferredVisionModel
-                    // is pre-filtered to image + tool support and prefers a
-                    // suggested pick. This only appears before a thread
-                    // exists, where model changes still update the default.
-                    void handleSelectGenerationModel(preferredVisionModel.id)
-                  }
-                >
-                  Switch to {preferredVisionModel.name}
-                </button>
-              ) : null}
             </div>
           ) : null}
           {visibleComposerSizeWarning ? (
