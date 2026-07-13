@@ -76,12 +76,13 @@ describe("suggestedModelsForMode", () => {
       },
       {
         name: "Auto · Balanced",
-        description: "Best for everyday work when you want a strong balance of quality and cost.",
+        description:
+          "Best for everyday work when you want a practical balance of quality and credit use.",
         costQuality: 50,
       },
       {
         name: "Auto · Lower Cost",
-        description: "Best for quick or routine tasks when keeping usage costs down matters most.",
+        description: "Best for quick or routine tasks when minimizing credit use matters most.",
         costQuality: 20,
       },
     ]);

@@ -48,13 +48,13 @@ export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
       id: "open-software/auto",
       label: "Auto · Balanced",
       costQuality: 50,
-      reason: "Best for everyday work when you want a strong balance of quality and cost.",
+      reason: "Best for everyday work when you want a practical balance of quality and credit use.",
     },
     {
       id: "open-software/auto",
       label: "Auto · Lower Cost",
       costQuality: 20,
-      reason: "Best for quick or routine tasks when keeping usage costs down matters most.",
+      reason: "Best for quick or routine tasks when minimizing credit use matters most.",
     },
   ],
   transcription: [
