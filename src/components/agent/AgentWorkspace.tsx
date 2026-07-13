@@ -1748,7 +1748,7 @@ type AgentSessionContinuity = {
   queuedAttachmentFollowUps: Record<string, QueuedAttachmentFollowUp[]>;
 };
 
-type AgentSessionTitleSource = "prompt" | "exchange" | "manual";
+type AgentSessionTitleSource = "prompt" | "exchange" | "manual" | "rejected";
 
 type IssueReportDeliveryResult = { sent: true } | { sent: false; errorMessage: string };
 
@@ -8396,6 +8396,7 @@ export function AgentWorkspace({
     if (
       source === "manual" ||
       source === "exchange" ||
+      source === "rejected" ||
       settledTitleKind === "manual" ||
       settledTitleKind === "exchange" ||
       settledTitleKind === "rejected"
@@ -8433,13 +8434,21 @@ export function AgentWorkspace({
       const session = hermesSessionItems.find((item) => item.id === sessionId);
       if (!session || !isReplaceableAgentSessionTitle(session.title)) return;
     }
+    const settleRejectedTitle = () => {
+      if (sessionTitleSourceRef.current[sessionId] === "manual") return;
+      sessionTitleSourceRef.current = {
+        ...sessionTitleSourceRef.current,
+        [sessionId]: "rejected",
+      };
+      rememberSessionTitleRejected(sessionId);
+    };
     titleSuggestionInFlightSessionIdsRef.current.add(sessionId);
     let shouldRecheckLatestMessages = false;
     try {
       const suggestion = await agentSessionTitleForPrompt(prompt, hasReply ? reply : undefined);
       if (titleSuggestionSessionIdsRef.current.has(sessionId)) return;
       if (!suggestion.fromModel && sessionTitleOverridesRef.current[sessionId]) {
-        if (suggestion.rejected && hasReply) rememberSessionTitleRejected(sessionId);
+        if (suggestion.rejected && hasReply) settleRejectedTitle();
         return;
       }
       const title = suggestion.title;
@@ -8477,7 +8486,7 @@ export function AgentWorkspace({
             return;
           }
           if (settleExchangeAfterPersist) rememberSessionExchangeTitled(sessionId);
-          if (settleRejectionAfterPersist) rememberSessionTitleRejected(sessionId);
+          if (settleRejectionAfterPersist) settleRejectedTitle();
         })
         .catch(() => {});
     } finally {
