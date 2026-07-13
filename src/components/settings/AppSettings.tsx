@@ -480,6 +480,7 @@ export function AppSettings({
   const modelPickerSearchRef = useRef<HTMLInputElement>(null);
   const costQualitySaveChainRef = useRef<Promise<void>>(Promise.resolve());
   const latestCostQualitySaveRef = useRef(0);
+  const confirmedCostQualityRef = useRef(DEFAULT_PROVIDER_MODELS.costQuality);
   const [veniceApiKeyDraft, setVeniceApiKeyDraft] = useState("");
   const [showMoreModelOptions, setShowMoreModelOptions] = useState(false);
   const [showMoreImageOptions, setShowMoreImageOptions] = useState(false);
@@ -650,10 +651,12 @@ export function AppSettings({
         if (cancelled) return;
         // Merge over defaults so a settings payload that predates a field
         // (e.g. imageModel from an older backend) still has every model set.
-        setProviderSettings({
+        const nextProviderSettings = {
           ...DEFAULT_PROVIDER_MODELS,
           ...modelResponse.settings,
-        });
+        };
+        confirmedCostQualityRef.current = nextProviderSettings.costQuality;
+        setProviderSettings(nextProviderSettings);
         await requestMicrophones();
         await Promise.all([
           requestVeniceModels("transcription"),
@@ -993,6 +996,7 @@ export function AppSettings({
     );
     void save.then(
       (next) => {
+        confirmedCostQualityRef.current = next.costQuality;
         if (version !== latestCostQualitySaveRef.current) return;
         setProviderSettings((current) => ({
           ...current,
@@ -1002,6 +1006,10 @@ export function AppSettings({
       },
       (error) => {
         if (version !== latestCostQualitySaveRef.current) return;
+        setProviderSettings((current) => ({
+          ...current,
+          costQuality: confirmedCostQualityRef.current,
+        }));
         setStatus(messageFromError(error));
       },
     );

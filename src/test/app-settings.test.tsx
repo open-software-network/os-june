@@ -2365,6 +2365,40 @@ describe("AppSettings", () => {
     expect(higherQuality).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("restores the last confirmed automatic preference when saving fails", async () => {
+    const autoSettings = {
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      costQuality: 50,
+    };
+    mocks.providerModelSettings.mockResolvedValueOnce({ settings: autoSettings });
+    mocks.setCostQuality.mockRejectedValueOnce(new Error("Could not save preference."));
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Models" }));
+    const preference = await screen.findByRole("group", { name: "Auto preference" });
+    const balanced = within(preference).getByRole("button", { name: "Balanced" });
+    const higherQuality = within(preference).getByRole("button", { name: "Higher quality" });
+
+    fireEvent.click(higherQuality);
+    expect(higherQuality).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(screen.getByText("Could not save preference.")).toBeInTheDocument());
+    expect(balanced).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("keeps local endpoint fields hidden until local setup starts", async () => {
     const user = userEvent.setup();
 
