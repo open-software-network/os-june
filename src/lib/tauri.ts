@@ -194,6 +194,9 @@ export type ProviderModelSettingsDto = {
   imageSafeMode: boolean;
   /** Whether the user chose "don't ask again" on the safe-mode consent dialog. */
   imageSafeModePromptDismissed: boolean;
+  /** Whether the agent chat shows the model's thinking. Display-only; it does
+   * not change what the model does. On by default. */
+  showThinking: boolean;
 };
 
 export type LocalGenerationSettingsDto = {
@@ -1759,6 +1762,14 @@ export async function setImageSafeMode(enabled: boolean) {
 export async function setImageSafeModePromptDismissed(dismissed: boolean) {
   return invoke<ProviderModelSettingsDto>("set_image_safe_mode_prompt_dismissed", {
     request: { dismissed },
+  });
+}
+
+// Toggles whether the agent chat displays the model's thinking. Display-only:
+// the reasoning still streams and is kept in the transcript, just not shown.
+export async function setShowThinking(enabled: boolean) {
+  return invoke<ProviderModelSettingsDto>("set_show_thinking", {
+    request: { enabled },
   });
 }
 

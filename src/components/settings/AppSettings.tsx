@@ -252,6 +252,8 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   // On by default, matching the Rust providers default.
   imageSafeMode: true,
   imageSafeModePromptDismissed: false,
+  // On by default, matching the Rust providers default.
+  showThinking: true,
 };
 
 const MIC_TEST_DURATION_SECONDS = 5;

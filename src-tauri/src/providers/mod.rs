@@ -98,6 +98,12 @@ pub struct ProviderModelSettings {
     /// carry an incidental `false` the user never picked.
     #[serde(default)]
     pub image_safe_mode_set_by_user: bool,
+    /// When true, the agent chat shows the model's thinking as a collapsible
+    /// disclosure. Display-only: turning it off hides the reasoning output
+    /// but does not change what the model does. Defaulted so settings files
+    /// predating this field still deserialize to the current default (on).
+    #[serde(default = "default_show_thinking")]
+    pub show_thinking: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -126,6 +132,7 @@ pub struct ProviderModelSettingsDto {
     pub local_generation: LocalGenerationSettings,
     pub image_safe_mode: bool,
     pub image_safe_mode_prompt_dismissed: bool,
+    pub show_thinking: bool,
 }
 
 impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
@@ -145,6 +152,7 @@ impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
             local_generation: settings.local_generation.clone(),
             image_safe_mode: settings.image_safe_mode,
             image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
+            show_thinking: settings.show_thinking,
         }
     }
 }
@@ -491,6 +499,24 @@ fn set_image_safe_mode_impl(
         if request.enabled {
             settings.image_safe_mode_prompt_dismissed = false;
         }
+    })
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetShowThinkingRequest {
+    pub enabled: bool,
+}
+
+/// Persists whether the agent chat displays the model's thinking. On by
+/// default; display-only, so it never changes the request sent to the model.
+#[tauri::command]
+pub fn set_show_thinking(
+    state: State<'_, ProviderSettingsState>,
+    request: SetShowThinkingRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    update_settings(&state, |settings| {
+        settings.show_thinking = request.enabled;
     })
 }
 
@@ -1033,6 +1059,7 @@ fn default_settings() -> ProviderModelSettings {
         image_safe_mode: true,
         image_safe_mode_prompt_dismissed: false,
         image_safe_mode_set_by_user: false,
+        show_thinking: true,
     }
 }
 
@@ -1061,6 +1088,10 @@ fn default_video_model() -> String {
 }
 
 fn default_image_safe_mode() -> bool {
+    true
+}
+
+fn default_show_thinking() -> bool {
     true
 }
 
@@ -1137,6 +1168,7 @@ fn sanitize_settings(
         image_safe_mode,
         image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
         image_safe_mode_set_by_user: settings.image_safe_mode_set_by_user,
+        show_thinking: settings.show_thinking,
     }
 }
 
@@ -1506,6 +1538,30 @@ mod tests {
         assert!(settings.image_safe_mode);
         assert!(!settings.image_safe_mode_prompt_dismissed);
         assert!(!settings.image_safe_mode_set_by_user);
+    }
+
+    #[test]
+    fn provider_settings_default_show_thinking_on_and_persist_an_explicit_off() {
+        // A settings file written before the field existed reads as on...
+        let legacy = serde_json::from_value::<ProviderModelSettings>(serde_json::json!({
+            "transcriptionProvider": "venice",
+            "transcriptionModel": "nvidia/parakeet-tdt-0.6b-v3",
+            "generationModel": "zai-org-glm-5-2",
+            "imageModel": "venice-sd35"
+        }))
+        .unwrap();
+        assert!(sanitize_settings(legacy, &default_settings()).show_thinking);
+
+        // ...while an explicit off survives the load-time sanitize pass.
+        let opted_out = serde_json::from_value::<ProviderModelSettings>(serde_json::json!({
+            "transcriptionProvider": "venice",
+            "transcriptionModel": "nvidia/parakeet-tdt-0.6b-v3",
+            "generationModel": "zai-org-glm-5-2",
+            "imageModel": "venice-sd35",
+            "showThinking": false
+        }))
+        .unwrap();
+        assert!(!sanitize_settings(opted_out, &default_settings()).show_thinking);
     }
 
     #[test]

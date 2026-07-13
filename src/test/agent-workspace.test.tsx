@@ -22,6 +22,10 @@ import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
 } from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
+import {
+  SHOW_THINKING_CHANGED_EVENT,
+  type ShowThinkingChangedDetail,
+} from "../lib/show-thinking-settings";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
 import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-activity-store";
@@ -6638,6 +6642,210 @@ describe("AgentWorkspace", () => {
     expect(thoughtDetails).toHaveClass("agent-reasoning");
     expect(thoughtDetails).not.toContainElement(toolLabel);
     expect(await screen.findByText("Done.")).toBeInTheDocument();
+  });
+
+  it("hides the thinking disclosure when the show-thinking preference is off", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-2",
+        showThinking: false,
+      },
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "think quietly",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "think quietly",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Checking the project state." },
+        });
+      }
+    });
+
+    // With the preference off, streamed reasoning renders as the plain
+    // "Thinking…" shimmer instead of the disclosure, and never leaks its text.
+    await waitFor(() => expect(screen.getByText("Thinking…")).toBeInTheDocument());
+    expect(screen.queryByText("Thinking")).toBeNull();
+    expect(screen.queryByText("Checking the project state.")).toBeNull();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: { text: "Done." },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Done.")).toBeInTheDocument();
+    expect(screen.queryByText("Thought")).toBeNull();
+
+    // The preference is display-only: the reasoning stayed in the transcript,
+    // so flipping the setting back on reveals the completed disclosure live.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent<ShowThinkingChangedDetail>(SHOW_THINKING_CHANGED_EVENT, {
+          detail: { enabled: true },
+        }),
+      );
+    });
+    expect(await screen.findByText("Thought")).toBeInTheDocument();
+    expect(
+      within(screen.getByText("Thought").closest("details") as HTMLElement).getByText(
+        "Checking the project state.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("never flashes reasoning that streams before a saved opt-out resolves", async () => {
+    // The settings load is held open so reasoning arrives while the persisted
+    // preference is still unknown; the disclosure must not appear in that
+    // window, and the late showThinking:false keeps it hidden.
+    let resolveSettings: (value: unknown) => void = () => {};
+    mocks.providerModelSettings.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "think before settings load",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "think before settings load",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Early reasoning before settings resolve." },
+        });
+      }
+    });
+
+    // While the preference is unresolved, only the plain shimmer shows.
+    await waitFor(() => expect(screen.getByText("Thinking…")).toBeInTheDocument());
+    expect(screen.queryByText("Thinking")).toBeNull();
+    expect(screen.queryByText("Early reasoning before settings resolve.")).toBeNull();
+
+    act(() => {
+      resolveSettings({
+        settings: {
+          transcriptionProvider: "venice",
+          transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+          generationModel: "zai-org-glm-5-2",
+          showThinking: false,
+        },
+      });
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: { text: "Done." },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Done.")).toBeInTheDocument();
+    expect(screen.queryByText("Thought")).toBeNull();
+    expect(screen.queryByText("Early reasoning before settings resolve.")).toBeNull();
+  });
+
+  it("keeps a live toggle-off from being overwritten by a stale settings response", async () => {
+    // The mount-time settings fetch is held open past a live toggle: its stale
+    // showThinking:true must not clobber the newer opt-out the settings switch
+    // just broadcast after persisting.
+    let resolveSettings: (value: unknown) => void = () => {};
+    mocks.providerModelSettings.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "race the settings fetch",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "race the settings fetch",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Reasoning the user opted out of seeing." },
+        });
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: { text: "Done." },
+        });
+      }
+    });
+    expect(await screen.findByText("Done.")).toBeInTheDocument();
+
+    // The user turns thinking off while the mount fetch is still in flight.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent<ShowThinkingChangedDetail>(SHOW_THINKING_CHANGED_EVENT, {
+          detail: { enabled: false },
+        }),
+      );
+    });
+    expect(screen.queryByText("Thought")).toBeNull();
+
+    // The stale response (thinking on) lands afterwards and must lose.
+    await act(async () => {
+      resolveSettings({
+        settings: {
+          transcriptionProvider: "venice",
+          transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+          generationModel: "zai-org-glm-5-2",
+          showThinking: true,
+        },
+      });
+    });
+    expect(screen.queryByText("Thought")).toBeNull();
+    expect(screen.queryByText("Reasoning the user opted out of seeing.")).toBeNull();
   });
 
   it("does not force the transcript to the bottom while subagent progress streams", async () => {
