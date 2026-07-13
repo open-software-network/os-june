@@ -55,7 +55,10 @@ jobs:
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: main
+          # Build the exact ref selected for workflow_dispatch. This permits a
+          # signed pre-merge release candidate while keeping BUILD_COMMIT tied
+          # to the tree testers actually ran.
+          ref: ${{ github.sha }}
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
