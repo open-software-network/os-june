@@ -33,6 +33,8 @@ PNPM_GLOBAL_VALUE_OPTIONS = {
 }
 CARGO_GUARDED = {"add", "install", "update"}
 CARGO_GLOBAL_VALUE_OPTIONS = {"--color", "--config", "-C"}
+COREPACK_GUARDED = {"install", "prepare", "up", "use"}
+COREPACK_VALUE_OPTIONS = {"--install-directory"}
 NPM_INSTALL_COMMANDS = {"i", "install", "ci", "add"}
 NPM_REGISTRY_COMMANDS = {"create", "init", "exec"}
 NPM_GLOBAL_VALUE_OPTIONS = {
@@ -109,6 +111,8 @@ def frozen_pnpm_restore(args):
             "--no-frozen-lockfile",
             "--no-lockfile",
         }
+        or token.startswith("--fix-lockfile=")
+        or token.startswith("--lockfile=")
         or not token.startswith("-")
         for token in args
     )
@@ -158,14 +162,22 @@ def check(command):
         if not tokens:
             continue
         executable = tokens[0]
+        guarded = False
         if executable in {"bun", "bunx", "yarn"}:
             return (
                 "This repo is pnpm-only (no bun/npm/yarn lockfiles). Use "
                 "`sfw pnpm add <pkg>` instead; see spec/package-install-security.md."
             )
+        if executable == "corepack":
+            command_name, args = subcommand(tokens, COREPACK_VALUE_OPTIONS)
+            if command_name in {"pnpm", "npm", "yarn", "bun", "bunx"}:
+                tokens = [command_name, *args]
+                executable = tokens[0]
+            elif command_name in COREPACK_GUARDED:
+                guarded = True
         if executable == "pnpm":
             command_name, args = subcommand(tokens, PNPM_GLOBAL_VALUE_OPTIONS)
-            guarded = command_name in PNPM_GUARDED
+            guarded = guarded or command_name in PNPM_GUARDED
             guarded = guarded or (
                 command_name in PNPM_INSTALL and not frozen_pnpm_restore(args)
             )
@@ -180,13 +192,13 @@ def check(command):
             command_name, args = subcommand(
                 tokens, CARGO_GLOBAL_VALUE_OPTIONS, allow_toolchain=True
             )
-            guarded = command_name in CARGO_GUARDED
+            guarded = guarded or command_name in CARGO_GUARDED
         elif executable == "npm":
             command_name, args = subcommand(tokens, NPM_GLOBAL_VALUE_OPTIONS)
-            guarded = command_name in NPM_REGISTRY_COMMANDS
+            guarded = guarded or command_name in NPM_REGISTRY_COMMANDS
         else:
             command_name, args = None, []
-            guarded = executable == "npx"
+            guarded = guarded or executable in {"npx", "pnpx"}
         npm = npm_install(tokens, command_name, args)
         if npm:
             global_install, packages = npm

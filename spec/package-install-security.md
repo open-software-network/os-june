@@ -4,7 +4,7 @@
 introduce bun/npm/yarn lockfiles. Every agent-issued command that brings new
 package code into the tree or executes registry code (`pnpm add`, `pnpm update`,
 `pnpm dlx` / `pnpm create`, mutable `pnpm install`, `npx` / `npm exec` /
-`npm create`, `cargo add`, `cargo install`,
+`npm create`, registry-changing `corepack` commands, `cargo add`, `cargo install`,
 `cargo update`) runs through Socket Firewall:
 `sfw <command>`. Dependency versions younger than 7 days are refused by
 `minimumReleaseAge` in `pnpm-workspace.yaml`; cargo gets the same cooldown
