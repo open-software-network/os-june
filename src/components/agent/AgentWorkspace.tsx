@@ -2540,9 +2540,12 @@ export function AgentWorkspace({
   const [generationCostQuality, setGenerationCostQuality] = useState<number | undefined>();
   // Preference saves from the picker's drill-in: writes are chained so they
   // persist in click order, and versioned so only the newest call's outcome
-  // touches the UI (mirrors Settings' saveCostQuality discipline).
+  // touches the UI (mirrors Settings' saveCostQuality discipline). Rollback
+  // targets the last CONFIRMED value (persisted read or successful save) —
+  // never an optimistic value a still-in-flight click painted.
   const costQualitySaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const latestCostQualitySaveRef = useRef(0);
+  const confirmedCostQualityRef = useRef<number | undefined>(undefined);
   const defaultGenerationModelIdRef = useRef("");
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>([]);
   const generationModelsRef = useRef<VeniceModelDto[]>([]);
@@ -3593,6 +3596,7 @@ export function AgentWorkspace({
       setGenerationProvider(provider);
       defaultGenerationModelIdRef.current = selectedModelId;
       setDefaultGenerationModelId(selectedModelId);
+      confirmedCostQualityRef.current = settings.costQuality;
       setGenerationCostQuality(settings.costQuality);
       return selectedModelId;
     },
@@ -3751,7 +3755,6 @@ export function AgentWorkspace({
     // newest call's outcome (success or rollback) touches the UI — the same
     // discipline as Settings' saveCostQuality.
     const version = ++latestCostQualitySaveRef.current;
-    const confirmed = generationCostQuality;
     setGenerationCostQuality(value);
     const save = costQualitySaveChainRef.current.then(() => setCostQuality(value));
     costQualitySaveChainRef.current = save.then(
@@ -3760,6 +3763,7 @@ export function AgentWorkspace({
     );
     void save.then(
       (next) => {
+        confirmedCostQualityRef.current = next.costQuality;
         if (version !== latestCostQualitySaveRef.current) return;
         setGenerationCostQuality(next.costQuality);
         dispatchProviderModelSettingsChanged({
@@ -3770,7 +3774,7 @@ export function AgentWorkspace({
       },
       (err) => {
         if (version !== latestCostQualitySaveRef.current) return;
-        setGenerationCostQuality(confirmed);
+        setGenerationCostQuality(confirmedCostQualityRef.current);
         setError(messageFromError(err));
       },
     );
