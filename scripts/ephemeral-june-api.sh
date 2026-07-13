@@ -30,7 +30,11 @@ cleanup() {
   # `dev` only: no ephemeral CVM outlives the dev session, whether it ended by
   # a clean quit, Ctrl-C, or a failure after the CVM came up.
   if [[ "$TEARDOWN_CVM" == "1" ]]; then
-    cmd_down || echo "Teardown failed. Delete it by hand: phala cvms delete <name> --force" >&2
+    if ! cmd_down; then
+      # A swallowed failure here would report success while the CVM bills on.
+      echo "Teardown failed; the CVM may still be billing. Retry: make ephemeral-api-down" >&2
+      if [[ "$status" -eq 0 ]]; then status=1; fi
+    fi
   fi
   exit "$status"
 }
@@ -124,6 +128,8 @@ cmd_up() {
 
   local git_sha image name token created
   git_sha="$(git rev-parse HEAD)"
+  # /verify must not claim a commit the build did not match: mark dirty trees.
+  git diff --quiet && git diff --cached --quiet || git_sha="${git_sha}-dirty"
   image="ttl.sh/june-api-eph-$(uuidgen | perl -ne 'print lc'):4h"
   # 32 bits of suffix entropy: teardown deletes by name until the UUID is
   # captured, so a cross-session name collision must be negligible.
@@ -227,6 +233,7 @@ Run the app against a FRESH ephemeral CVM (its own flow, this one is not reused)
 Or use this one from a manual session (token is in $STATE_FILE, mode 600):
   export JUNE_API_URL=$url
   export OS_JUNE_LOCAL_DEV=1
+  export JUNE_DEV_SKIP_LOCAL_API=1
   export OS_JUNE_LOCAL_DEV_BEARER_TOKEN="\$(jq -r .token $STATE_FILE)"
 
 Tear it down with:

@@ -93,8 +93,11 @@ container inside the staging CVM. It terminates TLS on 443 and proxies to
 external port of its own.
 
 Phala sealed envs are full-replacement on `phala envs update`: every variable
-must be re-supplied on each update, including the ingress ones. Read the
-comments in `june-api/deploy/docker-compose.staging.yml` before touching them.
+must be re-supplied on each update, including the ingress ones. Seal new
+variables BEFORE deploying a compose that references them; containers boot
+against whatever is already sealed, so the reverse order boots the ingress
+without its Cloudflare credentials. Read the comments in
+`june-api/deploy/docker-compose.staging.yml` before touching them.
 
 ### Ephemeral Phala CVM
 
@@ -150,6 +153,7 @@ up by `ephemeral-api`:
 export JUNE_API_URL="$(jq -r .url .ephemeral-june-api.json)"
 export OS_JUNE_LOCAL_DEV=1
 export OS_JUNE_LOCAL_DEV_BEARER_TOKEN="$(jq -r .token .ephemeral-june-api.json)"
+export JUNE_DEV_SKIP_LOCAL_API=1
 ```
 
 Ephemeral CVMs get no `dstack-ingress` and no custom domain. The dstack

@@ -11,6 +11,11 @@
 # The image comes from ttl.sh, an anonymous registry whose tags expire a few
 # hours after push. The CVM keeps running past expiry, but a restart cannot
 # re-pull the image: treat an ephemeral CVM as dead once its tag expires.
+#
+# The /verify page still renders the packaged config.toml attestation facts
+# (GHCR image repo, production Trust Center); those describe production, not
+# this throwaway build. Its source commit is stamped from the working tree
+# and suffixed "-dirty" when uncommitted changes were baked in.
 services:
   june-api:
     image: ${JUNE_IMAGE}
