@@ -77,9 +77,13 @@ cmd_up() {
   command -v phala >/dev/null 2>&1 || die "The phala CLI is required. Install it with: npm install -g phala"
   phala status >/dev/null 2>&1 || die "The phala CLI is not authenticated. Run: phala auth login"
   [[ -f "$API_ENV_FILE" ]] || die "$API_ENV_FILE is missing. Copy june-api/.env.example and fill in the upstream keys."
-  if [[ -f "$STATE_FILE" ]]; then
+  # Atomic reservation (noclobber): two concurrent `up`s must not both pass a
+  # plain -f guard during the long image build and then overwrite each other's
+  # only CVM record. Whoever creates the file owns the run.
+  if ! (set -C; : >"$STATE_FILE") 2>/dev/null; then
     die "An ephemeral CVM is already recorded in $STATE_FILE. Run \`make ephemeral-api-down\` first."
   fi
+  chmod 600 "$STATE_FILE"
 
   local git_sha image name token created
   git_sha="$(git rev-parse HEAD)"
@@ -195,11 +199,25 @@ cmd_down() {
 
   local name
   name="$(read_state name)"
-  [[ -n "$name" ]] || die "$STATE_FILE has no CVM name. Delete it by hand: phala cvms delete <name> --force"
+  if [[ -z "$name" ]]; then
+    # A reservation that never reached the deploy: nothing exists to delete.
+    rm -f "$STATE_FILE"
+    echo "Dropped an empty reservation; no CVM was created."
+    return 0
+  fi
 
   echo "Deleting CVM $name ..."
   if ! phala cvms delete "$name" --force; then
-    echo "Could not delete $name; it may already be gone. Dropping the state file anyway." >&2
+    # A failed delete may mean already-gone OR a transient auth/network/API
+    # failure. The state file is the only record of a billing CVM's name, so
+    # drop it only once the CVM is confirmed absent.
+    if phala cvms get "$name" --json 2>/dev/null \
+      | jq -e --arg n "$name" '.name == $n' >/dev/null 2>&1; then
+      echo "Could not delete $name and it still exists; keeping $STATE_FILE." >&2
+      echo "Retry with: make ephemeral-api-down" >&2
+      return 1
+    fi
+    echo "Delete reported failure but $name is no longer listed; dropping the state file." >&2
   fi
   rm -f "$STATE_FILE"
   echo "Ephemeral June API torn down."
