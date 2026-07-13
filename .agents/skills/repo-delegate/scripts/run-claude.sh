@@ -35,13 +35,18 @@ dry_run=0
 allow_untracked=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    -t) task_file=$2; shift 2 ;;
-    -C) worktree=$2; shift 2 ;;
-    -g) gate=$2; shift 2 ;;
-    -c) constraints=$2; shift 2 ;;
-    -o) out=$2; shift 2 ;;
-    -m) model=$2; shift 2 ;;
-    -e) effort=$2; shift 2 ;;
+    -t|-C|-g|-c|-o|-m|-e)
+      [ $# -ge 2 ] || { echo "error: $1 requires a value" >&2; exit 2; }
+      case "$1" in
+        -t) task_file=$2 ;;
+        -C) worktree=$2 ;;
+        -g) gate=$2 ;;
+        -c) constraints=$2 ;;
+        -o) out=$2 ;;
+        -m) model=$2 ;;
+        -e) effort=$2 ;;
+      esac
+      shift 2 ;;
     --allow-untracked) allow_untracked=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage ;;

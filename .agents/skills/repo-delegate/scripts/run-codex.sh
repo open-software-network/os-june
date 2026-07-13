@@ -30,14 +30,19 @@ dry_run=0
 allow_untracked=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    -t) task_file=$2; shift 2 ;;
-    -C) worktree=$2; shift 2 ;;
-    -g) gate=$2; shift 2 ;;
-    -c) constraints=$2; shift 2 ;;
-    -o) out=$2; shift 2 ;;
-    -m) model=$2; shift 2 ;;
-    -e) effort=$2; shift 2 ;;
-    -S) speed=$2; shift 2 ;;
+    -t|-C|-g|-c|-o|-m|-e|-S)
+      [ $# -ge 2 ] || { echo "error: $1 requires a value" >&2; exit 2; }
+      case "$1" in
+        -t) task_file=$2 ;;
+        -C) worktree=$2 ;;
+        -g) gate=$2 ;;
+        -c) constraints=$2 ;;
+        -o) out=$2 ;;
+        -m) model=$2 ;;
+        -e) effort=$2 ;;
+        -S) speed=$2 ;;
+      esac
+      shift 2 ;;
     --allow-untracked) allow_untracked=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage ;;
@@ -91,14 +96,18 @@ if [ -n "$untracked" ] && [ "$allow_untracked" != 1 ]; then
   exit 1
 fi
 
+# tier is always set (defaults to standard), so the array is never empty —
+# important under set -u with macOS bash 3.2, where "${empty[@]}" errors.
+codex_args=(-c "service_tier=$tier")
+if [ -n "$model" ]; then codex_args+=(-m "$model"); fi
+if [ -n "$effort" ]; then codex_args+=(-c "model_reasoning_effort=$effort"); fi
+
 state_before=$(git_state "$worktree")
 harness_rc=0
 run_log=$(mktemp "${TMPDIR:-/tmp}/repo-delegate-codex-log.XXXXXX")
+trap 'rm -f "$run_log"' EXIT
 printf '%s\n' "$prompt" | codex exec -s workspace-write -C "$worktree" -o "$out" \
-  ${model:+-m "$model"} \
-  ${effort:+-c model_reasoning_effort="$effort"} \
-  ${tier:+-c service_tier="$tier"} \
-  - 2>&1 | tee "$run_log" \
+  "${codex_args[@]}" - 2>&1 | tee "$run_log" \
   || harness_rc=$?
 state_after=$(git_state "$worktree")
 if [ "$state_before" != "$state_after" ]; then
@@ -109,6 +118,8 @@ fi
 session_id=$(grep -m1 '^session id:' "$run_log" | awk '{print $3}') || true
 if [ -n "${session_id:-}" ]; then
   printf '\n--- session %s (follow up: codex exec resume %s) ---\n' "$session_id" "$session_id"
+else
+  echo "warning: no session id found in codex output (format change?) — resume via codex exec resume --last" >&2
 fi
 printf '\n--- report (%s) ---\n' "$out"
 cat "$out"
