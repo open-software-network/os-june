@@ -6,11 +6,12 @@
 # defined `run` + `runScriptMode`.
 
 [scripts]
-# pnpm is the repo's declared package manager (packageManager: pnpm@9.15.4).
+# pnpm is the repo's declared package manager (pinned by the packageManager
+# field in package.json).
 # Installs the front-end deps; the Rust crates (src-tauri, june-api) compile
 # on the first `tauri:dev` run. The .env files live in the root checkout and
 # are symlinked into each workspace so updates do not drift.
-setup = "mkdir -p june-api && if [ -n \"$CONDUCTOR_ROOT_PATH\" ]; then ln -sf \"$CONDUCTOR_ROOT_PATH/.env\" .env && ln -sf \"$CONDUCTOR_ROOT_PATH/june-api/.env\" june-api/.env; fi && pnpm install"
+setup = "mkdir -p june-api && if [ -n \"$CONDUCTOR_ROOT_PATH\" ]; then ln -sf \"$CONDUCTOR_ROOT_PATH/.env\" .env && ln -sf \"$CONDUCTOR_ROOT_PATH/june-api/.env\" june-api/.env; fi && pnpm install --frozen-lockfile"
 
 # Launch the Tauri desktop app in dev (migrated verbatim from conductor.json).
 # `tauri:dev` also starts the june-api backend via the beforeDevCommand hook.

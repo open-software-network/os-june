@@ -9,7 +9,7 @@
 	june-api-fmt june-api-fmt-check june-api-lint june-api-test \
 	fmt fmt-check lint test verify \
 	local-ci signoff-pr signoff-frontend signoff-rust-macos \
-	skills-update skills-restore skills-sync
+	skills-update skills-restore skills-sync sfw-check
 
 .DEFAULT_GOAL := help
 
@@ -55,10 +55,10 @@ tauri-fmt-check:  ## rustfmt (check only)
 	cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
 tauri-lint:  ## clippy (warnings = errors)
-	cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+	cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 
 tauri-test:  ## cargo test
-	cargo test --manifest-path src-tauri/Cargo.toml
+	cargo test --manifest-path src-tauri/Cargo.toml --locked
 
 # --- June API backend (june-api/) ---
 june-api-fmt:  ## rustfmt (write)
@@ -74,14 +74,21 @@ june-api-test:  ## cargo test
 	cd june-api && cargo test --all-targets --all-features --locked
 
 # --- Skills (.agents/skills is the source of truth; .claude/skills are symlinks) ---
-skills-update:  ## Update project skills to latest (npx skills)
-	npx -y skills update --project --yes
+# The runner executes registry code, so it is version-pinned and wrapped in
+# Socket Firewall per spec/package-install-security.md.
+SKILLS_CLI := skills@1.5.15
 
-skills-restore:  ## Restore skills from the lockfile (npx skills)
-	npx -y skills experimental_install
+sfw-check:
+	@command -v sfw >/dev/null 2>&1 || { echo "Socket Firewall (sfw) is required: npm i -g sfw (see spec/package-install-security.md)" >&2; exit 1; }
 
-skills-sync:  ## Re-link skills into .claude/skills (npx skills)
-	npx -y skills experimental_sync --yes
+skills-update: sfw-check  ## Update project skills to latest (sfw npx skills)
+	sfw npx -y $(SKILLS_CLI) update --project --yes
+
+skills-restore: sfw-check  ## Restore skills from the lockfile (sfw npx skills)
+	sfw npx -y $(SKILLS_CLI) experimental_install
+
+skills-sync: sfw-check  ## Re-link skills into .claude/skills (sfw npx skills)
+	sfw npx -y $(SKILLS_CLI) experimental_sync --yes
 
 # --- Aggregates ---
 fmt: format tauri-fmt june-api-fmt  ## Format everything (biome + both cargo fmt)

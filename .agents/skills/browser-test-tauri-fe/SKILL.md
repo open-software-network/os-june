@@ -61,7 +61,7 @@ Recipe — a dev-only HTML entry (e.g. `app-preview.html`) NOT listed in `vite.c
 
 **Chrome DevTools MCP** (interactive: `take_snapshot`, `take_screenshot`, `list_console_messages`, `evaluate_script`) — best for ad-hoc debugging and a11y/perf. User prefers the testing Chrome profile, not the personal Claude-in-Chrome extension.
 
-**Tools (check first, prompt before installing).** Driving/screenshots need Playwright + a Chromium build. Check with `pnpm exec playwright --version`; if it's missing, ask the user, then `pnpm add -D playwright && pnpm exec playwright install chromium`. These are install-on-demand, not standing devDeps.
+**Tools (check first, prompt before installing).** Driving/screenshots need Playwright + a Chromium build. Playwright is a pinned dev dependency; if `pnpm exec playwright --version` is missing, restore it with `pnpm install --frozen-lockfile`. If the Chromium build is missing, ask the user before running `pnpm exec playwright install chromium`.
 
 ## Recording walkthroughs (video / GIF)
 
@@ -72,7 +72,7 @@ which owns that process and its scripts.
 
 **Recording needs more than screenshots do, so if the user asks for a recording, first prompt to install every tool it needs** — check each, and install only with the user's go-ahead (one of these failing midway wastes the slow recording pass):
 
-- **Playwright + Chromium** (drives the page, captures the `.webm`): check `pnpm exec playwright --version` → `pnpm add -D playwright && pnpm exec playwright install chromium`
+- **Playwright + Chromium** (drives the page, captures the `.webm`): restore the pinned dependency with `pnpm install --frozen-lockfile` if needed, then run `pnpm exec playwright install chromium` with the user's approval
 - **ffmpeg** (converts `.webm` → a PR-embeddable `.gif`, and extracts verify frames): check `ffmpeg -version` → `brew install ffmpeg` (macOS) / `apt-get install -y ffmpeg` (Debian/Ubuntu)
 
 Don't assume any are present. A missing ffmpeg only fails at the convert step, *after* the recording runs, so confirm all of them up front.
@@ -113,6 +113,7 @@ wiring.
 
 These preview + recorder files are **dev-only and not committed**: generate them
 per feature from the templates here, attach the screenshots/GIF to the PR, then
-leave them out of the repo. Playwright is installed on demand
-(`pnpm add -D playwright && pnpm exec playwright install chromium`), not kept as
-a standing dependency.
+leave them out of the repo. Playwright is a standing pinned dev dependency;
+restore it with `pnpm install --frozen-lockfile`. Install its Chromium build on
+demand with `pnpm exec playwright install chromium` after the user approves the
+download.

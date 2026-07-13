@@ -29,6 +29,13 @@ jobs:
             exit 1
           fi
 
+      - name: Test supply-chain guard scripts
+        run: |
+          set -euo pipefail
+          python3 scripts/hooks/test_require_sfw.py
+          python3 scripts/test_check_pnpm_release_age.py
+          python3 scripts/test_check_cargo_release_age.py
+
       - name: Reject committed env and key material
         run: |
           set -euo pipefail

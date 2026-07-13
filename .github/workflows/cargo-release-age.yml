@@ -1,0 +1,65 @@
+name: cargo release age
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "scripts/check-cargo-release-age.py"
+      - "scripts/cargo-release-age-exclude.txt"
+      - ".github/workflows/cargo-release-age.yml"
+  # Direct pushes and merges to main re-check against the previous tip
+  # (HEAD^), so the cooldown cannot be skipped by bypassing the PR flow.
+  push:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "scripts/check-cargo-release-age.py"
+      - "scripts/cargo-release-age-exclude.txt"
+      - ".github/workflows/cargo-release-age.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: New crate versions meet 7d cooldown
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Two commits so the HEAD^ fallback resolves.
+          fetch-depth: 2
+      # PRs diff against the PR base; pushes diff against the pre-push tip
+      # (event.before covers every commit in a multi-commit push, which
+      # HEAD^ would not); manual dispatch audits against origin/main.
+      # Fallback for unfetchable/zero SHAs (first push, force push): HEAD^.
+      - name: Resolve base ref
+        id: base
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before || '' }}
+        run: |
+          set -euo pipefail
+          base="HEAD^"
+          if [ "$EVENT" = "pull_request" ]; then
+            git fetch --depth=1 origin "$PR_BASE"
+            base="origin/$PR_BASE"
+          elif [ "$EVENT" = "workflow_dispatch" ]; then
+            git fetch --depth=1 origin main
+            base="origin/main"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+            && git fetch --depth=1 origin "$BEFORE" 2>/dev/null; then
+            base="$BEFORE"
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+      # The script verifies every tracked Cargo.toml with `cargo metadata
+      # --locked` before diffing lockfiles, so a new standalone manifest cannot
+      # defer resolution to an unchecked later build.
+      - name: Verify manifests and check release age of new crate versions
+        env:
+          BASE_REF: ${{ steps.base.outputs.base }}
+        run: python3 scripts/check-cargo-release-age.py --base "$BASE_REF"

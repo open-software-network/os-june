@@ -1,0 +1,25 @@
+# pnpm settings (pnpm 11 no longer reads the "pnpm" field in package.json).
+
+# Supply-chain cooldown: refuse package versions published less than 7 days
+# ago (value is in minutes). Applies to all dependencies, including transitive
+# ones. Fail closed when registry metadata omits publication times. For an
+# urgent security patch inside the window, `sfw pnpm audit --fix`
+# adds the patched version to minimumReleaseAgeExclude.
+minimumReleaseAge: 10080
+minimumReleaseAgeIgnoreMissingTime: false
+
+# enableGlobalVirtualStore was tried and reverted: with the global virtual
+# store, tsc stops resolving @react-three/fiber's JSX type augmentation
+# (ExtendedColors errors in glass-mark-canvas), so typecheck fails.
+# Re-evaluate after the react-three stack is upgraded.
+
+# Dependency build scripts are ignored unless explicitly allowed here.
+allowBuilds:
+  '@central-icons-react/round-outlined-radius-3-stroke-2': false
+  '@central-icons-react/round-filled-radius-3-stroke-2': false
+  # validates/provisions the platform binary used by vite and vitest;
+  # version-qualified so a bumped esbuild fails install until its new
+  # version's script is reviewed and re-approved here
+  esbuild@0.21.5 || 0.25.12: true
+  # postinstall only plays a cosmetic terminal animation
+  unicode-animations: false

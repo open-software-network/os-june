@@ -5,7 +5,7 @@
 //   node scripts/<name>.mjs [outDir]
 // Output: <outDir>/walkthrough.webm + walkthrough.gif
 //
-// Requires: pnpm add -D playwright && pnpm exec playwright install chromium; ffmpeg on PATH.
+// Requires: pnpm install --frozen-lockfile && pnpm exec playwright install chromium; ffmpeg on PATH.
 
 import { chromium } from "playwright";
 import { mkdir, readdir, rename, rm } from "node:fs/promises";
