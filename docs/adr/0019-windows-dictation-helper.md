@@ -7,8 +7,6 @@ date: 2026-07-09
 
 Windows dictation uses a native sidecar helper, `june-dictation-helper.exe`, that speaks the same newline-delimited JSON command/event protocol as the macOS dictation helper. The helper owns Windows-native concerns: global shortcuts, microphone recording, audio levels, foreground-window pinning, clipboard writes, and synthetic `Ctrl+V`. The Tauri app keeps the existing Rust coordinator responsibilities: auth and credits, June API dictation transcription, cleanup, dictation history, HUD events, and frontend command routing.
 
-The shared protocol is documented in [dictation-helper-protocol.md](../dictation-helper-protocol.md).
-
 ## Why
 
 Dictation has to cross native boundaries that Tauri and the web frontend should not own directly:

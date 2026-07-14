@@ -78,7 +78,6 @@ Per-repo config the engineering skills read before acting (see the
   - [Documents](plugins/documents-prd.md) — [implementation plan](plugins/documents-implementation-plan.md)
   - [Spreadsheets](plugins/spreadsheets-prd.md) — [implementation plan](plugins/spreadsheets-implementation-plan.md)
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
-- [dictation-helper-protocol.md](dictation-helper-protocol.md) — JSON-lines protocol shared by platform-native dictation helpers
 - [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
 - [telemetry.md](telemetry.md) — public overview of June telemetry, current behavior, and policies
 - [telemetry-p3a-prd.md](telemetry-p3a-prd.md) — June P3A: opt-in, privacy-preserving product telemetry
