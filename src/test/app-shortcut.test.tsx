@@ -145,7 +145,6 @@ vi.mock("../app/update-decision", async () => {
 });
 
 vi.mock("../lib/tauri", () => ({
-  primeGeneratedVideoDir: vi.fn().mockResolvedValue(undefined),
   dictationCapabilities: vi.fn().mockResolvedValue({
     capabilities: {
       available: true,
@@ -157,6 +156,7 @@ vi.mock("../lib/tauri", () => ({
       systemAudio: true,
     },
   }),
+  primeGeneratedVideoDir: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   // The agent workspace mounts the pending skill-writes tray, whose loader
   // reaches the Rust bridge through this named `invoke`. A quiet stub keeps
@@ -1431,7 +1431,7 @@ describe("App shortcuts", () => {
     expect(mocks.createNote).not.toHaveBeenCalled();
   });
 
-  it("uses Windows sign-in copy and opens meeting notes after sign-in", async () => {
+  it("uses Windows dictation sign-in copy and opens meeting notes after sign-in", async () => {
     const user = userEvent.setup();
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
@@ -1447,10 +1447,9 @@ describe("App shortcuts", () => {
 
       expect(
         await screen.findByText(
-          "Record conversations and turn them into notes with your OpenSoftware account.",
+          "Record conversations, turn them into notes, and dictate with your OpenSoftware account.",
         ),
       ).toBeInTheDocument();
-      expect(screen.queryByText(/dictate with/)).not.toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
 

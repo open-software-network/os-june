@@ -469,6 +469,24 @@ pub struct DictationCapabilitiesResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DictationCapabilities {
+    pub available: bool,
+    pub platform: &'static str,
+    pub shortcuts: bool,
+    pub paste: bool,
+    pub microphone_selection: bool,
+    pub accessibility_permission: bool,
+    pub system_audio: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationCapabilitiesResponse {
+    pub capabilities: DictationCapabilities,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DictationSettingsResponse {
     pub settings: DictationSettings,
 }

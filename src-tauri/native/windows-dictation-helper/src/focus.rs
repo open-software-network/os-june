@@ -1,15 +1,15 @@
 use anyhow::{anyhow, Result};
 use std::{ffi::OsString, os::windows::ffi::OsStringExt, thread, time::Duration};
 use windows_sys::Win32::{
-    Foundation::HWND,
+    Foundation::{HWND, LPARAM},
     UI::{
         Input::KeyboardAndMouse::{
             SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL,
             VK_V,
         },
         WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-            IsWindow, SetForegroundWindow,
+            EnumWindows, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
+            GetWindowThreadProcessId, IsWindow, IsWindowVisible, SetForegroundWindow,
         },
     },
 };
@@ -40,7 +40,7 @@ impl PinnedTarget {
 pub fn pin_foreground_window() -> Option<PinnedTarget> {
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
-        return None;
+        return first_visible_window();
     }
     Some(target_for_hwnd(hwnd))
 }
@@ -136,4 +136,23 @@ fn window_title(hwnd: HWND) -> String {
     OsString::from_wide(&buffer[..copied as usize])
         .to_string_lossy()
         .into_owned()
+}
+
+fn first_visible_window() -> Option<PinnedTarget> {
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
+        if IsWindowVisible(hwnd) != 0 && GetWindowTextLengthW(hwnd) > 0 {
+            let slot = lparam as *mut HWND;
+            *slot = hwnd;
+            return 0;
+        }
+        1
+    }
+
+    let mut hwnd: HWND = std::ptr::null_mut();
+    unsafe { EnumWindows(Some(enum_proc), &mut hwnd as *mut HWND as LPARAM) };
+    if hwnd.is_null() {
+        None
+    } else {
+        Some(target_for_hwnd(hwnd))
+    }
 }
