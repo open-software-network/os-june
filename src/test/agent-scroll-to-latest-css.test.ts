@@ -26,6 +26,10 @@ describe("agent scroll-to-latest styles", () => {
     );
   });
 
+  it("aligns the Up next label with the composer text line", () => {
+    expect(cssRuleFor(".agent-steer-queue-trigger")).toContain("padding-inline-start: var(--sp-4)");
+  });
+
   it("floats the pill absolutely (never fixed) above the composer", () => {
     const rule = cssRuleFor(".agent-scroll-to-latest");
     // WKWebView clips composited fixed elements to the overflow-hidden card.

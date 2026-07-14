@@ -5913,6 +5913,9 @@ input:focus-visible,
   gap: var(--sp-2);
   min-height: var(--control-md);
   padding: var(--sp-1) var(--sp-2);
+  /* Match the composer text line: queue frame (sp-2) + this sp-4 inset equals
+   * composer frame (sp-1) + editor inset (sp-5). */
+  padding-inline-start: var(--sp-4);
   border: 0;
   border-radius: var(--r-md);
   background: transparent;
