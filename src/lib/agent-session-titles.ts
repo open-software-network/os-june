@@ -95,6 +95,7 @@ const QUESTION_SUBJECTS = new Set([
   "she",
   "it",
   "they",
+  "june",
   "this",
   "that",
   "these",

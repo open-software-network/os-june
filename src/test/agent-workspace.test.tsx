@@ -404,6 +404,10 @@ describe("AgentWorkspace", () => {
     expect(isAgentSessionTitleCandidate("I'm sorry, but I can't help with that")).toBe(false);
     expect(isAgentSessionTitleCandidate("What should I update")).toBe(false);
     expect(isAgentSessionTitleCandidate("What, exactly should I update")).toBe(false);
+    expect(isAgentSessionTitleCandidate("What,exactly should I update")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Would/you clarify")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Can June access the note")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Will June rename this")).toBe(false);
     expect(isAgentSessionTitleCandidate("Which email service should I use")).toBe(false);
     expect(isAgentSessionTitleCandidate("Would it be okay to rename this")).toBe(false);
     expect(isAgentSessionTitleCandidate("Should this use Gmail")).toBe(false);

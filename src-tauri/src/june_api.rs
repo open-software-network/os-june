@@ -2100,9 +2100,9 @@ fn is_valid_agent_session_title_candidate(value: &str) -> bool {
     {
         return false;
     }
-    let mut words = normalized.split_whitespace().map(|word| {
-        word.trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '\'')
-    });
+    let mut words = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '\'')
+        .filter(|word| !word.is_empty());
     let first = words.next().unwrap_or_default();
     let second = words.next().unwrap_or_default();
     let question_words = ["who", "what", "when", "where", "why", "how"];
@@ -2142,8 +2142,8 @@ fn is_valid_agent_session_title_candidate(value: &str) -> bool {
     ];
     let ambiguous_question_auxiliaries = ["can", "will", "may", "might"];
     let question_subjects = [
-        "i", "you", "we", "he", "she", "it", "they", "this", "that", "these", "those", "there",
-        "the", "a", "an", "my", "your", "our", "his", "her", "their",
+        "i", "you", "we", "he", "she", "it", "they", "june", "this", "that", "these", "those",
+        "there", "the", "a", "an", "my", "your", "our", "his", "her", "their",
     ];
     let is_how_to_title = first == "how" && second == "to";
     !(first == "which"
@@ -3137,6 +3137,13 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             clean_agent_session_title("What, exactly should I update"),
             None
         );
+        assert_eq!(
+            clean_agent_session_title("What,exactly should I update"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("Would/you clarify"), None);
+        assert_eq!(clean_agent_session_title("Can June access the note"), None);
+        assert_eq!(clean_agent_session_title("Will June rename this"), None);
         assert_eq!(
             clean_agent_session_title("Which email service should I use"),
             None
