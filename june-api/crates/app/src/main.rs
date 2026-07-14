@@ -108,7 +108,10 @@ async fn load_pricing(
 /// sold below cost. Remove this once settlement is authenticated per route.
 fn apply_private_route_price_floors(pricing: &mut BTreeMap<String, ModelPriceConfig>) {
     for (model_id, input_floor, output_floor) in [
+        ("openai/gpt-oss-120b", 180, 720),
+        ("google/gemma-3-27b-it", 180, 552),
         ("z-ai/glm-5.2", 1_680, 5_280),
+        ("qwen/qwen3.6-27b", 390, 3_900),
         ("moonshotai/kimi-k2.6", 1_308, 5_520),
     ] {
         let Some(model) = pricing.get_mut(model_id) else {
@@ -487,17 +490,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_kimi_catalog_price_is_floored_for_phala_fallback() {
+    fn canonical_catalog_prices_cover_every_preferred_fallback() {
         let mut pricing = AppConfig::default().pricing;
-        let mut canonical = pricing["kimi-k2-6"].clone();
-        canonical.input_credits_per_million_tokens = Some(900);
-        canonical.output_credits_per_million_tokens = Some(4_200);
-        pricing.insert("moonshotai/kimi-k2.6".to_string(), canonical);
+        let template = pricing["kimi-k2-6"].clone();
+        for model_id in [
+            "openai/gpt-oss-120b",
+            "google/gemma-3-27b-it",
+            "z-ai/glm-5.2",
+            "qwen/qwen3.6-27b",
+            "moonshotai/kimi-k2.6",
+        ] {
+            let mut canonical = template.clone();
+            canonical.input_credits_per_million_tokens = Some(1);
+            canonical.output_credits_per_million_tokens = Some(1);
+            pricing.insert(model_id.to_string(), canonical);
+        }
 
         apply_private_route_price_floors(&mut pricing);
 
-        let canonical = &pricing["moonshotai/kimi-k2.6"];
-        assert_eq!(canonical.input_credits_per_million_tokens, Some(1_308));
-        assert_eq!(canonical.output_credits_per_million_tokens, Some(5_520));
+        for (model_id, input, output) in [
+            ("openai/gpt-oss-120b", 180, 720),
+            ("google/gemma-3-27b-it", 180, 552),
+            ("z-ai/glm-5.2", 1_680, 5_280),
+            ("qwen/qwen3.6-27b", 390, 3_900),
+            ("moonshotai/kimi-k2.6", 1_308, 5_520),
+        ] {
+            let canonical = &pricing[model_id];
+            assert_eq!(
+                canonical.input_credits_per_million_tokens,
+                Some(input),
+                "{model_id} input price"
+            );
+            assert_eq!(
+                canonical.output_credits_per_million_tokens,
+                Some(output),
+                "{model_id} output price"
+            );
+        }
     }
 }

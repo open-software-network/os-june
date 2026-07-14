@@ -15,7 +15,7 @@ not require that stronger contract for its normal text workloads.
 
 The policy is server-side and remains compatible with shipped June builds. Existing clients keep
 sending legacy model ids such as `zai-org-glm-5-2`; os-api resolves them to canonical models without
-changing June's `/v1` request or response shape. User-supplied Venice keys continue to use Venice's
+breaking June's existing `/v1` contract. User-supplied Venice keys continue to use Venice's
 public API directly and do not receive the os-api routing header.
 
 June API preserves os-api's selected provider, privacy level, and endpoint as additive response
