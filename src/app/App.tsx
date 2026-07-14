@@ -567,6 +567,10 @@ export function App() {
           setActiveView("meetings");
         },
         setStatus: (status) => {
+          // Defense in depth: never let the demo's synthetic status stomp a real
+          // recording, even if the driver's hasRealRecording check somehow raced.
+          const active = recordingStatusRef.current;
+          if (active && active.sessionId !== RECORD_NOTICES_DEMO_SESSION_ID) return;
           if (status) {
             dispatch({ type: "recordingStatusChanged", status });
             setRecordingNote(status.noteId);
@@ -579,6 +583,10 @@ export function App() {
         setConsentPinned: setRecordNoticesConsentPinned,
         setMicOverride: setRecordNoticesMicOverride,
         getSelectedNoteId: () => selectedNoteIdRef.current,
+        hasRealRecording: () => {
+          const active = recordingStatusRef.current;
+          return !!active && active.sessionId !== RECORD_NOTICES_DEMO_SESSION_ID;
+        },
       });
     });
     return () => {

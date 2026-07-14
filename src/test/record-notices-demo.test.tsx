@@ -49,7 +49,7 @@ const editorProps = {
 // A harness that stands in for App's side of the driver: it records the latest
 // synthetic status / pins so tests can feed them into a real NoteEditor, just
 // as App does. getSelectedNoteId returns a note by default so no seeding fires.
-function setup(options: { selectedNoteId?: string | undefined } = {}) {
+function setup(options: { selectedNoteId?: string | undefined; hasRealRecording?: boolean } = {}) {
   const seedNote = vi.fn<(note: NoteDto) => void>();
   const setConsentPinned = vi.fn<(pinned: boolean) => void>();
   const setMicOverride = vi.fn<(blocked: boolean | null) => void>();
@@ -63,6 +63,7 @@ function setup(options: { selectedNoteId?: string | undefined } = {}) {
     setConsentPinned,
     setMicOverride,
     getSelectedNoteId: () => ("selectedNoteId" in options ? options.selectedNoteId : "note-1"),
+    hasRealRecording: () => options.hasRealRecording ?? false,
   });
   const invoke = (command?: string, arg?: string) =>
     (window as unknown as Record<string, (c?: string, a?: string) => string>).__recordNoticesDemo(
@@ -194,6 +195,38 @@ describe("registerRecordNoticesDemo", () => {
     expect(setStatus).toHaveBeenLastCalledWith(null);
     expect(setConsentPinned).toHaveBeenLastCalledWith(false);
     expect(setMicOverride).toHaveBeenLastCalledWith(null);
+    api.dispose();
+  });
+
+  it("refuses state-mutating commands while a real recording is active", () => {
+    const { api, invoke, setStatus, setConsentPinned, setMicOverride, latestStatus } = setup({
+      hasRealRecording: true,
+    });
+
+    const refusal = "A real recording is in progress. Finish it before running the demo.";
+    for (const command of ["consent", "warning", "mic"] as const) {
+      expect(invoke(command)).toBe(refusal);
+    }
+
+    // None of them touched the reducer status, consent pin, or mic override.
+    expect(setStatus).not.toHaveBeenCalled();
+    expect(setConsentPinned).not.toHaveBeenCalled();
+    expect(setMicOverride).not.toHaveBeenCalled();
+    expect(latestStatus()).toBeNull();
+    api.dispose();
+  });
+
+  it("clear does not clear a real recording", () => {
+    const { api, invoke, setStatus, setConsentPinned, setMicOverride } = setup({
+      hasRealRecording: true,
+    });
+
+    expect(invoke("clear")).toBe(
+      "A real recording is in progress. Finish it before running the demo.",
+    );
+    expect(setStatus).not.toHaveBeenCalled();
+    expect(setConsentPinned).not.toHaveBeenCalled();
+    expect(setMicOverride).not.toHaveBeenCalled();
     api.dispose();
   });
 

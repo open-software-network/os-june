@@ -17,6 +17,10 @@
 // inspected in the browser sandbox or `pnpm tauri:dev`. It parks on the
 // selected note, seeding a minimal in-memory note when none is selected.
 //
+// Because it drives the same reducer recording status, every state-mutating
+// command refuses while a real recording is live, rather than stomping it and
+// stranding the backend recording with no pause/resume/finish controls.
+//
 // The out-of-credits editor-footer notice is a separate surface: drive it with
 // __fundingDemo("free"). Mirrors the sibling dev drivers in
 // lib/processing-progress-demo.ts and lib/global-recorder-demo.ts.
@@ -61,6 +65,12 @@ const HELP = [
   'a separate surface: drive it with __fundingDemo("free"). Dev only.',
 ].join("\n");
 
+// Shown when a command that would mutate recorder state runs while a real
+// recording is live: the driver refuses rather than stomping the reducer's
+// recording status (which would strand the backend recording with no controls).
+const REAL_RECORDING_REFUSAL =
+  "A real recording is in progress. Finish it before running the demo.";
+
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
@@ -88,6 +98,7 @@ export function registerRecordNoticesDemo({
   setConsentPinned,
   setMicOverride,
   getSelectedNoteId,
+  hasRealRecording,
 }: {
   /** Add the minimal demo note and select it on the meeting-notes view. */
   seedNote: (note: NoteDto) => void;
@@ -99,6 +110,9 @@ export function registerRecordNoticesDemo({
   setMicOverride: (blocked: boolean | null) => void;
   /** The id of the currently selected note, or undefined if none. */
   getSelectedNoteId: () => string | undefined;
+  /** True when a real (non-sentinel) recording is live; guards the driver from
+   * stomping the reducer's recording status out from under the backend. */
+  hasRealRecording: () => boolean;
 }): RecordNoticesDemoApi {
   let timer: number | undefined;
   let phase = 0;
@@ -204,6 +218,18 @@ export function registerRecordNoticesDemo({
   }
 
   const hook = (command?: string, arg?: string) => {
+    // Every state-mutating command refuses while a real recording is live: the
+    // demo drives the same reducer status, so parking or clearing here would
+    // strand the backend recording with no pause/resume/finish controls.
+    if (
+      (command === "consent" ||
+        command === "warning" ||
+        command === "mic" ||
+        command === "clear") &&
+      hasRealRecording()
+    ) {
+      return REAL_RECORDING_REFUSAL;
+    }
     switch (command) {
       case "consent":
         parkRecording("consent");
