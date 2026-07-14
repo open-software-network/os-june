@@ -691,9 +691,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   }, []);
 
   const turns = useMemo(() => {
-    const built = buildHermesSessionChatTurns(messages, liveEvents);
-    if (!pendingUserTurns.length) return built;
-    return [...built, ...pendingUserTurns].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return buildHermesSessionChatTurns(messages, liveEvents, pendingUserTurns);
   }, [messages, liveEvents, pendingUserTurns]);
 
   return {
