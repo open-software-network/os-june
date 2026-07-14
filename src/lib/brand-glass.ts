@@ -42,14 +42,16 @@ export const GLASS_PALETTES: Record<BrandId, GlassPalette> = {
   },
   rose: {
     // bodyTint is the attenuationColor (hue light turns as it travels through
-    // the glass, saturating in the THICK lower bars), so it's the deepest value.
-    bodyColor: "#d49a8a",
-    bodyTint: "#ba8172",
-    backdrop: "#d5ada2",
-    edgeColor: "#db9483",
-    topColor: "#e5b2a0",
-    streakColor: "#f9ece8",
-    envLight: "#f2e7e2",
+    // the glass, saturating in the thick lower bars), so it's the deepest value.
+    // This set follows the Rose accent's actual hue instead of drifting orange,
+    // with restrained chroma so it stays dusty under the high-intensity rig.
+    bodyColor: "#cf9c94",
+    bodyTint: "#b5837b",
+    backdrop: "#d2aea9",
+    edgeColor: "#d5978d",
+    topColor: "#e1b2ac",
+    streakColor: "#f9ece9",
+    envLight: "#f3e6e4",
     envDark: "#241917",
   },
   plum: {
