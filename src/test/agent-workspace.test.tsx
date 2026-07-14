@@ -11,6 +11,7 @@ import {
   HERO_GREETINGS,
   SkillsToolsPanel,
   composerInSteerStateFor,
+  generatedImagePathAliases,
   projectAgentActivityLevels,
   resetAgentSessionContinuity,
   seedAgentComposerDraftForTest,
@@ -9795,6 +9796,11 @@ describe("AgentWorkspace", () => {
   it("deduplicates absolute and signed bare references to the same generated image", async () => {
     const absolutePath = "/Users/alex/.hermes/image_cache/img_cff5d542a4d2.png";
     const signedName = "generated-image-abc.june-source-deadbeef.png";
+    expect(generatedImagePathAliases(absolutePath, signedName)).toEqual([
+      "img_cff5d542a4d2.png",
+      "generated-image-abc.png",
+    ]);
+    expect(generatedImagePathAliases(signedName, signedName)).toEqual(["generated-image-abc.png"]);
     const envelope = {
       result: `MEDIA:${absolutePath}\n${JSON.stringify({ filename: signedName })}`,
       structuredContent: { filename: signedName, mimeType: "image/png" },
@@ -9842,6 +9848,16 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByRole("button", { name: "View files (1)" })).toBeInTheDocument();
+  });
+
+  it("keeps distinct cache images that share a generic display name", () => {
+    const firstPath = "/Users/alex/.hermes/image_cache/img_first.png";
+    const secondPath = "/Users/alex/.hermes/image_cache/img_second.png";
+    expect(generatedImagePathAliases(firstPath, "output.png")).toEqual(["img_first.png"]);
+    expect(generatedImagePathAliases(secondPath, "output.png")).toEqual(["img_second.png"]);
+    expect(generatedImagePathAliases(firstPath, "output.png")).not.toEqual(
+      generatedImagePathAliases(secondPath, "output.png"),
+    );
   });
 
   it("does not register a pathless MCP image block by filename", async () => {

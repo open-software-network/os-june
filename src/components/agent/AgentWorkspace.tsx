@@ -15904,8 +15904,8 @@ function surfacedArtifactsFromTurns(
       if (part.type !== "image" || part.status !== "complete") continue;
       const imagePath = part.path?.trim();
       if (!imagePath) continue;
-      const alias = generatedImagePathAlias(imagePath, part.name);
-      if (alias && surfacedImageAliases.has(alias)) continue;
+      const aliases = generatedImagePathAliases(imagePath, part.name);
+      if (aliases.some((alias) => surfacedImageAliases.has(alias))) continue;
       const matchingArtifacts = availableArtifacts.filter(
         (artifact) => artifact.path === imagePath,
       );
@@ -15919,20 +15919,29 @@ function surfacedArtifactsFromTurns(
           rootLabel: "Workspace",
         });
       }
-      if (alias) surfacedImageAliases.add(alias);
+      for (const alias of aliases) surfacedImageAliases.add(alias);
     }
   }
 
   return surfaced;
 }
 
-function generatedImagePathAlias(path: string, displayName?: string): string | undefined {
+export function generatedImagePathAliases(path: string, displayName?: string): string[] {
   const normalized = path.replaceAll("\\", "/");
   const isBare = !normalized.includes("/");
-  if (!isBare && !/\/(?:image_cache|images)\//i.test(normalized)) return undefined;
-  return (displayName?.trim() || normalized.split("/").at(-1))
-    ?.replace(/\.june-source-[^.]+(?=\.[^.]+$)/i, "")
-    .toLowerCase();
+  if (!isBare && !/\/(?:image_cache|images)\//i.test(normalized)) return [];
+  const aliases = new Set<string>();
+  const pathName = normalized.split("/").at(-1);
+  if (pathName) aliases.add(normalizedGeneratedImageName(pathName));
+  const name = displayName?.trim();
+  if (name && (/\.june-source-[^.]+(?=\.[^.]+$)/i.test(name) || /^generated-image-/i.test(name))) {
+    aliases.add(normalizedGeneratedImageName(name));
+  }
+  return [...aliases];
+}
+
+function normalizedGeneratedImageName(name: string): string {
+  return name.replace(/\.june-source-[^.]+(?=\.[^.]+$)/i, "").toLowerCase();
 }
 
 function includesQuery(value: unknown, query: string) {
