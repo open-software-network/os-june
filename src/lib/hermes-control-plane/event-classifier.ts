@@ -155,7 +155,8 @@ function classifyTool(
       stringValue(payload?.tool_call_id) ??
       stringValue(payload?.toolCallId) ??
       stringValue(payload?.call_id) ??
-      stringValue(payload?.id),
+      stringValue(payload?.id) ??
+      stringValue(payload?.tool_id),
     // The builder treats failure-flavored tool event names as terminal failed,
     // while unknown tool.* names still update the in-flight row as progress.
     phase: toolPhase(type),
@@ -169,7 +170,10 @@ function classifyTool(
     text: eventText(payload),
     // Clarify tool calls are action-card plumbing in the builder, not tool rows.
     isClarify: isClarifyTool(payload),
-    content: toolMediaContent(payload?.content),
+    // The pinned runtime emits completed tool output under `result`; older
+    // fixtures/builds used `content`. Normalize both at this sole raw-frame
+    // boundary so the transcript receives the real media blocks either way.
+    content: toolMediaContent(payload?.content) ?? toolMediaContent(payload?.result),
     // Tool cards render arguments/output, so keep the sanitized payload in case
     // a tool's args happen to embed a secret.
     sanitizedPayload,
