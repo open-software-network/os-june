@@ -96,7 +96,12 @@ import {
   withLocalGenerationOption,
 } from "../../lib/local-generation";
 import { ProviderLogo } from "./ProviderLogo";
-import { modelOptions, selectedModel } from "./ModelPickerDialog";
+import { AUTO_MODEL_ID, modelOptions, selectedModel } from "./ModelPickerDialog";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import {
+  DEFAULT_GENERATION_SUGGESTION_ID,
+  suggestedModelsForMode,
+} from "../../lib/suggested-models";
 import {
   AUTO_PREFERENCE_VALUES,
   autoPreferenceFromCostQuality,
@@ -484,6 +489,10 @@ export function AppSettings({
   const latestCostQualitySaveRef = useRef(0);
   const confirmedCostQualityRef = useRef(DEFAULT_PROVIDER_MODELS.costQuality);
   const [veniceApiKeyDraft, setVeniceApiKeyDraft] = useState("");
+  // Saving a Venice key while Auto is the text model would silently keep
+  // billing June credits (Auto never uses the key), so the save surfaces an
+  // explicit billing choice: switch to a Venice model or knowingly keep Auto.
+  const [veniceKeyAutoBillingChoiceOpen, setVeniceKeyAutoBillingChoiceOpen] = useState(false);
   const [showMoreModelOptions, setShowMoreModelOptions] = useState(false);
   const [showMoreImageOptions, setShowMoreImageOptions] = useState(false);
   const [localModelSetupVisible, setLocalModelSetupVisible] = useState(false);
@@ -1220,6 +1229,12 @@ export function AppSettings({
       setProviderSettings(next);
       setVeniceApiKeyDraft("");
       setStatus("Venice API key saved.");
+      // The workspace's model picker shows a billing note while a key is
+      // saved, so let it refresh its provider settings snapshot.
+      dispatchProviderModelSettingsChanged({ mode: "generation", modelId: next.generationModel });
+      if (next.generationModel === AUTO_MODEL_ID) {
+        setVeniceKeyAutoBillingChoiceOpen(true);
+      }
     } catch (error) {
       setStatus(messageFromError(error));
     }
@@ -1253,6 +1268,7 @@ export function AppSettings({
       setProviderSettings(next);
       setVeniceApiKeyDraft("");
       setStatus("Venice API key removed.");
+      dispatchProviderModelSettingsChanged({ mode: "generation", modelId: next.generationModel });
     } catch (error) {
       setStatus(messageFromError(error));
     }
@@ -1320,6 +1336,12 @@ export function AppSettings({
   // prepend a bare duplicate entry that persisted the local id as the remote
   // model when clicked.
   const generationOptions = modelOptions(generationCatalog, modelValueForMode("generation"));
+  // Where the billing-choice dialog lands when the user opts out of Auto to
+  // use their Venice key: the leading suggested pick, mirroring the Auto
+  // toggle's own off-target in the model picker.
+  const veniceKeySwitchTarget = suggestedModelsForMode("generation", generationOptions).find(
+    (item) => item.model.id !== AUTO_MODEL_ID,
+  )?.model;
   const imageOptions = IMAGE_GENERATION_ENABLED
     ? modelOptions(IMAGE_MODELS, providerSettings.imageModel)
     : [];
@@ -1947,6 +1969,7 @@ export function AppSettings({
                     value={modelValueForMode("generation")}
                     options={generationOptions}
                     costQuality={providerSettings.costQuality}
+                    veniceApiKeyConfigured={providerSettings.veniceApiKeyConfigured}
                     open={pickerMode === "generation"}
                     summarySuppressed={pickerMode !== undefined}
                     flyout={modelPickerFlyout}
@@ -2159,6 +2182,21 @@ export function AppSettings({
                 </div>
               </div>
             </section>
+
+            <ConfirmDialog
+              open={veniceKeyAutoBillingChoiceOpen}
+              onClose={() => setVeniceKeyAutoBillingChoiceOpen(false)}
+              onConfirm={() =>
+                selectVeniceModel(
+                  "generation",
+                  veniceKeySwitchTarget?.id ?? DEFAULT_GENERATION_SUGGESTION_ID,
+                )
+              }
+              title="Auto does not use your Venice API key"
+              description={`Notes and chat are billed to June credits while Auto is selected. Switch to ${veniceKeySwitchTarget?.name ?? "a Venice model"} to use your key for notes and new chats.`}
+              confirmLabel={`Use ${veniceKeySwitchTarget?.name ?? "a Venice model"}`}
+              cancelLabel="Keep Auto"
+            />
 
             {IMAGE_GENERATION_ENABLED || VIDEO_GENERATION_ENABLED ? (
               <section
@@ -2689,6 +2727,7 @@ function ModelRow({
   value,
   options,
   costQuality,
+  veniceApiKeyConfigured,
   open,
   flyout,
   search,
@@ -2708,6 +2747,7 @@ function ModelRow({
   value: string;
   options: VeniceModelDto[];
   costQuality?: number;
+  veniceApiKeyConfigured?: boolean;
   open: boolean;
   flyout: ModelPickerFlyout;
   search: string;
@@ -2761,6 +2801,7 @@ function ModelRow({
             model={model}
             options={options}
             costQuality={costQuality}
+            veniceApiKeyConfigured={veniceApiKeyConfigured}
             search={search}
             popoverRef={popoverRef}
             searchRef={searchRef}

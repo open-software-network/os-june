@@ -6700,6 +6700,17 @@ input:focus-visible,
   border-bottom: 0;
 }
 
+/* Billing note under the Auto toggle while a Venice API key is saved: Auto
+ * never uses the key, so the credits impact stays visible right where Auto
+ * gets switched on. Quiet caption on the same gutter as the toggle label. */
+.agent-composer-model-auto-note {
+  margin: 0;
+  padding: 0 var(--sp-2) var(--sp-1) var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
 /* The Preference drill-in row while Auto is on: label left, the active preset
  * as a quiet value beside the chevron. The auto margin sits on the value, so
  * the chevron's own auto margin has to stand down or the pair splits apart. */

@@ -2646,6 +2646,10 @@ export function AgentWorkspace({
   // shows as a name-only stub so the pill never goes blank while configured.
   const [defaultGenerationModelId, setDefaultGenerationModelId] = useState("");
   const [generationCostQuality, setGenerationCostQuality] = useState<number | undefined>();
+  // Mirrors the saved Venice API key's presence so the model picker's Auto
+  // section can show its billing note (Auto meters June credits, never the
+  // key). Refreshed with every provider-settings read.
+  const [veniceApiKeyConfigured, setVeniceApiKeyConfigured] = useState(false);
   // Preference saves from the picker's drill-in: writes are chained so they
   // persist in click order, and versioned so only the newest call's outcome
   // touches the UI (mirrors Settings' saveCostQuality discipline). Rollback
@@ -3768,6 +3772,7 @@ export function AgentWorkspace({
       confirmedCostQualityRef.current = settings.costQuality;
       generationCostQualityRef.current = settings.costQuality;
       setGenerationCostQuality(settings.costQuality);
+      setVeniceApiKeyConfigured(settings.veniceApiKeyConfigured);
       return selectedModelId;
     },
     [],
@@ -10573,6 +10578,7 @@ export function AgentWorkspace({
             model={generationModel}
             options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
             costQuality={activeGenerationCostQuality}
+            veniceApiKeyConfigured={veniceApiKeyConfigured}
             search={modelSearch}
             popoverRef={composerModelPopoverRef}
             searchRef={composerModelSearchRef}
