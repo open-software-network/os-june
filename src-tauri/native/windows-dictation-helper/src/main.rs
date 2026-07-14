@@ -475,6 +475,7 @@ impl HelperApp {
     }
 
     fn discard_mic_test(&mut self) {
+        self.cleanup_last_mic_test();
         if let Some(test) = self.mic_test.take() {
             if let Ok(summary) = test.recorder.stop() {
                 let _ = std::fs::remove_file(summary.path);
