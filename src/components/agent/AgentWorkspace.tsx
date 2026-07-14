@@ -16323,7 +16323,7 @@ function DownloadToastMessage({ action, fileName }: { action: string; fileName: 
   const label = `${action} ${fileName}`;
   return (
     <span className="june-download-toast-message" aria-label={label}>
-      <span>{action}</span>
+      <span className="june-download-toast-action">{action}</span>
       <span className="june-download-toast-file" title={fileName}>
         {fileName}
       </span>
