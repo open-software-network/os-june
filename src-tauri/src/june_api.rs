@@ -2589,7 +2589,13 @@ where
     if envelope.message.as_deref() == Some("venice_api_key_invalid") {
         return Err(AppError::new(
             "venice_api_key_invalid",
-            "Your saved Venice API key is not an inference key. Open Settings and paste a key that starts with VENICE_INFERENCE_KEY_.",
+            "June could not use your saved Venice API key. If June just updated, try again later. Otherwise, open Settings and replace the key.",
+        ));
+    }
+    if envelope.message.as_deref() == Some("venice_api_key_model_unavailable") {
+        return Err(AppError::new(
+            "venice_api_key_model_unavailable",
+            "Your selected Venice model is no longer available. Open Settings and choose another Venice model.",
         ));
     }
     if envelope.message.as_deref() == Some("venice_api_key_rejected") {
@@ -3380,7 +3386,7 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             panic!("invalid Venice key should fail");
         };
         assert_eq!(invalid.code, "venice_api_key_invalid");
-        assert!(invalid.message.contains("VENICE_INFERENCE_KEY_"));
+        assert!(invalid.message.contains("try again later"));
 
         let Err(rejected) = parse_response_body::<GenerateResponse>(
             "/v1/notes/generate",
@@ -3392,6 +3398,19 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         };
         assert_eq!(rejected.code, "venice_api_key_rejected");
         assert!(rejected.message.contains("update it"));
+
+        let Err(model_unavailable) = parse_response_body::<GenerateResponse>(
+            "/v1/notes/generate",
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            None,
+            r#"{"data":null,"success":false,"error_code":4000,"message":"venice_api_key_model_unavailable"}"#,
+        ) else {
+            panic!("retired Venice model should fail");
+        };
+        assert_eq!(model_unavailable.code, "venice_api_key_model_unavailable");
+        assert!(model_unavailable
+            .message
+            .contains("choose another Venice model"));
     }
 
     #[test]

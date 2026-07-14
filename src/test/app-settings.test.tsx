@@ -10,6 +10,7 @@ import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { TELEMETRY_INFO_URL } from "../lib/p3a";
 import { DATE_FORMAT_STORAGE_KEY } from "../lib/date-format";
+import { setStoredFontScale } from "../lib/font-scale";
 
 const mocks = vi.hoisted(() => ({
   dictationCapabilities: vi.fn(),
@@ -742,6 +743,34 @@ describe("AppSettings", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps the appearance text-size control in sync with zoom shortcuts", () => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    expect(screen.getByRole("button", { name: "Default text size" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    act(() => setStoredFontScale("large"));
+
+    expect(screen.getByRole("button", { name: "Large text size" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("changes the sidebar date format through the appearance picker", () => {
@@ -1953,7 +1982,7 @@ describe("AppSettings", () => {
     }
   });
 
-  it("only lists microphone permissions on Windows", async () => {
+  it("lists system audio controls but no dictation-only controls on Windows", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -1972,6 +2001,7 @@ describe("AppSettings", () => {
     const onEnableMicrophone = vi.fn();
     const onEnableAccessibility = vi.fn();
     const onEnableSystemAudio = vi.fn();
+    const onSourceModeChange = vi.fn();
 
     try {
       render(
@@ -1996,11 +2026,10 @@ describe("AppSettings", () => {
               {
                 source: "system",
                 required: true,
-                ready: false,
-                permissionState: "denied",
+                ready: true,
+                permissionState: "granted",
                 deviceAvailable: true,
-                captureAvailable: false,
-                recoveryAction: "openSystemAudioSettings",
+                captureAvailable: true,
               },
             ],
           }}
@@ -2009,17 +2038,20 @@ describe("AppSettings", () => {
           accessibilityPermissionStatus="missing"
           onAccountChanged={vi.fn()}
           onAccountRefresh={vi.fn()}
-          onSourceModeChange={vi.fn()}
+          onSourceModeChange={onSourceModeChange}
           onEnableMicrophone={onEnableMicrophone}
           onEnableAccessibility={onEnableAccessibility}
           onEnableSystemAudio={onEnableSystemAudio}
         />,
       );
 
-      expect(screen.getByText("Access used for recording audio.")).toBeInTheDocument();
+      expect(screen.getByText("Audio access")).toBeInTheDocument();
+      expect(
+        screen.getByText("Audio sources available for recording microphone and app audio."),
+      ).toBeInTheDocument();
       expect(screen.getByText("Microphone")).toBeInTheDocument();
       expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
-      expect(screen.queryByText("System audio")).not.toBeInTheDocument();
+      expect(screen.getByText("System audio")).toBeInTheDocument();
 
       const microphoneRow = screen.getByText("Microphone").closest(".settings-row");
       expect(microphoneRow).not.toBeNull();
@@ -2033,12 +2065,23 @@ describe("AppSettings", () => {
       expect(onEnableAccessibility).not.toHaveBeenCalled();
       expect(onEnableSystemAudio).not.toHaveBeenCalled();
 
+      const systemAudioRow = screen.getByText("System audio").closest(".settings-row");
+      expect(systemAudioRow).not.toBeNull();
+      expect(within(systemAudioRow as HTMLElement).getByLabelText("Available")).toBeInTheDocument();
+      await userEvent.click(
+        within(systemAudioRow as HTMLElement).getByRole("button", {
+          name: "Open sound settings",
+        }),
+      );
+      expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
+
       await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
-      expect(
-        screen.queryByRole("switch", {
+      await userEvent.click(
+        screen.getByRole("switch", {
           name: "Capture system audio for notes",
         }),
-      ).not.toBeInTheDocument();
+      );
+      expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
       expect(
         screen.getByRole("button", {
           name: "Start test",
@@ -3224,6 +3267,39 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("button", { name: "Remove" }));
     expect(mocks.clearVeniceApiKey).toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByText("Key saved.")).not.toBeInTheDocument());
+  });
+
+  it("explains that Auto does not use the saved Venice API key", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+        veniceApiKeyConfigured: true,
+      },
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+
+    expect(
+      await screen.findByText(
+        "Auto does not use your Venice API key for notes or chat. Choose a Venice model above to use your key for notes and new chats.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("defaults the model picker to curated suggestions", async () => {

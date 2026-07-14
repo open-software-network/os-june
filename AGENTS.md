@@ -202,9 +202,11 @@ build scripts in `pnpm-workspace.yaml` — live in
 
 ## Boundaries
 
-- **Upstream provider keys live only in June API, never in the desktop binary.**
-  The app calls June API over `/v1/*`; June API holds the Venice/OpenAI keys and
-  the OS Accounts App API key.
+- **Service-managed upstream provider keys live only in June API, never in the desktop binary.**
+  The app calls June API over `/v1/*`; June API holds the Venice/OpenAI service
+  keys and the OS Accounts App API key. A user's explicit Venice BYOK credential
+  is the exception: June stores it locally and forwards it only on eligible
+  Venice requests.
 - **June API must stay backward-compatible — no breaking changes.** June ships
   and auto-updates in production, so installs in the wild keep calling older
   `/v1/*` contracts. Never remove or repurpose an existing endpoint, request

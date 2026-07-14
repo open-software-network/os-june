@@ -3,7 +3,10 @@ use crate::{
     auth::{authenticated_user, provider_credentials},
     envelope::ApiResponse,
     error::ApiError,
-    handlers::notes::{required, resolve_priced_asr_model, resolve_priced_text_model},
+    handlers::notes::{
+        credentials_for_resolved_model, required, resolve_priced_asr_model,
+        resolve_priced_text_model,
+    },
     multipart::MultipartFields,
     state::ApiState,
     validation,
@@ -30,9 +33,15 @@ pub(crate) async fn transcribe(
     let mut form = MultipartFields::collect(multipart, limits.max_audio_bytes).await?;
     let audio = form.required_audio()?;
     validate_audio(&audio)?;
-    let model_id = form.required_text("model")?;
-    validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
-    let model_id = resolve_priced_asr_model(&state, &model_id)?;
+    let requested_model_id = form.required_text("model")?;
+    validation::validate_text_len("model", &requested_model_id, validation::MAX_MODEL_CHARS)?;
+    let model_id = resolve_priced_asr_model(&state, &requested_model_id)?;
+    let provider_credentials = credentials_for_resolved_model(
+        provider_credentials,
+        &requested_model_id,
+        &model_id,
+        state.pricing().is_venice_model(&model_id),
+    )?;
     let session_id = form.required_text("sessionId")?;
     validation::validate_text_len("session_id", &session_id, validation::MAX_ID_CHARS)?;
     let utterance_id = form.required_text("utteranceId")?;
@@ -79,9 +88,15 @@ pub(crate) async fn cleanup(
     let user_id = authenticated_user(&state, &headers).await?;
     let provider_credentials = provider_credentials(&headers)?;
     request.validate()?;
-    let model_id = required(request.model, "model_required")?;
-    validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
-    let model_id = resolve_priced_text_model(&state, &model_id)?;
+    let requested_model_id = required(request.model, "model_required")?;
+    validation::validate_text_len("model", &requested_model_id, validation::MAX_MODEL_CHARS)?;
+    let model_id = resolve_priced_text_model(&state, &requested_model_id)?;
+    let provider_credentials = credentials_for_resolved_model(
+        provider_credentials,
+        &requested_model_id,
+        &model_id,
+        state.pricing().is_venice_model(&model_id),
+    )?;
     let output = state
         .dictate()
         .cleanup(DictateCleanupParams {

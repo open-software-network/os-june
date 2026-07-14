@@ -36,6 +36,7 @@ import { NoteChatPanel } from "../components/note-chat/NoteChatPanel";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
 import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
 import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
+import type { RecordNoticesDemoApi } from "../lib/record-notices-demo";
 import type { UpdateCardDemoApi } from "../lib/update-card-demo";
 import { NotesList, type NotesListHandle } from "../components/notes-list/NotesList";
 import { PermissionBanner } from "../components/permissions/PermissionBanner";
@@ -198,7 +199,11 @@ import {
 } from "../lib/max-upgrade";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { checkJuneUpdate, reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
-import { PROCESSING_DEMO_NOTE_ID, shouldPollProcessingStatus } from "./processing-polling";
+import {
+  PROCESSING_DEMO_NOTE_ID,
+  RECORD_NOTICES_DEMO_SESSION_ID,
+  shouldPollProcessingStatus,
+} from "./processing-polling";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import { createInitialState, notesReducer } from "./state/app-state";
 import { handleSidebarResizeStart } from "./sidebar-resize";
@@ -453,8 +458,8 @@ export function App() {
   const [preparingUpdate, setPreparingUpdate] = useState(false);
   const [relaunchingUpdate, setRelaunchingUpdate] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<UpdateInstallProgress | null>(null);
-  // `ready` only says this Mac is capable of system capture; the grant is the
-  // permission state, which only a microphone-plus-system probe establishes.
+  // `ready` only says this device is capable of system capture; the platform
+  // grant/status is established by a microphone-plus-system probe.
   const systemSourceReadiness = sourceReadiness?.sources.find(
     (source) => source.source === "system",
   );
@@ -542,6 +547,54 @@ export function App() {
       dispose?.();
     };
   }, []);
+  // Dev-only console driver (window.__recordNoticesDemo) that parks the
+  // recorder-area notices (consent reminder, source warning, mic-blocked) on the
+  // selected note without a real recording, so their styling can be inspected.
+  // The synthetic status runs under RECORD_NOTICES_DEMO_SESSION_ID, which the
+  // status poll and the pause/resume/finish handlers skip so no backend call
+  // fires; consent pinning bypasses the recorder bar's reveal/auto-hide timers.
+  const [recordNoticesConsentPinned, setRecordNoticesConsentPinned] = useState(false);
+  const [recordNoticesMicOverride, setRecordNoticesMicOverride] = useState<boolean | null>(null);
+  const recordNoticesDemoRef = useRef<RecordNoticesDemoApi | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    void import("../lib/record-notices-demo").then(({ registerRecordNoticesDemo }) => {
+      if (cancelled) return;
+      recordNoticesDemoRef.current = registerRecordNoticesDemo({
+        seedNote: (note) => {
+          dispatch({ type: "noteLoaded", note });
+          setActiveView("meetings");
+        },
+        setStatus: (status) => {
+          // Defense in depth: never let the demo's synthetic status stomp a real
+          // recording, even if the driver's hasRealRecording check somehow raced.
+          const active = recordingStatusRef.current;
+          if (active && active.sessionId !== RECORD_NOTICES_DEMO_SESSION_ID) return;
+          if (status) {
+            dispatch({ type: "recordingStatusChanged", status });
+            setRecordingNote(status.noteId);
+          } else {
+            dispatch({ type: "recordingStatusCleared" });
+            setRecordingNote(undefined);
+            setLiveTranscriptEvents([]);
+          }
+        },
+        setConsentPinned: setRecordNoticesConsentPinned,
+        setMicOverride: setRecordNoticesMicOverride,
+        getSelectedNoteId: () => selectedNoteIdRef.current,
+        hasRealRecording: () => {
+          const active = recordingStatusRef.current;
+          return !!active && active.sessionId !== RECORD_NOTICES_DEMO_SESSION_ID;
+        },
+      });
+    });
+    return () => {
+      cancelled = true;
+      recordNoticesDemoRef.current?.dispose();
+      recordNoticesDemoRef.current = null;
+    };
+  }, [setRecordingNote]);
   // The referral delight nudge (bottom-left card). Real shows come from the
   // trigger layer (useReferralNudgeTriggers below); the dev console driver
   // (window.__referralNudge) parks the card without touching the persisted
@@ -1947,7 +2000,10 @@ export function App() {
   // TCC denial. Trust the dictation helper's AVCaptureDevice status
   // instead — that's the authoritative macOS API for the mic privacy
   // entry.
-  const microphoneBlocked = isDeniedPermission(microphoneStatus);
+  // recordNoticesMicOverride is the dev __recordNoticesDemo hook parking the
+  // mic-blocked notice; it is always null in production (the state never leaves
+  // its initial value), so real behavior is untouched.
+  const microphoneBlocked = recordNoticesMicOverride ?? isDeniedPermission(microphoneStatus);
 
   const refreshPermissionStatuses = useCallback(() => {
     void dictationHelperCommand({ type: "get_permission_status" }).catch(() => undefined);
@@ -2120,6 +2176,13 @@ export function App() {
       return;
     }
     const sessionId = state.recordingStatus.sessionId;
+    // The dev __recordNoticesDemo session lives only in the reducer — there is
+    // no backend recording to poll, and getRecordingStatus would clear the
+    // synthetic bar with a "recording not found". Stripped from production via
+    // import.meta.env.DEV. See lib/record-notices-demo.ts.
+    if (import.meta.env.DEV && sessionId === RECORD_NOTICES_DEMO_SESSION_ID) {
+      return;
+    }
     // Drops in-flight responses once this effect is torn down. Without it, a
     // poll that was already in flight when the user hit stop resolves after
     // recordingStatusCleared and resurrects the recorder bar with a stale
@@ -3035,6 +3098,13 @@ export function App() {
   }, []);
 
   async function handleFinishRecording(sessionId: string, options: { rethrow?: boolean } = {}) {
+    // The dev __recordNoticesDemo session has no backend recording — stopping it
+    // just tears the demo down (clears the synthetic status and pins) instead of
+    // calling finishRecording, which would fail with "recording not found".
+    if (import.meta.env.DEV && sessionId === RECORD_NOTICES_DEMO_SESSION_ID) {
+      recordNoticesDemoRef.current?.clear();
+      return;
+    }
     // The recorder bar stays mounted (and clickable) for the duration of its
     // exit animation after the first stop click, so a fast double-click would
     // fire finishRecording twice — the second call fails with a scary
@@ -3088,6 +3158,12 @@ export function App() {
   }
 
   const handlePauseRecording = useCallback(async (sessionId: string) => {
+    // The dev __recordNoticesDemo session has no backend recording; report
+    // success without a pauseRecording IPC round-trip. Its own ticker keeps the
+    // bar live, so pause is a visual no-op here.
+    if (import.meta.env.DEV && sessionId === RECORD_NOTICES_DEMO_SESSION_ID) {
+      return true;
+    }
     try {
       const status = await pauseRecording(sessionId);
       dispatch({ type: "recordingStatusChanged", status });
@@ -3100,6 +3176,11 @@ export function App() {
   }, []);
 
   async function handleResumeRecording(sessionId: string) {
+    // The dev __recordNoticesDemo session has no backend recording; its ticker
+    // already keeps the bar in the recording state, so resume is a no-op.
+    if (import.meta.env.DEV && sessionId === RECORD_NOTICES_DEMO_SESSION_ID) {
+      return;
+    }
     playRecordingSound("start");
     try {
       const status = await resumeRecording(sessionId);
@@ -3877,6 +3958,11 @@ export function App() {
                       onEnableSystemAudio={handleEnableSystemAudio}
                       onEnableMicrophone={handleEnableMicrophone}
                       microphoneBlocked={microphoneBlocked}
+                      consentReminderPinned={
+                        import.meta.env.DEV &&
+                        recordNoticesConsentPinned &&
+                        selectedNoteId === recordingNoteId
+                      }
                       onTabChange={(activeTab) =>
                         void updateNote({
                           noteId: selectedNote.id,

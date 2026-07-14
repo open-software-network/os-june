@@ -31,6 +31,7 @@ export function fallbackDictationCapabilities(): DictationCapabilitiesDto {
             shortcuts: true,
             paste: true,
             microphoneSelection: true,
+            systemAudio: true,
           }
         : {}),
   };
@@ -68,6 +69,10 @@ export function isMacLikePlatform() {
 
 export function isWindowsPlatform() {
   return /Windows|Win32|Win64/i.test(platformString());
+}
+
+export function isSystemAudioSupportedPlatform() {
+  return isMacLikePlatform() || isWindowsPlatform();
 }
 
 function platformString() {
