@@ -87,3 +87,6 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | JUN-331 (pre-PR) | Standards (codex) | 0 | — | clean on the scoped toast markup, CSS, and regression coverage |
 | JUN-331 (pre-PR) | Spec (codex) | 1 | 0 | treated required visual verification as missing from the diff; refuted by the live constrained-width Playwright screenshot, layout measurements, and video prepared for the PR |
 | JUN-331 (pre-PR) | Adversarial (claude) | 4 | 1 | end-ellipsis was the issue's documented filename-overflow trade-off; stale toast action and generic-span ARIA concerns were verified as `origin/main` parity (stale action filed as JUN-333); test-evidence concern was refuted by the live browser run |
+| os-api private routing (pre-PR) | Standards (codex, r1+final) | 3 | 3 | caught `/v1` provider-semantic drift, missing canonical glossary coverage, and stale response-shape wording; final clean |
+| os-api private routing (pre-PR) | Spec (codex, r1+final) | 0 | — | clean twice; verified deliberate Venice-private-first policy, BYOK isolation, additive metadata, compatibility, and pricing |
+| os-api private routing (pre-PR) | Adversarial (codex, r1-r3) | 2 | 2 | caught underpriced canonical Kimi first, then expanded the same billing invariant to all five multi-route preferred models; final approve |
