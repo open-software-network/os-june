@@ -301,8 +301,13 @@ enum MixSampleFormat {
     PcmUnsigned8,
     PcmSigned16,
     PcmSigned24,
-    PcmSigned24In32,
     PcmSigned32,
+    /// WAVEFORMATEXTENSIBLE stores valid PCM bits left-aligned in a wider
+    /// signed container. Keep both widths so decoding can remove padding.
+    PcmSignedExtensible {
+        container_bits: u16,
+        valid_bits: u16,
+    },
     Float32,
 }
 
@@ -640,10 +645,10 @@ fn sample_to_f32(sample: &[u8], sample_format: MixSampleFormat) -> f32 {
             let sign = if sample[2] & 0x80 == 0 { 0x00 } else { 0xff };
             i32::from_le_bytes([sample[0], sample[1], sample[2], sign]) as f32 / 8_388_608.0
         }
-        MixSampleFormat::PcmSigned24In32 => {
-            let container = i32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
-            (container >> 8) as f32 / 8_388_608.0
-        }
+        MixSampleFormat::PcmSignedExtensible {
+            container_bits,
+            valid_bits,
+        } => left_aligned_extensible_sample_to_f32(sample, container_bits, valid_bits),
         MixSampleFormat::PcmSigned16 => {
             i16::from_le_bytes([sample[0], sample[1]]) as f32 / i16::MAX as f32
         }
@@ -698,10 +703,23 @@ fn extensible_pcm_sample_format(
     valid_bits_per_sample: u16,
     bits_per_sample: u16,
 ) -> Result<MixSampleFormat, AppError> {
-    match (valid_bits_per_sample, bits_per_sample) {
-        (24, 32) => Ok(MixSampleFormat::PcmSigned24In32),
-        (0, bits) => pcm_sample_format(bits),
-        (valid, _) => pcm_sample_format(valid),
+    let valid_bits = if valid_bits_per_sample == 0 {
+        bits_per_sample
+    } else {
+        valid_bits_per_sample
+    };
+    if valid_bits == 0 || valid_bits > bits_per_sample {
+        return Err(unusable_format_error());
+    }
+    if valid_bits == bits_per_sample {
+        return pcm_sample_format(bits_per_sample);
+    }
+    match bits_per_sample {
+        16 | 24 | 32 => Ok(MixSampleFormat::PcmSignedExtensible {
+            container_bits: bits_per_sample,
+            valid_bits,
+        }),
+        _ => Err(unusable_format_error()),
     }
 }
 
@@ -734,6 +752,25 @@ fn ksdataformat_subtype_ieee_float() -> GUID {
         0x0010,
         [0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71],
     )
+}
+
+fn left_aligned_extensible_sample_to_f32(
+    sample: &[u8],
+    container_bits: u16,
+    valid_bits: u16,
+) -> f32 {
+    debug_assert!(valid_bits > 0 && valid_bits < container_bits);
+    let container = match container_bits {
+        16 => i16::from_le_bytes([sample[0], sample[1]]) as i64,
+        24 => {
+            let sign = if sample[2] & 0x80 == 0 { 0x00 } else { 0xff };
+            i32::from_le_bytes([sample[0], sample[1], sample[2], sign]) as i64
+        }
+        32 => i32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]) as i64,
+        _ => unreachable!("validated extensible PCM container width"),
+    };
+    let sample = container >> (container_bits - valid_bits);
+    sample as f32 / (1_i64 << (valid_bits - 1)) as f32
 }
 
 fn unusable_format_error() -> AppError {
@@ -811,21 +848,98 @@ mod tests {
     }
 
     #[test]
-    fn sample_conversion_handles_left_aligned_24_bit_extensible_pcm() {
+    fn sample_conversion_handles_left_aligned_extensible_pcm() {
+        let cases = [
+            (
+                "16 valid bits in a 24-bit container",
+                &[0x00, 0xff, 0x7f][..],
+                MixSampleFormat::PcmSignedExtensible {
+                    container_bits: 24,
+                    valid_bits: 16,
+                },
+                1.0,
+            ),
+            (
+                "20 valid bits in a 24-bit container",
+                &[0xf0, 0xff, 0x7f][..],
+                MixSampleFormat::PcmSignedExtensible {
+                    container_bits: 24,
+                    valid_bits: 20,
+                },
+                1.0,
+            ),
+            (
+                "16 valid bits in a 32-bit container",
+                &[0x00, 0x00, 0xff, 0x7f][..],
+                MixSampleFormat::PcmSignedExtensible {
+                    container_bits: 32,
+                    valid_bits: 16,
+                },
+                1.0,
+            ),
+            (
+                "24 valid bits in a 32-bit container",
+                &[0x00, 0xff, 0xff, 0x7f][..],
+                MixSampleFormat::PcmSignedExtensible {
+                    container_bits: 32,
+                    valid_bits: 24,
+                },
+                1.0,
+            ),
+            (
+                "24 valid bits in a 32-bit container at minimum",
+                &[0x00, 0x00, 0x00, 0x80][..],
+                MixSampleFormat::PcmSignedExtensible {
+                    container_bits: 32,
+                    valid_bits: 24,
+                },
+                -1.0,
+            ),
+        ];
+
+        for (name, bytes, format, expected) in cases {
+            assert!(
+                (sample_to_f32(bytes, format) - expected).abs() < 0.0001,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn extensible_pcm_format_preserves_container_and_valid_bits() {
         assert_eq!(
-            sample_to_f32(&[0x00, 0x00, 0x00, 0x00], MixSampleFormat::PcmSigned24In32),
-            0.0
+            extensible_pcm_sample_format(16, 24).unwrap(),
+            MixSampleFormat::PcmSignedExtensible {
+                container_bits: 24,
+                valid_bits: 16,
+            }
         );
-        assert!(
-            (sample_to_f32(&[0x00, 0xff, 0xff, 0x7f], MixSampleFormat::PcmSigned24In32) - 1.0)
-                .abs()
-                < 0.0001
+        assert_eq!(
+            extensible_pcm_sample_format(20, 24).unwrap(),
+            MixSampleFormat::PcmSignedExtensible {
+                container_bits: 24,
+                valid_bits: 20,
+            }
         );
-        assert!(
-            (sample_to_f32(&[0x00, 0x00, 0x00, 0x80], MixSampleFormat::PcmSigned24In32) + 1.0)
-                .abs()
-                < 0.0001
+        assert_eq!(
+            extensible_pcm_sample_format(16, 32).unwrap(),
+            MixSampleFormat::PcmSignedExtensible {
+                container_bits: 32,
+                valid_bits: 16,
+            }
         );
+        assert_eq!(
+            extensible_pcm_sample_format(24, 32).unwrap(),
+            MixSampleFormat::PcmSignedExtensible {
+                container_bits: 32,
+                valid_bits: 24,
+            }
+        );
+        assert_eq!(
+            extensible_pcm_sample_format(0, 16).unwrap(),
+            MixSampleFormat::PcmSigned16
+        );
+        assert!(extensible_pcm_sample_format(25, 24).is_err());
     }
 
     #[test]
