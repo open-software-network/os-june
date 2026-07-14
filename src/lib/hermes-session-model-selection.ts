@@ -17,8 +17,8 @@ export const DEFAULT_AUTO_COST_QUALITY = 100;
 
 /**
  * Reserved internal model id understood by June's on-device provider proxy.
- * It carries Auto's per-run preference through Hermes' model-only command
- * surface and is rewritten to `open-software/auto` before leaving the device.
+ * It carries Auto's per-run preference through session-scoped `config.set`
+ * and is rewritten to `open-software/auto` before leaving the device.
  */
 export const AUTO_HERMES_MODEL_ID_PREFIX = "__june_auto_generation__:";
 export const REMOTE_HERMES_MODEL_ID_PREFIX = "__june_remote_generation__:";

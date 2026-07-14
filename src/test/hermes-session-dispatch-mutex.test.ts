@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { withHermesSessionDispatchLock } from "../lib/hermes-session-dispatch-mutex";
+import {
+  reserveHermesSessionDispatch,
+  withHermesSessionDispatchLock,
+} from "../lib/hermes-session-dispatch-mutex";
 
 function deferred<Value>() {
   let resolve: (value: Value) => void = () => undefined;
@@ -73,5 +76,58 @@ describe("Hermes session dispatch mutex", () => {
     await expect(first).rejects.toBe(failure);
     await expect(second).resolves.toBe("accepted");
     expect(secondCallback).toHaveBeenCalledOnce();
+  });
+
+  it("preserves Send-time order when later preparation finishes first", async () => {
+    const firstPreparation = deferred<void>();
+    const events: string[] = [];
+    const firstReservation = reserveHermesSessionDispatch("session-a");
+    const secondReservation = reserveHermesSessionDispatch("session-a");
+
+    expect(firstReservation.queuedBehindPrior).toBe(false);
+    expect(secondReservation.queuedBehindPrior).toBe(true);
+
+    const first = (async () => {
+      await firstPreparation.promise;
+      return firstReservation.run(async () => {
+        events.push("first");
+        return "first result";
+      });
+    })();
+    const second = secondReservation.run(async () => {
+      events.push("second");
+      return "second result";
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual([]);
+    firstPreparation.resolve();
+
+    await expect(first).resolves.toBe("first result");
+    await expect(second).resolves.toBe("second result");
+    expect(events).toEqual(["first", "second"]);
+  });
+
+  it("keeps later reservations ordered when an earlier preparation is cancelled", async () => {
+    const firstDispatch = deferred<void>();
+    const events: string[] = [];
+    const firstReservation = reserveHermesSessionDispatch("session-a");
+    const cancelledReservation = reserveHermesSessionDispatch("session-a");
+    const thirdReservation = reserveHermesSessionDispatch("session-a");
+
+    const first = firstReservation.run(async () => {
+      events.push("first started");
+      await firstDispatch.promise;
+      events.push("first finished");
+    });
+    cancelledReservation.cancel();
+    const third = thirdReservation.run(async () => {
+      events.push("third");
+    });
+
+    await vi.waitFor(() => expect(events).toEqual(["first started"]));
+    firstDispatch.resolve();
+    await Promise.all([first, third]);
+    expect(events).toEqual(["first started", "first finished", "third"]);
   });
 });

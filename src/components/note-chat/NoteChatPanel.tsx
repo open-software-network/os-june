@@ -400,7 +400,10 @@ export function NoteChatPanel({
       setSessionModel(selection);
       setModelOpen(false);
       setComposerError(null);
-      if (storedSessionId) return;
+      // Before the first session.create returns there is no stored id yet, but
+      // a picker change already belongs to this chat's following agent run.
+      // Keep it session-local instead of mutating unrelated future sessions.
+      if (storedSessionId || chat.submissionPending) return;
 
       const intentRevision = ++generationSelectionIntentRevisionRef.current;
       try {

@@ -9,6 +9,7 @@ import {
   rememberNoteChatSession,
 } from "../components/note-chat/noteChatSessions";
 import { type NoteChat, useNoteChat } from "../components/note-chat/useNoteChat";
+import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
 import {
   rememberAppliedSessionModelSelection,
   stageSessionModelSelection,
@@ -103,6 +104,7 @@ function noteChat(overrides: Partial<NoteChat> = {}): NoteChat {
   return {
     turns: [],
     working: false,
+    submissionPending: false,
     loading: false,
     error: null,
     storedSessionId: undefined,
@@ -262,6 +264,49 @@ describe("note chat session map", () => {
     );
   });
 
+  it("waits for legacy session metadata instead of applying the app default", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const defaults = await mocks.providerModelSettings();
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        ...defaults.settings,
+        localGeneration: {
+          baseUrl: "http://localhost:11434/v1",
+          modelId: "llama3.1:8b",
+          apiKey: "",
+        },
+      },
+    });
+    let resolveSessions: (sessions: Array<{ id: string; model: string }>) => void = () => undefined;
+    mocks.listHermesSessions.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSessions = resolve;
+      }),
+    );
+
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    let submission: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      submission = result.current.submit("Keep the legacy route.");
+    });
+    await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
+    resolveSessions([{ id: "stored-note-chat", model: "llama3.1:8b" }]);
+
+    await act(async () => {
+      expect(await submission).toBe(true);
+    });
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+      session_id: "runtime-note-chat",
+      key: "model",
+      value: "__june_local_generation__:llama3.1%3A8b --session",
+      confirm_expensive_model: true,
+    });
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "config.set",
+      expect.objectContaining({ value: "__june_remote_generation__:zai-org-glm-5-2 --session" }),
+    );
+  });
+
   it("keeps Hermes metadata authoritative across unrelated selection writes", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     rememberAppliedSessionModelSelection("stored-note-chat", { modelId: "zai-org-glm-5-2" });
@@ -288,6 +333,29 @@ describe("note chat session map", () => {
       key: "model",
       value: "__june_remote_generation__:zai-org-glm-5-2 --session",
       confirm_expensive_model: true,
+    });
+  });
+
+  it("snapshots the app default when a first submit beats picker initialization", async () => {
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-note-chat",
+          stored_session_id: "stored-note-chat",
+        });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+
+    await act(async () => {
+      expect(await result.current.submit("What changed?")).toBe(true);
+    });
+
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
+      title: "Launch planning",
+      cols: 96,
+      model: "__june_remote_generation__:zai-org-glm-5-2",
     });
   });
 
@@ -330,6 +398,97 @@ describe("note chat session map", () => {
     });
 
     window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, settingsChanged);
+  });
+
+  it("keeps a first-run picker change session-local while session creation is pending", async () => {
+    const user = userEvent.setup();
+    const chat = noteChat({
+      working: true,
+      submissionPending: true,
+      modelSelection: { modelId: currentModel.id },
+    });
+
+    render(
+      createElement(NoteChatPanel, {
+        note: { id: "note-1", title: "Launch planning" },
+        chat,
+        onClose: vi.fn(),
+        onOpenInAgent: vi.fn(),
+      }),
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+    const picker = screen.getByRole("dialog", { name: "Choose text model" });
+    await user.click(within(picker).getByRole("button", { name: "All models" }));
+    await user.click(
+      within(screen.getByRole("group", { name: "All text models" })).getByRole("option", {
+        name: /^Auto /,
+      }),
+    );
+
+    expect(chat.setSessionModel).toHaveBeenCalledWith({
+      modelId: "open-software/auto",
+      costQuality: 100,
+    });
+    expect(mocks.setCostQuality).not.toHaveBeenCalled();
+    expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+    expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
+  });
+
+  it("keeps first-run model changes session-local after Stop hides the busy state", async () => {
+    const user = userEvent.setup();
+    let resolveCreate: (value: { session_id: string; stored_session_id: string }) => void = () =>
+      undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return new Promise((resolve) => {
+          resolveCreate = resolve;
+        });
+      }
+      return Promise.resolve({});
+    });
+    function LiveNoteChatPanel() {
+      const chat = useNoteChat({ id: "note-1", title: "Launch planning" });
+      return createElement(NoteChatPanel, {
+        note: { id: "note-1", title: "Launch planning" },
+        chat,
+        onClose: vi.fn(),
+        onOpenInAgent: vi.fn(),
+      });
+    }
+    render(createElement(LiveNoteChatPanel));
+
+    const composer = await screen.findByRole("textbox");
+    await user.type(composer, "What changed?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", expect.anything()),
+    );
+    await user.click(screen.getByRole("button", { name: "Stop June" }));
+
+    await user.click(screen.getByRole("button", { name: "Model: GLM 5.2" }));
+    const picker = screen.getByRole("dialog", { name: "Choose text model" });
+    await user.click(within(picker).getByRole("button", { name: "All models" }));
+    await user.click(
+      within(screen.getByRole("group", { name: "All text models" })).getByRole("option", {
+        name: /^Auto /,
+      }),
+    );
+
+    expect(mocks.setCostQuality).not.toHaveBeenCalled();
+    expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+    expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
+
+    resolveCreate({
+      session_id: "runtime-note-chat",
+      stored_session_id: "stored-note-chat",
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-note-chat",
+        text: expect.stringContaining("What changed?"),
+      }),
+    );
   });
 
   it("shows a legacy chat's applied model instead of the app-wide default", async () => {
@@ -435,6 +594,70 @@ describe("note chat session map", () => {
     ]);
   });
 
+  it("waits behind an earlier cross-surface Send before submitting the same model", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    rememberAppliedSessionModelSelection("stored-note-chat", { modelId: currentModel.id });
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "stored-note-chat",
+        model: "__june_remote_generation__:zai-org-glm-5-2",
+      },
+    ]);
+
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    await waitFor(() =>
+      expect(result.current.appliedHermesModelId).toBe(
+        "__june_remote_generation__:zai-org-glm-5-2",
+      ),
+    );
+    mocks.gatewayRequest.mockClear();
+
+    let releaseEarlierSend: () => void = () => undefined;
+    const earlierSend = reserveHermesSessionDispatch("stored-note-chat").run(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseEarlierSend = resolve;
+        }),
+    );
+    let noteSubmit: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      noteSubmit = result.current.submit("Run after the workspace message.");
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+        session_id: "stored-note-chat",
+        cols: 96,
+      }),
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+    releaseEarlierSend();
+    await earlierSend;
+    await act(async () => {
+      expect(await noteSubmit).toBe(true);
+    });
+    expect(mocks.gatewayRequest.mock.calls.slice(-2)).toEqual([
+      [
+        "config.set",
+        {
+          session_id: "runtime-note-chat",
+          key: "model",
+          value: "__june_remote_generation__:zai-org-glm-5-2 --session",
+          confirm_expensive_model: true,
+        },
+      ],
+      [
+        "prompt.submit",
+        {
+          session_id: "runtime-note-chat",
+          text: "Run after the workspace message.",
+        },
+      ],
+    ]);
+  });
+
   it("never retargets an in-flight send or its failure after switching notes", async () => {
     rememberNoteChatSession("note-a", "stored-a");
     rememberNoteChatSession("note-b", "stored-b");
@@ -467,6 +690,7 @@ describe("note chat session map", () => {
 
     rerender({ id: "note-b" });
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-b"));
+    expect(result.current.submissionPending).toBe(false);
     const noteBSubmit = result.current.submit("Question for B");
     await act(async () => releaseConnection?.());
 

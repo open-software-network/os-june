@@ -43,8 +43,8 @@ const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
 // validation error that it misclassifies as prompt context overflow.
 const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
 /// Internal Hermes model id used to carry a per-run Auto preference through
-/// the model-only command surface. The proxy rewrites it before forwarding,
-/// so June API never sees this implementation detail.
+/// session-scoped `config.set`. June's on-device provider proxy rewrites it
+/// before forwarding, so June API never sees this implementation detail.
 const AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__june_auto_generation__:";
 /// Internal Hermes model id that preserves an explicitly remote selection
 /// even when a configured local endpoint exposes the same raw model id.

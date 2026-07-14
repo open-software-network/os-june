@@ -30,6 +30,7 @@ import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
 import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
 import { readSessionModelSelections } from "../lib/hermes-session-model-selection";
+import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -1112,6 +1113,9 @@ describe("AgentWorkspace", () => {
         text: "focus on the API boundary",
       }),
     );
+    const laterSurfaceReservation = reserveHermesSessionDispatch("session-1");
+    expect(laterSurfaceReservation.queuedBehindPrior).toBe(true);
+    laterSurfaceReservation.cancel();
 
     expect(screen.getByRole("region", { name: "Up next" })).toBeInTheDocument();
     expect(screen.queryByText("Steering current turn")).toBeNull();
@@ -1239,6 +1243,10 @@ describe("AgentWorkspace", () => {
     await user.type(composer, "review the brief next");
     await user.click(screen.getByRole("button", { name: "Queue next message" }));
 
+    const laterSurfaceReservation = reserveHermesSessionDispatch("session-1");
+    expect(laterSurfaceReservation.queuedBehindPrior).toBe(true);
+    laterSurfaceReservation.cancel();
+
     expect(await screen.findByText("Up next")).toBeInTheDocument();
     expect(screen.getByText("review the brief next")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Remove queued message" })).toBeInTheDocument();
@@ -1307,6 +1315,371 @@ describe("AgentWorkspace", () => {
     await user.click(removeButtons[0]);
     expect(screen.queryByText("first queued message")).toBeNull();
     expect(screen.getByText("second queued message")).toBeInTheDocument();
+  });
+
+  it("keeps attachment follow-ups in Send order when later preparation finishes first", async () => {
+    const user = userEvent.setup();
+    let resolveFirstSkill: (document: {
+      name: string;
+      relativePath: string;
+      content: string;
+    }) => void = () => undefined;
+    const skillDocument = {
+      name: "repo-build-pr",
+      relativePath: "repo-build-pr/SKILL.md",
+      content: "# Repo build PR\n\nReview the attachment.",
+    };
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveFirstSkill = resolve;
+        }),
+      )
+      .mockResolvedValue(skillDocument);
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "/repo-build-pr first accepted message");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledTimes(1));
+
+    await user.clear(composer);
+    await user.type(composer, "/repo-build-pr second prepared message");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    expect(await screen.findByText("second prepared message")).toBeInTheDocument();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    expect(await screen.findByText("Ready to send")).toBeInTheDocument();
+    expect(
+      mocks.gatewayRequest.mock.calls.some(
+        ([method, params]) =>
+          method === "prompt.submit" && params?.text?.includes("second prepared message"),
+      ),
+    ).toBe(false);
+
+    resolveFirstSkill(skillDocument);
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method, params]) =>
+            method === "prompt.submit" && params?.text?.includes("first accepted message"),
+        ),
+      ).toBe(true),
+    );
+    expect(
+      mocks.gatewayRequest.mock.calls.some(
+        ([method, params]) =>
+          method === "prompt.submit" && params?.text?.includes("second prepared message"),
+      ),
+    ).toBe(false);
+  });
+
+  it("releases queued attachment dispatch reservations when a session is deleted", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "queued before deletion");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    expect(await screen.findByText("queued before deletion")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+
+    let laterDispatchRan = false;
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    await laterReservation.run(async () => {
+      laterDispatchRan = true;
+    });
+    expect(laterDispatchRan).toBe(true);
+    expect(screen.queryByText("queued before deletion")).toBeNull();
+  });
+
+  it("invalidates an attachment preparation when its session is deleted", async () => {
+    const user = userEvent.setup();
+    let resolveSkill: (document: { name: string; relativePath: string; content: string }) => void =
+      () => undefined;
+    const skillDocument = {
+      name: "repo-build-pr",
+      relativePath: "repo-build-pr/SKILL.md",
+      content: "# Repo build PR\n\nReview the attachment.",
+    };
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSkill = resolve;
+      }),
+    );
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "/repo-build-pr orphan after deletion");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+    let laterDispatchRan = false;
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    await laterReservation.run(async () => {
+      laterDispatchRan = true;
+    });
+    expect(laterDispatchRan).toBe(true);
+
+    await act(async () => {
+      resolveSkill(skillDocument);
+    });
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method, params]) =>
+            method === "prompt.submit" && params?.text?.includes("orphan after deletion"),
+        ),
+      ).toBe(false),
+    );
+    expect(screen.queryByText("orphan after deletion")).toBeNull();
+  });
+
+  it("releases a pending steer dispatch reservation when a session is deleted", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await user.type(composer, "steer before deletion");
+    await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+        session_id: "session-1",
+        text: "steer before deletion",
+      }),
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+    let laterDispatchRan = false;
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    await laterReservation.run(async () => {
+      laterDispatchRan = true;
+    });
+    expect(laterDispatchRan).toBe(true);
+    expect(screen.queryByText("steer before deletion")).toBeNull();
+  });
+
+  it("invalidates a full composer preparation when its session is deleted", async () => {
+    const user = userEvent.setup();
+    let resolveSkill: (document: { name: string; relativePath: string; content: string }) => void =
+      () => undefined;
+    const skillDocument = {
+      name: "repo-build-pr",
+      relativePath: "repo-build-pr/SKILL.md",
+      content: "# Repo build PR\n\nReview the request.",
+    };
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSkill = resolve;
+      }),
+    );
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/repo-build-pr pending deletion");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+    let laterDispatchRan = false;
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    await laterReservation.run(async () => {
+      laterDispatchRan = true;
+    });
+    expect(laterDispatchRan).toBe(true);
+
+    await act(async () => {
+      resolveSkill(skillDocument);
+    });
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method, params]) =>
+            method === "prompt.submit" && params?.text?.includes("pending deletion"),
+        ),
+      ).toBe(false),
+    );
+    expect(screen.queryByText("pending deletion")).toBeNull();
+  });
+
+  it("keeps another session's media consent open when deleting a preparing session", async () => {
+    const user = userEvent.setup();
+    let resolveSkill: (document: { name: string; relativePath: string; content: string }) => void =
+      () => undefined;
+    const skillDocument = {
+      name: "repo-build-pr",
+      relativePath: "repo-build-pr/SKILL.md",
+      content: "# Repo build PR\n\nReview the attachment.",
+    };
+    const secondSession = {
+      ...existingSession,
+      id: "session-2",
+      title: "Other session",
+      preview: "Other preview",
+    };
+    mocks.listHermesSessions.mockResolvedValue([existingSession, secondSession]);
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSkill = resolve;
+      }),
+    );
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(true);
+    const view = render(<AgentWorkspace initialSession={existingSession} />);
+
+    let composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "/repo-build-pr preparing in session A");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledTimes(1));
+
+    view.rerender(<AgentWorkspace initialSession={secondSession} />);
+    composer = await screen.findByRole("textbox", { name: "Message June" });
+    await waitFor(() => expect(composer).toHaveTextContent(""));
+    await user.type(composer, "/image explicit prompt in session B");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Safe mode is on" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    await act(async () => {
+      resolveSkill(skillDocument);
+    });
   });
 
   it("sends a queued file follow-up after the current turn completes", async () => {
@@ -1425,6 +1798,68 @@ describe("AgentWorkspace", () => {
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
         session_id: "runtime-session-1",
         text: expect.stringContaining("review the brief after that"),
+      }),
+    );
+  });
+
+  it("keeps a later steer fallback behind an earlier attachment follow-up", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "review the brief first");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    await user.type(composer, "then check the API boundary");
+    await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: expect.stringMatching(/review the brief first[\s\S]*uploads\/brief\.pdf/),
+      }),
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-1",
+      text: "then check the API boundary",
+    });
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "then check the API boundary",
       }),
     );
   });
@@ -7943,6 +8378,56 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("reserves the session dispatch order before skill preparation finishes", async () => {
+    const user = userEvent.setup();
+    let resolveSkillDocument: (document: {
+      name: string;
+      relativePath: string;
+      content: string;
+    }) => void = () => undefined;
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSkillDocument = resolve;
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "/repo-build-pr preserve send order");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"));
+
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    expect(laterReservation.queuedBehindPrior).toBe(true);
+    const laterDispatch = vi.fn(async () => undefined);
+    const later = laterReservation.run(laterDispatch);
+    await Promise.resolve();
+    expect(laterDispatch).not.toHaveBeenCalled();
+
+    resolveSkillDocument({
+      name: "repo-build-pr",
+      relativePath: "repo-build-pr/SKILL.md",
+      content: "# Repo build PR\n\nOpen a draft PR.",
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ text: expect.stringContaining("preserve send order") }),
+      ),
+    );
+    await expect(later).resolves.toBeUndefined();
+    expect(laterDispatch).toHaveBeenCalledOnce();
+  });
+
   it("keeps the draft and suggests matches for an unknown skill command", async () => {
     const user = userEvent.setup();
     mocks.hermesBridgeSkills.mockResolvedValue([
@@ -9555,6 +10040,25 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
     expect(mocks.generateImage).not.toHaveBeenCalled();
     expect(await screen.findByRole("textbox")).toHaveTextContent("/image a red bicycle");
+  });
+
+  it("releases the session FIFO when unmounting during media consent", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(true);
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    await screen.findByRole("dialog", { name: "Safe mode is on" });
+
+    view.unmount();
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    const laterDispatch = vi.fn(async () => undefined);
+    await laterReservation.run(laterDispatch);
+    expect(laterDispatch).toHaveBeenCalledOnce();
   });
 
   it("skips an explicit /video generation when the user keeps safe mode on", async () => {
@@ -11333,7 +11837,7 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
     // The rejected prompt never entered the session: no optimistic bubble
     // lingers in the transcript (it would render below later persisted
-    // messages as a send the agent ignored), and the draft comes back.
+    // messages as a send June ignored), and the draft comes back.
     expect(document.querySelector(".agent-user-turn")).toBeNull();
     expect(composer).toHaveTextContent("are the subagents using my CLI?");
     // The previous turn is still running, so the live listener stays attached.
@@ -12497,7 +13001,7 @@ describe("AgentWorkspace", () => {
       );
     });
 
-    it("keeps tool-incapable models out of the picker for the agent", async () => {
+    it("keeps tool-incapable models out of June's picker", async () => {
       mocks.listVeniceModels.mockResolvedValue({
         mode: "generation",
         modelType: "text",

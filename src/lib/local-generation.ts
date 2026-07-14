@@ -34,7 +34,8 @@ export function rawLocalGenerationModelId(optionId: string): string | null {
 
 /** Display-only row for a session whose tagged local choice no longer matches
  * the configured endpoint. Keep the original choice visible; sends fail closed
- * in the proxy until the user reconfigures or selects another model. */
+ * in June's on-device provider proxy until the user reconfigures or selects
+ * another model. */
 export function unavailableLocalGenerationOption(optionId: string): VeniceModelDto | null {
   const modelId = rawLocalGenerationModelId(optionId);
   if (!modelId) return null;

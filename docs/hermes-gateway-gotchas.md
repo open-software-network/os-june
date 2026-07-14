@@ -58,7 +58,7 @@ request is `config.set` with the runtime `session_id`, `key: "model"`,
 default and affect unrelated sessions.
 
 **Model `config.set` is idle-only.** Hermes returns 4009 while that session is
-running because changing the agent's model, provider, endpoint, and client in
+running because changing Hermes' model, provider, endpoint, and client in
 place would race with the active agent run. A picker change during that run is
 therefore June state only. On the next Send, apply its captured choice
 immediately before `prompt.submit`. `message.complete` can precede true idle,
