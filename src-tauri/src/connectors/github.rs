@@ -434,7 +434,10 @@ pub async fn complete_connect(
         .await
         .map_err(|_| github_storage_unavailable())?;
     let old_tokens = match old_snapshot.as_ref() {
-        Some(snapshot) => vault.load(&snapshot.connection.github_user_id).await?,
+        Some(snapshot) => vault
+            .load(&snapshot.connection.github_user_id)
+            .await?
+            .filter(|tokens| tokens.github_user_id == snapshot.connection.github_user_id),
         None => None,
     };
 
@@ -670,6 +673,9 @@ async fn compensate_failed_connect(
                 }
             },
             Some(old) => {
+                if old_tokens.is_none() {
+                    restored_consistently = false;
+                }
                 if state.old_custody_deleted {
                     match old_tokens {
                         Some(tokens) => {
@@ -736,6 +742,7 @@ pub async fn connection_get(
     vault: &dyn GitHubTokenVault,
     repositories: &Repositories,
 ) -> Result<Option<GitHubConnection>, AppError> {
+    let _operation_guard = connection_operation_lock().lock().await;
     let Some(snapshot) = repositories
         .github_snapshot()
         .await
@@ -1149,6 +1156,12 @@ mod tests {
         fail_next_store: AtomicBool,
         fail_delete_for: Mutex<Option<String>>,
         load_error: Mutex<Option<AppError>>,
+        load_hook: Mutex<
+            Option<(
+                std::sync::Arc<tokio::sync::Notify>,
+                std::sync::Arc<tokio::sync::Notify>,
+            )>,
+        >,
         store_hook: Mutex<
             Option<(
                 std::sync::Arc<tokio::sync::Notify>,
@@ -1203,6 +1216,14 @@ mod tests {
         ) {
             *self.store_hook.lock().expect("store hook") = Some((reached, resume));
         }
+
+        fn block_next_load_after_observation(
+            &self,
+            reached: std::sync::Arc<tokio::sync::Notify>,
+            resume: std::sync::Arc<tokio::sync::Notify>,
+        ) {
+            *self.load_hook.lock().expect("load hook") = Some((reached, resume));
+        }
     }
 
     impl GitHubTokenVault for InMemoryGitHubTokenVault {
@@ -1218,7 +1239,13 @@ mod tests {
                 if let Some(error) = self.load_error.lock().expect("load error").clone() {
                     return Err(error);
                 }
-                Ok(self.tokens.lock().await.get(github_user_id).cloned())
+                let observed = self.tokens.lock().await.get(github_user_id).cloned();
+                let hook = self.load_hook.lock().expect("load hook").take();
+                if let Some((reached, resume)) = hook {
+                    reached.notify_one();
+                    resume.notified().await;
+                }
+                Ok(observed)
             })
         }
 
@@ -1914,6 +1941,97 @@ mod tests {
                 .status,
             "reconnect_required"
         );
+    }
+
+    #[tokio::test]
+    async fn stale_connection_get_cannot_mark_a_successful_same_user_reconnect_terminal() {
+        let repositories = std::sync::Arc::new(test_repositories().await);
+        seed_snapshot(&repositories, "123", "connected", None, None).await;
+        let vault = std::sync::Arc::new(InMemoryGitHubTokenVault::default());
+        let getter_reached = std::sync::Arc::new(tokio::sync::Notify::new());
+        let resume_getter = std::sync::Arc::new(tokio::sync::Notify::new());
+        vault.block_next_load_after_observation(getter_reached.clone(), resume_getter.clone());
+        let getter = {
+            let vault = vault.clone();
+            let repositories = repositories.clone();
+            tokio::spawn(async move { connection_get(vault.as_ref(), &repositories).await })
+        };
+        getter_reached.notified().await;
+
+        let token_reached = std::sync::Arc::new(tokio::sync::Notify::new());
+        let release_token = std::sync::Arc::new(tokio::sync::Notify::new());
+        let user_reached = std::sync::Arc::new(tokio::sync::Notify::new());
+        let release_user = std::sync::Arc::new(tokio::sync::Notify::new());
+        let token = token_fixture();
+        let blocked_token = (
+            token
+                .0
+                .blocked(token_reached.clone(), release_token.clone()),
+            token.1,
+        );
+        let user = user_fixture("123", "octocat", "access-one");
+        let blocked_user = (
+            user.0.blocked(user_reached.clone(), release_user.clone()),
+            user.1,
+        );
+        let repository = repository_json(789, "test-repo", r#"{"pull":true}"#);
+        let (base_url, server) = scripted_server(vec![
+            device_fixture(),
+            blocked_token,
+            blocked_user,
+            installations_fixture("access-one", None, r#"{"contents":"read"}"#),
+            repositories_fixture("access-one", &format!("[{repository}]")),
+        ])
+        .await;
+        let client = std::sync::Arc::new(GitHubAuthClient::for_test(&base_url).unwrap());
+        let flow = std::sync::Arc::new(GitHubConnectFlow::default());
+        flow.start(&client, &config().client_id).await.unwrap();
+        let reconnect = {
+            let flow = flow.clone();
+            let client = client.clone();
+            let vault = vault.clone();
+            let repositories = repositories.clone();
+            tokio::spawn(async move {
+                complete_connect(&flow, &client, vault.as_ref(), &repositories, &config()).await
+            })
+        };
+        token_reached.notified().await;
+        release_token.notify_one();
+
+        let reconnect_reached_user_while_getter_paused = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            user_reached.notified(),
+        )
+        .await
+        .is_ok();
+        if reconnect_reached_user_while_getter_paused {
+            release_user.notify_one();
+            reconnect.await.unwrap().unwrap();
+            resume_getter.notify_one();
+            getter.await.unwrap().unwrap();
+        } else {
+            resume_getter.notify_one();
+            getter.await.unwrap().unwrap();
+            user_reached.notified().await;
+            release_user.notify_one();
+            reconnect.await.unwrap().unwrap();
+        }
+
+        assert_eq!(
+            repositories
+                .github_snapshot()
+                .await
+                .unwrap()
+                .unwrap()
+                .connection
+                .status,
+            "connected"
+        );
+        assert!(
+            !reconnect_reached_user_while_getter_paused,
+            "reconnect must wait for the connection read and status decision"
+        );
+        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -3398,6 +3516,135 @@ mod tests {
                 .status,
             "reconnect_required"
         );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_old_delete_marks_missing_old_custody_reconnect() {
+        let repositories = std::sync::Arc::new(test_repositories().await);
+        seed_snapshot(&repositories, "123", "connected", None, None).await;
+        let vault = std::sync::Arc::new(InMemoryGitHubTokenVault::default());
+        let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+        let resume = std::sync::Arc::new(tokio::sync::Notify::new());
+        vault.block_next_store(reached.clone(), resume.clone());
+        let repository = repository_json(789, "new-repo", r#"{"pull":true}"#);
+        let (base_url, server) = scripted_server(vec![
+            device_fixture(),
+            token_fixture(),
+            user_fixture("999", "hubot", "access-one"),
+            installations_fixture("access-one", None, r#"{"contents":"read"}"#),
+            repositories_fixture("access-one", &format!("[{repository}]")),
+        ])
+        .await;
+        let client = std::sync::Arc::new(GitHubAuthClient::for_test(&base_url).unwrap());
+        let flow = std::sync::Arc::new(GitHubConnectFlow::default());
+        flow.start(&client, &config().client_id).await.unwrap();
+        let completion = {
+            let flow = flow.clone();
+            let client = client.clone();
+            let vault = vault.clone();
+            let repositories = repositories.clone();
+            tokio::spawn(async move {
+                complete_connect(&flow, &client, vault.as_ref(), &repositories, &config()).await
+            })
+        };
+        reached.notified().await;
+        flow.cancel().await.unwrap();
+        resume.notify_one();
+
+        assert_eq!(
+            completion.await.unwrap().unwrap_err().code,
+            "github_storage_unavailable"
+        );
+        assert!(vault.token("999").await.is_none());
+        let snapshot = repositories.github_snapshot().await.unwrap().unwrap();
+        assert_eq!(snapshot.connection.github_user_id, "123");
+        assert_eq!(snapshot.connection.status, "reconnect_required");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_new_store_marks_surviving_snapshot_with_missing_custody_reconnect() {
+        let repositories = test_repositories().await;
+        seed_snapshot(&repositories, "123", "connected", None, None).await;
+        let vault = InMemoryGitHubTokenVault::default();
+        vault.fail_next_store();
+        let repository = repository_json(789, "new-repo", r#"{"pull":true}"#);
+        let (base_url, server) = scripted_server(vec![
+            device_fixture(),
+            token_fixture(),
+            user_fixture("999", "hubot", "access-one"),
+            installations_fixture("access-one", None, r#"{"contents":"read"}"#),
+            repositories_fixture("access-one", &format!("[{repository}]")),
+        ])
+        .await;
+        let client = GitHubAuthClient::for_test(&base_url).unwrap();
+        let flow = GitHubConnectFlow::default();
+        flow.start(&client, &config().client_id).await.unwrap();
+
+        assert_eq!(
+            complete_connect(&flow, &client, &vault, &repositories, &config())
+                .await
+                .unwrap_err()
+                .code,
+            "github_storage_unavailable"
+        );
+        assert!(vault.token("999").await.is_none());
+        let snapshot = repositories.github_snapshot().await.unwrap().unwrap();
+        assert_eq!(snapshot.connection.github_user_id, "123");
+        assert_eq!(snapshot.connection.status, "reconnect_required");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mismatched_old_custody_is_not_restored_during_different_user_rollback() {
+        let repositories = std::sync::Arc::new(test_repositories().await);
+        seed_snapshot(&repositories, "123", "connected", None, None).await;
+        let vault = std::sync::Arc::new(InMemoryGitHubTokenVault::default());
+        vault.tokens.lock().await.insert(
+            "123".into(),
+            stored_tokens("777", "wrong-access", "wrong-refresh", now_unix() + 3600),
+        );
+        let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+        let resume = std::sync::Arc::new(tokio::sync::Notify::new());
+        repositories.block_next_github_snapshot_commit(GitHubSnapshotReplaceHook {
+            reached: reached.clone(),
+            resume: resume.clone(),
+        });
+        let repository = repository_json(789, "new-repo", r#"{"pull":true}"#);
+        let (base_url, server) = scripted_server(vec![
+            device_fixture(),
+            token_fixture(),
+            user_fixture("999", "hubot", "access-one"),
+            installations_fixture("access-one", None, r#"{"contents":"read"}"#),
+            repositories_fixture("access-one", &format!("[{repository}]")),
+        ])
+        .await;
+        let client = std::sync::Arc::new(GitHubAuthClient::for_test(&base_url).unwrap());
+        let flow = std::sync::Arc::new(GitHubConnectFlow::default());
+        flow.start(&client, &config().client_id).await.unwrap();
+        let completion = {
+            let flow = flow.clone();
+            let client = client.clone();
+            let vault = vault.clone();
+            let repositories = repositories.clone();
+            tokio::spawn(async move {
+                complete_connect(&flow, &client, vault.as_ref(), &repositories, &config()).await
+            })
+        };
+        reached.notified().await;
+        flow.cancel().await.unwrap();
+        resume.notify_one();
+
+        assert_eq!(
+            completion.await.unwrap().unwrap_err().code,
+            "github_storage_unavailable"
+        );
+        assert!(vault.token("123").await.is_none());
+        assert!(vault.token("999").await.is_none());
+        let snapshot = repositories.github_snapshot().await.unwrap().unwrap();
+        assert_eq!(snapshot.connection.github_user_id, "123");
+        assert_eq!(snapshot.connection.status, "reconnect_required");
         server.await.unwrap();
     }
 }
