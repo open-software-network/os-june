@@ -1348,9 +1348,7 @@ export function AppSettings({
     suggestedModelsForMode("generation", generationOptions).find(
       (item) => item.model.id !== AUTO_MODEL_ID,
     )?.model ??
-    generationOptions.find(
-      (option) => option.provider === "venice" && option.id !== AUTO_MODEL_ID,
-    );
+    generationOptions.find((option) => option.provider === "venice" && option.id !== AUTO_MODEL_ID);
   const imageOptions = IMAGE_GENERATION_ENABLED
     ? modelOptions(IMAGE_MODELS, providerSettings.imageModel)
     : [];
