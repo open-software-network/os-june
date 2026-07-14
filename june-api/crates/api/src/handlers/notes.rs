@@ -38,6 +38,12 @@ pub(crate) async fn transcribe(
     let model_id = form.required_text("model")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
     require_priced_model(&state, &model_id, ModelKind::Asr)?;
+    let provider_credentials = credentials_for_resolved_model(
+        provider_credentials,
+        &model_id,
+        &model_id,
+        state.pricing().is_venice_model(&model_id),
+    )?;
     // Accepted and validated for wire compatibility, but deliberately not
     // carried into the transcription pipeline: the note title is user data
     // an ASR provider has no business seeing.

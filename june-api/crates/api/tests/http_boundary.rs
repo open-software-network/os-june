@@ -863,6 +863,50 @@ async fn integration_note_transcribe_accepts_valid_audio_multipart() -> Result<(
 }
 
 #[tokio::test]
+async fn integration_note_transcribe_keeps_byok_for_current_venice_model()
+-> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request_with_venice_api_key(
+        "/v1/notes/transcribe",
+        multipart_body([
+            text_part("model", "nvidia/parakeet-tdt-0.6b-v3"),
+            text_part("title", "Standup"),
+            text_part("noteId", "note-1"),
+            file_part("audio", "recording.wav", valid_wav()),
+        ]),
+        "opaque_user_venice_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["text"], "Transcribed audio");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_transcribe_rejects_byok_for_current_non_venice_model()
+-> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request_with_venice_api_key(
+        "/v1/notes/transcribe",
+        multipart_body([
+            text_part("model", "asr-model"),
+            text_part("title", "Standup"),
+            text_part("noteId", "note-1"),
+            file_part("audio", "recording.wav", valid_wav()),
+        ]),
+        "opaque_user_venice_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "venice_api_key_model_unavailable");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_note_transcribe_rejects_unsupported_audio() -> Result<(), Box<dyn Error>> {
     let response = send(multipart_request(
         "/v1/notes/transcribe",
