@@ -218,8 +218,9 @@ export function NoteEditor({
   // offered; only the recovery copy differs.
   const systemLocked = systemAvailability === "denied" || systemAvailability === "unavailable";
   const showRecordingOptions = isMacLikePlatform();
-  // Mic denial is sourced from App via the dictation helper, not from
-  // sourceReadiness — the Rust cpal-based check can't see TCC denials.
+  // Mic denial is sourced from App, which combines the dictation helper's
+  // grant with the Rust readiness probe of the main app's own TCC grant —
+  // recording uses the latter, so either denial blocks the record button.
   const micDenied = microphoneBlocked;
 
   // Auto-close the options panel whenever a recording starts so the

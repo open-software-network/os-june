@@ -1996,14 +1996,11 @@ export function App() {
     if (!accessibilityBlocked) setAccessibilityBannerDismissed(false);
   }, [accessibilityBlocked]);
 
-  // The Rust readiness check probes mic via cpal, which doesn't reflect
-  // TCC denial. Trust the dictation helper's AVCaptureDevice status
-  // instead — that's the authoritative macOS API for the mic privacy
-  // entry.
   // recordNoticesMicOverride is the dev __recordNoticesDemo hook parking the
   // mic-blocked notice; it is always null in production (the state never leaves
   // its initial value), so real behavior is untouched.
-  const microphoneBlocked = recordNoticesMicOverride ?? isDeniedPermission(microphoneStatus);
+  const microphoneBlocked =
+    recordNoticesMicOverride ?? isMicrophoneRecordingBlocked(microphoneStatus, sourceReadiness);
 
   const refreshPermissionStatuses = useCallback(() => {
     void dictationHelperCommand({ type: "get_permission_status" }).catch(() => undefined);
@@ -2825,6 +2822,17 @@ export function App() {
         setRecordingNote(undefined);
         recordingStatusRef.current = undefined;
         dispatch({ type: "recordingStatusCleared" });
+        // A TCC denial resolved inside start_recording (the first-run prompt
+        // declined, or the grant revoked after the readiness probe): re-probe
+        // so the persistent mic-blocked notice appears with its Enable action,
+        // not just this transient error (JUN-319).
+        if (errorCode(err) === "microphone_permission_missing") {
+          void checkRecordingSourceReadiness(requestedSourceMode)
+            .then((readiness) =>
+              setSourceReadiness((previous) => mergeSourceReadiness(previous, readiness)),
+            )
+            .catch(() => undefined);
+        }
         setError(messageFromError(err));
         return false;
       } finally {
@@ -4408,6 +4416,24 @@ function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
 
 function isDeniedPermission(state?: string) {
   return state === "denied" || state === "restricted";
+}
+
+// TCC grants are bundle-scoped, so the two microphone signals cover different
+// bundles: the dictation helper reports its own grant, while the Rust
+// readiness probe (AVCaptureDevice in recording_source_readiness) reads the
+// main app's — the one recording actually uses. Either reporting a denial
+// means Record would start a take with no audio, so either flips the
+// actionable mic-blocked notice before a doomed recording can start (JUN-319).
+// `not_determined` stays startable: the start path fires the main app's own
+// TCC prompt.
+export function isMicrophoneRecordingBlocked(
+  helperStatus: string | undefined,
+  readiness: RecordingSourceReadinessDto | undefined,
+) {
+  const readinessState = readiness?.sources.find(
+    (source) => source.source === "microphone",
+  )?.permissionState;
+  return isDeniedPermission(helperStatus) || isDeniedPermission(readinessState);
 }
 
 // Accessibility is a plain bool from the helper (AXIsProcessTrusted),
