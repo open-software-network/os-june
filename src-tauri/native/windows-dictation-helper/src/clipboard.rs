@@ -4,8 +4,8 @@ use windows_sys::Win32::{
     Foundation::{GlobalFree, HANDLE, HWND},
     System::{
         DataExchange::{
-            CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
-            IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
+            CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
+            OpenClipboard, SetClipboardData,
         },
         Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT},
     },
@@ -34,34 +34,19 @@ impl ClipboardBackup {
 
 pub fn replace_text(text: &str) -> Result<Option<ClipboardBackup>> {
     with_open_clipboard(|| {
-        let mut format = 0;
-        let mut has_non_text = false;
-        loop {
-            format = unsafe { EnumClipboardFormats(format) };
-            if format == 0 {
-                break;
-            }
-            if format != CF_UNICODETEXT && format != 1 && format != 7 {
-                has_non_text = true;
-                break;
-            }
-        }
-        if has_non_text {
-            set_open_clipboard_text(text)?;
-            return Ok(None);
-        }
-
-        let original_text = match read_open_clipboard_text()? {
-            Some(t) => t,
-            None => {
-                set_open_clipboard_text(text)?;
-                return Ok(None);
-            }
-        };
-
+        let backup = backup_from_clipboard_text(read_open_clipboard_text()?);
         set_open_clipboard_text(text)?;
-        Ok(Some(ClipboardBackup { original_text }))
+        Ok(backup)
     })
+}
+
+fn backup_from_clipboard_text(original_text: Option<String>) -> Option<ClipboardBackup> {
+    original_text.map(|original_text| ClipboardBackup { original_text })
+}
+
+#[cfg(test)]
+pub(crate) fn backup_exists_for_text_for_test(original_text: Option<String>) -> bool {
+    backup_from_clipboard_text(original_text).is_some()
 }
 
 pub fn restore_clipboard_if_unchanged(expected: &str, backup: &ClipboardBackup) -> Result<()> {
