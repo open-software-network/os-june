@@ -9238,6 +9238,8 @@ describe("AgentWorkspace", () => {
     expect(
       screen.queryByRole("button", { name: "Download generated-image-abc.png" }),
     ).not.toBeInTheDocument();
+
+    expect(screen.queryByRole("button", { name: /View files/ })).not.toBeInTheDocument();
   });
 
   it("opens a markdown artifact in the viewer panel with rendered content", async () => {
@@ -9666,6 +9668,7 @@ describe("AgentWorkspace", () => {
   });
 
   it("renders Hermes MEDIA image references as inline generated images", async () => {
+    const user = userEvent.setup();
     const mediaPath =
       "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/image_cache/img_ce347dc6e27a.png";
     mocks.listHermesSessionMessages.mockResolvedValue([
@@ -9690,9 +9693,17 @@ describe("AgentWorkspace", () => {
     expect(image).toHaveAttribute("src", "data:image/png;base64,cHJldmlldw==");
     expect(screen.queryByText(/MEDIA:/)).not.toBeInTheDocument();
     expect(mocks.hermesBridgeFilePreview).toHaveBeenCalledWith(mediaPath);
+
+    const openImage = image.closest("button");
+    expect(openImage).not.toBeNull();
+    await user.click(openImage as HTMLButtonElement);
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    await user.click(within(panel).getByRole("button", { name: "All files" }));
+    expect(within(panel).getByText("img_ce347dc6e27a.png")).toBeInTheDocument();
   });
 
   it("renders bare-filename MEDIA references as inline generated images", async () => {
+    const user = userEvent.setup();
     // The june_image tool returns a plain `filename`, and the model echoes it as
     // `MEDIA:<filename>` rather than an absolute path. The bare reference must
     // still render inline (the backend resolves it against the image roots)
@@ -9715,6 +9726,169 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText(/MEDIA:/)).not.toBeInTheDocument();
     // The bare filename is passed through to the bridge, which resolves it.
     expect(mocks.hermesBridgeFilePreview).toHaveBeenCalledWith(mediaName);
+
+    const openImage = image.closest("button");
+    expect(openImage).not.toBeNull();
+    await user.click(openImage as HTMLButtonElement);
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    await user.click(within(panel).getByRole("button", { name: "All files" }));
+    expect(within(panel).getByText(mediaName)).toBeInTheDocument();
+  });
+
+  it("does not remap a bare-filename MEDIA image to a same-named Workspace file", async () => {
+    const user = userEvent.setup();
+    const mediaName = "img_ae9ed1ffc669.png";
+    const workspacePath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/img_ae9ed1ffc669.png";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: mediaName,
+              path: workspacePath,
+              kind: "file",
+              size: 2048,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+        {
+          id: "memory",
+          label: "Memory",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/memory",
+          description: "Hermes memory files.",
+          entries: [
+            {
+              name: mediaName,
+              path: `/Users/alex/Library/Application Support/co.opensoftware.june/hermes/memory/${mediaName}`,
+              kind: "file",
+              size: 2048,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: `MEDIA:${mediaName}`,
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    await screen.findByRole("img", { name: "Generated image" });
+    await user.click(screen.getByRole("button", { name: "View files (1)" }));
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    await user.click(within(panel).getByText(mediaName));
+    expect(mocks.hermesBridgeFilePreview).not.toHaveBeenCalledWith(workspacePath);
+  });
+
+  it("deduplicates absolute and signed bare references to the same generated image", async () => {
+    const absolutePath = "/Users/alex/.hermes/image_cache/img_cff5d542a4d2.png";
+    const signedName = "generated-image-abc.june-source-deadbeef.png";
+    const envelope = {
+      result: `MEDIA:${absolutePath}\n${JSON.stringify({ filename: signedName })}`,
+      structuredContent: { filename: signedName, mimeType: "image/png" },
+    };
+    const wrappedResult = [
+      '<untrusted_tool_result source="mcp_june_image_generate_image">',
+      JSON.stringify(envelope),
+      "</untrusted_tool_result>",
+    ].join("\n");
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-06-04T18:39:00Z",
+        tool_calls: JSON.stringify([
+          {
+            id: "call-1",
+            function: { name: "mcp_june_image_generate_image", arguments: {} },
+          },
+        ]),
+      },
+      {
+        id: "message-2",
+        role: "tool",
+        tool_call_id: "call-1",
+        tool_name: "mcp_june_image_generate_image",
+        content: wrappedResult,
+        timestamp: "2026-06-04T18:39:01Z",
+      },
+      {
+        id: "message-3",
+        role: "user",
+        content: "Show that image again.",
+        timestamp: "2026-06-04T18:40:00Z",
+      },
+      {
+        id: "message-4",
+        role: "assistant",
+        content: `MEDIA:${signedName}`,
+        timestamp: "2026-06-04T18:41:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByRole("button", { name: "View files (1)" })).toBeInTheDocument();
+  });
+
+  it("does not register a pathless MCP image block by filename", async () => {
+    const mediaName = "output.png";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: mediaName,
+              path: `/workspace/first/${mediaName}`,
+              kind: "file",
+              size: 2048,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+            {
+              name: mediaName,
+              path: `/workspace/second/${mediaName}`,
+              kind: "file",
+              size: 2048,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "tool",
+        tool_name: "generate_image",
+        content: [
+          { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+          { type: "text", text: JSON.stringify({ filename: mediaName }) },
+        ],
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    await screen.findByRole("img", { name: "Generated image" });
+    expect(screen.queryByRole("button", { name: /View files/ })).not.toBeInTheDocument();
   });
 
   it("imports dropped files into the Hermes workspace before submitting", async () => {

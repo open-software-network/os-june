@@ -9689,6 +9689,11 @@ export function AgentWorkspace({
     selectedHermesSessionId ? hermesTurns : taskTurns,
     chatArtifacts,
   );
+  const surfacedConversationArtifacts = surfacedArtifactsFromTurns(
+    selectedHermesSessionId ? hermesTurns : taskTurns,
+    turnArtifacts,
+    chatArtifacts,
+  );
   const activeThinkingKey = selectedHermesSessionId
     ? `session:${selectedHermesSessionId}:active`
     : selectedTask
@@ -9705,7 +9710,7 @@ export function AgentWorkspace({
   }, []);
   // Every file the conversation has surfaced, in turn order — the session
   // bar's files button keeps them reachable after their cards scroll away.
-  const surfacedArtifacts = [...turnArtifacts.values()].flat().concat(devArtifacts);
+  const surfacedArtifacts = surfacedConversationArtifacts.concat(devArtifacts);
   const downloadPathBackedArtifact = (path: string, displayName: string) => {
     const requestSessionId = selectedHermesSessionIdRef.current;
     void downloadHermesBridgeFile(path)
@@ -15871,6 +15876,63 @@ function assignArtifactsToTurns(
     if (mentioned.length) byTurn.set(turn.id, mentioned);
   }
   return byTurn;
+}
+
+// The inline media renderer owns generated-image cards, so
+// assignArtifactsToTurns deliberately excludes their workspace files. The
+// Files panel still needs those path-backed images: collect them beside the
+// ordinary per-turn artifacts, preserving conversation order and listing each
+// file once.
+function surfacedArtifactsFromTurns(
+  turns: AgentChatTurn[],
+  artifactsByTurn: Map<string, AgentArtifact[]>,
+  availableArtifacts: AgentArtifact[],
+): AgentArtifact[] {
+  const surfaced: AgentArtifact[] = [];
+  const surfacedPaths = new Set<string>();
+  const surfacedImageAliases = new Set<string>();
+
+  function addArtifact(artifact: AgentArtifact) {
+    if (surfacedPaths.has(artifact.path)) return;
+    surfacedPaths.add(artifact.path);
+    surfaced.push(artifact);
+  }
+
+  for (const turn of turns) {
+    for (const artifact of artifactsByTurn.get(turn.id) ?? []) addArtifact(artifact);
+    for (const part of turn.parts) {
+      if (part.type !== "image" || part.status !== "complete") continue;
+      const imagePath = part.path?.trim();
+      if (!imagePath) continue;
+      const alias = generatedImagePathAlias(imagePath, part.name);
+      if (alias && surfacedImageAliases.has(alias)) continue;
+      const matchingArtifacts = availableArtifacts.filter(
+        (artifact) => artifact.path === imagePath,
+      );
+      const matchedArtifact = matchingArtifacts.length === 1 ? matchingArtifacts[0] : undefined;
+      if (matchedArtifact) {
+        addArtifact(matchedArtifact);
+      } else {
+        addArtifact({
+          name: part.name?.trim() || "Generated image",
+          path: imagePath,
+          rootLabel: "Workspace",
+        });
+      }
+      if (alias) surfacedImageAliases.add(alias);
+    }
+  }
+
+  return surfaced;
+}
+
+function generatedImagePathAlias(path: string, displayName?: string): string | undefined {
+  const normalized = path.replaceAll("\\", "/");
+  const isBare = !normalized.includes("/");
+  if (!isBare && !/\/(?:image_cache|images)\//i.test(normalized)) return undefined;
+  return (displayName?.trim() || normalized.split("/").at(-1))
+    ?.replace(/\.june-source-[^.]+(?=\.[^.]+$)/i, "")
+    .toLowerCase();
 }
 
 function includesQuery(value: unknown, query: string) {
