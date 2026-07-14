@@ -9,6 +9,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
+        mpsc::{self, Sender},
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
@@ -20,6 +21,7 @@ use windows::core::GUID;
 
 pub const SYSTEM_AUDIO_PERMISSION_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const CAPTURE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const STARTUP_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Default)]
 struct WindowsSystemAudioStats {
@@ -47,6 +49,7 @@ impl SystemAudioCapture {
         let stop_requested = Arc::new(AtomicBool::new(false));
         let paused = Arc::new(AtomicBool::new(false));
         let stats = Arc::new(Mutex::new(WindowsSystemAudioStats::default()));
+        let (startup_sender, startup_receiver) = mpsc::channel();
         let worker = {
             let stop_requested = Arc::clone(&stop_requested);
             let paused = Arc::clone(&paused);
@@ -54,9 +57,38 @@ impl SystemAudioCapture {
             let partial_path = partial_path.clone();
             thread::Builder::new()
                 .name("june-windows-system-audio".to_string())
-                .spawn(move || capture_loop(partial_path, stop_requested, paused, stats))
+                .spawn(move || {
+                    capture_loop(partial_path, stop_requested, paused, stats, startup_sender)
+                })
                 .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?
         };
+        match startup_receiver.recv_timeout(STARTUP_HANDSHAKE_TIMEOUT) {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                stop_requested.store(true, Ordering::Release);
+                let _ = worker.join();
+                let _ = std::fs::remove_file(&partial_path);
+                return Err(error);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                stop_requested.store(true, Ordering::Release);
+                return Err(AppError::new(
+                    "system_audio_start_timeout",
+                    "Could not start system audio capture. Try again, or check the selected output device.",
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let worker_result = worker.join().map_err(|_| {
+                    AppError::new("system_audio_unavailable", "System audio worker panicked.")
+                })?;
+                return Err(worker_result.err().unwrap_or_else(|| {
+                    AppError::new(
+                        "system_audio_unavailable",
+                        "System audio worker stopped before capture was ready.",
+                    )
+                }));
+            }
+        }
         Ok(Self {
             stop_requested,
             paused,
@@ -166,16 +198,50 @@ fn capture_loop(
     stop_requested: Arc<AtomicBool>,
     paused: Arc<AtomicBool>,
     stats: Arc<Mutex<WindowsSystemAudioStats>>,
+    startup_sender: Sender<Result<(), AppError>>,
 ) -> Result<(), AppError> {
-    let mut backend = WasapiLoopbackBackend::new()?;
+    let result = run_capture_loop(
+        partial_path,
+        stop_requested,
+        paused,
+        Arc::clone(&stats),
+        startup_sender,
+    );
+    if let Err(error) = result.as_ref() {
+        latch_error(&stats, error);
+    }
+    result
+}
+
+fn run_capture_loop(
+    partial_path: PathBuf,
+    stop_requested: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+    stats: Arc<Mutex<WindowsSystemAudioStats>>,
+    startup_sender: Sender<Result<(), AppError>>,
+) -> Result<(), AppError> {
+    let mut backend = match WasapiLoopbackBackend::new() {
+        Ok(backend) => backend,
+        Err(error) => {
+            let _ = startup_sender.send(Err(error.clone()));
+            return Err(error);
+        }
+    };
     let spec = WavSpec {
         channels: backend.channels,
         sample_rate: backend.sample_rate,
         bits_per_sample: 16,
         sample_format: SampleFormat::Int,
     };
-    let mut writer = WavWriter::create(&partial_path, spec)
-        .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
+    let mut writer = match WavWriter::create(&partial_path, spec) {
+        Ok(writer) => writer,
+        Err(error) => {
+            let error = AppError::new("audio_writer_failed", error.to_string());
+            let _ = startup_sender.send(Err(error.clone()));
+            return Err(error);
+        }
+    };
+    let _ = startup_sender.send(Ok(()));
     let mut last_written_at = Instant::now();
     let mut pending_silence_frames = 0.0_f64;
     let mut was_paused = false;
@@ -675,6 +741,13 @@ fn idle_frames_since(
     whole_frames.clamp(0.0, u32::MAX as f64) as u32
 }
 
+fn latch_error(stats: &Arc<Mutex<WindowsSystemAudioStats>>, error: &AppError) {
+    let Ok(mut stats) = stats.lock() else {
+        return;
+    };
+    stats.last_error = Some(error.message.clone());
+}
+
 fn update_stats(
     stats: &Arc<Mutex<WindowsSystemAudioStats>>,
     peak: f32,
@@ -718,8 +791,7 @@ mod tests {
                 < 0.0001
         );
         assert!(
-            (sample_to_f32(&[0xff, 0xff, 0x7f], MixSampleFormat::PcmSigned24) - 1.0).abs()
-                < 0.0001
+            (sample_to_f32(&[0xff, 0xff, 0x7f], MixSampleFormat::PcmSigned24) - 1.0).abs() < 0.0001
         );
     }
 
