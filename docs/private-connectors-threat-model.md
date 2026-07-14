@@ -117,10 +117,12 @@ The Google analysis above remains unchanged.
 ### Defenses and traffic boundary
 
 - Keychain is the default token store. The unsandboxed Rust host owns token
-  custody and provider calls. The Hermes sandbox denies Keychain database reads,
-  Keychain Services IPC, and reads of both the GitHub plaintext fixture and its
-  narrowly matched temporary files, so the embedded agent cannot obtain the
-  GitHub tokens.
+  custody and provider calls. While the Hermes sandbox is engaged, its profile
+  denies Keychain database reads, Keychain Services IPC, and reads of both the
+  GitHub plaintext fixture and its narrowly matched temporary files, so a
+  sandboxed embedded agent cannot obtain the GitHub tokens. Unrestricted
+  sessions and sessions started with `JUNE_HERMES_DISABLE_SANDBOX` do not apply
+  this profile and are outside this defense.
 - Device denial, expiry, or cancellation creates no connection row or token
   entry. If cancellation or attempt replacement races with a Keychain or SQLite
   side effect, the serialized completion and compensation boundary removes the
