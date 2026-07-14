@@ -878,6 +878,13 @@ export function AppSettings({
       setStatus(message);
       return;
     }
+    if (helperEvent.type === "shortcut_capture_cancelled") {
+      setCapturingShortcut(undefined);
+      setShortcutError(undefined);
+      setShortcutErrorKind(undefined);
+      setStatus("Shortcut capture ended.");
+      return;
+    }
     if (helperEvent.type === "shortcut_captured") {
       const kind = capturingShortcutRef.current;
       if (!kind) {

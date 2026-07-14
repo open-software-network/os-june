@@ -84,6 +84,11 @@ export function useShortcutCapture({
         setCapturing(false);
         return;
       }
+      if (helperEvent.type === "shortcut_capture_cancelled") {
+        setError(undefined);
+        setCapturing(false);
+        return;
+      }
       if (helperEvent.type !== "shortcut_captured") return;
       const captured = shortcutFromCapturePayload(helperEvent.payload?.shortcut, 1);
       if (!captured) {
