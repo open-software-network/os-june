@@ -226,6 +226,7 @@ import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
 import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
 import { HermesTracePanel } from "./HermesTracePanel";
 import { MarkdownContent, highlightText } from "./MarkdownContent";
+import { SmoothedStreamingMarkdown } from "./SmoothedStreamingMarkdown";
 import {
   ComposerModelPicker,
   PrivacyModeBadge,
@@ -12933,8 +12934,9 @@ function AgentChatTurnRow({
                 {/* A part can retain raw MEDIA deltas while streaming or when
                     a terminal/error event arrives without message.complete.
                     Those transport references never belong in assistant prose. */}
-                <MarkdownContent
+                <SmoothedStreamingMarkdown
                   markdown={stripRenderedMediaReferences(part.text, part.status === "running")}
+                  running={part.status === "running"}
                   repairProse
                 />
               </div>
