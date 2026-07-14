@@ -9082,8 +9082,8 @@ describe("AgentWorkspace", () => {
 
   it("renders generated workspace files mentioned by Hermes as downloadable artifacts", async () => {
     const user = userEvent.setup();
-    const samplePath =
-      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/sample.pdf";
+    const fileName = "sample-with-an-extraordinarily-long-generated-file-name.pdf";
+    const samplePath = `/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/${fileName}`;
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
@@ -9093,7 +9093,7 @@ describe("AgentWorkspace", () => {
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
-              name: "sample.pdf",
+              name: fileName,
               path: samplePath,
               kind: "file",
               size: 1768,
@@ -9107,7 +9107,7 @@ describe("AgentWorkspace", () => {
       {
         id: "message-1",
         role: "assistant",
-        content: "Done. The PDF is available as `sample.pdf`.",
+        content: `Done. The PDF is available as \`${fileName}\`.`,
         timestamp: "2026-06-04T18:39:00Z",
       },
     ]);
@@ -9115,11 +9115,19 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
-    expect(screen.getAllByText("sample.pdf").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(fileName).length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole("button", { name: "Download sample.pdf" }));
+    await user.click(screen.getByRole("button", { name: `Download ${fileName}` }));
 
     expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(samplePath);
+    const toastMessage = await screen.findByLabelText(`Downloaded ${fileName}`);
+    expect(toastMessage.querySelector(".june-download-toast-action")).toHaveTextContent(
+      "Downloaded",
+    );
+    expect(toastMessage.querySelector(".june-download-toast-file")).toHaveAttribute(
+      "title",
+      fileName,
+    );
   });
 
   it("renders a workspace file's download card only on the first response that mentions it", async () => {
