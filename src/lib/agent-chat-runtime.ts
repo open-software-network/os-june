@@ -511,6 +511,12 @@ function assistantTurnForTimestamp(turns: AgentChatTurn[], createdAt: string | u
   return undefined;
 }
 
+function liveToolCorrelationKey(event: Extract<JuneHermesEvent, { kind: "tool" }>) {
+  const name = toolActivityLabel(event.name ?? "tool", event.sanitizedPayload);
+  const media = generatedMediaToolKind(event.name, event.sanitizedPayload) ?? "none";
+  return `${name}\u0000${media}`;
+}
+
 function appendLiveHermesEvents(
   turns: AgentChatTurn[],
   events: JuneHermesEvent[],
@@ -519,6 +525,7 @@ function appendLiveHermesEvents(
 ) {
   let currentAssistant: AgentChatTurn | null = null;
   let idlessToolSequence = 0;
+  const suppressedPersistedToolCorrelations = new Set<string>();
   const toolCreatedTurns = new Set<AgentChatTurn>();
   const pendingSyntheticTurns = sortAgentChatTurns(
     syntheticTurns.map((turn) => ({
@@ -542,10 +549,15 @@ function appendLiveHermesEvents(
     const hasExplicitToolIdentity =
       event.kind === "tool" && Boolean(event.toolCallId || event.key !== event.name);
     if (event.kind === "tool") {
+      const correlation = liveToolCorrelationKey(event);
       if (
         (event.toolCallId && persistedToolResultIds.has(event.toolCallId)) ||
         persistedToolResultIds.has(event.key)
       ) {
+        if (hasExplicitToolIdentity) suppressedPersistedToolCorrelations.add(correlation);
+        continue;
+      }
+      if (!hasExplicitToolIdentity && suppressedPersistedToolCorrelations.has(correlation)) {
         continue;
       }
     }

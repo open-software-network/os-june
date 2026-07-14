@@ -1689,6 +1689,59 @@ describe("Agent chat runtime", () => {
     expect(runningMediaTools[0]).toMatchObject({ id: "chatcmpl-tool-current" });
   });
 
+  it("does not attach a delayed stale callback to a newer same-name media call", () => {
+    const persistedCall = "chatcmpl-tool-old";
+    const currentCall = "chatcmpl-tool-current";
+    const turns = buildHermesSessionChatTurns(
+      [
+        {
+          id: "old-tool-result",
+          role: "tool",
+          tool_call_id: persistedCall,
+          tool_name: "generate_image",
+          content: "finished",
+          timestamp: "2026-06-04T10:00:01.000Z",
+        },
+      ],
+      [
+        toolEvent({
+          key: persistedCall,
+          toolCallId: persistedCall,
+          phase: "start",
+          name: "generate_image",
+          receivedAt: "2026-06-04T10:00:00.500Z",
+        }),
+        toolEvent({
+          key: currentCall,
+          toolCallId: currentCall,
+          phase: "start",
+          name: "generate_image",
+          receivedAt: "2026-06-04T10:01:00.000Z",
+        }),
+        toolEvent({
+          key: "generate_image",
+          phase: "complete",
+          name: "generate_image",
+          content: { type: "text", text: "MEDIA:/tmp/stale-image.png" },
+          receivedAt: "2026-06-04T10:01:01.000Z",
+        }),
+        toolEvent({
+          key: currentCall,
+          toolCallId: currentCall,
+          phase: "complete",
+          name: "generate_image",
+          content: { type: "text", text: "MEDIA:/tmp/current-image.png" },
+          receivedAt: "2026-06-04T10:01:02.000Z",
+        }),
+      ],
+    );
+
+    const imagePaths = turns.flatMap((turn) =>
+      turn.parts.flatMap((part) => (part.type === "image" && part.path ? [part.path] : [])),
+    );
+    expect(imagePaths).toEqual(["/tmp/current-image.png"]);
+  });
+
   it("coalesces id-less media progress into its explicitly identified tool", () => {
     const turns = buildHermesSessionChatTurns(
       [],
