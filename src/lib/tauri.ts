@@ -2156,3 +2156,110 @@ export async function connectorApprovalsRespondAll(input: {
     approvalIds: input.approvalIds,
   });
 }
+
+// ---- Private sharing (JUN-308) -------------------------------------------
+// Owner-side share commands. Ciphertext, IVs, envelopes, and locally stored
+// keys cross the IPC boundary as base64url strings; plaintext and unwrapped
+// keys never leave the webview (see src/lib/share-crypto.ts).
+
+export type ShareKind = "note" | "session";
+
+export type ShareInviteState = "pending" | "accepted" | "revoked";
+
+export type ShareInvitePayload = {
+  email: string;
+  envelopeB64: string;
+  envelopeIvB64: string;
+};
+
+export type ShareCreatedInviteDto = {
+  inviteId: string;
+  email: string;
+};
+
+export type ShareCreatedDto = {
+  shareId: string;
+  invites: ShareCreatedInviteDto[];
+};
+
+export type ShareInviteDto = {
+  inviteId: string;
+  email: string;
+  state: ShareInviteState;
+  lastAccessAt?: string;
+};
+
+export type ShareDto = {
+  shareId: string;
+  kind: ShareKind;
+  createdAt?: string;
+  invites: ShareInviteDto[];
+};
+
+export type ShareKeyDto = {
+  shareId: string;
+  contentKeyB64: string;
+};
+
+export type ShareInviteKeyDto = {
+  inviteId: string;
+  inviteKeyB64: string;
+};
+
+export async function shareCreate(input: {
+  kind: ShareKind;
+  ciphertextB64: string;
+  ivB64: string;
+  invites: ShareInvitePayload[];
+}) {
+  return invoke<ShareCreatedDto>("share_create", { request: input });
+}
+
+export async function shareList() {
+  return invoke<ShareDto[]>("share_list");
+}
+
+export async function shareGet(shareId: string) {
+  return invoke<ShareDto>("share_get", { request: { shareId } });
+}
+
+export async function shareAddInvites(shareId: string, invites: ShareInvitePayload[]) {
+  return invoke<ShareCreatedDto>("share_add_invites", { request: { shareId, invites } });
+}
+
+export async function shareRevokeInvite(shareId: string, inviteId: string) {
+  return invoke<void>("share_revoke_invite", { request: { shareId, inviteId } });
+}
+
+export async function shareDelete(shareId: string) {
+  return invoke<void>("share_delete", { request: { shareId } });
+}
+
+export async function shareKeySave(input: {
+  shareId: string;
+  itemKind: ShareKind;
+  itemId: string;
+  contentKeyB64: string;
+}) {
+  return invoke<void>("share_key_save", { request: input });
+}
+
+export async function shareKeyGet(itemKind: ShareKind, itemId: string) {
+  return invoke<ShareKeyDto | null>("share_key_get", { request: { itemKind, itemId } });
+}
+
+export async function shareInviteKeySave(input: {
+  inviteId: string;
+  shareId: string;
+  inviteKeyB64: string;
+}) {
+  return invoke<void>("share_invite_key_save", { request: input });
+}
+
+export async function shareInviteKeysGet(shareId: string) {
+  return invoke<ShareInviteKeyDto[]>("share_invite_keys_get", { request: { shareId } });
+}
+
+export async function getShareBaseUrl() {
+  return invoke<string>("get_share_base_url");
+}

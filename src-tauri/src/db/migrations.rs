@@ -160,6 +160,12 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     // crediting only counts runs that finished at or after this instant, so
     // earlier read-only runs never retroactively unlock autonomy.
     ensure_column(_pool, "routine_trust", "approval_since", "TEXT").await?;
+    for statement in include_str!("../../migrations/014_share_keys.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
     Ok(())
 }
 

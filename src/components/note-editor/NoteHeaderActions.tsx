@@ -3,6 +3,7 @@ import { IconChainLink1 } from "central-icons/IconChainLink1";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
+import { IconShareOs } from "central-icons/IconShareOs";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { useEffect, useRef, useState } from "react";
 
@@ -17,6 +18,7 @@ export function NoteHeaderActions({
   askJuneOpen,
   askJuneWorking,
   onAskJune,
+  onShare,
   onExportPdf,
   onDelete,
 }: {
@@ -28,6 +30,8 @@ export function NoteHeaderActions({
    * the panel is closed, so a fired-off question is visibly still running. */
   askJuneWorking?: boolean;
   onAskJune?: () => void;
+  /** Opens the private-sharing dialog for this note. */
+  onShare?: () => void;
   /** Opens the system print sheet with a PDF-ready version of the note. */
   onExportPdf?: () => void;
   /** Opens the delete-note confirmation. Omitted → no overflow menu. */
@@ -47,6 +51,17 @@ export function NoteHeaderActions({
         Ask June
         {askJuneWorking ? <span className="note-header-ask-dot" aria-hidden /> : null}
       </button>
+      {onShare ? (
+        <button
+          type="button"
+          className="icon-button note-header-share"
+          aria-label="Share note"
+          title="Share"
+          onClick={onShare}
+        >
+          <IconShareOs size={16} />
+        </button>
+      ) : null}
       <CopyNoteReferenceButton noteId={noteId} title={noteTitle} />
       {onExportPdf || onDelete ? (
         <NoteOverflowMenu onExportPdf={onExportPdf} onDelete={onDelete} />

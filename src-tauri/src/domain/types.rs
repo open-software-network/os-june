@@ -944,3 +944,136 @@ pub enum SourceState {
     Recoverable,
     Failed,
 }
+
+// ---- Private sharing (JUN-308) -------------------------------------------
+// Wire DTOs for the june-api /v1/shares endpoints plus the local key-store
+// commands. Ciphertext, IVs, envelopes, and keys cross the IPC boundary as
+// base64url strings; the Tauri layer only moves ciphertext and metadata,
+// never plaintext or unwrapped keys (crypto happens in the webview).
+
+/// One invite as submitted by the owner: the recipient email plus the content
+/// key wrapped under that recipient's invite key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInvitePayload {
+    pub email: String,
+    pub envelope_b64: String,
+    pub envelope_iv_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareCreateRequest {
+    /// "note" | "session".
+    pub kind: String,
+    pub ciphertext_b64: String,
+    pub iv_b64: String,
+    pub invites: Vec<ShareInvitePayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareCreatedInviteDto {
+    pub invite_id: String,
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareCreatedDto {
+    pub share_id: String,
+    pub invites: Vec<ShareCreatedInviteDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInviteDto {
+    pub invite_id: String,
+    pub email: String,
+    /// "pending" | "accepted" | "revoked".
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_access_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareDto {
+    pub share_id: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub invites: Vec<ShareInviteDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareAddInvitesRequest {
+    pub share_id: String,
+    pub invites: Vec<ShareInvitePayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareGetRequest {
+    pub share_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareDeleteRequest {
+    pub share_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareRevokeInviteRequest {
+    pub share_id: String,
+    pub invite_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareKeySaveRequest {
+    pub share_id: String,
+    /// "note" | "session".
+    pub item_kind: String,
+    pub item_id: String,
+    pub content_key_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareKeyGetRequest {
+    pub item_kind: String,
+    pub item_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareKeyDto {
+    pub share_id: String,
+    pub content_key_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInviteKeySaveRequest {
+    pub invite_id: String,
+    pub share_id: String,
+    pub invite_key_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInviteKeysGetRequest {
+    pub share_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInviteKeyDto {
+    pub invite_id: String,
+    pub invite_key_b64: String,
+}

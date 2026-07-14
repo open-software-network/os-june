@@ -26493,3 +26493,111 @@ button.connector-approvals-info {
     caret-color: transparent;
   }
 }
+
+/* ---- Share dialog (JUN-308) -------------------------------------------- */
+/* Owner-side private sharing: invite-by-email row, per-invite rows with a
+ * quiet state chip, copy link, and revoke. Reuses the shared dialog recipes
+ * (dialog-input, primary-action) so it reads like every other dialog. */
+
+.share-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.share-invite-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.share-invite-controls {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+}
+
+.share-invite-controls .dialog-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-invite-controls .primary-action {
+  flex-shrink: 0;
+}
+
+.share-invite-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.share-invite-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.share-invite-item:last-child {
+  border-bottom: none;
+}
+
+.share-invite-email {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-md);
+  color: var(--foreground);
+}
+
+.share-invite-state {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  line-height: 1;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-pill);
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+
+.share-invite-state[data-state="accepted"] {
+  color: var(--success);
+  background: color-mix(in oklch, var(--success) 12%, transparent);
+}
+
+.share-invite-state[data-state="revoked"] {
+  color: var(--destructive);
+  background: var(--destructive-soft);
+}
+
+.share-invite-copy,
+.share-invite-revoke {
+  flex-shrink: 0;
+}
+
+.share-invite-revoke {
+  color: var(--destructive);
+}
+
+.share-unshare {
+  color: var(--destructive);
+  margin-right: auto;
+}
+
+.share-dialog-caption {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.share-dialog-error {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--destructive);
+}
