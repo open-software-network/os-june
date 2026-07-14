@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
-        new_charge_operation_id, zero_receipt,
+        AuthorizeParams, ChargeParams, ReleaseHoldParams, authorize_or_deny, charge, clamp_to_cap,
+        log_settled, new_charge_operation_id, release_hold, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key},
@@ -171,8 +171,9 @@ impl ImageService {
         let charge_created_at = Instant::now();
         let operation_id = new_charge_operation_id();
         // A failed/rejected generation returns the error WITHOUT charging; the
-        // wallet hold simply expires (same as the web and agent chat paths).
-        let image = self
+        // wallet hold is released so it stops counting against the user's
+        // concurrency cap (same as the web and agent chat paths).
+        let image = match self
             .generator
             .generate(ImageGenerationRequest {
                 prompt: params.prompt.clone(),
@@ -182,7 +183,19 @@ impl ImageService {
                 safe_mode: params.safe_mode,
                 provider_credentials: params.provider_credentials.clone(),
             })
-            .await?;
+            .await
+        {
+            Ok(image) => image,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::ImageGenerate,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         let charge_credits = clamp_to_cap(estimate, authorization.cap_credits);
         Ok(PendingImageCharge {
             action: ActionSlug::ImageGenerate,
@@ -200,7 +213,7 @@ impl ImageService {
     /// model (requests name none, so the default governs), reject an unpriced
     /// model before any wallet/Venice call, authorize a hold, edit, then charge
     /// the flat edit price under a unique key. A failed/rejected edit returns the
-    /// error WITHOUT charging (the hold expires).
+    /// error WITHOUT charging (the hold is released).
     pub async fn edit(&self, params: ImageEditParams) -> Result<ImageGenerateOutput, ServiceError> {
         let model = params
             .model
@@ -284,7 +297,7 @@ impl ImageService {
         .await?;
         let charge_created_at = Instant::now();
         let operation_id = new_charge_operation_id();
-        let image = self
+        let image = match self
             .editor
             .edit(ImageEditRequest {
                 image_base64: params.image_base64.clone(),
@@ -294,7 +307,19 @@ impl ImageService {
                 safe_mode: params.safe_mode,
                 provider_credentials: params.provider_credentials.clone(),
             })
-            .await?;
+            .await
+        {
+            Ok(image) => image,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::ImageEdit,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         let charge_credits = clamp_to_cap(estimate, authorization.cap_credits);
         Ok(PendingImageCharge {
             action: ActionSlug::ImageEdit,
@@ -1715,19 +1740,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_generation_authorizes_but_never_charges() {
+    async fn failed_generation_authorizes_but_never_bills() {
         let os_accounts = Arc::new(RecordingOsAccounts::new(true));
         let result = service(os_accounts.clone(), Arc::new(FailingGenerator))
             .generate(params("venice-sd35"))
             .await;
 
         assert!(matches!(result, Err(crate::ServiceError::UpstreamProvider)));
+        // The hold is released at zero credits instead of stranding until TTL.
         assert_eq!(
             os_accounts.events(),
-            vec![Call::Authorize {
-                action: "image_generate".to_string(),
-                estimate: 20,
-            }]
+            vec![
+                Call::Authorize {
+                    action: "image_generate".to_string(),
+                    estimate: 20,
+                },
+                Call::Charge {
+                    credits: 0,
+                    idempotency_key: format!(
+                        "release:image_generate:{}",
+                        &crate::util::sha256_hex("agt_test".as_bytes())[..32],
+                    ),
+                },
+            ]
         );
     }
 

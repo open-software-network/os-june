@@ -2094,6 +2094,12 @@ fn user_facing_transcription_failure_message(
     {
         return "The transcription provider could not process this audio.".to_string();
     }
+    // A transient metering denial (concurrency cap, rate limit): the account
+    // is fine and a retry after a short wait usually clears it. Never show
+    // the raw reason string.
+    if normalized_message.contains("authorization_denied") {
+        return "The service is busy right now. Wait a minute, then retry.".to_string();
+    }
     message.trim().to_string()
 }
 
@@ -2951,6 +2957,17 @@ mod tests {
                 "microphone",
             ),
             "Billing is temporarily unavailable. Please try again in a moment."
+        );
+        // Regression (2026-07-14): the raw deny reason leaked into the failure
+        // banner as "authorization_denied".
+        assert_eq!(
+            user_facing_transcription_failure_message(
+                "june_request_failed",
+                "authorization_denied",
+                false,
+                "microphone",
+            ),
+            "The service is busy right now. Wait a minute, then retry."
         );
     }
 

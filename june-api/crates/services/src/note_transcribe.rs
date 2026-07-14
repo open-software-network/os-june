@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
-        zero_receipt,
+        AuthorizeParams, ChargeParams, ReleaseHoldParams, authorize_or_deny, charge, clamp_to_cap,
+        log_settled, release_hold, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
@@ -180,7 +180,7 @@ impl NoteTranscribeService {
             "note_transcribe: preview request authorized"
         );
         let audio_digest = sha256_hex(&params.audio);
-        let transcript_result = self
+        let transcript = match self
             .transcriber
             .transcribe(TranscriptionRequest {
                 audio: params.audio,
@@ -190,7 +190,21 @@ impl NoteTranscribeService {
                 model: params.model_id.clone(),
                 provider_credentials: params.provider_credentials.clone(),
             })
-            .await;
+            .await
+        {
+            Ok(transcript) => transcript,
+            Err(error) => {
+                // Failed previews used to settle at the full audio price just
+                // to avoid stranding the hold; release bills nothing instead.
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::NoteTranscribe,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
         let idempotency_key = format!(
             "note_transcribe_preview:{}:{}:{}",
@@ -208,7 +222,6 @@ impl NoteTranscribeService {
             credits_charged = receipt.credits_charged.0,
             "note_transcribe: preview hold settled"
         );
-        let transcript = transcript_result?;
         Ok(NoteTranscribeOutput {
             transcript,
             receipt,
@@ -244,7 +257,7 @@ impl NoteTranscribeService {
             model = %params.model_id.0,
             "note_transcribe: calling transcriber"
         );
-        let transcript = self
+        let transcript = match self
             .transcriber
             .transcribe(TranscriptionRequest {
                 audio: params.audio,
@@ -254,7 +267,19 @@ impl NoteTranscribeService {
                 model: params.model_id.clone(),
                 provider_credentials: params.provider_credentials.clone(),
             })
-            .await?;
+            .await
+        {
+            Ok(transcript) => transcript,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::NoteTranscribe,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         tracing::info!(
             note_id = %params.note_id,
             text_len = transcript.text.len(),

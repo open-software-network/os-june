@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
-        new_charge_operation_id, zero_receipt,
+        AuthorizeParams, ChargeParams, ReleaseHoldParams, authorize_or_deny, charge, clamp_to_cap,
+        log_settled, new_charge_operation_id, release_hold, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
@@ -75,7 +75,7 @@ impl AgentChatService {
         })
         .await?;
         let idempotency_key = idempotency_key(&params.user_id, &params.body);
-        let completion = self
+        let completion = match self
             .chat_completer
             .complete(AgentChatRequest {
                 body: params.body,
@@ -83,7 +83,19 @@ impl AgentChatService {
                 provider_credentials: params.provider_credentials.clone(),
                 unmetered: false,
             })
-            .await?;
+            .await
+        {
+            Ok(completion) => completion,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::AgentChat,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         let actual = self
             .pricing
             .price_token_usage(&params.model_id.0, completion.usage)?;
@@ -148,7 +160,7 @@ impl AgentChatService {
         })
         .await?;
         let idempotency_key = idempotency_key(&params.user_id, &params.body);
-        let stream = self
+        let stream = match self
             .chat_completer
             .complete_stream(AgentChatRequest {
                 body: params.body,
@@ -156,7 +168,19 @@ impl AgentChatService {
                 provider_credentials: params.provider_credentials.clone(),
                 unmetered: false,
             })
-            .await?;
+            .await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::AgentChat,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         spawn_stream_settlement(StreamSettlement {
             pricing: self.pricing.clone(),
             os_accounts: self.os_accounts.clone(),
@@ -270,8 +294,14 @@ async fn settle_stream_charge(params: StreamSettlement) {
                 user_id = %params.user_id.0,
                 action = ActionSlug::AgentChat.as_str(),
                 model = %params.model_id.0,
-                "agent chat stream failed mid-transport; leaving hold unsettled"
+                "agent chat stream failed mid-transport; releasing hold"
             );
+            release_hold(ReleaseHoldParams {
+                os_accounts: params.os_accounts.as_ref(),
+                action: ActionSlug::AgentChat,
+                action_token: params.action_token,
+            })
+            .await;
             return;
         }
     };
