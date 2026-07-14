@@ -77,6 +77,18 @@ async fn serve() -> anyhow::Result<()> {
                 tracing::info!("share store not configured; sharing endpoints disabled");
                 None
             }
+            _ if !config.local_dev.enabled && config.share.viewer_client_id.trim().is_empty() => {
+                // The browser viewer signs recipients in with this OAuth client
+                // id; without it, links created here would be unusable (the
+                // viewer would redirect with an empty client_id). Fail closed to
+                // 501 rather than mint dead links. Local dev seeds the token
+                // directly and needs no client id.
+                tracing::warn!(
+                    "share database configured but JUNE__SHARE__VIEWER_CLIENT_ID is unset; \
+                     sharing endpoints disabled to avoid creating unusable links"
+                );
+                None
+            }
             database_url => match june_persistence::PgShareStore::connect(database_url).await {
                 Ok(store) => {
                     tracing::info!("share store connected");

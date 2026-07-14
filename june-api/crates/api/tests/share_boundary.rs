@@ -232,9 +232,14 @@ impl ShareStore for MemoryShareStore {
             .find(|invite| {
                 !invite.revoked
                     && invite_id.is_none_or(|id| invite.invite_id == id)
-                    && (invite.recipient_user_id.as_deref() == Some(viewer_user_id)
-                        || (invite.recipient_user_id.is_none()
-                            && viewer_emails.contains(&invite.email)))
+                    // The invited email must still be currently verified, even
+                    // for an already-bound invite; among those, the invite must
+                    // be unbound or bound to this caller.
+                    && viewer_emails.contains(&invite.email)
+                    && invite
+                        .recipient_user_id
+                        .as_deref()
+                        .is_none_or(|bound| bound == viewer_user_id)
             })
             .ok_or(ShareStoreError::NotFound)?;
         invite.recipient_user_id = Some(viewer_user_id.to_string());
@@ -430,6 +435,53 @@ async fn each_invite_link_resolves_to_its_own_envelope_by_invite_id() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["envelopeB64"], BASE64.encode([0x11u8; 48]));
     assert_eq!(body["data"]["envelopeIvB64"], BASE64.encode([0x21u8; 12]));
+}
+
+#[tokio::test]
+async fn bound_invite_lapses_when_the_recipient_loses_the_verified_email() {
+    let router = share_router();
+    let (status, body) = call(
+        &router,
+        create_request(OWNER, &[invite_wire("friend@example.com")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let share_id = body["data"]["shareId"]
+        .as_str()
+        .expect("share id")
+        .to_string();
+
+    // First view binds the invite to usr_friend (the token carries the email).
+    let (status, _) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/shares/{share_id}/view")),
+            "user:usr_friend|friend@example.com",
+        )
+        .body(Body::empty())
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Same user, but the invited email is no longer in their verified set:
+    // access must lapse (byte-identical 404), not persist through the binding.
+    let (status, body) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/shares/{share_id}/view")),
+            "user:usr_friend|other@example.com",
+        )
+        .body(Body::empty())
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["message"], "share_not_found");
 }
 
 #[tokio::test]

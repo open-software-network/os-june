@@ -290,18 +290,22 @@ impl ShareStore for PgShareStore {
             });
         }
 
-        // Match a non-revoked invite: first by an existing recipient binding,
-        // then by any of the caller's verified emails. When the viewer carries
-        // an invite id ($4), pin to that invite so a re-invited address always
-        // resolves to its own envelope instead of an older active one. The id
-        // only narrows the match; the binding/email authorization still holds.
+        // Match a non-revoked invite. The invited email must still be one of
+        // the caller's currently-verified emails ($3) — enforced even for an
+        // already-bound invite, so access lapses if the recipient later removes
+        // that address from their account. Among those, the invite must be
+        // unbound or bound to this caller. When the viewer carries an invite id
+        // ($4), pin to that invite so a caller holding several verified emails
+        // gets the envelope for the link they opened; the id only narrows the
+        // match, it never widens the authorization.
         let invite_row = sqlx::query(
             r"
             SELECT id, envelope, envelope_iv
             FROM share_invites
             WHERE share_id = $1
               AND revoked_at IS NULL
-              AND (recipient_user_id = $2 OR (recipient_user_id IS NULL AND email = ANY($3)))
+              AND email = ANY($3)
+              AND (recipient_user_id IS NULL OR recipient_user_id = $2)
               AND ($4::text IS NULL OR invite_id = $4)
             ORDER BY (recipient_user_id = $2) DESC, created_at ASC
             LIMIT 1
