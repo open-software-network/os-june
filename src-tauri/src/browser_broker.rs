@@ -357,6 +357,9 @@ impl BrowserBroker {
                         | "back"
                         | "snapshot"
                         | "screenshot"
+                        | "click"
+                        | "fill"
+                        | "press"
                 ) =>
             {
                 return Err(AppError::new(
@@ -1001,7 +1004,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_dispatch_uses_transport_policy_and_supports_back_only_on_that_track() {
+    async fn managed_dispatch_uses_transport_policy_and_supports_back_and_interactions() {
         let temp = tempfile::tempdir().expect("tempdir");
         let flag = temp.path().join("browser-access");
         std::fs::write(&flag, b"1").expect("grant");
@@ -1041,15 +1044,159 @@ mod tests {
             )
             .await
             .expect("managed back is implemented");
-        let unavailable = broker
+        broker
             .execute(
                 BrowserTransportKind::Managed,
                 "click",
                 json!({ "session_id": session_id, "ref": "ref1" }),
             )
             .await
-            .expect_err("managed interaction is structurally unavailable");
-        assert_eq!(unavailable.code, "browser_tool_unavailable");
+            .expect("managed interaction reaches its transport");
+    }
+
+    #[derive(Default)]
+    struct ManagedInteractionDispatchTransport {
+        epoch: std::sync::atomic::AtomicU64,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl BrowserTransport for ManagedInteractionDispatchTransport {
+        fn execute<'a>(&'a self, tool: &'a str, arguments: Value) -> TransportFuture<'a> {
+            Box::pin(async move {
+                if matches!(tool, "click" | "fill" | "press") {
+                    self.calls
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(tool.to_string());
+                    let expected = self.epoch.load(std::sync::atomic::Ordering::SeqCst);
+                    let reference = arguments["ref"].as_str().unwrap_or_default();
+                    if reference == format!("e{expected}:m0:n9") {
+                        return Err(AppError::new(
+                            "browser_consequential_action_blocked",
+                            "The action was refused: consequential actions are not available in routines.",
+                        ));
+                    }
+                    if !reference.starts_with(&format!("e{expected}:")) {
+                        return Err(AppError::new(
+                            "browser_stale_reference",
+                            "The action reference is stale.",
+                        ));
+                    }
+                    let next = self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    return Ok(TransportResponse::data(json!({
+                        "epoch": next,
+                        "snapshot": format!("fresh snapshot after {tool}"),
+                    })));
+                }
+                Ok(TransportResponse::data(json!({})))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn every_managed_interaction_uses_broker_dispatch_and_returns_a_fresh_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let flag = temp.path().join("browser-access");
+        std::fs::write(&flag, b"1").expect("grant");
+        let transport = Arc::new(ManagedInteractionDispatchTransport::default());
+        let broker = BrowserBroker::default();
+        broker.set_access_flag_path(flag);
+        broker.configure_transport(
+            BrowserTransportKind::Managed,
+            transport.clone(),
+            temp.path().join("images"),
+            temp.path().join("artifacts"),
+        );
+        let started = broker
+            .execute(BrowserTransportKind::Managed, "start_session", json!({}))
+            .await
+            .expect("start managed session");
+        let session_id = started["sessionId"].as_str().expect("session id");
+
+        for (epoch, tool, extra) in [
+            (0, "click", json!({})),
+            (1, "fill", json!({ "text": "private form value" })),
+            (2, "press", json!({ "key": "Escape" })),
+        ] {
+            let mut arguments = json!({
+                "session_id": session_id,
+                "ref": format!("e{epoch}:m0:n1"),
+            });
+            arguments
+                .as_object_mut()
+                .expect("arguments")
+                .extend(extra.as_object().expect("extra").clone());
+            let response = broker
+                .execute(BrowserTransportKind::Managed, tool, arguments)
+                .await
+                .unwrap_or_else(|error| panic!("{tool} dispatch failed: {}", error.code));
+            assert_eq!(response["epoch"], epoch + 1);
+            assert_eq!(response["snapshot"], format!("fresh snapshot after {tool}"));
+        }
+        assert_eq!(
+            *transport
+                .calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ["click", "fill", "press"]
+        );
+
+        let stale = broker
+            .execute(
+                BrowserTransportKind::Managed,
+                "click",
+                json!({ "session_id": session_id, "ref": "e0:m0:n1" }),
+            )
+            .await
+            .expect_err("an older epoch must be refused through broker dispatch");
+        assert_eq!(stale.code, "browser_stale_reference");
+
+        let consequential = broker
+            .execute(
+                BrowserTransportKind::Managed,
+                "click",
+                json!({ "session_id": session_id, "ref": "e3:m0:n9" }),
+            )
+            .await
+            .expect_err("managed consequential action must be hard-blocked");
+        assert_eq!(consequential.code, "browser_consequential_action_blocked");
+        assert!(consequential.message.contains("not available in routines"));
+    }
+
+    #[tokio::test]
+    async fn managed_interactions_are_grant_gated_before_dispatch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let broker = BrowserBroker::default();
+        broker.set_access_flag_path(temp.path().join("missing-grant"));
+        let transport = Arc::new(ManagedInteractionDispatchTransport::default());
+        broker.configure_transport(
+            BrowserTransportKind::Managed,
+            transport.clone(),
+            temp.path().join("images"),
+            temp.path().join("artifacts"),
+        );
+
+        for tool in ["click", "fill", "press"] {
+            let error = broker
+                .execute(
+                    BrowserTransportKind::Managed,
+                    tool,
+                    json!({
+                        "session_id": "not-authorized",
+                        "ref": "e0:m0:n1",
+                        "text": "must not be dispatched",
+                        "key": "Escape",
+                    }),
+                )
+                .await
+                .expect_err("grant is required");
+            assert_eq!(error.code, "browser_access_disabled");
+        }
+        assert!(transport
+            .calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
     }
 
     struct FakeTransport;

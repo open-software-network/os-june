@@ -18,6 +18,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::browser::BoxFuture;
@@ -33,6 +34,126 @@ pub struct PolicyConfig {
     /// Admit loopback destinations (127.0.0.0/8 and ::1). Never set in
     /// production; the derived default is false, so loopback is blocked.
     pub allow_loopback: bool,
+}
+
+/// The broker-visible facts about an interactive element. Page script only
+/// reports these facts; the Rust policy below is the sole classifier.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractiveElement {
+    pub tag: String,
+    pub input_type: String,
+    pub role: String,
+    pub name: String,
+    pub id: String,
+    pub label: String,
+    pub autocomplete: String,
+    pub in_form: bool,
+    pub content_editable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedAction<'a> {
+    Click,
+    Fill,
+    Press(&'a str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionClass {
+    Routine,
+    Consequential,
+    SensitiveField,
+}
+
+/// Classify a managed-browser action from element semantics. The page never
+/// decides whether an action is allowed, and its descriptive text is never
+/// included in a refusal.
+pub fn classify_managed_action(
+    action: ManagedAction<'_>,
+    element: &InteractiveElement,
+) -> ActionClass {
+    if matches!(action, ManagedAction::Fill) && is_sensitive_field(element) {
+        return ActionClass::SensitiveField;
+    }
+
+    let activates = match action {
+        ManagedAction::Click => true,
+        ManagedAction::Fill => false,
+        ManagedAction::Press(key) => matches!(key, "Enter" | " " | "Space" | "Spacebar"),
+    };
+    if !activates {
+        return ActionClass::Routine;
+    }
+
+    let tag = element.tag.to_ascii_lowercase();
+    let input_type = element.input_type.to_ascii_lowercase();
+    let semantic_submit = matches!(input_type.as_str(), "submit" | "image")
+        || (tag == "button" && element.in_form && input_type != "button")
+        || (matches!(action, ManagedAction::Press("Enter"))
+            && element.in_form
+            && matches!(tag.as_str(), "input" | "textarea" | "select"));
+    if semantic_submit || contains_consequential_term(element) {
+        ActionClass::Consequential
+    } else {
+        ActionClass::Routine
+    }
+}
+
+fn is_sensitive_field(element: &InteractiveElement) -> bool {
+    if element.input_type.eq_ignore_ascii_case("password") {
+        return true;
+    }
+    let autocomplete = element.autocomplete.to_ascii_lowercase();
+    if autocomplete.split_whitespace().any(|token| {
+        token.contains("password") || token == "one-time-code" || token.starts_with("cc-")
+    }) {
+        return true;
+    }
+    contains_term(
+        element,
+        &[
+            "password",
+            "passcode",
+            "one time code",
+            "one-time code",
+            "otp",
+            "security code",
+            "card number",
+            "credit card",
+            "cvv",
+            "cvc",
+        ],
+    )
+}
+
+fn contains_consequential_term(element: &InteractiveElement) -> bool {
+    contains_term(
+        element,
+        &[
+            "submit",
+            "send",
+            "publish",
+            "purchase",
+            "buy",
+            "checkout",
+            "place order",
+            "delete",
+            "remove",
+            "confirm",
+            "save changes",
+        ],
+    )
+}
+
+fn contains_term(element: &InteractiveElement, terms: &[&str]) -> bool {
+    let haystack = format!(
+        "{} {} {} {}",
+        element.name, element.id, element.label, element.role
+    )
+    .to_ascii_lowercase()
+    .replace(['_', '-'], " ");
+    terms.iter().any(|term| haystack.contains(term))
 }
 
 /// The class of a blocked address, used to name a refusal without leaking the
@@ -456,6 +577,19 @@ pub async fn resolve_validated(
     Ok(addrs)
 }
 
+/// Re-run the complete URL and resolution policy against the URL observed
+/// after navigation. Redirects must pass this same check as the requested URL.
+pub async fn validate_final_public_url(
+    raw_url: &str,
+    resolver: &dyn Resolver,
+    config: &PolicyConfig,
+) -> Result<(), PolicyViolation> {
+    let validated = validate_public_http_url(raw_url)?;
+    resolve_validated(validated.host(), validated.port(), resolver, config)
+        .await
+        .map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,6 +947,95 @@ mod tests {
             )
             .await,
             Err(PolicyViolation::ResolutionFailure)
+        );
+    }
+
+    #[tokio::test]
+    async fn post_redirect_recheck_applies_scheme_and_resolved_address_policy() {
+        let public = FixedResolver(vec!["93.184.216.34:443".parse().unwrap()]);
+        assert!(validate_final_public_url(
+            "https://example.com/after-redirect",
+            &public,
+            &PolicyConfig::default()
+        )
+        .await
+        .is_ok());
+
+        assert_eq!(
+            validate_final_public_url("file:///tmp/redirected", &public, &PolicyConfig::default())
+                .await,
+            Err(PolicyViolation::NonHttpScheme)
+        );
+        let private = FixedResolver(vec!["10.0.0.1:443".parse().unwrap()]);
+        assert_eq!(
+            validate_final_public_url(
+                "https://example.com/after-redirect",
+                &private,
+                &PolicyConfig::default()
+            )
+            .await,
+            Err(PolicyViolation::BlockedAddress(AddressClass::Private))
+        );
+    }
+
+    #[test]
+    fn managed_action_classification_covers_consequential_and_routine_actions() {
+        let submit = InteractiveElement {
+            tag: "button".into(),
+            in_form: true,
+            label: "Continue".into(),
+            ..InteractiveElement::default()
+        };
+        assert_eq!(
+            classify_managed_action(ManagedAction::Click, &submit),
+            ActionClass::Consequential
+        );
+
+        let delete = InteractiveElement {
+            tag: "div".into(),
+            role: "button".into(),
+            label: "Delete draft".into(),
+            ..InteractiveElement::default()
+        };
+        assert_eq!(
+            classify_managed_action(ManagedAction::Click, &delete),
+            ActionClass::Consequential
+        );
+
+        let link = InteractiveElement {
+            tag: "a".into(),
+            label: "Read details".into(),
+            ..InteractiveElement::default()
+        };
+        assert_eq!(
+            classify_managed_action(ManagedAction::Click, &link),
+            ActionClass::Routine
+        );
+        assert_eq!(
+            classify_managed_action(ManagedAction::Press("Escape"), &submit),
+            ActionClass::Routine
+        );
+    }
+
+    #[test]
+    fn managed_fill_classification_blocks_sensitive_fields_only() {
+        let password = InteractiveElement {
+            tag: "input".into(),
+            input_type: "password".into(),
+            ..InteractiveElement::default()
+        };
+        assert_eq!(
+            classify_managed_action(ManagedAction::Fill, &password),
+            ActionClass::SensitiveField
+        );
+        let ordinary = InteractiveElement {
+            tag: "input".into(),
+            label: "City".into(),
+            ..InteractiveElement::default()
+        };
+        assert_eq!(
+            classify_managed_action(ManagedAction::Fill, &ordinary),
+            ActionClass::Routine
         );
     }
 

@@ -5,9 +5,9 @@
 //! One session = one detected system Chromium-family browser launched headless
 //! against a fresh throwaway profile, every connection routed through the
 //! per-session pinning proxy (`super::proxy`), driven over the CDP pipe
-//! (`super::cdp`). Interaction and tab commands are not part of
-//! the transport's dispatch table at all, so consequential-action classes are
-//! blocked structurally: nobody is present to approve them on this transport.
+//! (`super::cdp`). Interaction commands resolve only references minted by the
+//! latest snapshot. Rust classifies each referenced element before execution;
+//! consequential classes are refused because nobody is present to approve.
 //!
 //! Teardown is Drop-based and layered: [`LaunchedBrowser`] kills the process,
 //! [`EphemeralProfile`] deletes the profile, and `PinningProxy` stops its
@@ -37,7 +37,9 @@ use crate::domain::types::AppError;
 use super::cdp::CdpClient;
 use super::launcher::{self, EphemeralProfile, LaunchedBrowser};
 use super::policy::{
-    resolve_validated, validate_public_http_url, PolicyConfig, Resolver, SystemResolver,
+    classify_managed_action, resolve_validated, validate_final_public_url,
+    validate_public_http_url, ActionClass, InteractiveElement, ManagedAction, PolicyConfig,
+    Resolver, SystemResolver,
 };
 use super::proxy::PinningProxy;
 
@@ -210,6 +212,19 @@ pub struct ManagedBrowserSession {
     /// epoch instead of acting on the wrong element.
     epoch: AtomicU64,
     last_used: Mutex<Instant>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReferenceInspection {
+    status: String,
+    #[serde(default)]
+    element: Option<InteractiveElement>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ReferenceActionResult {
+    status: String,
 }
 
 struct ManagedSessionResources {
@@ -417,18 +432,9 @@ impl ManagedBrowserSession {
         // non-public.
         let final_url = self.evaluate_string("location.href").await?;
         if final_url != "about:blank" {
-            let recheck = match validate_public_http_url(&final_url) {
-                Ok(validated) => resolve_validated(
-                    validated.host(),
-                    validated.port(),
-                    self.resolver.as_ref(),
-                    &self.policy,
-                )
-                .await
-                .map(|_| ()),
-                Err(violation) => Err(violation),
-            };
-            if let Err(violation) = recheck {
+            if let Err(violation) =
+                validate_final_public_url(&final_url, self.resolver.as_ref(), &self.policy).await
+            {
                 self.epoch.fetch_add(1, Ordering::SeqCst);
                 let _ = self
                     .cdp
@@ -508,10 +514,176 @@ impl ManagedBrowserSession {
         }))
     }
 
-    pub async fn snapshot(&self) -> Result<String, AppError> {
+    pub async fn snapshot(&self) -> Result<(u64, String), AppError> {
         self.ensure_open()?;
         self.touch();
-        self.evaluate_string(SNAPSHOT_JS).await
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let expression =
+            format!("(() => {{ window.__juneSnapshotEpoch = {epoch}; return {SNAPSHOT_JS}; }})()");
+        self.evaluate_string(&expression)
+            .await
+            .map(|snapshot| (epoch, snapshot))
+    }
+
+    async fn interact(
+        &self,
+        operation: &str,
+        reference: &str,
+        value: &str,
+    ) -> Result<(), AppError> {
+        self.ensure_open()?;
+        self.touch();
+        let expected_epoch = reference_epoch(reference).ok_or_else(|| {
+            reference_error("browser_reference_invalid", operation, &self.id, reference)
+        })?;
+        if expected_epoch != self.epoch.load(Ordering::SeqCst) {
+            return Err(reference_error(
+                "browser_stale_reference",
+                operation,
+                &self.id,
+                reference,
+            ));
+        }
+
+        let inspection: ReferenceInspection = self
+            .call_function_on_document(INSPECT_REFERENCE_JS, json!([reference]))
+            .await
+            .map_err(|_| {
+                reference_error("browser_reference_failed", operation, &self.id, reference)
+            })?;
+        if inspection.status != "ok" {
+            return Err(reference_error(
+                reference_status_code(&inspection.status),
+                operation,
+                &self.id,
+                reference,
+            ));
+        }
+        let element = inspection.element.ok_or_else(|| {
+            reference_error("browser_reference_failed", operation, &self.id, reference)
+        })?;
+        let action = match operation {
+            "click" => ManagedAction::Click,
+            "fill" => ManagedAction::Fill,
+            "press" => ManagedAction::Press(value),
+            _ => {
+                return Err(reference_error(
+                    "browser_reference_failed",
+                    operation,
+                    &self.id,
+                    reference,
+                ))
+            }
+        };
+        match classify_managed_action(action, &element) {
+            ActionClass::Routine => {}
+            ActionClass::Consequential => {
+                return Err(AppError::new(
+                    "browser_consequential_action_blocked",
+                    format!(
+                        "The {operation} action for reference {reference} in session {} was refused: consequential actions are not available in routines.",
+                        self.id
+                    ),
+                ));
+            }
+            ActionClass::SensitiveField => {
+                return Err(AppError::new(
+                    "browser_sensitive_field_blocked",
+                    format!(
+                        "The {operation} action for reference {reference} in session {} was refused: sensitive fields are not available for automation.",
+                        self.id
+                    ),
+                ));
+            }
+        }
+
+        let mut events = self.cdp.events();
+        let expected = serde_json::to_value(&element).map_err(|_| {
+            reference_error("browser_reference_failed", operation, &self.id, reference)
+        })?;
+        let result: ReferenceActionResult = self
+            .call_function_on_document(
+                ACT_ON_REFERENCE_JS,
+                json!([operation, reference, value, expected]),
+            )
+            .await
+            .map_err(|_| {
+                reference_error("browser_reference_failed", operation, &self.id, reference)
+            })?;
+        if result.status != "ok" {
+            return Err(reference_error(
+                reference_status_code(&result.status),
+                operation,
+                &self.id,
+                reference,
+            ));
+        }
+
+        if operation == "press" {
+            let text = if value.chars().count() == 1 {
+                value
+            } else {
+                ""
+            };
+            for event_type in ["keyDown", "keyUp"] {
+                self.cdp
+                    .call(
+                        Some(&self.cdp_session_id),
+                        "Input.dispatchKeyEvent",
+                        json!({ "type": event_type, "key": value, "text": text }),
+                    )
+                    .await
+                    .map_err(|_| {
+                        reference_error("browser_reference_failed", operation, &self.id, reference)
+                    })?;
+            }
+        }
+
+        // Every successful action consumes the whole reference set. The fresh
+        // snapshot returned by the transport below mints the next epoch.
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        if matches!(operation, "click" | "press") && element.tag.eq_ignore_ascii_case("a") {
+            self.wait_for_load(&mut events, Duration::from_secs(10))
+                .await;
+            let final_url = self.evaluate_string("location.href").await.map_err(|_| {
+                reference_error("browser_reference_failed", operation, &self.id, reference)
+            })?;
+            if final_url != "about:blank"
+                && validate_final_public_url(&final_url, self.resolver.as_ref(), &self.policy)
+                    .await
+                    .is_err()
+            {
+                self.epoch.fetch_add(1, Ordering::SeqCst);
+                let _ = self
+                    .cdp
+                    .call(
+                        Some(&self.cdp_session_id),
+                        "Page.navigate",
+                        json!({ "url": "about:blank" }),
+                    )
+                    .await;
+                return Err(AppError::new(
+                    "browser_policy_blocked",
+                    format!(
+                        "The {operation} action for reference {reference} in session {} was refused (browser_policy_blocked): the destination is not on the public web.",
+                        self.id
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn click(&self, reference: &str) -> Result<(), AppError> {
+        self.interact("click", reference, "").await
+    }
+
+    pub async fn fill(&self, reference: &str, text: &str) -> Result<(), AppError> {
+        self.interact("fill", reference, text).await
+    }
+
+    pub async fn press(&self, reference: &str, key: &str) -> Result<(), AppError> {
+        self.interact("press", reference, key).await
     }
 
     pub async fn screenshot(&self) -> Result<ManagedScreenshot, AppError> {
@@ -606,6 +778,66 @@ impl ManagedBrowserSession {
                     format!("The page could not be read in session {}.", self.id),
                 )
             })
+    }
+
+    async fn call_function_on_document<T: serde::de::DeserializeOwned>(
+        &self,
+        function_declaration: &str,
+        arguments: Value,
+    ) -> Result<T, AppError> {
+        let document = self
+            .cdp
+            .call(
+                Some(&self.cdp_session_id),
+                "Runtime.evaluate",
+                json!({ "expression": "document" }),
+            )
+            .await
+            .map_err(tool_error)?;
+        let object_id = document
+            .get("result")
+            .and_then(|result| result.get("objectId"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                AppError::new("browser_command_failed", "The browser page is unavailable.")
+            })?;
+        let arguments = arguments
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| json!({ "value": value }))
+            .collect::<Vec<_>>();
+        let response = self
+            .cdp
+            .call(
+                Some(&self.cdp_session_id),
+                "Runtime.callFunctionOn",
+                json!({
+                    "objectId": object_id,
+                    "functionDeclaration": function_declaration,
+                    "arguments": arguments,
+                    "returnByValue": true,
+                }),
+            )
+            .await
+            .map_err(tool_error)?;
+        let value = response
+            .get("result")
+            .and_then(|result| result.get("value"))
+            .cloned()
+            .ok_or_else(|| {
+                AppError::new(
+                    "browser_command_failed",
+                    "The browser action returned no result.",
+                )
+            })?;
+        serde_json::from_value(value).map_err(|_| {
+            AppError::new(
+                "browser_command_failed",
+                "The browser action returned an invalid result.",
+            )
+        })
     }
 
     pub async fn close(&self) {
@@ -765,6 +997,33 @@ impl ManagedBrowserTransport {
             self.starting().remove(session_id);
         }
     }
+
+    async fn snapshot_response(
+        &self,
+        session: &ManagedBrowserSession,
+    ) -> Result<TransportResponse, AppError> {
+        let (epoch, snapshot) = session.snapshot().await?;
+        if snapshot.len() <= SNAPSHOT_INLINE_MAX_BYTES {
+            Ok(TransportResponse::data(json!({
+                "epoch": epoch,
+                "snapshot": snapshot,
+            })))
+        } else {
+            let bytes = serde_json::to_vec(&json!({
+                "epoch": epoch,
+                "snapshot": snapshot,
+            }))
+            .map_err(|_| artifact_error("snapshot", session.id()))?;
+            Ok(TransportResponse::artifact(
+                json!({ "epoch": epoch }),
+                TransportArtifact {
+                    kind: "snapshot".to_string(),
+                    mime_type: "application/json".to_string(),
+                    bytes,
+                },
+            ))
+        }
+    }
 }
 
 impl BrowserTransport for ManagedBrowserTransport {
@@ -792,28 +1051,27 @@ impl BrowserTransport for ManagedBrowserTransport {
                 }
                 "snapshot" => {
                     let session = self.session(session_id)?;
-                    let epoch = session.epoch.load(Ordering::SeqCst);
-                    let snapshot = session.snapshot().await?;
-                    if snapshot.len() <= SNAPSHOT_INLINE_MAX_BYTES {
-                        Ok(TransportResponse::data(json!({
-                            "epoch": epoch,
-                            "snapshot": snapshot,
-                        })))
-                    } else {
-                        let bytes = serde_json::to_vec(&json!({
-                            "epoch": epoch,
-                            "snapshot": snapshot,
-                        }))
-                        .map_err(|_| artifact_error("snapshot", session_id))?;
-                        Ok(TransportResponse::artifact(
-                            json!({ "epoch": epoch }),
-                            TransportArtifact {
-                                kind: "snapshot".to_string(),
-                                mime_type: "application/json".to_string(),
-                                bytes,
-                            },
-                        ))
-                    }
+                    self.snapshot_response(&session).await
+                }
+                "click" => {
+                    let reference = required_argument(&arguments, "ref")?;
+                    let session = self.session(session_id)?;
+                    session.click(reference).await?;
+                    self.snapshot_response(&session).await
+                }
+                "fill" => {
+                    let reference = required_argument(&arguments, "ref")?;
+                    let text = string_argument(&arguments, "text")?;
+                    let session = self.session(session_id)?;
+                    session.fill(reference, text).await?;
+                    self.snapshot_response(&session).await
+                }
+                "press" => {
+                    let reference = required_argument(&arguments, "ref")?;
+                    let key = required_argument(&arguments, "key")?;
+                    let session = self.session(session_id)?;
+                    session.press(reference, key).await?;
+                    self.snapshot_response(&session).await
                 }
                 "screenshot" => {
                     let screenshot = self.session(session_id)?.screenshot().await?;
@@ -908,6 +1166,13 @@ fn required_argument<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, Ap
         .ok_or_else(|| AppError::new("invalid_arguments", format!("{name} is required.")))
 }
 
+fn string_argument<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, AppError> {
+    arguments
+        .get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::new("invalid_arguments", format!("{name} is required.")))
+}
+
 fn start_failed(stage: &str) -> AppError {
     // The stage is an internal noun (profile/proxy/launch/pipes/target), never
     // content; it makes "it did not start" actionable in a bug report.
@@ -939,15 +1204,40 @@ fn artifact_error(operation: &str, session_id: &str) -> AppError {
     )
 }
 
+fn reference_epoch(reference: &str) -> Option<u64> {
+    let epoch = reference.strip_prefix('e')?.split(':').next()?;
+    epoch.parse().ok()
+}
+
+fn reference_status_code(status: &str) -> &'static str {
+    match status {
+        "stale" | "changed" | "missing" => "browser_stale_reference",
+        "invalid" => "browser_reference_invalid",
+        "unsupported" => "browser_action_unsupported",
+        _ => "browser_reference_failed",
+    }
+}
+
+fn reference_error(code: &str, operation: &str, session_id: &str, reference: &str) -> AppError {
+    AppError::new(
+        code,
+        format!(
+            "The {operation} action for reference {reference} in session {session_id} was refused ({code})."
+        ),
+    )
+}
+
 /// The snapshot extraction script: visible page text plus interactive elements
-/// tagged with [refN] references. The elements are also stashed on the page
-/// (`window.__juneSnapshotRefs`) so a future interaction tool can resolve a
-/// reference; references expire when the page navigates (the epoch bumps) or
-/// mutates. Runs entirely inside the page; the result string is the only thing
-/// that leaves it.
+/// tagged with epoch-scoped references. The elements are stashed in one page
+/// state object, and a MutationObserver invalidates that entire object on any
+/// DOM mutation. This deliberately uses coarse invalidation: it may require a
+/// new snapshot after an unrelated mutation, but can never retarget an old
+/// reference to a different element.
 const SNAPSHOT_JS: &str = r#"(() => {
   const MAX_REFS = 800;
   const MAX_TEXT = 150000;
+  const epoch = Number(window.__juneSnapshotEpoch || 0);
+  const mutationVersion = Number(window.__juneMutationVersion || 0);
   const lines = [];
   lines.push("URL: " + location.href);
   lines.push("Title: " + document.title);
@@ -1005,6 +1295,18 @@ const SNAPSHOT_JS: &str = r#"(() => {
       ""
     ).trim().replace(/\s+/g, " ").slice(0, 120);
   };
+  const elementFacts = (el) => ({
+    tag: el.tagName.toLowerCase(),
+    inputType: (el.getAttribute("type") || "").toLowerCase(),
+    role: (el.getAttribute("role") || "").toLowerCase(),
+    name: el.getAttribute("name") || "",
+    id: el.id || "",
+    label: accessibleLabel(el) || (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 120),
+    autocomplete: el.getAttribute("autocomplete") || "",
+    inForm: Boolean(el.closest("form")),
+    contentEditable: Boolean(el.isContentEditable),
+  });
+  const reference = (n) => "e" + epoch + ":m" + mutationVersion + ":n" + n;
   const describe = (el, n) => {
     const tag = el.tagName.toLowerCase();
     const type = el.getAttribute("type");
@@ -1016,7 +1318,7 @@ const SNAPSHOT_JS: &str = r#"(() => {
     const raw = isControl ? "" : sanitizedText(el);
     const text = raw.trim().replace(/\s+/g, " ").slice(0, 120);
     const href = tag === "a" ? (el.getAttribute("href") || "").slice(0, 300) : "";
-    let out = "[ref" + n + "] <" + tag + (type ? " type=" + type : "") + (role ? " role=" + role : "") + ">";
+    let out = "[" + reference(n) + "] <" + tag + (type ? " type=" + type : "") + (role ? " role=" + role : "") + ">";
     if (isControl) {
       out += " " + controlPlaceholder(el, label);
       return out;
@@ -1094,7 +1396,29 @@ const SNAPSHOT_JS: &str = r#"(() => {
     refs.push(el);
     interactive.push(describe(el, refs.length));
   }
-  window.__juneSnapshotRefs = refs;
+  if (window.__juneSnapshotObserver) window.__juneSnapshotObserver.disconnect();
+  const state = {
+    epoch,
+    mutationVersion,
+    refs,
+    elements: refs.map(elementFacts),
+    valid: true,
+  };
+  window.__juneSnapshotState = state;
+  const observer = new MutationObserver(() => {
+    window.__juneMutationVersion = Number(window.__juneMutationVersion || 0) + 1;
+    state.valid = false;
+    observer.disconnect();
+  });
+  if (document.documentElement) {
+    observer.observe(document.documentElement, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+    });
+  }
+  window.__juneSnapshotObserver = observer;
   lines.push("");
   lines.push("Interactive elements (" + interactive.length + "):");
   lines.push(...interactive);
@@ -1104,3 +1428,106 @@ const SNAPSHOT_JS: &str = r#"(() => {
   lines.push(text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) + "\n[truncated]" : text);
   return lines.join("\n");
 })()"#;
+
+const INSPECT_REFERENCE_JS: &str = r#"function(reference) {
+  const match = /^e(\d+):m(\d+):n(\d+)$/.exec(reference);
+  if (!match) return {status: "invalid"};
+  const state = window.__juneSnapshotState;
+  if (!state || !state.valid) return {status: "stale"};
+  if (state.epoch !== Number(match[1]) || state.mutationVersion !== Number(match[2])) {
+    return {status: "stale"};
+  }
+  const index = Number(match[3]) - 1;
+  const el = state.refs[index];
+  if (!el || !el.isConnected) return {status: "missing"};
+  return {status: "ok", element: state.elements[index]};
+}"#;
+
+const ACT_ON_REFERENCE_JS: &str = r#"function(operation, reference, value, expected) {
+  const match = /^e(\d+):m(\d+):n(\d+)$/.exec(reference);
+  if (!match) return {status: "invalid"};
+  const state = window.__juneSnapshotState;
+  if (!state || !state.valid) return {status: "stale"};
+  if (state.epoch !== Number(match[1]) || state.mutationVersion !== Number(match[2])) {
+    return {status: "stale"};
+  }
+  const index = Number(match[3]) - 1;
+  const el = state.refs[index];
+  if (!el || !el.isConnected) return {status: "missing"};
+  const labelText = (root) => {
+    const parts = [];
+    const walk = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        parts.push(node.nodeValue || "");
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const tag = node.tagName.toLowerCase();
+      const role = (node.getAttribute("role") || "").toLowerCase();
+      if (["input", "textarea", "select"].includes(tag) || node.isContentEditable || ["textbox", "combobox", "searchbox"].includes(role)) return;
+      for (const child of node.childNodes) walk(child);
+    };
+    walk(root);
+    return parts.join(" ").trim().replace(/\s+/g, " ");
+  };
+  const accessibleLabel = (node) => {
+    const labelledBy = (node.getAttribute("aria-labelledby") || "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => {
+        const label = document.getElementById(id);
+        return label ? labelText(label) : "";
+      })
+      .join(" ");
+    const labels = node.labels
+      ? Array.from(node.labels).map((label) => labelText(label)).join(" ")
+      : "";
+    return (
+      node.getAttribute("aria-label") || labelledBy || labels ||
+      node.getAttribute("placeholder") || node.getAttribute("name") || ""
+    ).trim().replace(/\s+/g, " ").slice(0, 120);
+  };
+  const current = {
+    tag: el.tagName.toLowerCase(),
+    inputType: (el.getAttribute("type") || "").toLowerCase(),
+    role: (el.getAttribute("role") || "").toLowerCase(),
+    name: el.getAttribute("name") || "",
+    id: el.id || "",
+    label: accessibleLabel(el) || (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 120),
+    autocomplete: el.getAttribute("autocomplete") || "",
+    inForm: Boolean(el.closest("form")),
+    contentEditable: Boolean(el.isContentEditable),
+  };
+  if (Object.keys(current).some((key) => current[key] !== expected[key])) {
+    return {status: "changed"};
+  }
+  if (operation === "click") {
+    el.click();
+  } else if (operation === "fill") {
+    if (!("value" in el) && !el.isContentEditable) return {status: "unsupported"};
+    el.focus();
+    if (el.isContentEditable) el.textContent = value;
+    else el.value = value;
+    el.dispatchEvent(new Event("input", {bubbles: true}));
+    el.dispatchEvent(new Event("change", {bubbles: true}));
+  } else if (operation === "press") {
+    el.focus();
+  } else {
+    return {status: "unsupported"};
+  }
+  state.valid = false;
+  return {status: "ok"};
+}"#;
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+
+    #[test]
+    fn reference_epoch_parser_refuses_malformed_and_distinguishes_old_epochs() {
+        assert_eq!(reference_epoch("e12:m4:n7"), Some(12));
+        assert_eq!(reference_epoch("ref7"), None);
+        assert_eq!(reference_epoch("eold:m4:n7"), None);
+        assert_ne!(reference_epoch("e1:m0:n1"), reference_epoch("e2:m0:n1"));
+    }
+}

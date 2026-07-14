@@ -9991,7 +9991,12 @@ async fn handle_browser_execute(
                 | "unknown_browser_tool"
                 | "browser_url_invalid"
                 | "browser_url_not_allowed"
-                | "browser_policy_blocked" => 400,
+                | "browser_policy_blocked"
+                | "browser_reference_invalid"
+                | "browser_stale_reference"
+                | "browser_action_unsupported"
+                | "browser_consequential_action_blocked"
+                | "browser_sensitive_field_blocked" => 400,
                 "extension_not_paired" | "browser_transport_unavailable" | "browser_not_found" => {
                     503
                 }
@@ -12894,7 +12899,7 @@ mod tests {
             );
         }
         assert!(JUNE_BROWSER_MCP_SCRIPT.contains("[\"session_id\", \"tab_id\", \"ref\"]"));
-        assert!(JUNE_BROWSER_MCP_SCRIPT.contains("[\"session_id\", \"tab_id\", \"key\"]"));
+        assert!(JUNE_BROWSER_MCP_SCRIPT.contains("[\"session_id\", \"tab_id\", \"ref\", \"key\"]"));
         assert!(!JUNE_BROWSER_MCP_SCRIPT.contains("\"name\": \"open\""));
         assert!(!JUNE_BROWSER_MCP_SCRIPT.contains("start_recording"));
         // It reads its dedicated token env var, kept distinct from the others.

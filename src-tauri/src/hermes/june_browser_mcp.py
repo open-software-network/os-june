@@ -95,7 +95,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "click",
-        "description": "Click a snapshot reference. Not implemented yet.",
+        "description": "Click a current snapshot reference and return a fresh snapshot.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -108,20 +108,21 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "press",
-        "description": "Press a key in a task tab. Not implemented yet.",
+        "description": "Press a key on a current snapshot reference and return a fresh snapshot.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "session_id": {"type": "string"},
                 "tab_id": {"type": "integer"},
+                "ref": {"type": "string"},
                 "key": {"type": "string"},
             },
-            "required": ["session_id", "tab_id", "key"],
+            "required": ["session_id", "tab_id", "ref", "key"],
         },
     },
     {
         "name": "fill",
-        "description": "Fill a snapshot reference. Not implemented yet.",
+        "description": "Fill a current snapshot reference and return a fresh snapshot.",
         "inputSchema": {
             "type": "object",
             "properties": {

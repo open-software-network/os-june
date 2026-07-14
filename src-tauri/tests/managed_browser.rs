@@ -52,7 +52,7 @@ impl Resolver for FixtureResolver {
 }
 
 /// A minimal HTTP fixture server: `/` serves a page with a heading, a link,
-/// and body text; `/redirect` 302s to the blocked internal host.
+/// an input, and body text; `/redirect` 302s to the blocked internal host.
 async fn spawn_fixture_server() -> SocketAddr {
     spawn_fixture_server_with_webrtc_probe(None).await
 }
@@ -111,8 +111,14 @@ peer.createOffer().then(offer => peer.setLocalDescription(offer));\
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     )
+                } else if path.starts_with("/other") {
+                    let body = "<!doctype html><html><head><title>Other page</title></head><body><h1>Link destination</h1></body></html>";
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
                 } else {
-                    let body = "<!doctype html><html><head><title>Fixture page</title></head><body><h1>Managed browser fixture</h1><a href=\"/other\">A fixture link</a><p>The quick brown fox jumps over the lazy dog.</p></body></html>";
+                    let body = "<!doctype html><html><head><title>Fixture page</title></head><body><h1>Managed browser fixture</h1><a href=\"/other\">A fixture link</a><label for=\"city\">City</label><input id=\"city\" name=\"city\"><button type=\"button\">Delete draft</button><p>The quick brown fox jumps over the lazy dog.</p></body></html>";
                     format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
@@ -176,10 +182,10 @@ async fn navigate_snapshot_screenshot_and_teardown_end_to_end() {
     assert!(url.starts_with("http://fixture.test"), "url: {url}");
     assert_eq!(navigated["title"].as_str(), Some("Fixture page"));
 
-    let snapshot = session.snapshot().await.expect("snapshot");
+    let (_, snapshot) = session.snapshot().await.expect("snapshot");
     assert!(snapshot.contains("Managed browser fixture"));
     assert!(snapshot.contains("quick brown fox"));
-    assert!(snapshot.contains("[ref1]"), "interactive refs missing");
+    assert!(snapshot.contains(":n1]"), "interactive refs missing");
 
     let screenshot = session.screenshot().await.expect("screenshot");
     assert!(
@@ -208,7 +214,7 @@ async fn snapshot_never_leaks_sensitive_field_values() {
         .navigate("http://fixture.test/secrets")
         .await
         .expect("navigate");
-    let text = session.snapshot().await.expect("snapshot");
+    let (_, text) = session.snapshot().await.expect("snapshot");
 
     for secret in [
         "hunter2-should-never-leak",
@@ -228,6 +234,72 @@ async fn snapshot_never_leaks_sensitive_field_values() {
     // The fields are still described, so the agent can reason about the form.
     assert!(text.contains("value hidden"));
     assert!(text.contains("One-time code"));
+
+    session.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "launches the real detected browser; run with -- --ignored"]
+async fn reference_click_fill_fresh_snapshots_and_stale_navigation_end_to_end() {
+    let _serial = LIVE_BROWSER_SERIAL.lock().await;
+    let artifacts = tempfile::tempdir().expect("artifacts dir");
+    let session = start_fixture_session(artifacts.path()).await;
+
+    session
+        .navigate("http://fixture.test/")
+        .await
+        .expect("navigate to interactions fixture");
+    let (first_epoch, first) = session.snapshot().await.expect("initial snapshot");
+    let link_ref = format!("e{first_epoch}:m0:n1");
+    let input_ref = format!("e{first_epoch}:m0:n2");
+    assert!(first.contains(&format!("[{link_ref}]")));
+    assert!(first.contains(&format!("[{input_ref}]")));
+
+    let consequential = session
+        .click(&format!("e{first_epoch}:m0:n3"))
+        .await
+        .expect_err("consequential managed action must be hard-blocked");
+    assert_eq!(consequential.code, "browser_consequential_action_blocked");
+    assert!(consequential.message.contains("not available in routines"));
+    assert!(!consequential.message.contains("Delete draft"));
+
+    session
+        .fill(&input_ref, "Krakow")
+        .await
+        .expect("fill input by reference");
+    let (after_fill_epoch, after_fill) = session.snapshot().await.expect("snapshot after fill");
+    assert!(after_fill_epoch > first_epoch, "fill must consume old refs");
+    assert!(after_fill.contains("City, input, filled"));
+    assert!(after_fill.contains(&format!("[e{after_fill_epoch}:m0:n1]")));
+
+    let fresh_link_ref = format!("e{after_fill_epoch}:m0:n1");
+    session
+        .click(&fresh_link_ref)
+        .await
+        .expect("click fixture link by reference");
+    let (after_click_epoch, after_click) = session.snapshot().await.expect("snapshot after click");
+    assert!(
+        after_click_epoch > after_fill_epoch,
+        "click must mint fresh refs"
+    );
+    assert!(after_click.contains("Link destination"));
+
+    session
+        .navigate("http://fixture.test/")
+        .await
+        .expect("return to fixture");
+    let (before_navigation_epoch, _) = session.snapshot().await.expect("snapshot before navigate");
+    let pre_navigation_ref = format!("e{before_navigation_epoch}:m0:n1");
+    session
+        .navigate("http://fixture.test/other")
+        .await
+        .expect("navigate away");
+    let stale = session
+        .click(&pre_navigation_ref)
+        .await
+        .expect_err("pre-navigation reference must be stale");
+    assert_eq!(stale.code, "browser_stale_reference");
+    assert!(!stale.message.contains("Krakow"));
 
     session.close().await;
 }
@@ -315,7 +387,7 @@ async fn public_page_end_to_end_with_production_policy() {
     let url = navigated["url"].as_str().expect("url");
     assert!(url.starts_with("https://example.com"), "url: {url}");
 
-    let snapshot = session.snapshot().await.expect("snapshot");
+    let (_, snapshot) = session.snapshot().await.expect("snapshot");
     assert!(snapshot.to_lowercase().contains("example"));
 
     // Production policy still blocks loopback and private destinations.
