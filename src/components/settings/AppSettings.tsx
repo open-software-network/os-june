@@ -72,8 +72,8 @@ import { getStoredTheme, setStoredTheme, type ThemePreference } from "../../lib/
 import { BRAND_PRESETS, getStoredBrand, setStoredBrand, type BrandId } from "../../lib/brand";
 import {
   FONT_SCALE_PRESETS,
-  getStoredFontScale,
   setStoredFontScale,
+  useFontScaleId,
   type FontScaleId,
 } from "../../lib/font-scale";
 import {
@@ -457,7 +457,7 @@ export function AppSettings({
   const [micOpen, setMicOpen] = useState(false);
   const [theme, setTheme] = useState<ThemePreference>(() => getStoredTheme());
   const [brand, setBrand] = useState<BrandId>(() => getStoredBrand());
-  const [fontScale, setFontScale] = useState<FontScaleId>(() => getStoredFontScale());
+  const fontScale = useFontScaleId();
   const [dateFormat, setDateFormat] = useState<DateFormatPreference>(() => getStoredDateFormat());
   const [releaseChannel, setReleaseChannelValue] = useState<ReleaseChannel>("stable");
   // Set only when a leave-rc switch turns up an installable stable, so the
@@ -488,6 +488,7 @@ export function AppSettings({
   const [micTestStartedAt, setMicTestStartedAt] = useState<number>();
   const [micTestElapsedMs, setMicTestElapsedMs] = useState(0);
   const [micTestSampleSrc, setMicTestSampleSrc] = useState<string>();
+
   const [micTestError, setMicTestError] = useState<string>();
   const [micTestPlaying, setMicTestPlaying] = useState(false);
   const controlled = controlledTab !== undefined && onTabChange !== undefined;
@@ -1517,10 +1518,7 @@ export function AppSettings({
                       aria-label="Text size"
                       value={fontScale}
                       options={FONT_SCALE_OPTIONS}
-                      onValueChange={(next) => {
-                        setFontScale(next);
-                        setStoredFontScale(next);
-                      }}
+                      onValueChange={setStoredFontScale}
                     />
                   </div>
                 </div>

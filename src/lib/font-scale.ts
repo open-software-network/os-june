@@ -10,6 +10,9 @@
 // runs so a non-default size doesn't flash the base scale first. Keep the
 // storage key and the id->multiplier map in sync with that bootstrap.
 
+import { useSyncExternalStore } from "react";
+import { isMacLikePlatform } from "./platform";
+
 export type FontScaleId = "default" | "large" | "larger";
 
 // Up-only ladder: June is a reading app, so there's no "denser" step — the two
@@ -26,6 +29,7 @@ export const FONT_SCALE_PRESETS: {
 ];
 
 const STORAGE_KEY = "os-june:font-scale";
+export const FONT_SCALE_CHANGED_EVENT = "june://font-scale-change";
 export const DEFAULT_FONT_SCALE: FontScaleId = "default";
 
 function presetFor(id: string | null) {
@@ -52,14 +56,78 @@ export function applyFontScale(id: FontScaleId) {
 }
 
 export function setStoredFontScale(id: FontScaleId) {
+  const next = presetFor(id).id;
   try {
-    localStorage.setItem(STORAGE_KEY, id);
+    localStorage.setItem(STORAGE_KEY, next);
   } catch {
     // Apply still works for this session.
   }
-  applyFontScale(id);
+  applyFontScale(next);
+  window.dispatchEvent(new CustomEvent<FontScaleId>(FONT_SCALE_CHANGED_EVENT, { detail: next }));
 }
 
 export function initFontScale() {
   applyFontScale(getStoredFontScale());
+}
+
+function subscribeFontScale(onChange: () => void) {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === STORAGE_KEY || event.key === null) onChange();
+  };
+  window.addEventListener(FONT_SCALE_CHANGED_EVENT, onChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(FONT_SCALE_CHANGED_EVENT, onChange);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+export function useFontScaleId() {
+  return useSyncExternalStore(subscribeFontScale, getStoredFontScale, () => DEFAULT_FONT_SCALE);
+}
+
+function stepStoredFontScale(delta: -1 | 1) {
+  const current = getStoredFontScale();
+  const currentIndex = FONT_SCALE_PRESETS.findIndex((preset) => preset.id === current);
+  const nextIndex = Math.min(FONT_SCALE_PRESETS.length - 1, Math.max(0, currentIndex + delta));
+  const next = FONT_SCALE_PRESETS[nextIndex]?.id ?? DEFAULT_FONT_SCALE;
+  if (next !== current) setStoredFontScale(next);
+}
+
+function shortcutAction(event: KeyboardEvent): "increase" | "decrease" | "reset" | undefined {
+  if (event.altKey) return undefined;
+
+  const hasPrimaryModifier = isMacLikePlatform()
+    ? event.metaKey && !event.ctrlKey
+    : event.ctrlKey && !event.metaKey;
+  if (!hasPrimaryModifier) return undefined;
+
+  if (event.key === "+" || event.key === "=") return "increase";
+  if (!event.shiftKey && event.key === "-") return "decrease";
+  if (!event.shiftKey && event.key === "0") return "reset";
+  return undefined;
+}
+
+/**
+ * Installs the standard desktop text zoom shortcuts. June's scale is
+ * intentionally up-only, so zooming out reverses a prior zoom-in and stops at
+ * the default size.
+ */
+export function installFontScaleShortcuts() {
+  const onKeyDown = (event: KeyboardEvent) => {
+    const action = shortcutAction(event);
+    if (!action) return;
+
+    event.preventDefault();
+    if (action === "increase") {
+      stepStoredFontScale(1);
+    } else if (action === "decrease") {
+      stepStoredFontScale(-1);
+    } else if (getStoredFontScale() !== DEFAULT_FONT_SCALE) {
+      setStoredFontScale(DEFAULT_FONT_SCALE);
+    }
+  };
+
+  window.addEventListener("keydown", onKeyDown);
+  return () => window.removeEventListener("keydown", onKeyDown);
 }

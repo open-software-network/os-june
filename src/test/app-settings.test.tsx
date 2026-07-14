@@ -10,6 +10,7 @@ import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { TELEMETRY_INFO_URL } from "../lib/p3a";
 import { DATE_FORMAT_STORAGE_KEY } from "../lib/date-format";
+import { setStoredFontScale } from "../lib/font-scale";
 
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
@@ -729,6 +730,34 @@ describe("AppSettings", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps the appearance text-size control in sync with zoom shortcuts", () => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    expect(screen.getByRole("button", { name: "Default text size" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    act(() => setStoredFontScale("large"));
+
+    expect(screen.getByRole("button", { name: "Large text size" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("changes the sidebar date format through the appearance picker", () => {
