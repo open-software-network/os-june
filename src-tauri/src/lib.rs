@@ -295,6 +295,13 @@ pub fn run() {
             connectors::commands::connectors_connect,
             connectors::commands::connectors_cancel_connect,
             connectors::commands::connectors_disconnect,
+            connectors::github_commands::github_connect_start,
+            connectors::github_commands::github_connect_wait,
+            connectors::github_commands::github_connect_cancel,
+            connectors::github_commands::github_connection_get,
+            connectors::github_commands::github_installations_refresh,
+            connectors::github_commands::github_installation_open,
+            connectors::github_commands::github_disconnect,
             connectors::commands::routine_trust_get,
             connectors::commands::routine_trust_set,
             connectors::commands::routine_trust_record_run,
@@ -314,6 +321,7 @@ pub fn run() {
         .manage(hermes_bridge::HermesBridge::default())
         .manage(os_accounts::LoginFlow::default())
         .manage(connectors::ConnectFlow::default())
+        .manage(connectors::github_auth::GitHubConnectFlow::default())
         .setup(|app| {
             setup_app_menu(app)?;
             menu_bar::setup(app)?;

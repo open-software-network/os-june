@@ -1968,6 +1968,45 @@ export type ConnectorAccount = {
   status: ConnectorAccountStatus;
 };
 
+export type GitHubConnectionStatus = "connected" | "setup_incomplete" | "reconnect_required";
+
+export type GitHubDevicePrompt = {
+  userCode: string;
+  verificationUri: string;
+  expiresAtUnix: number;
+  intervalSeconds: number;
+};
+
+export type GitHubRepository = {
+  repositoryId: string;
+  installationId: string;
+  ownerLogin: string;
+  name: string;
+  fullName: string;
+  private: boolean;
+  archived: boolean;
+  permissions: Record<string, boolean>;
+};
+
+export type GitHubInstallation = {
+  installationId: string;
+  ownerId: string;
+  ownerLogin: string;
+  ownerType: string;
+  repositorySelection: "all" | "selected";
+  permissions: Record<string, string>;
+  suspendedAt?: string;
+  repositories: GitHubRepository[];
+};
+
+export type GitHubConnection = {
+  githubUserId: string;
+  login: string;
+  avatarUrl?: string;
+  status: GitHubConnectionStatus;
+  installations: GitHubInstallation[];
+};
+
 /** Per-routine trust mode for connector action tools. Distinct from the
  * Sandboxed/Unrestricted machine-access choice: trust governs what a routine
  * may do with your Google account, not with your machine. */
@@ -2044,6 +2083,36 @@ export async function connectorsDisconnect(input: { accountId: string; revoke: b
   return invoke<void>("connectors_disconnect", {
     request: { accountId: input.accountId, revoke: input.revoke },
   });
+}
+
+export function githubConnectStart(): Promise<GitHubDevicePrompt> {
+  return invoke<GitHubDevicePrompt>("github_connect_start");
+}
+
+export function githubConnectWait(): Promise<GitHubConnection> {
+  return invoke<GitHubConnection>("github_connect_wait");
+}
+
+export function githubConnectCancel(): Promise<void> {
+  return invoke<void>("github_connect_cancel");
+}
+
+export function githubConnectionGet(): Promise<GitHubConnection | null> {
+  return invoke<GitHubConnection | null>("github_connection_get");
+}
+
+export function githubInstallationsRefresh(): Promise<GitHubConnection> {
+  return invoke<GitHubConnection>("github_installations_refresh");
+}
+
+export function githubInstallationOpen(installationId?: string): Promise<void> {
+  return invoke<void>("github_installation_open", {
+    installationId: installationId ?? null,
+  });
+}
+
+export function githubDisconnect(): Promise<void> {
+  return invoke<void>("github_disconnect");
 }
 
 /** Restarts the Hermes runtimes so a connect/disconnect/grant change lands in

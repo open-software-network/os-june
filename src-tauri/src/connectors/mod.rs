@@ -15,6 +15,7 @@ pub mod approvals;
 pub mod commands;
 pub mod github;
 pub mod github_auth;
+pub mod github_commands;
 pub mod github_store;
 pub mod google;
 pub mod oauth;
