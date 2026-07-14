@@ -146,6 +146,21 @@ export function ConnectorApprovalsTray() {
     ),
   ].slice(0, 3);
 
+  // Dev-only: only Google ships today, so a real queue only ever stacks one
+  // mark. The demo driver sets window.__connectorApprovalsStack to preview the
+  // overlapping-logo treatment with 2 to 3 marks; production ignores it and
+  // shows one mark per distinct provider (guarded on import.meta.env.DEV).
+  const demoStackCount =
+    import.meta.env.DEV && stackProviders.length > 0
+      ? Number(
+          (window as unknown as { __connectorApprovalsStack?: number }).__connectorApprovalsStack,
+        ) || 0
+      : 0;
+  const stackMarks =
+    demoStackCount > 0
+      ? Array.from({ length: Math.min(demoStackCount, 3) }, () => stackProviders[0])
+      : stackProviders;
+
   return (
     <aside
       className="connector-approvals"
@@ -162,9 +177,9 @@ export function ConnectorApprovalsTray() {
           onClick={() => setCollapsed((current) => !current)}
         >
           <span className="connector-approvals-stack" aria-hidden>
-            {stackProviders.length > 0 ? (
-              stackProviders.map((provider) => (
-                <span key={provider} className="connector-approvals-stack-mark">
+            {stackMarks.length > 0 ? (
+              stackMarks.map((provider, index) => (
+                <span key={`${provider}-${index}`} className="connector-approvals-stack-mark">
                   <ConnectorProviderIcon provider={provider} size={10} />
                 </span>
               ))

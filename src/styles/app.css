@@ -25979,15 +25979,15 @@ input:focus-visible,
 }
 
 .connector-approvals-stack-mark + .connector-approvals-stack-mark {
-  margin-left: -5px;
+  margin-left: -2px;
 }
 
-/* The next mark sits 3px right of this tile's right edge center (16px tile,
- * -5px overlap → its center lands at x=19px); carving a 10px circle there
+/* The next mark sits 6px right of this tile's right edge center (16px tile,
+ * -2px overlap → its center lands at x=22px); carving a 10px circle there
  * leaves a 2px see-through gap around the overlapping mark. */
 .connector-approvals-stack-mark:not(:last-child) {
-  -webkit-mask: radial-gradient(circle 10px at 19px 50%, transparent 98%, #000 100%);
-  mask: radial-gradient(circle 10px at 19px 50%, transparent 98%, #000 100%);
+  -webkit-mask: radial-gradient(circle 10px at 22px 50%, transparent 98%, #000 100%);
+  mask: radial-gradient(circle 10px at 22px 50%, transparent 98%, #000 100%);
 }
 
 .connector-approvals-header-actions {
