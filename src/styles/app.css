@@ -25875,8 +25875,8 @@ input:focus-visible,
 
 /* Connectors settings page: a capability and provider directory. Every entry
  * is always listed with a logo tile, name, one capability line, status, and
- * actions. The row recipe mirrors .mcp-server-row so integration lists read
- * the same across settings. */
+ * actions. The row recipe mirrors .mcp-server-row so connector and capability
+ * lists read the same across settings. */
 .connectors-card {
   padding: var(--sp-2) var(--sp-3);
 }

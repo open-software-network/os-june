@@ -41,7 +41,8 @@ export function BrowserUseCapabilityRow() {
         if (!cancelled) setStatus(current);
       })
       .catch(() => {
-        // Status stays unknown; the row shows "Not paired" copy below.
+        // Status stays unknown; the row falls back to the not-connected
+        // subtitle and the Connect action below.
       });
     void listen<ExtensionPairingStatus>(EXTENSION_PAIRING_CHANGED_EVENT, (event) => {
       if (!cancelled) setStatus(event.payload);
@@ -61,6 +62,22 @@ export function BrowserUseCapabilityRow() {
     try {
       const access = await setHermesBrowserAccess(true);
       setGrantEnabled(access.enabled);
+      await registerBrowserExtensionHost();
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  // Partial state (grant already on, extension not yet paired): only re-register
+  // the host manifest. Writing the grant again would rotate the proxy token and
+  // retire both runtime modes, interrupting active agent work for no
+  // authorization change, so the grant write stays on Connect/Disconnect only.
+  async function handleSetup() {
+    setSaving("connect");
+    setError(null);
+    try {
       await registerBrowserExtensionHost();
     } catch (err) {
       setError(messageFromError(err));
@@ -126,7 +143,7 @@ export function BrowserUseCapabilityRow() {
                 className="btn btn-secondary"
                 disabled={saving !== null}
                 aria-busy={saving === "connect" || undefined}
-                onClick={() => void handleConnect()}
+                onClick={() => void handleSetup()}
               >
                 {saving === "connect" ? "Setting up..." : "Set up extension"}
               </button>

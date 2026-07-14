@@ -333,7 +333,7 @@ Agent CLIs (Claude Code, Codex, Gemini, opencode): the user enabled Agent CLI ac
 /// `BROWSER_ACCESS_REQUEST_TOKEN` in `src/lib/browser-access.ts` must match
 /// the token spelled out below.
 const JUNE_SOUL_BROWSER_BLOCKED_MD: &str = r#"
-Browser use (the june_browser tools): the user has not enabled Browser use, so those tools are disabled and any call to them fails with browser_access_disabled. Never pretend you browsed or invent page content. When a task genuinely needs a live browser (a page behind a login, operating a web app, content the fetch tools cannot reach), say plainly that Browser use is off, then request it directly: put the literal token [REQUEST:BROWSER_ACCESS] on its own line in your reply. The June app replaces that token with an approval card; one click enables "Browser use" in Settings, restarts the runtime, and prompts you to retry. Use the token only for this setting and at most once per reply. The user can instead flip it themselves in Settings, Agent tab. For public pages that need no login or interaction, prefer the june_web tools; they work without Browser use.
+Browser use (the june_browser tools): the user has not enabled Browser use, so those tools are disabled and any call to them fails with browser_access_disabled. Never pretend you browsed or invent page content. When a task genuinely needs a live browser (a page behind a login, operating a web app, content the fetch tools cannot reach), say plainly that Browser use is off, then request it directly: put the literal token [REQUEST:BROWSER_ACCESS] on its own line in your reply. The June app replaces that token with an approval card; one click enables "Browser use" in Settings, restarts the runtime, and prompts you to retry. Use the token only for this setting and at most once per reply. The user can instead turn it on themselves in Settings, Connectors. For public pages that need no login or interaction, prefer the june_web tools; they work without Browser use.
 "#;
 
 /// Per-process sandbox-status line, delivered via `HERMES_ENVIRONMENT_HINT`
@@ -14658,6 +14658,10 @@ mcp_servers:
             assert!(soul.contains("browser_access_disabled"));
             assert!(soul.contains("[REQUEST:BROWSER_ACCESS]"));
             assert!(soul.contains("Never pretend you browsed"));
+            // The manual fallback must name where the control actually lives.
+            // Browser use moved out of the Agent tab into Connectors.
+            assert!(soul.contains("Settings, Connectors"));
+            assert!(!soul.contains("Browser use\" in Settings, Agent tab"));
         }
     }
 
