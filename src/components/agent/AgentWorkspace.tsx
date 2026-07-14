@@ -1749,7 +1749,7 @@ type AgentSessionContinuity = {
   queuedAttachmentFollowUps: Record<string, QueuedAttachmentFollowUp[]>;
 };
 
-type AgentSessionTitleSource = "prompt" | "exchange" | "manual" | "rejected";
+type AgentSessionTitleSource = "prompt" | "exchange" | "manual" | "rejected" | "rejected-final";
 
 type IssueReportDeliveryResult = { sent: true } | { sent: false; errorMessage: string };
 
@@ -8397,10 +8397,10 @@ export function AgentWorkspace({
     if (
       source === "manual" ||
       source === "exchange" ||
-      source === "rejected" ||
+      source === "rejected-final" ||
       settledTitleKind === "manual" ||
       settledTitleKind === "exchange" ||
-      settledTitleKind === "rejected"
+      settledTitleKind === "rejected-final"
     ) {
       return;
     }
@@ -8415,19 +8415,22 @@ export function AgentWorkspace({
       firstUserMessageIndex >= 0 ? messages[firstUserMessageIndex] : undefined;
     const prompt = firstUserMessage ? visibleHermesMessageText(firstUserMessage).trim() : "";
     if (!prompt) return;
-    const firstAssistantReply =
+    const assistantReplies =
       firstUserMessageIndex >= 0
         ? messages
             .slice(firstUserMessageIndex + 1)
-            .find(
+            .filter(
               (message) => message.role === "assistant" && visibleHermesMessageText(message).trim(),
             )
-        : undefined;
+        : [];
+    const wasRejected = source === "rejected" || settledTitleKind === "rejected";
+    if (wasRejected && assistantReplies.length < 2) return;
+    const assistantReply = wasRejected ? assistantReplies.at(-1) : assistantReplies[0];
     const reply = truncateAgentTitleResponseExcerpt(
-      visibleHermesMessageText(firstAssistantReply).trim(),
+      visibleHermesMessageText(assistantReply).trim(),
     );
     const hasReply = Boolean(reply);
-    if (source === "prompt") {
+    if (source === "prompt" || wasRejected) {
       if (!hasReply) return;
     } else if (sessionTitleOverridesRef.current[sessionId]) {
       return;
@@ -8437,11 +8440,12 @@ export function AgentWorkspace({
     }
     const settleRejectedTitle = () => {
       if (sessionTitleSourceRef.current[sessionId] === "manual") return;
+      const rejectionIsFinal = wasRejected;
       sessionTitleSourceRef.current = {
         ...sessionTitleSourceRef.current,
-        [sessionId]: "rejected",
+        [sessionId]: rejectionIsFinal ? "rejected-final" : "rejected",
       };
-      rememberSessionTitleRejected(sessionId);
+      rememberSessionTitleRejected(sessionId, rejectionIsFinal);
     };
     titleSuggestionInFlightSessionIdsRef.current.add(sessionId);
     let shouldRecheckLatestMessages = false;

@@ -315,6 +315,27 @@ describe("agent HUD", () => {
     expect(stackElement()).not.toHaveTextContent("Summarize latest failures");
   });
 
+  it("keeps an unsettled prompt-derived title that resembles assistant dialogue", async () => {
+    const prompt = "I can't get the microphone to work in meetings";
+    const promptTitle = "I can't get the microphone to";
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [{ ...sessionFixture("session-1", promptTitle), preview: prompt }],
+      workingSessionIds: ["session-1"],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "running",
+      title: promptTitle,
+      prompt,
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent(promptTitle);
+  });
+
   it("stays collapsed after an explicit collapse while a session still needs input", async () => {
     await loadAgentHud();
 

@@ -26,6 +26,7 @@ import {
   isRefusalLikeAgentSessionTitle,
   sessionSettledTitleKind,
 } from "./lib/agent-session-titles";
+import { titleFromPrompt } from "./lib/hermes-adapter";
 import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import type { HermesSessionInfo } from "./lib/tauri";
@@ -488,20 +489,27 @@ function sessionStatus(session: HermesSessionInfo, record?: StatusRecord): HudSe
 function sessionTitle(session: HermesSessionInfo, record?: StatusRecord) {
   const storedTitle = session.title?.trim();
   const settledTitleKind = sessionSettledTitleKind(session.id);
-  if (storedTitle && settledTitleKind && isHudStoredSessionTitleSafe(storedTitle, session.id)) {
+  if (
+    storedTitle &&
+    settledTitleKind &&
+    isHudStoredSessionTitleSafe(storedTitle, session.id, record?.prompt, session.preview)
+  ) {
     return storedTitle;
   }
   const recordTitle = record?.title?.trim();
   if (recordTitle) {
-    if (isHudStatusTitleSafe(recordTitle, session.id)) return recordTitle;
+    if (isHudStatusTitleSafe(recordTitle, session.id, record?.prompt)) return recordTitle;
     const safeSessionTitle = storedTitle;
-    if (safeSessionTitle && isHudStoredSessionTitleSafe(safeSessionTitle, session.id)) {
+    if (
+      safeSessionTitle &&
+      isHudStoredSessionTitleSafe(safeSessionTitle, session.id, record?.prompt, session.preview)
+    ) {
       return safeSessionTitle;
     }
     return record?.prompt?.trim() || session.preview?.trim() || "Agent session";
   }
   if (storedTitle) {
-    return isHudStoredSessionTitleSafe(storedTitle, session.id)
+    return isHudStoredSessionTitleSafe(storedTitle, session.id, record?.prompt, session.preview)
       ? storedTitle
       : record?.prompt?.trim() || session.preview?.trim() || "Agent session";
   }
@@ -532,19 +540,46 @@ function sessionTimestamp(session: HermesSessionInfo, record?: StatusRecord) {
 
 function statusTitle(record: StatusRecord) {
   const title = record.title?.trim();
-  return title && isHudStatusTitleSafe(title, record.sessionId)
+  return title && isHudStatusTitleSafe(title, record.sessionId, record.prompt)
     ? title
     : record.prompt?.trim() || "Agent session";
 }
 
-function isHudStatusTitleSafe(title: string, sessionId?: string) {
-  return sessionSettledTitleKind(sessionId) === "exchange"
-    ? isAgentSessionTitleCandidate(title)
-    : !isRefusalLikeAgentSessionTitle(title);
+function isHudStatusTitleSafe(title: string, sessionId?: string, prompt?: string) {
+  const settledTitleKind = sessionSettledTitleKind(sessionId);
+  if (
+    settledTitleKind === "manual" ||
+    settledTitleKind === "rejected" ||
+    settledTitleKind === "rejected-final"
+  ) {
+    return true;
+  }
+  if (settledTitleKind === "exchange") return isAgentSessionTitleCandidate(title);
+  return isPromptDerivedTitle(title, prompt) || !isRefusalLikeAgentSessionTitle(title);
 }
 
-function isHudStoredSessionTitleSafe(title: string, sessionId: string) {
-  return sessionSettledTitleKind(sessionId) === "manual" || isHudStatusTitleSafe(title, sessionId);
+function isHudStoredSessionTitleSafe(
+  title: string,
+  sessionId: string,
+  ...promptCandidates: Array<string | undefined>
+) {
+  const settledTitleKind = sessionSettledTitleKind(sessionId);
+  if (
+    settledTitleKind === "manual" ||
+    settledTitleKind === "rejected" ||
+    settledTitleKind === "rejected-final"
+  ) {
+    return true;
+  }
+  if (settledTitleKind === "exchange") return isAgentSessionTitleCandidate(title);
+  return (
+    promptCandidates.some((prompt) => isPromptDerivedTitle(title, prompt)) ||
+    !isRefusalLikeAgentSessionTitle(title)
+  );
+}
+
+function isPromptDerivedTitle(title: string, prompt?: string) {
+  return Boolean(prompt?.trim() && titleFromPrompt(prompt) === title);
 }
 
 function statusSummary(record: StatusRecord) {
@@ -732,7 +767,7 @@ function sameStatusSubject(a: StatusRecord, b: StatusRecord) {
 }
 
 function statusSubject(record: StatusRecord) {
-  return statusTitle(record).trim().toLowerCase();
+  return (record.title?.trim() || record.prompt?.trim() || "Agent session").toLowerCase();
 }
 
 async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries: boolean) {

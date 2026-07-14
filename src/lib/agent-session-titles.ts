@@ -13,7 +13,7 @@
 const STORAGE_KEY = "june.agent.manuallyTitledSessions";
 let volatileStore: Record<string, AgentSessionSettledTitleKind> = {};
 
-export type AgentSessionSettledTitleKind = "manual" | "exchange" | "rejected";
+export type AgentSessionSettledTitleKind = "manual" | "exchange" | "rejected" | "rejected-final";
 
 const ASSISTANT_DIALOGUE_PREFIXES = [
   "i'm sorry",
@@ -105,13 +105,13 @@ function readStore(): Record<string, AgentSessionSettledTitleKind> {
     if (!raw) return { ...volatileStore };
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {};
+      return { ...volatileStore };
     }
     const store: Record<string, AgentSessionSettledTitleKind> = {};
     for (const [sessionId, value] of Object.entries(parsed)) {
       if (value === true || value === "manual") {
         store[sessionId] = "manual";
-      } else if (value === "exchange" || value === "rejected") {
+      } else if (value === "exchange" || value === "rejected" || value === "rejected-final") {
         store[sessionId] = value;
       }
     }
@@ -158,10 +158,10 @@ export function rememberSessionExchangeTitled(sessionId: string) {
   writeStore(store);
 }
 
-export function rememberSessionTitleRejected(sessionId: string) {
+export function rememberSessionTitleRejected(sessionId: string, final = false) {
   const store = readStore();
   if (store[sessionId] === "manual" || store[sessionId] === "exchange") return;
-  store[sessionId] = "rejected";
+  store[sessionId] = final ? "rejected-final" : "rejected";
   writeStore(store);
 }
 

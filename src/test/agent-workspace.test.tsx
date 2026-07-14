@@ -4636,6 +4636,18 @@ describe("AgentWorkspace", () => {
       content: "Could you clarify which failures you mean?",
       timestamp: "2026-06-04T12:00:01Z",
     };
+    const followUpUserMessage = {
+      id: "u2",
+      role: "user",
+      content: "the staging failures",
+      timestamp: "2026-06-04T12:00:02Z",
+    };
+    const substantiveAssistantMessage = {
+      id: "a2",
+      role: "assistant",
+      content: "I fixed the staging persistence race and verified the regression test.",
+      timestamp: "2026-06-04T12:00:03Z",
+    };
     mocks.listHermesSessions.mockResolvedValue([
       {
         id: "session-invalid-exchange-title",
@@ -4652,7 +4664,8 @@ describe("AgentWorkspace", () => {
       .mockRejectedValueOnce({
         code: "agent_title_empty",
         message: "Title generation returned an empty title.",
-      });
+      })
+      .mockResolvedValueOnce({ title: "Staging persistence fix" });
     hermesActivityStore.record(
       {
         kind: "lifecycle",
@@ -4688,6 +4701,30 @@ describe("AgentWorkspace", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 2600));
     });
     expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2);
+
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      userMessage,
+      assistantMessage,
+      followUpUserMessage,
+      substantiveAssistantMessage,
+    ]);
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-invalid-exchange-title",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:04Z",
+      },
+      "sandboxed",
+    );
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(3));
+    expect(await screen.findByText("Staging persistence fix")).toBeInTheDocument();
   }, 10_000);
 
   it("keeps a failed fresh title fallback retry to a later natural refresh", async () => {
