@@ -32,7 +32,8 @@ const STORAGE_KEY = "os-june:font-scale";
 export const FONT_SCALE_CHANGED_EVENT = "june://font-scale-change";
 export const DEFAULT_FONT_SCALE: FontScaleId = "default";
 let sessionFontScale: FontScaleId = DEFAULT_FONT_SCALE;
-let storageUnavailable = false;
+let storageWriteFailed = false;
+let storageReadFailed = false;
 
 function presetFor(id: string | null) {
   // Unknown ids (including a stored "small" from the dropped preset) resolve
@@ -45,13 +46,17 @@ function presetFor(id: string | null) {
 }
 
 export function getStoredFontScale(): FontScaleId {
-  if (storageUnavailable) return sessionFontScale;
+  if (storageWriteFailed) return sessionFontScale;
   try {
-    sessionFontScale = presetFor(localStorage.getItem(STORAGE_KEY)).id;
+    const next = presetFor(localStorage.getItem(STORAGE_KEY)).id;
+    const recoveredFromReadFailure = storageReadFailed;
+    storageReadFailed = false;
+    sessionFontScale = next;
+    if (recoveredFromReadFailure) applyFontScale(next);
     return sessionFontScale;
   } catch {
-    // localStorage can throw in sandboxed contexts.
-    storageUnavailable = true;
+    // A transient read failure should not prevent a later snapshot from retrying.
+    storageReadFailed = true;
     return sessionFontScale;
   }
 }
@@ -65,17 +70,19 @@ export function setStoredFontScale(id: FontScaleId) {
   sessionFontScale = next;
   try {
     localStorage.setItem(STORAGE_KEY, next);
-    storageUnavailable = false;
+    storageWriteFailed = false;
+    storageReadFailed = false;
   } catch {
     // The in-memory value keeps stepping and reset working for this session.
-    storageUnavailable = true;
+    storageWriteFailed = true;
   }
   applyFontScale(next);
   window.dispatchEvent(new CustomEvent<FontScaleId>(FONT_SCALE_CHANGED_EVENT, { detail: next }));
 }
 
 export function initFontScale() {
-  storageUnavailable = false;
+  storageWriteFailed = false;
+  storageReadFailed = false;
   applyFontScale(getStoredFontScale());
 }
 
@@ -105,8 +112,11 @@ function shortcutAction(event: KeyboardEvent): "increase" | "decrease" | "reset"
   if (!hasPrimaryModifier) return undefined;
 
   if (event.key === "+" || event.key === "=") return "increase";
-  if (!event.shiftKey && event.key === "-") return "decrease";
-  if (!event.shiftKey && event.key === "0") return "reset";
+  if (event.key === "-") return "decrease";
+  if (event.key === "0") return "reset";
+  if (event.code === "Equal" || event.code === "NumpadAdd") return "increase";
+  if (event.code === "Minus" || event.code === "NumpadSubtract") return "decrease";
+  if (event.code === "Digit0" || event.code === "Numpad0") return "reset";
   return undefined;
 }
 

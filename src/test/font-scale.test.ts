@@ -69,7 +69,19 @@ describe("font scale shortcuts", () => {
   it("ignores chords that are not standard zoom shortcuts", () => {
     fireEvent.keyDown(window, { key: "+", ctrlKey: true, shiftKey: true });
     fireEvent.keyDown(window, { key: "+", metaKey: true, altKey: true, shiftKey: true });
-    fireEvent.keyDown(window, { key: "0", metaKey: true, shiftKey: true });
+    fireEvent.keyDown(window, { key: "z", code: "KeyZ", metaKey: true, shiftKey: true });
+    expect(getStoredFontScale()).toBe("default");
+  });
+
+  it("recognizes physical zoom keys across keyboard layouts", () => {
+    fireEvent.keyDown(window, { key: "´", code: "Equal", metaKey: true });
+    expect(getStoredFontScale()).toBe("large");
+
+    fireEvent.keyDown(window, { key: "à", code: "Digit0", metaKey: true, shiftKey: true });
+    expect(getStoredFontScale()).toBe("default");
+
+    fireEvent.keyDown(window, { key: "´", code: "Equal", metaKey: true });
+    fireEvent.keyDown(window, { key: "/", code: "Minus", metaKey: true, shiftKey: true });
     expect(getStoredFontScale()).toBe("default");
   });
 
@@ -113,6 +125,23 @@ describe("font scale shortcuts", () => {
       expect(document.documentElement.style.getPropertyValue("--font-scale")).toBe("1");
     } finally {
       setItem.mockRestore();
+    }
+  });
+
+  it("retries snapshots after a transient storage read failure", () => {
+    const getItem = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementationOnce(() => {
+        throw new DOMException("Storage temporarily unavailable", "SecurityError");
+      })
+      .mockImplementation(() => "large");
+
+    try {
+      expect(getStoredFontScale()).toBe("default");
+      expect(getStoredFontScale()).toBe("large");
+      expect(document.documentElement.style.getPropertyValue("--font-scale")).toBe("1.1");
+    } finally {
+      getItem.mockRestore();
     }
   });
 });
