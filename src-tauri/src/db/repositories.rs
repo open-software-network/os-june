@@ -552,12 +552,8 @@ impl Repositories {
                     repository.owner_login, repository.name, repository.full_name,
                     repository.is_private, repository.is_archived, repository.permissions_json
              FROM github_repositories AS repository
-             INNER JOIN github_installations AS installation
-               ON installation.installation_id = repository.installation_id
-             WHERE installation.github_user_id = ?
              ORDER BY repository.full_name, repository.repository_id",
         )
-        .bind(&connection.github_user_id)
         .fetch_all(&mut *tx)
         .await?;
 

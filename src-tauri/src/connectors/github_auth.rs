@@ -173,7 +173,7 @@ impl GitHubConnectFlow {
             .fetch_add(1, Ordering::SeqCst)
             .checked_add(1)
             .ok_or_else(state_invalid)?;
-        let (cancellation, _) = tokio::sync::watch::channel(false);
+        let (cancellation, mut cancellation_receiver) = tokio::sync::watch::channel(false);
         {
             let mut active = self.active.lock().await;
             if let Some(previous) = active.take() {
@@ -186,7 +186,12 @@ impl GitHubConnectFlow {
             });
         }
 
-        let (prompt, pending) = match client.start_device_flow(client_id).await {
+        let start_result = tokio::select! {
+            biased;
+            _ = cancellation_receiver.changed() => Err(connect_canceled()),
+            result = client.start_device_flow(client_id) => result,
+        };
+        let (prompt, pending) = match start_result {
             Ok(result) => result,
             Err(error) => {
                 self.clear_if_current(attempt_id).await;
@@ -1543,6 +1548,7 @@ pub(crate) mod tests {
     async fn delayed_device_server() -> (
         String,
         std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
         tokio::task::JoinHandle<()>,
     ) {
         let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -1551,6 +1557,8 @@ pub(crate) mod tests {
         let base_url = format!("http://{}", listener.local_addr().expect("server address"));
         let first_blocked = std::sync::Arc::new(tokio::sync::Notify::new());
         let first_blocked_for_task = first_blocked.clone();
+        let release_first = std::sync::Arc::new(tokio::sync::Notify::new());
+        let release_first_for_task = release_first.clone();
         let task = tokio::spawn(async move {
             let (mut first, _) = listener.accept().await.expect("accept first request");
             let expected = RequestExpectations {
@@ -1570,6 +1578,7 @@ pub(crate) mod tests {
             )
             .await
             .expect("write second response");
+            release_first_for_task.notified().await;
             write_json_response(
                 &mut first,
                 r#"{"device_code":"old-device","user_code":"OLD-CODE","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}"#,
@@ -1577,12 +1586,12 @@ pub(crate) mod tests {
             .await
             .expect("write first response");
         });
-        (base_url, first_blocked, task)
+        (base_url, first_blocked, release_first, task)
     }
 
     #[tokio::test]
     async fn a_delayed_first_start_cannot_replace_a_faster_second_start() {
-        let (base_url, first_blocked, server) = delayed_device_server().await;
+        let (base_url, first_blocked, release_first, server) = delayed_device_server().await;
         let client = GitHubAuthClient::for_test(&base_url).expect("test client");
         let flow = std::sync::Arc::new(GitHubConnectFlow::default());
 
@@ -1603,15 +1612,55 @@ pub(crate) mod tests {
             "NEW-CODE"
         );
         assert_eq!(
-            first
+            tokio::time::timeout(Duration::from_millis(200), first)
                 .await
+                .expect("replacement must cancel the blocked first request")
                 .expect("first task")
                 .expect_err("older start must be canceled")
                 .code,
             "github_connect_canceled"
         );
         assert_eq!(flow.active_attempt_id().await, Some(2));
+        release_first.notify_one();
         server.await.expect("delayed server");
+    }
+
+    #[tokio::test]
+    async fn explicit_cancellation_interrupts_a_blocked_device_start_immediately() {
+        let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+        let resume = std::sync::Arc::new(tokio::sync::Notify::new());
+        let fixture = ResponseFixture::json(
+            200,
+            r#"{"device_code":"device-secret","user_code":"ABCD-EFGH","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}"#,
+        )
+        .blocked(reached.clone(), resume.clone());
+        let (base_url, server) = scripted_server(vec![(
+            fixture,
+            RequestExpectations {
+                client_id: Some("Iv23example"),
+                ..RequestExpectations::default()
+            },
+        )])
+        .await;
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+        let flow = std::sync::Arc::new(GitHubConnectFlow::default());
+        let starting_flow = flow.clone();
+        let starting_client = client.clone();
+        let start =
+            tokio::spawn(async move { starting_flow.start(&starting_client, "Iv23example").await });
+
+        reached.notified().await;
+        flow.cancel().await.expect("cancel flow");
+        let error = tokio::time::timeout(Duration::from_millis(200), start)
+            .await
+            .expect("cancellation must not wait for the device endpoint")
+            .expect("start task")
+            .expect_err("canceled start");
+        assert_eq!(error.code, "github_connect_canceled");
+        assert_eq!(flow.active_attempt_id().await, None);
+
+        resume.notify_one();
+        server.await.expect("blocked device server");
     }
 
     #[tokio::test]
