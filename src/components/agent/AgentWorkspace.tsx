@@ -8415,6 +8415,7 @@ export function AgentWorkspace({
       firstUserMessageIndex >= 0 ? messages[firstUserMessageIndex] : undefined;
     const prompt = firstUserMessage ? visibleHermesMessageText(firstUserMessage).trim() : "";
     if (!prompt) return;
+    let titlePrompt = prompt;
     const wasRejected = source === "rejected" || settledTitleKind === "rejected";
     const firstAssistantReplyIndex = messages.findIndex(
       (message, index) =>
@@ -8438,6 +8439,7 @@ export function AgentWorkspace({
           Boolean(visibleHermesMessageText(message).trim()),
       );
       if (laterUserMessageIndex < 0 || laterAssistantReplyIndex < 0) return;
+      titlePrompt = visibleHermesMessageText(messages[laterUserMessageIndex]).trim();
       assistantReply = messages[laterAssistantReplyIndex];
     }
     const reply = truncateAgentTitleResponseExcerpt(
@@ -8468,7 +8470,10 @@ export function AgentWorkspace({
     titleSuggestionInFlightSessionIdsRef.current.add(sessionId);
     let shouldRecheckLatestMessages = false;
     try {
-      const suggestion = await agentSessionTitleForPrompt(prompt, hasReply ? reply : undefined);
+      const suggestion = await agentSessionTitleForPrompt(
+        titlePrompt,
+        hasReply ? reply : undefined,
+      );
       if (titleSuggestionSessionIdsRef.current.has(sessionId)) return;
       if (!suggestion.fromModel && sessionTitleOverridesRef.current[sessionId]) {
         if (suggestion.rejected && hasReply) settleRejectedTitle();

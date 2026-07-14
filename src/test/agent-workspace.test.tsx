@@ -4826,6 +4826,10 @@ describe("AgentWorkspace", () => {
     });
 
     await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(3));
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenLastCalledWith(
+      "the staging failures",
+      "I fixed the staging persistence race and verified the regression test.",
+    );
     expect(await screen.findByText("Staging persistence fix")).toBeInTheDocument();
   }, 15_000);
 
