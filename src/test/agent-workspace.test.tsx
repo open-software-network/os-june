@@ -44,6 +44,7 @@ const HERO_GREETING = new RegExp(
 );
 
 const mocks = vi.hoisted(() => ({
+  cancelAgentRunMonitoring: vi.fn(),
   cancelAgentTask: vi.fn(),
   createAgentTask: vi.fn(),
   editImage: vi.fn(),
@@ -96,6 +97,9 @@ const mocks = vi.hoisted(() => ({
   setHermesAgentCliAccess: vi.fn(),
   listHermesSessions: vi.fn(),
   gatewayRequest: vi.fn(),
+  markAgentRunSucceeded: vi.fn(),
+  releaseAgentRunSettlement: vi.fn(),
+  startAgentRunMonitoring: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
   gatewayInstances: [] as Array<{
     connect: ReturnType<typeof vi.fn>;
@@ -106,6 +110,13 @@ const mocks = vi.hoisted(() => ({
     mocks.eventHandlers.set(eventName, handler);
     return () => mocks.eventHandlers.delete(eventName);
   }),
+}));
+
+vi.mock("../lib/agent-run-monitor", () => ({
+  cancelAgentRunMonitoring: mocks.cancelAgentRunMonitoring,
+  markAgentRunSucceeded: mocks.markAgentRunSucceeded,
+  releaseAgentRunSettlement: mocks.releaseAgentRunSettlement,
+  startAgentRunMonitoring: mocks.startAgentRunMonitoring,
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -2083,6 +2094,7 @@ describe("AgentWorkspace", () => {
     const retry = await screen.findByRole("button", { name: "Retry queued message" });
     expect(screen.getByText("Couldn't send")).toBeInTheDocument();
     expect(screen.getByText("review the brief next")).toBeInTheDocument();
+    expect(mocks.releaseAgentRunSettlement).not.toHaveBeenCalled();
     await user.click(retry);
     await waitFor(() => expect(queuedAttempts).toBe(2));
     expect(screen.queryByText("Up next")).toBeNull();
@@ -8255,6 +8267,121 @@ describe("AgentWorkspace", () => {
     );
     expect(mocks.gatewayEventHandlers.size).toBe(0);
     window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it("does not arm readiness for a failure-flavored terminal frame", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "run the build" }),
+    );
+
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith(
+        expect.objectContaining({ storedSessionId: "session-2" }),
+      ),
+    );
+    mocks.markAgentRunSucceeded.mockClear();
+    mocks.releaseAgentRunSettlement.mockClear();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-2",
+          payload: { status: "timeout" },
+        });
+      }
+    });
+
+    expect(statusDetails).toContainEqual(
+      expect.objectContaining({ sessionId: "session-2", status: "failed" }),
+    );
+    expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledWith("session-2");
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+    expect(mocks.releaseAgentRunSettlement).not.toHaveBeenCalled();
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it("hands an accepted run to app-lifetime settlement monitoring", async () => {
+    vi.useFakeTimers();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "run the build" }),
+    );
+
+    try {
+      render(<AgentWorkspace />);
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-2",
+          text: "run the build",
+        }),
+      );
+      expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith({
+        storedSessionId: "session-2",
+        runtimeSessionId: "runtime-session-2",
+        title: "Summarize Current Page",
+        fullMode: false,
+        settlementHeld: true,
+      });
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-2",
+            payload: { status: "success" },
+          });
+        }
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-2");
+      expect(mocks.releaseAgentRunSettlement).toHaveBeenCalledWith("session-2");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases an unqueued run for monitoring when the Agent view unmounts", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "run the build" }),
+    );
+    const { unmount } = render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith(
+        expect.objectContaining({
+          storedSessionId: "session-2",
+          runtimeSessionId: "runtime-session-2",
+          settlementHeld: true,
+        }),
+      ),
+    );
+    unmount();
+
+    expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalledWith("session-2");
+    expect(mocks.releaseAgentRunSettlement).toHaveBeenCalledWith("session-2");
   });
 
   it("keeps sudo and secret pending status copy generic", async () => {

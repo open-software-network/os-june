@@ -5,6 +5,7 @@ export const AGENT_DELETE_SESSION_EVENT = "june:agent:delete-session";
 export const AGENT_SESSIONS_CHANGED_EVENT = "june:agent:sessions-changed";
 export const AGENT_NEW_SESSION_PENDING_KEY = "june:agent:new-session-pending";
 export const AGENT_SESSION_STATUS_EVENT = "june:agent:session-status";
+export const AGENT_RUN_SETTLED_EVENT = "june:agent:run-settled";
 export const AGENT_OPEN_EVENT = "june:agent:open";
 // Dev-only: toggles the agent response gallery (window.__agentGallery) or its
 // error-focused variant (window.__agentErrors).
@@ -31,6 +32,12 @@ export type AgentSessionStatusDetail = {
   needsUserCount?: number;
 };
 
+export type AgentRunSettledDetail = {
+  sessionId: string;
+  title: string;
+  summary: string;
+};
+
 export type AgentSessionsChangedDetail = {
   sessions: HermesSessionInfo[];
   selectedSessionId?: string;
@@ -47,6 +54,19 @@ export function dispatchAgentSessionStatus(detail: AgentSessionStatusDetail) {
   void import("@tauri-apps/api/event")
     .then((api) =>
       typeof api.emit === "function" ? api.emit(AGENT_SESSION_STATUS_EVENT, detail) : undefined,
+    )
+    .catch(() => {});
+}
+
+export function dispatchAgentRunSettled(detail: AgentRunSettledDetail) {
+  window.dispatchEvent(
+    new CustomEvent<AgentRunSettledDetail>(AGENT_RUN_SETTLED_EVENT, {
+      detail,
+    }),
+  );
+  void import("@tauri-apps/api/event")
+    .then((api) =>
+      typeof api.emit === "function" ? api.emit(AGENT_RUN_SETTLED_EVENT, detail) : undefined,
     )
     .catch(() => {});
 }

@@ -29,6 +29,12 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "../../lib/agent-hud-settings";
+import {
+  AGENT_SOUNDS_CHANGED_EVENT,
+  getAgentSoundsEnabled,
+  setAgentSoundsEnabled,
+  type AgentSoundsChangedDetail,
+} from "../../lib/agent-sound-settings";
 import { withTimeout } from "../../lib/async-timeout";
 import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
@@ -70,6 +76,7 @@ export function AgentSettingsSection({
   );
   const [envEdits, setEnvEdits] = useState<Record<string, string>>({});
   const [agentHudEnabled, setAgentHudEnabledState] = useState(() => getAgentHudEnabled());
+  const [agentSoundsEnabled, setAgentSoundsEnabledState] = useState(() => getAgentSoundsEnabled());
   // null until the stored value loads, so the switch never flashes a wrong
   // default for a setting with security weight.
   const [cliAccessEnabled, setCliAccessEnabled] = useState<boolean | null>(null);
@@ -86,6 +93,18 @@ export function AgentSettingsSection({
       });
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    function handleAgentSoundsChanged(event: Event) {
+      const detail = (event as CustomEvent<AgentSoundsChangedDetail>).detail;
+      if (detail) setAgentSoundsEnabledState(detail.enabled);
+    }
+
+    window.addEventListener(AGENT_SOUNDS_CHANGED_EVENT, handleAgentSoundsChanged);
+    return () => {
+      window.removeEventListener(AGENT_SOUNDS_CHANGED_EVENT, handleAgentSoundsChanged);
     };
   }, []);
 
@@ -338,6 +357,24 @@ export function AgentSettingsSection({
                   checked={agentHudEnabled}
                   onCheckedChange={(enabled) => void handleAgentHudEnabledChange(enabled)}
                   aria-label="Show sessions HUD"
+                />
+              </div>
+            </div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">Agent sounds</h3>
+                <p className="settings-row-description">
+                  Play a sound when June finishes or needs your attention.
+                </p>
+              </div>
+              <div className="settings-row-control">
+                <Switch
+                  checked={agentSoundsEnabled}
+                  onCheckedChange={(enabled) => {
+                    setAgentSoundsEnabledState(enabled);
+                    setAgentSoundsEnabled(enabled);
+                  }}
+                  aria-label="Play agent sounds"
                 />
               </div>
             </div>

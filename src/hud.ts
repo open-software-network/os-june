@@ -17,7 +17,6 @@ import {
   LIVE_WAVE_OPTIONS,
   withWaveLayers,
 } from "./lib/audio-meter";
-import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "./lib/agent-events";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "./lib/events";
 import { isOnboardingComplete, subscribeToOnboardingComplete } from "./lib/onboarding";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
@@ -393,31 +392,6 @@ function stopBraille() {
   if (brailleTimer !== undefined) {
     window.clearInterval(brailleTimer);
     brailleTimer = undefined;
-  }
-}
-
-function playAgentStartTone() {
-  const AudioContextCtor =
-    window.AudioContext ??
-    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AudioContextCtor) return;
-  try {
-    const context = new AudioContextCtor();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    const now = context.currentTime;
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(520, now);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.045, now + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start(now);
-    oscillator.stop(now + 0.18);
-    oscillator.addEventListener("ended", () => void context.close());
-  } catch {
-    // The visual handoff cue is the source of truth; sound is opportunistic.
   }
 }
 
@@ -1068,17 +1042,6 @@ function canShowMeetingPrompt(state: string | undefined) {
   return state === undefined || state === "idle" || state === "meeting" || state === "exiting";
 }
 
-function handleAgentStatusEventPayload(payload: unknown) {
-  const event = parseEvent(payload) as unknown as AgentSessionStatusDetail | undefined;
-  if (event?.status !== "received") return;
-
-  // Audible ack only: the agent HUD (top right) is the visual announcement
-  // for a new session, and the dictation pill was already hidden by the
-  // agent_session_prompt event. The tone covers the eyes-elsewhere voice
-  // handoff without a second pill claiming the screen.
-  playAgentStartTone();
-}
-
 function parseEvent(payload: unknown): DictationHudEvent | undefined {
   try {
     if (typeof payload === "string") {
@@ -1153,10 +1116,6 @@ void listen("dictation-event", async (event) => {
 
 void listen("meeting-detection-event", async (event) => {
   await handleMeetingDetectionEventPayload(event.payload);
-}).catch(() => {});
-
-void listen(AGENT_SESSION_STATUS_EVENT, async (event) => {
-  await handleAgentStatusEventPayload(event.payload);
 }).catch(() => {});
 
 void listen<boolean>("hud-stop-hover", (event) => {

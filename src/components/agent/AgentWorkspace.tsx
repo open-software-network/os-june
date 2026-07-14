@@ -169,6 +169,12 @@ import {
   type AgentSessionStatusKind,
 } from "../../lib/agent-events";
 import {
+  cancelAgentRunMonitoring,
+  markAgentRunSucceeded,
+  releaseAgentRunSettlement,
+  startAgentRunMonitoring,
+} from "../../lib/agent-run-monitor";
+import {
   HermesGatewayClient,
   isSessionBusyError,
   type HermesGatewayEvent,
@@ -3035,6 +3041,7 @@ export function AgentWorkspace({
   }
 
   function recordSessionErrorActivity(sessionId: string, message: string) {
+    cancelAgentRunSettlement(sessionId);
     hermesActivityStore.record(
       { kind: "error", sessionId, message, receivedAt: new Date().toISOString() },
       hermesModeFor(sessionId),
@@ -4426,6 +4433,12 @@ export function AgentWorkspace({
         for (const entry of entries) entry.dispatchReservation?.cancel();
       }
       pendingSteerBySessionIdRef.current = {};
+      // Settlement monitoring belongs to the app lifetime, not this view.
+      // Release runs with no queued local continuation before the workspace
+      // gateway closes so they can still alert from Notes or Settings.
+      for (const sessionId of workingSessionIdsRef.current) {
+        if (!hasAutomaticContinuation(sessionId)) releaseAgentRunSettlement(sessionId);
+      }
       const consentRequest = imageSafeModeConsentRequestRef.current;
       imageSafeModeConsentRequestRef.current = null;
       consentRequest?.resolve({ action: "dismiss" });
@@ -6756,6 +6769,11 @@ export function AgentWorkspace({
         pendingActionStore.resolveSession(storedSessionId);
       }
       if (status) {
+        if (status === "completed") {
+          markAgentRunSucceeded(storedSessionId);
+        } else if (status === "failed" || status === "cancelled") {
+          cancelAgentRunSettlement(storedSessionId);
+        }
         dispatchAgentSessionStatus({
           sessionId: storedSessionId,
           title: sessionDisplayTitle,
@@ -7295,6 +7313,13 @@ export function AgentWorkspace({
           session_id: runtimeSessionId,
           text: promptSubmitContent,
         });
+        startAgentRunMonitoring({
+          storedSessionId,
+          runtimeSessionId,
+          title: sessionDisplayTitle,
+          fullMode: sessionUnrestricted(storedSessionId),
+          settlementHeld: true,
+        });
         // JUN-171 (Phase A): the held fast-path images have now ridden along
         // with a successful follow-up prompt, either as structured image bytes or
         // in the non-vision path fallback. Clear only after prompt.submit accepts
@@ -7579,6 +7604,24 @@ export function AgentWorkspace({
     );
   }
 
+  function cancelAgentRunSettlement(storedSessionId: string) {
+    cancelAgentRunMonitoring(storedSessionId);
+  }
+
+  function hasAutomaticContinuation(storedSessionId: string) {
+    if (pendingAttachmentPreparationsRef.current[storedSessionId]?.size) return true;
+    if (pendingSteerBySessionIdRef.current[storedSessionId]?.length) return true;
+    // A failed row is still unresolved continuation work: announcing "ready"
+    // after its delivery error would contradict the needs-input alert and the
+    // visible Retry action.
+    return (queuedAttachmentFollowUpsRef.current[storedSessionId] ?? []).length > 0;
+  }
+
+  function watchCompletedAgentRunSettle(storedSessionId: string) {
+    if (hasAutomaticContinuation(storedSessionId)) return;
+    releaseAgentRunSettlement(storedSessionId);
+  }
+
   async function reconcileWorkingSessionsAgainstRuntime() {
     const working = Array.from(workingSessionIdsRef.current);
     const misses = workingReconcileMissesRef.current;
@@ -7689,6 +7732,7 @@ export function AgentWorkspace({
         );
         const activityCounts = clearSessionActivity(sessionId);
         if (wasActive) {
+          markAgentRunSucceeded(sessionId);
           dispatchAgentSessionStatus({
             sessionId,
             title:
@@ -8354,6 +8398,7 @@ export function AgentWorkspace({
       ? undefined
       : hermesSessionItemsRef.current.find((candidate) => candidate.id === queueKey);
     if (!isNewSessionRecovery && !session) {
+      const summary = "This session is no longer available.";
       item.dispatchReservation?.cancel();
       updateQueuedAttachmentFollowUps(queueKey, (items) =>
         items.map((candidate) =>
@@ -8362,11 +8407,18 @@ export function AgentWorkspace({
                 ...candidate,
                 dispatchReservation: undefined,
                 status: "failed",
-                error: "This session is no longer available.",
+                error: summary,
               }
             : candidate,
         ),
       );
+      cancelAgentRunSettlement(queueKey);
+      dispatchAgentSessionStatus({
+        sessionId: queueKey,
+        title: "Agent session",
+        status: "failed",
+        summary,
+      });
       return false;
     }
     const dispatchReservation =
@@ -8431,12 +8483,15 @@ export function AgentWorkspace({
       return;
     }
     continuingSources.set(storedSessionId, source);
-    const finishContinuation = () => {
+    const finishContinuation = (watchForSettlement: boolean) => {
       continuingSources.delete(storedSessionId);
       const pendingSource = pendingCompletedAgentRunSourcesRef.current.get(storedSessionId);
-      if (!pendingSource) return;
-      pendingCompletedAgentRunSourcesRef.current.delete(storedSessionId);
-      continueAfterCompletedAgentRun(storedSessionId, pendingSource);
+      if (pendingSource) {
+        pendingCompletedAgentRunSourcesRef.current.delete(storedSessionId);
+        continueAfterCompletedAgentRun(storedSessionId, pendingSource);
+        return;
+      }
+      if (watchForSettlement) watchCompletedAgentRunSettle(storedSessionId);
     };
     const submittedSteers = pendingSteerBySessionIdRef.current[storedSessionId] ?? [];
     const unconsumedSteers = submittedSteers.filter(
@@ -8480,7 +8535,7 @@ export function AgentWorkspace({
         earliestPendingPreparationOrder < queueHeadOrder
       ) {
         completedAgentRunAwaitingAttachmentPreparationRef.current.add(storedSessionId);
-        finishContinuation();
+        finishContinuation(false);
         return;
       }
       if (steerFollowUps.length) {
@@ -8491,28 +8546,30 @@ export function AgentWorkspace({
           for (const followUp of steerFollowUps) {
             removeQueuedAttachmentFollowUp(storedSessionId, followUp.id);
           }
-          finishContinuation();
+          finishContinuation(false);
           return;
         }
         // Each Send captured its own model and FIFO position. Dispatch the
         // merged queue head; later completions advance one agent run at a time.
+        let followUpStarted = false;
         try {
-          await deliverQueuedAttachmentFollowUp(storedSessionId, undefined, {
+          followUpStarted = await deliverQueuedAttachmentFollowUp(storedSessionId, undefined, {
             afterCompletion: true,
           });
         } catch (err) {
           setError(messageFromError(err), { sessionId: storedSessionId });
         } finally {
-          finishContinuation();
+          finishContinuation(!followUpStarted);
         }
         return;
       }
+      let followUpStarted = false;
       try {
-        await deliverQueuedAttachmentFollowUp(storedSessionId, undefined, {
+        followUpStarted = await deliverQueuedAttachmentFollowUp(storedSessionId, undefined, {
           afterCompletion: true,
         });
       } finally {
-        finishContinuation();
+        finishContinuation(!followUpStarted);
       }
     }, 0);
   }
@@ -9005,6 +9062,7 @@ export function AgentWorkspace({
   // the RPC fails (gateway drop, runtime session already gone).
   async function stopHermesSession(sessionId: string) {
     if (stoppingSessionIds.has(sessionId)) return;
+    cancelAgentRunSettlement(sessionId);
     setStoppingSessionIds((current) => new Set(current).add(sessionId));
 
     // Stop the UI FIRST, synchronously, before the interrupt RPC. Stopping
@@ -9218,6 +9276,7 @@ export function AgentWorkspace({
   // clears messages, pending sends, activity-store state, and live events so a
   // running session doesn't linger as phantom "working" work.
   function removeHermesSessionLocally(sessionId: string, selectNext = true) {
+    cancelAgentRunSettlement(sessionId);
     setHermesSessionItems((current) => {
       const next = current.filter((session) => session.id !== sessionId);
       setSelectedHermesSessionId((selected) => {
@@ -16066,7 +16125,15 @@ function agentStatusFromHermesEvent(event: JuneHermesEvent): AgentSessionStatusK
   if (event.kind === "error") return "failed";
   if (event.kind === "pending_action") return "waitingForUser";
   if (event.kind === "pending_action_resolution") return "running";
-  if (isTerminalHermesEvent(event)) return "completed";
+  if (event.kind === "transcript" && event.complete) {
+    return event.failed ? "failed" : "completed";
+  }
+  if (event.kind === "lifecycle" && event.flavor === "terminal") {
+    const status = event.status.toLowerCase();
+    if (/(?:cancel|stop|interrupt|abort)/.test(status)) return "cancelled";
+    if (/(?:fail|error|timeout)/.test(status)) return "failed";
+    return "completed";
+  }
   if (
     event.kind === "tool" ||
     event.kind === "reasoning" ||

@@ -13,3 +13,27 @@ export function parseDictationHelperEvent(payload: unknown): DictationHelperEven
     return undefined;
   }
 }
+
+const DICTATION_ACTIVE_EVENTS = new Set([
+  "recording_ready",
+  "listening_started",
+  "audio_level",
+  "finalizing_transcript",
+  "final_transcript",
+  "paste_target",
+]);
+
+const DICTATION_FINISHED_EVENTS = new Set([
+  "recording_discarded",
+  "paste_completed",
+  "agent_session_prompt",
+  "error",
+  "helper_unavailable",
+  "shutdown_ack",
+]);
+
+export function nextDictationWorkflowActive(current: boolean, eventType: string) {
+  if (DICTATION_ACTIVE_EVENTS.has(eventType)) return true;
+  if (DICTATION_FINISHED_EVENTS.has(eventType)) return false;
+  return current;
+}

@@ -96,22 +96,30 @@ import {
   type LiveTranscriptEventDto,
 } from "../lib/tauri";
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
+import { preloadAgentSounds } from "../lib/agent-sounds";
 import { isMacLikePlatform, isPrimaryShortcut } from "../lib/platform";
 import { mergeSourceReadiness } from "../lib/source-readiness";
 import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_GALLERY_EVENT,
   AGENT_OPEN_EVENT,
+  AGENT_RUN_SETTLED_EVENT,
   AGENT_SESSION_STATUS_EVENT,
   dispatchAgentSessionStatus,
   emitAgentSessionsChanged,
   type AgentGalleryDetail,
+  type AgentRunSettledDetail,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
-import { notifyAgentSessionStatus } from "../lib/agent-notifications";
+import {
+  notifyAgentRunSettled,
+  notifyAgentSessionStatus,
+  type AgentAttentionContext,
+} from "../lib/agent-notifications";
+import { getAgentSoundsEnabled } from "../lib/agent-sound-settings";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { errorCode, messageFromError } from "../lib/errors";
-import { parseDictationHelperEvent } from "../lib/dictation-events";
+import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
 import {
@@ -387,6 +395,8 @@ export function App() {
   // native menu state.
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
   const [activeAgentSessionId, setActiveAgentSessionId] = useState<string>();
+  const activeAgentSessionIdRef = useRef(activeAgentSessionId);
+  activeAgentSessionIdRef.current = activeAgentSessionId;
   const [activeAgentSessionSeed, setActiveAgentSessionSeed] = useState<HermesSessionInfo>();
   const setActiveAgentSession = useCallback((session: HermesSessionInfo | undefined) => {
     setActiveAgentSessionId(session?.id);
@@ -493,6 +503,7 @@ export function App() {
   // setRecordingNote so they can't drift.
   const [recordingNoteId, setRecordingNoteIdState] = useState<string | undefined>(undefined);
   const recordingStatusRef = useRef(state.recordingStatus);
+  const dictationWorkflowActiveRef = useRef(false);
   const recordingInactivityTrackerRef = useRef<RecordingInactivityTracker>({});
   const [recordingInactivityPrompt, setRecordingInactivityPrompt] =
     useState<RecordingInactivityPrompt | null>(null);
@@ -650,6 +661,21 @@ export function App() {
     void import("../lib/toast-demo").then(({ registerToastDemo }) => {
       if (cancelled) return;
       ({ dispose } = registerToastDemo());
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
+  // Dev console driver (window.__juneSounds) for hearing the full recording
+  // and agent sound family without walking each production lifecycle.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/june-sounds-demo").then(({ registerJuneSoundsDemo }) => {
+      if (cancelled) return;
+      ({ dispose } = registerJuneSoundsDemo());
     });
     return () => {
       cancelled = true;
@@ -950,6 +976,8 @@ export function App() {
   // open note changes (below) so it never flies out onto a different or
   // brand-new note the user didn't open it on.
   const [noteChatOpen, setNoteChatOpen] = useState(false);
+  const noteChatOpenRef = useRef(noteChatOpen);
+  noteChatOpenRef.current = noteChatOpen;
   const [confirmDeleteNote, setConfirmDeleteNote] = useState(false);
   useEffect(() => {
     setNoteChatOpen(false);
@@ -962,6 +990,8 @@ export function App() {
   const noteChat = useNoteChat(
     selectedNote ? { id: selectedNote.id, title: selectedNote.title } : null,
   );
+  const noteChatSessionIdRef = useRef(noteChat.storedSessionId);
+  noteChatSessionIdRef.current = noteChat.storedSessionId;
   async function handleExportNotePdf() {
     if (!selectedNote) return;
     await exportNoteAsPdf(selectedNote.title, {
@@ -1434,6 +1464,7 @@ export function App() {
 
   useEffect(() => {
     preloadRecordingSounds();
+    preloadAgentSounds();
   }, []);
 
   // The card scroller's thumb fades in with scroll/pointer activity and back
@@ -1649,14 +1680,57 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    async function attentionContextFor(sessionId?: string): Promise<AgentAttentionContext> {
+      let windowFocused = document.hasFocus();
+      try {
+        const appWindow = getCurrentWindow();
+        if (typeof appWindow.isFocused === "function") {
+          windowFocused = await appWindow.isFocused();
+        }
+      } catch {
+        // Browser previews do not expose a Tauri window; document focus is enough.
+      }
+      const away = document.visibilityState !== "visible" || !windowFocused;
+      const recordingState = recordingStatusRef.current?.state;
+      const recordingCaptureActive =
+        recordingState === "recording" ||
+        recordingState === "paused" ||
+        recordingState === "finalizing" ||
+        recordingState === "validating";
+      return {
+        away,
+        viewingSession:
+          !away &&
+          ((activeViewRef.current === "agent" &&
+            (!sessionId || sessionId === activeAgentSessionIdRef.current)) ||
+            (activeViewRef.current === "meetings" &&
+              noteChatOpenRef.current &&
+              !!sessionId &&
+              sessionId === noteChatSessionIdRef.current)),
+        captureActive: recordingCaptureActive || dictationWorkflowActiveRef.current,
+        soundsEnabled: getAgentSoundsEnabled(),
+      };
+    }
+
     const handleAgentStatus = (event: Event) => {
       const detail = (event as CustomEvent<AgentSessionStatusDetail>).detail;
+      if (!detail || (detail.status !== "waitingForUser" && detail.status !== "failed")) return;
+      void attentionContextFor(detail.sessionId).then((context) =>
+        notifyAgentSessionStatus(detail, context),
+      );
+    };
+    const handleAgentRunSettled = (event: Event) => {
+      const detail = (event as CustomEvent<AgentRunSettledDetail>).detail;
       if (!detail) return;
-      void notifyAgentSessionStatus(detail);
+      void attentionContextFor(detail.sessionId).then((context) =>
+        notifyAgentRunSettled(detail, context),
+      );
     };
     window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatus);
+    window.addEventListener(AGENT_RUN_SETTLED_EVENT, handleAgentRunSettled);
     return () => {
       window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatus);
+      window.removeEventListener(AGENT_RUN_SETTLED_EVENT, handleAgentRunSettled);
     };
   }, []);
 
@@ -1917,6 +1991,10 @@ export function App() {
     void listen<string>("dictation-event", (event) => {
       const helperEvent = parseDictationHelperEvent(event.payload);
       if (!helperEvent) return;
+      dictationWorkflowActiveRef.current = nextDictationWorkflowActive(
+        dictationWorkflowActiveRef.current,
+        helperEvent.type,
+      );
       if (helperEvent.type === "final_transcript") {
         // T3 of the referral delight nudge: a dictation landed (often while
         // June is backgrounded; the card waits to be found).

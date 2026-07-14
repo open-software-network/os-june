@@ -45,6 +45,7 @@ const mocks = vi.hoisted(() => ({
   agentHudHide: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
+  preloadAgentSounds: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -58,6 +59,10 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("../lib/recording-sounds", () => ({
   playRecordingSound: mocks.playRecordingSound,
   preloadRecordingSounds: mocks.preloadRecordingSounds,
+}));
+
+vi.mock("../lib/agent-sounds", () => ({
+  preloadAgentSounds: mocks.preloadAgentSounds,
 }));
 
 vi.mock("../lib/tauri", () => ({
