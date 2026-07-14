@@ -2591,6 +2591,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
             // retry handle after recording_ready, so remove it before
             // surfacing the retriable auth error.
             remove_windows_dictation_audio(&recording.audio_path);
+            update_shortcut_helper_finalizing(&app, false);
             emit_dictation_event_value(&app, app_error_event(error));
             return;
         }
@@ -2598,6 +2599,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
             remove_windows_dictation_audio(&recording.audio_path);
             let state = app.state::<HelperState>();
             let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
+            update_shortcut_helper_finalizing(&app, false);
             notify_dictation_not_signed_in(&app);
             let _ = std::fs::remove_file(&audio_path);
             return;
@@ -2609,6 +2611,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
             remove_windows_dictation_audio(&recording.audio_path);
             let state = app.state::<HelperState>();
             let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
+            update_shortcut_helper_finalizing(&app, false);
             emit_dictation_event_value(&app, app_error_event(error));
             let _ = std::fs::remove_file(&audio_path);
             return;
@@ -2630,6 +2633,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
             remove_windows_dictation_audio(&recording.audio_path);
             let state = app.state::<HelperState>();
             let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
+            update_shortcut_helper_finalizing(&app, false);
             emit_dictation_event_value(&app, app_error_event(error));
             return;
         }
@@ -2660,6 +2664,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     let outcome = outcome_from_transcription_result(result, recording.observed_audio_level, style);
     let state = app.state::<HelperState>();
     if let Err(error) = send_helper_command(&state, outcome.helper_command) {
+        update_shortcut_helper_finalizing(&app, false);
         emit_dictation_event_value(&app, app_error_event(error));
         let _ = std::fs::remove_file(&audio_path);
         return;
