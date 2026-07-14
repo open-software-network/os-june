@@ -9,11 +9,11 @@ use axum::{
     Json,
     body::Body,
     extract::State,
-    http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
+    http::{HeaderMap, HeaderValue, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
-use june_domain::{ModelId, ModelKind};
-use june_services::{AgentChatParams, PricingTable};
+use june_domain::{ModelId, ModelKind, UpstreamRouteMetadata};
+use june_services::{AgentChatParams, AgentChatStreamOutput, PricingTable};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 const PREFERRED_VISION_TEXT_MODEL: &str = "kimi-k2-6";
@@ -69,12 +69,20 @@ pub(crate) async fn chat_completions(
             .await?;
         // The route TimeoutLayer bounds this handler future; the streamed body
         // is bounded by the upstream reqwest client's total timeout.
-        return Ok((
+        let AgentChatStreamOutput {
+            content_type,
+            provider,
+            route,
+            chunks,
+        } = output;
+        let mut response = (
             StatusCode::OK,
-            [(CONTENT_TYPE, output.content_type)],
-            Body::from_stream(UnboundedReceiverStream::new(output.chunks)),
+            [(CONTENT_TYPE, content_type)],
+            Body::from_stream(UnboundedReceiverStream::new(chunks)),
         )
-            .into_response());
+            .into_response();
+        insert_upstream_route_headers(response.headers_mut(), &provider, &route);
+        return Ok(response);
     }
     let output = state
         .agent_chat()
@@ -85,12 +93,37 @@ pub(crate) async fn chat_completions(
             provider_credentials,
         })
         .await?;
-    Ok((
+    let completion = output.completion;
+    let mut response = (
         StatusCode::OK,
-        [(CONTENT_TYPE, output.completion.content_type)],
-        output.completion.body,
+        [(CONTENT_TYPE, completion.content_type)],
+        completion.body,
     )
-        .into_response())
+        .into_response();
+    insert_upstream_route_headers(
+        response.headers_mut(),
+        &completion.provider,
+        &completion.route,
+    );
+    Ok(response)
+}
+
+fn insert_upstream_route_headers(
+    headers: &mut HeaderMap,
+    provider: &str,
+    route: &UpstreamRouteMetadata,
+) {
+    for (name, value) in [
+        ("x-os-provider", Some(provider)),
+        ("x-os-privacy-level", route.privacy_level.as_deref()),
+        ("x-os-endpoint", route.endpoint.as_deref()),
+    ] {
+        if let Some(value) = value
+            && let Ok(value) = HeaderValue::from_str(value)
+        {
+            headers.insert(name, value);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

@@ -21,10 +21,10 @@ use june_domain::{
     CleanedText, Cleaner, CleanupRequest, Credits, DomainError, GeneratedImage, GeneratedNote,
     GenerationRequest, Generator, ImageEditRequest, ImageEditor, ImageGenerationRequest,
     ImageGenerator, IssueReport, IssueReportDelivery, IssueReportSink, OsAccountsClient, P3aReport,
-    P3aSink, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
-    VideoAnimationRequest, VideoGenerationRequest, VideoProvider, VideoQueued, VideoQuoteRequest,
-    VideoRetrieved, WebFetchRequest, WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult,
-    WebSearchResults, WebSearcher,
+    P3aSink, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest,
+    UpstreamRouteMetadata, UserId, VideoAnimationRequest, VideoGenerationRequest, VideoProvider,
+    VideoQueued, VideoQuoteRequest, VideoRetrieved, WebFetchRequest, WebFetchResult, WebFetcher,
+    WebSearchRequest, WebSearchResult, WebSearchResults, WebSearcher,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
@@ -735,6 +735,10 @@ impl Generator for FakeGenerator {
             content: content.to_string(),
             title_suggestion: Some("Generated title".to_string()),
             provider: "fake-generator".to_string(),
+            route: UpstreamRouteMetadata {
+                privacy_level: Some("no-retention".to_string()),
+                endpoint: Some("venice-private".to_string()),
+            },
             usage: TokenUsage {
                 prompt_tokens: 500,
                 completion_tokens: 500,
@@ -751,6 +755,10 @@ impl Cleaner for FakeCleaner {
         Ok(CleanedText {
             text: "Cleaned dictation".to_string(),
             provider: "fake-cleaner".to_string(),
+            route: UpstreamRouteMetadata {
+                privacy_level: Some("no-retention".to_string()),
+                endpoint: Some("venice-private".to_string()),
+            },
             usage: TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 100,
@@ -776,6 +784,10 @@ impl AgentChatCompleter for FakeChatCompleter {
             body: format!(r#"{{"id":"{id}"}}"#).into_bytes(),
             content_type: "application/json".to_string(),
             provider: "fake-chat".to_string(),
+            route: UpstreamRouteMetadata {
+                privacy_level: Some("no-retention".to_string()),
+                endpoint: Some("venice-private".to_string()),
+            },
             usage: TokenUsage {
                 prompt_tokens: 100,
                 completion_tokens: 100,
@@ -799,6 +811,10 @@ impl AgentChatCompleter for FakeChatCompleter {
         Ok(AgentChatStream {
             content_type: "text/event-stream".to_string(),
             provider: "fake-chat".to_string(),
+            route: UpstreamRouteMetadata {
+                privacy_level: Some("no-retention".to_string()),
+                endpoint: Some("venice-private".to_string()),
+            },
             chunks: chunks_rx,
             outcome: outcome_rx,
         })

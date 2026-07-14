@@ -683,17 +683,17 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
             capabilities: Vec::new(),
         },
     );
-    // Fallback pricing for the default and suggested text models, used only
-    // when the live Venice catalog can't be reached at startup so metered
-    // charges still settle. The live catalog (which carries the authoritative
-    // numbers) extends over this on every boot. Keep the GLM 5.2 entry in sync
-    // with DEFAULT_GENERATION_MODEL in the Tauri providers module.
+    // Credit prices for June's legacy text-model ids. os-api's live catalog
+    // uses canonical ids, so those entries extend rather than replace these
+    // aliases. Price each alias for the most expensive enabled private route
+    // so a Phala fallback cannot cost more than June charges. Keep GLM 5.2 in
+    // sync with DEFAULT_GENERATION_MODEL in the Tauri providers module.
     for model in [
         TextModelFallback {
             id: "zai-org-glm-5-2",
             display_name: "GLM 5.2",
-            input_credits_per_million_tokens: 2_100,
-            output_credits_per_million_tokens: 6_600,
+            input_credits_per_million_tokens: 1_680,
+            output_credits_per_million_tokens: 5_280,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -706,8 +706,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "kimi-k2-6",
             display_name: "Kimi K2.6",
-            input_credits_per_million_tokens: 1_020,
-            output_credits_per_million_tokens: 5_592,
+            input_credits_per_million_tokens: 1_308,
+            output_credits_per_million_tokens: 5_520,
             context_tokens: 256_000,
             // Kimi K2.6 is natively multimodal (Venice `supportsVision`), so it
             // is the image-input fallback the frontend switches to when an image
@@ -723,8 +723,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5-1",
             display_name: "GLM 5.1",
-            input_credits_per_million_tokens: 2_100,
-            output_credits_per_million_tokens: 6_600,
+            input_credits_per_million_tokens: 1_680,
+            output_credits_per_million_tokens: 5_280,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -737,8 +737,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5",
             display_name: "GLM 5",
-            input_credits_per_million_tokens: 1_200,
-            output_credits_per_million_tokens: 3_840,
+            input_credits_per_million_tokens: 1_680,
+            output_credits_per_million_tokens: 5_280,
             context_tokens: 198_000,
             capabilities: &["supportsFunctionCalling"],
         },
@@ -1528,14 +1528,36 @@ mod tests {
                 .pricing
                 .get("zai-org-glm-5-2")
                 .and_then(|model| model.input_credits_per_million_tokens),
-            Some(2_100)
+            Some(1_680)
         );
         assert_eq!(
             config
                 .pricing
                 .get("zai-org-glm-5-2")
                 .and_then(|model| model.output_credits_per_million_tokens),
-            Some(6_600)
+            Some(5_280)
+        );
+        for model_id in ["zai-org-glm-5-1", "zai-org-glm-5"] {
+            let model = config.pricing.get(model_id);
+            assert_eq!(
+                model.and_then(|model| model.input_credits_per_million_tokens),
+                Some(1_680),
+                "{model_id} must use the routed GLM 5.2 input price"
+            );
+            assert_eq!(
+                model.and_then(|model| model.output_credits_per_million_tokens),
+                Some(5_280),
+                "{model_id} must use the routed GLM 5.2 output price"
+            );
+        }
+        let kimi = config.pricing.get("kimi-k2-6");
+        assert_eq!(
+            kimi.and_then(|model| model.input_credits_per_million_tokens),
+            Some(1_308)
+        );
+        assert_eq!(
+            kimi.and_then(|model| model.output_credits_per_million_tokens),
+            Some(5_520)
         );
         assert_eq!(
             config

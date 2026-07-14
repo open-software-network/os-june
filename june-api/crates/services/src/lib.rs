@@ -63,7 +63,7 @@ mod tests {
         AgentChatStreamOutcome, AudioDurationProbe, Authorization, AuthorizeRequest, ChargeRequest,
         CleanedText, Cleaner, CleanupRequest, Credits, DomainError, GeneratedNote,
         GenerationRequest, Generator, ModelId, OsAccountsClient, ProviderCredentials, Receipt,
-        TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
+        TokenUsage, Transcriber, Transcript, TranscriptionRequest, UpstreamRouteMetadata, UserId,
     };
     use pretty_assertions::assert_eq;
     use std::{
@@ -1529,6 +1529,7 @@ mod tests {
                 content: "Generated note".to_string(),
                 title_suggestion: Some("Title".to_string()),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 usage: TokenUsage {
                     prompt_tokens: 10,
                     completion_tokens: 20,
@@ -1561,6 +1562,7 @@ mod tests {
                 content: "Generated note".to_string(),
                 title_suggestion: Some("Title".to_string()),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 usage: TokenUsage {
                     prompt_tokens: 10,
                     completion_tokens: 20,
@@ -1577,6 +1579,7 @@ mod tests {
             Ok(CleanedText {
                 text: "Hello".to_string(),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 usage: TokenUsage {
                     prompt_tokens: 5,
                     completion_tokens: 6,
@@ -1597,6 +1600,7 @@ mod tests {
                 body: br#"{"id":"chatcmpl_test"}"#.to_vec(),
                 content_type: "application/json".to_string(),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 usage: TokenUsage {
                     prompt_tokens: 10,
                     completion_tokens: 20,
@@ -1620,6 +1624,7 @@ mod tests {
             Ok(AgentChatStream {
                 content_type: "text/event-stream".to_string(),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 chunks: chunks_rx,
                 outcome: outcome_rx,
             })
@@ -1650,6 +1655,7 @@ mod tests {
             Ok(AgentChatStream {
                 content_type: "text/event-stream".to_string(),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 chunks: chunks_rx,
                 outcome: outcome_rx,
             })
@@ -1681,6 +1687,7 @@ mod tests {
             Ok(AgentChatStream {
                 content_type: "text/event-stream".to_string(),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 chunks: chunks_rx,
                 outcome: outcome_rx,
             })

@@ -76,6 +76,9 @@ async fn integration_note_generate_returns_enveloped_response() -> Result<(), Bo
     assert_eq!(body["success"], true);
     assert_eq!(body["data"]["content"], "Generated note body");
     assert_eq!(body["data"]["titleSuggestion"], "Generated title");
+    assert_eq!(body["data"]["provider"], "fake-generator");
+    assert_eq!(body["data"]["privacyLevel"], "no-retention");
+    assert_eq!(body["data"]["upstreamEndpoint"], "venice-private");
     assert_eq!(body["data"]["promptVersion"], NOTE_GENERATE_PROMPT_VERSION);
     assert_eq!(body["data"]["creditsCharged"], 1);
     Ok(())
@@ -283,6 +286,27 @@ async fn integration_agent_chat_stream_returns_upstream_sse_body() -> Result<(),
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-os-provider")
+            .and_then(|value| value.to_str().ok()),
+        Some("fake-chat")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-os-privacy-level")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-retention")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-os-endpoint")
+            .and_then(|value| value.to_str().ok()),
+        Some("venice-private")
+    );
     assert_eq!(
         response
             .headers()

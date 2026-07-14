@@ -6,10 +6,10 @@ use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
     AgentChatStreamOutcome, CleanedText, Cleaner, CleanupRequest, DomainError, GeneratedNote,
     GenerationRequest, Generator, ProviderCredentials, TokenUsage, Transcriber, Transcript,
-    TranscriptionRequest,
+    TranscriptionRequest, UpstreamRouteMetadata,
 };
 use reqwest::{
-    StatusCode,
+    RequestBuilder, StatusCode,
     multipart::{Form, Part},
 };
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,11 @@ use std::collections::BTreeMap;
 use tokio::sync::{mpsc, oneshot};
 
 pub const PROVIDER_NAME: &str = "venice";
+const CONFIDENTIAL_COMPUTE_HEADER: &str = "X-Confidential-Compute";
+const PREFERRED_PRIVATE_ROUTING: &str = "preferred";
+const OS_PROVIDER_HEADER: &str = "X-OS-Provider";
+const OS_PRIVACY_LEVEL_HEADER: &str = "X-OS-Privacy-Level";
+const OS_ENDPOINT_HEADER: &str = "X-OS-Endpoint";
 
 /// Where BYOK requests go when the config names no `byok_base_url`. The
 /// configured `base_url` may point at a June-managed gateway that only
@@ -338,6 +343,7 @@ impl Generator for VeniceGenerator {
             )
             .await?;
         let content = parsed
+            .response
             .first_choice_text()
             .map(|text| {
                 if request.transcript_source_labels {
@@ -355,8 +361,9 @@ impl Generator for VeniceGenerator {
             } else {
                 title_hint.to_string()
             }),
-            provider: PROVIDER_NAME.to_string(),
-            usage: parsed.usage_or_error()?,
+            provider: parsed.provider,
+            route: parsed.route,
+            usage: parsed.response.usage_or_error()?,
         })
     }
 }
@@ -462,14 +469,16 @@ impl Cleaner for VeniceCleaner {
             )
             .await?;
         let cleaned = parsed
+            .response
             .first_choice_text()
             .map(|text| strip_scaffolding_tags(&text))
             .filter(|text| !text.is_empty())
             .ok_or(DomainError::UpstreamProvider)?;
         Ok(CleanedText {
             text: cleaned,
-            provider: PROVIDER_NAME.to_string(),
-            usage: parsed.usage_or_error()?,
+            provider: parsed.provider,
+            route: parsed.route,
+            usage: parsed.response.usage_or_error()?,
         })
     }
 }
@@ -535,7 +544,7 @@ impl VeniceChat {
         &self,
         mut body: ChatCompletionRequest,
         auth: ChatCallAuth<'_>,
-    ) -> Result<ChatCompletionResponse, DomainError> {
+    ) -> Result<RoutedChatCompletion, DomainError> {
         body.messages.insert(0, ChatMessage::safety_context());
         let url = self.chat_completions_url(auth.provider_credentials);
         // Bounded retry on transient failures — same rationale as the
@@ -566,13 +575,14 @@ impl VeniceChat {
         url: &str,
         body: &ChatCompletionRequest,
         auth: ChatCallAuth<'_>,
-    ) -> Result<ChatCompletionResponse, UpstreamAttemptError> {
+    ) -> Result<RoutedChatCompletion, UpstreamAttemptError> {
         let api_key = venice_api_key(&self.api_key, auth.provider_credentials);
-        let response = self
+        let request = self
             .client(auth.unmetered)
             .post(url)
             .bearer_auth(api_key)
-            .json(body)
+            .json(body);
+        let response = apply_private_routing(request, auth)
             .send()
             .await
             .map_err(|error| {
@@ -596,9 +606,15 @@ impl VeniceChat {
                 retryable,
             });
         }
+        let (provider, route) = upstream_route(&response);
         response
             .json::<ChatCompletionResponse>()
             .await
+            .map(|response| RoutedChatCompletion {
+                response,
+                provider,
+                route,
+            })
             .map_err(|error| {
                 tracing::error!(%error, %url, model = %body.model, "venice: chat response JSON parse failed");
                 UpstreamAttemptError::fatal(DomainError::UpstreamProvider)
@@ -613,68 +629,18 @@ impl VeniceChat {
     ) -> Result<AgentChatCompletion, DomainError> {
         let body = prepare_agent_chat_body(body, &model)?;
         let url = self.chat_completions_url(auth.provider_credentials);
-        let response = self
+        let request = self
             .client(auth.unmetered)
             .post(&url)
             .bearer_auth(venice_api_key(&self.api_key, auth.provider_credentials))
-            .json(&body)
+            .json(&body);
+        let response = apply_private_routing(request, auth)
             .send()
             .await
             .map_err(|error| {
                 tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
                 DomainError::UpstreamProvider
-            })?;
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("application/json")
-            .to_string();
-        let body = response.bytes().await.map_err(|error| {
-            tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
-            DomainError::UpstreamProvider
         })?;
-        if !status.is_success() {
-            return Err(handle_agent_chat_non_success(
-                AgentChatNonSuccess {
-                    status,
-                    url: &url,
-                    model: &model.0,
-                    body_bytes: body.len(),
-                    body: &body,
-                },
-                auth.provider_credentials,
-            ));
-        }
-        let usage = usage_from_chat_body(&body, &content_type)?;
-        Ok(AgentChatCompletion {
-            body: body.to_vec(),
-            content_type,
-            provider: PROVIDER_NAME.to_string(),
-            usage,
-        })
-    }
-
-    async fn complete_stream(
-        &self,
-        body: serde_json::Value,
-        model: june_domain::ModelId,
-        auth: ChatCallAuth<'_>,
-    ) -> Result<AgentChatStream, DomainError> {
-        let body = prepare_agent_chat_body(body, &model)?;
-        let url = self.chat_completions_url(auth.provider_credentials);
-        let mut response = self
-            .client(auth.unmetered)
-            .post(&url)
-            .bearer_auth(venice_api_key(&self.api_key, auth.provider_credentials))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
-                DomainError::UpstreamProvider
-            })?;
         let status = response.status();
         let content_type = response
             .headers()
@@ -698,6 +664,65 @@ impl VeniceChat {
                 auth.provider_credentials,
             ));
         }
+        let (provider, route) = upstream_route(&response);
+        let body = response.bytes().await.map_err(|error| {
+            tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
+            DomainError::UpstreamProvider
+        })?;
+        let usage = usage_from_chat_body(&body, &content_type)?;
+        Ok(AgentChatCompletion {
+            body: body.to_vec(),
+            content_type,
+            provider,
+            route,
+            usage,
+        })
+    }
+
+    async fn complete_stream(
+        &self,
+        body: serde_json::Value,
+        model: june_domain::ModelId,
+        auth: ChatCallAuth<'_>,
+    ) -> Result<AgentChatStream, DomainError> {
+        let body = prepare_agent_chat_body(body, &model)?;
+        let url = self.chat_completions_url(auth.provider_credentials);
+        let request = self
+            .client(auth.unmetered)
+            .post(&url)
+            .bearer_auth(venice_api_key(&self.api_key, auth.provider_credentials))
+            .json(&body);
+        let mut response = apply_private_routing(request, auth)
+            .send()
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
+                DomainError::UpstreamProvider
+        })?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+        if !status.is_success() {
+            let body = response.bytes().await.map_err(|error| {
+                tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
+                DomainError::UpstreamProvider
+            })?;
+            return Err(handle_agent_chat_non_success(
+                AgentChatNonSuccess {
+                    status,
+                    url: &url,
+                    model: &model.0,
+                    body_bytes: body.len(),
+                    body: &body,
+                },
+                auth.provider_credentials,
+            ));
+        }
+        let (provider, route) = upstream_route(&response);
 
         let (chunks_tx, chunks_rx) = mpsc::unbounded_channel();
         let (outcome_tx, outcome_rx) = oneshot::channel();
@@ -720,11 +745,44 @@ impl VeniceChat {
 
         Ok(AgentChatStream {
             content_type,
-            provider: PROVIDER_NAME.to_string(),
+            provider,
+            route,
             chunks: chunks_rx,
             outcome: outcome_rx,
         })
     }
+}
+
+fn apply_private_routing(request: RequestBuilder, auth: ChatCallAuth<'_>) -> RequestBuilder {
+    if auth.provider_credentials.has_venice_api_key() {
+        request
+    } else {
+        request.header(CONFIDENTIAL_COMPUTE_HEADER, PREFERRED_PRIVATE_ROUTING)
+    }
+}
+
+fn upstream_route(response: &reqwest::Response) -> (String, UpstreamRouteMetadata) {
+    let header = |name| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let provider = header(OS_PROVIDER_HEADER).unwrap_or_else(|| PROVIDER_NAME.to_string());
+    let route = UpstreamRouteMetadata {
+        privacy_level: header(OS_PRIVACY_LEVEL_HEADER),
+        endpoint: header(OS_ENDPOINT_HEADER),
+    };
+    tracing::info!(
+        upstream_provider = %provider,
+        privacy_level = route.privacy_level.as_deref().unwrap_or("unknown"),
+        upstream_endpoint = route.endpoint.as_deref().unwrap_or("unknown"),
+        "venice: resolved upstream route"
+    );
+    (provider, route)
 }
 
 fn prepare_agent_chat_body(
@@ -995,6 +1053,12 @@ impl ChatMessage {
 struct ChatCompletionResponse {
     choices: Vec<ChatCompletionChoice>,
     usage: Option<ChatCompletionUsage>,
+}
+
+struct RoutedChatCompletion {
+    response: ChatCompletionResponse,
+    provider: String,
+    route: UpstreamRouteMetadata,
 }
 
 impl ChatCompletionResponse {
@@ -1551,15 +1615,22 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .and(header("authorization", "Bearer venice_key"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "choices": [
-                    { "message": { "content": "Generated note block" } }
-                ],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5
-                }
-            })))
+            .and(header("x-confidential-compute", "preferred"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-os-provider", "phala")
+                    .insert_header("x-os-privacy-level", "tee")
+                    .insert_header("x-os-endpoint", "phala-glm-5.2")
+                    .set_body_json(json!({
+                        "choices": [
+                            { "message": { "content": "Generated note block" } }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 5
+                        }
+                    })),
+            )
             .mount(&server)
             .await;
         let generator = VeniceGenerator::from_config(
@@ -1592,12 +1663,16 @@ mod tests {
             generated.map(|value| (
                 value.content,
                 value.provider,
+                value.route.privacy_level,
+                value.route.endpoint,
                 value.usage.prompt_tokens,
                 value.usage.completion_tokens,
             )),
             Ok((
                 "Generated note block".to_string(),
-                "venice".to_string(),
+                "phala".to_string(),
+                Some("tee".to_string()),
+                Some("phala-glm-5.2".to_string()),
                 10,
                 5
             ))
@@ -1655,6 +1730,8 @@ mod tests {
             generated.map(|value| value.content),
             Ok("Generated note block".to_string())
         );
+        let requests = server.received_requests().await.expect("requests");
+        assert!(requests[0].headers.get("x-confidential-compute").is_none());
     }
 
     #[tokio::test]
@@ -2015,11 +2092,18 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
+            .and(header("x-confidential-compute", "preferred"))
             .and(body_string_contains(r#""include_usage":true"#))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "choices": [{ "message": { "content": "hi" } }],
-                "usage": { "prompt_tokens": 1, "completion_tokens": 2 }
-            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-os-provider", "phala")
+                    .insert_header("x-os-privacy-level", "tee")
+                    .insert_header("x-os-endpoint", "phala-glm-5.2")
+                    .set_body_json(json!({
+                        "choices": [{ "message": { "content": "hi" } }],
+                        "usage": { "prompt_tokens": 1, "completion_tokens": 2 }
+                    })),
+            )
             .mount(&server)
             .await;
         let agent = VeniceAgentChat::from_config(
@@ -2049,6 +2133,9 @@ mod tests {
 
         assert_eq!(completion.usage.prompt_tokens, 1);
         assert_eq!(completion.usage.completion_tokens, 2);
+        assert_eq!(completion.provider, "phala");
+        assert_eq!(completion.route.privacy_level.as_deref(), Some("tee"));
+        assert_eq!(completion.route.endpoint.as_deref(), Some("phala-glm-5.2"));
     }
 
     #[tokio::test]

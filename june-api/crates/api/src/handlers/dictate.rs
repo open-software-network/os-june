@@ -190,6 +190,8 @@ impl From<DictateTranscribeOutput> for DictateTranscribeResponse {
 pub struct DictateCleanupResponse {
     pub text: String,
     pub provider: String,
+    pub privacy_level: Option<String>,
+    pub upstream_endpoint: Option<String>,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub credits_charged: u64,
@@ -201,6 +203,8 @@ impl From<DictateCleanupOutput> for DictateCleanupResponse {
         Self {
             text: output.cleaned.text,
             provider: output.cleaned.provider,
+            privacy_level: output.cleaned.route.privacy_level,
+            upstream_endpoint: output.cleaned.route.endpoint,
             prompt_tokens: output.cleaned.usage.prompt_tokens,
             completion_tokens: output.cleaned.usage.completion_tokens,
             credits_charged: output.receipt.credits_charged.0,
