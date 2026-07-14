@@ -1969,7 +1969,7 @@ describe("AppSettings", () => {
     }
   });
 
-  it("only lists microphone permissions on Windows", async () => {
+  it("lists system audio controls but no dictation-only controls on Windows", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -1977,6 +1977,7 @@ describe("AppSettings", () => {
     const onEnableMicrophone = vi.fn();
     const onEnableAccessibility = vi.fn();
     const onEnableSystemAudio = vi.fn();
+    const onSourceModeChange = vi.fn();
 
     try {
       render(
@@ -2001,11 +2002,10 @@ describe("AppSettings", () => {
               {
                 source: "system",
                 required: true,
-                ready: false,
-                permissionState: "denied",
+                ready: true,
+                permissionState: "granted",
                 deviceAvailable: true,
-                captureAvailable: false,
-                recoveryAction: "openSystemAudioSettings",
+                captureAvailable: true,
               },
             ],
           }}
@@ -2014,17 +2014,20 @@ describe("AppSettings", () => {
           accessibilityPermissionStatus="missing"
           onAccountChanged={vi.fn()}
           onAccountRefresh={vi.fn()}
-          onSourceModeChange={vi.fn()}
+          onSourceModeChange={onSourceModeChange}
           onEnableMicrophone={onEnableMicrophone}
           onEnableAccessibility={onEnableAccessibility}
           onEnableSystemAudio={onEnableSystemAudio}
         />,
       );
 
-      expect(screen.getByText("Access used for recording audio.")).toBeInTheDocument();
+      expect(screen.getByText("Audio access")).toBeInTheDocument();
+      expect(
+        screen.getByText("Audio sources available for recording microphone and app audio."),
+      ).toBeInTheDocument();
       expect(screen.getByText("Microphone")).toBeInTheDocument();
       expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
-      expect(screen.queryByText("System audio")).not.toBeInTheDocument();
+      expect(screen.getByText("System audio")).toBeInTheDocument();
 
       const microphoneRow = screen.getByText("Microphone").closest(".settings-row");
       expect(microphoneRow).not.toBeNull();
@@ -2038,12 +2041,23 @@ describe("AppSettings", () => {
       expect(onEnableAccessibility).not.toHaveBeenCalled();
       expect(onEnableSystemAudio).not.toHaveBeenCalled();
 
+      const systemAudioRow = screen.getByText("System audio").closest(".settings-row");
+      expect(systemAudioRow).not.toBeNull();
+      expect(within(systemAudioRow as HTMLElement).getByLabelText("Available")).toBeInTheDocument();
+      await userEvent.click(
+        within(systemAudioRow as HTMLElement).getByRole("button", {
+          name: "Open sound settings",
+        }),
+      );
+      expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
+
       await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
-      expect(
-        screen.queryByRole("switch", {
+      await userEvent.click(
+        screen.getByRole("switch", {
           name: "Capture system audio for notes",
         }),
-      ).not.toBeInTheDocument();
+      );
+      expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
       expect(
         screen.queryByRole("button", {
           name: "Start test",

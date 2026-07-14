@@ -3,19 +3,19 @@ import type { RecordingSourceReadinessDto } from "./tauri";
 export type SystemAudioAvailability =
   /** The readiness probe has not answered yet. */
   | "unknown"
-  /** This Mac cannot capture system audio at all (macOS below 14.2). */
+  /** This device cannot capture system audio at all. */
   | "unsupported"
-  /** The user declined the permission. */
+  /** The user declined the platform grant. */
   | "denied"
-  /** The permission is granted, but the capture helper cannot capture now. */
+  /** The platform grant/status is usable, but capture cannot start now. */
   | "unavailable"
   | "usable";
 
 /**
  * The single question every system-audio surface asks. `permissionState` is the
- * grant and `ready` is whether this Mac can actually capture; neither answers
- * on its own, and a granted source can still be uncapturable. Offering the user
- * a control June cannot honor is the bug this collapses.
+ * platform grant/status and `ready` is whether this device can actually capture;
+ * neither answers on its own, and a granted source can still be uncapturable.
+ * Offering the user a control June cannot honor is the bug this collapses.
  */
 export function systemAudioAvailability(
   readiness: RecordingSourceReadinessDto | undefined,
@@ -32,8 +32,8 @@ export function systemAudioAvailability(
 
 /**
  * A microphone-only readiness check never assesses system audio: it skips the
- * capture helper's permission preflight, so its system source reports whether
- * this Mac is *capable* rather than whether the permission was granted. Keep
+ * system-audio preflight, so its system source reports whether this device is
+ * *capable* rather than whether the platform grant/status was established. Keep
  * the source last assessed by a microphone-plus-system check instead of
  * overwriting it with that weaker signal.
  */

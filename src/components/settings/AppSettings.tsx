@@ -82,7 +82,7 @@ import {
   setReleaseChannel,
   type ReleaseChannel,
 } from "../../lib/updater";
-import { isMacLikePlatform } from "../../lib/platform";
+import { isMacLikePlatform, isSystemAudioSupportedPlatform } from "../../lib/platform";
 import { systemAudioAvailability } from "../../lib/source-readiness";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
@@ -516,6 +516,7 @@ export function AppSettings({
     ? SETTINGS_TABS.filter((tab) => tab.id !== "billing")
     : SETTINGS_TABS;
   const macLikePlatform = isMacLikePlatform();
+  const systemAudioSupportedPlatform = isSystemAudioSupportedPlatform();
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
       onTabChange?.(tab);
@@ -537,7 +538,7 @@ export function AppSettings({
   // be a dead end. The status label tells the two apart.
   const systemDenied = systemAvailability === "denied";
   const systemLocked = systemDenied || systemAvailability === "unavailable";
-  const systemUnavailable = !macLikePlatform || systemAvailability === "unsupported";
+  const systemUnavailable = !systemAudioSupportedPlatform || systemAvailability === "unsupported";
 
   useEffect(() => {
     capturingShortcutRef.current = capturingShortcut;
@@ -1731,7 +1732,7 @@ export function AppSettings({
             <SettingsPageHeader
               id="audio-heading"
               title="Audio"
-              blurb="Control how June captures meeting and system audio on this Mac."
+              blurb="Control how June captures meeting and system audio."
             />
             <div className="settings-card">
               <div className="settings-rows">
@@ -2458,15 +2459,18 @@ function PermissionsSettingsSection({
   onEnableSystemAudio: () => void;
 }) {
   const macLikePlatform = isMacLikePlatform();
+  const systemAudioSupportedPlatform = isSystemAudioSupportedPlatform();
   return (
     <section className="settings-group" aria-labelledby="permissions-heading">
       <h2 id="permissions-heading" className="settings-group-heading">
-        System permissions
+        {macLikePlatform ? "System permissions" : "Audio access"}
       </h2>
       <p className="settings-group-description">
         {macLikePlatform
           ? "macOS access used for recording audio, pasting dictation, and capturing system sound."
-          : "Access used for recording audio."}
+          : systemAudioSupportedPlatform
+            ? "Audio sources available for recording microphone and app audio."
+            : "Audio sources available for recording microphone audio."}
       </p>
       <div className="settings-card">
         <div className="settings-rows">
@@ -2488,13 +2492,24 @@ function PermissionsSettingsSection({
                 onManage={onEnableAccessibility}
               />
 
-              <PermissionRow
-                title="System audio"
-                description="Record audio from other apps when system audio is enabled."
-                status={sourcePermissionStatus(systemReadiness)}
-                onManage={onEnableSystemAudio}
-              />
+              {systemAudioSupportedPlatform ? (
+                <PermissionRow
+                  title="System audio"
+                  description="Record audio from other apps when system audio is enabled."
+                  status={sourcePermissionStatus(systemReadiness, macLikePlatform)}
+                  onManage={onEnableSystemAudio}
+                />
+              ) : null}
             </>
+          ) : systemAudioSupportedPlatform ? (
+            <PermissionRow
+              title="System audio"
+              description="Record audio from other apps when system audio is enabled."
+              status={sourcePermissionStatus(systemReadiness, macLikePlatform)}
+              onManage={onEnableSystemAudio}
+              actionLabel="Open sound settings"
+              actionText="Open"
+            />
           ) : null}
         </div>
       </div>
@@ -2507,11 +2522,15 @@ function PermissionRow({
   description,
   status,
   onManage,
+  actionLabel,
+  actionText = "Manage",
 }: {
   title: string;
   description: string;
   status: PermissionStatusView;
   onManage?: () => void;
+  actionLabel?: string;
+  actionText?: string;
 }) {
   const actionDisabled = status.tone === "unsupported" || !onManage;
   return (
@@ -2534,10 +2553,10 @@ function PermissionRow({
           type="button"
           className="btn btn-secondary"
           disabled={actionDisabled}
-          aria-label={`Manage ${title} permission`}
+          aria-label={actionLabel ?? `Manage ${title} permission`}
           onClick={onManage}
         >
-          Manage
+          {actionText}
         </button>
       </div>
     </div>
@@ -2573,16 +2592,17 @@ function permissionStatus(state?: string): PermissionStatusView {
 }
 
 function sourcePermissionStatus(
-  source?: RecordingSourceReadinessDto["sources"][number],
+  source: RecordingSourceReadinessDto["sources"][number] | undefined,
+  macLikePlatform: boolean,
 ): PermissionStatusView {
   if (!source) return { label: "Checking", tone: "unknown" };
-  // The two halves are independent: permissionState is the grant, `ready` is
-  // whether this Mac can actually capture. A microphone-only check never asks
-  // for the grant, and a granted source can still be uncapturable (the helper
-  // reports `system_audio_capture_unavailable`, recoverable by restarting).
+  // The two halves are independent: permissionState is the platform grant or
+  // endpoint status, while `ready` says whether this device can actually
+  // capture. A microphone-only check never asks for the grant/status, and a
+  // granted source can still be uncapturable.
   if (source.permissionState === "granted") {
     return source.ready
-      ? { label: "Allowed", tone: "allowed" }
+      ? { label: macLikePlatform ? "Allowed" : "Available", tone: "allowed" }
       : { label: "Unavailable", tone: "attention" };
   }
   return permissionStatus(source.permissionState);

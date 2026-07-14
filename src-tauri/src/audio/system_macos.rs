@@ -1,4 +1,7 @@
-use crate::domain::types::{AppError, AudioLevelDto, RecordingSource, SourceReadinessDto};
+use crate::{
+    audio::system_audio::SystemAudioStopResult,
+    domain::types::{AppError, AudioLevelDto, RecordingSource, SourceReadinessDto},
+};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -159,7 +162,7 @@ impl SystemAudioCapture {
         (level, bytes, error)
     }
 
-    pub fn stop(self) -> Result<PathBuf, AppError> {
+    pub fn stop(self) -> SystemAudioStopResult {
         dev_log(format!("stopping helper pid={}", self.pid));
         send_signal(self.pid, "-TERM");
         if wait_for_stopped(&self.status_path, Duration::from_secs(5)).is_err() {
@@ -171,8 +174,11 @@ impl SystemAudioCapture {
             std::thread::sleep(Duration::from_millis(100));
         }
         if self.partial_path.exists() {
-            std::fs::rename(&self.partial_path, &self.final_path)
-                .map_err(|error| AppError::new("audio_finalization_failed", error.to_string()))?;
+            if let Err(error) = std::fs::rename(&self.partial_path, &self.final_path) {
+                return SystemAudioStopResult::Failed(
+                    AppError::new("audio_finalization_failed", error.to_string()).into(),
+                );
+            }
         }
         let _ = std::fs::remove_file(&self.status_path);
         let _ = std::fs::remove_file(&self.pid_path);
@@ -180,7 +186,7 @@ impl SystemAudioCapture {
             "preserved helper log at {}",
             self.log_path.display()
         ));
-        Ok(self.final_path)
+        SystemAudioStopResult::Stopped(self.final_path)
     }
 }
 

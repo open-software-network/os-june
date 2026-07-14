@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,12 +70,17 @@ if (config && !hasConfigOverride) {
 }
 
 const frontendPort = await resolveFrontendPort();
-// Merge a devUrl override last so it wins over the file configs, pointing the
-// native window at the Vite server that before-dev will start on this port.
-tauriArgs.push(
-  "--config",
+// Write a tiny config overlay file so Windows shell invocation does not have to
+// preserve inline JSON quoting for `--config`.
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const devConfigPath = resolve(scriptDir, "..", "src-tauri", ".tauri.dev.generated.json");
+writeFileSync(
+  devConfigPath,
   JSON.stringify({ build: { devUrl: `http://127.0.0.1:${frontendPort}` } }),
 );
+// Merge a devUrl override last so it wins over the file configs, pointing the
+// native window at the Vite server that before-dev will start on this port.
+tauriArgs.push("--config", devConfigPath);
 
 const child = spawn(tauriCommand(), tauriCommandArgs(["dev", ...tauriArgs]), {
   env: {
