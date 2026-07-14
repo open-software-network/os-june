@@ -156,6 +156,12 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
+    for statement in include_str!("../../migrations/014_github_connections.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
     // Marks when a routine most recently entered approval mode; approval-run
     // crediting only counts runs that finished at or after this instant, so
     // earlier read-only runs never retroactively unlock autonomy.
@@ -207,4 +213,39 @@ async fn drop_index_if_exists(pool: &SqlitePool, index: &str) -> Result<(), sqlx
 
 fn quote_sqlite_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::row::Row;
+
+    #[tokio::test]
+    async fn github_migration_creates_connection_tables() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+
+        super::run_migrations(&pool).await.expect("migrations");
+
+        let rows = sqlx::query::query(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND name LIKE 'github_%'
+             ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("GitHub tables");
+        assert_eq!(
+            rows.into_iter()
+                .map(|row| row.get::<String, _>("name"))
+                .collect::<Vec<_>>(),
+            vec![
+                "github_connections",
+                "github_installations",
+                "github_repositories"
+            ]
+        );
+    }
 }

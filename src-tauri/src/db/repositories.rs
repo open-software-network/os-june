@@ -46,6 +46,47 @@ pub struct ConnectorAccountRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubConnectionRecord {
+    pub github_user_id: String,
+    pub login: String,
+    pub avatar_url: Option<String>,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubInstallationRecord {
+    pub installation_id: String,
+    pub github_user_id: String,
+    pub owner_id: String,
+    pub owner_login: String,
+    pub owner_type: String,
+    pub management_url: String,
+    pub repository_selection: String,
+    pub permissions_json: String,
+    pub suspended_at: Option<String>,
+    pub last_refreshed_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubRepositoryRecord {
+    pub repository_id: String,
+    pub installation_id: String,
+    pub owner_login: String,
+    pub name: String,
+    pub full_name: String,
+    pub is_private: bool,
+    pub is_archived: bool,
+    pub permissions_json: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GitHubSnapshotRecord {
+    pub connection: GitHubConnectionRecord,
+    pub installations: Vec<GitHubInstallationRecord>,
+    pub repositories: Vec<GitHubRepositoryRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoutineTrustRecord {
     pub job_id: String,
     pub trust_mode: String,
@@ -315,6 +356,183 @@ impl Repositories {
             .await?;
         query("DELETE FROM connector_accounts WHERE account_id = ?")
             .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    }
+
+    pub async fn replace_github_snapshot(
+        &self,
+        connection: &GitHubConnectionRecord,
+        installations: &[GitHubInstallationRecord],
+        repositories: &[GitHubRepositoryRecord],
+    ) -> Result<(), sqlx::error::Error> {
+        for installation in installations {
+            validate_github_management_url(installation)?;
+        }
+
+        let now = timestamp();
+        let mut tx = self.pool.begin().await?;
+        query("DELETE FROM github_connections WHERE github_user_id <> ?")
+            .bind(&connection.github_user_id)
+            .execute(&mut *tx)
+            .await?;
+        query(
+            "INSERT INTO github_connections
+               (github_user_id, login, avatar_url, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(github_user_id) DO UPDATE SET
+               login = excluded.login,
+               avatar_url = excluded.avatar_url,
+               status = excluded.status,
+               updated_at = excluded.updated_at",
+        )
+        .bind(&connection.github_user_id)
+        .bind(&connection.login)
+        .bind(&connection.avatar_url)
+        .bind(&connection.status)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        query("DELETE FROM github_installations WHERE github_user_id = ?")
+            .bind(&connection.github_user_id)
+            .execute(&mut *tx)
+            .await?;
+
+        for installation in installations {
+            query(
+                "INSERT INTO github_installations
+                   (installation_id, github_user_id, owner_id, owner_login, owner_type,
+                    management_url, repository_selection, permissions_json, suspended_at,
+                    last_refreshed_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&installation.installation_id)
+            .bind(&installation.github_user_id)
+            .bind(&installation.owner_id)
+            .bind(&installation.owner_login)
+            .bind(&installation.owner_type)
+            .bind(&installation.management_url)
+            .bind(&installation.repository_selection)
+            .bind(&installation.permissions_json)
+            .bind(&installation.suspended_at)
+            .bind(&installation.last_refreshed_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for repository in repositories {
+            query(
+                "INSERT INTO github_repositories
+                   (repository_id, installation_id, owner_login, name, full_name, is_private,
+                    is_archived, permissions_json, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&repository.repository_id)
+            .bind(&repository.installation_id)
+            .bind(&repository.owner_login)
+            .bind(&repository.name)
+            .bind(&repository.full_name)
+            .bind(i64::from(repository.is_private))
+            .bind(i64::from(repository.is_archived))
+            .bind(&repository.permissions_json)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await
+    }
+
+    pub async fn github_snapshot(
+        &self,
+    ) -> Result<Option<GitHubSnapshotRecord>, sqlx::error::Error> {
+        let Some(connection_row) = query(
+            "SELECT github_user_id, login, avatar_url, status
+             FROM github_connections ORDER BY created_at, github_user_id LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let connection = github_connection_from_row(connection_row);
+        let installation_rows = query(
+            "SELECT installation_id, github_user_id, owner_id, owner_login, owner_type,
+                    management_url, repository_selection, permissions_json, suspended_at,
+                    last_refreshed_at
+             FROM github_installations
+             WHERE github_user_id = ?
+             ORDER BY owner_login, installation_id",
+        )
+        .bind(&connection.github_user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let repository_rows = query(
+            "SELECT repository.repository_id, repository.installation_id,
+                    repository.owner_login, repository.name, repository.full_name,
+                    repository.is_private, repository.is_archived, repository.permissions_json
+             FROM github_repositories AS repository
+             INNER JOIN github_installations AS installation
+               ON installation.installation_id = repository.installation_id
+             WHERE installation.github_user_id = ?
+             ORDER BY repository.full_name, repository.repository_id",
+        )
+        .bind(&connection.github_user_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(Some(GitHubSnapshotRecord {
+            connection,
+            installations: installation_rows
+                .into_iter()
+                .map(github_installation_from_row)
+                .collect(),
+            repositories: repository_rows
+                .into_iter()
+                .map(github_repository_from_row)
+                .collect(),
+        }))
+    }
+
+    pub async fn get_github_installation(
+        &self,
+        installation_id: &str,
+    ) -> Result<Option<GitHubInstallationRecord>, sqlx::error::Error> {
+        let row = query(
+            "SELECT installation_id, github_user_id, owner_id, owner_login, owner_type,
+                    management_url, repository_selection, permissions_json, suspended_at,
+                    last_refreshed_at
+             FROM github_installations WHERE installation_id = ?",
+        )
+        .bind(installation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(github_installation_from_row))
+    }
+
+    pub async fn set_github_connection_status(
+        &self,
+        github_user_id: &str,
+        status: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query("UPDATE github_connections SET status = ?, updated_at = ? WHERE github_user_id = ?")
+            .bind(status)
+            .bind(timestamp())
+            .bind(github_user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_github_state(
+        &self,
+        github_user_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let mut tx = self.pool.begin().await?;
+        query("DELETE FROM github_connections WHERE github_user_id = ?")
+            .bind(github_user_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await
@@ -3392,6 +3610,88 @@ fn connector_account_from_row(row: sqlx_sqlite::SqliteRow) -> ConnectorAccountRe
     }
 }
 
+fn github_connection_from_row(row: sqlx_sqlite::SqliteRow) -> GitHubConnectionRecord {
+    GitHubConnectionRecord {
+        github_user_id: row.get("github_user_id"),
+        login: row.get("login"),
+        avatar_url: row.get("avatar_url"),
+        status: row.get("status"),
+    }
+}
+
+fn github_installation_from_row(row: sqlx_sqlite::SqliteRow) -> GitHubInstallationRecord {
+    GitHubInstallationRecord {
+        installation_id: row.get("installation_id"),
+        github_user_id: row.get("github_user_id"),
+        owner_id: row.get("owner_id"),
+        owner_login: row.get("owner_login"),
+        owner_type: row.get("owner_type"),
+        management_url: row.get("management_url"),
+        repository_selection: row.get("repository_selection"),
+        permissions_json: row.get("permissions_json"),
+        suspended_at: row.get("suspended_at"),
+        last_refreshed_at: row.get("last_refreshed_at"),
+    }
+}
+
+fn github_repository_from_row(row: sqlx_sqlite::SqliteRow) -> GitHubRepositoryRecord {
+    GitHubRepositoryRecord {
+        repository_id: row.get("repository_id"),
+        installation_id: row.get("installation_id"),
+        owner_login: row.get("owner_login"),
+        name: row.get("name"),
+        full_name: row.get("full_name"),
+        is_private: row.get::<i64, _>("is_private") != 0,
+        is_archived: row.get::<i64, _>("is_archived") != 0,
+        permissions_json: row.get("permissions_json"),
+    }
+}
+
+fn validate_github_management_url(
+    installation: &GitHubInstallationRecord,
+) -> Result<(), sqlx::error::Error> {
+    let invalid = || {
+        sqlx::Error::Protocol(
+            "GitHub installation management URL must be an HTTPS github.com settings URL"
+                .to_string(),
+        )
+    };
+    let url = reqwest::Url::parse(&installation.management_url).map_err(|_| invalid())?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid());
+    }
+
+    let segments = url
+        .path_segments()
+        .ok_or_else(invalid)?
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let is_personal_settings = segments.as_slice()
+        == [
+            "settings",
+            "installations",
+            installation.installation_id.as_str(),
+        ];
+    let is_organization_settings = segments.len() == 5
+        && segments[0] == "organizations"
+        && !segments[1].is_empty()
+        && segments[2] == "settings"
+        && segments[3] == "installations"
+        && segments[4] == installation.installation_id;
+    if !is_personal_settings && !is_organization_settings {
+        return Err(invalid());
+    }
+
+    Ok(())
+}
+
 fn routine_trust_from_row(row: sqlx_sqlite::SqliteRow) -> RoutineTrustRecord {
     RoutineTrustRecord {
         job_id: row.get("job_id"),
@@ -3556,6 +3856,213 @@ mod tests {
 
     fn scopes(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn github_connection_fixture(
+        github_user_id: &str,
+        login: &str,
+        status: &str,
+    ) -> super::GitHubConnectionRecord {
+        super::GitHubConnectionRecord {
+            github_user_id: github_user_id.to_string(),
+            login: login.to_string(),
+            avatar_url: Some(format!(
+                "https://avatars.githubusercontent.com/u/{github_user_id}"
+            )),
+            status: status.to_string(),
+        }
+    }
+
+    fn github_installation_fixture(
+        installation_id: &str,
+        github_user_id: &str,
+        owner_login: &str,
+    ) -> super::GitHubInstallationRecord {
+        super::GitHubInstallationRecord {
+            installation_id: installation_id.to_string(),
+            github_user_id: github_user_id.to_string(),
+            owner_id: "321".to_string(),
+            owner_login: owner_login.to_string(),
+            owner_type: "Organization".to_string(),
+            management_url: format!(
+                "https://github.com/organizations/{owner_login}/settings/installations/{installation_id}"
+            ),
+            repository_selection: "selected".to_string(),
+            permissions_json: r#"{"contents":"read","issues":"write"}"#.to_string(),
+            suspended_at: None,
+            last_refreshed_at: "2026-07-14T00:00:00.000Z".to_string(),
+        }
+    }
+
+    fn github_repository_fixture(
+        repository_id: &str,
+        installation_id: &str,
+        full_name: &str,
+    ) -> super::GitHubRepositoryRecord {
+        super::GitHubRepositoryRecord {
+            repository_id: repository_id.to_string(),
+            installation_id: installation_id.to_string(),
+            owner_login: full_name.split('/').next().unwrap().to_string(),
+            name: full_name.split('/').nth(1).unwrap().to_string(),
+            full_name: full_name.to_string(),
+            is_private: true,
+            is_archived: false,
+            permissions_json: r#"{"admin":false,"pull":true,"push":false}"#.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn github_snapshot_replacement_and_disconnect_are_atomic() {
+        let repos = test_repositories().await;
+        let connection = github_connection_fixture("123", "octocat", "connected");
+        let installation = github_installation_fixture("456", "123", "open-software-network");
+        let first = vec![
+            github_repository_fixture("789", "456", "open-software-network/test-repo"),
+            github_repository_fixture("790", "456", "open-software-network/removed-repo"),
+        ];
+
+        repos
+            .replace_github_snapshot(&connection, &[installation.clone()], &first)
+            .await
+            .unwrap();
+        let stored = repos.github_snapshot().await.unwrap().unwrap();
+        assert_eq!(stored.repositories.len(), 2);
+
+        repos
+            .replace_github_snapshot(&connection, &[installation], &first[..1])
+            .await
+            .unwrap();
+        let refreshed = repos.github_snapshot().await.unwrap().unwrap();
+        assert_eq!(
+            refreshed
+                .repositories
+                .iter()
+                .map(|repository| repository.repository_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["789"]
+        );
+
+        repos.delete_github_state("123").await.unwrap();
+        assert!(repos.github_snapshot().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn github_snapshot_rollback_preserves_previous_state() {
+        let repos = test_repositories().await;
+        let connection = github_connection_fixture("123", "octocat", "connected");
+        let installation = github_installation_fixture("456", "123", "open-software-network");
+        let repositories = vec![github_repository_fixture(
+            "789",
+            "456",
+            "open-software-network/test-repo",
+        )];
+
+        repos
+            .replace_github_snapshot(&connection, &[installation.clone()], &repositories)
+            .await
+            .unwrap();
+        let original = repos.github_snapshot().await.unwrap().unwrap();
+
+        let invalid = super::GitHubInstallationRecord {
+            repository_selection: "invalid".to_string(),
+            ..installation
+        };
+        assert!(repos
+            .replace_github_snapshot(&connection, &[invalid], &repositories)
+            .await
+            .is_err());
+
+        assert_eq!(repos.github_snapshot().await.unwrap().unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn github_snapshot_accessors_are_stable_and_replace_a_different_user() {
+        let repos = test_repositories().await;
+        let connection = github_connection_fixture("123", "octocat", "connected");
+        let installations = vec![
+            github_installation_fixture("457", "123", "zeta-owner"),
+            github_installation_fixture("456", "123", "alpha-owner"),
+        ];
+        let repositories = vec![
+            github_repository_fixture("790", "457", "zeta-owner/repository"),
+            github_repository_fixture("789", "456", "alpha-owner/repository"),
+        ];
+        repos
+            .replace_github_snapshot(&connection, &installations, &repositories)
+            .await
+            .unwrap();
+
+        let snapshot = repos.github_snapshot().await.unwrap().unwrap();
+        assert_eq!(
+            snapshot
+                .installations
+                .iter()
+                .map(|installation| installation.installation_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["456", "457"]
+        );
+        assert_eq!(
+            snapshot
+                .repositories
+                .iter()
+                .map(|repository| repository.repository_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["789", "790"]
+        );
+        assert_eq!(
+            repos.get_github_installation("457").await.unwrap().unwrap(),
+            installations[0]
+        );
+        assert!(repos
+            .get_github_installation("missing")
+            .await
+            .unwrap()
+            .is_none());
+
+        repos
+            .set_github_connection_status("123", "reconnect_required")
+            .await
+            .unwrap();
+        assert_eq!(
+            repos
+                .github_snapshot()
+                .await
+                .unwrap()
+                .unwrap()
+                .connection
+                .status,
+            "reconnect_required"
+        );
+
+        let replacement = github_connection_fixture("999", "hubot", "setup_incomplete");
+        let replacement_installation = github_installation_fixture("888", "999", "hubot");
+        repos
+            .replace_github_snapshot(&replacement, &[replacement_installation], &[])
+            .await
+            .unwrap();
+        let snapshot = repos.github_snapshot().await.unwrap().unwrap();
+        assert_eq!(snapshot.connection.github_user_id, "999");
+        assert!(repos
+            .get_github_installation("456")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn github_snapshot_rejects_unsafe_management_urls_before_persistence() {
+        let repos = test_repositories().await;
+        let connection = github_connection_fixture("123", "octocat", "connected");
+        let mut installation = github_installation_fixture("456", "123", "open-software-network");
+        installation.management_url =
+            "https://example.com/organizations/open-software-network/settings/installations/456"
+                .to_string();
+
+        assert!(repos
+            .replace_github_snapshot(&connection, &[installation], &[])
+            .await
+            .is_err());
+        assert!(repos.github_snapshot().await.unwrap().is_none());
     }
 
     #[tokio::test]
