@@ -68,6 +68,41 @@ filled by **note generation**, and owns any manual notes the user types. A
 the reverse, and a note need not have a recording at all.
 _Avoid_: meeting (June has no meeting entity), document, summary.
 
+**Project (folder)**:
+The user-facing organizational unit — "Projects" in the UI, the `folders`
+entity in code — that groups notes and agent sessions and, since JUN-256,
+carries **project instructions** and scopes **memory entries**. One entity,
+two names: say "project" in UI copy, keep `folder` in code and schema.
+_Avoid_: workspace (overloaded), profile (a different, reverted concept).
+
+**Project instructions**:
+The user-written, per-project text (max 4000 chars, on the folder row) that
+June follows in sessions filed in that project. Delivered by injecting a
+delimited project-context block into the session's prompt text at run
+boundaries — never via the global SOUL.md (see
+[ADR-0019](docs/adr/0019-june-owned-project-memory-store.md)).
+_Avoid_: system prompt (that is SOUL territory), folder description (a
+separate, filing-help field).
+
+**Memory entry**:
+One durable fact June remembers, stored in June's own SQLite `memories`
+table — global or scoped to one project — written by the agent through
+`june_context` memory tools (or by the user in Settings), inspectable and
+editable in the "Memory" settings tab and the project detail view. Deletion
+is a hard DELETE plus a tombstone row (so sync can propagate it).
+_Avoid_: the Hermes memory toolset's `memories/` files (the upstream
+mechanism June does not use for this), Biography (the connector-built user
+profile).
+
+**Memory sync** (zero-access):
+The opt-in encrypted sync of memory entries + project instructions across a
+user's devices via June API's `/v1/memory-sync/blob`. Client-encrypted under
+a Keychain-held key the server never sees; the key moves between devices only
+as a user-transferred **recovery phrase** (see
+[ADR-0020](docs/adr/0020-zero-access-encrypted-memory-sync.md)).
+_Avoid_: backup (it is multi-device sync), cloud memory (the server cannot
+read it).
+
 ### Audio & recording
 
 **Recording session**:
@@ -343,7 +378,8 @@ transcripts plus the user's mail and calendar ("here's what I already know, and
 it never left your Mac"). Stored locally, feeds the soul's context, fully
 deletable and regenerable.
 _Avoid_: profile (overloaded with **provider settings** and the account
-snapshot), persona, memory (that is the agent memory toolset).
+snapshot), persona, memory (that is the June **memory entry** store; the
+upstream agent memory toolset is a third thing again — qualify which).
 
 **Admin surface**:
 A June-native management view for the embedded Hermes runtime — skills hub,

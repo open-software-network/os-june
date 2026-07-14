@@ -33,6 +33,8 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0021](adr/0021-june-api-v1-compatibility-policy.md) — `/v1` is additive-only for shipped app versions: per-version contract fixtures gate CI and production promotes, clients send `x-june-app-version`, error codes never renumber
 - [adr/0022](adr/0022-venice-private-first-model-routing.md) — service-managed text uses Venice private zero-retention first with Phala TEE fallback; existing `/v1` provider semantics stay compatible and pricing is fallback-safe
 - [adr/0023](adr/0023-attested-os-api-service-chain.md) — June verifies a nonce-bound, digest-pinned Confidential Space proof for the Open Software API before service-managed inference
+- [adr/0019](adr/0019-june-owned-project-memory-store.md) — memory entries live in June's SQLite (not the Hermes memory toolset), scoped by project, agent writes via the loopback proxy, project context by prompt injection
+- [adr/0020](adr/0020-zero-access-encrypted-memory-sync.md) — opt-in memory/instructions sync as one client-encrypted blob; Keychain key + recovery phrase, version-CAS, tombstones beat content
 
 ## Enforceable rules (spec/)
 
