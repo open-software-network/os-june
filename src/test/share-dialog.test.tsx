@@ -406,6 +406,72 @@ describe("ShareDialog", () => {
     expect(screen.queryByRole("button", { name: "Unshare" })).not.toBeInTheDocument();
   });
 
+  it("revokes a just-added invite when persisting its key fails, keeping the share", async () => {
+    mocks.shareKeyGet.mockResolvedValue({
+      shareId: "shr_1",
+      contentKeyB64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    });
+    mocks.shareGet.mockResolvedValue({
+      shareId: "shr_1",
+      kind: "note",
+      invites: [{ inviteId: "shi_1", email: "first@example.com", state: "accepted" }],
+    });
+    mocks.shareInviteKeysGet.mockResolvedValue([
+      { inviteId: "shi_1", inviteKeyB64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8" },
+    ]);
+    mocks.shareAddInvites.mockResolvedValue({
+      invites: [{ inviteId: "shi_2", email: "second@example.com" }],
+    });
+    // The invite is created on the existing share, then its local key save fails.
+    mocks.shareInviteKeySave.mockRejectedValueOnce(new Error("disk full"));
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    expect(await screen.findByText("first@example.com")).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Invite by email"), "second@example.com");
+    await user.click(screen.getByRole("button", { name: "Invite" }));
+
+    // The dangling invite is revoked; the pre-existing share is left intact.
+    await waitFor(() => expect(mocks.shareRevokeInvite).toHaveBeenCalledWith("shr_1", "shi_2"));
+    expect(mocks.shareDelete).not.toHaveBeenCalled();
+    expect(await screen.findByText("disk full")).toBeInTheDocument();
+  });
+
+  it("disables unshare while an invite is in flight", async () => {
+    mocks.shareKeyGet.mockResolvedValue({
+      shareId: "shr_1",
+      contentKeyB64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    });
+    mocks.shareGet.mockResolvedValue({
+      shareId: "shr_1",
+      kind: "note",
+      invites: [{ inviteId: "shi_1", email: "first@example.com", state: "accepted" }],
+    });
+    // Hold shareAddInvites pending to keep the invite in flight.
+    let resolveAdd: (value: { invites: { inviteId: string; email: string }[] }) => void = () => {};
+    mocks.shareAddInvites.mockReturnValue(
+      new Promise((resolve) => {
+        resolveAdd = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    expect(await screen.findByText("first@example.com")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unshare" })).toBeEnabled();
+
+    await user.type(screen.getByLabelText("Invite by email"), "second@example.com");
+    await user.click(screen.getByRole("button", { name: "Invite" }));
+
+    // While the add is in flight, unsharing is blocked (it would delete the
+    // share out from under the invite's continuation).
+    await waitFor(() => expect(screen.getByRole("button", { name: "Unshare" })).toBeDisabled());
+
+    // Once it settles, unshare is available again.
+    resolveAdd({ invites: [{ inviteId: "shi_2", email: "second@example.com" }] });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Unshare" })).toBeEnabled());
+  });
+
   it("keeps the invite button disabled while an existing share is still loading", async () => {
     // Hold shareKeyGet pending so the open effect never settles during the
     // assertion window; a submit now would wrongly take the first-invite path.

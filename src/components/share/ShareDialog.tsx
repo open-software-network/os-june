@@ -194,6 +194,12 @@ export function ShareDialog({
     // is an orphan: the owner can't find it (shareKeyGet is null), can't revoke
     // it from this item, and future invites mint a second share beside it.
     let createdShareId: string | null = null;
+    // Tracks an invite added to an *existing* share this call (the add branch),
+    // so the catch can revoke it if the local invite-key save then fails. Unlike
+    // the create branch we must not delete the whole share (it predates this
+    // call); revoking just the new invite drops the active-but-unusable row
+    // whose link we could never produce.
+    let addedInviteId: string | null = null;
     try {
       const inviteKey = await generateKey();
       let nextShareId = shareId;
@@ -240,6 +246,8 @@ export function ShareDialog({
           },
         ]);
         created = response.invites[0];
+        // Arm invite rollback: the invite now exists on the existing share.
+        if (created) addedInviteId = created.inviteId;
       }
       if (!created) throw new Error("June returned no invite.");
       const inviteKeyB64 = toBase64Url(inviteKey);
@@ -248,11 +256,12 @@ export function ShareDialog({
         shareId: nextShareId,
         inviteKeyB64,
       });
-      // The share and its first invite key are fully persisted now (server +
-      // local, keyed to the started item), so disarm rollback regardless. Only
+      // The share and its invite key are fully persisted now (server + local,
+      // keyed to the started item), so disarm both rollbacks regardless. Only
       // reflect it in the dialog if we're still on that item: committing after
       // the user switched items would attach this share to the wrong one.
       createdShareId = null;
+      addedInviteId = null;
       if (activeItemKeyRef.current === startedItemKey) {
         setShareId(nextShareId);
         setContentKeyB64(nextContentKeyB64);
@@ -275,6 +284,11 @@ export function ShareDialog({
           setShareId(null);
           setContentKeyB64(null);
         }
+      } else if (addedInviteId && shareId) {
+        // The invite was added to an existing share but its key never persisted;
+        // revoke it so no active invite lingers whose link we can never produce.
+        // Best-effort, and it targets the share the invite was added to.
+        await shareRevokeInvite(shareId, addedInviteId).catch(() => {});
       }
       // Don't surface this item's error on a different item's dialog.
       if (stillOnStartedItem) setError(messageFromError(err));
@@ -343,6 +357,10 @@ export function ShareDialog({
               <button
                 type="button"
                 className="primary-action share-unshare"
+                // Blocked while an invite is in flight: unsharing mid-invite
+                // would delete the share, then the invite's continuation could
+                // save a key and set shareId back to the now-deleted share.
+                disabled={inviteBusy}
                 onClick={() => setConfirmUnshare(true)}
               >
                 Unshare
