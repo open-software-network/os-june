@@ -75,6 +75,8 @@ export function reducePairing(
           return { state };
         case "pong":
           return { state };
+        case "request":
+          return { state };
       }
     }
   }

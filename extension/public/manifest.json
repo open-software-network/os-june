@@ -12,5 +12,5 @@
     "default_popup": "popup.html",
     "default_title": "June"
   },
-  "permissions": ["nativeMessaging"]
+  "permissions": ["nativeMessaging", "tabs", "tabGroups", "debugger"]
 }

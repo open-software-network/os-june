@@ -10,9 +10,12 @@ import {
   type PairingState,
 } from "./pairing";
 import { NATIVE_HOST_NAME } from "./protocol";
+import { parseBrowserRequest } from "./protocol";
+import { BrowserController, withRequestId } from "./browser";
 
 let port: chrome.runtime.Port | null = null;
 let state: PairingState = initialPairingState;
+const browser = new BrowserController();
 
 function extensionVersion(): string {
   return chrome.runtime.getManifest().version;
@@ -47,10 +50,25 @@ function connect() {
     void updateBadge();
     return;
   }
-  port.onMessage.addListener((message) => apply({ kind: "message", message }));
+  port.onMessage.addListener((message) => {
+    const request = parseBrowserRequest(message);
+    if (request) {
+      if (state.status !== "paired" || !port) return;
+      const requestPort = port;
+      void browser.execute(request).then((result) => {
+        if (port !== requestPort || state.status !== "paired") return;
+        const outgoing = withRequestId(request.id, result);
+        for (const chunk of outgoing.chunks ?? []) requestPort.postMessage(chunk);
+        requestPort.postMessage(outgoing.response);
+      });
+      return;
+    }
+    apply({ kind: "message", message });
+  });
   port.onDisconnect.addListener(() => {
     port = null;
     apply({ kind: "disconnect" });
+    void browser.disconnect();
   });
   apply({ kind: "connect" });
 }

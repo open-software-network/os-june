@@ -4,6 +4,25 @@
 // real package the next time dependencies are touched (JUN-287 follow-up).
 // Keep it scoped to what the code calls so the compiler still catches typos.
 
+interface ChromeDebuggerApi {
+  attach(target: { tabId?: number }, requiredVersion: string): Promise<void>;
+  detach(target: { tabId?: number }): Promise<void>;
+  sendCommand(
+    target: { tabId?: number },
+    method: string,
+    commandParams?: Record<string, unknown>,
+  ): Promise<unknown>;
+  onEvent: {
+    addListener(
+      callback: (
+        source: { tabId?: number },
+        method: string,
+        params?: Record<string, unknown>,
+      ) => void,
+    ): void;
+  };
+}
+
 declare namespace chrome {
   namespace runtime {
     interface Port {
@@ -41,5 +60,23 @@ declare namespace chrome {
   namespace action {
     function setBadgeText(details: { text: string }): Promise<void>;
     function setBadgeBackgroundColor(details: { color: string }): Promise<void>;
+  }
+
+  namespace tabs {
+    interface Tab {
+      id?: number;
+      title?: string;
+      url?: string;
+    }
+    function create(details: { url: string; active?: boolean }): Promise<Tab>;
+    function get(tabId: number): Promise<Tab>;
+    function update(tabId: number, details: { active?: boolean }): Promise<Tab>;
+    function remove(tabIds: number | number[]): Promise<void>;
+    function group(details: { tabIds: number[]; groupId?: number }): Promise<number>;
+    const onRemoved: { addListener(callback: (tabId: number) => void): void };
+  }
+
+  namespace tabGroups {
+    function update(groupId: number, details: { title: string }): Promise<void>;
   }
 }

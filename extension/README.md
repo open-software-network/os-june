@@ -1,8 +1,16 @@
 # June extension
 
-The MV3 extension half of Browser use (JUN-287, ADR 0017). This walking
-skeleton pairs the extension with the running June app over Chrome native
-messaging and a signed shim; page control arrives in later slices.
+The MV3 extension half of Browser use (ADR 0017). It pairs with the running
+June app over Chrome native messaging and a signed shim, then drives only tabs
+it created for the active broker session. Task tabs stay in a `June` tab group
+and keep Chrome's debugger banner visible while attached.
+
+The current driver starts and closes sessions, opens, lists, switches, and
+closes task tabs, and supports navigation, accessibility snapshots, and
+viewport screenshots. Click, fill, press, back, and user-shared tabs are part
+of the common `june_browser` contract but are implemented in later slices.
+Both the Rust broker and this extension keep independent ownership registries;
+pre-existing tabs are never attached, read, navigated, grouped, or closed.
 
 ## How pairing works
 

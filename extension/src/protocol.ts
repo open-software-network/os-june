@@ -22,11 +22,49 @@ export type PingMessage = {
   id?: number;
 };
 
+export type BrowserToolName =
+  | "session_start"
+  | "session_close"
+  | "navigate"
+  | "snapshot"
+  | "screenshot"
+  | "tabs_list"
+  | "tab_open"
+  | "tab_switch"
+  | "tab_close";
+
+export type BrowserRequestMessage = {
+  v: number;
+  type: "request";
+  id: number;
+  tool: BrowserToolName;
+  arguments: Record<string, unknown>;
+};
+
 export type HostMessage =
   | { v: number; type: "hello_ok"; appVersion?: string }
   | { v: number; type: "hello_incompatible"; expected?: number }
   | { v: number; type: "pong"; id?: number }
-  | { v: number; type: "error"; code?: string };
+  | { v: number; type: "error"; code?: string }
+  | BrowserRequestMessage;
+
+export type BrowserResponseMessage = {
+  v: number;
+  type: "response";
+  id: number;
+  success: boolean;
+  data?: Record<string, unknown>;
+  message?: string;
+  errorCode?: string;
+};
+
+export type ChunkMessage = {
+  v: number;
+  type: "chunk";
+  id: number;
+  index: number;
+  data: string;
+};
 
 export function helloMessage(extensionVersion: string): HelloMessage {
   return { v: PROTOCOL_VERSION, type: "hello", extensionVersion };
@@ -52,9 +90,18 @@ export function parseHostMessage(raw: unknown): HostMessage | null {
     value.type !== "hello_ok" &&
     value.type !== "hello_incompatible" &&
     value.type !== "pong" &&
-    value.type !== "error"
+    value.type !== "error" &&
+    value.type !== "request"
   ) {
     return null;
   }
   return value as HostMessage;
+}
+
+export function parseBrowserRequest(raw: unknown): BrowserRequestMessage | null {
+  const message = parseHostMessage(raw);
+  if (message?.type !== "request") return null;
+  if (!Number.isInteger(message.id) || typeof message.tool !== "string") return null;
+  if (typeof message.arguments !== "object" || message.arguments === null) return null;
+  return message;
 }

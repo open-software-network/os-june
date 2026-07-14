@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { helloMessage, parseHostMessage, pingMessage, PROTOCOL_VERSION } from "../protocol";
+import {
+  helloMessage,
+  parseBrowserRequest,
+  parseHostMessage,
+  pingMessage,
+  PROTOCOL_VERSION,
+} from "../protocol";
 
 describe("protocol messages", () => {
   it("stamps hello with the pinned protocol version and extension version", () => {
@@ -29,5 +35,21 @@ describe("parseHostMessage", () => {
     expect(parseHostMessage({ type: "hello_ok" })).toBeNull();
     expect(parseHostMessage({ v: "1", type: "hello_ok" })).toBeNull();
     expect(parseHostMessage({ v: 1, type: "take_over_tab" })).toBeNull();
+  });
+
+  it("accepts only well-formed browser requests", () => {
+    expect(
+      parseBrowserRequest({
+        v: 1,
+        type: "request",
+        id: 3,
+        tool: "tab_open",
+        arguments: { session_id: "s" },
+      }),
+    ).toMatchObject({ id: 3, tool: "tab_open" });
+    expect(
+      parseBrowserRequest({ v: 1, type: "request", id: "3", tool: "tab_open", arguments: {} }),
+    ).toBeNull();
+    expect(parseBrowserRequest({ v: 1, type: "request", id: 3, tool: "tab_open" })).toBeNull();
   });
 });
