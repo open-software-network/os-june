@@ -15,6 +15,10 @@ const CLIPBOARD_RETRY_ATTEMPTS: usize = 12;
 const CLIPBOARD_RETRY_DELAY: Duration = Duration::from_millis(25);
 const CF_UNICODETEXT: u32 = 13;
 
+// v1 clipboard backup only preserves CF_UNICODETEXT. Rich/non-text formats
+// (HTML, RTF, images, file lists, app-specific formats) are not cloned because
+// arbitrary Windows clipboard formats can be delayed-rendered or owned by other
+// processes. The clipboard-based paste path may therefore drop those formats.
 pub struct ClipboardBackup {
     original_text: String,
 }
