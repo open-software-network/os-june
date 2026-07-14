@@ -5199,7 +5199,7 @@ mod tests {
         let mut controller = ShortcutActivationController::default();
         let now = Instant::now();
 
-        controller.mark_helper_finalizing();
+        controller.helper_finalizing_since = Some(now);
         assert_eq!(
             controller.handle_edge(
                 ShortcutKeyEdge::Down,
