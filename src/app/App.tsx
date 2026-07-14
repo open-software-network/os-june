@@ -1631,10 +1631,16 @@ export function App() {
 
     // Notification clicks carry only a session id (the session may have
     // changed since the notification was posted). Resolve it against the
-    // known sessions, refreshing from the bridge when it is not cached; a
-    // session that no longer exists still opens the agent workspace rather
-    // than dropping the click on an unrelated view. The sequence counter
-    // keeps a slow lookup for an older click from overriding a newer one.
+    // known sessions, refreshing from the bridge when it is not cached. The
+    // workspace opens immediately for feedback and upgrades to the chat when
+    // the lookup lands; a session that no longer exists stays on the agent
+    // view rather than dropping the click on an unrelated one. The sequence
+    // counter keeps a slow lookup for an older click from overriding a newer
+    // one. A cold start can reach this before the Hermes bridge is up, so a
+    // failed listing (as opposed to a successful listing that lacks the id)
+    // retries while the bridge boots instead of eating the click.
+    const sessionLookupAttempts = 20;
+    const sessionLookupRetryMs = 1_000;
     let openSequence = 0;
     async function openAgentSessionById(sessionId: string) {
       openSequence += 1;
@@ -1644,9 +1650,21 @@ export function App() {
         openAgentWorkspace(cached);
         return;
       }
-      const sessions = await listHermesSessions({}).catch(() => []);
-      if (aborted || sequence !== openSequence) return;
-      openAgentWorkspace(sessions.find((session) => session.id === sessionId));
+      openAgentWorkspace(undefined);
+      for (let attempt = 0; attempt < sessionLookupAttempts; attempt += 1) {
+        let sessions: HermesSessionInfo[];
+        try {
+          sessions = await listHermesSessions({});
+        } catch {
+          await new Promise((resolve) => window.setTimeout(resolve, sessionLookupRetryMs));
+          if (aborted || sequence !== openSequence) return;
+          continue;
+        }
+        if (aborted || sequence !== openSequence) return;
+        const session = sessions.find((candidate) => candidate.id === sessionId);
+        if (session) openAgentWorkspace(session);
+        return;
+      }
     }
 
     function handleOpenPayload(payload?: { session?: HermesSessionInfo; sessionId?: string }) {

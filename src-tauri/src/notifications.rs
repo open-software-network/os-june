@@ -73,9 +73,11 @@ impl AgentOpenQueue {
     /// may land on no listener. The frontend drains the queue after handling
     /// an event, and the next `mark_ready` recovers anything that was lost.
     fn on_activation(&mut self, session_id: Option<String>) -> Option<String> {
+        // Last click wins, generic clicks included: a click without a session
+        // (recording notifications) must clear a stale queued agent open so
+        // the next ready handshake cannot hijack it into an unrelated chat.
+        self.pending_session_id = session_id.clone();
         let session_id = session_id?;
-        // Last click wins: the user's most recent choice is the one to honor.
-        self.pending_session_id = Some(session_id.clone());
         self.frontend_ready.then_some(session_id)
     }
 
@@ -404,6 +406,14 @@ mod tests {
     #[test]
     fn clicks_without_a_session_are_ignored_by_the_queue() {
         let mut queue = AgentOpenQueue::new();
+        assert_eq!(queue.on_activation(None), None);
+        assert_eq!(queue.mark_ready(), None);
+    }
+
+    #[test]
+    fn generic_click_clears_a_stale_queued_agent_open() {
+        let mut queue = AgentOpenQueue::new();
+        assert_eq!(queue.on_activation(Some("session-old".to_string())), None);
         assert_eq!(queue.on_activation(None), None);
         assert_eq!(queue.mark_ready(), None);
     }

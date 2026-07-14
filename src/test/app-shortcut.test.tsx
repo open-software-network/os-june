@@ -1555,4 +1555,27 @@ describe("App shortcuts", () => {
 
     expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
   });
+
+  it("retries the notified-chat lookup while the Hermes bridge is still starting", async () => {
+    mocks.agentOpenReady.mockResolvedValue("session-9");
+    let sessionListCalls = 0;
+    mocks.listHermesSessions.mockImplementation(async () => {
+      sessionListCalls += 1;
+      if (sessionListCalls <= 2) throw new Error("hermes_bridge_not_running");
+      return [
+        {
+          id: "session-9",
+          title: "Notified session",
+          preview: "Notified session preview",
+          last_active: now,
+        },
+      ];
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("button", { name: "Send message" }, { timeout: 8_000 }),
+    ).toBeInTheDocument();
+  }, 15_000);
 });
