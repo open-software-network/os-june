@@ -37,7 +37,7 @@ pub(crate) async fn transcribe(
     validate_audio(&audio)?;
     let model_id = form.required_text("model")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
-    require_priced_model(&state, &model_id, ModelKind::Asr)?;
+    let model_id = resolve_priced_asr_model(&state, &model_id)?;
     // Accepted and validated for wire compatibility, but deliberately not
     // carried into the transcription pipeline: the note title is user data
     // an ASR provider has no business seeing.
@@ -337,14 +337,6 @@ pub(crate) fn required(value: Option<String>, message: &str) -> Result<String, A
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| ApiError::bad_request(message))
-}
-
-pub(crate) fn require_priced_model(
-    state: &ApiState,
-    model_id: &str,
-    kind: ModelKind,
-) -> Result<(), ApiError> {
-    require_priced_model_kind(state.pricing(), model_id, kind)
 }
 
 const AUTO_TEXT_MODEL: &str = "open-software/auto";

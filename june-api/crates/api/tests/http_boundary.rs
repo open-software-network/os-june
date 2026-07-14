@@ -798,6 +798,27 @@ async fn integration_note_transcribe_accepts_valid_audio_multipart() -> Result<(
 }
 
 #[tokio::test]
+async fn integration_note_transcribe_routes_retired_asr_model_through_priced_fallback()
+-> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request(
+        "/v1/notes/transcribe",
+        multipart_body([
+            text_part("model", "retired-asr-model"),
+            text_part("title", "Standup"),
+            text_part("noteId", "note-stale-asr"),
+            file_part("audio", "recording.wav", valid_wav()),
+        ]),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["text"], "Transcribed audio");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_note_transcribe_rejects_unsupported_audio() -> Result<(), Box<dyn Error>> {
     let response = send(multipart_request(
         "/v1/notes/transcribe",
