@@ -7612,6 +7612,16 @@ describe("AgentWorkspace", () => {
             prompt: "a calm mountain lake at dawn",
           },
         });
+        // The pinned runtime can follow the stable-id start with an id-less
+        // progress frame. Both belong to one tool and must hold one canvas.
+        handler({
+          type: "tool.progress",
+          session_id: "runtime-session-2",
+          payload: {
+            name: "generate_image",
+            preview: "Generating",
+          },
+        });
         handler({
           type: "message.delta",
           session_id: "runtime-session-2",

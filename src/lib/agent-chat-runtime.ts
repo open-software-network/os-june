@@ -266,10 +266,20 @@ export function buildHermesSessionChatTurns(
 ): AgentChatTurn[] {
   const turns: AgentChatTurn[] = [];
   const toolResults = new Map<string, HermesSessionMessage>();
+  const persistedToolResultIds = new Set<string>();
+  const persistedToolResultAtByName = new Map<string, string>();
 
   for (const message of messages) {
     if (message.role === "tool") {
       const id = message.tool_call_id ?? message.id;
+      persistedToolResultIds.add(id);
+      if (message.tool_name) {
+        const resultAt = messageTimestamp(message);
+        const previousResultAt = persistedToolResultAtByName.get(message.tool_name);
+        if (!previousResultAt || previousResultAt < resultAt) {
+          persistedToolResultAtByName.set(message.tool_name, resultAt);
+        }
+      }
       toolResults.set(id, message);
       const turn =
         lastAssistantTurn(turns) ?? createAssistantTurn(turns, messageTimestamp(message));
@@ -364,7 +374,13 @@ export function buildHermesSessionChatTurns(
     }
   }
 
-  appendLiveHermesEvents(turns, liveEvents, syntheticTurns);
+  appendLiveHermesEvents(
+    turns,
+    liveEvents,
+    syntheticTurns,
+    persistedToolResultIds,
+    persistedToolResultAtByName,
+  );
   const sortedTurns = sortAgentChatTurns(turns);
   deduplicateGeneratedMediaWithinAgentRuns(sortedTurns);
   return sortedTurns.filter((turn) =>
@@ -513,6 +529,8 @@ function appendLiveHermesEvents(
   turns: AgentChatTurn[],
   events: JuneHermesEvent[],
   syntheticTurns: AgentChatTurn[] = [],
+  persistedToolResultIds: ReadonlySet<string> = new Set(),
+  persistedToolResultAtByName: ReadonlyMap<string, string> = new Map(),
 ) {
   let currentAssistant: AgentChatTurn | null = null;
   const toolCreatedTurns = new Set<AgentChatTurn>();
@@ -529,6 +547,26 @@ function appendLiveHermesEvents(
       if (!syntheticTurn) break;
       turns.push(syntheticTurn);
       if (syntheticTurn.role !== "assistant") currentAssistant = null;
+    }
+
+    // A gateway suspension can drop tool.complete while leaving tool.start in
+    // the buffered live tail. Once history contains that same stable call id,
+    // the persisted row is authoritative; replaying the stale start would add
+    // a second running generation canvas beside a newer run.
+    const hasExplicitToolIdentity =
+      event.kind === "tool" &&
+      Boolean(event.toolCallId || (event.name && event.key !== event.name));
+    if (event.kind === "tool") {
+      const persistedResultAt = event.name
+        ? persistedToolResultAtByName.get(event.name)
+        : undefined;
+      if (
+        (event.toolCallId && persistedToolResultIds.has(event.toolCallId)) ||
+        persistedToolResultIds.has(event.key) ||
+        (!hasExplicitToolIdentity && persistedResultAt && event.receivedAt <= persistedResultAt)
+      ) {
+        continue;
+      }
     }
 
     switch (event.kind) {
@@ -688,13 +726,22 @@ function appendLiveHermesEvents(
           // stream once its tool reaches a terminal state.
           currentAssistant.status = "complete";
         }
-        upsertToolPart(currentAssistant.parts, {
-          id: event.key,
-          name: toolActivityLabel(event.name ?? "tool", event.sanitizedPayload),
-          text: event.text,
-          status,
-          media: generatedMediaToolKind(event.name, event.sanitizedPayload),
-        });
+        const name = toolActivityLabel(event.name ?? "tool", event.sanitizedPayload);
+        const media = generatedMediaToolKind(event.name, event.sanitizedPayload);
+        upsertToolPart(
+          currentAssistant.parts,
+          {
+            id: event.toolCallId ?? event.key,
+            name,
+            text: event.text,
+            status,
+            media,
+          },
+          // Some runtime progress/completion callbacks omit the stable id and
+          // carry only the tool name. Fold those into the most recent matching
+          // row; explicit ids remain distinct for genuinely concurrent calls.
+          !hasExplicitToolIdentity,
+        );
         if (status === "complete") {
           appendImageParts(currentAssistant.parts, imagePartsFromHermesContent(event.content));
           appendVideoParts(currentAssistant.parts, videoPartsFromHermesContent(event.content));
@@ -1076,12 +1123,22 @@ function upsertToolPart(
   parts: AgentChatPart[],
   next: Pick<AgentChatToolPart, "id" | "name" | "text" | "status"> &
     Partial<Pick<AgentChatToolPart, "media">>,
+  correlateByName = false,
 ) {
-  const existing = parts.find(
+  let existing = parts.find(
     (part): part is AgentChatToolPart =>
       part.type === "tool" &&
       (part.id === next.id || (!next.id && part.name === next.name && part.status === "running")),
   );
+  if (!existing && correlateByName) {
+    for (let index = parts.length - 1; index >= 0; index -= 1) {
+      const part = parts[index];
+      if (part?.type === "tool" && part.name === next.name && part.media === next.media) {
+        existing = part;
+        break;
+      }
+    }
+  }
   if (existing) {
     existing.name = next.name && next.name !== "Tool" ? next.name : existing.name;
     existing.status = next.status;
@@ -1391,6 +1448,17 @@ function parseLikelyJsonContent(value: string) {
   return safeJsonParse(trimmed);
 }
 
+function parseUntrustedToolResultEnvelope(value: string) {
+  const closingTag = "</untrusted_tool_result>";
+  if (!value.trimStart().startsWith("<untrusted_tool_result")) return undefined;
+  const closingIndex = value.lastIndexOf(closingTag);
+  if (closingIndex < 0) return undefined;
+  const body = value.slice(0, closingIndex).trimEnd();
+  const payloadStart = body.indexOf("\n\n");
+  if (payloadStart < 0) return undefined;
+  return safeJsonParse(body.slice(payloadStart + 2).trim());
+}
+
 function stripMediaImageReferences(value: string) {
   return stripMediaReferences(value);
 }
@@ -1432,7 +1500,7 @@ function stripTerminalMediaReferences(value: string): string {
 function mediaImageReferences(value: unknown, depth = 0): string[] {
   if (value === null || value === undefined || depth > 4) return [];
   if (typeof value === "string") {
-    const parsed = parseLikelyJsonContent(value);
+    const parsed = parseLikelyJsonContent(value) ?? parseUntrustedToolResultEnvelope(value);
     const nested = parsed !== undefined ? mediaImageReferences(parsed, depth + 1) : [];
     const direct = [...value.matchAll(mediaImageReferencePattern())]
       .map((match) => match[1]?.trim())
@@ -1445,9 +1513,18 @@ function mediaImageReferences(value: unknown, depth = 0): string[] {
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
     return uniqueStrings(
-      ["text", "output_text", "content", "message", "delta", "summary", "url", "image_url"].flatMap(
-        (key) => mediaImageReferences(record[key], depth + 1),
-      ),
+      [
+        "text",
+        "output_text",
+        "content",
+        "result",
+        "structuredContent",
+        "message",
+        "delta",
+        "summary",
+        "url",
+        "image_url",
+      ].flatMap((key) => mediaImageReferences(record[key], depth + 1)),
     );
   }
   return [];
@@ -1456,7 +1533,7 @@ function mediaImageReferences(value: unknown, depth = 0): string[] {
 export function mediaVideoReferences(value: unknown, depth = 0): string[] {
   if (value === null || value === undefined || depth > 4) return [];
   if (typeof value === "string") {
-    const parsed = parseLikelyJsonContent(value);
+    const parsed = parseLikelyJsonContent(value) ?? parseUntrustedToolResultEnvelope(value);
     const nested = parsed !== undefined ? mediaVideoReferences(parsed, depth + 1) : [];
     const direct = [...value.matchAll(mediaVideoReferencePattern())]
       .map((match) => match[1]?.trim())
@@ -1469,9 +1546,18 @@ export function mediaVideoReferences(value: unknown, depth = 0): string[] {
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
     return uniqueStrings(
-      ["text", "output_text", "content", "message", "delta", "summary", "url", "video_url"].flatMap(
-        (key) => mediaVideoReferences(record[key], depth + 1),
-      ),
+      [
+        "text",
+        "output_text",
+        "content",
+        "result",
+        "structuredContent",
+        "message",
+        "delta",
+        "summary",
+        "url",
+        "video_url",
+      ].flatMap((key) => mediaVideoReferences(record[key], depth + 1)),
     );
   }
   return [];
@@ -1542,12 +1628,16 @@ function mcpImageContentBlocks(value: unknown, depth = 0): McpImageBlock[] {
 function mcpImageMetadata(value: unknown, depth = 0): { label?: string; filename?: string } {
   if (value === null || value === undefined || depth > 4) return {};
   if (typeof value === "string") {
-    const parsed = parseLikelyJsonContent(value);
+    const parsed = parseLikelyJsonContent(value) ?? parseUntrustedToolResultEnvelope(value);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       const record = parsed as Record<string, unknown>;
       const label = typeof record.label === "string" ? record.label : undefined;
       const filename = typeof record.filename === "string" ? record.filename : undefined;
       if (label || filename) return { label, filename };
+      for (const key of ["structuredContent", "result", "text", "content"]) {
+        const meta = mcpImageMetadata(record[key], depth + 1);
+        if (meta.label || meta.filename) return meta;
+      }
     }
     return {};
   }
@@ -1560,12 +1650,12 @@ function mcpImageMetadata(value: unknown, depth = 0): { label?: string; filename
   }
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
-    if (typeof record.text === "string") {
-      const meta = mcpImageMetadata(record.text, depth + 1);
+    const label = typeof record.label === "string" ? record.label : undefined;
+    const filename = typeof record.filename === "string" ? record.filename : undefined;
+    if (label || filename) return { label, filename };
+    for (const key of ["structuredContent", "result", "text", "content"]) {
+      const meta = mcpImageMetadata(record[key], depth + 1);
       if (meta.label || meta.filename) return meta;
-    }
-    if (Array.isArray(record.content)) {
-      return mcpImageMetadata(record.content, depth + 1);
     }
   }
   return {};
@@ -1585,7 +1675,20 @@ export function imagePartsFromHermesContent(content: unknown): AgentChatImagePar
     dataUrl: `data:${block.mimeType};base64,${block.data}`,
     ...(meta.filename ? { name: meta.filename } : {}),
   }));
-  const mediaParts = mediaImageReferences(content).map(mediaImagePart);
+  const mediaReferences = mediaImageReferences(content);
+  const mediaParts = mediaReferences.map((path) => {
+    const part = mediaImagePart(path);
+    // Hermes persists an MCP image block as a random image_cache path while
+    // retaining the tool's signed filename in structuredContent. With one
+    // output, that filename is the stable identity used by the assistant's
+    // trailing MEDIA ref; keep the cache path for loading and carry the signed
+    // name solely for display/deduplication.
+    if (mediaReferences.length === 1) {
+      if (meta.filename?.trim()) part.name = meta.filename.trim();
+      if (meta.label?.trim()) part.prompt = meta.label.trim();
+    }
+    return part;
+  });
   return [...blockParts, ...mediaParts];
 }
 
