@@ -327,13 +327,25 @@ Agent CLIs (Claude Code, Codex, Gemini, opencode): the user enabled Agent CLI ac
 /// browse — instead it can request the grant in-chat via a literal token the
 /// app turns into a one-click approval card. The agent itself can never flip
 /// the setting: the flag file lives outside every sandbox write root by
-/// design. When the grant is ON this section is omitted entirely; the
-/// `june_browser` tool descriptions carry their own usage guidance.
+/// design. When the grant is ON, `JUNE_SOUL_BROWSER_ENABLED_MD` takes its
+/// place: tool descriptions alone do not stop the model defaulting to "I
+/// can't browse".
 ///
 /// `BROWSER_ACCESS_REQUEST_TOKEN` in `src/lib/browser-access.ts` must match
 /// the token spelled out below.
 const JUNE_SOUL_BROWSER_BLOCKED_MD: &str = r#"
 Browser use (the june_browser tools): the user has not enabled Browser use, so those tools are disabled and any call to them fails with browser_access_disabled. Never pretend you browsed or invent page content. When a task genuinely needs a live browser (a page behind a login, operating a web app, content the fetch tools cannot reach), say plainly that Browser use is off, then request it directly: put the literal token [REQUEST:BROWSER_ACCESS] on its own line in your reply. The June app replaces that token with an approval card; one click enables "Browser use" in Settings, restarts the runtime, and prompts you to retry. Use the token only for this setting and at most once per reply. The user can instead flip it themselves in Settings, Agent tab. For public pages that need no login or interaction, prefer the june_web tools; they work without Browser use.
+"#;
+
+/// Appended when the user HAS enabled Browser use. Without this, an enabled
+/// session sees the `june_browser` tools but no framing, and the model falls
+/// back to its default "I can't access your browser" refusal instead of using
+/// them — which is exactly what happens in practice. This section tells the
+/// model plainly that it can operate the user's browser and when to reach for
+/// it, so a request like "check my notifications" drives the tools instead of
+/// a refusal. It never carries the request token (the grant is already on).
+const JUNE_SOUL_BROWSER_ENABLED_MD: &str = r#"
+Browser use (the june_browser tools): the user enabled Browser use, so you can operate their browser, not only read the web. You open your own task tabs (kept in a visible, marked group), navigate, read pages with snapshot, take screenshots, and act on sites the user is already signed into; their session is available to you. Reach for these tools whenever a task wants a live or signed-in browser: "check my notifications", "read my feed", "what's on my dashboard", filling a form, or operating a web app. Do this directly; never tell the user you cannot access their browser or their accounts, because now you can. For a public page that needs no sign-in or interaction, still prefer the june_web tools; they are lighter and open no tab. You act only in your own task tabs and tabs the user explicitly shares; their other tabs are off limits. Consequential actions (submitting, sending, publishing, purchasing, deleting) pause for the user's one-click approval, so move toward them without hesitating. Never type a password, one-time code, or payment detail; ask the user to take over those fields.
 "#;
 
 /// Per-process sandbox-status line, delivered via `HERMES_ENVIRONMENT_HINT`
@@ -8404,10 +8416,10 @@ fn sync_june_soul(
         ""
     };
     // The Browser access grant is independent of the sandbox: the broker
-    // enforces it for every mode, so the request guidance rides along whenever
-    // the grant is off and disappears entirely once it is on.
+    // enforces it for every mode, so browser guidance rides along in both
+    // states — request-the-grant when off, use-the-tools when on.
     let browser_section = if browser_access {
-        ""
+        JUNE_SOUL_BROWSER_ENABLED_MD
     } else {
         JUNE_SOUL_BROWSER_BLOCKED_MD
     };
@@ -14667,11 +14679,14 @@ mcp_servers:
 
         sync_june_soul(home.path(), true, false, true, true, false).expect("sync soul");
 
-        // Grant on: nothing to request, and no stale "disabled" claim; the
-        // june_browser tool descriptions carry their own guidance.
+        // Grant on: nothing to request and no stale "disabled" claim, but the
+        // soul must positively tell the model it can operate the browser, or it
+        // defaults to refusing ("I can't access your browser").
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(!soul.contains("[REQUEST:BROWSER_ACCESS]"));
         assert!(!soul.contains("browser_access_disabled"));
+        assert!(soul.contains("the user enabled Browser use"));
+        assert!(soul.contains("never tell the user you cannot access their browser"));
     }
 
     #[test]
