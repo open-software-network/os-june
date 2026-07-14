@@ -15,11 +15,13 @@ import {
 const mocks = vi.hoisted(() => ({
   hermesBridgeStatus: vi.fn(),
   invoke: vi.fn(),
+  stickyActiveProfile: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   invoke: mocks.invoke,
+  stickyActiveProfile: mocks.stickyActiveProfile,
 }));
 
 const sandboxedConnection = {
@@ -45,6 +47,9 @@ describe("active Hermes profile store", () => {
       connections: [sandboxedConnection],
     });
     mocks.invoke.mockResolvedValue({ active: "default", current: "default" });
+    // Both resolution paths failing is the baseline for the "refresh fails"
+    // cases; fallback tests override this with a resolved sticky value.
+    mocks.stickyActiveProfile.mockRejectedValue(new Error("no tauri shell"));
   });
 
   it("defaults to the default profile", () => {
@@ -83,6 +88,27 @@ describe("active Hermes profile store", () => {
 
     expect(getActiveHermesProfileName()).toBe("default");
     expect(isActiveHermesProfileConfirmed()).toBe(false);
+  });
+
+  it("falls back to the sticky file when the bridge is not running (cold start)", async () => {
+    mocks.hermesBridgeStatus.mockResolvedValue({ running: false });
+    mocks.stickyActiveProfile.mockResolvedValue("research");
+
+    await expect(refreshActiveHermesProfile()).resolves.toBe("research");
+
+    expect(getActiveHermesProfileName()).toBe("research");
+    expect(isActiveHermesProfileConfirmed()).toBe(true);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the sticky file when the admin request fails", async () => {
+    mocks.invoke.mockRejectedValue(new Error("bridge unavailable"));
+    mocks.stickyActiveProfile.mockResolvedValue("writing");
+
+    await expect(refreshActiveHermesProfile()).resolves.toBe("writing");
+
+    expect(getActiveHermesProfileName()).toBe("writing");
+    expect(isActiveHermesProfileConfirmed()).toBe(true);
   });
 
   it("confirms and notifies when setting the same default name", () => {

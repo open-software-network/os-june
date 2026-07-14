@@ -88,3 +88,19 @@ The wizard's "Create and start test session" flow (which opened a terminal
 via `POST /api/profiles/{name}/open-terminal`) was replaced by
 "Create and make active": activation plus June's own chat is the in-app way
 to try a profile, and no June UI path opens a terminal.
+
+## Addendum (2026-07-14): cold-start resolution reads the sticky file directly
+
+The frontend's active-profile store confirmed only through
+`GET /api/profiles/active`, which requires the Hermes web server. On a cold
+start under a named profile the server is not up yet, the one
+subscribe-triggered refresh short-circuited, and the store sat unconfirmed at
+`default` — so every session-list surface filtered against the wrong profile
+until the first new session forced a re-read (meeting notes were unaffected:
+Rust reads the sticky file per query). Since the endpoint itself just reads
+the sticky `active_profile` file, June now exposes that read as the
+`sticky_active_profile` Tauri command and the store falls back to it whenever
+the admin target is unavailable or the request fails. The REST path stays
+preferred when the server is up (it normalizes and reflects gateway state);
+the file read is the bridge-independent equivalent, not a second source of
+truth.

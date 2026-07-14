@@ -7,7 +7,7 @@ import {
   DEFAULT_HERMES_PROFILE,
   type HermesAdminMode,
 } from "./hermes-admin/target";
-import { hermesBridgeStatus, type HermesBridgeStatus } from "./tauri";
+import { hermesBridgeStatus, stickyActiveProfile, type HermesBridgeStatus } from "./tauri";
 
 type Listener = () => void;
 export type ActiveHermesProfile = {
@@ -121,7 +121,7 @@ async function refreshActiveHermesProfileOnce(
       preferredMode === "sandboxed" ? "unrestricted" : "sandboxed";
     const target =
       adminTargetForMode(status, preferredMode) ?? adminTargetForMode(status, fallbackMode);
-    if (!target) return activeProfileName;
+    if (!target) return refreshFromStickyFile();
 
     const client = createHermesAdminClient(target, {
       fetch: createRustAdminFetch(target.mode),
@@ -130,8 +130,24 @@ async function refreshActiveHermesProfileOnce(
     setActiveHermesProfileName(active.active);
     return activeProfileName;
   } catch {
+    return refreshFromStickyFile();
+  }
+}
+
+/** Cold-start / bridge-down path: the sticky pointer is a file in the Hermes
+ * home, and the gateway's GET /api/profiles/active reads that same file — so
+ * a direct Rust read is equally authoritative and needs no web server.
+ * Without it the store sat unconfirmed at `default` after an app restart
+ * under a named profile (subscribe only refreshes once), so every
+ * session-list surface filtered against the wrong profile until the first
+ * new session forced a re-read. Failure keeps the last-known value, same as
+ * the REST path. */
+async function refreshFromStickyFile(): Promise<string> {
+  try {
+    setActiveHermesProfileName(await stickyActiveProfile());
+  } catch {
     // Keep the last-known value: `default` when nothing was ever confirmed,
     // the previously confirmed name otherwise (see activeProfileName's doc).
-    return activeProfileName;
   }
+  return activeProfileName;
 }

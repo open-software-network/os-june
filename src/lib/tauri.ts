@@ -825,6 +825,12 @@ export async function assignSessionToProfile(sessionId: string, profile: string)
   });
 }
 
+/** The sticky active profile read straight from the Hermes home file —
+ * resolvable before the Hermes web server is up (cold start). */
+export async function stickyActiveProfile() {
+  return invoke<string>("sticky_active_profile");
+}
+
 export async function profileDataSummary(profile: string) {
   return invoke<ProfileDataSummary>("profile_data_summary", { profile });
 }

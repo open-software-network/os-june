@@ -156,6 +156,7 @@ pub fn run() {
             commands::assign_session_to_folder,
             commands::list_session_profiles,
             commands::assign_session_to_profile,
+            commands::sticky_active_profile,
             commands::profile_data_summary,
             commands::move_profile_data_to_default,
             commands::delete_profile_data,

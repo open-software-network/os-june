@@ -218,6 +218,14 @@ pub async fn list_folders(
     Ok(repositories(&app).await?.list_folders(&profile).await?)
 }
 
+/// The sticky active profile, read straight from the Hermes home file. Gives
+/// the frontend a resolution path that works before the Hermes web server is
+/// up (cold start), matching what every profile-scoped Rust read uses.
+#[tauri::command]
+pub fn sticky_active_profile(app: AppHandle) -> String {
+    active_profile(&app)
+}
+
 #[tauri::command]
 pub async fn delete_folder(app: AppHandle, request: DeleteFolderRequest) -> Result<(), AppError> {
     repositories(&app)
