@@ -15726,8 +15726,13 @@ function assignArtifactsToTurns(
   for (const turn of turns) {
     for (const part of turn.parts) {
       if (part.type !== "image" && part.type !== "video") continue;
+      // A path-bearing inline media part is deduped precisely by its path, so it
+      // needn't also claim its basename (which would wrongly suppress an
+      // unrelated later file sharing that name). Only pathless inline media
+      // (e.g. MCP inline image blocks carrying just a filename) fall back to the
+      // fuzzy name match.
       if (part.path) mediaPaths.add(part.path);
-      if (part.name) mediaNames.add(part.name.toLowerCase());
+      else if (part.name) mediaNames.add(part.name.toLowerCase());
     }
   }
   for (const turn of turns) {

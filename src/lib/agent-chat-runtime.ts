@@ -994,7 +994,13 @@ function completeRunningParts(parts: AgentChatPart[]) {
   for (const part of parts) {
     if (part.type === "reasoning") part.status = "complete";
     if (part.type === "text") {
-      if (hasMediaTool) part.text = stripTerminalMediaReferences(part.text);
+      // Scrub terminal MEDIA transport refs when a media tool ran (fast path) or
+      // when the text itself still carries a real `MEDIA:<path|filename>` ref —
+      // a media-producing tool that wasn't classified as media leaves the gate
+      // shut otherwise, stranding a trailing MEDIA line on the final message.
+      if (hasMediaTool || containsMediaReference(part.text)) {
+        part.text = stripTerminalMediaReferences(part.text);
+      }
       part.status = "complete";
     }
     if (part.type === "tool" && part.status === "running") part.status = "complete";
@@ -1346,6 +1352,13 @@ export function stripRenderedMediaReferences(value: string, holdTrailingPartial 
   const stripped = stripMediaReferences(value);
   if (!holdTrailingPartial) return stripped;
   return stripped.replace(/(^|\r?\n)[ \t]*(?:M|ME|MED|MEDI|MEDIA|MEDIA:.*)$/i, "$1");
+}
+
+/** True when the text carries a real `MEDIA:<path|filename>` transport ref. The
+ * patterns are anchored to `MEDIA:` plus a path/filename, so ordinary prose that
+ * merely contains the word "media" doesn't match. */
+function containsMediaReference(value: string): boolean {
+  return mediaImageReferencePattern().test(value) || mediaVideoReferencePattern().test(value);
 }
 
 function stripTerminalMediaReferences(value: string): string {
