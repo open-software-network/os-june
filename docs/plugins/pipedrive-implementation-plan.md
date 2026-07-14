@@ -33,7 +33,9 @@ Exit with approved auth, supported endpoint/version table, and customer demand.
 | `june_pipedrive_actions` | `create_note`, `create_activity`, `update_deal_fields` |
 
 Results preserve company, pipeline/stage, object id, update time, owner, custom
-field type, associations, canonical URL, and pagination metadata.
+field type, associations, canonical URL, and pagination metadata. Search
+results for persons, organizations, activities, and notes are filtered through
+a live association to at least one deal currently in an allowed pipeline.
 
 ## Boundary and state
 
@@ -41,11 +43,16 @@ field type, associations, canonical URL, and pagination metadata.
 - Company/user id, selected pipeline ids, field registry, endpoint versions,
   rate-limit budget, capabilities, and health in SQLite.
 - No CRM record corpus at rest.
-- Rust re-resolves the deal's current pipeline before read or mutation.
+- Rust re-resolves a deal's current pipeline before read or mutation. For
+  persons, organizations, activities, and notes, Rust follows current provider
+  associations and requires at least one associated deal whose current pipeline
+  is allowed. Search applies the same test before returning compact metadata;
+  cached associations are never authorization evidence.
 
 ## Write model
 
-- Note/activity creation requires explicit associated ids.
+- Note/activity creation requires an explicit allowed deal plus any person or
+  organization proven through its current associations.
 - Deal updates use a reviewed field allowlist; stage changes are separately
   labeled and cannot be batch-approved.
 - Preflight checks update time, current fields, stage, and owner.

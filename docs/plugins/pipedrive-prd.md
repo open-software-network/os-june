@@ -29,8 +29,8 @@ reviewed note, activity, or selected deal update.
 ## V1 experience
 
 - Connect and select pipelines.
-- Search/read persons, organizations, deals, leads, activities, notes, stages,
-  and owners.
+- Search/read allowed deals and the persons, organizations, activities, notes,
+  stages, and owners currently associated with them.
 - Link a meeting to selected records.
 - Draft a note or follow-up activity and selected deal-field changes.
 - Approve every mutation with destination and source disclosure visible.
@@ -40,7 +40,8 @@ reviewed note, activity, or selected deal update.
 ### V1
 
 - One company account and explicit pipeline allowlist.
-- Metadata-first search and bounded record reads.
+- Metadata-first search and bounded record reads, with non-deal records
+  reachable only through a current association to an allowed deal.
 - Approved note/activity create and reviewed deal updates.
 - Live fetch and bounded polling while June is awake.
 
@@ -63,8 +64,10 @@ secret custody. Webhook management has dedicated scopes, but delivery still
 requires public HTTPS and belongs to away mode. Pipeline and property
 allowlists are enforced in Rust beyond provider permissions.
 
-CRM content is untrusted. Approval names company, pipeline, records, field
-diff, and June-originated content.
+CRM content is untrusted. Persons, organizations, activities, and notes are not
+pipeline records, so June returns them only when a live provider association
+connects them to a deal currently in an allowed pipeline. Approval names
+company, pipeline, records, field diff, and June-originated content.
 
 ## Business model
 

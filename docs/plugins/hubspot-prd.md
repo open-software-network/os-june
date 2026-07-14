@@ -34,7 +34,8 @@ content visible before commit.
 
 ## V1 experience
 
-- Search contacts, companies, deals, owners, and recent engagements.
+- Search allowed deals and the contacts, companies, owners, and recent
+  engagements currently associated with them.
 - Link a June note to one contact, company, and deal without copying the full
   transcript.
 - Draft a meeting note, deal-stage update, next step, or follow-up task.
@@ -47,7 +48,8 @@ content visible before commit.
 ### V1
 
 - One HubSpot account and an explicit pipeline allowlist.
-- Metadata-first search and bounded record reads.
+- Metadata-first search and bounded record reads, with non-deal records
+  reachable only through a current association to an allowed deal.
 - Read contact, company, deal, owner, pipeline, and engagement context.
 - Create an engagement note or task and update selected deal properties.
 - Stable HubSpot links in June responses.
@@ -81,7 +83,9 @@ documented authorization and refresh exchanges require a client secret. The
 auth spike must resolve that boundary before June promises local-mode token
 custody. HubSpot also documents that an app's CRM scopes can provide access
 beyond the authorizing user's ordinary owned-record view, so June must enforce
-selected pipelines and record types independently.
+selected pipelines independently. Contacts, companies, and engagements are not
+pipeline records; June returns them only when a live provider association
+connects them to a deal currently in an allowed pipeline.
 
 CRM text and properties are untrusted input. Every write is approval-only in
 v1, with portal, object, record, changed fields, and June-originated content in

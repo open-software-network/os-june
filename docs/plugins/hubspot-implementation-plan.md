@@ -37,8 +37,10 @@ and server-side revoke behavior.
 | `june_hubspot_actions` | `create_note`, `create_task`, `update_deal_properties` |
 
 Search returns compact ids, labels, associations, modified time, pipeline and
-stage, owner, canonical URL, and an explicit list of omitted fields. Full
-record reads accept bounded property lists from a reviewed registry.
+stage, owner, canonical URL, and an explicit list of omitted fields. Results
+for contacts, companies, and engagements are filtered through a live
+association to at least one deal currently in an allowed pipeline. Full record
+reads accept bounded property lists from a reviewed registry.
 
 ## Authorization and state
 
@@ -46,12 +48,16 @@ record reads accept bounded property lists from a reviewed registry.
 - Portal id, user id, granted scopes, selected pipeline ids, property registry,
   capabilities, and health in SQLite.
 - No CRM record bodies or engagement corpus at rest.
-- Rust checks the resolved record's current pipeline before returning content
-  or accepting a mutation.
+- Rust checks a resolved deal's current pipeline before returning content or
+  accepting a mutation. For contacts, companies, and engagements, Rust follows
+  current provider associations and requires at least one associated deal whose
+  current pipeline is allowed. Search applies the same test before returning
+  even compact metadata. Cached associations are never authorization evidence.
 
 ## Write model
 
-- Notes and tasks require an explicit associated record set.
+- Notes and tasks require an explicit allowed deal plus any contacts or
+  companies proven through its current associations.
 - Deal updates are limited to a reviewed property allowlist. Stage changes are
   separately labeled in approval and excluded from batch approval.
 - Preflight re-reads object modification time and current property values.
