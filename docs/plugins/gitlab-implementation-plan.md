@@ -1,4 +1,4 @@
-# Implementation plan: GitLab plugin
+# Implementation plan: GitLab Issues plugin
 
 - **Mode:** CTO
 - **Date:** 2026-07-14
@@ -7,15 +7,15 @@
 
 ## Technical objective
 
-Implement a host-pinned, project-bounded GitLab connector using OAuth PKCE and
-approval-gated issue/comment actions. Preserve GitLab resource ids and version
-differences rather than forcing GitHub response shapes.
+Implement a host-pinned, project-bounded GitLab Issues connector using OAuth
+PKCE and approval-gated issue/comment actions. Preserve GitLab resource ids and
+version differences rather than forcing GitHub response shapes.
 
 ## Phase 0: API and host matrix
 
 1. Verify GitLab.com PKCE, refresh, revoke, scope minimization, and app review.
-2. Test REST versus GraphQL coverage for proposed tools and choose one canonical
-   read path per object.
+2. Test REST versus GraphQL coverage for issues, comments, labels, milestones,
+   and projects, then choose one canonical read path per object.
 3. Capture rate-limit, pagination, tier, confidential-resource, and partial
    permission behavior.
 4. Build a deferred self-managed matrix for supported versions, URL base paths,
@@ -27,8 +27,8 @@ Exit with GitLab.com scope/tool fixtures and no self-managed promise.
 
 | Server | Tools |
 | --- | --- |
-| `june_gitlab` | `list_projects`, `search_issues`, `get_issue`, `get_merge_request`, `list_discussions`, `get_pipeline_status` |
-| `june_gitlab_actions` | `create_issue`, `add_issue_comment`, `add_merge_request_comment` |
+| `june_gitlab_issues` | `list_projects`, `search_issues`, `get_issue`, `list_issue_comments`, `list_labels`, `get_milestone` |
+| `june_gitlab_issues_actions` | `create_issue`, `add_issue_comment` |
 
 Results include host, namespace/project id, visibility, iid and global id,
 updated time, state, labels, assignees, canonical URL, and pagination metadata.
@@ -46,7 +46,7 @@ updated time, state, labels, assignees, canonical URL, and pagination metadata.
 
 - Issue create requires exact project, title, description, labels, and
   assignees validated against current project capabilities.
-- Comment actions require a current issue/MR and display confidentiality.
+- Comment actions require a current issue and display confidentiality.
 - Approval includes host, project, target, visibility, labels, and note excerpt.
 - Reconcile ambiguous creates using a stable hidden marker only if acceptable
   in issue text; otherwise search recent matching issues and require confirmation
@@ -55,7 +55,7 @@ updated time, state, labels, assignees, canonical URL, and pagination metadata.
 
 ## Events and limits
 
-V1 polls selected projects for updated issues, MRs, and pipelines while awake.
+V1 polls selected projects for updated issues while awake.
 Project/group webhooks require a public endpoint and permissions, so they stay
 in away mode. Respect deployment-specific `429`, `Retry-After`, and rate-limit
 headers without assuming GitLab.com and self-managed parity.
@@ -63,10 +63,10 @@ headers without assuming GitLab.com and self-managed parity.
 ## Delivery slices
 
 1. PKCE, project picker, origin pinning, revoke, and health.
-2. Issue/MR/discussion reads and search.
-3. Pipeline status and bounded job metadata.
-4. Approved issue and comment actions with reconciliation.
-5. Skills, polling, GitLab.com pilot, and self-managed research backlog.
+2. Issue/comment reads, labels, milestones, and search.
+3. Approved issue and comment actions with reconciliation.
+4. Issue-focused skills and bounded polling.
+5. GitLab.com pilot and self-managed research backlog.
 
 ## Verification
 
@@ -75,8 +75,8 @@ headers without assuming GitLab.com and self-managed parity.
 - Forged host/project ids, redirects, namespaces moves, archived projects,
   pagination, tier differences, and `429` fixtures.
 - Duplicate issue/comment, timeout, stale target, and restart tests.
-- Injection corpus in issue/MR text, comments, commit messages, labels, user
-  names, pipeline metadata, and URLs.
+- Injection corpus in issue text, comments, labels, milestone text, project
+  metadata, user names, and URLs.
 - Live GitLab.com walkthrough across public, private, and confidential objects.
 
 ## ADR threshold

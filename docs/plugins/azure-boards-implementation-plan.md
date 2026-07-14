@@ -13,11 +13,13 @@ every write for approval.
 
 ## Phase 0: identity and project matrix
 
-Test personal Microsoft and Entra tenant accounts across standard and
-admin-restricted organizations:
+Test Entra work and school accounts across standard and admin-restricted
+organizations:
 
 - public-client authorization code with PKCE, redirect behavior, delegated
   Azure DevOps audience/scopes, refresh, tenant consent, and revoke;
+- explicit rejection and clear reconnect copy for Microsoft personal accounts
+  until Entra adds native Azure DevOps resource support;
 - organization discovery and membership versus Entra tenant identity;
 - work item process types, field metadata, rules, area/iteration permissions,
   comments, queries, and boards;
@@ -73,8 +75,9 @@ Azure DevOps retry headers and per-resource request budgets.
 
 ## Verification
 
-- Personal/work auth, admin consent denial, tenant switch, organization removal,
-  audience mismatch, token expiry, revoke, and disconnect.
+- Work/school auth, personal-account rejection, admin consent denial, tenant
+  switch, organization removal, audience mismatch, token expiry, revoke, and
+  disconnect.
 - Forged organization/project ids, area/iteration permissions, process changes,
   required/custom fields, deleted users, and revision conflicts.
 - WIQL and JSON Patch injection tests.

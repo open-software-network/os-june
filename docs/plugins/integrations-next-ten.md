@@ -15,7 +15,7 @@ After June's first ten plugins, the next ten provider integrations should be:
 | 12 | Salesforce | 62 | Enterprise CRM system of record | Org administration, schema variance, and packaging |
 | 13 | Asana | 61 | Cross-functional project execution | Confidential OAuth exchange |
 | 14 | Box | 60 | Governed enterprise content | Auth feasibility and enterprise policy matrix |
-| 15 | GitLab | 60 | Alternative software delivery graph | Self-managed instance and version variance |
+| 15 | GitLab Issues | 60 | Alternative software delivery issue graph | Self-managed instance and version variance |
 | 16 | ClickUp | 59 | All-in-one project execution | Confidential OAuth and long-lived token posture |
 | 17 | Dropbox | 59 | Broad file access for smaller teams | Content bounds and app review |
 | 18 | Pipedrive | 59 | Lightweight sales follow-through | Confidential OAuth exchange and webhook boundary |
@@ -41,7 +41,7 @@ new architecture required.
 | Salesforce | 19 | 9 | 13 | 11 | 8 | 2 | **62** |
 | Asana | 17 | 10 | 11 | 10 | 8 | 5 | **61** |
 | Box | 16 | 11 | 8 | 9 | 9 | 7 | **60** |
-| GitLab | 17 | 9 | 10 | 10 | 8 | 6 | **60** |
+| GitLab Issues | 17 | 9 | 10 | 10 | 8 | 6 | **60** |
 | ClickUp | 16 | 10 | 11 | 9 | 8 | 5 | **59** |
 | Dropbox | 15 | 11 | 8 | 9 | 9 | 7 | **59** |
 | Pipedrive | 17 | 8 | 12 | 9 | 8 | 5 | **59** |
@@ -58,7 +58,8 @@ provider deserves a one-off architecture:
 - Asana, ClickUp, and Azure Boards cover project systems beyond Linear.
 - Box and Dropbox add explicit, live file access without copying provider
   corpora into OpenSoftware infrastructure.
-- GitLab covers teams whose software delivery graph is not on GitHub.
+- GitLab Issues covers teams whose software delivery issue graph is not on
+  GitHub.
 - Canva turns approved meeting outcomes into bounded visual artifacts and
   export jobs.
 
@@ -82,7 +83,8 @@ Each plan therefore begins with an auth matrix and ends the spike with one of:
 
 1. supported public-client OAuth with Keychain token custody;
 2. a separately approved TEE exchange that returns the user's token to the
-   device and describes the changed trust boundary honestly;
+   device, or a provider-required server connector whose token and content
+   path is explicitly accepted and documented;
 3. a provider-supported user-created app for a limited technical preview; or
 4. deferral.
 

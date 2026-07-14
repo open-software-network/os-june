@@ -7,16 +7,18 @@
 
 ## Technical objective
 
-Expose selected Canva designs through metadata reads and approval-gated export
-jobs. Add template autofill only when generally available, publicly reviewable,
-and bounded by an explicit field schema.
+Evaluate and, only after an accepted ADR, expose selected Canva designs through
+a provider-supported TEE web connector with approval-gated export jobs. Add
+template autofill only when generally available, publicly reviewable, and
+bounded by an explicit field schema.
 
 ## Phase 0: credential and capability matrix
 
-1. Test Connect API authorization, refresh, revoke, integration review, team
-   selection, redirect constraints, and client-secret requirements.
-2. Reject embedding the client secret. Evaluate a minimal TEE code exchange
-   that returns tokens to Keychain and does not proxy Canva content.
+1. Test Connect API web-app authorization, refresh, revoke, integration review,
+   team selection, redirect constraints, and credential requirements.
+2. Reject desktop token custody and an exchange-only workaround. Evaluate a
+   provider-supported June API web connector that stores the client secret and
+   user tokens sealed inside the TEE and proxies Canva calls.
 3. Test design/folder scope availability, export formats by design type,
    asynchronous job expiry, download URL lifetime, and rate limits.
 4. Mark every preview endpoint as unavailable to public v1, including preview
@@ -24,8 +26,10 @@ and bounded by an explicit field schema.
 5. Test brand-template/autofill availability and schema constraints separately
    from export.
 
-Exit with an ADR-approved credential exchange or deferral, plus a
-generally-available endpoint/scope matrix.
+Exit with an ADR-approved server-side credential, token, provider-call, and
+content-lifetime design or deferral, plus a generally-available endpoint/scope
+matrix. The ADR must state that Canva is not local mode and describe what
+OpenSoftware infrastructure can observe.
 
 ## Proposed servers
 
@@ -37,22 +41,30 @@ generally-available endpoint/scope matrix.
 No tool exposes arbitrary element editing. Preview-only tools are omitted from
 the runtime schema, not merely hidden in UI.
 
+Unlike local connector MCP servers, these servers call authenticated June API
+routes. June API verifies the OS Accounts identity and selection boundary, then
+uses the sealed Canva token inside the TEE for the provider call.
+
 ## Boundary and state
 
-- Keychain token if Phase 0 approves device custody after exchange.
-- Canva user/team, selected design/folder ids, capability/version matrix,
-  export jobs, rate-limit state, and health in SQLite.
-- No design body, asset corpus, or completed export retained by default.
-- Rust verifies selected design/folder identity on every call and validates
-  download hosts from provider responses.
+- Client secret and per-user Canva tokens sealed inside the June API TEE; no
+  Canva token is returned to the desktop.
+- Desktop SQLite stores non-secret Canva user/team, selected design/folder ids,
+  capability/version matrix, export jobs, and health.
+- June API stores the minimum account binding and enforced selection needed to
+  authorize Canva calls. It retains no design body, asset corpus, or completed
+  export by default.
+- The June API broker verifies selected design/folder identity on every call.
+  The desktop separately validates download metadata before native save.
 
 ## Action and artifact model
 
 - Export approval shows design, format/options, page selection, destination,
   estimated disclosure, and local save behavior.
 - Poll async jobs with bounded backoff and terminal-state handling.
-- Download to a task-scoped temporary file, inspect type/size, then use native
-  save approval. Delete temporary data after completion/cancel.
+- Stream the export from Canva through the June API TEE to a task-scoped local
+  file, inspect type/size, then use native save approval. Do not persist export
+  bytes in backend storage; delete temporary local data after completion/cancel.
 - Template autofill validates exact provider field keys and type/length bounds;
   approval shows every June-originated value sent.
 - Job creation is not blindly retried after timeout. Reconcile against recent
@@ -85,6 +97,8 @@ remain future away-mode work after general availability and threat review.
 
 ## Architecture decision gate
 
-A TEE credential exchange meets the repo's ADR threshold because it introduces
-a backend secret and changes privacy copy even if provider content stays direct
-to Canva. No implementation begins before that decision is accepted.
+A Canva integration meets the repo's ADR threshold because provider support
+requires a web app, backend-held user tokens, and provider content/actions to
+transit June API. No implementation begins before that full boundary is
+accepted, documented in the connector threat model, and reflected in consent
+copy. If that boundary is unacceptable, Canva remains deferred.

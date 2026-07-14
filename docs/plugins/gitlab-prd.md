@@ -1,4 +1,4 @@
-# PRD: GitLab plugin
+# PRD: GitLab Issues plugin
 
 - **Mode:** CEO
 - **Overall rank:** 15 of 20
@@ -8,13 +8,13 @@
 
 ## Thesis
 
-GitLab brings June's meeting context into software delivery for teams outside
-GitHub. The plugin should prepare from selected issues, merge requests, and
-pipelines, then create reviewed issues or comments with source traceability.
+GitLab Issues brings June's meeting context into software delivery for teams
+outside GitHub. The plugin should prepare from selected issues and issue
+comments, then create reviewed issues or comments with source traceability.
 
-GitLab ties Box on score but follows it because the software-team segment is
-narrower and self-managed deployments add host, version, and policy variance.
-Its documented PKCE support makes device-local auth credible.
+GitLab Issues ties Box on score but follows it because the software-team
+segment is narrower and self-managed deployments add host, version, and policy
+variance. Its documented PKCE support makes device-local auth credible.
 
 ## Customer and problem
 
@@ -31,8 +31,7 @@ context or propose bounded issue/comment actions under approval.
 ## V1 experience
 
 - Authorize with PKCE and select groups/projects.
-- Search/read issues, merge requests, discussions, pipelines, jobs, releases,
-  milestones, and selected repository metadata.
+- Search/read issues, issue comments, labels, milestones, and project metadata.
 - Create an issue or add a comment from a June meeting.
 - Preview destination, visibility, labels, assignees, and disclosed note text.
 - Disconnect and verify provider access and tools are gone.
@@ -42,15 +41,14 @@ context or propose bounded issue/comment actions under approval.
 ### V1
 
 - GitLab.com only, one account, explicit project allowlist.
-- Metadata-first search and bounded issue/MR/discussion reads.
-- Pipeline/job status without job logs by default.
-- Approved issue creation and issue/MR comment.
+- Metadata-first search and bounded issue/comment reads.
+- Approved issue creation and issue comment.
 - Local polling while June is awake.
 
 ### Later
 
-- Tested self-managed versions, group-wide install, code/file reads, job logs,
-  issue updates, merge actions, and webhook-triggered routines.
+- Tested self-managed versions, group-wide install, merge requests, pipelines,
+  releases, code/file reads, issue updates, and webhook-triggered routines.
 
 ## Non-goals
 
@@ -66,7 +64,7 @@ in Keychain and calls go from the Mac to a pinned GitLab.com origin in v1.
 Project selection is enforced in Rust. Self-managed support requires explicit
 host trust, TLS policy, version discovery, and separate test coverage.
 
-Issues, comments, MR descriptions, commit messages, job metadata, and links are
+Issues, comments, labels, milestone text, project metadata, and links are
 untrusted. Writes are approval-only.
 
 ## Business model
@@ -99,6 +97,6 @@ approval-only issue/comment actions. Defer self-managed support to a matrix.
 ## Sources
 
 - [GitLab OAuth 2.0 provider API](https://docs.gitlab.com/api/oauth2/)
-- [GitLab merge requests API](https://docs.gitlab.com/api/merge_requests/)
+- [GitLab issues API](https://docs.gitlab.com/api/issues/)
 - [GitLab project webhooks API](https://docs.gitlab.com/api/project_webhooks/)
 - [GitLab rate limits](https://docs.gitlab.com/security/rate_limits/)

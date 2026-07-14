@@ -30,7 +30,7 @@ projects, and let June read or propose changes only within those boundaries.
 
 ## V1 experience
 
-- Authorize with a Microsoft account or work account through Entra ID.
+- Authorize a work or school account through Microsoft Entra ID.
 - Select one Azure DevOps organization and projects.
 - Search/read work items, comments, iterations, areas, queries, and boards.
 - Create a work item or comment and update selected fields after approval.
@@ -41,7 +41,8 @@ projects, and let June read or propose changes only within those boundaries.
 
 ### V1
 
-- Azure DevOps Services only, one organization, project allowlist.
+- Azure DevOps Services with an Entra work or school account only, one
+  organization, and a project allowlist.
 - Work item, query, board, area, and iteration reads.
 - Approved work item create, comment, and selected-field update.
 - Local polling while June is awake.
@@ -54,7 +55,7 @@ projects, and let June read or propose changes only within those boundaries.
 
 ## Non-goals
 
-- Personal access tokens for production setup.
+- Microsoft personal accounts or personal access tokens for production setup.
 - Legacy Azure DevOps OAuth registration.
 - Code, pipeline, release, service connection, permission, or admin mutations.
 - Arbitrary WIQL supplied by the model.
@@ -62,9 +63,11 @@ projects, and let June read or propose changes only within those boundaries.
 ## Privacy and trust
 
 Microsoft directs new Azure DevOps apps to Microsoft Entra ID and is
-deprecating Azure DevOps OAuth in 2026. The spike must prove a desktop public
-client, delegated scopes, tenant consent, token audience, and revoke behavior.
-Project and area selection are enforced in Rust.
+deprecating Azure DevOps OAuth in 2026. The Azure DevOps resource does not yet
+natively support Microsoft personal accounts through Entra, so v1 is work and
+school accounts only. The spike must prove a desktop public client, delegated
+scopes, tenant consent, token audience, and revoke behavior. Project and area
+selection are enforced in Rust.
 
 Work item content is untrusted. All creates, comments, and updates are
 approval-only in v1.
@@ -99,6 +102,7 @@ items in selected projects with approval-only actions.
 ## Sources
 
 - [Azure DevOps service authorization](https://learn.microsoft.com/en-us/azure/devops/service-hooks/authorize?view=azure-devops)
+- [Azure DevOps integrations with Microsoft Entra](https://learn.microsoft.com/en-gb/azure/devops/integrate/get-started/authentication/entra-oauth?view=azure-devops)
 - [Azure DevOps OAuth migration guidance](https://learn.microsoft.com/en-gb/azure/devops/integrate/get-started/authentication/oauth?view=azure-devops)
 - [Azure DevOps service hooks](https://learn.microsoft.com/en-us/azure/devops/service-hooks/overview?view=azure-devops)
 - [Azure DevOps work items REST API](https://learn.microsoft.com/en-us/rest/api/azure/devops/wit/work-items?view=azure-devops-rest-7.1)

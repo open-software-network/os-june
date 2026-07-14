@@ -32,8 +32,7 @@ export job with the source note content and output format visible before action.
 ## V1 experience
 
 - Connect one Canva account and choose folders/designs.
-- Search/list design metadata and inspect supported comments or collaboration
-  state where generally available.
+- Search/list selected design and folder metadata.
 - Start a reviewed export of an existing design to a supported format.
 - If public APIs and review permit it, create from an approved brand template
   using explicit autofill fields.
@@ -62,11 +61,14 @@ export job with the source note content and output format visible before action.
 
 ## Privacy and trust
 
-Canva's Connect API security guidance treats the client secret as a credential
-that must be stored securely and warns against environments that cannot protect
-it. June must not embed it. The auth spike must approve a TEE exchange or defer
-the integration. Selected designs/folders remain a narrower Rust-enforced
-boundary after provider authorization.
+Canva requires Connect API integrations to be associated with a web app and
+explicitly does not support desktop integrations. It also requires secure
+server custody for the client secret and user tokens. June cannot use the
+Google-style local connector model. The architecture spike must either approve
+a provider-supported TEE web connector, with explicit token custody and Canva
+content/action transit through June API, or defer the integration. Selected
+designs/folders remain a narrower broker-enforced boundary after provider
+authorization.
 
 Design metadata, comments, template fields, and imported text are untrusted.
 Every export/create action is approval-only and displays the exact June content
@@ -90,7 +92,8 @@ existing billing.
 
 ## Risks and gates
 
-- Client-secret custody requires a new approved trust boundary.
+- Provider-supported web-app credential and user-token custody requires a new
+  approved trust boundary and June API data path.
 - Public integration review rejects preview webhook use.
 - Export support varies by design type and format.
 - Autofill and brand-template availability may constrain the creation promise.
