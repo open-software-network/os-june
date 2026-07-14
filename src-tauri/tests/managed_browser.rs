@@ -89,6 +89,10 @@ async fn spawn_fixture_server_with_webrtc_probe(webrtc_probe: Option<SocketAddr>
 <label for=\"x\">One-time code</label>\
 <input id=\"x\" value=\"label-only-otp-secret\">\
 <input type=\"text\" name=\"city\" value=\"Warsaw\">\
+<div contenteditable=\"true\">hunter2-contenteditable-never-leak</div>\
+<div role=\"textbox\">4837-role-textbox-never-leak</div>\
+<label id=\"custom-code-label\">One-time code</label>\
+<div role=\"combobox\" aria-labelledby=\"custom-code-label\">custom-widget-code-never-leak</div>\
 </form></body></html>";
                     format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -173,12 +177,9 @@ async fn navigate_snapshot_screenshot_and_teardown_end_to_end() {
     assert_eq!(navigated["title"].as_str(), Some("Fixture page"));
 
     let snapshot = session.snapshot().await.expect("snapshot");
-    assert!(snapshot.contains("Managed browser fixture"), "{snapshot}");
-    assert!(snapshot.contains("quick brown fox"), "{snapshot}");
-    assert!(
-        snapshot.contains("[ref1]"),
-        "interactive refs missing: {snapshot}"
-    );
+    assert!(snapshot.contains("Managed browser fixture"));
+    assert!(snapshot.contains("quick brown fox"));
+    assert!(snapshot.contains("[ref1]"), "interactive refs missing");
 
     let screenshot = session.screenshot().await.expect("screenshot");
     assert!(
@@ -215,15 +216,18 @@ async fn snapshot_never_leaks_sensitive_field_values() {
         "4111111111111111",
         "label-only-otp-secret",
         "Warsaw",
+        "hunter2-contenteditable-never-leak",
+        "4837-role-textbox-never-leak",
+        "custom-widget-code-never-leak",
     ] {
         assert!(
             !text.contains(secret),
-            "snapshot leaked a form-control value: {text}"
+            "snapshot leaked a form-control value"
         );
     }
     // The fields are still described, so the agent can reason about the form.
-    assert!(text.contains("value hidden"), "{text}");
-    assert!(text.contains("One-time code"), "{text}");
+    assert!(text.contains("value hidden"));
+    assert!(text.contains("One-time code"));
 
     session.close().await;
 }
@@ -312,7 +316,7 @@ async fn public_page_end_to_end_with_production_policy() {
     assert!(url.starts_with("https://example.com"), "url: {url}");
 
     let snapshot = session.snapshot().await.expect("snapshot");
-    assert!(snapshot.to_lowercase().contains("example"), "{snapshot}");
+    assert!(snapshot.to_lowercase().contains("example"));
 
     // Production policy still blocks loopback and private destinations.
     let refused = session

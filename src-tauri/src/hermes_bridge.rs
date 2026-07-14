@@ -22,7 +22,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::oneshot,
 };
 
@@ -132,12 +132,13 @@ const JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS: u64 = 620;
 const JUNE_BROWSER_MCP_SERVER_NAME: &str = "june_browser";
 const JUNE_BROWSER_MCP_SCRIPT_NAME: &str = "june_browser_mcp.py";
 const JUNE_BROWSER_MCP_SCRIPT: &str = include_str!("hermes/june_browser_mcp.py");
-/// Environment variable the `june_browser` MCP reads its loopback proxy token
-/// from. Kept out of argv so it does not appear in process listings. The
-/// distinct token prevents cross-talk between MCP subprocesses; it is not an
-/// authorization boundary against the agent, which can read its own config.
-/// The Browser access grant, re-checked by the broker, authorizes browser use.
-const JUNE_BROWSER_MCP_TOKEN_ENV: &str = "JUNE_BROWSER_PROXY_TOKEN";
+/// Environment variables the `june_browser` MCP reads its context-bound
+/// loopback credentials from. The routine token is rendered into the shared
+/// config because the launchd gateway receives no arbitrary parent env. The
+/// attended token is only interpolated from the dashboard process environment,
+/// so a routine can read its own config without learning the attended secret.
+const JUNE_BROWSER_MCP_ROUTINE_TOKEN_ENV: &str = "JUNE_BROWSER_ROUTINE_PROXY_TOKEN";
+const JUNE_BROWSER_MCP_ATTENDED_TOKEN_ENV: &str = "JUNE_BROWSER_ATTENDED_PROXY_TOKEN";
 /// Runtime-owned session markers passed through to `june_browser`. Hermes
 /// filters subprocess environments, so the rendered MCP entry explicitly
 /// interpolates both values for the child process.
@@ -429,6 +430,8 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_DASHBOARD_SESSION_TOKEN",
     "HERMES_ENVIRONMENT_HINT",
     "HERMES_TUI_TOOLSETS",
+    JUNE_BROWSER_MCP_ROUTINE_TOKEN_ENV,
+    JUNE_BROWSER_MCP_ATTENDED_TOKEN_ENV,
     "HERMES_MODEL",
     "HERMES_PROVIDER",
     "OPENAI_API_KEY",
@@ -497,7 +500,8 @@ struct SharedProviderProxy {
     port: u16,
     token: String,
     recorder_token: String,
-    browser_token: BrowserProxyToken,
+    routine_browser_token: BrowserProxyToken,
+    attended_browser_token: BrowserProxyToken,
     connector_token: String,
     shutdown: Option<oneshot::Sender<()>>,
 }
@@ -538,10 +542,10 @@ struct ProviderProxyState {
     /// `june_recorder` MCP to prevent cross-talk from other MCP subprocesses.
     /// This is not a boundary against the agent, which can read its own config.
     recorder_token: String,
-    /// Browser routes require this dedicated secret, handed to the
-    /// `june_browser` MCP to prevent cross-talk from other MCP subprocesses.
-    /// The Browser access grant in the broker is the authorization boundary.
-    browser_token: BrowserProxyToken,
+    /// Browser routes accept one of two context-bound secrets. The bearer
+    /// determines the transport; request data can only cross-check it.
+    routine_browser_token: BrowserProxyToken,
+    attended_browser_token: BrowserProxyToken,
     /// The browser broker, shared with `HermesBridge`, so `/v1/browser/status`
     /// reads the live Browser access grant and active session count.
     browser_broker: Arc<BrowserBroker>,
@@ -1196,7 +1200,7 @@ async fn start_hermes_bridge_inner(
         provider_proxy.port,
         &provider_proxy.token,
         &provider_proxy.recorder_token,
-        &provider_proxy.browser_token,
+        &provider_proxy.routine_browser_token,
         &provider_proxy.connector_token,
         supports_vision,
         &june_context_mcp,
@@ -1281,6 +1285,13 @@ async fn start_hermes_bridge_inner(
         &hermes_home,
         &token,
         environment_hint_for_spawn(full_mode, sandbox_available),
+    );
+    // The shared config contains only an interpolation placeholder for this
+    // secret. Cron runs execute in the separate launchd gateway, which never
+    // receives this dashboard-only environment value.
+    cmd.env(
+        JUNE_BROWSER_MCP_ATTENDED_TOKEN_ENV,
+        &provider_proxy.attended_browser_token,
     );
     // The pinned runtime otherwise auto-includes every enabled MCP server in
     // interactive chat. Per-routine autonomy servers carry bypass grants, so
@@ -1392,14 +1403,16 @@ async fn ensure_provider_proxy(
                 port: proxy.port,
                 token: proxy.token.clone(),
                 recorder_token: proxy.recorder_token.clone(),
-                browser_token: proxy.browser_token.current(),
+                routine_browser_token: proxy.routine_browser_token.current(),
+                attended_browser_token: proxy.attended_browser_token.current(),
                 connector_token: proxy.connector_token.clone(),
             });
         }
     }
     let token = random_token();
     let recorder_token = random_token();
-    let browser_token = BrowserProxyToken::new(random_token());
+    let routine_browser_token = BrowserProxyToken::new(random_token());
+    let attended_browser_token = BrowserProxyToken::new(random_token());
     let connector_token = random_token();
     let app_data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
@@ -1411,7 +1424,8 @@ async fn ensure_provider_proxy(
     let started = start_june_provider_proxy(
         token.clone(),
         recorder_token.clone(),
-        browser_token.clone(),
+        routine_browser_token.clone(),
+        attended_browser_token.clone(),
         Arc::clone(&bridge.browser_broker),
         connector_token.clone(),
         image_sources,
@@ -1431,7 +1445,8 @@ async fn ensure_provider_proxy(
         port: started.port,
         token: token.clone(),
         recorder_token: recorder_token.clone(),
-        browser_token: browser_token.clone(),
+        routine_browser_token: routine_browser_token.clone(),
+        attended_browser_token: attended_browser_token.clone(),
         connector_token: connector_token.clone(),
         shutdown: Some(started.shutdown),
     });
@@ -1439,7 +1454,8 @@ async fn ensure_provider_proxy(
         port: started.port,
         token,
         recorder_token,
-        browser_token: browser_token.current(),
+        routine_browser_token: routine_browser_token.current(),
+        attended_browser_token: attended_browser_token.current(),
         connector_token,
     })
 }
@@ -1448,7 +1464,8 @@ struct SharedProviderProxyInfo {
     port: u16,
     token: String,
     recorder_token: String,
-    browser_token: String,
+    routine_browser_token: String,
+    attended_browser_token: String,
     connector_token: String,
 }
 
@@ -2671,7 +2688,8 @@ fn rotate_browser_proxy_token(bridge: &HermesBridge) -> Result<(), AppError> {
         .lock()
         .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?;
     if let Some(proxy) = proxy.as_ref() {
-        proxy.browser_token.rotate();
+        proxy.routine_browser_token.rotate();
+        proxy.attended_browser_token.rotate();
     }
     Ok(())
 }
@@ -7437,7 +7455,7 @@ fn sync_hermes_config(
     provider_proxy_port: u16,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
-    browser_proxy_token: &str,
+    routine_browser_proxy_token: &str,
     connector_proxy_token: &str,
     supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
@@ -7453,7 +7471,7 @@ fn sync_hermes_config(
         provider_proxy_port,
         provider_proxy_token,
         recorder_proxy_token,
-        browser_proxy_token,
+        routine_browser_proxy_token,
         connector_proxy_token,
         supports_vision,
         june_context_mcp,
@@ -7473,7 +7491,7 @@ fn sync_hermes_config_with_external_dirs(
     provider_proxy_port: u16,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
-    browser_proxy_token: &str,
+    routine_browser_proxy_token: &str,
     connector_proxy_token: &str,
     supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
@@ -7513,7 +7531,7 @@ fn sync_hermes_config_with_external_dirs(
         &base_url,
         provider_proxy_token,
         recorder_proxy_token,
-        browser_proxy_token,
+        routine_browser_proxy_token,
         connector_proxy_token,
         &cron_toolsets,
         &external_skill_dirs,
@@ -7829,7 +7847,7 @@ fn render_hermes_config(
     base_url: &str,
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
-    browser_proxy_token: &str,
+    routine_browser_proxy_token: &str,
     connector_proxy_token: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
@@ -7849,7 +7867,7 @@ fn render_hermes_config(
         base_url,
         provider_proxy_token,
         recorder_proxy_token,
-        browser_proxy_token,
+        routine_browser_proxy_token,
         connector_proxy_token,
     );
     format!(
@@ -7883,7 +7901,7 @@ fn render_mcp_servers_config(
     base_url: &str,
     proxy_token: &str,
     recorder_proxy_token: &str,
-    browser_proxy_token: &str,
+    routine_browser_proxy_token: &str,
     connector_proxy_token: &str,
 ) -> String {
     let mut entries = String::new();
@@ -7910,7 +7928,7 @@ fn render_mcp_servers_config(
         entries.push_str(&render_browser_mcp_entry(
             config,
             base_url,
-            browser_proxy_token,
+            routine_browser_proxy_token,
         ));
     }
     // Read connector servers get the read timeout; action servers get a longer
@@ -8111,22 +8129,22 @@ fn render_recorder_mcp_entry(
 /// follows the stored Browser access grant (`false` when off). June owns this
 /// key, so a deep-merge omission would leave a stale or user-added `enabled:
 /// true` in place and fail to revoke — writing the leaf every spawn keeps the
-/// grant authoritative. While enabled it gets the dedicated browser token via
-/// the environment (kept out of argv), never the provider or recorder token;
-/// while disabled no browser token is rendered. The distinct tokens prevent
-/// MCP subprocess cross-talk, but the readable config makes them no boundary
-/// against the agent itself. Broker enforcement of the Browser access grant is
-/// the authorization gate.
+/// grant authoritative. While enabled, the launchd gateway gets the routine
+/// credential from this shared config. The attended credential is an env
+/// interpolation only: June sets it on dashboard processes, never the gateway.
+/// The broker binds transport selection to whichever credential authenticated
+/// the request; the body context is only a consistency check.
 fn render_browser_mcp_entry(
     config: &JuneBrowserMcpConfig,
     base_url: &str,
-    proxy_token: &str,
+    routine_proxy_token: &str,
 ) -> String {
     let token_entry = if config.enabled {
         format!(
-            "      {token_env}: {token}\n",
-            token_env = JUNE_BROWSER_MCP_TOKEN_ENV,
-            token = yaml_string(proxy_token),
+            "      {routine_token_env}: {routine_token}\n      {attended_token_env}: \"${{{attended_token_env}}}\"\n",
+            routine_token_env = JUNE_BROWSER_MCP_ROUTINE_TOKEN_ENV,
+            routine_token = yaml_string(routine_proxy_token),
+            attended_token_env = JUNE_BROWSER_MCP_ATTENDED_TOKEN_ENV,
         )
     } else {
         String::new()
@@ -8625,7 +8643,8 @@ fn yaml_string(value: &str) -> String {
 async fn start_june_provider_proxy(
     token: String,
     recorder_token: String,
-    browser_token: BrowserProxyToken,
+    routine_browser_token: BrowserProxyToken,
+    attended_browser_token: BrowserProxyToken,
     browser_broker: Arc<BrowserBroker>,
     connector_token: String,
     image_sources: ImageSourceCapabilities,
@@ -8651,7 +8670,8 @@ async fn start_june_provider_proxy(
         Arc::new(ProviderProxyState {
             token,
             recorder_token,
-            browser_token,
+            routine_browser_token,
+            attended_browser_token,
             browser_broker,
             connector_token,
             image_sources,
@@ -8718,15 +8738,29 @@ async fn handle_june_provider_connection(
             return Ok(());
         }
     };
-    let browser_token = state.browser_token.current();
+    let routine_browser_token = state.routine_browser_token.current();
+    let attended_browser_token = state.attended_browser_token.current();
     let required_token = provider_proxy_required_token(
         &request.path,
         &state.token,
         &state.recorder_token,
-        &browser_token,
+        &routine_browser_token,
         &state.connector_token,
     );
-    if !provider_proxy_authorized(&request, required_token) {
+    let browser_context = if request.path.starts_with("/v1/browser/") {
+        provider_proxy_browser_context(&request, &routine_browser_token, &attended_browser_token)
+    } else if provider_proxy_authorized(&request, required_token) {
+        None
+    } else {
+        write_json_response(
+            &mut stream,
+            401,
+            serde_json::json!({ "error": { "message": "Unauthorized" } }),
+        )
+        .await?;
+        return Ok(());
+    };
+    if request.path.starts_with("/v1/browser/") && browser_context.is_none() {
         write_json_response(
             &mut stream,
             401,
@@ -8919,7 +8953,7 @@ async fn handle_june_provider_connection(
             handle_browser_status(&mut stream, &state).await?;
         }
         ("POST", "/v1/browser/execute") => {
-            handle_browser_execute(&mut stream, &state, &request.body).await?;
+            handle_browser_execute(&mut stream, &state, browser_context, &request.body).await?;
         }
         ("POST", path)
             if path.starts_with("/v1/gmail/")
@@ -9823,13 +9857,14 @@ fn browser_status_body(state: &ProviderProxyState) -> serde_json::Value {
 }
 
 async fn handle_browser_execute(
-    stream: &mut tokio::net::TcpStream,
+    stream: &mut (impl AsyncWrite + Unpin),
     state: &ProviderProxyState,
+    authenticated_context: Option<BrowserCallerContext>,
     body: &[u8],
 ) -> io::Result<()> {
     // The grant is deliberately re-read inside every broker execution. The
-    // browser-scoped loopback token prevents MCP cross-talk but is not an
-    // authorization boundary against the runtime itself (ADR 0017).
+    // context-bound bearer selects the transport; request data can only agree
+    // with it, never widen a routine into the attended browser.
     let request = match serde_json::from_slice::<serde_json::Value>(body) {
         Ok(request) => request,
         Err(_) => {
@@ -9857,12 +9892,40 @@ async fn handle_browser_execute(
         )
         .await;
     };
-    let transport = match request
+    let claimed_context = match request
         .get("callContext")
         .and_then(serde_json::Value::as_str)
     {
-        Some("routine") => BrowserTransportKind::Managed,
-        Some("attended") => BrowserTransportKind::Attended,
+        Some("routine") => Some(BrowserCallerContext::Routine),
+        Some("attended") => Some(BrowserCallerContext::Attended),
+        _ => None,
+    };
+    let Some(authenticated_context) = authenticated_context else {
+        return write_json_response(
+            stream,
+            403,
+            serde_json::json!({
+                "success": false,
+                "message": "Browser use is unavailable because the caller context could not be verified.",
+                "errorCode": "browser_context_unknown",
+            }),
+        )
+        .await;
+    };
+    match claimed_context {
+        Some(claimed_context) if claimed_context == authenticated_context => {}
+        Some(_) => {
+            return write_json_response(
+                stream,
+                403,
+                serde_json::json!({
+                    "success": false,
+                    "message": "Browser request context did not match its credential.",
+                    "errorCode": "browser_context_mismatch",
+                }),
+            )
+            .await;
+        }
         _ => {
             return write_json_response(
                 stream,
@@ -9875,7 +9938,8 @@ async fn handle_browser_execute(
             )
             .await;
         }
-    };
+    }
+    let transport = authenticated_context.transport();
     let arguments = match request.get("arguments") {
         Some(arguments) if arguments.is_object() => arguments.clone(),
         None => serde_json::json!({}),
@@ -10227,19 +10291,21 @@ fn model_catalog_with_fallback(
 
 /// Recorder mutations require the recorder-scoped secret; connector routes
 /// (mail/calendar) require the connector-scoped secret; every other route keeps
-/// the general provider token. Distinct secrets, so none authorizes another's
-/// surface.
+/// the general provider token. Browser routes return the routine token for
+/// scope classification here, but the connection auth path accepts both
+/// browser tokens through `provider_proxy_browser_context` and binds the
+/// transport to the one that matched.
 fn provider_proxy_required_token<'a>(
     path: &str,
     provider_token: &'a str,
     recorder_token: &'a str,
-    browser_token: &'a str,
+    routine_browser_token: &'a str,
     connector_token: &'a str,
 ) -> &'a str {
     if path.starts_with("/v1/recorder/") {
         recorder_token
     } else if path.starts_with("/v1/browser/") {
-        browser_token
+        routine_browser_token
     } else if path.starts_with("/v1/gmail/")
         || path.starts_with("/v1/gmail-actions/")
         || path.starts_with("/v1/gcal/")
@@ -10248,6 +10314,40 @@ fn provider_proxy_required_token<'a>(
         connector_token
     } else {
         provider_token
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserCallerContext {
+    Routine,
+    Attended,
+}
+
+impl BrowserCallerContext {
+    fn transport(self) -> BrowserTransportKind {
+        match self {
+            Self::Routine => BrowserTransportKind::Managed,
+            Self::Attended => BrowserTransportKind::Attended,
+        }
+    }
+}
+
+fn provider_proxy_browser_context(
+    request: &HttpRequest,
+    routine_token: &str,
+    attended_token: &str,
+) -> Option<BrowserCallerContext> {
+    let candidate = request
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        .and_then(|(_, value)| bearer_token(value))?;
+    if constant_time_eq(candidate, routine_token) {
+        Some(BrowserCallerContext::Routine)
+    } else if constant_time_eq(candidate, attended_token) {
+        Some(BrowserCallerContext::Attended)
+    } else {
+        None
     }
 }
 
@@ -10281,7 +10381,7 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
 }
 
 async fn write_json_response(
-    stream: &mut tokio::net::TcpStream,
+    stream: &mut (impl AsyncWrite + Unpin),
     status: u16,
     body: serde_json::Value,
 ) -> io::Result<()> {
@@ -11339,7 +11439,7 @@ fn ensure_video_duration_resolution_defaults(
 }
 
 async fn write_raw_response(
-    stream: &mut tokio::net::TcpStream,
+    stream: &mut (impl AsyncWrite + Unpin),
     status: u16,
     content_type: &str,
     body: &[u8],
@@ -11522,7 +11622,8 @@ mod tests {
         let state = Arc::new(ProviderProxyState {
             token: "proxy-token".to_string(),
             recorder_token: "recorder-token".to_string(),
-            browser_token: BrowserProxyToken::new("browser-token".to_string()),
+            routine_browser_token: BrowserProxyToken::new("browser-token".to_string()),
+            attended_browser_token: BrowserProxyToken::new("attended-browser-token".to_string()),
             browser_broker: Arc::new(BrowserBroker::default()),
             connector_token: "connector-token".to_string(),
             image_sources: ImageSourceCapabilities {
@@ -12112,10 +12213,8 @@ mod tests {
 
     #[test]
     fn browser_recorder_provider_token_scopes_are_mutually_isolated() {
-        // The three loopback secrets must be pairwise non-interchangeable:
-        // browser routes take the browser token, recorder routes the recorder
-        // token, and everything else the provider token — and a bearer minted
-        // for one scope must not authorize another's.
+        // Browser routes use their two context-bound tokens, recorder routes
+        // the recorder token, and everything else the provider token.
         let required = |path: &str| {
             provider_proxy_required_token(
                 path,
@@ -12133,6 +12232,7 @@ mod tests {
         assert_eq!(required("/v1/browser"), "provider-tok");
 
         let browser = request_with_authorization("Bearer browser-tok");
+        let attended = request_with_authorization("Bearer attended-browser-tok");
         let recorder = request_with_authorization("Bearer recorder-tok");
         let provider = request_with_authorization("Bearer provider-tok");
         // The browser token opens only the browser scope.
@@ -12142,6 +12242,18 @@ mod tests {
         // ...and neither of the other two opens the browser scope.
         assert!(!provider_proxy_authorized(&recorder, "browser-tok"));
         assert!(!provider_proxy_authorized(&provider, "browser-tok"));
+        assert_eq!(
+            provider_proxy_browser_context(&browser, "browser-tok", "attended-browser-tok"),
+            Some(BrowserCallerContext::Routine)
+        );
+        assert_eq!(
+            provider_proxy_browser_context(&attended, "browser-tok", "attended-browser-tok"),
+            Some(BrowserCallerContext::Attended)
+        );
+        assert_eq!(
+            provider_proxy_browser_context(&provider, "browser-tok", "attended-browser-tok"),
+            None
+        );
     }
 
     fn broker_for_access_flag(path: &Path) -> Arc<BrowserBroker> {
@@ -12162,7 +12274,8 @@ mod tests {
         let state = Arc::new(ProviderProxyState {
             token: "proxy-token".to_string(),
             recorder_token: "recorder-token".to_string(),
-            browser_token: BrowserProxyToken::new("browser-token".to_string()),
+            routine_browser_token: BrowserProxyToken::new("browser-token".to_string()),
+            attended_browser_token: BrowserProxyToken::new("attended-browser-token".to_string()),
             connector_token: "connector-token".to_string(),
             model_catalog_cache: Default::default(),
             browser_broker: broker,
@@ -12262,7 +12375,7 @@ mod tests {
         let access_flag = home.path().join(BROWSER_ACCESS_FLAG_FILE);
         let body = r#"{"callContext":"attended","tool":"start_session","arguments":{}}"#;
         let request = format!(
-            "POST /v1/browser/execute HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer browser-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "POST /v1/browser/execute HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer attended-browser-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         );
 
@@ -12306,8 +12419,12 @@ mod tests {
     }
 
     fn browser_execute_request(body: &str) -> String {
+        browser_execute_request_with_token(body, "browser-token")
+    }
+
+    fn browser_execute_request_with_token(body: &str, token: &str) -> String {
         format!(
-            "POST /v1/browser/execute HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer browser-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "POST /v1/browser/execute HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         )
     }
@@ -12389,11 +12506,91 @@ mod tests {
         let attended_body = r#"{"callContext":"attended","tool":"start_session","arguments":{}}"#;
         let attended = browser_proxy_response_with_broker(
             Arc::clone(&broker),
-            &browser_execute_request(attended_body),
+            &browser_execute_request_with_token(attended_body, "attended-browser-token"),
         )
         .await;
         assert!(attended.starts_with("HTTP/1.1 200 OK"), "{attended}");
         assert!(attended_called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn routine_browser_token_cannot_forge_attended_context() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let access_flag = home.path().join(BROWSER_ACCESS_FLAG_FILE);
+        std::fs::write(&access_flag, b"1").expect("write browser access flag");
+        let attended_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let managed_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let broker = broker_for_access_flag(&access_flag);
+        broker.configure_transport(
+            BrowserTransportKind::Attended,
+            Arc::new(BrowserContextTransport {
+                called: Arc::clone(&attended_called),
+                block_navigation: false,
+            }),
+            home.path().join("attended-images"),
+            home.path().join("attended-artifacts"),
+        );
+        broker.configure_transport(
+            BrowserTransportKind::Managed,
+            Arc::new(BrowserContextTransport {
+                called: Arc::clone(&managed_called),
+                block_navigation: false,
+            }),
+            home.path().join("managed-images"),
+            home.path().join("managed-artifacts"),
+        );
+
+        let forged = r#"{"callContext":"attended","tool":"start_session","arguments":{}}"#;
+        let routine_request = request_with_authorization("Bearer browser-token");
+        let authenticated_context = provider_proxy_browser_context(
+            &routine_request,
+            "browser-token",
+            "attended-browser-token",
+        );
+        assert_eq!(authenticated_context, Some(BrowserCallerContext::Routine));
+        let state = ProviderProxyState {
+            token: "proxy-token".to_string(),
+            recorder_token: "recorder-token".to_string(),
+            routine_browser_token: BrowserProxyToken::new("browser-token".to_string()),
+            attended_browser_token: BrowserProxyToken::new("attended-browser-token".to_string()),
+            connector_token: "connector-token".to_string(),
+            model_catalog_cache: Default::default(),
+            browser_broker: broker,
+            image_sources: ImageSourceCapabilities {
+                images_dir: home.path().join("images"),
+                secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
+            },
+            videos_dir: home.path().join("videos"),
+            video_generation_enabled: false,
+            app: None,
+            image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
+            recorder_requests: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let (mut response_reader, mut response_writer) = tokio::io::duplex(4096);
+        handle_browser_execute(
+            &mut response_writer,
+            &state,
+            authenticated_context,
+            forged.as_bytes(),
+        )
+        .await
+        .expect("handle browser execute");
+        let mut response = String::new();
+        response_reader
+            .read_to_string(&mut response)
+            .await
+            .expect("read browser response");
+
+        assert!(
+            response.starts_with("HTTP/1.1 403 Forbidden"),
+            "a forged attended context must be refused: {response}"
+        );
+        assert!(response.contains("browser_context_mismatch"), "{response}");
+        assert!(!managed_called.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            !attended_called.load(std::sync::atomic::Ordering::SeqCst),
+            "a routine-scoped browser token must never reach Attended"
+        );
     }
 
     #[tokio::test]
@@ -12462,7 +12659,8 @@ mod tests {
             config.contains("      JUNE_BROWSER_GATEWAY_SESSION: \"${HERMES_GATEWAY_SESSION}\"\n")
         );
         assert!(!config.contains("browser-proxy-tok"));
-        assert!(!config.contains(JUNE_BROWSER_MCP_TOKEN_ENV));
+        assert!(!config.contains(JUNE_BROWSER_MCP_ROUTINE_TOKEN_ENV));
+        assert!(!config.contains(JUNE_BROWSER_MCP_ATTENDED_TOKEN_ENV));
         assert!(!config.contains("JUNE_BROWSER_PROXY_TOKEN: \"proxy-tok\""));
         assert!(!config.contains("JUNE_BROWSER_PROXY_TOKEN: \"recorder-proxy-tok\""));
 
@@ -12495,7 +12693,10 @@ mod tests {
         );
         assert!(config.contains("  june_browser:\n"));
         assert!(config.contains("    enabled: true\n"));
-        assert!(config.contains("      JUNE_BROWSER_PROXY_TOKEN: \"browser-proxy-tok\"\n"));
+        assert!(config.contains("      JUNE_BROWSER_ROUTINE_PROXY_TOKEN: \"browser-proxy-tok\"\n"));
+        assert!(config.contains(
+            "      JUNE_BROWSER_ATTENDED_PROXY_TOKEN: \"${JUNE_BROWSER_ATTENDED_PROXY_TOKEN}\"\n"
+        ));
     }
 
     #[test]
@@ -12609,40 +12810,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browser_proxy_token_rotates_across_every_grant_transition_and_refuses_stale_tokens() {
+    async fn browser_proxy_tokens_rotate_across_every_grant_transition_and_refuse_stale_tokens() {
         let broker = BrowserBroker::default();
-        let browser_token = BrowserProxyToken::new("stale-browser-token".to_string());
+        let routine_token = BrowserProxyToken::new("stale-routine-token".to_string());
+        let attended_token = BrowserProxyToken::new("stale-attended-token".to_string());
 
         for enabled in [true, false] {
-            let stale = browser_token.current();
-            let stale_request = request_with_authorization(&format!("Bearer {stale}"));
-            let token_to_rotate = browser_token.clone();
+            let stale_routine = routine_token.current();
+            let stale_attended = attended_token.current();
+            let stale_routine_request =
+                request_with_authorization(&format!("Bearer {stale_routine}"));
+            let stale_attended_request =
+                request_with_authorization(&format!("Bearer {stale_attended}"));
+            let routine_to_rotate = routine_token.clone();
+            let attended_to_rotate = attended_token.clone();
 
             apply_browser_access_transition(
                 &broker,
                 enabled,
                 || Ok(()),
                 || {
-                    token_to_rotate.rotate();
+                    routine_to_rotate.rotate();
+                    attended_to_rotate.rotate();
                     Ok(())
                 },
             )
             .await
             .expect("grant transition");
 
-            let current = browser_token.current();
-            assert_ne!(current, stale, "enabled={enabled}");
-            let required = provider_proxy_required_token(
-                "/v1/browser/status",
-                "provider-token",
-                "recorder-token",
-                &current,
-                "connector-token",
-            );
-            assert!(
-                !provider_proxy_authorized(&stale_request, required),
-                "enabled={enabled}: a credential captured before the transition must be refused"
-            );
+            let current_routine = routine_token.current();
+            let current_attended = attended_token.current();
+            assert_ne!(current_routine, stale_routine, "enabled={enabled}");
+            assert_ne!(current_attended, stale_attended, "enabled={enabled}");
+            for stale_request in [&stale_routine_request, &stale_attended_request] {
+                assert_eq!(
+                    provider_proxy_browser_context(
+                        stale_request,
+                        &current_routine,
+                        &current_attended,
+                    ),
+                    None,
+                    "enabled={enabled}: a credential captured before the transition must be refused"
+                );
+            }
         }
     }
 
@@ -12676,7 +12886,8 @@ mod tests {
         assert!(!JUNE_BROWSER_MCP_SCRIPT.contains("\"name\": \"open\""));
         assert!(!JUNE_BROWSER_MCP_SCRIPT.contains("start_recording"));
         // It reads its dedicated token env var, kept distinct from the others.
-        assert!(JUNE_BROWSER_MCP_SCRIPT.contains(JUNE_BROWSER_MCP_TOKEN_ENV));
+        assert!(JUNE_BROWSER_MCP_SCRIPT.contains(JUNE_BROWSER_MCP_ROUTINE_TOKEN_ENV));
+        assert!(JUNE_BROWSER_MCP_SCRIPT.contains(JUNE_BROWSER_MCP_ATTENDED_TOKEN_ENV));
     }
 
     #[test]
@@ -14322,6 +14533,8 @@ mcp_servers:
             envs.get("HERMES_NONINTERACTIVE").map(String::as_str),
             Some("1")
         );
+        assert!(!envs.contains_key(JUNE_BROWSER_MCP_ROUTINE_TOKEN_ENV));
+        assert!(!envs.contains_key(JUNE_BROWSER_MCP_ATTENDED_TOKEN_ENV));
         assert_eq!(cmd.get_current_dir(), Some(Path::new("/tmp/hermes-home")));
     }
 
@@ -14497,6 +14710,8 @@ mcp_servers:
         std::env::remove_var("HERMES_ENVIRONMENT_HINT");
         assert!(!envs_of(&bare).contains_key("HERMES_ENVIRONMENT_HINT"));
         assert!(!envs_of(&bare).contains_key("HERMES_TUI_TOOLSETS"));
+        assert!(!envs_of(&bare).contains_key(JUNE_BROWSER_MCP_ROUTINE_TOKEN_ENV));
+        assert!(!envs_of(&bare).contains_key(JUNE_BROWSER_MCP_ATTENDED_TOKEN_ENV));
     }
 
     #[test]

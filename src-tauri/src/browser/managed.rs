@@ -955,7 +955,7 @@ const SNAPSHOT_JS: &str = r#"(() => {
     "a[href]", "button", "input", "textarea", "select", "summary",
     "[role=button]", "[role=link]", "[role=tab]", "[role=menuitem]",
     "[role=checkbox]", "[role=radio]", "[role=combobox]", "[role=textbox]",
-    "[onclick]",
+    "[role=searchbox]", "[contenteditable]", "[onclick]",
   ].join(", ");
   const visible = (el) => {
     const style = window.getComputedStyle(el);
@@ -965,14 +965,36 @@ const SNAPSHOT_JS: &str = r#"(() => {
   };
   const refs = [];
   const FORM_CONTROLS = new Set(["input", "textarea", "select"]);
+  const VALUE_ROLES = new Set(["textbox", "combobox", "searchbox"]);
+  const valueRole = (el) => (el.getAttribute("role") || "").toLowerCase();
+  const isValueControl = (el) =>
+    FORM_CONTROLS.has(el.tagName.toLowerCase()) ||
+    el.isContentEditable ||
+    VALUE_ROLES.has(valueRole(el));
+  const labelText = (root) => {
+    const parts = [];
+    const walk = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        parts.push(node.nodeValue || "");
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE || isValueControl(node)) return;
+      for (const child of node.childNodes) walk(child);
+    };
+    walk(root);
+    return parts.join(" ").trim().replace(/\s+/g, " ");
+  };
   const accessibleLabel = (el) => {
     const labelledBy = (el.getAttribute("aria-labelledby") || "")
       .split(/\s+/)
       .filter(Boolean)
-      .map((id) => document.getElementById(id)?.innerText || "")
+      .map((id) => {
+        const label = document.getElementById(id);
+        return label ? labelText(label) : "";
+      })
       .join(" ");
     const labels = el.labels
-      ? Array.from(el.labels).map((label) => label.innerText || "").join(" ")
+      ? Array.from(el.labels).map((label) => labelText(label)).join(" ")
       : "";
     return (
       el.getAttribute("aria-label") ||
@@ -986,25 +1008,84 @@ const SNAPSHOT_JS: &str = r#"(() => {
   const describe = (el, n) => {
     const tag = el.tagName.toLowerCase();
     const type = el.getAttribute("type");
+    const role = valueRole(el);
     const label = accessibleLabel(el);
-    const isFormControl = FORM_CONTROLS.has(tag);
-    // Form-control values are untrusted page data that may contain secrets.
-    // Expose only the accessible label and a generic state.
-    const raw = isFormControl ? "" : (el.innerText || "");
+    const isControl = isValueControl(el);
+    // Control values are untrusted page data that may contain secrets. Expose
+    // only the accessible label, implementation type, and a generic state.
+    const raw = isControl ? "" : sanitizedText(el);
     const text = raw.trim().replace(/\s+/g, " ").slice(0, 120);
     const href = tag === "a" ? (el.getAttribute("href") || "").slice(0, 300) : "";
-    let out = "[ref" + n + "] <" + tag + (type ? " type=" + type : "") + ">";
-    if (isFormControl) {
-      const filled = type === "checkbox" || type === "radio" ? el.checked : Boolean(el.value);
-      out += " (value hidden";
-      if (label) out += ": " + label;
-      out += filled ? ", filled)" : ", empty)";
+    let out = "[ref" + n + "] <" + tag + (type ? " type=" + type : "") + (role ? " role=" + role : "") + ">";
+    if (isControl) {
+      out += " " + controlPlaceholder(el, label);
       return out;
     }
     if (text) out += " " + text;
     else if (label) out += " (" + label + ")";
     if (href) out += " -> " + href;
     return out;
+  };
+  const controlPlaceholder = (el, knownLabel) => {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute("type") || "").toLowerCase();
+    const role = valueRole(el);
+    const label = knownLabel === undefined ? accessibleLabel(el) : knownLabel;
+    const kind = role || type || (el.isContentEditable ? "contenteditable" : tag);
+    const filled = type === "checkbox" || type === "radio"
+      ? Boolean(el.checked)
+      : Boolean(
+          ("value" in el && el.value) ||
+          (el.textContent || "").trim() ||
+          el.getAttribute("aria-valuetext") ||
+          el.getAttribute("aria-valuenow")
+        );
+    let value = "(value hidden";
+    if (label) value += ": " + label;
+    value += ", " + kind + (filled ? ", filled)" : ", empty)");
+    return value;
+  };
+  const BLOCK_TAGS = new Set([
+    "address", "article", "aside", "blockquote", "div", "dl", "fieldset",
+    "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header",
+    "hr", "li", "main", "nav", "ol", "p", "pre", "section", "table", "ul",
+  ]);
+  const walkSanitizedText = (node, parts) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      parts.push(node.nodeValue || "");
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node;
+    const style = window.getComputedStyle(el);
+    if (
+      style.display === "none" ||
+      style.visibility === "hidden" ||
+      el.getAttribute("aria-hidden") === "true"
+    ) return;
+    if (isValueControl(el)) {
+      parts.push(" " + controlPlaceholder(el) + " ");
+      return;
+    }
+    const tag = el.tagName.toLowerCase();
+    if (tag === "br") {
+      parts.push("\n");
+      return;
+    }
+    const block = BLOCK_TAGS.has(tag);
+    if (block) parts.push("\n");
+    for (const child of el.childNodes) walkSanitizedText(child, parts);
+    if (block) parts.push("\n");
+  };
+  const sanitizedText = (root) => {
+    const parts = [];
+    walkSanitizedText(root, parts);
+    return parts
+      .join("")
+      .replace(/[\t\f\v ]+/g, " ")
+      .replace(/ *\n */g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
   };
   const interactive = [];
   for (const el of document.querySelectorAll(selector)) {
@@ -1019,7 +1100,7 @@ const SNAPSHOT_JS: &str = r#"(() => {
   lines.push(...interactive);
   lines.push("");
   lines.push("Page text:");
-  const text = (document.body && document.body.innerText) || "";
+  const text = document.body ? sanitizedText(document.body) : "";
   lines.push(text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) + "\n[truncated]" : text);
   return lines.join("\n");
 })()"#;

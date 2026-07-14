@@ -23,7 +23,8 @@ from typing import Any
 PROTOCOL_VERSION = "2025-03-26"
 SERVER_INFO = {"name": "june-browser", "version": "0.1.0"}
 REQUEST_TIMEOUT_SECONDS = 30
-TOKEN_ENV_VAR = "JUNE_BROWSER_PROXY_TOKEN"
+ROUTINE_TOKEN_ENV_VAR = "JUNE_BROWSER_ROUTINE_PROXY_TOKEN"
+ATTENDED_TOKEN_ENV_VAR = "JUNE_BROWSER_ATTENDED_PROXY_TOKEN"
 CRON_CONTEXT_ENV_VAR = "JUNE_BROWSER_CRON_SESSION"
 GATEWAY_CONTEXT_ENV_VAR = "JUNE_BROWSER_GATEWAY_SESSION"
 
@@ -152,7 +153,7 @@ def main() -> None:
         raise SystemExit("Usage: june_browser_mcp.py <proxy_base_url>")
 
     base_url = sys.argv[1].rstrip("/")
-    token = os.environ.get(TOKEN_ENV_VAR, "")
+    token = browser_proxy_token()
     while True:
         message = read_message()
         if message is None:
@@ -285,6 +286,16 @@ def browser_call_context() -> str:
     if os.environ.get(GATEWAY_CONTEXT_ENV_VAR) == "1":
         return "attended"
     return "unknown"
+
+
+def browser_proxy_token() -> str:
+    """Select only the credential minted for this runtime context."""
+    context = browser_call_context()
+    if context == "routine":
+        return os.environ.get(ROUTINE_TOKEN_ENV_VAR, "")
+    if context == "attended":
+        return os.environ.get(ATTENDED_TOKEN_ENV_VAR, "")
+    return ""
 
 
 def proxy_json(
