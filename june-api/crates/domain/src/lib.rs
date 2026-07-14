@@ -99,6 +99,7 @@ pub struct AgentChatCompletion {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpstreamRouteMetadata {
+    pub provider: Option<String>,
     pub privacy_level: Option<String>,
     pub endpoint: Option<String>,
 }

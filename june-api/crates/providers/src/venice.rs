@@ -606,13 +606,13 @@ impl VeniceChat {
                 retryable,
             });
         }
-        let (provider, route) = upstream_route(&response);
+        let route = upstream_route(&response);
         response
             .json::<ChatCompletionResponse>()
             .await
             .map(|response| RoutedChatCompletion {
                 response,
-                provider,
+                provider: PROVIDER_NAME.to_string(),
                 route,
             })
             .map_err(|error| {
@@ -664,7 +664,7 @@ impl VeniceChat {
                 auth.provider_credentials,
             ));
         }
-        let (provider, route) = upstream_route(&response);
+        let route = upstream_route(&response);
         let body = response.bytes().await.map_err(|error| {
             tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
             DomainError::UpstreamProvider
@@ -673,7 +673,7 @@ impl VeniceChat {
         Ok(AgentChatCompletion {
             body: body.to_vec(),
             content_type,
-            provider,
+            provider: PROVIDER_NAME.to_string(),
             route,
             usage,
         })
@@ -722,7 +722,7 @@ impl VeniceChat {
                 auth.provider_credentials,
             ));
         }
-        let (provider, route) = upstream_route(&response);
+        let route = upstream_route(&response);
 
         let (chunks_tx, chunks_rx) = mpsc::unbounded_channel();
         let (outcome_tx, outcome_rx) = oneshot::channel();
@@ -745,7 +745,7 @@ impl VeniceChat {
 
         Ok(AgentChatStream {
             content_type,
-            provider,
+            provider: PROVIDER_NAME.to_string(),
             route,
             chunks: chunks_rx,
             outcome: outcome_rx,
@@ -761,7 +761,7 @@ fn apply_private_routing(request: RequestBuilder, auth: ChatCallAuth<'_>) -> Req
     }
 }
 
-fn upstream_route(response: &reqwest::Response) -> (String, UpstreamRouteMetadata) {
+fn upstream_route(response: &reqwest::Response) -> UpstreamRouteMetadata {
     let header = |name| {
         response
             .headers()
@@ -771,18 +771,18 @@ fn upstream_route(response: &reqwest::Response) -> (String, UpstreamRouteMetadat
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     };
-    let provider = header(OS_PROVIDER_HEADER).unwrap_or_else(|| PROVIDER_NAME.to_string());
     let route = UpstreamRouteMetadata {
+        provider: header(OS_PROVIDER_HEADER),
         privacy_level: header(OS_PRIVACY_LEVEL_HEADER),
         endpoint: header(OS_ENDPOINT_HEADER),
     };
     tracing::info!(
-        upstream_provider = %provider,
+        upstream_provider = route.provider.as_deref().unwrap_or("unknown"),
         privacy_level = route.privacy_level.as_deref().unwrap_or("unknown"),
         upstream_endpoint = route.endpoint.as_deref().unwrap_or("unknown"),
         "venice: resolved upstream route"
     );
-    (provider, route)
+    route
 }
 
 fn prepare_agent_chat_body(
@@ -1663,6 +1663,7 @@ mod tests {
             generated.map(|value| (
                 value.content,
                 value.provider,
+                value.route.provider,
                 value.route.privacy_level,
                 value.route.endpoint,
                 value.usage.prompt_tokens,
@@ -1670,7 +1671,8 @@ mod tests {
             )),
             Ok((
                 "Generated note block".to_string(),
-                "phala".to_string(),
+                "venice".to_string(),
+                Some("phala".to_string()),
                 Some("tee".to_string()),
                 Some("phala-glm-5.2".to_string()),
                 10,
@@ -2133,7 +2135,8 @@ mod tests {
 
         assert_eq!(completion.usage.prompt_tokens, 1);
         assert_eq!(completion.usage.completion_tokens, 2);
-        assert_eq!(completion.provider, "phala");
+        assert_eq!(completion.provider, "venice");
+        assert_eq!(completion.route.provider.as_deref(), Some("phala"));
         assert_eq!(completion.route.privacy_level.as_deref(), Some("tee"));
         assert_eq!(completion.route.endpoint.as_deref(), Some("phala-glm-5.2"));
     }

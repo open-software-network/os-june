@@ -114,7 +114,10 @@ fn insert_upstream_route_headers(
     route: &UpstreamRouteMetadata,
 ) {
     for (name, value) in [
-        ("x-os-provider", Some(provider)),
+        (
+            "x-os-provider",
+            route.provider.as_deref().or(Some(provider)),
+        ),
         ("x-os-privacy-level", route.privacy_level.as_deref()),
         ("x-os-endpoint", route.endpoint.as_deref()),
     ] {

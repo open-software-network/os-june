@@ -18,9 +18,11 @@ sending legacy model ids such as `zai-org-glm-5-2`; os-api resolves them to cano
 changing June's `/v1` request or response shape. User-supplied Venice keys continue to use Venice's
 public API directly and do not receive the os-api routing header.
 
-June API preserves os-api's selected provider, privacy level, and endpoint in response metadata so
-Phala fallbacks are not mislabeled as Venice. Legacy model credit prices are keyed separately from
-os-api's canonical live-catalog ids and must cover the most expensive enabled private route.
+June API preserves os-api's selected provider, privacy level, and endpoint as additive response
+metadata (`upstreamProvider`, `privacyLevel`, and `upstreamEndpoint`, plus `X-OS-*` chat headers).
+The existing `provider` field keeps its historical Venice adapter meaning for shipped clients.
+Legacy aliases and canonical live-catalog model IDs must both cover the most expensive enabled
+private route because settlement is currently keyed by requested model ID.
 
 Build the desktop release with `OS_JUNE_AUTO_MODE_DEFAULT=true`. Existing users retain their saved
 model. Roll back by restoring the Venice URL in production compose and removing the build flag.

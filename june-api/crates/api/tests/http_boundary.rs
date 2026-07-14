@@ -77,6 +77,7 @@ async fn integration_note_generate_returns_enveloped_response() -> Result<(), Bo
     assert_eq!(body["data"]["content"], "Generated note body");
     assert_eq!(body["data"]["titleSuggestion"], "Generated title");
     assert_eq!(body["data"]["provider"], "fake-generator");
+    assert_eq!(body["data"]["upstreamProvider"], "phala");
     assert_eq!(body["data"]["privacyLevel"], "no-retention");
     assert_eq!(body["data"]["upstreamEndpoint"], "venice-private");
     assert_eq!(body["data"]["promptVersion"], NOTE_GENERATE_PROMPT_VERSION);
@@ -291,7 +292,7 @@ async fn integration_agent_chat_stream_returns_upstream_sse_body() -> Result<(),
             .headers()
             .get("x-os-provider")
             .and_then(|value| value.to_str().ok()),
-        Some("fake-chat")
+        Some("phala")
     );
     assert_eq!(
         response
@@ -1285,6 +1286,8 @@ async fn integration_dictate_cleanup_returns_enveloped_response() -> Result<(), 
     let body = response_json(response).await?;
     assert_eq!(body["success"], true);
     assert_eq!(body["data"]["text"], "Cleaned dictation");
+    assert_eq!(body["data"]["provider"], "fake-cleaner");
+    assert_eq!(body["data"]["upstreamProvider"], "phala");
     assert_eq!(body["data"]["creditsCharged"], 0);
     Ok(())
 }

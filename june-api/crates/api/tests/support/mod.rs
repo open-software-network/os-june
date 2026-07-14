@@ -736,6 +736,7 @@ impl Generator for FakeGenerator {
             title_suggestion: Some("Generated title".to_string()),
             provider: "fake-generator".to_string(),
             route: UpstreamRouteMetadata {
+                provider: Some("phala".to_string()),
                 privacy_level: Some("no-retention".to_string()),
                 endpoint: Some("venice-private".to_string()),
             },
@@ -756,6 +757,7 @@ impl Cleaner for FakeCleaner {
             text: "Cleaned dictation".to_string(),
             provider: "fake-cleaner".to_string(),
             route: UpstreamRouteMetadata {
+                provider: Some("phala".to_string()),
                 privacy_level: Some("no-retention".to_string()),
                 endpoint: Some("venice-private".to_string()),
             },
@@ -785,6 +787,7 @@ impl AgentChatCompleter for FakeChatCompleter {
             content_type: "application/json".to_string(),
             provider: "fake-chat".to_string(),
             route: UpstreamRouteMetadata {
+                provider: Some("phala".to_string()),
                 privacy_level: Some("no-retention".to_string()),
                 endpoint: Some("venice-private".to_string()),
             },
@@ -812,6 +815,7 @@ impl AgentChatCompleter for FakeChatCompleter {
             content_type: "text/event-stream".to_string(),
             provider: "fake-chat".to_string(),
             route: UpstreamRouteMetadata {
+                provider: Some("phala".to_string()),
                 privacy_level: Some("no-retention".to_string()),
                 endpoint: Some("venice-private".to_string()),
             },

@@ -92,6 +92,7 @@ async fn load_pricing(
         Ok(models) => {
             let count = models.len();
             pricing.extend(models);
+            apply_private_route_price_floors(&mut pricing);
             tracing::info!(count, "loaded Venice model catalog");
         }
         Err(error) => {
@@ -99,6 +100,33 @@ async fn load_pricing(
         }
     }
     pricing
+}
+
+/// The routed catalog currently reports the cheapest eligible endpoint, while
+/// June settles by requested model ID. Floor routed text models at the most
+/// expensive endpoint eligible for `preferred` so a Phala fallback cannot be
+/// sold below cost. Remove this once settlement is authenticated per route.
+fn apply_private_route_price_floors(pricing: &mut BTreeMap<String, ModelPriceConfig>) {
+    for (model_id, input_floor, output_floor) in [
+        ("z-ai/glm-5.2", 1_680, 5_280),
+        ("moonshotai/kimi-k2.6", 1_308, 5_520),
+    ] {
+        let Some(model) = pricing.get_mut(model_id) else {
+            continue;
+        };
+        model.input_credits_per_million_tokens = Some(
+            model
+                .input_credits_per_million_tokens
+                .unwrap_or_default()
+                .max(input_floor),
+        );
+        model.output_credits_per_million_tokens = Some(
+            model
+                .output_credits_per_million_tokens
+                .unwrap_or_default()
+                .max(output_floor),
+        );
+    }
 }
 
 // The dependency-injection composition root: it wires every provider and
@@ -452,4 +480,24 @@ fn init_tracing() {
         )
         .with(tracing_subscriber::fmt::layer().json())
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_kimi_catalog_price_is_floored_for_phala_fallback() {
+        let mut pricing = AppConfig::default().pricing;
+        let mut canonical = pricing["kimi-k2-6"].clone();
+        canonical.input_credits_per_million_tokens = Some(900);
+        canonical.output_credits_per_million_tokens = Some(4_200);
+        pricing.insert("moonshotai/kimi-k2.6".to_string(), canonical);
+
+        apply_private_route_price_floors(&mut pricing);
+
+        let canonical = &pricing["moonshotai/kimi-k2.6"];
+        assert_eq!(canonical.input_credits_per_million_tokens, Some(1_308));
+        assert_eq!(canonical.output_credits_per_million_tokens, Some(5_520));
+    }
 }
