@@ -18,6 +18,14 @@ function cssRuleFor(selector: string) {
 }
 
 describe("agent scroll-to-latest styles", () => {
+  it("reserves the measured fixed-composer overlap below the conversation", () => {
+    expect(appCss).toContain("calc(var(--agent-composer-clearance, 0px) + var(--sp-5))");
+    expect(cssRuleFor(".agent-timeline")).not.toContain("148px");
+    expect(cssRuleFor(".agent-timeline")).toContain(
+      "calc(var(--agent-turn-actions-h) + var(--sp-2))",
+    );
+  });
+
   it("floats the pill absolutely (never fixed) above the composer", () => {
     const rule = cssRuleFor(".agent-scroll-to-latest");
     // WKWebView clips composited fixed elements to the overflow-hidden card.

@@ -534,7 +534,10 @@ input:focus-visible,
   overflow-y: auto;
   overscroll-behavior: contain;
   margin: calc(-1 * var(--detail-bar-h)) calc(-1 * var(--sp-8)) 0;
-  padding: var(--detail-bar-h) var(--sp-8) var(--sp-5);
+  /* The fixed composer is outside layout. Its measured overlap grows with the
+   * Up next queue and shrinks as rows drain; the final gap keeps the last chat
+   * item visibly separated from the top of that floating surface. */
+  padding: var(--detail-bar-h) var(--sp-8) calc(var(--agent-composer-clearance, 0px) + var(--sp-5));
   /* Center the thread column from the LEFT GUTTER, not margin:auto inside the
    * scroller: the classic scrollbar steals an engine-specific slice of the
    * content box (8px custom in Chrome, wider native in WKWebView), and auto
@@ -741,9 +744,11 @@ input:focus-visible,
   /* Align the thread rail with the composer's text line, not its outer
    * border: 1px box border + sp-1 box padding + sp-5 textarea padding.
    * User turns stay right-aligned inside this rail. */
-  /* Bottom padding clears the fixed composer so the last turn can scroll fully
-   * clear of it instead of hiding underneath. */
-  padding: var(--sp-2) calc(1px + var(--sp-1) + var(--sp-5)) 148px;
+  /* The outer scroller owns the live clearance for the fixed composer. Keep
+   * only the final turn's out-of-flow action row in this rail's tail so its
+   * copy/branch/timestamp controls also remain above that surface. */
+  padding: var(--sp-2) calc(1px + var(--sp-1) + var(--sp-5))
+    calc(var(--agent-turn-actions-h) + var(--sp-2));
 }
 
 /* Dev-tools response gallery (window.__agentGallery): a labeled catalog of every

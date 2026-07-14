@@ -2820,9 +2820,11 @@ export function AgentWorkspace({
   const titleSuggestionInFlightSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
   const agentScrollRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLFormElement | null>(null);
   const composerEditorRef = useRef<ComposerEditorHandle | null>(null);
   const composerTiptapEditorRef = useRef<TiptapEditor | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
+  const [composerClearance, setComposerClearance] = useState(0);
   // A note reference to seed once the editor is ready, set by startNewTask for
   // note-level "Ask June" entry points.
   const pendingSeedNoteRefRef = useRef<{
@@ -3608,6 +3610,36 @@ export function AgentWorkspace({
     if (!el || el.scrollHeight <= el.clientHeight + 1) return;
     return attachScrollThumbFade(el);
   }, [hasFollowUps, steerQueueOpen, selectedFollowUpCount]);
+
+  // The composer is fixed over the conversation, so it contributes no layout
+  // height of its own. Reserve its live overlap in the scroller instead. A
+  // ResizeObserver catches queue rows draining, collapse/expand, wrapped copy,
+  // draft growth, and viewport changes without coupling the chat to any one
+  // queue-row height.
+  useLayoutEffect(() => {
+    const scroller = agentScrollRef.current;
+    const composer = composerRef.current;
+    if (heroMode || activePanel !== "chat" || !scroller || !composer) {
+      setComposerClearance(0);
+      return;
+    }
+    const measure = () => {
+      const next = agentComposerClearance(
+        scroller.getBoundingClientRect().bottom,
+        composer.getBoundingClientRect().top,
+      );
+      setComposerClearance((current) => (current === next ? current : next));
+    };
+    measure();
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : undefined;
+    observer?.observe(scroller);
+    observer?.observe(composer);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [activePanel, heroMode, selectedFollowUpCount, steerQueueOpen]);
 
   // Updates the task list without touching the selection — a late poll
   // response must not re-select a task the user already navigated away from.
@@ -9873,7 +9905,13 @@ export function AgentWorkspace({
       behavior: settled ? "smooth" : "auto",
     });
     transcriptShouldStickToBottomRef.current = true;
-  }, [renderedTurnsSignature, selectedHermesSessionId, selectedHistoryLoaded, selectedTaskId]);
+  }, [
+    composerClearance,
+    renderedTurnsSignature,
+    selectedHermesSessionId,
+    selectedHistoryLoaded,
+    selectedTaskId,
+  ]);
 
   // Jump back to the live edge from the floating pill. Glide the same way the
   // auto-scroll effect does — arm the programmatic-scroll ref + timeout so the
@@ -10032,6 +10070,7 @@ export function AgentWorkspace({
   const composer =
     activePanel === "chat" ? (
       <form
+        ref={composerRef}
         className="agent-composer"
         data-hero={heroMode ? "true" : undefined}
         data-drop-active={dropActive ? "true" : undefined}
@@ -11046,7 +11085,15 @@ export function AgentWorkspace({
         </section>
       ) : (
         <>
-          <div ref={agentScrollRef} className="agent-scroll">
+          <div
+            ref={agentScrollRef}
+            className="agent-scroll"
+            style={
+              {
+                "--agent-composer-clearance": `${composerClearance}px`,
+              } as CSSProperties
+            }
+          >
             <section className="agent-main" aria-label="Agent task details">
               {galleryErrors ? (
                 <AgentErrorBanner
@@ -12354,6 +12401,10 @@ function chatTurnsSignature(turns: AgentChatTurn[]) {
 const TURN_ACTION_TIP_DELAY_MS = 550;
 
 const AGENT_TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
+
+export function agentComposerClearance(scrollerBottom: number, composerTop: number) {
+  return Math.max(0, Math.ceil(scrollerBottom - composerTop));
+}
 
 function isAgentTranscriptNearBottom(scroller: HTMLElement) {
   return (
