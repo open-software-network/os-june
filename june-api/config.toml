@@ -74,6 +74,11 @@ base_url = "https://api.openai.com/v1"
 
 [upstreams.venice]
 base_url = "https://api.venice.ai/api/v1"
+# Requests carrying a user-supplied (BYOK) Venice key go to `byok_base_url`
+# instead of `base_url`, because `base_url` may point at a June-managed
+# gateway that only accepts June's own service key. Unset, it defaults to
+# Venice's public API (https://api.venice.ai/api/v1).
+# byok_base_url = "https://api.venice.ai/api/v1"
 
 # Usage credit prices include June's 1.2x retail multiplier over upstream cost.
 # OpenAI lists ASR prices per MINUTE of audio ($0.003/min mini, $0.006/min 4o);

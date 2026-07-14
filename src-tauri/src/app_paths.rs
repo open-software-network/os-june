@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     io::{Error, ErrorKind},
     path::{Component, Path, PathBuf},
 };
@@ -64,23 +65,55 @@ pub fn app_data_dir(app: &AppHandle) -> Result<PathBuf, tauri::Error> {
     })
 }
 
+pub fn app_config_dir(app: &AppHandle) -> Result<PathBuf, tauri::Error> {
+    app.path().app_config_dir().map(|config_dir| {
+        app_config_dir_for_build(config_dir, cfg!(debug_assertions), use_prod_data_dir())
+    })
+}
+
 fn use_prod_data_dir() -> bool {
-    std::env::var_os(USE_PROD_DATA_DIR_ENV).is_some()
+    let value = std::env::var_os(USE_PROD_DATA_DIR_ENV);
+    env_value_truthy(value.as_deref())
+}
+
+fn env_value_truthy(value: Option<&OsStr>) -> bool {
+    value.and_then(OsStr::to_str).is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn app_data_dir_for_build(data_dir: PathBuf, debug_assertions: bool, use_prod: bool) -> PathBuf {
+    isolated_app_dir_for_build(data_dir, debug_assertions, use_prod)
+}
+
+fn app_config_dir_for_build(
+    config_dir: PathBuf,
+    debug_assertions: bool,
+    use_prod: bool,
+) -> PathBuf {
+    isolated_app_dir_for_build(config_dir, debug_assertions, use_prod)
+}
+
+fn isolated_app_dir_for_build(
+    directory: PathBuf,
+    debug_assertions: bool,
+    use_prod: bool,
+) -> PathBuf {
     if !debug_assertions || use_prod {
-        return data_dir;
+        return directory;
     }
 
-    data_dir
+    directory
         .file_name()
         .map(|name| {
             let mut dev_name = name.to_os_string();
             dev_name.push("-dev");
-            data_dir.with_file_name(dev_name)
+            directory.with_file_name(dev_name)
         })
-        .unwrap_or_else(|| data_dir.join("dev"))
+        .unwrap_or_else(|| directory.join("dev"))
 }
 
 fn validate_recording_component(field: &'static str, value: &str) -> std::io::Result<()> {
@@ -103,8 +136,20 @@ fn validate_recording_component(field: &'static str, value: &str) -> std::io::Re
 
 #[cfg(test)]
 mod tests {
-    use super::{app_data_dir_for_build, AppPaths};
-    use std::path::PathBuf;
+    use super::{app_config_dir_for_build, app_data_dir_for_build, env_value_truthy, AppPaths};
+    use std::{ffi::OsStr, path::PathBuf};
+
+    #[test]
+    fn production_data_override_accepts_only_truthy_values() {
+        for value in ["1", "true", "TRUE", " yes ", "on"] {
+            assert!(env_value_truthy(Some(OsStr::new(value))), "{value:?}");
+        }
+
+        for value in ["", "0", "false", "no", "off", "unexpected"] {
+            assert!(!env_value_truthy(Some(OsStr::new(value))), "{value:?}");
+        }
+        assert!(!env_value_truthy(None));
+    }
 
     #[test]
     fn recording_session_dir_rejects_path_traversal_components() {
@@ -164,6 +209,36 @@ mod tests {
         assert_eq!(
             app_data_dir_for_build(data_dir.clone(), true, true),
             data_dir
+        );
+    }
+
+    #[test]
+    fn release_builds_use_the_configured_config_dir() {
+        let config_dir = PathBuf::from("/tmp/co.opensoftware.june");
+
+        assert_eq!(
+            app_config_dir_for_build(config_dir.clone(), false, false),
+            config_dir
+        );
+    }
+
+    #[test]
+    fn debug_builds_use_a_separate_dev_config_dir_by_default() {
+        let config_dir = PathBuf::from("/tmp/co.opensoftware.june");
+
+        assert_eq!(
+            app_config_dir_for_build(config_dir, true, false),
+            PathBuf::from("/tmp/co.opensoftware.june-dev")
+        );
+    }
+
+    #[test]
+    fn debug_builds_can_opt_into_the_configured_config_dir() {
+        let config_dir = PathBuf::from("/tmp/co.opensoftware.june");
+
+        assert_eq!(
+            app_config_dir_for_build(config_dir.clone(), true, true),
+            config_dir
         );
     }
 }

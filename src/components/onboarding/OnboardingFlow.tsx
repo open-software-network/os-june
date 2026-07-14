@@ -1,7 +1,7 @@
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { useEffect, useMemo, useState } from "react";
 import { onboardingResumeStep, setOnboardingResumeStep } from "../../lib/onboarding";
-import { isMacLikePlatform } from "../../lib/platform";
+import { fallbackDictationCapabilities } from "../../lib/platform";
 import { dictationSettings, p3aRecord, setDictationShortcut } from "../../lib/tauri";
 import type { AccountStatus, DictationShortcutSetting } from "../../lib/tauri";
 import { PermissionsStep } from "./steps/PermissionSteps";
@@ -48,7 +48,14 @@ const MAC_STEPS: StepId[] = [
   "permissions",
   "dictation-practice",
 ];
-const NON_MAC_STEPS: StepId[] = ["sign-in", "telemetry", "usage-intent", "permissions"];
+const WINDOWS_STEPS: StepId[] = [
+  "sign-in",
+  "telemetry",
+  "usage-intent",
+  "permissions",
+  "dictation-practice",
+];
+const NON_DICTATION_STEPS: StepId[] = ["sign-in", "telemetry", "usage-intent", "permissions"];
 
 type Props = {
   account: AccountStatus;
@@ -81,13 +88,24 @@ function browserOnboardingDemoStep(): StepId | null {
 }
 
 export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props) {
-  const steps = useMemo(() => (isMacLikePlatform() ? MAC_STEPS : NON_MAC_STEPS), []);
+  const capabilities = fallbackDictationCapabilities();
+  const steps = useMemo(
+    () =>
+      capabilities.platform === "macos"
+        ? MAC_STEPS
+        : capabilities.platform === "windows"
+          ? WINDOWS_STEPS
+          : NON_DICTATION_STEPS,
+    [capabilities.platform],
+  );
   const supportsDictationPractice = steps.includes("dictation-practice");
   const [stepIndex, setStepIndex] = useState(() => {
     const initial = initialStepIndex(steps);
     return account.signedIn && steps[initial] === "sign-in" ? 1 : initial;
   });
-  const [shortcutLabel, setShortcutLabel] = useState("fn");
+  const [shortcutLabel, setShortcutLabel] = useState(() =>
+    capabilities.platform === "windows" ? "Ctrl+Alt+D" : "fn",
+  );
 
   const stepId = steps[stepIndex];
 
@@ -127,19 +145,30 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
   // practice screen survives stepping back and forward.
   useEffect(() => {
     if (!supportsDictationPractice) return;
-    dictationSettings()
-      .then(({ settings }) => {
-        const current = settings.pushToTalkShortcut;
-        if (current && !isFactoryDefaultShortcut(current)) {
-          if (current.label) setShortcutLabel(current.label);
-          return undefined;
-        }
-        return setDictationShortcut("push_to_talk", FN_SHORTCUT).then((saved) => {
-          setShortcutLabel(saved?.pushToTalkShortcut?.label ?? FN_SHORTCUT.label);
-        });
-      })
-      .catch(() => undefined);
-  }, [supportsDictationPractice]);
+    if (capabilities.platform === "macos") {
+      dictationSettings()
+        .then(({ settings }) => {
+          const current = settings.pushToTalkShortcut;
+          if (current && !isFactoryDefaultShortcut(current)) {
+            if (current.label) setShortcutLabel(current.label);
+            return undefined;
+          }
+          return setDictationShortcut("push_to_talk", FN_SHORTCUT).then((saved) => {
+            setShortcutLabel(saved?.pushToTalkShortcut?.label ?? FN_SHORTCUT.label);
+          });
+        })
+        .catch(() => undefined);
+    } else if (capabilities.platform === "windows") {
+      dictationSettings()
+        .then(({ settings }) => {
+          const current = settings.pushToTalkShortcut;
+          if (current?.label) {
+            setShortcutLabel(current.label);
+          }
+        })
+        .catch(() => undefined);
+    }
+  }, [supportsDictationPractice, capabilities.platform]);
 
   function goNext() {
     if (stepIndex >= steps.length - 1) {

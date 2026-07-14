@@ -6,15 +6,16 @@ use axum::{
 use june_api::{AttestationInfo, router};
 use june_config::DEFAULT_MAX_IMAGE_EDIT_BYTES;
 use june_domain::{
-    DomainError, GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportDelivery,
-    IssueReportSink, P3aReport, Transcriber, Transcript, TranscriptionRequest, UserId,
+    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream, DomainError,
+    GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportDelivery, IssueReportSink,
+    P3aReport, Transcriber, Transcript, TranscriptionRequest, UserId,
 };
 use june_services::NOTE_GENERATE_PROMPT_VERSION;
 use pretty_assertions::assert_eq;
 use std::{
     error::Error,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -309,6 +310,206 @@ async fn integration_agent_chat_routes_stale_model_through_auto() -> Result<(), 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await?;
     assert_eq!(body["id"], "chatcmpl_test");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_local_auto_fallback_strips_auto_policy()
+-> Result<(), Box<dyn Error>> {
+    let completer = Arc::new(RecordingChatCompleter::default());
+    let app = router(test_state_with_local_text_pricing(
+        Arc::new(FakeGenerator),
+        completer.clone(),
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "auto": { "cost_quality": 0.75 },
+                "messages": [{ "role": "user", "content": "hello" }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = completer
+        .requests
+        .lock()
+        .map_err(|_| "chat request mutex poisoned")?;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model.0, "zai-org-glm-5-2");
+    assert!(requests[0].body.get("auto").is_none());
+    assert!(!requests[0].body.to_string().contains("cost_quality"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_non_local_missing_auto_fails_loudly() -> Result<(), Box<dyn Error>>
+{
+    let app = router(test_state_with_text_pricing_without_auto(
+        false,
+        Arc::new(FakeGenerator),
+        Arc::new(FakeChatCompleter),
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "messages": [{ "role": "user", "content": "hello" }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["message"], "model_not_priced");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_local_auto_image_and_tools_falls_back_to_compatible_model()
+-> Result<(), Box<dyn Error>> {
+    let completer = Arc::new(RecordingChatCompleter::default());
+    let app = router(test_state_with_local_text_pricing(
+        Arc::new(FakeGenerator),
+        completer.clone(),
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "auto": { "cost_quality": 0.75 },
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": "describe this image" },
+                        {
+                            "type": "image_url",
+                            "image_url": { "url": "https://example.com/image.png" }
+                        }
+                    ]
+                }],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "save_description",
+                        "parameters": { "type": "object" }
+                    }
+                }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = completer
+        .requests
+        .lock()
+        .map_err(|_| "chat request mutex poisoned")?;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model.0, "kimi-k2-6");
+    assert!(requests[0].body.get("auto").is_none());
+    assert!(requests[0].body.get("tools").is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_local_auto_rejects_when_capabilities_are_unavailable()
+-> Result<(), Box<dyn Error>> {
+    let app = router(
+        test_state_with_text_pricing_without_auto_and_kimi_capabilities(
+            true,
+            Arc::new(FakeGenerator),
+            Arc::new(FakeChatCompleter),
+            vec!["supportsVision".to_string()],
+        ),
+    );
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "image_url",
+                        "image_url": { "url": "https://example.com/image.png" }
+                    }]
+                }],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "save_description",
+                        "parameters": { "type": "object" }
+                    }
+                }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["message"], "model_capability_unavailable");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_local_auto_fallback_omits_cost_quality()
+-> Result<(), Box<dyn Error>> {
+    let generator = Arc::new(RecordingGenerator::default());
+    let app = router(test_state_with_local_text_pricing(
+        generator.clone(),
+        Arc::new(FakeChatCompleter),
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/notes/generate",
+            &serde_json::json!({
+                "noteId": "note-local-auto",
+                "promptVersion": "prompt-v1",
+                "title": "Planning",
+                "transcript": "System: launch is Friday",
+                "model": "open-software/auto",
+                "costQuality": 0.75
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = generator
+        .requests
+        .lock()
+        .map_err(|_| "generation request mutex poisoned")?;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model.0, "zai-org-glm-5-2");
+    assert_eq!(requests[0].cost_quality, None);
     Ok(())
 }
 
@@ -1805,6 +2006,22 @@ impl Transcriber for LanguagelessTranscriber {
     }
 }
 
+#[derive(Default)]
+struct RecordingGenerator {
+    requests: Mutex<Vec<GenerationRequest>>,
+}
+
+#[async_trait]
+impl Generator for RecordingGenerator {
+    async fn generate(&self, request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
+        self.requests
+            .lock()
+            .map_err(|_| DomainError::UpstreamProvider)?
+            .push(request.clone());
+        FakeGenerator.generate(request).await
+    }
+}
+
 struct SlowGenerator;
 
 #[async_trait]
@@ -1812,5 +2029,35 @@ impl Generator for SlowGenerator {
     async fn generate(&self, request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
         tokio::time::sleep(Duration::from_secs(11)).await;
         FakeGenerator.generate(request).await
+    }
+}
+
+#[derive(Default)]
+struct RecordingChatCompleter {
+    requests: Mutex<Vec<AgentChatRequest>>,
+}
+
+#[async_trait]
+impl AgentChatCompleter for RecordingChatCompleter {
+    async fn complete(
+        &self,
+        request: AgentChatRequest,
+    ) -> Result<AgentChatCompletion, DomainError> {
+        self.requests
+            .lock()
+            .map_err(|_| DomainError::UpstreamProvider)?
+            .push(request.clone());
+        FakeChatCompleter.complete(request).await
+    }
+
+    async fn complete_stream(
+        &self,
+        request: AgentChatRequest,
+    ) -> Result<AgentChatStream, DomainError> {
+        self.requests
+            .lock()
+            .map_err(|_| DomainError::UpstreamProvider)?
+            .push(request.clone());
+        FakeChatCompleter.complete_stream(request).await
     }
 }

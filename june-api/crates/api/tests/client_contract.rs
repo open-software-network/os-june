@@ -11,7 +11,7 @@
 //!
 //! If a change here is the only thing failing your PR, you are about to
 //! break a shipped app version. Do not edit a fixture to make it pass; see
-//! docs/adr/0019-june-api-v1-compatibility-policy.md for the rules and for
+//! docs/adr/0021-june-api-v1-compatibility-policy.md for the rules and for
 //! how fixture versions are added and retired.
 
 use axum::http::header;

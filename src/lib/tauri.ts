@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { parseDictationHelperEvent } from "./dictation-events";
 
 // Re-exported so modules that build their own command calls (e.g. the Hermes
 // admin Rust transport) route through the same `invoke` the rest of the app's
@@ -135,6 +136,20 @@ export type DictationSettingsDto = {
   microphone: DictationMicrophoneSetting;
   style: DictationStyle;
   language?: string;
+};
+
+export type DictationCapabilitiesDto = {
+  available: boolean;
+  platform: "macos" | "windows" | "unsupported";
+  shortcuts: boolean;
+  paste: boolean;
+  microphoneSelection: boolean;
+  accessibilityPermission: boolean;
+  systemAudio: boolean;
+};
+
+export type DictationCapabilitiesResponse = {
+  capabilities: DictationCapabilitiesDto;
 };
 
 export type DictationSettingsResponse = {
@@ -1700,6 +1715,10 @@ export async function osAccountsReferralSummary() {
   return invoke<ReferralSummary>("os_accounts_referral_summary");
 }
 
+export async function dictationCapabilities() {
+  return invoke<DictationCapabilitiesResponse>("dictation_capabilities");
+}
+
 export async function dictationSettings() {
   return invoke<DictationSettingsResponse>("dictation_settings");
 }
@@ -1938,7 +1957,7 @@ export async function dictationHotkeyStatus() {
 
 export async function latestDictationEvent() {
   const payload = await invoke<string | undefined>("latest_dictation_event");
-  return payload ? (JSON.parse(payload) as DictationHelperEvent) : undefined;
+  return parseDictationHelperEvent(payload);
 }
 
 // ---------------------------------------------------------------------------

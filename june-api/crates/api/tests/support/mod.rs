@@ -81,10 +81,13 @@ pub(crate) fn test_state_with_issue_sink_and_timeout(
     request_timeout_secs: u64,
 ) -> ApiState {
     test_state_from_deps(TestStateDeps {
+        pricing: models(),
+        local_dev_enabled: false,
         issue_reports: test_issue_report_service(issue_reports),
         attestation,
         transcriber: Arc::new(FakeTranscriber),
         generator: Arc::new(FakeGenerator),
+        chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
     })
@@ -113,10 +116,13 @@ pub(crate) fn test_state_with_sinks_and_transcriber(
     transcriber: Arc<dyn Transcriber>,
 ) -> ApiState {
     test_state_from_deps(TestStateDeps {
+        pricing: models(),
+        local_dev_enabled: false,
         issue_reports,
         attestation,
         transcriber,
         generator: Arc::new(FakeGenerator),
+        chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs: 5,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
     })
@@ -127,10 +133,13 @@ pub(crate) fn test_state_with_generator_and_timeout(
     request_timeout_secs: u64,
 ) -> ApiState {
     test_state_from_deps(TestStateDeps {
+        pricing: models(),
+        local_dev_enabled: false,
         issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
         attestation: test_attestation(),
         transcriber: Arc::new(FakeTranscriber),
         generator,
+        chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
     })
@@ -138,30 +147,115 @@ pub(crate) fn test_state_with_generator_and_timeout(
 
 pub(crate) fn test_state_with_p3a_sink(p3a_sink: Arc<dyn P3aSink>) -> ApiState {
     test_state_from_deps(TestStateDeps {
+        pricing: models(),
+        local_dev_enabled: false,
         issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
         attestation: test_attestation(),
         transcriber: Arc::new(FakeTranscriber),
         generator: Arc::new(FakeGenerator),
+        chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs: 5,
         p3a_sink,
     })
 }
 
+pub(crate) fn test_state_with_local_text_pricing(
+    generator: Arc<dyn Generator>,
+    chat_completer: Arc<dyn AgentChatCompleter>,
+) -> ApiState {
+    test_state_with_text_pricing_without_auto(true, generator, chat_completer)
+}
+
+pub(crate) fn test_state_with_text_pricing_without_auto(
+    local_dev_enabled: bool,
+    generator: Arc<dyn Generator>,
+    chat_completer: Arc<dyn AgentChatCompleter>,
+) -> ApiState {
+    test_state_with_text_pricing_without_auto_and_kimi_capabilities(
+        local_dev_enabled,
+        generator,
+        chat_completer,
+        vec![
+            "supportsFunctionCalling".to_string(),
+            "supportsVision".to_string(),
+        ],
+    )
+}
+
+pub(crate) fn test_state_with_text_pricing_without_auto_and_kimi_capabilities(
+    local_dev_enabled: bool,
+    generator: Arc<dyn Generator>,
+    chat_completer: Arc<dyn AgentChatCompleter>,
+    kimi_capabilities: Vec<String>,
+) -> ApiState {
+    let mut pricing = models();
+    pricing.remove("open-software/auto");
+    pricing.insert(
+        "zai-org-glm-5-2".to_string(),
+        ModelPriceConfig {
+            unit: PriceUnit::Tokens,
+            credits_per_million_seconds: None,
+            input_credits_per_million_tokens: Some(500),
+            output_credits_per_million_tokens: Some(500),
+            provider: ModelProvider::Venice,
+            model_type: ModelType::Text,
+            display_name: "GLM 5.2".to_string(),
+            description: None,
+            privacy: None,
+            pricing: None,
+            context_tokens: None,
+            traits: Vec::new(),
+            capabilities: Vec::new(),
+        },
+    );
+    pricing.insert(
+        "kimi-k2-6".to_string(),
+        ModelPriceConfig {
+            unit: PriceUnit::Tokens,
+            credits_per_million_seconds: None,
+            input_credits_per_million_tokens: Some(500),
+            output_credits_per_million_tokens: Some(500),
+            provider: ModelProvider::Venice,
+            model_type: ModelType::Text,
+            display_name: "Kimi K2.6".to_string(),
+            description: None,
+            privacy: None,
+            pricing: None,
+            context_tokens: None,
+            traits: Vec::new(),
+            capabilities: kimi_capabilities,
+        },
+    );
+    test_state_from_deps(TestStateDeps {
+        pricing,
+        local_dev_enabled,
+        issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
+        attestation: test_attestation(),
+        transcriber: Arc::new(FakeTranscriber),
+        generator,
+        chat_completer,
+        request_timeout_secs: 5,
+        p3a_sink: Arc::new(RecordingP3aSink::default()),
+    })
+}
+
 pub(crate) struct TestStateDeps {
+    pub(crate) pricing: BTreeMap<String, ModelPriceConfig>,
+    pub(crate) local_dev_enabled: bool,
     pub(crate) issue_reports: Arc<IssueReportService>,
     pub(crate) attestation: AttestationInfo,
     pub(crate) transcriber: Arc<dyn Transcriber>,
     pub(crate) generator: Arc<dyn Generator>,
+    pub(crate) chat_completer: Arc<dyn AgentChatCompleter>,
     pub(crate) request_timeout_secs: u64,
     pub(crate) p3a_sink: Arc<dyn P3aSink>,
 }
 
 pub(crate) fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
-    let pricing = Arc::new(PricingTable::new(models()));
+    let pricing = Arc::new(PricingTable::new(deps.pricing));
     let os_accounts = Arc::new(FakeOsAccounts);
     let cleaner = Arc::new(FakeCleaner);
     let duration_probe = Arc::new(FakeDurationProbe);
-    let chat_completer = Arc::new(FakeChatCompleter);
     let image = Arc::new(ImageService::new(ImageServiceDeps {
         os_accounts: os_accounts.clone(),
         generator: Arc::new(FakeImageGenerator),
@@ -192,6 +286,7 @@ pub(crate) fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
 
     ApiState::new(ApiStateParams {
         pricing: pricing.clone(),
+        local_dev_enabled: deps.local_dev_enabled,
         token_verifier: Arc::new(FakeTokenVerifier),
         note_transcribe: Arc::new(NoteTranscribeService::new(NoteTranscribeServiceDeps {
             pricing: pricing.clone(),
@@ -212,7 +307,7 @@ pub(crate) fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
         agent_chat: Arc::new(AgentChatService::new(AgentChatServiceDeps {
             pricing: pricing.clone(),
             os_accounts: os_accounts.clone(),
-            chat_completer,
+            chat_completer: deps.chat_completer,
             hold_ttl_seconds: 30,
             flat_estimate_credits: 1_000,
         })),

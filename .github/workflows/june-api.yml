@@ -51,7 +51,7 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-rust
       # Also part of the full run below; the named step makes a shipped-client
-      # compatibility break unmissable in the check list. See ADR 0019.
+      # compatibility break unmissable in the check list. See ADR 0021.
       - name: client contract suite
         working-directory: june-api
         env:

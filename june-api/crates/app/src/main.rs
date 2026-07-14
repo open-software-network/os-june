@@ -274,6 +274,7 @@ fn build_router(
 
     let state = ApiState::new(ApiStateParams {
         pricing,
+        local_dev_enabled: config.local_dev.enabled,
         token_verifier,
         note_transcribe,
         note_generate,

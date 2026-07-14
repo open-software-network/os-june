@@ -39,6 +39,12 @@ Dev-only toggles also read in code: `OS_JUNE_ENABLE_DEV_SINGLE_INSTANCE`,
 `OS_JUNE_USE_PROD_ACCOUNTS_TOKENS`, `OS_JUNE_USE_PROD_DATA_DIR`,
 `JUNE_HERMES_DISABLE_SANDBOX`.
 
+When set to `1`, `true`, `yes`, or `on`, `OS_JUNE_USE_PROD_DATA_DIR` opts a
+debug build into the production app data directory and the production
+`provider-settings.json` location. Otherwise, app data and provider settings
+use debug-only paths with the `-dev` suffix. Other files read directly from the
+raw Tauri app config directory are unaffected.
+
 ## June API backend (`june-api/.env`, `JUNE__…`)
 
 **Secrets — env only, never in `config.toml` or the client `.env`:**

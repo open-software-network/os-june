@@ -47,7 +47,7 @@ pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 
 /// Real shipped app version, sent by the desktop client on every request.
 /// Old stable builds keep calling production long after main moves on; this
-/// header is how logs and metrics tell them apart (ADR 0019).
+/// header is how logs and metrics tell them apart (ADR 0021).
 pub const JUNE_APP_VERSION_HEADER: &str = "x-june-app-version";
 
 pub fn router(state: ApiState) -> Router {

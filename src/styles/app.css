@@ -21310,8 +21310,9 @@ input:focus-visible,
    grain, June mark) — so the click-through feels continuous. */
 .referral-nudge {
   position: fixed;
-  /* Window bottom-left, on the main-panel card's --sp-3 inset so the two
-     share a bottom line (a near-miss offset here reads as misalignment).
+  /* Window bottom-left, on the main-panel card's equal --sp-3 inset so the
+     two share a bottom line. The compact overlay shadow preserves that
+     breathing room instead of visually filling it with a long downward blur.
      Keep this a static inset: anchoring to the animated --sidebar-w-current
      made the compositor move a blend-mode + WebGL stack continuously, which
      read as noise flashing on the hero. It overlaps the sidebar footer while
@@ -21325,12 +21326,20 @@ input:focus-visible,
   background: var(--card);
   color: var(--foreground);
   box-shadow:
-    var(--shadow-md),
+    var(--shadow-hud),
     0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
   animation: referral-nudge-enter var(--t-med) var(--ease-out) both;
   transition:
     opacity var(--t-med) var(--ease-out),
     transform var(--t-med) var(--ease-out);
+}
+
+/* With the sidebar collapsed, keep a small reveal between the nudge and the
+   main panel without changing the card's uniform r-xl corner treatment. */
+.app-shell[data-sidebar="collapsed"] .referral-nudge {
+  left: var(--sp-5);
+  bottom: var(--sp-5);
+  width: min(300px, calc(100vw - 2 * var(--sp-5)));
 }
 
 /* Dismissing: drop the (filled) enter animation so the exit transition can

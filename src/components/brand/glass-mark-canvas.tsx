@@ -10,7 +10,16 @@
 // lighting values in GLASS_DEFAULTS below are the tuned rig from that repo. The
 // per-brand COLORS come in as a GlassPalette prop (see src/lib/brand-glass.ts).
 
-import { type RefObject, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { Canvas, type ThreeEvent, useFrame, useThree } from "@react-three/fiber";
 import {
   Environment,
@@ -23,6 +32,7 @@ import {
 import * as THREE from "three";
 import { SVGLoader } from "three-stdlib";
 import type { GlassPalette } from "../../lib/brand-glass";
+import { adjustOklch } from "../../lib/oklch";
 
 // The two glyph paths (viewBox 0 0 12 14), matching the flat JuneMark SVG.
 const SVG_PATHS = [
@@ -49,6 +59,13 @@ const HIT_Z = EXTRUDE.depth + 0.08;
  *  lightformer POSITIONS — so bump this whenever the rig geometry changes to
  *  force a re-bake. */
 const RIG_VERSION = "perspective-stripes · 2026-06-28";
+
+// A dark reflection environment has less white dilution, so the same palette
+// reads hotter there. Calm every chromatic glass color consistently instead of
+// maintaining a second hand-tuned palette for each accent.
+const DARK_CHROMA_SCALE = 0.85;
+const DARK_LIGHTNESS_LIFT = 0.03;
+const ENV_THEME_FADE = 0.45;
 
 /* ----------------------------------------------------------- tunable look --
  * The whole glass look. Colors are supplied per-brand (GlassPalette); the rest
@@ -479,33 +496,148 @@ function GlassMark({ p }: { p: GlassParams }) {
   );
 }
 
-/** The lazy-loaded glass canvas. `palette` swaps live (the material fades to it);
- *  theme flips re-bake the reflection environment. Decorative — aria-hidden. */
+function applyEnvColors(
+  colors: { background: THREE.Color; top: THREE.Color; edge: THREE.Color },
+  backgroundColor: THREE.Color | null,
+  topMeshes: RefObject<Array<THREE.Mesh | null>>,
+  edgeMeshes: RefObject<Array<THREE.Mesh | null>>,
+  topIntensity: number,
+  keyIntensity: number,
+  sideIntensity: number,
+) {
+  backgroundColor?.copy(colors.background);
+  const topScales = [topIntensity, topIntensity * 0.9, keyIntensity * 0.18];
+  topMeshes.current?.forEach((mesh, index) => {
+    (mesh?.material as THREE.MeshBasicMaterial | undefined)?.color
+      .copy(colors.top)
+      .multiplyScalar(topScales[index] ?? 1);
+  });
+  edgeMeshes.current?.forEach((mesh) => {
+    (mesh?.material as THREE.MeshBasicMaterial | undefined)?.color
+      .copy(colors.edge)
+      .multiplyScalar(sideIntensity);
+  });
+}
+
+/** Cross-fade the theme-dependent backdrop and rim colors inside one mounted
+ * environment. Keeping it mounted lets reflections glide instead of sticking
+ * for a beat and snapping when a freshly baked environment replaces them. */
+function EnvironmentThemeFade({
+  background,
+  top,
+  edge,
+  live,
+  onSettled,
+  topMeshes,
+  edgeMeshes,
+  topIntensity,
+  keyIntensity,
+  sideIntensity,
+}: {
+  background: string;
+  top: string;
+  edge: string;
+  live: boolean;
+  onSettled: () => void;
+  topMeshes: RefObject<Array<THREE.Mesh | null>>;
+  edgeMeshes: RefObject<Array<THREE.Mesh | null>>;
+  topIntensity: number;
+  keyIntensity: number;
+  sideIntensity: number;
+}) {
+  const backgroundRef = useRef<THREE.Color | null>(null);
+  const [colors] = useState(() => ({
+    background: colorTarget(background),
+    top: colorTarget(top),
+    edge: colorTarget(edge),
+    targetBackground: colorTarget(background),
+    targetTop: colorTarget(top),
+    targetEdge: colorTarget(edge),
+  }));
+  const [initialBackground] = useState(background);
+  const settled = useRef(false);
+
+  useLayoutEffect(() => {
+    colors.targetBackground.set(background);
+    colors.targetTop.set(top);
+    colors.targetEdge.set(edge);
+    if (!live) {
+      colors.background.copy(colors.targetBackground);
+      colors.top.copy(colors.targetTop);
+      colors.edge.copy(colors.targetEdge);
+      applyEnvColors(
+        colors,
+        backgroundRef.current,
+        topMeshes,
+        edgeMeshes,
+        topIntensity,
+        keyIntensity,
+        sideIntensity,
+      );
+    }
+  }, [
+    background,
+    colors,
+    edge,
+    edgeMeshes,
+    keyIntensity,
+    live,
+    sideIntensity,
+    top,
+    topIntensity,
+    topMeshes,
+  ]);
+
+  useEffect(() => {
+    if (live) settled.current = false;
+  }, [live]);
+
+  useFrame((_, delta) => {
+    if (!live) return;
+    const alpha = 1 - 0.001 ** (delta / ENV_THEME_FADE);
+    dampColor(colors.background, colors.targetBackground, alpha);
+    dampColor(colors.top, colors.targetTop, alpha);
+    dampColor(colors.edge, colors.targetEdge, alpha);
+    applyEnvColors(
+      colors,
+      backgroundRef.current,
+      topMeshes,
+      edgeMeshes,
+      topIntensity,
+      keyIntensity,
+      sideIntensity,
+    );
+    if (
+      !settled.current &&
+      colors.background.equals(colors.targetBackground) &&
+      colors.top.equals(colors.targetTop) &&
+      colors.edge.equals(colors.targetEdge)
+    ) {
+      settled.current = true;
+      onSettled();
+    }
+  });
+
+  return <color ref={backgroundRef} attach="background" args={[initialBackground]} />;
+}
+
+/** The lazy-loaded glass canvas. Palette and theme changes fade live;
+ * decorative — aria-hidden. */
 export default function GlassMarkCanvas({ palette }: { palette: GlassPalette }) {
   const isDark = useIsDark();
-  // Let theme flips settle for a beat and bake the env once for the final theme,
-  // rather than baking on every intermediate flip.
-  const [envIsDark, setEnvIsDark] = useState(isDark);
-  useEffect(() => {
-    if (envIsDark === isDark) return;
-    const id = window.setTimeout(() => setEnvIsDark(isDark), 260);
-    return () => window.clearTimeout(id);
-  }, [isDark, envIsDark]);
-
-  const p = useMemo<GlassParams>(() => ({ ...GLASS_DEFAULTS, ...palette }), [palette]);
-  const envKey = useMemo(
-    () =>
-      [
-        RIG_VERSION,
-        envIsDark ? "dark" : "light",
-        p.edgeColor,
-        p.topColor,
-        p.streakColor,
-        p.envLight,
-        p.envDark,
-      ].join("|"),
-    [envIsDark, p.edgeColor, p.topColor, p.streakColor, p.envLight, p.envDark],
-  );
+  const base = useMemo<GlassParams>(() => ({ ...GLASS_DEFAULTS, ...palette }), [palette]);
+  const p = useMemo<GlassParams>(() => {
+    if (!isDark) return base;
+    const dark = { chromaScale: DARK_CHROMA_SCALE, lightnessLift: DARK_LIGHTNESS_LIFT };
+    return {
+      ...base,
+      bodyColor: adjustOklch(base.bodyColor, dark),
+      bodyTint: adjustOklch(base.bodyTint, dark),
+      backdrop: adjustOklch(base.backdrop, dark),
+      edgeColor: adjustOklch(base.edgeColor, dark),
+      topColor: adjustOklch(base.topColor, dark),
+    };
+  }, [base, isDark]);
 
   // Fade the canvas in only once it has drawn a few real frames (see RevealGate).
   const [ready, setReady] = useState(false);
@@ -514,14 +646,38 @@ export default function GlassMarkCanvas({ palette }: { palette: GlassPalette }) 
   const wrapRef = useRef<HTMLDivElement>(null);
   const active = useRenderActive(wrapRef);
 
+  // Theme flips temporarily rebake the environment every frame so its reflected
+  // colors track the lerp. If the mark is hidden, land immediately instead.
+  const [envFading, setEnvFading] = useState(false);
+  const [previousDark, setPreviousDark] = useState(isDark);
+  if (previousDark !== isDark) {
+    setPreviousDark(isDark);
+    if (active) setEnvFading(true);
+  }
+  const settleEnv = useCallback(() => setEnvFading(false), []);
+
+  const topLightRefs = useRef<Array<THREE.Mesh | null>>([]);
+  const edgeLightRefs = useRef<Array<THREE.Mesh | null>>([]);
+  const envKey = useMemo(
+    () =>
+      [
+        RIG_VERSION,
+        base.edgeColor,
+        base.topColor,
+        base.streakColor,
+        base.envLight,
+        base.envDark,
+      ].join("|"),
+    [base],
+  );
+
   return (
     <div
       ref={wrapRef}
       aria-hidden
       // touch-action:none so a touch-drag spins the mark instead of scrolling.
-      // A quick crossfade only masks the placeholder→glass swap (and the frame
-      // gate) — short enough that the mark reads as loading with the content,
-      // not easing in a beat later.
+      // A quick crossfade only masks the placeholder to glass swap and frame
+      // gate, so the mark reads as loading with the content rather than later.
       style={{
         position: "relative",
         width: "100%",
@@ -546,71 +702,94 @@ export default function GlassMarkCanvas({ palette }: { palette: GlassPalette }) 
 
         <GlassMark p={p} />
 
-        {/* Each theme flip re-bakes this env on the main thread (its key changes). */}
-        <Environment key={envKey} resolution={256} frames={1}>
-          <color attach="background" args={[envIsDark ? p.envDark : p.envLight]} />
+        <Environment key={envKey} resolution={256} frames={envFading ? Infinity : 1}>
           {/* Warm rims TOP + BOTTOM, balanced — a matching bottom rim means both
               bars catch the same light and read as the same color. Pulled behind
               the mark (z<0) so they rim the bevels rather than washing the face. */}
           <Lightformer
+            ref={(mesh: THREE.Mesh | null) => {
+              topLightRefs.current[0] = mesh;
+            }}
             form="rect"
-            intensity={p.topIntensity}
-            color={p.topColor}
+            intensity={base.topIntensity}
+            color={base.topColor}
             position={[0, 5, -0.5]}
             scale={[10, 4, 1]}
           />
           <Lightformer
+            ref={(mesh: THREE.Mesh | null) => {
+              topLightRefs.current[1] = mesh;
+            }}
             form="rect"
-            intensity={p.topIntensity * 0.9}
-            color={p.topColor}
+            intensity={base.topIntensity * 0.9}
+            color={base.topColor}
             position={[0, -5, -0.5]}
             scale={[10, 4, 1]}
           />
           {/* Soft, dead-centered FRONT FILL (head-on sheen) — large + centered so
-              the flat face reflects a near-constant value as it tilts: a steady
-              sheen, never a sweeping flash. */}
+              the flat face reflects a near-constant value as it tilts. */}
           <Lightformer
+            ref={(mesh: THREE.Mesh | null) => {
+              topLightRefs.current[2] = mesh;
+            }}
             form="rect"
-            intensity={p.keyIntensity * 0.18}
-            color={p.topColor}
+            intensity={base.keyIntensity * 0.18}
+            color={base.topColor}
             position={[0, 0, 6]}
             scale={[14, 14, 1]}
           />
-          {/* Edge glow — at the mark's depth (z≈0), beside it, so they light the
-              sideways-facing bevels but stay out of the flat front's reflection
-              cone. Equal left/right so neither bar favors a side. */}
+          {/* Edge glow sits at the mark's depth so it lights the bevels while
+              staying out of the flat front's reflection cone. */}
           <Lightformer
+            ref={(mesh: THREE.Mesh | null) => {
+              edgeLightRefs.current[0] = mesh;
+            }}
             form="rect"
-            intensity={p.sideIntensity}
-            color={p.edgeColor}
+            intensity={base.sideIntensity}
+            color={base.edgeColor}
             position={[-5, -1, 0]}
             scale={[5, 9, 1]}
           />
           <Lightformer
+            ref={(mesh: THREE.Mesh | null) => {
+              edgeLightRefs.current[1] = mesh;
+            }}
             form="rect"
-            intensity={p.sideIntensity}
-            color={p.edgeColor}
+            intensity={base.sideIntensity}
+            color={base.edgeColor}
             position={[5, 1, 0]}
             scale={[5, 9, 1]}
           />
-          {/* The hero highlight — narrow "window" streaks. These sweep as the mark
-              articulates: thin bright lines across the face. Forward (z=5) and
-              narrow on purpose so the moving glint stays a line. */}
+          {/* Narrow forward streaks sweep as thin lines across the face. */}
           <Lightformer
             form="rect"
-            intensity={p.streakIntensity}
-            color={p.streakColor}
+            intensity={base.streakIntensity}
+            color={base.streakColor}
             position={[-1.5, 1.5, 5]}
             rotation={[0, 0, 0.5]}
             scale={[0.4, 5, 1]}
           />
           <Lightformer
             form="rect"
-            intensity={p.streakIntensity * 0.7}
-            color={p.streakColor}
+            intensity={base.streakIntensity * 0.7}
+            color={base.streakColor}
             position={[1.8, -0.5, 5]}
             rotation={[0, 0, 0.4]}
             scale={[0.3, 4, 1]}
+          />
+          {/* Last so its layout effect overwrites the Lightformers' initial color
+              writes before the environment's first bake. */}
+          <EnvironmentThemeFade
+            background={isDark ? base.envDark : base.envLight}
+            top={p.topColor}
+            edge={p.edgeColor}
+            live={envFading}
+            onSettled={settleEnv}
+            topMeshes={topLightRefs}
+            edgeMeshes={edgeLightRefs}
+            topIntensity={base.topIntensity}
+            keyIntensity={base.keyIntensity}
+            sideIntensity={base.sideIntensity}
           />
         </Environment>
       </Canvas>

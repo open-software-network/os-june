@@ -99,7 +99,7 @@ jobs:
   # Shipped stable app versions keep calling production with their baked-in
   # wire types. Replay their pinned request/response snapshots against the
   # exact commit being promoted so a compatibility break stops the promote
-  # instead of reaching production. See ADR 0019 and
+  # instead of reaching production. See ADR 0021 and
   # june-api/crates/api/tests/client_contract.rs.
   contract-check:
     name: Client contract suite

@@ -1,4 +1,4 @@
-# ADR 0019: June API /v1 compatibility policy for shipped clients
+# ADR 0021: June API /v1 compatibility policy for shipped clients
 
 Date: 2026-07-14
 Status: accepted

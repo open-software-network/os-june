@@ -275,9 +275,9 @@ jobs:
               throw "NSIS installer payload does not include $expected."
             }
           }
-          foreach ($expected in @("native/hermes/bin/hermes.exe", "native/hermes/python/current/python.exe", "native/hermes/hermes-agent/pyproject.toml")) {
+          foreach ($expected in @("native/hermes/bin/hermes.exe", "native/hermes/python/current/python.exe", "native/hermes/hermes-agent/pyproject.toml", "native/bin/june-dictation-helper.exe")) {
             if ($listingText -notmatch [regex]::Escape($expected)) {
-              throw "NSIS installer payload does not include bundled Hermes file $expected."
+              throw "NSIS installer payload does not include bundled file $expected."
             }
           }
 

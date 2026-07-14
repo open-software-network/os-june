@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   listDictationHistory: vi.fn(),
   deleteDictationHistoryItem: vi.fn(),
   dictationSettings: vi.fn(),
+  dictationCapabilities: vi.fn(),
   listDictionaryEntries: vi.fn(),
   listen: vi.fn(),
   writeText: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock("../lib/tauri", () => ({
   listDictationHistory: mocks.listDictationHistory,
   deleteDictationHistoryItem: mocks.deleteDictationHistoryItem,
   dictationSettings: mocks.dictationSettings,
+  dictationCapabilities: mocks.dictationCapabilities,
   listDictionaryEntries: mocks.listDictionaryEntries,
 }));
 
@@ -56,6 +58,17 @@ describe("DictationHistoryView", () => {
     mocks.writeText.mockResolvedValue(undefined);
     mocks.deleteDictationHistoryItem.mockResolvedValue(undefined);
     mocks.listDictionaryEntries.mockResolvedValue([]);
+    mocks.dictationCapabilities.mockResolvedValue({
+      capabilities: {
+        available: true,
+        platform: "macos",
+        shortcuts: true,
+        paste: true,
+        microphoneSelection: true,
+        accessibilityPermission: true,
+        systemAudio: true,
+      },
+    });
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: {
@@ -121,12 +134,53 @@ describe("DictationHistoryView", () => {
     await waitFor(() => expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "));
   });
 
-  it("does not advertise shortcut dictation on Windows", async () => {
+  it("advertises shortcut dictation on Windows", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     );
     try {
+      mocks.dictationCapabilities.mockResolvedValue({
+        capabilities: {
+          available: true,
+          platform: "windows",
+          shortcuts: true,
+          paste: true,
+          microphoneSelection: true,
+          accessibilityPermission: false,
+          systemAudio: false,
+        },
+      });
+      mocks.dictationSettings.mockResolvedValue({
+        settings: {
+          pushToTalkShortcut: {
+            code: "KeyD",
+            label: "Ctrl+Alt+D",
+            pressCount: 1,
+            modifiers: {
+              command: false,
+              control: true,
+              option: true,
+              shift: false,
+              function: false,
+            },
+          },
+          toggleShortcut: {
+            code: "KeyT",
+            label: "Ctrl+Alt+T",
+            pressCount: 1,
+            modifiers: {
+              command: false,
+              control: true,
+              option: true,
+              shift: false,
+              function: false,
+            },
+          },
+          microphone: {},
+          style: "standard",
+        },
+      });
       mocks.listDictationHistory.mockResolvedValue({
         retentionDays: 7,
         items: [],
@@ -134,12 +188,14 @@ describe("DictationHistoryView", () => {
 
       render(<DictationHistoryView />);
 
-      expect(await screen.findByText("Dictation is only supported on macOS")).toBeInTheDocument();
+      expect(await screen.findByText("Start dictating anywhere")).toBeInTheDocument();
       expect(
-        screen.getByText("Meeting notes still work with microphone recording on this device."),
+        screen.getByText(
+          "Place your cursor in any app, hold the shortcut, and speak. Your words are transcribed and pasted right where you're typing.",
+        ),
       ).toBeInTheDocument();
-      expect(screen.queryByLabelText("Dictation shortcuts")).toBeNull();
-      expect(screen.queryByText("Start dictating anywhere")).toBeNull();
+      expect(screen.getByLabelText("Shortcut Ctrl+Alt+D")).toBeInTheDocument();
+      expect(screen.getByLabelText("Shortcut Ctrl+Alt+T")).toBeInTheDocument();
     } finally {
       restoreNavigator();
     }
