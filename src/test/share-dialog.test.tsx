@@ -304,6 +304,37 @@ describe("ShareDialog", () => {
     expect(screen.queryByRole("button", { name: "Unshare" })).not.toBeInTheDocument();
   });
 
+  it("does not mint a second share when a post-create save fails; a retry uses the add path", async () => {
+    mocks.shareKeyGet.mockResolvedValue(null); // item not shared yet
+    mocks.shareCreate.mockResolvedValue({
+      shareId: "shr_1",
+      invites: [{ inviteId: "shi_1", email: "first@example.com" }],
+    });
+    // The share is created server-side, then the local invite-key save fails.
+    mocks.shareInviteKeySave.mockRejectedValueOnce(new Error("disk full"));
+    mocks.shareAddInvites.mockResolvedValue({
+      invites: [{ inviteId: "shi_2", email: "second@example.com" }],
+    });
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    const field = await screen.findByLabelText("Invite by email");
+    await user.type(field, "first@example.com");
+    await user.click(screen.getByRole("button", { name: "Invite" }));
+    await waitFor(() => expect(mocks.shareCreate).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("disk full")).toBeInTheDocument();
+
+    // Retry with another address: it must add to the existing share, never
+    // create a second (which would orphan the first).
+    await user.clear(field);
+    await user.type(field, "second@example.com");
+    await user.click(screen.getByRole("button", { name: "Invite" }));
+    await waitFor(() =>
+      expect(mocks.shareAddInvites).toHaveBeenCalledWith("shr_1", expect.anything()),
+    );
+    expect(mocks.shareCreate).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the invite button disabled while an existing share is still loading", async () => {
     // Hold shareKeyGet pending so the open effect never settles during the
     // assertion window; a submit now would wrongly take the first-invite path.

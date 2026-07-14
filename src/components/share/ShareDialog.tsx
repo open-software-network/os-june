@@ -190,6 +190,12 @@ export function ShareDialog({
         });
         nextShareId = response.shareId;
         nextContentKeyB64 = toBase64Url(contentKey);
+        // Commit the share to state the moment it exists server-side, before
+        // the local key/invite-key saves below. If one of those throws (or the
+        // app quits between them), a retry then takes the add-invite path for
+        // this share instead of minting a second, orphaned server share.
+        setShareId(nextShareId);
+        setContentKeyB64(nextContentKeyB64);
         await shareKeySave({
           shareId: nextShareId,
           itemKind: item.kind,
@@ -216,8 +222,8 @@ export function ShareDialog({
         shareId: nextShareId,
         inviteKeyB64,
       });
-      setShareId(nextShareId);
-      setContentKeyB64(nextContentKeyB64);
+      // shareId/contentKeyB64 were already committed to state above (create
+      // branch) or were already set (add branch); no need to set them again.
       setInvites((current) => [
         ...current,
         { inviteId: created.inviteId, email: created.email, state: "pending", inviteKeyB64 },
