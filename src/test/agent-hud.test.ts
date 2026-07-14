@@ -291,15 +291,16 @@ describe("agent HUD", () => {
     expect(stackElement()).toHaveTextContent("Could you clarify this?");
   });
 
-  it("prefers a settled stored title over a stale status title", async () => {
-    localStorage.setItem(
-      "june.agent.manuallyTitledSessions",
-      JSON.stringify({ "session-1": "exchange" }),
-    );
+  it("prefers a current stored title before its settlement marker arrives", async () => {
     await loadAgentHud();
 
     emitSessionsChanged({
-      sessions: [sessionFixture("session-1", "Persistence fix")],
+      sessions: [
+        {
+          ...sessionFixture("session-1", "Persistence fix"),
+          preview: "Summarize latest failures",
+        },
+      ],
       workingSessionIds: ["session-1"],
       waitingSessionIds: [],
     });

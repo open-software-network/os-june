@@ -401,6 +401,9 @@ describe("AgentWorkspace", () => {
     expect(isAgentSessionTitleCandidate("I'm sorry, but I can't help with that")).toBe(false);
     expect(isAgentSessionTitleCandidate("What should I update")).toBe(false);
     expect(isAgentSessionTitleCandidate("Which email service should I use")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Would it be okay to rename this")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Should this use Gmail")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Are there archived notes")).toBe(false);
     expect(isAgentSessionTitleCandidate("I don't have email access")).toBe(false);
   });
 
@@ -4648,6 +4651,12 @@ describe("AgentWorkspace", () => {
       content: "I fixed the staging persistence race and verified the regression test.",
       timestamp: "2026-06-04T12:00:03Z",
     };
+    const extraAssistantMessage = {
+      id: "a-tool",
+      role: "assistant",
+      content: "I checked one more source.",
+      timestamp: "2026-06-04T12:00:02Z",
+    };
     mocks.listHermesSessions.mockResolvedValue([
       {
         id: "session-invalid-exchange-title",
@@ -4705,6 +4714,27 @@ describe("AgentWorkspace", () => {
     mocks.listHermesSessionMessages.mockResolvedValue([
       userMessage,
       assistantMessage,
+      extraAssistantMessage,
+    ]);
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-invalid-exchange-title",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:03Z",
+      },
+      "sandboxed",
+    );
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2);
+
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      userMessage,
+      assistantMessage,
       followUpUserMessage,
       substantiveAssistantMessage,
     ]);
@@ -4725,7 +4755,7 @@ describe("AgentWorkspace", () => {
 
     await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(3));
     expect(await screen.findByText("Staging persistence fix")).toBeInTheDocument();
-  }, 10_000);
+  }, 15_000);
 
   it("keeps a failed fresh title fallback retry to a later natural refresh", async () => {
     const rawTitle = "I want you to summarize latest failures";

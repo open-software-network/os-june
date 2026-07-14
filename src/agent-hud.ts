@@ -489,11 +489,13 @@ function sessionStatus(session: HermesSessionInfo, record?: StatusRecord): HudSe
 function sessionTitle(session: HermesSessionInfo, record?: StatusRecord) {
   const storedTitle = session.title?.trim();
   const settledTitleKind = sessionSettledTitleKind(session.id);
-  if (
+  const storedTitleIsAuthoritative =
     storedTitle &&
-    settledTitleKind &&
-    isHudStoredSessionTitleSafe(storedTitle, session.id, record?.prompt, session.preview)
-  ) {
+    (settledTitleKind ||
+      (storedTitle !== session.preview?.trim() &&
+        !isPromptDerivedTitle(storedTitle, session.preview))) &&
+    isHudStoredSessionTitleSafe(storedTitle, session.id, record?.prompt, session.preview);
+  if (storedTitleIsAuthoritative) {
     return storedTitle;
   }
   const recordTitle = record?.title?.trim();

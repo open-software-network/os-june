@@ -2108,10 +2108,9 @@ fn is_valid_agent_session_title_candidate(value: &str) -> bool {
         "can", "could", "would", "should", "do", "does", "did", "is", "are", "am", "will", "may",
         "might", "have", "has",
     ];
-    let question_subjects = ["i", "you", "we", "june"];
     !(first == "which"
         || question_words.contains(&first) && question_auxiliaries.contains(&second)
-        || question_auxiliaries.contains(&first) && question_subjects.contains(&second))
+        || question_auxiliaries.contains(&first))
 }
 
 fn starts_with_title_phrase(value: &str, phrase: &str) -> bool {
@@ -3099,6 +3098,12 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             clean_agent_session_title("Which email service should I use"),
             None
         );
+        assert_eq!(
+            clean_agent_session_title("Would it be okay to rename this"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("Should this use Gmail"), None);
+        assert_eq!(clean_agent_session_title("Are there archived notes"), None);
         assert_eq!(clean_agent_session_title("I don't have email access"), None);
         assert_eq!(
             clean_agent_session_title("Could you clarify the target"),

@@ -69,8 +69,6 @@ const QUESTION_AUXILIARIES = new Set([
   "have",
   "has",
 ]);
-const QUESTION_SUBJECTS = new Set(["i", "you", "we", "june"]);
-
 function startsWithPhrase(value: string, phrase: string) {
   if (!value.startsWith(phrase)) return false;
   const next = value[phrase.length];
@@ -95,7 +93,7 @@ export function isAgentSessionTitleCandidate(value: unknown): value is string {
   return !(
     first === "which" ||
     (QUESTION_WORDS.has(first) && QUESTION_AUXILIARIES.has(second)) ||
-    (QUESTION_AUXILIARIES.has(first) && QUESTION_SUBJECTS.has(second))
+    QUESTION_AUXILIARIES.has(first)
   );
 }
 

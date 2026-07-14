@@ -8415,19 +8415,33 @@ export function AgentWorkspace({
       firstUserMessageIndex >= 0 ? messages[firstUserMessageIndex] : undefined;
     const prompt = firstUserMessage ? visibleHermesMessageText(firstUserMessage).trim() : "";
     if (!prompt) return;
-    const assistantReplies =
-      firstUserMessageIndex >= 0
-        ? messages
-            .slice(firstUserMessageIndex + 1)
-            .filter(
-              (message) => message.role === "assistant" && visibleHermesMessageText(message).trim(),
-            )
-        : [];
     const wasRejected = source === "rejected" || settledTitleKind === "rejected";
-    if (wasRejected && assistantReplies.length < 2) return;
-    const assistantReply = wasRejected ? assistantReplies.at(-1) : assistantReplies[0];
+    const firstAssistantReplyIndex = messages.findIndex(
+      (message, index) =>
+        index > firstUserMessageIndex &&
+        message.role === "assistant" &&
+        Boolean(visibleHermesMessageText(message).trim()),
+    );
+    let assistantReply =
+      firstAssistantReplyIndex >= 0 ? messages[firstAssistantReplyIndex] : undefined;
+    if (wasRejected) {
+      const laterUserMessageIndex = messages.findIndex(
+        (message, index) =>
+          index > firstAssistantReplyIndex &&
+          message.role === "user" &&
+          Boolean(visibleHermesMessageText(message).trim()),
+      );
+      const laterAssistantReplyIndex = messages.findIndex(
+        (message, index) =>
+          index > laterUserMessageIndex &&
+          message.role === "assistant" &&
+          Boolean(visibleHermesMessageText(message).trim()),
+      );
+      if (laterUserMessageIndex < 0 || laterAssistantReplyIndex < 0) return;
+      assistantReply = messages[laterAssistantReplyIndex];
+    }
     const reply = truncateAgentTitleResponseExcerpt(
-      visibleHermesMessageText(assistantReply).trim(),
+      assistantReply ? visibleHermesMessageText(assistantReply).trim() : "",
     );
     const hasReply = Boolean(reply);
     if (source === "prompt" || wasRejected) {
@@ -8447,6 +8461,10 @@ export function AgentWorkspace({
       };
       rememberSessionTitleRejected(sessionId, rejectionIsFinal);
     };
+    // A rejected title gets exactly one retry, and only after a later user and
+    // assistant exchange. Consume that retry before the metered request so a
+    // timeout, refresh, or concurrent poll cannot issue it again.
+    if (wasRejected) settleRejectedTitle();
     titleSuggestionInFlightSessionIdsRef.current.add(sessionId);
     let shouldRecheckLatestMessages = false;
     try {
