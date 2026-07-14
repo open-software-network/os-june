@@ -63,7 +63,10 @@ Fixture lifecycle:
 - When a new stable desktop version ships with any change to what it sends
   or reads, copy the newest fixture directory to `v<new-version>` and edit
   the delta. Versions whose wire behavior is identical to an existing
-  snapshot do not need their own directory.
+  snapshot do not need their own directory. Fixtures replay exactly what
+  the released build sends, headers included: v0.0.33 predates
+  `x-june-app-version`, so its fixtures carry no such header, and versions
+  released with the header pin it via the fixture `headers` map.
 - The client sends `x-june-app-version` (its real version, from the crate
   version kept in lockstep with `tauri.conf.json`) on every June API
   request. Server logs segmented by that header are the retirement signal:

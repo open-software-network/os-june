@@ -44,6 +44,11 @@ struct Fixture {
     /// `endpoint`.
     #[serde(default)]
     setup: Option<Setup>,
+    /// Extra headers the pinned version sends, exactly as released. The
+    /// v0.0.33 build predates `x-june-app-version`, so its fixtures set no
+    /// headers; versions released with the header pin it here.
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
     expect: Expect,
 }
 
@@ -151,31 +156,21 @@ async fn pinned_client_requests_are_still_accepted() -> Result<(), Box<dyn Error
             "no fixtures in {}",
             dir.display()
         );
-        let app_version = dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_prefix('v'))
-            .ok_or_else(|| format!("bad version directory {}", dir.display()))?
-            .to_string();
         for path in fixture_paths {
             let fixture: Fixture = serde_json::from_str(&fs::read_to_string(&path)?)
                 .map_err(|error| format!("{}: {error}", path.display()))?;
             let label = format!("{} ({})", path.display(), fixture.description);
-            check_fixture(&fixture, &app_version, &label).await?;
+            check_fixture(&fixture, &label).await?;
         }
     }
     Ok(())
 }
 
-async fn check_fixture(
-    fixture: &Fixture,
-    app_version: &str,
-    label: &str,
-) -> Result<(), Box<dyn Error>> {
+async fn check_fixture(fixture: &Fixture, label: &str) -> Result<(), Box<dyn Error>> {
     let app = test_router();
     let authorization = fixture.auth.then_some(AUTHORIZATION);
 
-    let endpoint = run_setup(app.clone(), fixture, app_version, label).await?;
+    let endpoint = run_setup(app.clone(), fixture, label).await?;
 
     let mut request = match (&fixture.body, &fixture.multipart) {
         (Some(body), None) => json_request(&endpoint, body, authorization)?,
@@ -198,10 +193,11 @@ async fn check_fixture(
         (None, None) => get_request_with_auth(&endpoint, authorization)?,
         (Some(_), Some(_)) => return Err(format!("{label}: both body and multipart set").into()),
     };
-    // The shipped client stamps its real version on every request.
-    request
-        .headers_mut()
-        .insert(june_api::JUNE_APP_VERSION_HEADER, app_version.parse()?);
+    for (name, value) in &fixture.headers {
+        request
+            .headers_mut()
+            .insert(name.parse::<header::HeaderName>()?, value.parse()?);
+    }
 
     let response = send_on(app, request).await;
     let status = response.status();
@@ -265,7 +261,6 @@ async fn check_fixture(
 async fn run_setup(
     app: axum::Router,
     fixture: &Fixture,
-    app_version: &str,
     label: &str,
 ) -> Result<String, Box<dyn Error>> {
     let Some(setup) = &fixture.setup else {
@@ -273,9 +268,11 @@ async fn run_setup(
     };
     let authorization = fixture.auth.then_some(AUTHORIZATION);
     let mut request = json_request(&setup.endpoint, &setup.body, authorization)?;
-    request
-        .headers_mut()
-        .insert(june_api::JUNE_APP_VERSION_HEADER, app_version.parse()?);
+    for (name, value) in &fixture.headers {
+        request
+            .headers_mut()
+            .insert(name.parse::<header::HeaderName>()?, value.parse()?);
+    }
     let response = send_on(app, request).await;
     let status = response.status();
     if !status.is_success() {
