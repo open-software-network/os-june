@@ -187,7 +187,7 @@ struct DeviceCodeWire {
     interval: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
 struct TokenErrorWire {
     error: String,
 }
@@ -368,11 +368,9 @@ impl GitHubAuthClient {
         zeroize_form_values(&mut form);
         let response = request.send().await.map_err(|_| token_exchange_failed())?;
         let status = response.status();
-        let body = Zeroizing::new(
-            read_response_bounded(response)
-                .await
-                .map_err(|_| token_exchange_failed())?,
-        );
+        let body = read_response_bounded(response)
+            .await
+            .map_err(|_| token_exchange_failed())?;
         if !status.is_success() {
             return Err(token_exchange_failed());
         }
@@ -386,9 +384,7 @@ impl GitHubAuthClient {
         {
             return Err(token_exchange_failed());
         }
-        let expires_at_unix = now_unix()
-            .checked_add(i64::try_from(wire.expires_in).map_err(|_| token_exchange_failed())?)
-            .ok_or_else(token_exchange_failed)?;
+        let expires_at_unix = absolute_expiry(now_unix(), wire.expires_in)?;
         let prompt = GitHubDevicePrompt {
             user_code: std::mem::take(&mut wire.user_code),
             verification_uri: std::mem::take(&mut wire.verification_uri),
@@ -421,11 +417,9 @@ impl GitHubAuthClient {
         zeroize_form_values(&mut form);
         let response = request.send().await.map_err(|_| token_exchange_failed())?;
         let status = response.status();
-        let body = Zeroizing::new(
-            read_response_bounded(response)
-                .await
-                .map_err(|_| token_exchange_failed())?,
-        );
+        let body = read_response_bounded(response)
+            .await
+            .map_err(|_| token_exchange_failed())?;
         if !status.is_success() {
             return Err(token_exchange_failed());
         }
@@ -446,21 +440,21 @@ impl GitHubAuthClient {
         zeroize_form_values(&mut form);
         let response = request.send().await.map_err(|_| refresh_failed())?;
         let status = response.status();
-        let body = Zeroizing::new(
-            read_response_bounded(response)
-                .await
-                .map_err(|_| refresh_failed())?,
-        );
+        let body = read_response_bounded(response)
+            .await
+            .map_err(|_| refresh_failed())?;
         if let Ok(grant) = token_grant_from_bytes(&body) {
             if status.is_success() {
                 return Ok(RefreshOutcome::Refreshed(grant));
             }
             return Err(refresh_failed());
         }
-        let error_code = serde_json::from_slice::<TokenErrorWire>(&body)
-            .ok()
-            .map(|wire| wire.error);
-        if error_code.as_deref().is_some_and(is_invalid_refresh) {
+        let error = serde_json::from_slice::<TokenErrorWire>(&body).ok();
+        if can_invalidate_refresh(status)
+            && error
+                .as_ref()
+                .is_some_and(|wire| is_invalid_refresh(&wire.error))
+        {
             Ok(RefreshOutcome::InvalidGrant)
         } else {
             Err(refresh_failed())
@@ -472,14 +466,17 @@ impl GitHubAuthClient {
         let response = self
             .api_get(&url, access_token)
             .await
-            .map_err(|_| reconnect_required())?;
+            .map_err(|_| request_failed())?;
         let status = response.status();
         let headers = response.headers().clone();
         let body = read_response_bounded(response).await;
         if !status.is_success() {
             return Err(classify_api_error(status, &headers, false));
         }
-        let body = body.map_err(|_| state_invalid())?;
+        let body = body.map_err(|error| match error {
+            ResponseReadError::Transport => request_failed(),
+            ResponseReadError::Limit => state_invalid(),
+        })?;
         let wire = serde_json::from_slice::<UserWire>(&body).map_err(|_| state_invalid())?;
         if wire.login.trim().is_empty() {
             return Err(state_invalid());
@@ -518,7 +515,7 @@ impl GitHubAuthClient {
             let response = self
                 .api_get(&url, access_token)
                 .await
-                .map_err(|_| installation_required())?;
+                .map_err(|_| request_failed())?;
             let status = response.status();
             let headers = response.headers().clone();
             let body = read_discovery_response(response, &mut budget).await;
@@ -566,7 +563,7 @@ impl GitHubAuthClient {
                 let response = self
                     .api_get(&url, access_token)
                     .await
-                    .map_err(|_| installation_required())?;
+                    .map_err(|_| request_failed())?;
                 let status = response.status();
                 let headers = response.headers().clone();
                 let body = read_discovery_response(response, &mut budget).await;
@@ -828,6 +825,13 @@ fn is_invalid_refresh(error: &str) -> bool {
     )
 }
 
+fn can_invalidate_refresh(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::OK | reqwest::StatusCode::BAD_REQUEST
+    )
+}
+
 fn is_allowed_avatar_url(raw: &str) -> bool {
     reqwest::Url::parse(raw).is_ok_and(|url| {
         url.scheme() == "https"
@@ -939,17 +943,32 @@ fn is_allowed_github_url(raw: &str) -> bool {
     })
 }
 
-async fn read_response_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, ()> {
+#[derive(Debug)]
+enum ResponseReadError {
+    Transport,
+    Limit,
+}
+
+async fn read_response_bounded(
+    mut response: reqwest::Response,
+) -> Result<Zeroizing<Vec<u8>>, ResponseReadError> {
     if response
         .content_length()
         .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
     {
-        return Err(());
+        return Err(ResponseReadError::Limit);
     }
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
+    // The accumulator owns partial response bytes across every await. Future
+    // cancellation, chunk failures, and limit returns therefore all drop a
+    // zeroizing buffer rather than an ordinary Vec.
+    let mut body = Zeroizing::new(Vec::new());
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| ResponseReadError::Transport)?
+    {
         if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-            return Err(());
+            return Err(ResponseReadError::Limit);
         }
         body.extend_from_slice(&chunk);
     }
@@ -969,11 +988,7 @@ async fn read_discovery_response(
         return Err(result_limit_exceeded());
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|_| installation_required())?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|_| request_failed())? {
         if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
             return Err(result_limit_exceeded());
         }
@@ -1006,6 +1021,13 @@ fn token_exchange_failed() -> AppError {
 
 fn refresh_failed() -> AppError {
     AppError::new("github_refresh_failed", "Could not refresh GitHub access.")
+}
+
+fn request_failed() -> AppError {
+    AppError::new(
+        "github_request_failed",
+        "Could not reach GitHub. Check your connection and try again.",
+    )
 }
 
 #[allow(dead_code)]
@@ -1095,6 +1117,8 @@ mod tests {
         headers: Vec<(String, String)>,
         body: String,
         declared_length: Option<usize>,
+        chunked: bool,
+        allow_early_close: bool,
     }
 
     impl ResponseFixture {
@@ -1104,11 +1128,24 @@ mod tests {
                 headers: vec![("Content-Type".into(), "application/json".into())],
                 body: body.into(),
                 declared_length: None,
+                chunked: false,
+                allow_early_close: false,
             }
         }
 
         fn with_header(mut self, name: &str, value: &str) -> Self {
             self.headers.push((name.to_owned(), value.to_owned()));
+            self
+        }
+
+        fn chunked(mut self) -> Self {
+            self.chunked = true;
+            self.allow_early_close = true;
+            self
+        }
+
+        fn allow_early_close(mut self) -> Self {
+            self.allow_early_close = true;
             self
         }
     }
@@ -1230,15 +1267,34 @@ mod tests {
                 for (name, value) in fixture.headers {
                     response.push_str(&format!("{name}: {value}\r\n"));
                 }
-                response.push_str(&format!(
-                    "Content-Length: {}\r\nConnection: close\r\n\r\n",
-                    fixture.declared_length.unwrap_or(fixture.body.len())
-                ));
-                response.push_str(&fixture.body);
-                stream
-                    .write_all(response.as_bytes())
-                    .await
-                    .expect("write response");
+                if fixture.chunked {
+                    response.push_str("Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+                    let write_result = async {
+                        stream.write_all(response.as_bytes()).await?;
+                        for chunk in fixture.body.as_bytes().chunks(64 * 1024) {
+                            stream
+                                .write_all(format!("{:X}\r\n", chunk.len()).as_bytes())
+                                .await?;
+                            stream.write_all(chunk).await?;
+                            stream.write_all(b"\r\n").await?;
+                        }
+                        stream.write_all(b"0\r\n\r\n").await
+                    }
+                    .await;
+                    if !fixture.allow_early_close {
+                        write_result.expect("write chunked response");
+                    }
+                } else {
+                    response.push_str(&format!(
+                        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        fixture.declared_length.unwrap_or(fixture.body.len())
+                    ));
+                    response.push_str(&fixture.body);
+                    let write_result = stream.write_all(response.as_bytes()).await;
+                    if !fixture.allow_early_close {
+                        write_result.expect("write response");
+                    }
+                }
             }
             captures
         });
@@ -1588,6 +1644,22 @@ mod tests {
         assert_eq!(error.code, "github_refresh_failed");
         assert!(!error.message.contains("partial-fake-token"));
         server.await.expect("server task");
+
+        for status in [302, 401, 429, 500] {
+            let (base_url, server) = scripted_server(vec![(
+                ResponseFixture::json(status, r#"{"error":"bad_refresh_token"}"#),
+                RequestExpectations::default(),
+            )])
+            .await;
+            let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+            let error = client
+                .refresh_tokens("Iv23example", "hostile-fake-refresh")
+                .await
+                .expect_err("hostile status must not invalidate the grant");
+            assert_eq!(error.code, "github_refresh_failed");
+            assert!(!error.message.contains("bad_refresh_token"));
+            server.await.expect("server task");
+        }
     }
 
     #[tokio::test]
@@ -1700,6 +1772,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_transport_failures_are_distinct_from_provider_statuses() {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind dropped-response server");
+        let base_url = format!("http://{}", listener.local_addr().expect("server address"));
+        let dropped = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept dropped request");
+            drop(stream);
+        });
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+        let error = client
+            .current_user("fake-access-token")
+            .await
+            .expect_err("dropped current-user response");
+        assert_eq!(error.code, "github_request_failed");
+        assert_ne!(error.code, "github_reconnect_required");
+        dropped.await.expect("dropped-response task");
+
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("reserve unreachable address");
+        let base_url = format!("http://{}", listener.local_addr().expect("server address"));
+        drop(listener);
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+        let error = client
+            .installations_and_repositories("fake-access-token")
+            .await
+            .expect_err("unreachable installation discovery");
+        assert_eq!(error.code, "github_request_failed");
+        assert_ne!(error.code, "github_installation_required");
+
+        let mut truncated = ResponseFixture::json(200, r#"{"total_count":0,"installations":[]}"#);
+        truncated.declared_length = Some(truncated.body.len() + 128);
+        let (base_url, server) = scripted_server(vec![(
+            truncated,
+            RequestExpectations {
+                bearer_token: Some("fake-access-token"),
+                ..RequestExpectations::default()
+            },
+        )])
+        .await;
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+        let error = client
+            .installations_and_repositories("fake-access-token")
+            .await
+            .expect_err("truncated installation discovery");
+        assert_eq!(error.code, "github_request_failed");
+        assert_ne!(error.code, "github_installation_required");
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
     async fn expired_device_codes_fail_without_a_provider_request() {
         let client = GitHubAuthClient::for_test("http://127.0.0.1:9").expect("test client");
         let pending = PendingDeviceCode {
@@ -1726,6 +1850,50 @@ mod tests {
         assert_eq!(pending.interval_seconds, 15);
         assert_eq!(pending.poll_interval(), Duration::from_secs(15));
         assert_eq!(connect_canceled().code, "github_connect_canceled");
+
+        pending.interval_seconds = u64::MAX;
+        assert_eq!(
+            pending
+                .apply_slow_down()
+                .expect_err("slow-down overflow")
+                .code,
+            "github_token_exchange_failed"
+        );
+        assert_eq!(
+            absolute_expiry(i64::MAX, 1)
+                .expect_err("absolute expiry overflow")
+                .code,
+            "github_token_exchange_failed"
+        );
+        assert_eq!(
+            absolute_expiry(0, u64::MAX)
+                .expect_err("expiry conversion overflow")
+                .code,
+            "github_token_exchange_failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_token_reader_returns_a_zeroizing_buffer() {
+        fn assert_zeroizing_buffer(_: &Zeroizing<Vec<u8>>) {}
+
+        let (base_url, server) = scripted_server(vec![(
+            ResponseFixture::json(200, r#"{"error":"authorization_pending"}"#),
+            RequestExpectations::default(),
+        )])
+        .await;
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+        let response = client
+            .http
+            .get(format!("{base_url}/bounded"))
+            .send()
+            .await
+            .expect("fixture response");
+        let body = read_response_bounded(response)
+            .await
+            .expect("bounded response");
+        assert_zeroizing_buffer(&body);
+        server.await.expect("server task");
     }
 
     #[test]
@@ -2215,6 +2383,8 @@ mod tests {
             headers: vec![("Content-Type".into(), "application/json".into())],
             body: "{}".into(),
             declared_length: Some(MAX_RESPONSE_BYTES + 1),
+            chunked: false,
+            allow_early_close: true,
         };
         let (base_url, server) = scripted_server(vec![(oversized, api_expectation())]).await;
         let client = GitHubAuthClient::for_test(&base_url).expect("test client");
@@ -2227,6 +2397,23 @@ mod tests {
             "github_result_limit_exceeded"
         );
         server.await.expect("server task");
+
+        let chunked_body = format!("{{\"padding\":\"{}\"}}", "x".repeat(MAX_RESPONSE_BYTES));
+        let (base_url, server) = scripted_server(vec![(
+            ResponseFixture::json(200, chunked_body).chunked(),
+            api_expectation(),
+        )])
+        .await;
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+        assert_eq!(
+            client
+                .installations_and_repositories("fake-access-token")
+                .await
+                .expect_err("chunked oversized response")
+                .code,
+            "github_result_limit_exceeded"
+        );
+        assert_eq!(server.await.expect("server task").len(), 1);
 
         let installations = (1..=MAX_INSTALLATIONS as u64)
             .map(|id| {
@@ -2285,6 +2472,48 @@ mod tests {
             "github_result_limit_exceeded"
         );
         server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn aggregate_discovery_byte_cap_is_enforced_across_http_responses() {
+        let installations = (1..=9_u64)
+            .map(|id| {
+                installation_fixture(
+                    id,
+                    &format!("owner-{id}"),
+                    format!("https://github.com/settings/installations/{id}"),
+                    None,
+                )
+            })
+            .collect();
+        let mut script = vec![(
+            ResponseFixture::json(200, collection_body("installations", installations)),
+            api_expectation(),
+        )];
+        for index in 0..9 {
+            let body = serde_json::json!({
+                "total_count": 0,
+                "repositories": [],
+                "padding": "x".repeat(3_800_000),
+            })
+            .to_string();
+            let mut fixture = ResponseFixture::json(200, body);
+            if index == 8 {
+                fixture = fixture.allow_early_close();
+            }
+            script.push((fixture, api_expectation()));
+        }
+        let (base_url, server) = scripted_server(script).await;
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+        assert_eq!(
+            client
+                .installations_and_repositories("fake-access-token")
+                .await
+                .expect_err("aggregate response byte cap")
+                .code,
+            "github_result_limit_exceeded"
+        );
+        assert_eq!(server.await.expect("server task").len(), 10);
     }
 
     #[test]
