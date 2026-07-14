@@ -54,6 +54,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   AGENT_SESSION_RENAMED_EVENT,
   markAgentNewSessionPending,
@@ -1767,7 +1768,12 @@ function CommandPrompt({
 
   let itemIndex = 0;
 
-  return (
+  // Portal to the document body so the prompt renders above the whole app,
+  // never trapped inside the sidebar's DOM subtree. The collapsed sidebar is
+  // `display: none` (see .app-shell[data-sidebar="collapsed"] .sidebar), which
+  // would otherwise hide this overlay along with it — so ⌘K must open a prompt
+  // that lives outside the sidebar to fire regardless of the sidebar state.
+  return createPortal(
     <div
       className="command-prompt-backdrop"
       role="presentation"
@@ -1842,7 +1848,8 @@ function CommandPrompt({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
