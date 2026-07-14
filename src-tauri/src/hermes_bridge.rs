@@ -6491,14 +6491,19 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
     let config_temp_prefix = sandbox_config_temp_prefix(hermes_home);
     // Block the jailed agent from reading the connector token stores: the
     // Keychain is already denied above; add the dev plaintext connector token
-    // file (debug builds' fallback custody) explicitly.
-    let mut secret_read_paths = vec![image_source_key_path];
+    // files (debug builds' fallback custody) explicitly.
     #[cfg(debug_assertions)]
-    secret_read_paths.push(
+    let secret_read_paths = vec![
+        image_source_key_path,
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("dev-google-connector-tokens.json"),
-    );
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("dev-github-connector-tokens.json"),
+    ];
+    #[cfg(not(debug_assertions))]
+    let secret_read_paths = vec![image_source_key_path];
     let profile = build_sandbox_profile(
         &home,
         &write_roots,
@@ -8205,6 +8210,7 @@ fn is_sensitive_file_name(name: &str) -> bool {
                 | "credentials.json"
                 | "application_default_credentials.json"
                 | "dev-google-connector-tokens.json"
+                | "dev-github-connector-tokens.json"
                 | "secrets"
                 | "secrets.json"
                 | "id_rsa"
@@ -12055,6 +12061,16 @@ mod tests {
             "/workspace/project/id_rsa",
             "/workspace/project/client.p12",
             "/workspace/project/application_default_credentials.json",
+        ] {
+            assert!(is_hidden_secret_path(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn hidden_secret_filter_rejects_connector_token_fixtures() {
+        for path in [
+            "/workspace/dev-google-connector-tokens.json",
+            "/workspace/dev-github-connector-tokens.json",
         ] {
             assert!(is_hidden_secret_path(Path::new(path)), "{path}");
         }

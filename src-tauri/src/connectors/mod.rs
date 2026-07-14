@@ -14,6 +14,7 @@
 pub mod approvals;
 pub mod commands;
 pub mod github;
+pub mod github_store;
 pub mod google;
 pub mod oauth;
 pub mod scopes;
