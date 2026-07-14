@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     io::{Error, ErrorKind},
     path::{Component, Path, PathBuf},
 };
@@ -71,7 +72,17 @@ pub fn app_config_dir(app: &AppHandle) -> Result<PathBuf, tauri::Error> {
 }
 
 fn use_prod_data_dir() -> bool {
-    std::env::var_os(USE_PROD_DATA_DIR_ENV).is_some()
+    let value = std::env::var_os(USE_PROD_DATA_DIR_ENV);
+    env_value_truthy(value.as_deref())
+}
+
+fn env_value_truthy(value: Option<&OsStr>) -> bool {
+    value.and_then(OsStr::to_str).is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 fn app_data_dir_for_build(data_dir: PathBuf, debug_assertions: bool, use_prod: bool) -> PathBuf {
@@ -125,8 +136,20 @@ fn validate_recording_component(field: &'static str, value: &str) -> std::io::Re
 
 #[cfg(test)]
 mod tests {
-    use super::{app_config_dir_for_build, app_data_dir_for_build, AppPaths};
-    use std::path::PathBuf;
+    use super::{app_config_dir_for_build, app_data_dir_for_build, env_value_truthy, AppPaths};
+    use std::{ffi::OsStr, path::PathBuf};
+
+    #[test]
+    fn production_data_override_accepts_only_truthy_values() {
+        for value in ["1", "true", "TRUE", " yes ", "on"] {
+            assert!(env_value_truthy(Some(OsStr::new(value))), "{value:?}");
+        }
+
+        for value in ["", "0", "false", "no", "off", "unexpected"] {
+            assert!(!env_value_truthy(Some(OsStr::new(value))), "{value:?}");
+        }
+        assert!(!env_value_truthy(None));
+    }
 
     #[test]
     fn recording_session_dir_rejects_path_traversal_components() {

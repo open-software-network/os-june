@@ -1,7 +1,7 @@
 use crate::{
     auth::{authenticated_user, provider_credentials},
     error::ApiError,
-    handlers::notes::{credentials_for_resolved_model, resolve_priced_text_model},
+    handlers::notes::{AUTO_TEXT_MODEL, credentials_for_resolved_model, resolve_priced_text_model},
     state::ApiState,
     validation,
 };
@@ -40,6 +40,9 @@ pub(crate) async fn chat_completions(
         state.pricing().is_venice_model(&model_id),
     )?;
     if let Some(object) = body.as_object_mut() {
+        if model_id != AUTO_TEXT_MODEL {
+            object.remove("auto");
+        }
         object.insert(
             "model".to_string(),
             serde_json::Value::String(model_id.clone()),
