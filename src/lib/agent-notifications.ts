@@ -4,6 +4,7 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import type { AgentSessionStatusDetail, AgentSessionStatusKind } from "./agent-events";
+import { sendAppNotification } from "./tauri";
 
 type NotificationCopy = {
   title: string;
@@ -56,12 +57,26 @@ export async function notifyAgentSessionStatus(detail: AgentSessionStatusDetail)
   // so a permission denial does not swallow the next legitimate notification.
   recent.set(dedupeKey, now);
 
-  sendNotification({
-    title: copy.title,
-    body: copy.body,
-    group,
-    sound: NOTIFICATION_SOUND,
-  });
+  // The backend command owns delivery so clicking the notification can
+  // deep-link into the session (JUN-327). The plugin path stays as a
+  // fallback for environments without the command (it cannot deliver
+  // clicks, so those notifications just open the app).
+  try {
+    await sendAppNotification({
+      title: copy.title,
+      body: copy.body,
+      sound: NOTIFICATION_SOUND,
+      group,
+      sessionId: detail.sessionId,
+    });
+  } catch {
+    sendNotification({
+      title: copy.title,
+      body: copy.body,
+      group,
+      sound: NOTIFICATION_SOUND,
+    });
+  }
   playAgentNotificationTone(detail.status);
   return true;
 }

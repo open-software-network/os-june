@@ -62,6 +62,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsUpgradeSession: vi.fn(),
   osAccountsChangePlan: vi.fn(),
   agentHudShow: vi.fn(),
+  agentOpenReady: vi.fn().mockResolvedValue(null),
   agentHudHide: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
@@ -133,6 +134,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsUpgradeSession: mocks.osAccountsUpgradeSession,
   osAccountsChangePlan: mocks.osAccountsChangePlan,
   agentHudShow: mocks.agentHudShow,
+  agentOpenReady: mocks.agentOpenReady,
   agentHudHide: mocks.agentHudHide,
   // The agent workspace mounts at launch; a quiet, not-running bridge keeps
   // these tests focused on the meetings surfaces.
