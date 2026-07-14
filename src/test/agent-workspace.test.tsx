@@ -7604,12 +7604,27 @@ describe("AgentWorkspace", () => {
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
         handler({
+          type: "message.start",
+          session_id: "runtime-session-2",
+        });
+        // The pinned gateway announces the tool name while the model is still
+        // streaming arguments, before execution has a stable tool id.
+        handler({
+          type: "tool.generating",
+          session_id: "runtime-session-2",
+          payload: {
+            name: "generate_image",
+          },
+        });
+        // Execution starts later with the stable id. This must promote the
+        // early placeholder instead of opening a second canvas.
+        handler({
           type: "tool.start",
           session_id: "runtime-session-2",
           payload: {
             tool_id: "tool-1",
-            tool_name: "generate_image",
-            prompt: "a calm mountain lake at dawn",
+            name: "generate_image",
+            context: "a calm mountain lake at dawn",
           },
         });
         handler({
@@ -7625,6 +7640,7 @@ describe("AgentWorkspace", () => {
 
     // The generation placeholder holds the image's slot while the tool runs.
     expect(await screen.findByRole("status", { name: "Generating image" })).toBeInTheDocument();
+    expect(screen.getAllByRole("status", { name: "Generating image" })).toHaveLength(1);
     expect(screen.getByText("Generating image…")).toBeInTheDocument();
     expect(document.querySelector(".agent-generated-image-placeholder")).not.toBeNull();
     expect(document.querySelector("canvas.agent-generated-media-field")).not.toBeNull();
