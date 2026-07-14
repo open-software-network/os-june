@@ -1729,7 +1729,7 @@ describe("Agent chat runtime", () => {
         {
           id: "pending-user-1",
           role: "user",
-          createdAt: "2026-06-04T10:01:00.000Z",
+          createdAt: "2026-06-04T10:01:01.000Z",
           status: "complete",
           parts: [{ type: "text", text: "Show me that image again.", status: "complete" }],
         },
@@ -1760,6 +1760,27 @@ describe("Agent chat runtime", () => {
         id: "assistant-2",
         role: "assistant",
         content: imageContent("c2Vjb25k"),
+        timestamp: "2026-06-04T10:00:01.000Z",
+      },
+    ]);
+
+    expect(
+      turns.flatMap((turn) => turn.parts.filter((part) => part.type === "image")),
+    ).toHaveLength(2);
+  });
+
+  it("keeps distinct absolute image paths that share a filename", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "MEDIA:/tmp/run-a/output.png",
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        content: "MEDIA:/tmp/run-b/output.png",
         timestamp: "2026-06-04T10:00:01.000Z",
       },
     ]);

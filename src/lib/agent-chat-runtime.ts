@@ -364,13 +364,13 @@ export function buildHermesSessionChatTurns(
     }
   }
 
-  appendLiveHermesEvents(turns, liveEvents);
   turns.push(
     ...syntheticTurns.map((turn) => ({
       ...turn,
       parts: [...turn.parts],
     })),
   );
+  appendLiveHermesEvents(turns, liveEvents);
   const sortedTurns = sortAgentChatTurns(turns);
   deduplicateGeneratedMediaWithinAgentRuns(sortedTurns);
   return sortedTurns.filter((turn) =>
@@ -948,13 +948,16 @@ function sameImagePart(left: AgentChatImagePart, right: AgentChatImagePart) {
   if (left.path && right.path && left.path === right.path) return true;
   const leftName = left.name ?? (left.path ? filenameFromPath(left.path) : undefined);
   const rightName = right.name ?? (right.path ? filenameFromPath(right.path) : undefined);
+  const hasBarePath =
+    (left.path && left.path === leftName) || (right.path && right.path === rightName);
   return Boolean(
     leftName &&
       rightName &&
       leftName === rightName &&
       // Equal display names bridge an inline MCP image to its trailing MEDIA
-      // reference, but never collapse two distinct inline byte payloads.
-      (!left.dataUrl || !right.dataUrl),
+      // reference, but never collapse distinct inline payloads or absolute paths.
+      ((!left.dataUrl && !right.dataUrl && hasBarePath) ||
+        Boolean(left.dataUrl) !== Boolean(right.dataUrl)),
   );
 }
 
