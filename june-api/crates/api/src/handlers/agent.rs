@@ -95,10 +95,7 @@ struct AgentModelRequirements {
 impl AgentModelRequirements {
     fn from_body(body: &serde_json::Value) -> Self {
         Self {
-            vision: ["messages", "input"]
-                .into_iter()
-                .filter_map(|key| body.get(key))
-                .any(chat_items_contain_image),
+            vision: body.get("messages").is_some_and(chat_items_contain_image),
             tools: body
                 .get("tools")
                 .and_then(serde_json::Value::as_array)
@@ -161,7 +158,7 @@ fn chat_items_contain_image(value: &serde_json::Value) -> bool {
         serde_json::Value::Object(object) => {
             matches!(
                 object.get("type").and_then(serde_json::Value::as_str),
-                Some("image_url" | "input_image")
+                Some("image_url")
             ) || object.get("content").is_some_and(chat_items_contain_image)
         }
         _ => false,
@@ -196,7 +193,7 @@ fn has_capability(capabilities: &[String], expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentModelRequirements, chat_items_contain_image, has_capability};
+    use super::{AgentModelRequirements, has_capability};
 
     #[test]
     fn infers_image_and_tool_requirements_from_chat_content() {
@@ -221,31 +218,15 @@ mod tests {
     }
 
     #[test]
-    fn infers_input_image_without_inventing_a_tool_requirement() {
-        let body = serde_json::json!({
-            "messages": [{
-                "role": "user",
-                "content": [{ "type": "input_image", "image_url": "data:image/png;base64,eA==" }]
-            }]
-        });
-
-        assert!(chat_items_contain_image(&body["messages"]));
-        assert_eq!(
-            AgentModelRequirements::from_body(&body),
-            AgentModelRequirements {
-                vision: true,
-                tools: false,
-            }
-        );
-    }
-
-    #[test]
-    fn ignores_image_like_metadata_outside_message_content() {
+    fn ignores_image_like_content_outside_supported_message_content() {
         let body = serde_json::json!({
             "messages": [{
                 "role": "user",
                 "content": "hello",
                 "metadata": { "type": "image_url" }
+            }],
+            "input": [{
+                "content": [{ "type": "image_url", "image_url": "unsupported-here" }]
             }]
         });
 
