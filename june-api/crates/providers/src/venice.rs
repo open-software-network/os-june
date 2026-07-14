@@ -28,6 +28,8 @@ pub(crate) fn byok_base_url(config: &UpstreamConfig) -> String {
     config
         .byok_base_url
         .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .unwrap_or(VENICE_PUBLIC_BASE_URL)
         .trim_end_matches('/')
         .to_string()
@@ -1917,12 +1919,16 @@ mod tests {
 
     #[test]
     fn byok_base_url_defaults_to_public_venice() {
-        let config = UpstreamConfig {
+        let mut config = UpstreamConfig {
             api_key: "venice_key".to_string(),
             base_url: "https://june-managed.example/v1".to_string(),
             byok_base_url: None,
         };
+        assert_eq!(super::byok_base_url(&config), super::VENICE_PUBLIC_BASE_URL);
 
+        // An explicitly blank override (e.g. an empty env var) must fall back
+        // too, not build scheme-less request URLs.
+        config.byok_base_url = Some("   ".to_string());
         assert_eq!(super::byok_base_url(&config), super::VENICE_PUBLIC_BASE_URL);
     }
 
