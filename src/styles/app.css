@@ -11934,6 +11934,15 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
+/* The app-shell banners render as the first children of .main-panel-body,
+ * which has no top padding (each workspace row brings its own). Without a
+ * top margin the banner sits flush against the card's top edge. Scoped to
+ * direct children so mid-content usages (routines) keep their geometry. */
+.main-panel-body > .error-banner,
+.main-panel-body > .notice-banner {
+  margin-top: var(--sp-4);
+}
+
 .routines-error-banner {
   display: flex;
   align-items: center;
