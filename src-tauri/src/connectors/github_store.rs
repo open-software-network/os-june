@@ -130,7 +130,7 @@ async fn load_platform_tokens(
     let raw = tokio::task::spawn_blocking(move || {
         let entry = keyring::Entry::new(&service, &user).map_err(|_| unavailable_store())?;
         match entry.get_password() {
-            Ok(raw) => Ok(Some(raw)),
+            Ok(raw) => Ok(Some(Zeroizing::new(raw))),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err(unavailable_store()),
         }
@@ -140,7 +140,6 @@ async fn load_platform_tokens(
     let Some(raw) = raw else {
         return Ok(None);
     };
-    let raw = Zeroizing::new(raw);
     let tokens = serde_json::from_str::<StoredGitHubTokens>(&raw).map_err(|_| invalid_store())?;
     validate_account_match(github_user_id, &tokens)?;
     Ok(Some(tokens))
@@ -234,6 +233,12 @@ async fn delete_dev_plaintext_tokens(github_user_id: &str) -> Result<(), AppErro
 type DevTokenMap = std::collections::HashMap<String, StoredGitHubTokens>;
 
 #[cfg(any(debug_assertions, test))]
+fn dev_file_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[cfg(any(debug_assertions, test))]
 fn dev_file_read_map(path: &std::path::Path) -> Result<DevTokenMap, AppError> {
     let raw = match std::fs::read_to_string(path) {
         Ok(raw) => Zeroizing::new(raw),
@@ -248,30 +253,69 @@ fn dev_file_read_map(path: &std::path::Path) -> Result<DevTokenMap, AppError> {
 #[cfg(any(debug_assertions, test))]
 fn dev_file_write_map(path: &std::path::Path, map: &DevTokenMap) -> Result<(), AppError> {
     let json = Zeroizing::new(serde_json::to_string(map).map_err(|_| unavailable_store())?);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| unavailable_store())?;
-    }
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|_| unavailable_store())?;
+
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_else(|| std::borrow::Cow::Borrowed("tokens.json"));
+    let (temp_path, mut temp_file) = (0..32)
+        .find_map(|_| {
+            static NEXT_TEMP_FILE_ID: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let id = NEXT_TEMP_FILE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let temp_path = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), id));
+            let mut options = std::fs::OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            match options.open(&temp_path) {
+                Ok(file) => Some(Ok((temp_path, file))),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(_) => Some(Err(unavailable_store())),
+            }
+        })
+        .unwrap_or_else(|| Err(unavailable_store()))?;
 
     #[cfg(unix)]
     {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(|_| unavailable_store())?;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))
-            .map_err(|_| unavailable_store())?;
-        file.write_all(json.as_bytes())
-            .map_err(|_| unavailable_store())?;
+        use std::os::unix::fs::PermissionsExt;
+        if temp_file
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .is_err()
+        {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(unavailable_store());
+        }
     }
 
-    #[cfg(not(unix))]
-    std::fs::write(path, json.as_bytes()).map_err(|_| unavailable_store())?;
+    use std::io::Write;
+    if temp_file
+        .write_all(json.as_bytes())
+        .and_then(|()| temp_file.sync_all())
+        .is_err()
+    {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(unavailable_store());
+    }
+    drop(temp_file);
+
+    if std::fs::rename(&temp_path, path).is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(unavailable_store());
+    }
+
+    #[cfg(unix)]
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| unavailable_store())?;
 
     Ok(())
 }
@@ -282,6 +326,7 @@ fn dev_file_store(
     github_user_id: &str,
     tokens: &StoredGitHubTokens,
 ) -> Result<(), AppError> {
+    let _guard = dev_file_lock().lock().map_err(|_| unavailable_store())?;
     validate_account_match(github_user_id, tokens)?;
     let mut map = dev_file_read_map(path)?;
     map.insert(github_user_id.to_string(), tokens.clone());
@@ -293,6 +338,7 @@ fn dev_file_load(
     path: &std::path::Path,
     github_user_id: &str,
 ) -> Result<Option<StoredGitHubTokens>, AppError> {
+    let _guard = dev_file_lock().lock().map_err(|_| unavailable_store())?;
     let mut map = dev_file_read_map(path)?;
     let Some(tokens) = map.remove(github_user_id) else {
         return Ok(None);
@@ -303,6 +349,7 @@ fn dev_file_load(
 
 #[cfg(any(debug_assertions, test))]
 fn dev_file_delete(path: &std::path::Path, github_user_id: &str) -> Result<(), AppError> {
+    let _guard = dev_file_lock().lock().map_err(|_| unavailable_store())?;
     let mut map = dev_file_read_map(path)?;
     if map.remove(github_user_id).is_none() {
         return Ok(());
@@ -408,6 +455,61 @@ mod tests {
         assert_eq!(loaded.refresh_token, "rotated-refresh");
         assert_eq!(loaded.expires_at_unix, 2_000_000_001);
         assert_eq!(loaded.refresh_token_expires_at_unix, 2_100_000_001);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dev_file_rotation_uses_atomic_same_directory_replacement() {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tokens.json");
+        let mut entry = tokens("123");
+        dev_file_store(&path, "123", &entry).expect("store initial");
+        let initial_inode = std::fs::metadata(&path).expect("initial metadata").ino();
+
+        entry.access_token = "rotated-access".into();
+        dev_file_store(&path, "123", &entry).expect("store rotated");
+        let rotated_inode = std::fs::metadata(&path).expect("rotated metadata").ino();
+
+        assert_ne!(initial_inode, rotated_inode);
+    }
+
+    #[test]
+    fn concurrent_dev_file_updates_preserve_every_github_user() {
+        const WRITERS: usize = 24;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = std::sync::Arc::new(dir.path().join("tokens.json"));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+        let handles = (0..WRITERS)
+            .map(|index| {
+                let path = std::sync::Arc::clone(&path);
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let github_user_id = index.to_string();
+                    let entry = tokens(&github_user_id);
+                    barrier.wait();
+                    dev_file_store(&path, &github_user_id, &entry)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle
+                .join()
+                .expect("writer thread")
+                .expect("serialized store");
+        }
+        for index in 0..WRITERS {
+            let github_user_id = index.to_string();
+            assert!(
+                dev_file_load(&path, &github_user_id)
+                    .expect("load")
+                    .is_some(),
+                "missing GitHub user {github_user_id}"
+            );
+        }
     }
 
     #[test]

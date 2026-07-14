@@ -6474,6 +6474,19 @@ fn apply_isolated_hermes_env(
 /// jailed agent can't rewrite the policy that governs it or the one the next
 /// spawn will read.
 #[cfg(target_os = "macos")]
+fn sandbox_secret_read_paths(manifest_dir: &Path, image_source_key_path: PathBuf) -> Vec<PathBuf> {
+    vec![
+        image_source_key_path,
+        manifest_dir
+            .join("target")
+            .join("dev-google-connector-tokens.json"),
+        manifest_dir
+            .join("target")
+            .join("dev-github-connector-tokens.json"),
+    ]
+}
+
+#[cfg(target_os = "macos")]
 fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) -> Option<PathBuf> {
     // The caller logs the sandboxed/unsandboxed outcome; this only short-circuits.
     if env_flag_enabled(JUNE_HERMES_DISABLE_SANDBOX_ENV) {
@@ -6491,19 +6504,10 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
     let config_temp_prefix = sandbox_config_temp_prefix(hermes_home);
     // Block the jailed agent from reading the connector token stores: the
     // Keychain is already denied above; add the dev plaintext connector token
-    // files (debug builds' fallback custody) explicitly.
-    #[cfg(debug_assertions)]
-    let secret_read_paths = vec![
-        image_source_key_path,
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("dev-google-connector-tokens.json"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("dev-github-connector-tokens.json"),
-    ];
-    #[cfg(not(debug_assertions))]
-    let secret_read_paths = vec![image_source_key_path];
+    // files explicitly, including in release profiles in case a fixture remains
+    // from an earlier development run.
+    let secret_read_paths =
+        sandbox_secret_read_paths(Path::new(env!("CARGO_MANIFEST_DIR")), image_source_key_path);
     let profile = build_sandbox_profile(
         &home,
         &write_roots,
@@ -14026,6 +14030,35 @@ mcp_servers:
         assert!(!profile.contains(".codex"));
         assert!(!profile.contains(".gemini"));
         assert!(!profile.contains("opencode"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn release_sandbox_profile_denies_connector_token_fixtures() {
+        let home = PathBuf::from("/Users/test");
+        let workspace = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
+        let manifest_dir = PathBuf::from("/checkout/src-tauri");
+        let secret_read_paths = sandbox_secret_read_paths(
+            &manifest_dir,
+            PathBuf::from("/Users/test/Library/Application Support/june/image-source.key"),
+        );
+        let profile = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &sandbox_config_write_path(&workspace),
+            &sandbox_config_temp_prefix(&workspace),
+            &secret_read_paths,
+            false,
+        );
+
+        for filename in [
+            "dev-google-connector-tokens.json",
+            "dev-github-connector-tokens.json",
+        ] {
+            let fixture = manifest_dir.join("target").join(filename);
+            let deny_rule = format!("(literal {})", sbpl_quote(&fixture.to_string_lossy()));
+            assert!(profile.contains(&deny_rule), "missing deny for {fixture:?}");
+        }
     }
 
     #[cfg(target_os = "macos")]
