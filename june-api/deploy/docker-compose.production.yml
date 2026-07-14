@@ -11,7 +11,7 @@ services:
   dstack-ingress:
     image: dstacktee/dstack-ingress:20251013@sha256:fee7a6075a271adb5a5ff72ff3ff49bcb9e22d5f4c9fa68fa683cfb3932f911c
     restart: unless-stopped
-    # Start after the app so the proxy isn't pointed at a cold backend on first
+    # Start after the app so the proxy isn't pointed at a cold June API on first
     # boot. Plain start-ordering, not health-gated: the slim runtime image has no
     # curl/wget for a healthcheck, and restart-policy + the proxy's own retry
     # cover the brief window until june-api binds 8080.
@@ -60,6 +60,9 @@ services:
       - JUNE__OS_ACCOUNTS__P3A_INGEST_TOKEN=${JUNE__OS_ACCOUNTS__P3A_INGEST_TOKEN}
       - JUNE__UPSTREAMS__OPENAI__API_KEY=${JUNE__UPSTREAMS__OPENAI__API_KEY}
       - JUNE__UPSTREAMS__VENICE__API_KEY=${JUNE__UPSTREAMS__VENICE__API_KEY}
+      # Production text inference is routed through os-api; the matching
+      # dedicated service key remains in Phala's sealed environment.
+      - JUNE__UPSTREAMS__VENICE__BASE_URL=https://api.opensoftware.co/v1
       - JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY=${JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY}
 
 volumes:

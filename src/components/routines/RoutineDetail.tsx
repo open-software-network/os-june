@@ -7,6 +7,17 @@ import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconPause } from "central-icons/IconPause";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
+  TRIGGER_META,
+  autonomyRuntimeNeedsRestart,
+  eventTriggerScheduleDraft,
+  routineToolsetsFor,
+  triggerConfigFromDraft,
+  triggerScopeWarning,
+  type TriggerDraft,
+} from "../../lib/connectors";
+import {
+  pauseRoutine,
+  resumeRoutine,
   routineUnrestricted,
   type RoutineJob,
   type RoutineUpdates,
@@ -17,16 +28,49 @@ import {
   scheduleFromDraft,
   type ScheduleDraft,
 } from "../../lib/routine-schedule";
-import type { HermesSessionInfo } from "../../lib/tauri";
+import {
+  connectorTriggerDelete,
+  connectorTriggerSet,
+  connectorTriggersList,
+  connectorsApplyRuntime,
+  connectorsList,
+  routineTrustGet,
+  routineTrustSet,
+  type ConnectorAccount,
+  type ConnectorTrigger,
+  type HermesSessionInfo,
+  type RoutineTrust,
+  type RoutineTrustMode,
+} from "../../lib/tauri";
+import {
+  HERMES_SERVER_ERROR_MESSAGE,
+  isHermesServerError,
+  messageFromError,
+} from "../../lib/errors";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { HoverTip } from "../ui/HoverTip";
 import { Switch } from "../ui/Switch";
+import { toast } from "../ui/Toaster";
 import { userFacingFailureMessage } from "../note-editor/NoteFailureBanner";
-import { HERMES_SERVER_ERROR_MESSAGE, isHermesServerError } from "../../lib/errors";
 import { GrowingTextarea } from "./GrowingTextarea";
 import { RoutineModePicker } from "./RoutineModePicker";
 import { formatRunTime, RoutineRunList } from "./RoutineRunList";
-import { SchedulePicker } from "./SchedulePicker";
+import { TriggerPicker } from "./TriggerPicker";
+import { TrustModePicker } from "./TrustModePicker";
+
+/** Maps a stored connector trigger back onto the editor's "When" model. Key
+ * order matters: the dirty check compares drafts via JSON.stringify, so this
+ * must build objects in the same shape TriggerPicker emits. */
+function triggerDraftFromStored(stored: ConnectorTrigger): TriggerDraft {
+  if (stored.kind === "email_received") return { source: "email_received" };
+  const lead = stored.config.leadMinutes;
+  const external = stored.config.externalOnly;
+  return {
+    source: "event_upcoming",
+    leadMinutes: typeof lead === "number" ? lead : 30,
+    externalOnly: typeof external === "boolean" ? external : true,
+  };
+}
 
 type RoutineDetailProps = {
   routine: RoutineJob;
@@ -71,6 +115,15 @@ export function RoutineDetail({
   const [draft, setDraft] = useState<ScheduleDraft>(() => draftFromSchedule(routine.schedule));
   const [prompt, setPrompt] = useState(routine.prompt);
   const [unrestricted, setUnrestricted] = useState(() => routineUnrestricted(routine));
+  // Connector trust + trigger. All loads degrade quietly: a routine without
+  // a trust record (or a build without the connectors module) reads as
+  // read only with no trigger, which is exactly the stored default.
+  const [storedTrust, setStoredTrust] = useState<RoutineTrust | null>(null);
+  const [trustMode, setTrustMode] = useState<RoutineTrustMode>("read_only");
+  const [autonomousTools, setAutonomousTools] = useState<string[]>([]);
+  const [storedTrigger, setStoredTrigger] = useState<ConnectorTrigger | null>(null);
+  const [trigger, setTrigger] = useState<TriggerDraft>({ source: "schedule" });
+  const [accounts, setAccounts] = useState<ConnectorAccount[]>([]);
   const [activeTab, setActiveTab] = useState<"details" | "history">("details");
   // "Run now" only queues the job for the scheduler's next tick, so the
   // confirmation is a short-lived label swap rather than a new run row.
@@ -103,6 +156,34 @@ export function RoutineDetail({
   }, [menuOpen]);
 
   useEffect(() => {
+    let cancelled = false;
+    routineTrustGet(routine.job_id)
+      .then((trust) => {
+        if (cancelled || !trust) return;
+        setStoredTrust(trust);
+        setTrustMode(trust.trustMode);
+        setAutonomousTools(trust.autonomousTools);
+      })
+      .catch(() => {});
+    connectorTriggersList(routine.job_id)
+      .then((triggers) => {
+        if (cancelled) return;
+        const stored = triggers[0] ?? null;
+        setStoredTrigger(stored);
+        if (stored) setTrigger(triggerDraftFromStored(stored));
+      })
+      .catch(() => {});
+    connectorsList()
+      .then((list) => {
+        if (!cancelled) setAccounts(list);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [routine.job_id]);
+
+  useEffect(() => {
     const previousName = previousRoutineNameRef.current;
     previousRoutineNameRef.current = routine.name;
     setName((current) => {
@@ -128,18 +209,217 @@ export function RoutineDetail({
 
   const nameChanged = name.trim().length > 0 && name.trim() !== routine.name;
   const scheduleChanged =
+    trigger.source === "schedule" &&
     JSON.stringify(draft) !== JSON.stringify(draftFromSchedule(routine.schedule));
   const promptChanged = prompt !== routine.prompt;
   const modeChanged = unrestricted !== routineUnrestricted(routine);
-  const dirty = nameChanged || scheduleChanged || promptChanged || modeChanged;
+  const storedTrustMode = storedTrust?.trustMode ?? "read_only";
+  const storedTools = storedTrust?.autonomousTools ?? [];
+  const trustChanged =
+    trustMode !== storedTrustMode ||
+    (trustMode === "autonomous" && JSON.stringify(autonomousTools) !== JSON.stringify(storedTools));
+  const storedTriggerDraft: TriggerDraft = storedTrigger
+    ? triggerDraftFromStored(storedTrigger)
+    : { source: "schedule" };
+  const triggerChanged = JSON.stringify(trigger) !== JSON.stringify(storedTriggerDraft);
+  const dirty =
+    nameChanged ||
+    scheduleChanged ||
+    promptChanged ||
+    modeChanged ||
+    trustChanged ||
+    triggerChanged;
+
+  function changeTrigger(next: TriggerDraft) {
+    // Event routines store a far-future one-off schedule only as a dormant
+    // Hermes placeholder. Do not expose or resume that placeholder when the
+    // user switches back to scheduling; start from a useful daily default.
+    if (
+      trigger.source !== "schedule" &&
+      next.source === "schedule" &&
+      scheduleFromDraft(draft) === eventTriggerScheduleDraft().schedule
+    ) {
+      setDraft({ kind: "daily", time: "09:00" });
+    }
+    setTrigger(next);
+  }
 
   async function save() {
     const updates: RoutineUpdates = {};
     if (nameChanged) updates.name = name.trim();
     if (scheduleChanged) updates.schedule = scheduleFromDraft(draft);
     if (promptChanged) updates.prompt = prompt;
-    if (modeChanged) updates.unrestricted = unrestricted;
-    await onSave(updates);
+
+    // Validate a new event trigger up front, before any persistent write. An
+    // account/scope problem must abort the save before trust is minted or the
+    // cron job is touched, so a validation failure never leaves a half-applied
+    // trust/grant change to unwind.
+    let triggerAccount: ConnectorAccount | undefined;
+    const switchingToEvent = triggerChanged && trigger.source !== "schedule";
+    if (switchingToEvent) {
+      triggerAccount = accounts.find((entry) => entry.status === "connected");
+      if (!triggerAccount) {
+        toast.error("Connect a Google account before using an event trigger.");
+        return;
+      }
+      // The account must hold the scope this trigger's daemon polls, or the
+      // routine saves but never fires (the Gmail/calendar call fails).
+      const scopeIssue = triggerScopeWarning(trigger, triggerAccount.scopes);
+      if (scopeIssue) {
+        toast.error(scopeIssue);
+        return;
+      }
+    }
+
+    // The trust record before this save, so a failed cron-job update can roll
+    // the trust/grant change back and keep the two in sync.
+    const previousTrust = storedTrust;
+
+    // Whether this save added or removed a per-job autonomy server, which only
+    // enters the rendered config when the runtime restarts.
+    let autoServersChanged = false;
+
+    // Trust first: an autonomous grant mints per-job auto server names that
+    // the toolset override must reference.
+    if (trustChanged) {
+      try {
+        const previousServers = storedTrust?.autonomousServers ?? [];
+        const previousTools = storedTrust?.autonomousTools ?? [];
+        const stored = await routineTrustSet({
+          jobId: routine.job_id,
+          trustMode,
+          autonomousTools: trustMode === "autonomous" ? autonomousTools : undefined,
+        });
+        setStoredTrust(stored);
+        updates.enabledToolsets = routineToolsetsFor(trustMode, {
+          unrestricted,
+          autonomousServers: stored.autonomousServers,
+        });
+        autoServersChanged = autonomyRuntimeNeedsRestart({
+          previousServers,
+          nextServers: stored.autonomousServers ?? [],
+          trustMode: stored.trustMode,
+          previousTools,
+          nextTools: stored.autonomousTools ?? [],
+        });
+      } catch (err) {
+        toast.error(messageFromError(err));
+        return;
+      }
+    } else if (modeChanged) {
+      // No trust change: connector routines recompose their toolsets around
+      // the new base; plain routines keep the legacy boolean path.
+      if (storedTrust) {
+        updates.enabledToolsets = routineToolsetsFor(trustMode, {
+          unrestricted,
+          autonomousServers: storedTrust.autonomousServers,
+        });
+      } else {
+        updates.unrestricted = unrestricted;
+      }
+    }
+
+    // Fold the trigger's schedule change into the cron update so it lands
+    // atomically with the rest. The trigger row write and pause/resume are
+    // deferred until after onSave succeeds (below).
+    const switchingToSchedule = triggerChanged && trigger.source === "schedule";
+    const switchingFromSchedule = switchingToEvent && storedTriggerDraft.source === "schedule";
+    if (switchingToSchedule) {
+      // Back on a real schedule: replace the far-future placeholder so the
+      // scheduler owns the job again once it is resumed below.
+      updates.schedule = scheduleFromDraft(draft);
+    } else if (switchingFromSchedule) {
+      // Newly event-driven: park the cron schedule far in the future; the
+      // trigger daemon fires the job once its trigger row is written below.
+      updates.schedule = eventTriggerScheduleDraft().schedule;
+    }
+
+    try {
+      await onSave(updates);
+    } catch {
+      // The cron job update failed (onSave rejects and has already surfaced the
+      // error) after trust was persisted and grants minted or deleted, so the
+      // routine's DB trust and the job's toolsets now disagree. Roll the trust
+      // change back to keep them consistent: otherwise a downgrade to read only
+      // would have deleted the grant while the job kept its autonomous toolsets,
+      // and gate_action parks (not denies) an orphaned grant, so an approval
+      // could still let that run act on Google. No trigger row was written yet,
+      // so there is nothing else to unwind.
+      if (trustChanged) {
+        try {
+          const restored = await routineTrustSet({
+            jobId: routine.job_id,
+            trustMode: previousTrust?.trustMode ?? "read_only",
+            autonomousTools:
+              previousTrust?.trustMode === "autonomous" ? previousTrust.autonomousTools : undefined,
+          });
+          setStoredTrust(restored);
+          // Restoring autonomous trust mints a fresh grant token. A running
+          // auto MCP server still carries the pre-save token in its env, so
+          // re-render/restart after a successful rollback just as we do after
+          // a successful autonomous change below.
+          if (autoServersChanged) await connectorsApplyRuntime();
+        } catch (err) {
+          toast.error(messageFromError(err));
+        }
+      }
+      return;
+    }
+
+    // Trigger side effects run only after the cron save succeeded, so a failed
+    // onSave can never leave a trigger firing a routine whose schedule/toolsets
+    // never saved. If a side effect here fails the routine stays dormant (the
+    // far-future schedule and paused/unpaused state already persisted), which is
+    // safe: it under-fires rather than acting on stale config. Surface it so the
+    // user can retry.
+    if (triggerChanged) {
+      try {
+        if (trigger.source === "schedule") {
+          // Resume first so a gateway failure leaves the existing event
+          // trigger untouched. Only remove that fallback after the scheduled
+          // job is live again.
+          await resumeRoutine(routine.job_id);
+          try {
+            if (storedTrigger) {
+              await connectorTriggerDelete(storedTrigger.id);
+            }
+          } catch (deleteError) {
+            // The trigger still exists. Restore the previous paused state so
+            // schedule and event sources cannot both fire this routine.
+            try {
+              await pauseRoutine(routine.job_id);
+            } catch (restoreError) {
+              toast.error(
+                `June could not restore the previous paused state: ${messageFromError(restoreError)}`,
+              );
+            }
+            throw deleteError;
+          }
+          setStoredTrigger(null);
+        } else if (triggerAccount) {
+          const stored = await connectorTriggerSet({
+            jobId: routine.job_id,
+            kind: trigger.source,
+            accountId: triggerAccount.accountId,
+            config: triggerConfigFromDraft(trigger),
+          });
+          setStoredTrigger(stored);
+          if (switchingFromSchedule) {
+            await pauseRoutine(routine.job_id).catch(() => {});
+          }
+        }
+      } catch (err) {
+        toast.error(messageFromError(err));
+        return;
+      }
+    }
+
+    // A new or removed per-job autonomy server only takes effect once the
+    // runtime re-renders its config. Best-effort: it also registers on the
+    // next runtime start.
+    if (autoServersChanged) {
+      await connectorsApplyRuntime().catch(() => {});
+    }
   }
 
   async function runNow() {
@@ -269,7 +549,9 @@ export function RoutineDetail({
           {completed ? <span className="routine-meta-pill">Completed</span> : null}
           <span className="routine-meta-pill">
             <IconCalendarRepeat size={12} aria-hidden />
-            {compactScheduleLabel(routine.schedule)}
+            {storedTrigger
+              ? TRIGGER_META[storedTrigger.kind].label
+              : compactScheduleLabel(routine.schedule)}
           </span>
           {completed && routine.last_run_at ? (
             <span className="routine-meta-pill">Last ran {formatRunTime(routine.last_run_at)}</span>
@@ -343,10 +625,20 @@ export function RoutineDetail({
           >
             <section className="settings-group" aria-labelledby="routine-schedule">
               <h2 id="routine-schedule" className="settings-group-heading">
-                Schedule
+                When
               </h2>
               <div className="settings-card">
-                <SchedulePicker draft={draft} onChange={setDraft} />
+                <TriggerPicker
+                  trigger={trigger}
+                  scheduleDraft={draft}
+                  hasAccount={accounts.some((entry) => entry.status === "connected")}
+                  scopeWarning={triggerScopeWarning(
+                    trigger,
+                    accounts.find((entry) => entry.status === "connected")?.scopes ?? null,
+                  )}
+                  onTriggerChange={changeTrigger}
+                  onScheduleChange={setDraft}
+                />
               </div>
             </section>
 
@@ -375,6 +667,21 @@ export function RoutineDetail({
                     script when you save.
                   </p>
                 ) : null}
+              </div>
+            </section>
+
+            <section className="settings-group" aria-labelledby="routine-trust">
+              <h2 id="routine-trust" className="settings-group-heading">
+                Actions
+              </h2>
+              <div className="settings-card">
+                <TrustModePicker
+                  value={trustMode}
+                  runCount={storedTrust?.approvalRunCount ?? 0}
+                  autonomousTools={autonomousTools}
+                  onChange={setTrustMode}
+                  onAutonomousToolsChange={setAutonomousTools}
+                />
               </div>
             </section>
           </div>

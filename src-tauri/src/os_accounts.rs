@@ -72,6 +72,7 @@ const SUBSCRIPTION_REQUIRED_CODE: &str = "subscription_required";
 const ALREADY_ON_PLAN_CODE: &str = "already_on_plan";
 const UNKNOWN_PLAN_CODE: &str = "unknown_plan";
 const PLAN_NOT_ENABLED_CODE: &str = "plan_not_enabled";
+const UPGRADE_SESSION_UNAVAILABLE_CODE: &str = "upgrade_session_unavailable";
 /// Error code for a refresh that failed transiently (OS Accounts unreachable or
 /// wobbling), as opposed to a definitive rejection of the refresh token. A
 /// transient failure must NOT be treated as a sign-out: the user is still
@@ -779,6 +780,47 @@ pub async fn os_accounts_upgrade(plan: Option<String>) -> Result<(), AppError> {
     open_in_browser(url)
 }
 
+/// Open a hosted Billing Portal session where an existing subscriber reviews
+/// and confirms a prorated plan upgrade. Credits remain authoritative only
+/// after the OS Accounts invoice webhook updates the account snapshot.
+#[tauri::command]
+pub async fn os_accounts_upgrade_session(plan: String) -> Result<(), AppError> {
+    if local_dev_enabled() {
+        return Ok(());
+    }
+    let cfg = Config::load();
+    if !cfg.configured() {
+        return Err(AppError::new(
+            "os_accounts_unconfigured",
+            "OS Accounts is not configured for this build.",
+        ));
+    }
+    let Some(plan) = normalized_plan(&plan) else {
+        return Err(AppError::new(
+            UNKNOWN_PLAN_CODE,
+            "A plan is required to upgrade your subscription.",
+        ));
+    };
+    let session: CheckoutSessionWire = authed_post(
+        &cfg,
+        "/billing/subscription/upgrade-session",
+        upgrade_session_request(plan),
+    )
+    .await?;
+    let url = session.url.trim();
+    if url.is_empty() {
+        return Err(AppError::new(
+            "empty_response",
+            "OS Accounts returned no upgrade URL.",
+        ));
+    }
+    open_in_browser(url)
+}
+
+fn upgrade_session_request(plan: &str) -> serde_json::Value {
+    serde_json::json!({ "plan": plan })
+}
+
 /// Omitting `plan` keeps the accounts-API default (Pro), so June stays
 /// compatible with deployments that predate plan tiers.
 fn subscription_checkout_request(plan: Option<&str>) -> serde_json::Value {
@@ -796,10 +838,9 @@ fn subscription_checkout_request(plan: Option<&str>) -> serde_json::Value {
 
 /// Change the plan on the caller's *existing* subscription in place (e.g. Pro to
 /// Max). Unlike `os_accounts_upgrade`, which starts a fresh Stripe checkout, this
-/// PATCHes the live subscription so OS Accounts prorates the charge and grants
-/// the new plan's credits immediately, then returns the updated subscription
-/// status DTO. June's only in-app use today is the Pro -> Max path a depleted
-/// Pro user takes when their monthly credits run out.
+/// PATCHes the live subscription and returns its updated status. The associated
+/// credits still arrive only after the invoice webhook, so callers must poll the
+/// account snapshot before announcing the new plan as active.
 #[tauri::command]
 pub async fn os_accounts_change_plan(plan: String) -> Result<AccountSubscription, AppError> {
     if local_dev_enabled() {
@@ -1557,7 +1598,7 @@ async fn authed_post<T: for<'de> Deserialize<'de>>(
             return Err(empty_accounts_response(path, status));
         }
         let resp: Envelope<T> = serde_json::from_str(&body)
-            .map_err(|error| decode_accounts_response_error(path, error))?;
+            .map_err(|error| decode_accounts_response_error_for_response(path, status, error))?;
         if resp.success {
             return resp
                 .data
@@ -1567,7 +1608,12 @@ async fn authed_post<T: for<'de> Deserialize<'de>>(
             access = refresh_locked_with_retry(cfg).await?;
             continue;
         }
-        return Err(accounts_request_error(resp.error_code, resp.message));
+        return Err(accounts_request_error_for_response(
+            path,
+            status,
+            resp.error_code,
+            resp.message,
+        ));
     }
     Err(AppError::new("unauthorized", "Not signed in."))
 }
@@ -1645,6 +1691,18 @@ fn accounts_request_error(error_code: Option<i64>, message: Option<String>) -> A
     }
 }
 
+fn accounts_request_error_for_response(
+    path: &str,
+    status: reqwest::StatusCode,
+    error_code: Option<i64>,
+    message: Option<String>,
+) -> AppError {
+    if upgrade_session_route_missing(path, status) {
+        return upgrade_session_unavailable_error();
+    }
+    accounts_request_error(error_code, message)
+}
+
 fn accounts_request_failed_message(message: Option<String>) -> String {
     match message.as_deref() {
         Some("access token is missing required scope") => {
@@ -1656,6 +1714,9 @@ fn accounts_request_failed_message(message: Option<String>) -> String {
 }
 
 fn empty_accounts_response(path: &str, status: reqwest::StatusCode) -> AppError {
+    if upgrade_session_route_missing(path, status) {
+        return upgrade_session_unavailable_error();
+    }
     if path.starts_with("/referrals/") && status == reqwest::StatusCode::NOT_FOUND {
         return AppError::new(
             "referrals_unavailable",
@@ -1678,6 +1739,32 @@ fn decode_accounts_response_error(path: &str, error: serde_json::Error) -> AppEr
     AppError::new(
         "network_error",
         format!("OS Accounts returned an invalid response for {path}: {error}"),
+    )
+}
+
+fn decode_accounts_response_error_for_response(
+    path: &str,
+    status: reqwest::StatusCode,
+    error: serde_json::Error,
+) -> AppError {
+    if upgrade_session_route_missing(path, status) {
+        return upgrade_session_unavailable_error();
+    }
+    decode_accounts_response_error(path, error)
+}
+
+fn upgrade_session_route_missing(path: &str, status: reqwest::StatusCode) -> bool {
+    path == "/billing/subscription/upgrade-session"
+        && matches!(
+            status,
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+        )
+}
+
+fn upgrade_session_unavailable_error() -> AppError {
+    AppError::new(
+        UPGRADE_SESSION_UNAVAILABLE_CODE,
+        "Hosted subscription upgrades are not available on this OS Accounts deployment yet.",
     )
 }
 
@@ -2085,6 +2172,49 @@ mod tests {
             change_plan_request("max"),
             serde_json::json!({ "plan": "max" })
         );
+    }
+
+    #[test]
+    fn upgrade_session_request_carries_only_the_plan() {
+        assert_eq!(
+            upgrade_session_request("max"),
+            serde_json::json!({ "plan": "max" })
+        );
+    }
+
+    #[test]
+    fn upgrade_session_response_maps_the_browser_url() {
+        let session: CheckoutSessionWire = serde_json::from_value(serde_json::json!({
+            "url": "https://billing.stripe.com/session/upgrade"
+        }))
+        .expect("upgrade-session response");
+
+        assert_eq!(session.url, "https://billing.stripe.com/session/upgrade");
+    }
+
+    #[test]
+    fn upgrade_session_route_missing_shapes_map_to_a_stable_code() {
+        let path = "/billing/subscription/upgrade-session";
+        for status in [
+            reqwest::StatusCode::NOT_FOUND,
+            reqwest::StatusCode::METHOD_NOT_ALLOWED,
+        ] {
+            assert_eq!(
+                accounts_request_error_for_response(path, status, None, None).code,
+                UPGRADE_SESSION_UNAVAILABLE_CODE
+            );
+            assert_eq!(
+                empty_accounts_response(path, status).code,
+                UPGRADE_SESSION_UNAVAILABLE_CODE
+            );
+            let decode_error = serde_json::from_str::<Envelope<CheckoutSessionWire>>("not json")
+                .err()
+                .expect("invalid route-missing body");
+            assert_eq!(
+                decode_accounts_response_error_for_response(path, status, decode_error).code,
+                UPGRADE_SESSION_UNAVAILABLE_CODE
+            );
+        }
     }
 
     #[test]

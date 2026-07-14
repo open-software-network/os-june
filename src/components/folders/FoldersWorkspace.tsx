@@ -1,4 +1,4 @@
-import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
+import { IconCheckmark2 } from "central-icons-filled/IconCheckmark2";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleAnnotation3 } from "central-icons/IconBubbleAnnotation3";
 import { IconProjects } from "central-icons/IconProjects";
@@ -340,7 +340,7 @@ function SortDropdown({ value, onChange }: { value: SortKey; onChange: (value: S
               }}
             >
               <span className="folders-sort-check" aria-hidden>
-                {option.value === value ? <IconCheckmark1 size={11} /> : null}
+                {option.value === value ? <IconCheckmark2 size={11} /> : null}
               </span>
               {option.label}
             </button>

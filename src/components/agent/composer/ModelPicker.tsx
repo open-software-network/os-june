@@ -1,4 +1,4 @@
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
@@ -29,12 +29,16 @@ import { ModelPickerCardContent } from "../../settings/ModelPickerPopover";
 export function ComposerModelPicker({
   open,
   model,
+  detail,
   readOnly = false,
   triggerRef,
   onToggleOpen,
 }: {
   open: boolean;
   model?: VeniceModelDto;
+  /** Ghosted designation beside the name — the Auto routing preference
+   * ("Auto Higher"), quieter than the model name. */
+  detail?: string;
   readOnly?: boolean;
   triggerRef: RefObject<HTMLButtonElement>;
   onToggleOpen: () => void;
@@ -45,6 +49,7 @@ export function ComposerModelPicker({
       <div className="agent-composer-model" data-readonly="true">
         <span className="agent-composer-model-label">
           <span>{model.name}</span>
+          {detail ? <span className="agent-composer-model-trigger-detail">{detail}</span> : null}
         </span>
       </div>
     );
@@ -55,12 +60,13 @@ export function ComposerModelPicker({
         ref={triggerRef}
         type="button"
         className="agent-composer-model-trigger"
-        aria-label={`Model: ${model.name}`}
+        aria-label={`Model: ${model.name}${detail ? ` (${detail})` : ""}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={onToggleOpen}
       >
         <span>{model.name}</span>
+        {detail ? <span className="agent-composer-model-trigger-detail">{detail}</span> : null}
         <IconChevronDownSmall size={12} aria-hidden />
       </button>
     </div>
@@ -71,7 +77,13 @@ export function ComposerModelPicker({
 // lists the curated suggested models as plain rows, and a flyout panel
 // opens beside it — hover details for a suggested row, or the searchable
 // full catalog behind the "All models" row.
-export type ComposerModelFlyout = { kind: "model"; id: string } | { kind: "all" } | null;
+// "auto" matches the shared hover-bridge union; this popover has no Auto
+// section yet, so it never sets the kind itself.
+export type ComposerModelFlyout =
+  | { kind: "model"; id: string }
+  | { kind: "all" }
+  | { kind: "auto" }
+  | null;
 
 // Row hovers should feel quick while moving through models, but still keep a
 // tiny intent delay so a pointer sweep does not flash every card open. Click
@@ -86,6 +98,7 @@ export function ComposerModelPopover({
   flyout,
   model,
   options,
+  costQuality,
   search,
   popoverRef,
   searchRef,
@@ -96,12 +109,13 @@ export function ComposerModelPopover({
   flyout: ComposerModelFlyout;
   model?: VeniceModelDto;
   options: VeniceModelDto[];
+  costQuality?: number;
   search: string;
   popoverRef: RefObject<HTMLDivElement>;
   searchRef: RefObject<HTMLInputElement>;
   onFlyoutChange: (flyout: ComposerModelFlyout) => void;
   onSearchChange: (value: string) => void;
-  onSelect: (modelId: string) => void;
+  onSelect: (modelId: string, costQuality?: number) => void;
 }) {
   const flyoutRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -286,7 +300,7 @@ export function ComposerModelPopover({
     ? privacyFiltered.filter((option) => modelMatchesQuery(option, query))
     : privacyFiltered;
   const detail =
-    flyout?.kind === "model" ? suggested.find((item) => item.model.id === flyout.id) : undefined;
+    flyout?.kind === "model" ? suggested.find((item) => item.key === flyout.id) : undefined;
 
   // Latest filtered rows, read by the hand-off closure without re-subscribing
   // the pointer listener on every keystroke.
@@ -389,20 +403,23 @@ export function ComposerModelPopover({
       <p className="agent-composer-model-title">Suggested</p>
       <div className="agent-composer-model-menu" role="listbox" aria-label="Suggested text models">
         {suggested.length ? (
-          suggested.map(({ model: option }) => (
+          suggested.map(({ key, model: option, costQuality: presetCostQuality }) => (
             <button
-              key={option.id}
+              key={key}
               type="button"
               className="agent-composer-model-row"
               role="option"
-              aria-selected={option.id === model.id}
-              data-model-id={option.id}
-              data-active={(flyout?.kind === "model" && flyout.id === option.id) || undefined}
+              aria-selected={
+                option.id === model.id &&
+                (presetCostQuality === undefined || presetCostQuality === costQuality)
+              }
+              data-model-id={key}
+              data-active={(flyout?.kind === "model" && flyout.id === key) || undefined}
               onMouseEnter={() => {
                 if (modelBridge.isActive()) {
                   return;
                 }
-                const open = () => onFlyoutChange({ kind: "model", id: option.id });
+                const open = () => onFlyoutChange({ kind: "model", id: key });
                 if (flyout) {
                   cancelHoverIntent();
                   open();
@@ -412,13 +429,14 @@ export function ComposerModelPopover({
               }}
               onFocus={() => {
                 cancelHoverIntent();
-                onFlyoutChange({ kind: "model", id: option.id });
+                onFlyoutChange({ kind: "model", id: key });
               }}
-              onClick={() => onSelect(option.id)}
+              onClick={() => onSelect(option.id, presetCostQuality)}
             >
               <ComposerModelOptionText model={option} />
-              {option.id === model.id ? (
-                <IconCheckmark1Small
+              {option.id === model.id &&
+              (presetCostQuality === undefined || presetCostQuality === costQuality) ? (
+                <IconCheckmark2Small
                   size={14}
                   aria-hidden
                   className="agent-composer-model-row-check"
@@ -634,7 +652,7 @@ function ComposerModelOption({
   model: VeniceModelDto;
   selected: boolean;
   active?: boolean;
-  onSelect: (modelId: string) => void;
+  onSelect: (modelId: string, costQuality?: number) => void;
   onHover: (model: VeniceModelDto, row: HTMLElement, immediate: boolean) => void;
 }) {
   return (
@@ -651,7 +669,7 @@ function ComposerModelOption({
     >
       <ComposerModelOptionText model={model} />
       {selected ? (
-        <IconCheckmark1Small size={14} aria-hidden className="agent-composer-model-row-check" />
+        <IconCheckmark2Small size={14} aria-hidden className="agent-composer-model-row-check" />
       ) : null}
       <ModelRowPrivacyBadge model={model} />
     </button>

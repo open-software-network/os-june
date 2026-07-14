@@ -50,6 +50,14 @@ import { IconProjects } from "central-icons/IconProjects";
 import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
+import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
+import {
+  OPEN_REFERRAL_DIALOG_EVENT,
+  ReferralNudge,
+  type ReferralNudgeMoment,
+} from "../components/referral/ReferralNudge";
+import { markReferralNudgeClickedThrough, recordDictationFinished } from "../lib/referral-nudge";
+import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import { Dialog } from "../components/ui/Dialog";
 import {
   assignNoteToFolder,
@@ -71,6 +79,7 @@ import {
   listSessionFolders,
   openPrivacySettings,
   osAccountsLogout,
+  osAccountsOpenPortal,
   pauseRecording,
   removeNoteFromFolder,
   removeSessionFromFolder,
@@ -156,15 +165,35 @@ import {
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
-import { runDepletedBalanceAction } from "../lib/billing-actions";
 import {
+  type DepletedBalanceOutcome,
+  type MaxUpgradeTransport,
+  runDepletedBalanceAction,
+} from "../lib/billing-actions";
+import {
+  MAX_GRANT_HOSTED_POLL_TIMEOUT_MS,
+  MAX_UPGRADE_BROWSER_STATUS,
   MAX_UPGRADE_BUSY_LABEL,
+  MAX_UPGRADE_CHARGE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_LABEL,
   MAX_UPGRADE_CONFIRM_TITLE,
+  MAX_UPGRADE_PORTAL_LABEL,
   MAX_UPGRADE_READY_STATUS,
-  MAX_UPGRADE_SLOW_STATUS,
+  MAX_UPGRADE_STALE_ACTION_NOTICE,
   MAX_UPGRADE_WAITING_STATUS,
+  type MaxGrantWait,
+  accountLooksPreGrant,
+  beginMaxGrantWait,
+  clearMaxGrantWait,
+  isMaxGrantWaitCurrent,
+  isMaxUpgradeWaitStatus,
+  markMaxGrantWaitSlow,
+  markMaxGrantWaitWaiting,
+  maxGrantLanded,
+  maxGrantWaitForAccount,
+  maxUpgradeSlowStatus,
+  maxUpgradeWaitStatus,
   pollForMaxGrant,
 } from "../lib/max-upgrade";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
@@ -513,6 +542,31 @@ export function App() {
       dispose?.();
     };
   }, []);
+  // The referral delight nudge (bottom-left card). Real shows come from the
+  // trigger layer (useReferralNudgeTriggers below); the dev console driver
+  // (window.__referralNudge) parks the card without touching the persisted
+  // caps, which is why the source is tracked — only trigger-shown cards may
+  // record a click-through.
+  const [referralNudgeMoment, setReferralNudgeMoment] = useState<ReferralNudgeMoment | null>(null);
+  const referralNudgeSourceRef = useRef<"trigger" | "demo">("trigger");
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/referral-nudge-demo").then(({ registerReferralNudgeDemo }) => {
+      if (cancelled) return;
+      ({ dispose } = registerReferralNudgeDemo({
+        setMoment: (moment) => {
+          referralNudgeSourceRef.current = "demo";
+          setReferralNudgeMoment(moment);
+        },
+      }));
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
   // Dev console driver for the sidebar "Relaunch to update" card
   // (window.__updateCard). Pushes synthetic values into the real update state
   // so the card's styling can be parked and inspected without a live update.
@@ -593,15 +647,22 @@ export function App() {
     ? shouldBlockOnFunding(fundingDemoAccount)
     : !devAccountsUnconfigured && !signInRequired && shouldBlockOnFunding(account);
   const topUpLabel = depletedBalanceActionLabel(account);
-  // Confirm gate for the Pro -> Max upgrade reached from depleted-balance
-  // surfaces (note failure banner, agent workspace notice). The change
-  // charges the saved card the moment it runs, so it never fires straight
-  // from those buttons.
-  const [maxUpgradePromptOpen, setMaxUpgradePromptOpen] = useState(false);
+  // Confirm gate for the Pro -> Max plan change reached from depleted-balance
+  // surfaces (note failure banner, agent workspace notice). Capture the action
+  // at click time so a later account refresh cannot reroute confirmation to a
+  // different billing transport. `transport` flips to charge_now only after a
+  // hosted capability signal, swapping the dialog to the charge-now copy that
+  // the next confirm actually consents to.
+  const [maxUpgradePrompt, setMaxUpgradePrompt] = useState<{
+    action: "upgrade_to_max";
+    plan: "max";
+    transport: MaxUpgradeTransport;
+  } | null>(null);
   const [maxUpgradeError, setMaxUpgradeError] = useState<string>();
-  // Transient billing feedback ("You are on Max now...") shown beside the
-  // error banner; cleared automatically once it has been seen.
+  // Transient billing feedback shown beside the error banner. Success is only
+  // announced after the credit grant poll observes a higher credit balance.
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
+  const appMaxGrantWaitRef = useRef<MaxGrantWait>();
   const billingNoticeTimerRef = useRef<number | undefined>(undefined);
   const showBillingNotice = useCallback((notice: string, autoClearMs?: number) => {
     window.clearTimeout(billingNoticeTimerRef.current);
@@ -611,41 +672,163 @@ export function App() {
     }
   }, []);
   const confirmMaxUpgrade = useCallback(async () => {
+    if (!maxUpgradePrompt) return;
+    // A wait can begin on another surface while this dialog sits open (an
+    // upgrade confirmed in Billing settings). Never stack a second purchase
+    // on it; adopt the wait and show its status. A slow wait stays
+    // retryable - the dispatch below supersedes it.
+    const pendingWait = maxGrantWaitForAccount(account.user?.id);
+    if (pendingWait && pendingWait.phase !== "slow") {
+      setMaxUpgradePrompt(null);
+      appMaxGrantWaitRef.current = pendingWait;
+      showBillingNotice(
+        pendingWait.phase === "browser" ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS,
+      );
+      return;
+    }
+    if (depletedBalanceAction(account) !== maxUpgradePrompt.action) {
+      // The account reclassified between click and confirm (plan changed,
+      // subscription lapsed). Never dispatch the stale intent - and never
+      // just vanish: say why the dialog closed.
+      setMaxUpgradePrompt(null);
+      showBillingNotice(MAX_UPGRADE_STALE_ACTION_NOTICE, 8000);
+      return;
+    }
     const baselineCredits = account.balance?.credits ?? 0;
+    let outcome: DepletedBalanceOutcome;
     try {
-      const outcome = await runDepletedBalanceAction(account);
-      if (outcome !== "changed_plan") {
-        // Stale snapshot resolved another way (subscribe prompt): refresh and
-        // let the surfaces re-render; nothing was charged.
-        void refreshAccount();
-        return;
-      }
+      outcome = await runDepletedBalanceAction(
+        account,
+        maxUpgradePrompt.action,
+        maxUpgradePrompt.plan,
+        maxUpgradePrompt.transport,
+      );
     } catch (err) {
       // Keep the dialog open with the failure inside it, next to retry.
       setMaxUpgradeError(messageFromError(err));
       throw err;
     }
-    // The PATCH resolves before the webhook grants the credits: show interim
-    // feedback and poll briefly until the new balance lands.
-    showBillingNotice(MAX_UPGRADE_WAITING_STATUS);
-    // No separate refresh: the poll's first tick refreshes immediately, and a
-    // parallel request could resolve out of order and overwrite the poll's
-    // fresher snapshot with a stale pre-grant one.
-    void pollForMaxGrant(refreshAccount, baselineCredits).then((landed) => {
-      showBillingNotice(landed ? MAX_UPGRADE_READY_STATUS : MAX_UPGRADE_SLOW_STATUS, 8000);
-    });
-  }, [account, refreshAccount, showBillingNotice]);
-  const handleTopUp = useCallback(() => {
-    // Tier-aware: Max tops up, Pro upgrades in place to Max, Free subscribes.
-    // The upgrade is a charge, so it routes through an explicit confirm
-    // dialog. upgrade_required / subscribe_required mean the server proved
-    // our snapshot stale (top-up gated behind Max, or no active
-    // subscription): refresh so the depleted-balance surfaces re-render as
-    // the right prompt and the user chooses explicitly; no raw error, and
-    // never an automatic purchase.
-    if (depletedBalanceAction(account) === "upgrade_to_max") {
+    if (outcome === "charge_confirmation_required") {
+      // Definitive capability signal: nothing was charged. Swap the dialog to
+      // the charge-now copy and keep it open (ConfirmDialog stays up on a
+      // rejection) so the PATCH gets its own explicit confirm.
       setMaxUpgradeError(undefined);
-      setMaxUpgradePromptOpen(true);
+      setMaxUpgradePrompt({ ...maxUpgradePrompt, transport: "charge_now" });
+      throw new Error("charge_confirmation_required");
+    }
+    if (outcome === "already_on_plan") {
+      // The server already has the plan. One refresh decides between a grant
+      // still landing (poll) and a long-settled Max account, where a poll
+      // could never succeed and the surface must re-derive its prompt.
+      const refreshed = await refreshAccount();
+      if (!accountLooksPreGrant(refreshed, baselineCredits)) {
+        // Settled: any wait for this account is obsolete and must not keep
+        // suppressing the depleted-balance surfaces. A retry dispatched from
+        // a slow wait lands here.
+        const staleWait = maxGrantWaitForAccount(account.user?.id);
+        if (staleWait) clearMaxGrantWait(staleWait);
+        appMaxGrantWaitRef.current = undefined;
+        window.clearTimeout(billingNoticeTimerRef.current);
+        setBillingNotice(null);
+        return;
+      }
+    } else if (outcome !== "opened_upgrade_session" && outcome !== "changed_plan") {
+      // The server no longer sees an active subscription. Refresh and let
+      // the depleted-balance surface render the correct subscribe action.
+      void refreshAccount();
+      return;
+    }
+    // Hosted confirmation and the credit grant arrive asynchronously. The
+    // consented PATCH skips only the browser-confirmation phase; both paths
+    // stay neutral until the account refresh poll observes landed credits.
+    const hostedReview = outcome === "opened_upgrade_session";
+    const grantWait = beginMaxGrantWait(
+      baselineCredits,
+      account.user?.id,
+      hostedReview ? "browser" : "waiting",
+    );
+    appMaxGrantWaitRef.current = grantWait;
+    showBillingNotice(hostedReview ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS);
+    void pollForMaxGrant(
+      refreshAccount,
+      baselineCredits,
+      hostedReview ? { timeoutMs: MAX_GRANT_HOSTED_POLL_TIMEOUT_MS } : {},
+    ).then((landed) => {
+      if (!isMaxGrantWaitCurrent(grantWait)) return;
+      if (landed) {
+        clearMaxGrantWait(grantWait);
+        appMaxGrantWaitRef.current = undefined;
+        showBillingNotice(MAX_UPGRADE_READY_STATUS, 8000);
+      } else {
+        markMaxGrantWaitSlow(grantWait);
+        showBillingNotice(maxUpgradeSlowStatus(grantWait));
+      }
+    });
+  }, [account, maxUpgradePrompt, refreshAccount, showBillingNotice]);
+
+  useEffect(() => {
+    const grantWait = appMaxGrantWaitRef.current;
+    if (grantWait && grantWait.accountId !== account.user?.id) {
+      clearMaxGrantWait(grantWait);
+      appMaxGrantWaitRef.current = undefined;
+      window.clearTimeout(billingNoticeTimerRef.current);
+      setBillingNotice(null);
+      return;
+    }
+    if (grantWait && !isMaxGrantWaitCurrent(grantWait)) {
+      // Cancelled or superseded on a coexisting surface (funding notice,
+      // sidebar chip, Billing settings). Drop the cached copy so the banner
+      // cannot claim a wait that no longer exists; the surface owning the
+      // live wait shows its status, and interaction guards re-adopt it here.
+      appMaxGrantWaitRef.current = undefined;
+      window.clearTimeout(billingNoticeTimerRef.current);
+      setBillingNotice(null);
+      return;
+    }
+    if (grantWait) {
+      // A coexisting surface's poll advances the shared wait's phase by
+      // in-place mutation, which the identity checks above cannot see. Swap
+      // a stale phase line for the live one - and only a phase line, never
+      // an error or the ready notice.
+      const phaseCopy = maxUpgradeWaitStatus(grantWait);
+      setBillingNotice((notice) =>
+        notice !== null && notice !== phaseCopy && isMaxUpgradeWaitStatus(notice)
+          ? phaseCopy
+          : notice,
+      );
+    }
+    if (grantWait?.phase === "browser" && account.subscription?.plan === "max") {
+      markMaxGrantWaitWaiting(grantWait);
+      showBillingNotice(MAX_UPGRADE_WAITING_STATUS);
+    }
+    if (!grantWait || !maxGrantLanded(account, grantWait.baselineCredits)) return;
+    clearMaxGrantWait(grantWait);
+    appMaxGrantWaitRef.current = undefined;
+    showBillingNotice(MAX_UPGRADE_READY_STATUS, 8000);
+  }, [account, showBillingNotice]);
+
+  const handleTopUp = useCallback(() => {
+    // An upgrade already waiting for this account (started here or on any
+    // other surface) must never be offered a second purchase: adopt the wait
+    // and re-show its status instead of opening a new confirm. A slow wait
+    // (an abandoned Stripe page) keeps the retry path - reopening a hosted
+    // session charges nothing until the Stripe confirm.
+    const pendingWait = maxGrantWaitForAccount(account.user?.id);
+    if (pendingWait && pendingWait.phase !== "slow") {
+      appMaxGrantWaitRef.current = pendingWait;
+      showBillingNotice(
+        pendingWait.phase === "browser" ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS,
+      );
+      return;
+    }
+    // Tier-aware: Max tops up, Pro changes its plan in place, Free subscribes.
+    // The Max path routes through an explicit confirmation. A stale top-up
+    // gate refreshes the snapshot so the surface can render the right prompt
+    // without an automatic purchase.
+    const action = depletedBalanceAction(account);
+    if (action === "upgrade_to_max") {
+      setMaxUpgradeError(undefined);
+      setMaxUpgradePrompt({ action, plan: "max", transport: "hosted" });
       return;
     }
     runDepletedBalanceAction(account)
@@ -653,7 +836,7 @@ export function App() {
         if (outcome !== "opened_browser") void refreshAccount();
       })
       .catch((err: unknown) => setError(messageFromError(err)));
-  }, [account, refreshAccount]);
+  }, [account, refreshAccount, showBillingNotice]);
   const [onboardingDone, setOnboardingDone] = useState(() => {
     applyOnboardingReplayFlag();
     return isOnboardingComplete();
@@ -666,6 +849,21 @@ export function App() {
   // holds bootstrap, update checks, and eager permission probes because the
   // wizard owns the permission prompts while it is on screen.
   const appBlocked = accountLoading || signInRequired || onboardingRequired;
+  // The referral delight nudge's trigger layer: counts the moments (5th note,
+  // first agent completion, 25th dictation) and surfaces the card when the
+  // caps and gates allow. T4 (positive feedback) records from the report flow
+  // directly.
+  // Gated on captureActive too: a growth card sliding in mid-meeting is the
+  // one timing guaranteed to annoy. A moment that fires during a recording is
+  // consumed without showing (the caps never queue).
+  useReferralNudgeTriggers({
+    notes: state.notes,
+    enabled: account.signedIn && !account.localDev && onboardingDone && !captureActive,
+    onShow: (moment) => {
+      referralNudgeSourceRef.current = "trigger";
+      setReferralNudgeMoment(moment);
+    },
+  });
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
@@ -1666,6 +1864,12 @@ export function App() {
     void listen<string>("dictation-event", (event) => {
       const helperEvent = parseDictationHelperEvent(event.payload);
       if (!helperEvent) return;
+      if (helperEvent.type === "final_transcript") {
+        // T3 of the referral delight nudge: a dictation landed (often while
+        // June is backgrounded; the card waits to be found).
+        recordDictationFinished();
+        return;
+      }
       if (helperEvent.type === "agent_session_prompt") {
         const prompt = stringPayloadValue(helperEvent.payload?.prompt) ?? "";
         dispatchAgentSessionStatus({
@@ -3263,7 +3467,18 @@ export function App() {
             {error ? <p className="error-banner">{error}</p> : null}
             {billingNotice ? (
               <p className="notice-banner" role="status">
-                {billingNotice}
+                {billingNotice}{" "}
+                {appMaxGrantWaitRef.current?.phase === "slow" ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      void osAccountsOpenPortal().catch((err) => setError(messageFromError(err)));
+                    }}
+                  >
+                    {MAX_UPGRADE_PORTAL_LABEL}
+                  </button>
+                ) : null}
               </p>
             ) : null}
             <div className="workspace">
@@ -3862,14 +4077,38 @@ export function App() {
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
       />
       <ConfirmDialog
-        open={maxUpgradePromptOpen}
-        onClose={() => setMaxUpgradePromptOpen(false)}
+        open={maxUpgradePrompt !== null}
+        onClose={() => setMaxUpgradePrompt(null)}
         onConfirm={confirmMaxUpgrade}
         title={MAX_UPGRADE_CONFIRM_TITLE}
-        description={maxUpgradeError ?? MAX_UPGRADE_CONFIRM_BODY}
+        description={
+          maxUpgradeError ??
+          (maxUpgradePrompt?.transport === "charge_now"
+            ? MAX_UPGRADE_CHARGE_CONFIRM_BODY
+            : MAX_UPGRADE_CONFIRM_BODY)
+        }
         confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />
+      {/* Connector action approvals (approval trust mode) can arrive from a
+          routine or chat in any view, so the tray is mounted at the shell. */}
+      <ConnectorApprovalsTray />
+      {/* The referral delight nudge floats bottom-left at the shell so it can
+          appear over any view; click-through opens the sidebar-owned referral
+          dialog by event. */}
+      {referralNudgeMoment ? (
+        <ReferralNudge
+          moment={referralNudgeMoment}
+          onInvite={() => {
+            // Ends all future nudging, per the frequency rules — but only for
+            // real trigger shows; demo cards must not poison the caps.
+            if (referralNudgeSourceRef.current === "trigger") markReferralNudgeClickedThrough();
+            setReferralNudgeMoment(null);
+            window.dispatchEvent(new Event(OPEN_REFERRAL_DIALOG_EVENT));
+          }}
+          onDismiss={() => setReferralNudgeMoment(null)}
+        />
+      ) : null}
     </main>
   );
 }

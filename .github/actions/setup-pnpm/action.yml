@@ -1,0 +1,22 @@
+name: Setup policy-compliant pnpm
+description: Verify the pinned pnpm release age before installing it
+
+runs:
+  using: composite
+  steps:
+    - name: Verify pinned pnpm release age
+      shell: bash
+      run: |
+        set -euo pipefail
+        policy_root="$(cd "$GITHUB_ACTION_PATH/../../.." && pwd -P)"
+        if command -v python3 >/dev/null 2>&1; then
+          python3 "$policy_root/scripts/check-pnpm-release-age.py" \
+            --package-json "$GITHUB_WORKSPACE/package.json"
+        else
+          python "$policy_root/scripts/check-pnpm-release-age.py" \
+            --package-json "$GITHUB_WORKSPACE/package.json"
+        fi
+    - name: Install pinned pnpm
+      uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      with:
+        run_install: false

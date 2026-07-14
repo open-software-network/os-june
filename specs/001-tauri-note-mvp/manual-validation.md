@@ -39,7 +39,7 @@ Manual-only because they require real microphone input, macOS privacy prompts, f
 
 - [ ] Mute or disconnect microphone input.
 - [ ] Record for at least 10 seconds.
-- [ ] Confirm the UI warns that microphone input appears silent.
+- [ ] Confirm no live silence prompt appears, then select Done and verify validation explains the unusable audio.
 - [ ] Confirm Done does not generate a note from unusable audio.
 
 ## Network/Provider Failure Retry

@@ -206,7 +206,7 @@ async fn integration_p3a_report_uses_user_auth_and_forwards_anonymous_bucket()
             "/v1/p3a/reports",
             &serde_json::json!({
                 "schema": 1,
-                "questionId": "dictation.sessions",
+                "questionId": "onboarding.use-case.work",
                 "epoch": "2026-W28",
                 "platform": "macos",
                 "versionSeries": "0.0.x",
@@ -228,7 +228,7 @@ async fn integration_p3a_report_uses_user_auth_and_forwards_anonymous_bucket()
         sink.reports()?,
         vec![P3aReport {
             product_slug: "june".to_string(),
-            question_id: "dictation.sessions".to_string(),
+            question_id: "onboarding.use-case.work".to_string(),
             epoch: "2026-W28".to_string(),
             platform: "macos".to_string(),
             version_series: "0.0.x".to_string(),
@@ -309,6 +309,24 @@ async fn integration_agent_chat_stream_returns_upstream_sse_body() -> Result<(),
     );
     let body = response_text(response).await?;
     assert_eq!(body, "data: {\"choices\":[]}\n\n");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_routes_stale_model_through_auto() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/chat/completions",
+        &serde_json::json!({
+            "model": "retired-venice-model",
+            "messages": [{ "role": "user", "content": "hello" }]
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["id"], "chatcmpl_test");
     Ok(())
 }
 
@@ -796,6 +814,27 @@ async fn integration_note_transcribe_rejects_unsupported_audio() -> Result<(), B
     let body = response_json(response).await?;
     assert_eq!(body["success"], false);
     assert_eq!(body["message"], "unsupported_audio_format");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_dictate_routes_retired_asr_model_through_priced_fallback()
+-> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request(
+        "/v1/dictate",
+        multipart_body([
+            text_part("model", "retired-asr-model"),
+            text_part("sessionId", "session-stale-asr"),
+            text_part("utteranceId", "utterance-stale-asr"),
+            file_part("audio", "dictation.wav", valid_wav()),
+        ]),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["text"], "Transcribed audio");
     Ok(())
 }
 
@@ -1670,6 +1709,24 @@ fn models() -> BTreeMap<String, ModelPriceConfig> {
                 provider: ModelProvider::Openai,
                 model_type: ModelType::Text,
                 display_name: "Text Model".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
+            },
+        ),
+        (
+            "open-software/auto",
+            ModelPriceConfig {
+                unit: PriceUnit::Tokens,
+                credits_per_million_seconds: None,
+                input_credits_per_million_tokens: Some(500),
+                output_credits_per_million_tokens: Some(500),
+                provider: ModelProvider::Venice,
+                model_type: ModelType::Text,
+                display_name: "Auto".to_string(),
                 description: None,
                 privacy: None,
                 pricing: None,

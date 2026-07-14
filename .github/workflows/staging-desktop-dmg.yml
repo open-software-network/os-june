@@ -22,10 +22,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 9.15.4
-          run_install: false
+        uses: ./.github/actions/setup-pnpm
 
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -71,6 +68,8 @@ jobs:
           STAGING_OS_ACCOUNTS_URL: ${{ secrets.STAGING_OS_ACCOUNTS_URL }}
           STAGING_OS_ACCOUNTS_API_URL: ${{ secrets.STAGING_OS_ACCOUNTS_API_URL }}
           STAGING_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.STAGING_OS_ACCOUNTS_CLIENT_ID }}
+          STAGING_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.STAGING_GOOGLE_OAUTH_CLIENT_ID }}
+          STAGING_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.STAGING_GOOGLE_OAUTH_CLIENT_SECRET }}
           STAGING_JUNE_API_URL: ${{ secrets.STAGING_JUNE_API_URL }}
         run: |
           set -euo pipefail
@@ -85,6 +84,8 @@ jobs:
             STAGING_OS_ACCOUNTS_URL \
             STAGING_OS_ACCOUNTS_API_URL \
             STAGING_OS_ACCOUNTS_CLIENT_ID \
+            STAGING_GOOGLE_OAUTH_CLIENT_ID \
+            STAGING_GOOGLE_OAUTH_CLIENT_SECRET \
             STAGING_JUNE_API_URL
           do
             if [ -z "${!name:-}" ]; then
@@ -105,6 +106,8 @@ jobs:
           OS_ACCOUNTS_URL: ${{ secrets.STAGING_OS_ACCOUNTS_URL }}
           OS_ACCOUNTS_API_URL: ${{ secrets.STAGING_OS_ACCOUNTS_API_URL }}
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.STAGING_OS_ACCOUNTS_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.STAGING_GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.STAGING_GOOGLE_OAUTH_CLIENT_SECRET }}
           JUNE_API_URL: ${{ secrets.STAGING_JUNE_API_URL }}
         run: pnpm tauri:build:signed-dmg --target universal-apple-darwin
 

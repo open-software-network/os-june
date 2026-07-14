@@ -22,6 +22,7 @@ import {
   importHermesBridgeFile,
   listVeniceModels,
   providerModelSettings,
+  setCostQuality,
   type VeniceModelDto,
 } from "../../lib/tauri";
 import { FileTypeIcon } from "../agent/FileTypeIcon";
@@ -32,7 +33,13 @@ import {
   ComposerModelPopover,
   type ComposerModelFlyout,
 } from "../agent/composer/ModelPicker";
-import { modelOptions } from "../settings/ModelPickerDialog";
+import {
+  dispatchProviderModelSettingsChanged,
+  PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+  type ProviderModelSettingsChangedDetail,
+} from "../../lib/model-privacy";
+import { autoPillDesignation } from "../../lib/suggested-models";
+import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import type { NoteChat, NoteChatAttachment } from "./useNoteChat";
 
 /** Note-tailored presets, shown as the main session view's preset chips (icon
@@ -232,6 +239,7 @@ export function NoteChatPanel({
   // at session.create or as a /model switch before the next message).
   const [models, setModels] = useState<VeniceModelDto[]>([]);
   const [modelId, setModelId] = useState("");
+  const [costQuality, setCostQualityState] = useState<number | undefined>();
   const [modelOpen, setModelOpen] = useState(false);
   const [modelFlyout, setModelFlyout] = useState<ComposerModelFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
@@ -248,6 +256,7 @@ export function NoteChatPanel({
       if (stale) return;
       setModels(catalog.models);
       setModelId(settings.settings.generationModel || catalog.selectedModel);
+      setCostQualityState(settings.settings.costQuality);
     })().catch(() => {
       // No catalog (bridge down, browser preview): the picker simply hides.
     });
@@ -255,7 +264,44 @@ export function NoteChatPanel({
       stale = true;
     };
   }, []);
-  const model = models.find((candidate) => candidate.id === modelId);
+  // The Auto designation mirrors the app-wide preference, which the workspace
+  // and Settings pickers can change while this panel stays mounted — re-read
+  // it whenever a generation model change is announced. The session's model
+  // choice itself stays local on purpose.
+  useEffect(() => {
+    function handleSettingsChanged(event: Event) {
+      const detail = (event as CustomEvent<ProviderModelSettingsChangedDetail>).detail;
+      if (detail?.mode !== "generation") return;
+      void providerModelSettings()
+        .then((settings) => setCostQualityState(settings.settings.costQuality))
+        .catch(() => {
+          // No settings (bridge down, browser preview): keep the last value.
+        });
+    }
+    window.addEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, handleSettingsChanged);
+    return () =>
+      window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, handleSettingsChanged);
+  }, []);
+  const model = modelId ? selectedModel(models, modelId) : undefined;
+
+  async function selectModel(nextModelId: string, nextCostQuality?: number) {
+    try {
+      if (nextCostQuality !== undefined) {
+        const next = await setCostQuality(nextCostQuality);
+        setCostQualityState(next.costQuality);
+        // The preference is app-wide even though the model choice is
+        // session-local: announce it so the workspace pill's designation
+        // refreshes (the mirror of the listener above).
+        dispatchProviderModelSettingsChanged({ mode: "generation", modelId: nextModelId });
+      }
+      setModelId(nextModelId);
+      setSessionModel(nextModelId);
+      setModelOpen(false);
+      setComposerError(null);
+    } catch (err) {
+      setComposerError(messageFromError(err));
+    }
+  }
 
   useEffect(() => {
     if (!modelOpen) return;
@@ -528,6 +574,9 @@ export function NoteChatPanel({
                 <ComposerModelPicker
                   open={modelOpen}
                   model={model}
+                  detail={
+                    model?.id === AUTO_MODEL_ID ? autoPillDesignation(costQuality) : undefined
+                  }
                   triggerRef={modelTriggerRef}
                   onToggleOpen={() => {
                     setModelFlyout(null);
@@ -583,16 +632,15 @@ export function NoteChatPanel({
               flyout={modelFlyout}
               model={model}
               options={modelOptions(models, model?.id ?? "")}
+              costQuality={costQuality}
               search={modelSearch}
               popoverRef={modelPopoverRef}
               searchRef={modelSearchRef}
               onFlyoutChange={setModelFlyout}
               onSearchChange={setModelSearch}
-              onSelect={(nextModelId) => {
-                setModelId(nextModelId);
-                setSessionModel(nextModelId);
-                setModelOpen(false);
-              }}
+              onSelect={(nextModelId, nextCostQuality) =>
+                void selectModel(nextModelId, nextCostQuality)
+              }
             />
           ) : null}
         </footer>

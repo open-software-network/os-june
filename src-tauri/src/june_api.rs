@@ -240,6 +240,7 @@ struct GenerateBody {
     language: Option<String>,
     existing_generated_note: Option<String>,
     model: String,
+    cost_quality: Option<f64>,
     stream: bool,
 }
 
@@ -343,6 +344,9 @@ pub async fn generate_note_from_transcript(
         language: request.language,
         existing_generated_note: request.existing_generated_note,
         model,
+        cost_quality: (crate::providers::generation_model()
+            == crate::providers::AUTO_GENERATION_MODEL)
+            .then(crate::providers::cost_quality),
         stream: true,
     };
     let response: GenerateResponse =
@@ -1134,6 +1138,16 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
         object.insert(
             "model".to_string(),
             serde_json::Value::String(crate::providers::generation_model()),
+        );
+    }
+    if object.get("model").and_then(serde_json::Value::as_str)
+        == Some(crate::providers::AUTO_GENERATION_MODEL)
+    {
+        object.insert(
+            "auto".to_string(),
+            serde_json::json!({
+                "cost_quality": crate::providers::cost_quality()
+            }),
         );
     }
     clamp_agent_chat_output_tokens(object, "max_tokens");
@@ -2454,8 +2468,10 @@ fn request_accepts_venice_api_key(path: &str, model_accepts_venice_api_key: bool
 }
 
 fn model_accepts_venice_api_key(model: &str) -> bool {
-    crate::providers::transcription_provider_for_model(model.trim())
-        == crate::providers::PROVIDER_VENICE
+    let model = model.trim();
+    model != crate::providers::AUTO_GENERATION_MODEL
+        && crate::providers::transcription_provider_for_model(model)
+            == crate::providers::PROVIDER_VENICE
 }
 
 fn body_model_accepts_venice_api_key(body: &serde_json::Value) -> bool {
@@ -3265,6 +3281,20 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
     }
 
     #[test]
+    fn agent_proxy_injects_auto_cost_quality_preference() {
+        let mut body = serde_json::json!({
+            "model": crate::providers::AUTO_GENERATION_MODEL,
+            "messages": []
+        });
+        normalize_agent_chat_request_for_proxy(&mut body);
+        assert_eq!(
+            body["auto"]["cost_quality"],
+            serde_json::json!(crate::providers::cost_quality())
+        );
+        assert!(!body_model_accepts_venice_api_key(&body));
+    }
+
+    #[test]
     fn venice_key_gate_rejects_openai_transcription_models() {
         assert!(request_accepts_venice_api_key(
             "/v1/notes/transcribe",
@@ -3277,6 +3307,10 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         assert!(!request_accepts_venice_api_key(
             "/v1/dictate",
             model_accepts_venice_api_key("whisper-1")
+        ));
+        assert!(!request_accepts_venice_api_key(
+            "/v1/notes/generate",
+            model_accepts_venice_api_key(crate::providers::AUTO_GENERATION_MODEL)
         ));
         assert!(!request_accepts_venice_api_key(
             "/v1/issue-reports",

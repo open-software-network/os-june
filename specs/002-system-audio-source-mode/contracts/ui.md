@@ -39,7 +39,8 @@ Start behavior:
 
 `Microphone only`:
 
-- Preserves the existing recorder layout, elapsed time, waveform, Pause, Resume, Done, silence warning, and validation states.
+- Preserves the existing recorder layout, elapsed time, waveform, Pause, Resume, Done, and validation states.
+- Does not surface the live silence heuristic as warning copy. Unusable audio is explained after validation.
 
 `Microphone + system audio`:
 

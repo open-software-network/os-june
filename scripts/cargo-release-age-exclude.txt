@@ -1,0 +1,6 @@
+# Exclusions from the 7-day cargo release-age cooldown
+# (scripts/check-cargo-release-age.py). One entry per line:
+#   name@version # reason and link
+# Every entry needs a review-visible justification — typically an urgent
+# security patch that cannot wait out the cooldown window. Remove entries
+# once they age past the window.

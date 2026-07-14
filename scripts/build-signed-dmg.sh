@@ -142,7 +142,9 @@ cd "$ROOT_DIR"
 # (python, extension .so) get the Developer ID + hardened runtime signature
 # notarization requires.
 ./scripts/bundle-hermes-runtime.sh
-pnpm tauri build --bundles dmg "$@"
+# Trailing args after `--` reach the cargo runner; --locked keeps the
+# signed build from re-resolving past Cargo.lock (spec/package-install-security.md).
+pnpm tauri build --bundles dmg "$@" -- --locked
 
 shopt -s nullglob
 dmgs=(

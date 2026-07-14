@@ -886,12 +886,27 @@ pub fn reveal_path(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        // `explorer` wants the selection flag and path in a single `/select,<path>`
-        // token; pass it as one argument so nothing is shell-interpolated.
-        let mut arg = std::ffi::OsString::from("/select,");
-        arg.push(target);
-        std::process::Command::new("explorer")
-            .arg(arg)
+        use std::ffi::OsString;
+        use std::os::windows::process::CommandExt;
+
+        // Explorer has its own legacy command-line parser. Build the exact
+        // argument string it expects and pass it with `raw_arg` so Rust does
+        // not escape the inner quotes as `\"`, which makes Explorer fall
+        // back to the default folder instead of selecting the file. Keep the
+        // path as an OsString so non-UTF-8 Windows paths are not lossy-formatted.
+        let mut command = std::process::Command::new("explorer.exe");
+        let mut arg = OsString::new();
+        if target.is_dir() {
+            arg.push("\"");
+            arg.push(target.as_os_str());
+            arg.push("\"");
+        } else {
+            arg.push("/select,\"");
+            arg.push(target.as_os_str());
+            arg.push("\"");
+        }
+        command
+            .raw_arg(arg)
             .spawn()
             .map(|_| ())
             .map_err(|error| format!("Failed to reveal path in Explorer: {error}"))

@@ -33,6 +33,14 @@ if (bundles && !hasBundleOverride) {
   args.push("--bundles", bundles.join(","));
 }
 args.push(...userArgs);
+// Trailing args after `--` go to the cargo runner. `--locked` keeps release
+// builds from re-resolving dependencies past Cargo.lock, so a stale lockfile
+// fails the build instead of silently pulling crates that never saw the
+// release-age cooldown (spec/package-install-security.md).
+if (!userArgs.includes("--")) {
+  args.push("--");
+}
+args.push("--locked");
 
 const child = spawn(tauriCommand(), args, {
   shell: process.platform === "win32",

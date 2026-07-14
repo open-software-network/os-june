@@ -3,13 +3,33 @@ import { useEffect, useRef, useState } from "react";
 import { hasLiveSubscription, isOnMaxPlan } from "../../lib/account-gate";
 import { errorCode } from "../../lib/errors";
 import {
+  MAX_GRANT_HOSTED_POLL_TIMEOUT_MS,
+  MAX_UPGRADE_BROWSER_STATUS,
   MAX_UPGRADE_BUSY_LABEL,
+  MAX_UPGRADE_CHARGE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_LABEL,
   MAX_UPGRADE_CONFIRM_TITLE,
+  MAX_UPGRADE_PORTAL_LABEL,
+  MAX_UPGRADE_WAITING_STATUS,
+  accountLooksPreGrant,
+  beginMaxGrantWait,
+  clearMaxGrantWait,
+  isHostedMaxUpgradeFallbackError,
+  isMaxGrantWaitCurrent,
+  markMaxGrantWaitSlow,
+  markMaxGrantWaitWaiting,
+  maxGrantLanded,
+  maxGrantWaitForAccount,
+  maxUpgradeSlowStatus,
   pollForMaxGrant,
 } from "../../lib/max-upgrade";
-import { osAccountsChangePlan, osAccountsOpenPortal, osAccountsUpgrade } from "../../lib/tauri";
+import {
+  osAccountsChangePlan,
+  osAccountsOpenPortal,
+  osAccountsUpgrade,
+  osAccountsUpgradeSession,
+} from "../../lib/tauri";
 import type { AccountStatus, SubscriptionPlan } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Spinner } from "../ui/Spinner";
@@ -28,8 +48,9 @@ const POLL_INTERVAL_MS = 10_000;
 type NoticeCopy = {
   body: string;
   cta: string;
-  /** Copy for the waiting-on-the-browser row. Absent on the in-place Pro
-   * upgrade path, which never opens the browser. */
+  /** Copy for the waiting-on-the-portal row. Absent on the Pro upgrade
+   * path, whose waiting states derive from the shared grant wait's phase
+   * instead of the openedPortal flag. */
   waiting?: string;
   reopen?: string;
 };
@@ -54,8 +75,9 @@ function deriveFunding(account: AccountStatus) {
     subscribed && typeof status === "string" && status.length > 0 && !hasLiveSubscription(account);
   const topUpRequired = subscribed && !billingRecovery && negativeBalance;
   // Only Max may buy credits. A depleted Pro subscriber's one path is an
-  // in-place upgrade to Max (credits granted immediately, no browser round
-  // trip); a depleted Max subscriber tops up through the portal as before.
+  // upgrade of the existing subscription to Max (a hosted Stripe review in
+  // the browser, with a PATCH fallback behind its own charge-now confirm); a
+  // depleted Max subscriber tops up through the portal as before.
   const proUpgradeRequired = topUpRequired && !isOnMaxPlan(account);
   const maxTopUpRequired = topUpRequired && isOnMaxPlan(account);
   return {
@@ -95,13 +117,24 @@ export function TierMiniCard({ tier }: { tier: FundingTier }) {
 export function FundingNotice({ account, onRefresh, active = true }: Props) {
   const [openedPortal, setOpenedPortal] = useState(false);
   const [checking, setChecking] = useState(false);
-  // Upgrade to Max charges the saved card the moment it runs, so it only
-  // fires from an explicit confirm dialog.
+  // The Max upgrade can end in a saved-card charge, so it only fires from an
+  // explicit confirm dialog.
   const [confirmingUpgrade, setConfirmingUpgrade] = useState(false);
   const [confirmError, setConfirmError] = useState<string>();
-  // True after a successful plan change while the webhook credit grant is
-  // still on its way; the notice lifts (via App's refresh) once it lands.
-  const [awaitingGrant, setAwaitingGrant] = useState(false);
+  // Whether the confirm dialog has switched to the PATCH transport's
+  // charge-now copy after a hosted capability signal. The next confirm under
+  // that copy is what authorizes the saved-card charge.
+  const [chargeNowUpgrade, setChargeNowUpgrade] = useState(false);
+  // The notice renders in several placements at once (composer, editor
+  // footer, sidebar chip), so the upgrade wait is read from the shared
+  // module record on every render rather than mirrored into local state -
+  // every instance stays coherent with an upgrade started anywhere. The
+  // revision counter forces a re-render after in-place phase mutations.
+  const [, setMaxGrantPhaseRevision] = useState(0);
+  const maxGrantWait = maxGrantWaitForAccount(account.user?.id);
+  const awaitingBrowser = maxGrantWait?.phase === "browser";
+  const awaitingGrant = maxGrantWait?.phase === "waiting";
+  const grantNotConfirmed = maxGrantWait?.phase === "slow";
   const [portalError, setPortalError] = useState<string>();
   // Remembered so "Reopen checkout" lands on the same plan the user picked.
   const [chosenPlan, setChosenPlan] = useState<SubscriptionPlan>("pro");
@@ -164,36 +197,139 @@ export function FundingNotice({ account, onRefresh, active = true }: Props) {
     }
   }
 
-  // In-place Pro -> Max upgrade, run from the confirm dialog only. The PATCH
-  // resolves before the webhook grants the new credits, so on success the
-  // notice flips to a waiting row and polls until the balance reflects Max;
-  // App's refresh then lifts the notice. Real failures rethrow so the dialog
+  // Hosted Pro -> Max upgrade, run from the confirm dialog only. When this
+  // OS Accounts deploy cannot host the browser flow, the dialog switches to
+  // the charge-now copy and the PATCH waits for one more explicit confirm -
+  // hosted-copy consent never authorizes a saved-card charge. Either
+  // transport can expose Max before credits land, so the grant poll is the
+  // only authority for lifting the wait; the notice then re-derives (or
+  // lifts entirely via App's refresh). Real failures rethrow so the dialog
   // stays open showing the error next to its retry affordance.
   async function handleUpgradeToMax() {
+    // A wait can begin on a coexisting surface while this confirm sits open
+    // (Billing settings, another notice placement). Never stack a second
+    // purchase on it; resolving without dispatch closes the dialog and the
+    // notice re-derives the waiting row from the shared record. A slow wait
+    // stays retryable - the dispatch below supersedes it.
+    const pendingWait = maxGrantWaitForAccount(account.user?.id);
+    if (pendingWait && pendingWait.phase !== "slow") {
+      setMaxGrantPhaseRevision((revision) => revision + 1);
+      return;
+    }
     const baselineCredits = account.balance?.credits ?? 0;
+    const chargeNow = chargeNowUpgrade;
+    let alreadyOnPlan = false;
     try {
-      await osAccountsChangePlan("max");
+      if (chargeNow) {
+        await osAccountsChangePlan("max");
+      } else {
+        await osAccountsUpgradeSession("max");
+      }
     } catch (error) {
       const code = errorCode(error);
-      if (code === "already_on_plan" || code === "subscription_required") {
+      if (code === "already_on_plan") {
+        alreadyOnPlan = true;
+      } else if (code === "subscription_required") {
         // Stale snapshot: the server disagrees about the current plan.
-        // Refresh and let the notice re-derive the right prompt (top up or
-        // subscribe) instead of surfacing an error.
+        // Refresh and let the notice re-derive the right prompt.
         await onRefresh();
         return;
+      } else if (!chargeNow && isHostedMaxUpgradeFallbackError(error)) {
+        // Definitive capability signal: nothing was charged. Swap the dialog
+        // to the charge-now copy and keep it open for a fresh confirm.
+        setConfirmError(undefined);
+        setChargeNowUpgrade(true);
+        throw error;
+      } else {
+        setConfirmError(messageFromError(error));
+        throw error;
       }
-      setConfirmError(messageFromError(error));
-      throw error;
     }
-    setAwaitingGrant(true);
+    if (alreadyOnPlan) {
+      // The server already has the plan. One refresh decides between a grant
+      // still landing (poll) and a long-settled Max account, where a poll
+      // could never succeed and the notice must re-derive its prompt.
+      const refreshed = await onRefresh();
+      if (!accountLooksPreGrant(refreshed, baselineCredits)) {
+        // Settled: any wait for this account is obsolete and must not keep
+        // suppressing the re-derived prompt. A retry dispatched from the
+        // slow phase lands here.
+        const staleWait = maxGrantWaitForAccount(account.user?.id);
+        if (staleWait) clearMaxGrantWait(staleWait);
+        setMaxGrantPhaseRevision((revision) => revision + 1);
+        return;
+      }
+    }
+    const hostedReview = !chargeNow && !alreadyOnPlan;
+    const grantWait = beginMaxGrantWait(
+      baselineCredits,
+      account.user?.id,
+      hostedReview ? "browser" : "waiting",
+    );
+    setMaxGrantPhaseRevision((revision) => revision + 1);
     // No separate refresh here: the poll's first tick refreshes immediately,
     // and a parallel request could resolve out of order and overwrite the
     // poll's fresher snapshot with a stale pre-grant one.
-    void pollForMaxGrant(onRefresh, baselineCredits).then(() => {
-      // Landed: the poll's refresh already lifted the notice. Timed out: drop
-      // back to the prompt state; the periodic refresh keeps reconciling.
-      setAwaitingGrant(false);
+    void pollForMaxGrant(
+      onRefresh,
+      baselineCredits,
+      hostedReview ? { timeoutMs: MAX_GRANT_HOSTED_POLL_TIMEOUT_MS } : {},
+    ).then((landed) => {
+      if (!isMaxGrantWaitCurrent(grantWait)) return;
+      if (landed) {
+        // The poll's refresh already lifted or re-derived the notice.
+        clearMaxGrantWait(grantWait);
+      } else {
+        // Non-terminal: the user may still be reviewing the Stripe page.
+        // The slow phase keeps the retry CTA rendered.
+        markMaxGrantWaitSlow(grantWait);
+      }
+      setMaxGrantPhaseRevision((revision) => revision + 1);
     });
+  }
+
+  // The shared wait's lifecycle against account snapshots: waits belong to
+  // one account, the browser phase resolves once the plan flips, and the
+  // landed grant clears the wait so the notice re-derives.
+  useEffect(() => {
+    if (!maxGrantWait) return;
+    if (maxGrantWait.phase === "browser" && account.subscription?.plan === "max") {
+      markMaxGrantWaitWaiting(maxGrantWait);
+      setMaxGrantPhaseRevision((revision) => revision + 1);
+    }
+    if (!maxGrantLanded(account, maxGrantWait.baselineCredits)) return;
+    clearMaxGrantWait(maxGrantWait);
+    setMaxGrantPhaseRevision((revision) => revision + 1);
+  }, [account, maxGrantWait]);
+
+  // Closing the Stripe page must not park the notice on a spinner for the
+  // whole poll window. But the browser phase is exactly when a payment can
+  // complete out of band, and the wait is the only signal suppressing
+  // pre-grant "Max" claims - so cancel refreshes once and clears the wait
+  // only when the snapshot does not show a confirmed-but-ungranted upgrade.
+  async function handleCancelBrowserWait() {
+    const wait = maxGrantWait;
+    if (!wait) return;
+    let refreshed: AccountStatus | undefined;
+    try {
+      refreshed = await onRefresh();
+    } catch {
+      // A failed refresh cannot prove the payment went through; honor the
+      // cancel with the snapshot already on hand.
+    }
+    if (!isMaxGrantWaitCurrent(wait)) {
+      setMaxGrantPhaseRevision((revision) => revision + 1);
+      return;
+    }
+    const snapshot = refreshed ?? account;
+    if (snapshot.subscription?.plan === "max" && !maxGrantLanded(snapshot, wait.baselineCredits)) {
+      // Payment confirmed, grant still on its way: keep waiting instead of
+      // re-deriving a prompt that could sell a second billing action.
+      markMaxGrantWaitWaiting(wait);
+    } else {
+      clearMaxGrantWait(wait);
+    }
+    setMaxGrantPhaseRevision((revision) => revision + 1);
   }
 
   async function handleCheckNow() {
@@ -205,7 +341,20 @@ export function FundingNotice({ account, onRefresh, active = true }: Props) {
     }
   }
 
-  const waiting = awaitingGrant || openedPortal;
+  // The slow phase's billing link opens the account portal directly (its
+  // failures land in the always-rendered portalError line); it never flips
+  // the notice into the openedPortal waiting row.
+  async function handleOpenBilling() {
+    setPortalError(undefined);
+    try {
+      await osAccountsOpenPortal();
+    } catch (error) {
+      setPortalError(messageFromError(error));
+    }
+  }
+
+  const upgradePending = awaitingBrowser || awaitingGrant;
+  const waiting = upgradePending || openedPortal;
 
   return (
     <section className="funding-notice" role="status" aria-live="polite">
@@ -213,22 +362,58 @@ export function FundingNotice({ account, onRefresh, active = true }: Props) {
         {waiting ? <Spinner className="funding-notice-spinner" /> : <TierMiniCard tier={tier} />}
       </span>
       <p className="funding-notice-body">
-        {awaitingGrant
-          ? "Your upgrade went through. Your new credits are on the way."
-          : openedPortal
-            ? copy.waiting
-            : copy.body}
+        {awaitingBrowser
+          ? MAX_UPGRADE_BROWSER_STATUS
+          : awaitingGrant
+            ? MAX_UPGRADE_WAITING_STATUS
+            : grantNotConfirmed && maxGrantWait
+              ? maxUpgradeSlowStatus(maxGrantWait)
+              : openedPortal
+                ? copy.waiting
+                : copy.body}
       </p>
       <div className="funding-notice-actions">
-        {awaitingGrant ? (
-          <button
-            type="button"
-            className="btn btn-secondary"
-            disabled={checking}
-            onClick={() => void handleCheckNow()}
-          >
-            {checking ? "Checking..." : "Check again"}
-          </button>
+        {upgradePending ? (
+          <>
+            {awaitingBrowser ? (
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => void handleCancelBrowserWait()}
+              >
+                I closed the Stripe page
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={checking}
+              onClick={() => void handleCheckNow()}
+            >
+              {checking ? "Checking..." : "Check again"}
+            </button>
+          </>
+        ) : grantNotConfirmed ? (
+          <>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => void handleOpenBilling()}
+            >
+              {MAX_UPGRADE_PORTAL_LABEL}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary funding-notice-cta"
+              onClick={() => {
+                setConfirmError(undefined);
+                setChargeNowUpgrade(false);
+                setConfirmingUpgrade(true);
+              }}
+            >
+              Upgrade to Max
+            </button>
+          </>
         ) : openedPortal ? (
           <>
             <button type="button" className="btn btn-ghost" onClick={() => void handleOpenPortal()}>
@@ -260,6 +445,7 @@ export function FundingNotice({ account, onRefresh, active = true }: Props) {
               onClick={() => {
                 if (proUpgradeRequired) {
                   setConfirmError(undefined);
+                  setChargeNowUpgrade(false);
                   setConfirmingUpgrade(true);
                   return;
                 }
@@ -274,10 +460,16 @@ export function FundingNotice({ account, onRefresh, active = true }: Props) {
       {portalError ? <p className="funding-notice-error">{portalError}</p> : null}
       <ConfirmDialog
         open={confirmingUpgrade}
-        onClose={() => setConfirmingUpgrade(false)}
+        onClose={() => {
+          setConfirmingUpgrade(false);
+          setChargeNowUpgrade(false);
+        }}
         onConfirm={handleUpgradeToMax}
         title={MAX_UPGRADE_CONFIRM_TITLE}
-        description={confirmError ?? MAX_UPGRADE_CONFIRM_BODY}
+        description={
+          confirmError ??
+          (chargeNowUpgrade ? MAX_UPGRADE_CHARGE_CONFIRM_BODY : MAX_UPGRADE_CONFIRM_BODY)
+        }
         confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />

@@ -48,7 +48,7 @@
 
 - [x] T014 [P] [US1] Add audio validation tests for readable WAV, zero-byte file, duration mismatch, too-short audio, and silence detection in src-tauri/tests/recording_validation.rs
 - [x] T015 [P] [US1] Add provider pipeline tests for mock transcription, empty transcript failure, generated-note constraints, and retryable provider failure in src-tauri/tests/processing.rs
-- [x] T016 [P] [US1] Add frontend recorder component tests for elapsed state, waveform levels, pause/resume, Done, silence warning, and failed validation in src/test/recorder.test.tsx
+- [x] T016 [P] [US1] Add frontend recorder component tests for elapsed state, waveform levels, pause/resume, Done, suppressed live silence prompts, and failed validation in src/test/recorder.test.tsx
 
 ### Implementation for User Story 1
 

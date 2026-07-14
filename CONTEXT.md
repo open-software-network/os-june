@@ -169,6 +169,24 @@ write-jail, default) or `unrestricted`. Opt-in is per session; June keeps one
 gateway per mode so an unrestricted session can't un-sandbox others.
 _Avoid_: permission, profile.
 
+**Browser use**:
+The consent-gated capability (JUN-278, ADR 0017) that lets the agent operate
+a live browser. Attended sessions drive the user's own Chromium-family
+browser through the June extension, in task-owned or explicitly user-shared
+tabs; sandboxed routines get a June-managed, anonymous, ephemeral headless
+browser limited to the public web. All actions flow through the Rust browser
+broker; consequential actions park for approval.
+_Avoid_: web browsing (that is `june_web` search/fetch), browser toolset
+(the upstream runtime feature June does not expose).
+
+**Computer use**:
+The consent-gated capability (JUN-278 phase 2) that lets the agent operate
+Mac apps in the background - no cursor, focus, or Space theft - via the
+pinned runtime's computer-use toolset and a June-bundled pinned cua-driver.
+Every mutating action requires approval; requires a vision-capable model.
+_Avoid_: desktop automation (vague), computer_use toolset (that is the
+upstream mechanism, not the June capability).
+
 **Stored session id** vs **runtime session id**:
 The persistent id June keys all UI and history on, versus the live process's
 per-resume id. `session.create` returns both; conflating them attaches
@@ -235,8 +253,74 @@ is UI; the reference is the token).
 **Skill / Toolset / MCP server**:
 A Skill is a bundled/installed capability pack; a Toolset is a togglable tool
 group; an MCP server is an external tool provider (June ships `june_context`,
-`june_web`, `june_image`, `june_recorder`, and `june_video`).
+`june_web`, `june_image`, `june_recorder`, `june_video`, and the connector
+servers `june_gmail`/`june_gcal` plus their `*_actions` counterparts).
 _Avoid_: using "tool" for all three.
+
+**Plugin**:
+A user-facing capability bundle in June's Plugins area. A plugin may combine
+Skills, Toolsets, app-owned MCP servers, routine templates, and optional
+Connectors around one job. Enabling or installing the bundle is distinct from
+connecting a third-party account and from choosing a routine's trust mode.
+The ranked portfolio and shared product contract live in
+[docs/plugins/portfolio.md](docs/plugins/portfolio.md).
+_Avoid_: connector (unless specifically naming its third-party account path),
+integration (too broad), plugin for a Tauri framework package.
+
+### Connectors
+
+**Connector**:
+A private-by-architecture integration between June and a third-party account
+(launch: Google Gmail + Calendar). The user authorizes the provider on their
+Mac; the grant lives in the Keychain and every provider API call originates
+on-device. June ships each connector as a read MCP server (`june_gmail`,
+`june_gcal`) plus a mutating actions server (`june_gmail_actions`,
+`june_gcal_actions`); neither holds the token, which stays in Rust behind the
+on-device provider proxy (see [ADR-0016](docs/adr/0016-private-connectors-local-mode.md)).
+_Avoid_: integration (unqualified), plugin, the Google API.
+
+**Local mode**:
+The default (and, in v1, only) connector trust model: the OAuth grant is
+minted to the device and stored in the Keychain, and connector calls go
+straight from the device to the provider. OpenSoftware holds no credential that
+can read the user's mail and is not in the *connector* data path. (Routine
+model inference still follows the user's provider selection: June API by
+default, or a local model. The "not in the data path" claim covers token
+custody and provider calls, never inference.)
+_Avoid_: on-device mode, private mode (unqualified). Contrast with **away
+mode** (the proposed Phase 3 TEE relay, not yet shipped).
+
+**Trust mode**:
+The per-routine governance of *outward* connector actions:
+`read_only` -> `approval` (default) -> `autonomous`. Read-only routines get
+only the read servers; approval routines route every mutating call through
+June's own approval surface; autonomous routines execute granted tools without
+prompting. Distinct from **Runtime mode** (Sandboxed/Unrestricted), which
+governs *local system access* — the two are never conflated.
+_Avoid_: permission level, autonomy level (say **trust mode**), mixing with
+Sandboxed/Unrestricted.
+
+**Earned autonomy**:
+The rule that a routine may only be switched to the `autonomous` **trust mode**
+after it has run correctly under `approval` at least three times. Converts
+June's "the agent can make mistakes" honesty into a mechanic.
+_Avoid_: auto mode, trust score.
+
+**Trigger** (connector):
+A typed event that fires a routine outside the cron schedule:
+`email_received` or `event_upcoming`. Produced by the on-device trigger daemon
+polling Gmail history deltas and upcoming calendar events, delivered by
+re-triggering a paused routine through the bridge's run-now action. A trigger
+is a wake-up, not a payload: the routine re-reads state through its tools.
+_Avoid_: webhook (local mode has none; that is away mode), push, notification.
+
+**Biography**:
+The editable profile June builds on first connect from on-device notes and
+transcripts plus the user's mail and calendar ("here's what I already know, and
+it never left your Mac"). Stored locally, feeds the soul's context, fully
+deletable and regenerable.
+_Avoid_: profile (overloaded with **provider settings** and the account
+snapshot), persona, memory (that is the agent memory toolset).
 
 **Admin surface**:
 A June-native management view for the embedded Hermes runtime — skills hub,

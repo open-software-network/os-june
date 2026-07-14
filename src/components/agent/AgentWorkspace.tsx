@@ -9,8 +9,7 @@ import { IconBolt } from "central-icons/IconBolt";
 import { IconBranchSimple } from "central-icons/IconBranchSimple";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
-import { IconCheckmark1Medium } from "central-icons/IconCheckmark1Medium";
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Medium } from "central-icons/IconCheckmark2Medium";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
@@ -122,6 +121,7 @@ import {
   setImageSafeMode,
   setImageSafeModePromptDismissed,
   setLocalGenerationEnabled,
+  setCostQuality,
   setVeniceModel,
   startHermesBridge,
   submitIssueReport,
@@ -205,6 +205,7 @@ import {
   type BranchSessionResult,
 } from "../../lib/hermes-session-branch";
 import { normalizeSteerText } from "../../lib/hermes-session-steer";
+import { recordPositiveFeedbackSent } from "../../lib/referral-nudge";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
@@ -248,8 +249,12 @@ import {
   rawLocalGenerationModelId,
   withLocalGenerationOption,
 } from "../../lib/local-generation";
-import { preferredVisionFallbackModel } from "../../lib/suggested-models";
-import { modelOptions, selectedModel as selectedModelOption } from "../settings/ModelPickerDialog";
+import { autoPillDesignation, preferredVisionFallbackModel } from "../../lib/suggested-models";
+import {
+  AUTO_MODEL_ID,
+  modelOptions,
+  selectedModel as selectedModelOption,
+} from "../settings/ModelPickerDialog";
 import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import {
   HERMES_SERVER_ERROR_MESSAGE,
@@ -383,6 +388,7 @@ const MODEL_SWITCH_TOAST_ID = "agent-model-switch";
 // confirmation rather than stacking.
 const BRANCH_TOAST_ID = "agent-branch";
 const ISSUE_REPORT_SENT_TOAST_ID = "agent-issue-report-sent";
+const DOWNLOAD_TOAST_ID = "agent-download";
 
 function isSessionGoneError(message: string): boolean {
   return message.toLowerCase().includes("session not found");
@@ -2532,6 +2538,15 @@ export function AgentWorkspace({
   // each chat's stored model. A selection missing from the catalog still
   // shows as a name-only stub so the pill never goes blank while configured.
   const [defaultGenerationModelId, setDefaultGenerationModelId] = useState("");
+  const [generationCostQuality, setGenerationCostQuality] = useState<number | undefined>();
+  // Preference saves from the picker's drill-in: writes are chained so they
+  // persist in click order, and versioned so only the newest call's outcome
+  // touches the UI (mirrors Settings' saveCostQuality discipline). Rollback
+  // targets the last CONFIRMED value (persisted read or successful save) —
+  // never an optimistic value a still-in-flight click painted.
+  const costQualitySaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const latestCostQualitySaveRef = useRef(0);
+  const confirmedCostQualityRef = useRef<number | undefined>(undefined);
   const defaultGenerationModelIdRef = useRef("");
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>([]);
   const generationModelsRef = useRef<VeniceModelDto[]>([]);
@@ -3582,6 +3597,8 @@ export function AgentWorkspace({
       setGenerationProvider(provider);
       defaultGenerationModelIdRef.current = selectedModelId;
       setDefaultGenerationModelId(selectedModelId);
+      confirmedCostQualityRef.current = settings.costQuality;
+      setGenerationCostQuality(settings.costQuality);
       return selectedModelId;
     },
     [],
@@ -3730,12 +3747,52 @@ export function AgentWorkspace({
     return true;
   }
 
+  // The Auto section's Preference drill-in writes the app-wide preference
+  // without changing the model; announce it so other surfaces (Settings, the
+  // note chat panel) refresh their designation.
+  function handleCostQualityChange(value: number) {
+    // Rapid preset clicks overlap: the chain keeps the writes ordered so the
+    // last click is what persists, and the version gate makes sure only the
+    // newest call's outcome (success or rollback) touches the UI — the same
+    // discipline as Settings' saveCostQuality.
+    const version = ++latestCostQualitySaveRef.current;
+    setGenerationCostQuality(value);
+    const save = costQualitySaveChainRef.current.then(() => setCostQuality(value));
+    costQualitySaveChainRef.current = save.then(
+      () => undefined,
+      () => undefined,
+    );
+    void save.then(
+      (next) => {
+        confirmedCostQualityRef.current = next.costQuality;
+        if (version !== latestCostQualitySaveRef.current) return;
+        setGenerationCostQuality(next.costQuality);
+        dispatchProviderModelSettingsChanged({
+          mode: "generation",
+          modelId: defaultGenerationModelIdRef.current,
+        });
+        setError(null);
+      },
+      (err) => {
+        if (version !== latestCostQualitySaveRef.current) return;
+        setGenerationCostQuality(confirmedCostQualityRef.current);
+        setError(messageFromError(err));
+      },
+    );
+  }
+
   // Switching the model from the composer is only allowed before a thread
   // exists. It writes the app-wide text-model default (Settings' model rows and
   // this pill refresh through the same changed event), and new sessions inherit
   // that choice at creation time.
-  async function handleSelectGenerationModel(modelId: string) {
-    setComposerModelOpen(false);
+  async function handleSelectGenerationModel(
+    modelId: string,
+    costQuality?: number,
+    options?: { keepOpen?: boolean },
+  ) {
+    // The Auto toggle switches models mid-flow, so it asks to keep the picker
+    // open; a row pick is a final choice and closes it.
+    if (!options?.keepOpen) setComposerModelOpen(false);
     if (composerModelSelectionLocked()) {
       showComposerModelLockedNotice();
       return false;
@@ -3758,6 +3815,10 @@ export function AgentWorkspace({
       return false;
     }
     try {
+      if (costQuality !== undefined) {
+        const next = await setCostQuality(costQuality);
+        setGenerationCostQuality(next.costQuality);
+      }
       await setVeniceModel("generation", modelId);
       markRemoteGenerationSelected(modelId);
       dispatchProviderModelSettingsChanged({ mode: "generation", modelId });
@@ -5689,6 +5750,10 @@ export function AgentWorkspace({
       toast.success(issueReportSentMessage(response?.skippedAttachmentNames), {
         id: ISSUE_REPORT_SENT_TOAST_ID,
       });
+      // T4 of the referral delight nudge: positive feedback only. The
+      // error-report path deliberately doesn't record — a report sent from a
+      // failure is not a delight moment, whatever its category.
+      if (report.category === "feedback") recordPositiveFeedbackSent();
       return { sent: true };
     } catch (err) {
       const errorMessage = `The issue report could not be sent. ${messageFromError(err)}`;
@@ -8645,10 +8710,27 @@ export function AgentWorkspace({
   // Every file the conversation has surfaced, in turn order — the session
   // bar's files button keeps them reachable after their cards scroll away.
   const surfacedArtifacts = [...turnArtifacts.values()].flat().concat(devArtifacts);
-  const downloadArtifact = (artifact: AgentArtifact) =>
-    void downloadHermesBridgeFile(artifact.path).catch((err: unknown) =>
-      setError(messageFromError(err)),
-    );
+  const downloadPathBackedArtifact = (path: string, displayName: string) => {
+    const requestSessionId = selectedHermesSessionIdRef.current;
+    void downloadHermesBridgeFile(path)
+      .then((destination) => {
+        if (selectedHermesSessionIdRef.current === requestSessionId) {
+          toast.success(<DownloadToastMessage action="Downloaded" fileName={displayName} />, {
+            id: DOWNLOAD_TOAST_ID,
+            action: {
+              label: "Show file",
+              onClick: () => void revealPath(destination),
+            },
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        setError(messageFromError(err), { sessionId: requestSessionId ?? null });
+      });
+  };
+  const downloadArtifact = (artifact: AgentArtifact) => {
+    downloadPathBackedArtifact(artifact.path, artifact.name);
+  };
   const openArtifact = (artifact: AgentArtifact) => setArtifactPanel({ view: "file", artifact });
 
   // A `/image` result reuses the artifact view/download flow: download saves the
@@ -8661,18 +8743,26 @@ export function AgentWorkspace({
     // no June-workspace path — its bytes live only in the inline data url, so
     // save those directly via an anchor download.
     if (part.path) {
-      void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
-        setError(messageFromError(err)),
-      );
+      downloadPathBackedArtifact(part.path, part.name?.trim() || "Generated image");
       return;
     }
     if (part.dataUrl) {
+      const requestSessionId = selectedHermesSessionIdRef.current;
+      const fileName = ensureDownloadFileExtension(
+        part.name?.trim() || "generated-image.png",
+        "png",
+      );
       const link = document.createElement("a");
       link.href = part.dataUrl;
-      link.download = part.name?.trim() || "generated-image.png";
+      link.download = fileName;
       document.body.appendChild(link);
       link.click();
       link.remove();
+      if (selectedHermesSessionIdRef.current === requestSessionId) {
+        toast(<DownloadToastMessage action="Download started" fileName={fileName} />, {
+          id: DOWNLOAD_TOAST_ID,
+        });
+      }
     }
   };
   const openGeneratedImage = (part: Extract<AgentChatPart, { type: "image" }>) => {
@@ -8685,9 +8775,7 @@ export function AgentWorkspace({
   };
   const downloadGeneratedVideo = (part: Extract<AgentChatPart, { type: "video" }>) => {
     if (!part.path) return;
-    void downloadHermesBridgeFile(part.path).catch((err: unknown) =>
-      setError(messageFromError(err)),
-    );
+    downloadPathBackedArtifact(part.path, part.name?.trim() || "Generated video");
   };
 
   // Feature 14: open an artifact from the drawer's timeline. The timeline's
@@ -9120,6 +9208,48 @@ export function AgentWorkspace({
             ) : null}
           </section>
         ) : null}
+        <AnimatePresence>
+          {showImageModelWarning ? (
+            // Docked above the box in the FundingNotice family — same surface
+            // recipe, so the pair reads as one floating unit. The warm triangle
+            // carries the caution tone.
+            <motion.section
+              key="image-model-warning"
+              className="agent-composer-image-warning"
+              role="status"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: "easeOut" }}
+            >
+              <span className="agent-composer-image-warning-icon" aria-hidden>
+                <IconExclamationTriangle size={14} />
+              </span>
+              <p className="agent-composer-image-warning-text">{imageModelWarningText}</p>
+              {preferredVisionModel && !composerModelLocked ? (
+                <div className="agent-composer-image-warning-actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() =>
+                      // Switch straight to the preferred image-capable model. The
+                      // label promises a one-tap fix, and the generic model picker
+                      // isn't vision-scoped — opening it for the multi-candidate
+                      // case would drop the user into an unfiltered list that
+                      // doesn't surface the eligible models. preferredVisionModel
+                      // is pre-filtered to image + tool support and prefers a
+                      // suggested pick. This only appears before a thread
+                      // exists, where model changes still update the default.
+                      void handleSelectGenerationModel(preferredVisionModel.id)
+                    }
+                  >
+                    Switch to {preferredVisionModel.name}
+                  </button>
+                </div>
+              ) : null}
+            </motion.section>
+          ) : null}
+        </AnimatePresence>
         <div ref={composerBoxRef} className="agent-composer-box">
           {attachments.length ? (
             <div className="agent-composer-attachments">
@@ -9130,35 +9260,6 @@ export function AgentWorkspace({
                   onRemove={() => removeAttachment(attachment.id)}
                 />
               ))}
-            </div>
-          ) : null}
-          {showImageModelWarning ? (
-            <div className="agent-composer-image-warning" role="status">
-              <IconExclamationTriangle
-                size={14}
-                aria-hidden
-                className="agent-composer-image-warning-icon"
-              />
-              <span className="agent-composer-image-warning-text">{imageModelWarningText}</span>
-              {preferredVisionModel && !composerModelLocked ? (
-                <button
-                  type="button"
-                  className="agent-composer-notice-button agent-composer-image-warning-action"
-                  onClick={() =>
-                    // Switch straight to the preferred image-capable model. The
-                    // label promises a one-tap fix, and the generic model picker
-                    // isn't vision-scoped — opening it for the multi-candidate
-                    // case would drop the user into an unfiltered list that
-                    // doesn't surface the eligible models. preferredVisionModel
-                    // is pre-filtered to image + tool support and prefers a
-                    // suggested pick. This only appears before a thread
-                    // exists, where model changes still update the default.
-                    void handleSelectGenerationModel(preferredVisionModel.id)
-                  }
-                >
-                  Switch to {preferredVisionModel.name}
-                </button>
-              ) : null}
             </div>
           ) : null}
           {visibleComposerSizeWarning ? (
@@ -9294,6 +9395,11 @@ export function AgentWorkspace({
               <ComposerModelPicker
                 open={composerModelOpen}
                 model={generationModel}
+                detail={
+                  generationModel?.id === AUTO_MODEL_ID
+                    ? autoPillDesignation(generationCostQuality)
+                    : undefined
+                }
                 readOnly={composerModelLocked}
                 triggerRef={composerModelTriggerRef}
                 onToggleOpen={() => {
@@ -9477,12 +9583,16 @@ export function AgentWorkspace({
             flyout={composerModelFlyout}
             model={generationModel}
             options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
+            costQuality={generationCostQuality}
             search={modelSearch}
             popoverRef={composerModelPopoverRef}
             searchRef={composerModelSearchRef}
             onFlyoutChange={setComposerModelFlyout}
             onSearchChange={setModelSearch}
-            onSelect={(modelId) => void handleSelectGenerationModel(modelId)}
+            onSelect={(modelId, costQuality, options) =>
+              void handleSelectGenerationModel(modelId, costQuality, options)
+            }
+            onCostQualityChange={handleCostQualityChange}
           />
         ) : null}
         {heroMode && sandboxMenuOpen ? (
@@ -9519,7 +9629,7 @@ export function AgentWorkspace({
                   <span className="agent-sandbox-option-desc">{option.description}</span>
                 </span>
                 {fullModeDraft === option.unrestricted ? (
-                  <IconCheckmark1Small
+                  <IconCheckmark2Small
                     size={16}
                     aria-hidden
                     className="agent-sandbox-option-check"
@@ -11649,7 +11759,7 @@ function AgentChatTurnRow({
         {copied ? (
           // Medium checkmark: the small variant reads too slight as the only
           // confirmation left now that the label is gone.
-          <IconCheckmark1Medium size={14} aria-hidden />
+          <IconCheckmark2Medium size={14} aria-hidden />
         ) : (
           <IconClipboard size={14} aria-hidden />
         )}
@@ -12863,7 +12973,7 @@ export function ApprovalPart({
     // Submission in flight (status still pending): the in-progress line stays
     // in the card until the request actually resolves.
     <p className="agent-approval-result" data-choice={activeChoice}>
-      {activeChoice === "deny" ? <IconCrossMedium size={14} /> : <IconCheckmark1Small size={14} />}
+      {activeChoice === "deny" ? <IconCrossMedium size={14} /> : <IconCheckmark2Small size={14} />}
       {approvalChoiceLabel(activeChoice, submitting !== undefined)}
     </p>
   ) : (
@@ -13178,7 +13288,7 @@ export function SudoPart({
 
   const footer = showResult ? (
     <p className="agent-approval-result" data-choice={decided ? "once" : "deny"}>
-      {decided ? <IconCheckmark1Small size={14} /> : <IconCrossMedium size={14} />}
+      {decided ? <IconCheckmark2Small size={14} /> : <IconCrossMedium size={14} />}
       {decided ? (submitting ? "Approving" : "Approved") : submitting ? "Denying" : "Denied"}
     </p>
   ) : (
@@ -14639,6 +14749,25 @@ function taskActivitySummary(task: AgentTaskDto) {
     default:
       return "";
   }
+}
+
+function DownloadToastMessage({ action, fileName }: { action: string; fileName: string }) {
+  const label = `${action} ${fileName}`;
+  return (
+    <span className="june-download-toast-message" aria-label={label}>
+      <span>{action}</span>
+      <span className="june-download-toast-file" title={fileName}>
+        {fileName}
+      </span>
+    </span>
+  );
+}
+
+function ensureDownloadFileExtension(fileName: string, fallbackExtension: string) {
+  const trimmed = fileName.trim();
+  if (!trimmed) return `download.${fallbackExtension}`;
+  if (/\.[^./\\]+$/.test(trimmed)) return trimmed;
+  return `${trimmed}.${fallbackExtension}`;
 }
 
 function relativeDate(value: string) {

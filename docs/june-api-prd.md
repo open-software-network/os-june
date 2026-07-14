@@ -446,7 +446,8 @@ be added incrementally as bugs surface.
   Out of scope forever — owning identity is OS Accounts' job.
 - **Resolving the `bun.lock` vs `pnpm-lock.yaml` divergence** in this
   repo. Unrelated cleanup, worth picking one source of truth but not
-  blocking on it.
+  blocking on it. _(Since resolved: `bun.lock` was removed and pnpm is
+  the only package manager - see `spec/package-install-security.md`.)_
 
 ## Further Notes
 

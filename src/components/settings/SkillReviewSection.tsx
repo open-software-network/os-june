@@ -1,6 +1,6 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconBrain2 } from "central-icons/IconBrain2";
-import { IconCheckmark1 } from "central-icons/IconCheckmark1";
+import { IconCheckmark2 } from "central-icons/IconCheckmark2";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCode } from "central-icons/IconCode";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
@@ -106,7 +106,7 @@ export function SkillReviewView({
                   disabled={approvableCount === 0}
                   onClick={state.approveAll}
                 >
-                  <IconCheckmark1 size={14} ariaHidden />
+                  <IconCheckmark2 size={14} ariaHidden />
                   Approve all
                 </button>
                 <button
@@ -363,7 +363,7 @@ function WriteRow({
           disabled={pending || !approvable}
           onClick={onApprove}
         >
-          <IconCheckmark1 size={14} ariaHidden />
+          <IconCheckmark2 size={14} ariaHidden />
           Approve
         </button>
         <button

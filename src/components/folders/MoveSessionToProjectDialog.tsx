@@ -1,4 +1,4 @@
-import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
+import { IconCheckmark2 } from "central-icons-filled/IconCheckmark2";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
@@ -254,7 +254,7 @@ export function MoveSessionToProjectDialog({
                       ) : null}
                     </span>
                     <span className="add-notes-check" aria-hidden>
-                      {isSelected || isCurrent ? <IconCheckmark1 size={12} /> : null}
+                      {isSelected || isCurrent ? <IconCheckmark2 size={12} /> : null}
                     </span>
                   </button>
                 </li>
