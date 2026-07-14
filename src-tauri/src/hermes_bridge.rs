@@ -1,5 +1,8 @@
-use crate::browser_broker::{BrowserBroker, BrowserTransportKind, ExtensionBrowserTransport};
 use crate::domain::types::AppError;
+use crate::{
+    browser::managed::ManagedBrowserTransport,
+    browser_broker::{BrowserBroker, BrowserTransportKind, ExtensionBrowserTransport},
+};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rand::{distributions::Alphanumeric, Rng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -1363,6 +1366,14 @@ async fn ensure_provider_proxy(
             app.state::<crate::extension_host::ExtensionHost>()
                 .inner()
                 .clone(),
+        )),
+        hermes_home.join(JUNE_IMAGE_MCP_IMAGES_DIR_NAME),
+        hermes_home.join("workspace").join("browser-artifacts"),
+    );
+    bridge.browser_broker.configure_transport(
+        BrowserTransportKind::Managed,
+        Arc::new(ManagedBrowserTransport::production(
+            hermes_home.join("workspace").join("browser-artifacts"),
         )),
         hermes_home.join(JUNE_IMAGE_MCP_IMAGES_DIR_NAME),
         hermes_home.join("workspace").join("browser-artifacts"),
@@ -3595,6 +3606,7 @@ fn hermes_file_mime_type(path: &Path) -> Option<&'static str> {
 
 pub fn shutdown(app: &tauri::AppHandle) {
     let bridge = app.state::<HermesBridge>();
+    bridge.browser_broker.terminate_sessions();
     let _ = stop_hermes_bridge_inner(&bridge);
     let proxy = bridge
         .provider_proxy
@@ -9869,12 +9881,16 @@ async fn handle_browser_execute(
             let status = match error.code.as_str() {
                 "browser_access_disabled" => 403,
                 "browser_session_not_found" | "tab_not_owned" => 404,
-                "not_implemented" => 501,
+                "not_implemented" | "browser_tool_unavailable" => 501,
+                "browser_session_limit" => 429,
                 "invalid_arguments"
                 | "unknown_browser_tool"
                 | "browser_url_invalid"
-                | "browser_url_not_allowed" => 400,
-                "extension_not_paired" | "browser_transport_unavailable" => 503,
+                | "browser_url_not_allowed"
+                | "browser_policy_blocked" => 400,
+                "extension_not_paired" | "browser_transport_unavailable" | "browser_not_found" => {
+                    503
+                }
                 _ => 502,
             };
             write_json_response(

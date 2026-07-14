@@ -35,6 +35,8 @@ chrono = { version = "0.4", features = ["serde"] }
 cpal = "0.15"
 dotenvy = "0.15"
 hound = "3.5"
+# fd plumbing (pipe/dup2) for the managed browser's CDP pipe transport.
+libc = "0.2"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 # Pure-Rust FFT for the echo-rejection similarity gate (GCC-PHAT lag estimation).
@@ -62,6 +64,8 @@ tauri-plugin-updater = "2.10.1"
 thiserror = "2.0"
 tokio = { version = "1.42", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
+# Untrusted URL parsing for the managed browser's public-web policy.
+url = "2"
 urlencoding = "2"
 uuid = { version = "1.11", features = ["serde", "v4"] }
 zeroize = { version = "1", features = ["derive"] }
