@@ -221,6 +221,9 @@ describe("SessionUsagePanel", () => {
     const body = container.querySelector(".agent-usage-body");
     expect(body).not.toBeNull();
     expect(body).toHaveAttribute("aria-busy", "true");
+    // data-first-load exempts the busy first-load body from the refresh dim so
+    // the quiet skeleton bars stay at full strength.
+    expect(body).toHaveAttribute("data-first-load");
     expect(container.querySelectorAll(".agent-usage-skeleton")).toHaveLength(3);
     expect(container.querySelectorAll(".agent-usage-meter-segment")).toHaveLength(60);
     expect(container.querySelectorAll('.agent-usage-meter-segment[data-lit="true"]')).toHaveLength(

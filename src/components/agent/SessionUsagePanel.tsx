@@ -143,7 +143,10 @@ export function SessionUsagePanel({
         // container with a skeleton bar for the model name, the real (empty)
         // meter track, and two skeleton bars for the legend — nothing jumps when
         // the payload lands and the placeholders swap to real content in place.
-        <div className="agent-usage-body" aria-busy="true">
+        // aria-busy is honest here, but data-first-load exempts this body from
+        // the refresh dim so the quiet skeleton bars stay at full strength (a
+        // refresh dims stale content; the first-load skeleton must not dim).
+        <div className="agent-usage-body" aria-busy="true" data-first-load>
           <UsageSkeleton />
         </div>
       ) : (

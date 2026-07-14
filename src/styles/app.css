@@ -3694,7 +3694,12 @@ input:focus-visible,
   overflow-y: auto;
 }
 
-.agent-usage-body[aria-busy="true"] {
+/* A refresh dims the stale card so it reads as reloading while the prior data
+   stays visible. The first-load body is aria-busy too (its skeleton is genuinely
+   busy), but must NOT dim — the static --surface-subtle skeleton bars already
+   sit close to the popover background, so a 60% dim would render them nearly
+   invisible. [data-first-load] carries that exemption. */
+.agent-usage-body[aria-busy="true"]:not([data-first-load]) {
   opacity: 0.6;
 }
 
