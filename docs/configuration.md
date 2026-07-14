@@ -39,6 +39,11 @@ Dev-only toggles also read in code: `OS_JUNE_ENABLE_DEV_SINGLE_INSTANCE`,
 `OS_JUNE_USE_PROD_ACCOUNTS_TOKENS`, `OS_JUNE_USE_PROD_DATA_DIR`,
 `JUNE_HERMES_DISABLE_SANDBOX`.
 
+`OS_JUNE_USE_PROD_DATA_DIR` opts a debug build into both the production app
+data directory and the production app config directory that stores
+`provider-settings.json`. Without it, both directories use the debug-only
+`-dev` suffix.
+
 ## June API backend (`june-api/.env`, `JUNE__…`)
 
 **Secrets — env only, never in `config.toml` or the client `.env`:**

@@ -1111,10 +1111,13 @@ fn default_image_safe_mode() -> bool {
 }
 
 fn provider_settings_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_config_dir()
+    crate::app_paths::app_config_dir(app)
         .ok()
-        .map(|directory| directory.join("provider-settings.json"))
+        .map(provider_settings_path_from_config_dir)
+}
+
+fn provider_settings_path_from_config_dir(directory: PathBuf) -> PathBuf {
+    directory.join("provider-settings.json")
 }
 
 fn load_settings_from_disk(app: &AppHandle) -> ProviderModelSettings {
@@ -1433,6 +1436,16 @@ impl ModelMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_settings_path_derives_from_the_isolated_config_dir() {
+        let isolated_config_dir = PathBuf::from("/tmp/co.opensoftware.june-dev");
+
+        assert_eq!(
+            provider_settings_path_from_config_dir(isolated_config_dir),
+            PathBuf::from("/tmp/co.opensoftware.june-dev/provider-settings.json")
+        );
+    }
 
     #[test]
     fn legacy_settings_default_cost_quality_to_higher_quality() {
