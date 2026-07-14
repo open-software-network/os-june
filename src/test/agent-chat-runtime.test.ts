@@ -1791,6 +1791,27 @@ describe("Agent chat runtime", () => {
     ).toHaveLength(1);
   });
 
+  it("keeps distinct absolute video paths that share a filename", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "MEDIA:/tmp/run-a/output.mp4",
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        content: "MEDIA:/tmp/run-b/output.mp4",
+        timestamp: "2026-06-04T10:00:01.000Z",
+      },
+    ]);
+
+    expect(
+      turns.flatMap((turn) => turn.parts.filter((part) => part.type === "video")),
+    ).toHaveLength(2);
+  });
+
   it("renders live june_image tool results inline from tool.complete content", () => {
     const turns = buildHermesSessionChatTurns(
       [],

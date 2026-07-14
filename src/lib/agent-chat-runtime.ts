@@ -959,11 +959,11 @@ function sameImagePart(left: AgentChatImagePart, right: AgentChatImagePart) {
 }
 
 function sameVideoPart(left: AgentChatVideoPart, right: AgentChatVideoPart) {
-  return Boolean(
-    left.path &&
-      right.path &&
-      (left.path === right.path || filenameFromPath(left.path) === filenameFromPath(right.path)),
-  );
+  if (!left.path || !right.path) return false;
+  if (left.path === right.path) return true;
+  const leftName = filenameFromPath(left.path);
+  const rightName = filenameFromPath(right.path);
+  return leftName === rightName && (left.path === leftName || right.path === rightName);
 }
 
 /** Live tool output and the assistant's trailing MEDIA reference share one
