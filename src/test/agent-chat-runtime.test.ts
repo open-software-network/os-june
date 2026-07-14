@@ -1775,6 +1775,48 @@ describe("Agent chat runtime", () => {
     });
   });
 
+  it.each([
+    ["image", "mcp_june_image_generate_image"],
+    ["video", "mcp_june_video_generate_video"],
+  ] as const)("promotes early id-less %s generation into the later identified tool start", (media, toolName) => {
+    const toolCallId = `chatcmpl-tool-${media}`;
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        // This is the pinned gateway's real order: message.start opens the
+        // assistant turn, tool.generating arrives while the model is still
+        // streaming arguments, then tool.start supplies the stable id once
+        // execution begins.
+        transcriptEvent({ receivedAt: "2026-06-04T10:00:00.000Z" }),
+        toolEvent({
+          key: toolName,
+          phase: "progress",
+          name: toolName,
+          receivedAt: "2026-06-04T10:00:01.000Z",
+        }),
+        toolEvent({
+          key: toolCallId,
+          toolCallId,
+          phase: "start",
+          name: toolName,
+          receivedAt: "2026-06-04T10:00:03.000Z",
+        }),
+      ],
+    );
+
+    const mediaTools = turns.flatMap((turn) =>
+      turn.parts.filter(
+        (part): part is AgentChatToolPart => part.type === "tool" && part.media === media,
+      ),
+    );
+    expect(mediaTools).toHaveLength(1);
+    expect(mediaTools[0]).toMatchObject({
+      id: toolCallId,
+      status: "running",
+      media,
+    });
+  });
+
   it("does not assign ambiguous id-less completions across overlapping media calls", () => {
     const turns = buildHermesSessionChatTurns(
       [],

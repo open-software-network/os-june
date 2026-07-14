@@ -723,6 +723,9 @@ function appendLiveHermesEvents(
           // stream once its tool reaches a terminal state.
           currentAssistant.status = "complete";
         }
+        if (hasExplicitToolIdentity && event.phase === "start" && media) {
+          promoteIdlessMediaToolPart(currentAssistant.parts, event.key, name, media);
+        }
         upsertToolPart(
           currentAssistant.parts,
           {
@@ -1158,6 +1161,29 @@ function upsertToolPart(
     status: next.status,
     ...(next.media ? { media: next.media } : {}),
   });
+}
+
+function promoteIdlessMediaToolPart(
+  parts: AgentChatPart[],
+  id: string,
+  name: string,
+  media: NonNullable<AgentChatToolPart["media"]>,
+) {
+  // tool.generating precedes tool.start: keep the early canvas mounted while
+  // replacing its provisional identity with the execution's stable tool id.
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (
+      part?.type === "tool" &&
+      part.id.startsWith("idless:") &&
+      part.status === "running" &&
+      part.name === name &&
+      part.media === media
+    ) {
+      part.id = id;
+      return;
+    }
+  }
 }
 
 function latestAssistantTurnWithRunningTool(
