@@ -3056,19 +3056,11 @@ impl Repositories {
     // ---- Private share keys (JUN-308) ----------------------------------
 
     pub async fn save_share_key(&self, record: &ShareKeyRecord) -> Result<(), sqlx::error::Error> {
-        let mut tx = self.pool.begin().await?;
-        // An item maps to at most one share locally, enforced by the
-        // (item_kind, item_id) unique index. Drop any stale mapping for this
-        // item first (e.g. the previous share was deleted elsewhere or the
-        // user switched accounts) so inserting the new share id can't trip
-        // that index and strand the freshly created server share. The
-        // ON CONFLICT(share_id) branch still covers re-saving the same share.
-        query("DELETE FROM share_keys WHERE item_kind = ? AND item_id = ? AND share_id <> ?")
-            .bind(&record.item_kind)
-            .bind(&record.item_id)
-            .bind(&record.share_id)
-            .execute(&mut *tx)
-            .await?;
+        // Only the owner dialog's first-invite path writes here, and that path
+        // runs only when no local key exists for the item (the dialog pins an
+        // existing item's share up front), so this insert never collides with
+        // the (item_kind, item_id) unique index. Re-saving the same share is
+        // idempotent via the share_id primary key.
         query(
             "INSERT INTO share_keys (share_id, item_kind, item_id, content_key, created_at)
              VALUES (?, ?, ?, ?, ?)
@@ -3082,9 +3074,8 @@ impl Repositories {
         .bind(&record.item_id)
         .bind(&record.content_key)
         .bind(timestamp())
-        .execute(&mut *tx)
+        .execute(&self.pool)
         .await?;
-        tx.commit().await?;
         Ok(())
     }
 
@@ -4325,49 +4316,5 @@ mod tests {
             .await
             .expect("list after purge")
             .is_empty());
-    }
-
-    #[tokio::test]
-    async fn save_share_key_replaces_a_stale_mapping_for_the_same_item() {
-        use super::ShareKeyRecord;
-        use sqlx::query::query;
-        use sqlx::row::Row;
-
-        let repos = test_repositories().await;
-        // An item already mapped to an old share (e.g. deleted server-side).
-        repos
-            .save_share_key(&ShareKeyRecord {
-                share_id: "shr_old".to_string(),
-                item_kind: "note".to_string(),
-                item_id: "note_1".to_string(),
-                content_key: vec![1u8; 32],
-            })
-            .await
-            .expect("save old key");
-
-        // Re-sharing the same item mints a new share id. This must not trip the
-        // (item_kind, item_id) unique index; the old mapping is replaced.
-        let fresh = ShareKeyRecord {
-            share_id: "shr_new".to_string(),
-            item_kind: "note".to_string(),
-            item_id: "note_1".to_string(),
-            content_key: vec![2u8; 32],
-        };
-        repos.save_share_key(&fresh).await.expect("save fresh key");
-
-        assert_eq!(
-            repos
-                .share_key_for_item("note", "note_1")
-                .await
-                .expect("get key"),
-            Some(fresh)
-        );
-        // Exactly one row remains: the stale mapping was removed, not orphaned.
-        let count: i64 = query("SELECT COUNT(*) AS count FROM share_keys")
-            .fetch_one(&repos.pool)
-            .await
-            .expect("count rows")
-            .get("count");
-        assert_eq!(count, 1);
     }
 }

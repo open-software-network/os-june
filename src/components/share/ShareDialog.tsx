@@ -99,6 +99,13 @@ export function ShareDialog({
       try {
         const key = await shareKeyGet(item.kind, item.itemId);
         if (cancelled || !key) return;
+        // This item is already shared locally. Pin its share id and content
+        // key up front, before fetching invite state: if shareGet then fails
+        // (transient network error), the dialog must not fall back into the
+        // first-invite path, which would mint a duplicate server share and
+        // orphan this one. A later invite adds to the existing share instead.
+        setShareId(key.shareId);
+        setContentKeyB64(key.contentKeyB64);
         const [share, inviteKeys] = await Promise.all([
           shareGet(key.shareId),
           shareInviteKeysGet(key.shareId),
@@ -107,8 +114,6 @@ export function ShareDialog({
         const keyByInvite = new Map(
           inviteKeys.map((entry) => [entry.inviteId, entry.inviteKeyB64]),
         );
-        setShareId(key.shareId);
-        setContentKeyB64(key.contentKeyB64);
         setInvites(
           share.invites.map((invite) => ({
             inviteId: invite.inviteId,

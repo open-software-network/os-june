@@ -10985,7 +10985,13 @@ export function AgentWorkspace({
               : undefined
           }
           onShare={
-            !newSessionMode && selectedHermesSessionId && !selectedHermesSessionIsProvisional
+            // Gate on loaded history: sharing snapshots the transcript, and
+            // hermesTurns is empty until the selected session hydrates. Sharing
+            // early would persist an empty/partial session permanently.
+            !newSessionMode &&
+            selectedHermesSessionId &&
+            !selectedHermesSessionIsProvisional &&
+            selectedHistoryLoaded
               ? () => setShareSessionId(selectedHermesSessionId)
               : undefined
           }
