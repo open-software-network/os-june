@@ -40,6 +40,7 @@ pub const DEFAULT_VIDEO_RESOLUTION: &str = "720p";
 /// Some models (for example wan-2.2-a14b) reject a queue request that omits
 /// `aspect_ratio`, so the fast path injects a default when the caller names none.
 pub const DEFAULT_VIDEO_ASPECT_RATIO: &str = "16:9";
+const VENICE_API_KEY_PREFIX: &str = "VENICE_INFERENCE_KEY_";
 const VENICE_API_BASE_URL: &str = "https://api.venice.ai/api/v1";
 const VENICE_API_KEY_VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_VENICE_API_KEY_CHARS: usize = 4_096;
@@ -1224,6 +1225,12 @@ fn normalize_api_key(value: &str) -> Option<String> {
 }
 
 fn validate_venice_api_key_format(value: &str) -> Result<(), AppError> {
+    if !value.starts_with(VENICE_API_KEY_PREFIX) {
+        return Err(AppError::new(
+            "venice_api_key_invalid",
+            "Venice API keys must start with VENICE_INFERENCE_KEY_.",
+        ));
+    }
     if value.chars().count() > MAX_VENICE_API_KEY_CHARS
         || value.chars().any(|character| character.is_control())
     {
@@ -1620,22 +1627,12 @@ mod tests {
     }
 
     #[test]
-    fn venice_api_key_format_treats_credentials_as_opaque() {
+    fn venice_api_key_requires_inference_prefix() {
+        assert_eq!(
+            validate_venice_api_key_format("sk_wrong").unwrap_err().code,
+            "venice_api_key_invalid"
+        );
         assert!(validate_venice_api_key_format("VENICE_INFERENCE_KEY_valid").is_ok());
-        assert!(validate_venice_api_key_format("VENICE_ADMIN_KEY_valid").is_ok());
-        assert!(validate_venice_api_key_format("legacy-or-future-key-format").is_ok());
-        assert_eq!(
-            validate_venice_api_key_format("invalid\tkey")
-                .unwrap_err()
-                .code,
-            "venice_api_key_invalid"
-        );
-        assert_eq!(
-            validate_venice_api_key_format(&"x".repeat(MAX_VENICE_API_KEY_CHARS + 1))
-                .unwrap_err()
-                .code,
-            "venice_api_key_invalid"
-        );
     }
 
     #[test]

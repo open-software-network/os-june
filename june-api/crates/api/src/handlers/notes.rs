@@ -14,7 +14,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
-use june_domain::{ModelId, ModelKind, ProviderCredentials};
+use june_domain::{ModelId, ModelKind};
 use june_services::{
     NoteGenerateOutput, NoteGenerateParams, NoteTranscribeOutput, NoteTranscribeParams,
     PricingError, PricingTable,
@@ -90,15 +90,9 @@ pub(crate) async fn generate(
     let user_id = authenticated_user(&state, &headers).await?;
     let provider_credentials = provider_credentials(&headers)?;
     request.validate()?;
-    let requested_model_id = required(request.model, "model_required")?;
-    validation::validate_text_len("model", &requested_model_id, validation::MAX_MODEL_CHARS)?;
-    let model_id = resolve_priced_text_model(&state, &requested_model_id)?;
-    let provider_credentials = credentials_for_resolved_model(
-        provider_credentials,
-        &requested_model_id,
-        &model_id,
-        state.pricing().is_venice_model(&model_id),
-    )?;
+    let model_id = required(request.model, "model_required")?;
+    validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
+    let model_id = resolve_priced_text_model(&state, &model_id)?;
 
     let stream = request.stream;
     let params = NoteGenerateParams {
@@ -366,26 +360,6 @@ pub(crate) fn resolve_priced_text_model(
     resolve_priced_text_model_kind(state.pricing(), requested_model_id)
 }
 
-/// Auto is a June-managed route. Reject stale text BYOK selections instead of
-/// silently changing billing; callers may preserve the legacy ASR fallback.
-pub(crate) fn credentials_for_resolved_model(
-    mut credentials: ProviderCredentials,
-    requested_model_id: &str,
-    resolved_model_id: &str,
-    resolved_supports_venice_byok: bool,
-) -> Result<ProviderCredentials, ApiError> {
-    if credentials.has_venice_api_key()
-        && requested_model_id != resolved_model_id
-        && (resolved_model_id == AUTO_TEXT_MODEL || !resolved_supports_venice_byok)
-    {
-        return Err(ApiError::unprocessable("venice_api_key_model_unavailable"));
-    }
-    if resolved_model_id == AUTO_TEXT_MODEL {
-        credentials.venice_api_key = None;
-    }
-    Ok(credentials)
-}
-
 fn resolve_priced_text_model_kind(
     pricing: &PricingTable,
     requested_model_id: &str,
@@ -459,12 +433,12 @@ fn parse_preview_flag(value: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AUTO_TEXT_MODEL, credentials_for_resolved_model, parse_preview_flag,
-        require_priced_model_kind, resolve_priced_asr_model_kind, resolve_priced_text_model_kind,
+        AUTO_TEXT_MODEL, parse_preview_flag, require_priced_model_kind,
+        resolve_priced_asr_model_kind, resolve_priced_text_model_kind,
     };
     use crate::ApiError;
     use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
-    use june_domain::{ModelKind, ProviderCredentials};
+    use june_domain::ModelKind;
     use june_services::PricingTable;
     use std::collections::BTreeMap;
 
@@ -532,23 +506,6 @@ mod tests {
         let resolved = resolve_priced_text_model_kind(&pricing_table(), "retired-venice-model")
             .expect("stale model should remain usable through Auto");
         assert_eq!(resolved, AUTO_TEXT_MODEL);
-    }
-
-    #[test]
-    fn byok_rejects_retired_asr_fallback_to_non_venice_model() {
-        let credentials = ProviderCredentials {
-            venice_api_key: Some("opaque-user-key".to_string()),
-        };
-
-        let error =
-            credentials_for_resolved_model(credentials, "retired-venice-asr", "openai-asr", false)
-                .expect_err("provider-changing BYOK fallback should fail");
-
-        assert!(matches!(
-            error,
-            ApiError::Unprocessable { message, .. }
-                if message == "venice_api_key_model_unavailable"
-        ));
     }
 
     #[test]

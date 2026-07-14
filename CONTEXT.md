@@ -39,10 +39,8 @@ _Avoid_: accounts, the identity service, the auth service.
 **Upstream provider**:
 A third-party AI service June API calls on the user's behalf — currently
 **OpenAI** (transcription only) and **Venice** (transcription, generation,
-agent chat, web). Service-managed upstream provider API keys live only in June
-API's environment, never in June. A user's explicit Venice BYOK credential is
-stored locally by June and forwarded only on eligible Venice requests. In code,
-each upstream sits behind a domain trait
+agent chat, web). Upstream provider API keys live only in June API's
+environment, never in June. In code, each upstream sits behind a domain trait
 (`Transcriber`, `Generator`, `AgentChatCompleter`, ...) defined in
 `june-domain` and implemented in `june-providers`.
 _Avoid_: AI provider, model provider, vendor, "the LLM".
