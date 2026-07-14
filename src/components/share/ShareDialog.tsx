@@ -19,7 +19,6 @@ import {
   shareInviteKeySave,
   shareInviteKeysGet,
   shareKeyGet,
-  shareKeysForget,
   shareKeySave,
   shareRevokeInvite,
   type ShareInviteState,
@@ -139,12 +138,14 @@ export function ShareDialog({
       } catch (err) {
         if (cancelled) return;
         if (existing && isShareNotFoundError(err)) {
-          // The share is definitively gone or owned by a different account
-          // (e.g. re-signed-in on the same local notes). Forget the stale
-          // local key and reset to the unshared state so the item can be
-          // shared again, rather than pointing Invite/Unshare at a dead share.
-          await shareKeysForget(existing.shareId).catch(() => {});
-          if (cancelled) return;
+          // The share is gone, or it is owned by a *different* account now
+          // signed in on the same local notes: the API returns the same
+          // share_not_found for both (non-enumeration). Reset to the unshared
+          // view so the item can be shared again, but do NOT purge the local
+          // keys. The key store is not account-scoped, so deleting here could
+          // destroy the real owner's only copy of a still-live share's keys;
+          // a later re-share replaces the stale mapping instead (save_share_key
+          // upserts by item).
           setShareId(null);
           setContentKeyB64(null);
           setInvites([]);

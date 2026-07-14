@@ -179,7 +179,6 @@ pub fn run() {
             commands::share_add_invites,
             commands::share_revoke_invite,
             commands::share_delete,
-            commands::share_keys_forget,
             commands::share_key_save,
             commands::share_key_get,
             commands::share_invite_key_save,

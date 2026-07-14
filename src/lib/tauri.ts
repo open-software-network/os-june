@@ -2247,12 +2247,6 @@ export async function shareDelete(shareId: string) {
   return invoke<void>("share_delete", { request: { shareId } });
 }
 
-// Forget a share's local keys without a server call, for shares the server
-// reports gone/not-owned so the item can be re-shared from scratch.
-export async function shareKeysForget(shareId: string) {
-  return invoke<void>("share_keys_forget", { request: { shareId } });
-}
-
 export async function shareKeySave(input: {
   shareId: string;
   itemKind: ShareKind;

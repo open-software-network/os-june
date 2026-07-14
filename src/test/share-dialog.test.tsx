@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
   shareRevokeInvite: vi.fn(),
   shareDelete: vi.fn(),
   shareKeyGet: vi.fn(),
-  shareKeysForget: vi.fn(),
   shareKeySave: vi.fn(),
   shareInviteKeySave: vi.fn(),
   shareInviteKeysGet: vi.fn(),
@@ -27,7 +26,6 @@ vi.mock("../lib/tauri", () => ({
   shareRevokeInvite: mocks.shareRevokeInvite,
   shareDelete: mocks.shareDelete,
   shareKeyGet: mocks.shareKeyGet,
-  shareKeysForget: mocks.shareKeysForget,
   shareKeySave: mocks.shareKeySave,
   shareInviteKeySave: mocks.shareInviteKeySave,
   shareInviteKeysGet: mocks.shareInviteKeysGet,
@@ -69,7 +67,6 @@ beforeEach(() => {
   mocks.shareInviteKeysGet.mockResolvedValue([]);
   mocks.shareRevokeInvite.mockResolvedValue(undefined);
   mocks.shareDelete.mockResolvedValue(undefined);
-  mocks.shareKeysForget.mockResolvedValue(undefined);
 });
 
 describe("ShareDialog", () => {
@@ -287,21 +284,24 @@ describe("ShareDialog", () => {
     expect(mocks.shareCreate).not.toHaveBeenCalled();
   });
 
-  it("forgets a stale local key when the server reports the share gone", async () => {
+  it("resets to the unshared view on an ambiguous 404 without purging local keys", async () => {
     mocks.shareKeyGet.mockResolvedValue({
-      shareId: "shr_dead",
+      shareId: "shr_maybe",
       contentKeyB64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
     });
-    // The share no longer exists for this account (definitive 404).
+    // share_not_found is returned both for a deleted share and for one owned by
+    // a different account now signed in on the same local notes; the store is
+    // not account-scoped, so we must not delete the keys on this ambiguous 404.
     mocks.shareGet.mockRejectedValue({ code: "june_request_failed", message: "share_not_found" });
     render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
 
-    // The stale key is dropped and the item resets to the unshared state.
-    await waitFor(() => expect(mocks.shareKeysForget).toHaveBeenCalledWith("shr_dead"));
+    // The item resets to the unshared state so it can be shared again...
     expect(
       await screen.findByText("Not shared yet. This note stays private until you invite someone."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Unshare" })).not.toBeInTheDocument();
+    // ...but nothing purges the local keys, which may belong to the real owner.
+    expect(mocks.shareDelete).not.toHaveBeenCalled();
   });
 
   it("blocks inviting when an existing share's invite state fails to load", async () => {
