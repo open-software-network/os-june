@@ -100,8 +100,10 @@ an undocumented backend content path.
 Every integration binds one account and an explicit object boundary: HubSpot
 pipelines, Salesforce record types, Asana projects, Box/Dropbox folders,
 GitLab groups/projects, ClickUp spaces/lists, Pipedrive pipelines, Azure DevOps
-projects, or Canva folders/designs. The Rust provider proxy enforces that
-selection after resolving provider ids. A model-supplied id cannot widen it.
+projects, or Canva folders/designs. The component that holds the provider
+credential enforces that selection after resolving provider ids: the Rust
+provider proxy for local mode, or the June API broker for a server connector.
+A model-supplied id cannot widen it at either boundary.
 
 ## Sequencing
 
