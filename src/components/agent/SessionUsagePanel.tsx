@@ -22,12 +22,12 @@ import { ModelPrivacyChip } from "../ui/ModelPrivacyChip";
  *
  * Missing fields drop their row rather than showing a placeholder; a payload
  * with nothing usable shows a single empty-state line. The very first load
- * renders the REAL structure with placeholder content — a shimmer bar where the
- * model name lands, the real 60-segment meter track sitting empty (unlit), and
- * two shimmer bars where the legend reading and percent land — so nothing jumps
- * when data arrives: the text placeholders cross-fade to real copy in place and
- * the live track starts from a pixel-identical empty state before lighting up
- * with its eased sweep.
+ * renders the REAL structure with placeholder content — a skeleton bar where
+ * the model name lands, the real 60-segment meter track sitting empty (unlit),
+ * and two skeleton bars where the legend reading and percent land — so nothing
+ * jumps when data arrives: the text placeholders cross-fade to real copy in
+ * place and the live track starts from a pixel-identical empty state before
+ * lighting up with its eased sweep.
  *
  * Decoupled from the gateway on purpose: it takes a `fetchUsage(sessionId)`
  * function that already normalizes the raw `session.usage` result into a
@@ -140,9 +140,9 @@ export function SessionUsagePanel({
       ) : firstLoad ? (
         // First load: render the real structure with placeholder content. The
         // layout is known before data arrives, so we mount the same body
-        // container with a shimmer bar for the model name, the real (empty) meter
-        // track, and two shimmer bars for the legend — nothing jumps when the
-        // payload lands and the placeholders swap to real content in place.
+        // container with a skeleton bar for the model name, the real (empty)
+        // meter track, and two skeleton bars for the legend — nothing jumps when
+        // the payload lands and the placeholders swap to real content in place.
         <div className="agent-usage-body" aria-busy="true">
           <UsageSkeleton />
         </div>
@@ -416,12 +416,13 @@ function MeterTrack({
   );
 }
 
-/** First-load placeholder: the real body structure with shimmer bars standing in
- * for the model name and the legend reading/percent, wrapped around the real
- * (empty) meter track. Because it shares the body container, vertical rhythm,
- * and {@link MeterTrack} markup with the loaded content, the swap to real data
- * is seamless: the text cross-fades and the live track starts from the same
- * empty frame before lighting up. */
+/** First-load placeholder: the real body structure with static skeleton bars
+ * (the app-wide quiet-bar treatment) standing in for the model name and the
+ * legend reading/percent, wrapped around the real (empty) meter track. Because
+ * it shares the body container, vertical rhythm, and {@link MeterTrack} markup
+ * with the loaded content, the swap to real data is seamless: the text
+ * cross-fades and the live track starts from the same empty frame before
+ * lighting up. */
 function UsageSkeleton() {
   return (
     <>

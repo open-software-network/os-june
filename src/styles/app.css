@@ -3698,37 +3698,19 @@ input:focus-visible,
   opacity: 0.6;
 }
 
-/* First-load skeleton bars: block-shaped shimmer standing in for the model name
-   and the legend reading/percent while the real meter track renders empty
+/* First-load skeleton bars: quiet static placeholders standing in for the model
+   name and the legend reading/percent while the real meter track renders empty
    beneath. The body structure is shared with the loaded content, and the live
    track starts from a pixel-identical empty frame before lighting up, so the
-   swap has no visible jump. The bars run their own background-position sweep on
-   a wide muted gradient — a block sweep, not a text-clip, so it is independent
-   of the shared .shimmer text utility (which clips to glyphs). Muted base, pill
-   radius; sizes come from spacing tokens with a small local width var. */
+   swap has no visible jump. Same treatment as the other first-load skeletons
+   (settings sections, messaging detail): a flat --surface-subtle bar with the
+   small radius — no sweep. Bars stay 1em tall so they occupy exactly the line
+   the real text will. */
 .agent-usage-skeleton {
   display: inline-block;
   height: 1em;
-  border-radius: var(--r-pill);
-  background: linear-gradient(
-    90deg,
-    var(--muted) 0%,
-    var(--muted) 35%,
-    var(--muted-foreground) 50%,
-    var(--muted) 65%,
-    var(--muted) 100%
-  );
-  background-size: 200% 100%;
-  animation: usage-skeleton-sweep 1.6s linear infinite;
-}
-
-@keyframes usage-skeleton-sweep {
-  0% {
-    background-position: 150% 0;
-  }
-  100% {
-    background-position: -50% 0;
-  }
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
 }
 
 .agent-usage-skeleton-model {
@@ -3986,12 +3968,6 @@ input:focus-visible,
   .agent-usage-panel,
   .agent-usage-model-row,
   .agent-usage-meter-legend {
-    animation: none;
-  }
-
-  /* Static shimmer bars: no sweep, a flat muted fill. */
-  .agent-usage-skeleton {
-    background: var(--muted);
     animation: none;
   }
 
