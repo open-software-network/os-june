@@ -25,7 +25,7 @@ import { IconStopCircle } from "central-icons/IconStopCircle";
 import { IconToolbox } from "central-icons/IconToolbox";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { createPortal } from "react-dom";
 import { IconArrowCornerDownRight } from "central-icons/IconArrowCornerDownRight";
 import { IconArrowUp } from "central-icons/IconArrowUp";
@@ -216,6 +216,7 @@ import {
   // `AgentArtifact` (the file-viewer card), so alias it.
   type AgentArtifact as TimelineArtifact,
 } from "../../lib/hermes-artifact-store";
+import { AgentThinking } from "./AgentThinking";
 import { SessionUsagePanel } from "./SessionUsagePanel";
 import { useUsagePanelDemo } from "../../lib/usage-panel-demo";
 import { AgentActivityDrawer, AgentArtifactsSection } from "./AgentActivityDrawer";
@@ -10618,9 +10619,11 @@ export function AgentWorkspace({
           branchingMessageId={branchingMessageId}
         />
       ))}
-      {workingSessionIds.has(selectedHermesSessionId) && hermesTurns.at(-1)?.role === "user" ? (
-        <AgentThinking />
-      ) : null}
+      <AgentThinking
+        visible={
+          workingSessionIds.has(selectedHermesSessionId) && hermesTurns.at(-1)?.role === "user"
+        }
+      />
     </div>
   ) : !newSessionMode && selectedTask ? (
     <>
@@ -10723,9 +10726,9 @@ export function AgentWorkspace({
             }}
           />
         ))}
-        {workingTaskIds.has(selectedTask.id) && taskTurns.at(-1)?.role === "user" ? (
-          <AgentThinking />
-        ) : null}
+        <AgentThinking
+          visible={workingTaskIds.has(selectedTask.id) && taskTurns.at(-1)?.role === "user"}
+        />
       </div>
     </>
   ) : null;
@@ -12329,6 +12332,36 @@ function mergeThinkingTurns(turns: AgentChatTurn[]): AgentChatTurn[] {
 // stable across renders.
 const galleryNoop = () => {};
 
+const SHIMMER_GALLERY_SAMPLES = [
+  { length: "Short", text: "Thinking…" },
+  { length: "Medium", text: "Generating image…" },
+  { length: "Long", text: "Generating video, this can take a minute" },
+] as const;
+
+function AgentShimmerGallerySection() {
+  return (
+    <section className="agent-gallery-section agent-gallery-shimmer-section">
+      <header className="agent-gallery-section-header">
+        <h3>Shimmer text lengths</h3>
+        <p>
+          Each sample uses the production color, spread, and 1.6-second cadence. Compare perceived
+          speed and contrast across text lengths in the active theme.
+        </p>
+      </header>
+      <dl className="agent-gallery-shimmer-list">
+        {SHIMMER_GALLERY_SAMPLES.map((sample) => (
+          <div key={sample.length} className="agent-gallery-shimmer-sample">
+            <dt>{sample.length}</dt>
+            <dd>
+              <span className="text-shimmer shimmer agent-gallery-shimmer-text">{sample.text}</span>
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
 function AgentResponseGallery({
   sections,
   errors,
@@ -12368,6 +12401,7 @@ function AgentResponseGallery({
           <IconCrossMedium size={15} />
         </button>
       </div>
+      {errors ? null : <AgentShimmerGallerySection />}
       {sections.map((section) => (
         <section key={section.label} className="agent-gallery-section">
           <header className="agent-gallery-section-header">
@@ -13214,7 +13248,7 @@ function AgentGeneratedVideo({
     return (
       <div className="agent-generated-video" data-status="running" role="status" aria-live="polite">
         <div className="agent-generated-video-placeholder">
-          <span className="text-shimmer">Generating video, this can take a minute</span>
+          <span className="text-shimmer shimmer">Generating video, this can take a minute</span>
           {progress ? <span className="agent-generated-video-progress">{progress}</span> : null}
         </div>
       </div>
@@ -13250,7 +13284,9 @@ function AgentGeneratedVideo({
         {src ? (
           <video controls src={src} poster={part.posterDataUrl} preload="metadata" />
         ) : (
-          <span className="agent-generated-image-loading text-shimmer">Loading video...</span>
+          <span className="agent-generated-image-loading text-shimmer shimmer">
+            Loading video...
+          </span>
         )}
       </div>
       <figcaption className="agent-generated-image-bar">
@@ -14297,6 +14333,7 @@ function AgentThinkingGroup({
   reasoning: Extract<AgentChatPart, { type: "reasoning" }>[];
   running: boolean;
 }) {
+  const reduceMotion = useReducedMotion();
   // Collapsed by default to a short label — "Thinking" while it works, "Thought"
   // once done (terracotta while live). Expanding reveals only the reasoning
   // prose; tool/action rows render outside this disclosure.
@@ -14311,9 +14348,24 @@ function AgentThinkingGroup({
       open={open}
       onToggle={(event) => onOpenChange(event.currentTarget.open)}
     >
-      <summary>
-        <span className={running ? "text-shimmer shimmer" : undefined}>
-          {running ? "Thinking" : "Thought"}
+      <summary aria-label={running ? "Thinking" : "Thought"}>
+        <span className="agent-reasoning-label-swap" aria-hidden="true">
+          <AnimatePresence initial={false}>
+            <motion.span
+              key={running ? "thinking" : "thought"}
+              className={running ? "text-shimmer shimmer" : undefined}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{
+                // Framer Motion takes seconds; these mirror --t-fast/--t-med.
+                duration: reduceMotion ? 0.1 : 0.16,
+                ease: [0.22, 1, 0.36, 1],
+              }}
+            >
+              {running ? "Thinking" : "Thought"}
+            </motion.span>
+          </AnimatePresence>
         </span>
         <IconChevronDownSmall size={14} className="agent-disclosure-chevron" />
       </summary>
@@ -15551,18 +15603,6 @@ function ActivityIndicator({
       <span aria-hidden="true" />
       {status === "waitingForUser" ? "Needs you" : "Working"}
     </span>
-  );
-}
-
-// Bottom-of-timeline "responding" affordance: a shimmering label, painted by
-// the same shared .shimmer utility the recorder uses while transcribing. Lives
-// in the timeline (not the header) so it reads like the agent is actively
-// composing the next turn.
-function AgentThinking() {
-  return (
-    <div className="agent-thinking" role="status" aria-live="polite">
-      <span className="text-shimmer shimmer agent-thinking-label">Thinking…</span>
-    </div>
   );
 }
 

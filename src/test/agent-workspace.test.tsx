@@ -7134,6 +7134,53 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayEventHandlers.size).toBe(0);
   });
 
+  it("keeps one thinking shimmer mounted until visible response content arrives", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "summarize the current page",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "summarize the current page",
+      }),
+    );
+    const indicator = await screen.findByText("Thinking…");
+    expect(indicator).toHaveClass("text-shimmer", "shimmer");
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.start",
+          session_id: "runtime-session-2",
+          payload: { message_id: "live-response" },
+        });
+      }
+    });
+
+    expect(screen.getAllByText("Thinking…")).toHaveLength(1);
+    expect(screen.getByText("Thinking…")).toBe(indicator);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Here is the summary." },
+        });
+      }
+    });
+
+    expect(screen.getByText("Here is the summary.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Thinking…")).toBeNull());
+  });
+
   it("keeps an opened thinking disclosure open while reasoning streams", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
@@ -7165,6 +7212,9 @@ describe("AgentWorkspace", () => {
     const label = await screen.findByText("Thinking");
     const details = label.closest("details");
     expect(details).not.toHaveAttribute("open");
+    expect(label.parentElement).toHaveClass("agent-reasoning-label-swap");
+    expect(label.parentElement).toHaveAttribute("aria-hidden", "true");
+    expect(details?.querySelector("summary")).toHaveAttribute("aria-label", "Thinking");
 
     await user.click(label);
     await waitFor(() => expect(details).toHaveAttribute("open"));
@@ -7193,6 +7243,9 @@ describe("AgentWorkspace", () => {
     });
 
     expect(await screen.findByText("Thought")).toBeInTheDocument();
+    expect(screen.getByText("Thought").parentElement).toHaveClass("agent-reasoning-label-swap");
+    expect(screen.getByText("Thought").parentElement).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByText("Thought").closest("summary")).toHaveAttribute("aria-label", "Thought");
     expect(screen.getByText("Thought").closest("details")).toHaveAttribute("open");
 
     await user.type(screen.getByRole("textbox"), "next request");
@@ -10230,6 +10283,12 @@ describe("AgentWorkspace", () => {
     vi.useFakeTimers();
     try {
       fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByText("Generating video, this can take a minute")).toHaveClass(
+          "text-shimmer",
+          "shimmer",
+        ),
+      );
       await act(async () => {
         await vi.advanceTimersByTimeAsync(900_000);
       });
@@ -12096,12 +12155,47 @@ describe("AgentWorkspace", () => {
           selector: ".agent-composer-notice",
         }),
       ).toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Shimmer text lengths" })).toBeNull();
     } finally {
       // Always reset the module-level desired state — a failure here must not
       // leave the gallery on and cascade into later workspace mounts.
       act(() => void agentErrors(false));
     }
     await waitFor(() => expect(screen.queryByText("Agent error gallery")).toBeNull());
+  });
+
+  it("shows production shimmer across text lengths via the __agentGallery() dev handle", async () => {
+    const agentGallery = (window as unknown as { __agentGallery: (show?: boolean) => string })
+      .__agentGallery;
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => void agentGallery());
+
+    try {
+      expect(await screen.findByText("Agent response gallery")).toBeInTheDocument();
+      const heading = screen.getByRole("heading", { name: "Shimmer text lengths" });
+      const section = heading.closest("section");
+      expect(section).not.toBeNull();
+
+      const samples = Array.from(section?.querySelectorAll(".text-shimmer.shimmer") ?? []);
+      const sampleTexts = [
+        "Thinking…",
+        "Generating image…",
+        "Generating video, this can take a minute",
+      ];
+      expect(samples.map((sample) => sample.textContent)).toEqual(sampleTexts);
+      for (const text of sampleTexts) {
+        expect(within(section as HTMLElement).getByText(text)).toHaveClass(
+          "text-shimmer",
+          "shimmer",
+        );
+      }
+      expect(section?.querySelector('[role="status"], [aria-live]')).toBeNull();
+    } finally {
+      act(() => void agentGallery(false));
+    }
+    await waitFor(() => expect(screen.queryByText("Agent response gallery")).toBeNull());
   });
 
   it("does not let a stale message fetch erase a newer follow-up", async () => {

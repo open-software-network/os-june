@@ -803,6 +803,39 @@ input:focus-visible,
   line-height: 1.35;
 }
 
+.agent-gallery-shimmer-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.agent-gallery-shimmer-sample {
+  display: grid;
+  grid-template-columns: calc(var(--sp-12) + var(--sp-2)) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.agent-gallery-shimmer-sample dt {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-gallery-shimmer-sample dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.agent-gallery-shimmer-text {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: bottom;
+}
+
 .agent-management-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -4560,6 +4593,17 @@ input:focus-visible,
 
 .agent-reasoning > summary span {
   font-weight: 400;
+}
+
+/* Thinking -> Thought crossfades in one grid cell. Keeping both keyed labels
+ * in flow avoids popLayout's absolute-positioned inline clone, which can paint
+ * a clipped-text gradient outside its glyph bounds in some browser engines. */
+.agent-reasoning-label-swap {
+  display: inline-grid;
+}
+
+.agent-reasoning .agent-reasoning-label-swap > span {
+  grid-area: 1 / 1;
 }
 
 .agent-reasoning[open] > summary p {
@@ -10799,16 +10843,15 @@ input:focus-visible,
 
 /* Truncation layout plus the shimmer base color for the agent-chat working
  * labels. Pairs with the shared .shimmer utility in markup, which owns the
- * sweep; here we only keep the ellipsis clamp and the base color it sweeps. The
- * agent shimmer runs quicker than the 2s default — the slower cadence read
- * sluggish in the chat — so it sets a shorter --shimmer-duration. */
+ * sweep and theme contrast; here we keep the ellipsis clamp, base color, and
+ * agent-chat cadence between the old abrupt 1.2s and the shared 2s default. */
 .text-shimmer {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted-foreground);
-  --shimmer-duration: 1200ms;
+  --shimmer-duration: 1600ms;
 }
 
 /* Count chip — how many follow-up recordings are queued behind the one
