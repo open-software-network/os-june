@@ -12560,8 +12560,7 @@ mcp_servers:
         // request token the app renders as a card. The guidance is
         // sandbox-independent, so assert it in both soul shapes.
         for sandbox_available in [true, false] {
-            sync_june_soul(home.path(), sandbox_available, false, false, true)
-                .expect("sync soul");
+            sync_june_soul(home.path(), sandbox_available, false, false, true).expect("sync soul");
 
             let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
             assert!(soul.contains("Browser use"));
