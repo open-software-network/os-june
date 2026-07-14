@@ -130,7 +130,7 @@ fn resolve_priced_agent_text_model(
         return Ok(resolved_model_id);
     }
 
-    [PREFERRED_VISION_TEXT_MODEL]
+    let compatible_model = [PREFERRED_VISION_TEXT_MODEL]
         .into_iter()
         .filter(|model_id| {
             state
@@ -155,8 +155,18 @@ fn resolve_priced_agent_text_model(
                         && model_supports_requirements(state.pricing(), model_id, requirements)
                 })
                 .cloned()
-        })
-        .ok_or_else(|| ApiError::unprocessable("model_not_priced"))
+        });
+
+    if compatible_model.is_none() {
+        tracing::warn!(
+            requested_model = %requested_model_id,
+            vision_required = requirements.vision,
+            tools_required = requirements.tools,
+            "no priced text model satisfies the agent request capabilities"
+        );
+    }
+
+    compatible_model.ok_or_else(|| ApiError::unprocessable("model_capability_unavailable"))
 }
 
 fn chat_items_contain_image(value: &serde_json::Value) -> bool {
@@ -183,7 +193,8 @@ fn model_supports_requirements(
         .is_some_and(|(_, model)| {
             (!requirements.vision || has_capability(&model.capabilities, "supportsvision"))
                 && (!requirements.tools
-                    || has_capability(&model.capabilities, "supportsfunctioncalling"))
+                    || has_capability(&model.capabilities, "functioncalling")
+                    || has_capability(&model.capabilities, "toolcalling"))
         })
 }
 
@@ -194,7 +205,7 @@ fn has_capability(capabilities: &[String], expected: &str) -> bool {
             .filter(char::is_ascii_alphabetic)
             .map(|character| character.to_ascii_lowercase())
             .collect::<String>()
-            == expected
+            .contains(expected)
     })
 }
 
@@ -247,6 +258,10 @@ mod tests {
     fn capability_matching_uses_the_catalog_names_normalized() {
         assert!(has_capability(
             &["supports_vision".to_string()],
+            "supportsvision"
+        ));
+        assert!(has_capability(
+            &["parent.supportsVision".to_string()],
             "supportsvision"
         ));
         assert!(!has_capability(

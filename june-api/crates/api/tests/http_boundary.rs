@@ -448,6 +448,51 @@ async fn integration_agent_chat_local_auto_image_and_tools_falls_back_to_compati
 }
 
 #[tokio::test]
+async fn integration_agent_chat_local_auto_rejects_when_capabilities_are_unavailable()
+-> Result<(), Box<dyn Error>> {
+    let app = router(
+        test_state_with_text_pricing_without_auto_and_kimi_capabilities(
+            true,
+            Arc::new(FakeGenerator),
+            Arc::new(FakeChatCompleter),
+            vec!["supportsVision".to_string()],
+        ),
+    );
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "image_url",
+                        "image_url": { "url": "https://example.com/image.png" }
+                    }]
+                }],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "save_description",
+                        "parameters": { "type": "object" }
+                    }
+                }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["message"], "model_capability_unavailable");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_note_generate_local_auto_fallback_omits_cost_quality()
 -> Result<(), Box<dyn Error>> {
     let generator = Arc::new(RecordingGenerator::default());
@@ -1906,6 +1951,23 @@ fn test_state_with_text_pricing_without_auto(
     generator: Arc<dyn Generator>,
     chat_completer: Arc<dyn AgentChatCompleter>,
 ) -> ApiState {
+    test_state_with_text_pricing_without_auto_and_kimi_capabilities(
+        local_dev_enabled,
+        generator,
+        chat_completer,
+        vec![
+            "supportsFunctionCalling".to_string(),
+            "supportsVision".to_string(),
+        ],
+    )
+}
+
+fn test_state_with_text_pricing_without_auto_and_kimi_capabilities(
+    local_dev_enabled: bool,
+    generator: Arc<dyn Generator>,
+    chat_completer: Arc<dyn AgentChatCompleter>,
+    kimi_capabilities: Vec<String>,
+) -> ApiState {
     let mut pricing = models();
     pricing.remove("open-software/auto");
     pricing.insert(
@@ -1941,10 +2003,7 @@ fn test_state_with_text_pricing_without_auto(
             pricing: None,
             context_tokens: None,
             traits: Vec::new(),
-            capabilities: vec![
-                "supportsFunctionCalling".to_string(),
-                "supportsVision".to_string(),
-            ],
+            capabilities: kimi_capabilities,
         },
     );
     test_state_from_deps(TestStateDeps {
