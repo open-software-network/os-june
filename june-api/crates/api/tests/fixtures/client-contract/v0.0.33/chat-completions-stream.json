@@ -1,5 +1,5 @@
 {
-  "description": "proxy_agent_chat_completions: streaming agent run",
+  "description": "proxy_agent_chat_completions: streaming agent run; the raw upstream SSE stream passes through verbatim",
   "endpoint": "/v1/chat/completions",
   "body": {
     "model": "venice-text-model",
@@ -17,6 +17,8 @@
     ]
   },
   "expect": {
-    "envelope": false
+    "envelope": false,
+    "rawText": "data: {\"choices\":[]}\n\n",
+    "contentType": "text/event-stream"
   }
 }

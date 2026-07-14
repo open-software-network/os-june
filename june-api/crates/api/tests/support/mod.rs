@@ -350,7 +350,13 @@ pub(crate) fn models() -> BTreeMap<String, ModelPriceConfig> {
 }
 
 pub(crate) async fn send(request: Request<Body>) -> axum::response::Response {
-    match test_router().oneshot(request).await {
+    send_on(test_router(), request).await
+}
+
+/// Sends through a caller-held router, so multi-request flows (create a job,
+/// then poll it) share the in-memory service state one deployed API has.
+pub(crate) async fn send_on(router: Router, request: Request<Body>) -> axum::response::Response {
+    match router.oneshot(request).await {
         Ok(response) => response,
         Err(error) => match error {},
     }

@@ -14,6 +14,7 @@
 //! docs/adr/0019-june-api-v1-compatibility-policy.md for the rules and for
 //! how fixture versions are added and retired.
 
+use axum::http::header;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use std::{collections::BTreeMap, error::Error, fs, path::Path};
@@ -37,7 +38,21 @@ struct Fixture {
     /// Multipart POST form. Parts with a `filename` are file parts.
     #[serde(default)]
     multipart: Option<Vec<FixturePart>>,
+    /// A JSON POST sent first on the same router, for endpoints that need
+    /// server-side state (poll a job the client just created). The
+    /// `pathVar` field of its response `data` replaces `{pathVar}` in
+    /// `endpoint`.
+    #[serde(default)]
+    setup: Option<Setup>,
     expect: Expect,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Setup {
+    endpoint: String,
+    body: serde_json::Value,
+    path_var: String,
 }
 
 #[derive(Deserialize)]
@@ -62,8 +77,15 @@ struct Expect {
     /// For proxy responses (`envelope: false`): the exact JSON body the
     /// route must return for this request. Pins passthrough behavior; a
     /// route that starts wrapping or reshaping the upstream body fails.
+    /// Every non-envelope fixture must set this or `rawText`.
     #[serde(default)]
     raw_json: Option<serde_json::Value>,
+    /// Like `rawJson`, for non-JSON proxy bodies (an SSE stream).
+    #[serde(default)]
+    raw_text: Option<String>,
+    /// Response Content-Type must start with this value.
+    #[serde(default)]
+    content_type: Option<String>,
     /// Response arrives as SSE; the envelope is the `result` event payload.
     #[serde(default)]
     sse: bool,
@@ -150,9 +172,13 @@ async fn check_fixture(
     app_version: &str,
     label: &str,
 ) -> Result<(), Box<dyn Error>> {
+    let app = test_router();
     let authorization = fixture.auth.then_some(AUTHORIZATION);
+
+    let endpoint = run_setup(app.clone(), fixture, app_version, label).await?;
+
     let mut request = match (&fixture.body, &fixture.multipart) {
-        (Some(body), None) => json_request(&fixture.endpoint, body, authorization)?,
+        (Some(body), None) => json_request(&endpoint, body, authorization)?,
         (None, Some(parts)) => {
             let parts = parts.iter().map(|part| match &part.filename {
                 Some(filename) => typed_file_part(
@@ -164,12 +190,12 @@ async fn check_fixture(
                 None => text_part(part.name.clone(), part.value.clone()),
             });
             multipart_request_with_auth(
-                &fixture.endpoint,
+                &endpoint,
                 multipart_body(parts.collect::<Vec<_>>()),
                 authorization,
             )?
         }
-        (None, None) => get_request_with_auth(&fixture.endpoint, authorization)?,
+        (None, None) => get_request_with_auth(&endpoint, authorization)?,
         (Some(_), Some(_)) => return Err(format!("{label}: both body and multipart set").into()),
     };
     // The shipped client stamps its real version on every request.
@@ -177,19 +203,27 @@ async fn check_fixture(
         .headers_mut()
         .insert(june_api::JUNE_APP_VERSION_HEADER, app_version.parse()?);
 
-    let response = send(request).await;
+    let response = send_on(app, request).await;
     let status = response.status();
     assert!(
         status.is_success(),
         "{label}: expected success, got {status}: {}",
         response_text(response).await?
     );
+    if let Some(expected) = &fixture.expect.content_type {
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            content_type.starts_with(expected.as_str()),
+            "{label}: content type changed from {expected} to {content_type}"
+        );
+    }
     if !fixture.expect.envelope {
-        if let Some(expected) = &fixture.expect.raw_json {
-            let body = response_json(response).await?;
-            assert_eq!(&body, expected, "{label}: proxied body changed");
-        }
-        return Ok(());
+        return check_raw_body(fixture, response, label).await;
     }
 
     let envelope = if fixture.expect.sse {
@@ -220,6 +254,74 @@ async fn check_fixture(
             for spec in &fixture.expect.required_item_fields {
                 check_required_field(item, spec, label, "item")?;
             }
+        }
+    }
+    Ok(())
+}
+
+/// Runs a fixture's setup request, if any, on the shared router and returns
+/// the main endpoint with `{pathVar}` replaced by the setup response's
+/// `data` field.
+async fn run_setup(
+    app: axum::Router,
+    fixture: &Fixture,
+    app_version: &str,
+    label: &str,
+) -> Result<String, Box<dyn Error>> {
+    let Some(setup) = &fixture.setup else {
+        return Ok(fixture.endpoint.clone());
+    };
+    let authorization = fixture.auth.then_some(AUTHORIZATION);
+    let mut request = json_request(&setup.endpoint, &setup.body, authorization)?;
+    request
+        .headers_mut()
+        .insert(june_api::JUNE_APP_VERSION_HEADER, app_version.parse()?);
+    let response = send_on(app, request).await;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "{label}: setup request failed with {status}: {}",
+            response_text(response).await?
+        )
+        .into());
+    }
+    let envelope = response_json(response).await?;
+    let Some(value) = envelope["data"][&setup.path_var].as_str() else {
+        return Err(format!(
+            "{label}: setup response has no data.{} string: {envelope}",
+            setup.path_var
+        )
+        .into());
+    };
+    Ok(fixture
+        .endpoint
+        .replace(&format!("{{{}}}", setup.path_var), value))
+}
+
+/// Pins the exact body of an opaque (`envelope: false`) proxy response.
+/// Without a pinned body such a fixture asserts nothing beyond the status,
+/// so a missing pin is an error, not a pass.
+async fn check_raw_body(
+    fixture: &Fixture,
+    response: axum::response::Response,
+    label: &str,
+) -> Result<(), Box<dyn Error>> {
+    match (&fixture.expect.raw_json, &fixture.expect.raw_text) {
+        (Some(expected), None) => {
+            let body = response_json(response).await?;
+            assert_eq!(&body, expected, "{label}: proxied body changed");
+        }
+        (None, Some(expected)) => {
+            let body = response_text(response).await?;
+            assert_eq!(&body, expected, "{label}: proxied body changed");
+        }
+        (None, None) => {
+            return Err(
+                format!("{label}: envelope:false fixtures must pin rawJson or rawText").into(),
+            );
+        }
+        (Some(_), Some(_)) => {
+            return Err(format!("{label}: set only one of rawJson and rawText").into());
         }
     }
     Ok(())

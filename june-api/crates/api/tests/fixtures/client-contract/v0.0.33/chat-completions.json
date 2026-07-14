@@ -16,6 +16,7 @@
     "envelope": false,
     "rawJson": {
       "id": "chatcmpl_test"
-    }
+    },
+    "contentType": "application/json"
   }
 }
