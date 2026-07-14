@@ -6,11 +6,13 @@ it created for the active broker session. Task tabs stay in a `June` tab group
 and keep Chrome's debugger banner visible while attached.
 
 The current driver starts and closes sessions, opens, lists, switches, and
-closes task tabs, and supports navigation, accessibility snapshots, and
-viewport screenshots. Click, fill, press, back, and user-shared tabs are part
-of the common `june_browser` contract but are implemented in later slices.
+closes task tabs, accepts one-use share codes created by an explicit popup
+gesture, and supports navigation, accessibility snapshots, and viewport
+screenshots. Click, fill, press, and back are implemented in later slices.
 Both the Rust broker and this extension keep independent ownership registries;
-pre-existing tabs are never attached, read, navigated, grouped, or closed.
+pre-existing tabs are never attached or read unless explicitly shared. Shared
+tabs show Chrome's debugger banner while attached and are detached, never
+closed, when the task ends, the share is revoked, or the broker disconnects.
 
 ## How pairing works
 

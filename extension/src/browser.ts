@@ -14,8 +14,14 @@ function debuggerApi(): ChromeDebuggerApi {
   return (chrome as unknown as { debugger: ChromeDebuggerApi }).debugger;
 }
 
-type TaskTab = { tabId: number; epoch: number; refs: Set<string> };
+type TaskTab = {
+  tabId: number;
+  epoch: number;
+  refs: Set<string>;
+  ownership: "created" | "shared";
+};
 type TaskSession = { tabs: Map<number, TaskTab>; activeTabId?: number; groupId?: number };
+type SessionCleanup = { created: number[]; shared: number[] };
 
 export class TaskTabRegistry {
   private sessions = new Map<string, TaskSession>();
@@ -32,12 +38,22 @@ export class TaskTabRegistry {
     return session;
   }
 
-  add(sessionId: string, tabId: number): TaskTab {
+  private add(sessionId: string, tabId: number, ownership: TaskTab["ownership"]): TaskTab {
+    if (this.find(tabId))
+      throw toolError("tab_already_owned", "The tab already belongs to a Browser use session.");
     const session = this.session(sessionId);
-    const tab = { tabId, epoch: 0, refs: new Set<string>() };
+    const tab = { tabId, epoch: 0, refs: new Set<string>(), ownership };
     session.tabs.set(tabId, tab);
     session.activeTabId = tabId;
     return tab;
+  }
+
+  addCreated(sessionId: string, tabId: number): TaskTab {
+    return this.add(sessionId, tabId, "created");
+  }
+
+  addShared(sessionId: string, tabId: number): TaskTab {
+    return this.add(sessionId, tabId, "shared");
   }
 
   tab(sessionId: string, tabId: number): TaskTab {
@@ -71,10 +87,13 @@ export class TaskTabRegistry {
     if (session.activeTabId === tabId) session.activeTabId = session.tabs.keys().next().value;
   }
 
-  removeSession(sessionId: string): number[] {
-    const ids = [...this.session(sessionId).tabs.keys()];
+  removeSession(sessionId: string): SessionCleanup {
+    const cleanup: SessionCleanup = { created: [], shared: [] };
+    for (const tab of this.session(sessionId).tabs.values()) {
+      cleanup[tab.ownership].push(tab.tabId);
+    }
     this.sessions.delete(sessionId);
-    return ids;
+    return cleanup;
   }
 
   find(tabId: number): { sessionId: string; tab: TaskTab } | null {
@@ -89,8 +108,59 @@ export class TaskTabRegistry {
     return [...this.sessions.values()].flatMap((session) => [...session.tabs.keys()]);
   }
 
+  createdTabs(): number[] {
+    return [...this.sessions.values()].flatMap((session) =>
+      [...session.tabs.values()]
+        .filter((tab) => tab.ownership === "created")
+        .map((tab) => tab.tabId),
+    );
+  }
+
   clear(): void {
     this.sessions.clear();
+  }
+}
+
+export class PendingShareRegistry {
+  private offers = new Map<string, number>();
+
+  offer(tabId: number, shareId: string = crypto.randomUUID()): string {
+    this.revokeTab(tabId);
+    this.offers.set(shareId, tabId);
+    return shareId;
+  }
+
+  consume(shareId: string): number {
+    const tabId = this.offers.get(shareId);
+    if (tabId === undefined)
+      throw toolError("share_not_found", "The tab share was not found or has expired.");
+    this.offers.delete(shareId);
+    return tabId;
+  }
+
+  hasTab(tabId: number): boolean {
+    return [...this.offers.values()].includes(tabId);
+  }
+
+  shareIdForTab(tabId: number): string | undefined {
+    for (const [shareId, offeredTabId] of this.offers) {
+      if (offeredTabId === tabId) return shareId;
+    }
+    return undefined;
+  }
+
+  revokeTab(tabId: number): boolean {
+    let revoked = false;
+    for (const [shareId, offeredTabId] of this.offers) {
+      if (offeredTabId !== tabId) continue;
+      this.offers.delete(shareId);
+      revoked = true;
+    }
+    return revoked;
+  }
+
+  clear(): void {
+    this.offers.clear();
   }
 }
 
@@ -276,8 +346,9 @@ function artifactMessages(
 
 export class BrowserController {
   readonly registry = new TaskTabRegistry();
+  readonly shares = new PendingShareRegistry();
 
-  constructor() {
+  constructor(private readonly onSharedTabReleased?: (tabId: number) => void) {
     debuggerApi().onEvent.addListener((source, method, params) => {
       if (
         (method === "Page.frameNavigated" || method === "Page.navigatedWithinDocument") &&
@@ -296,14 +367,26 @@ export class BrowserController {
       const owner = this.registry.find(source.tabId);
       if (owner) this.registry.invalidate(owner.sessionId, source.tabId);
     });
+    debuggerApi().onDetach.addListener((source) => {
+      if (source.tabId === undefined) return;
+      const owner = this.registry.find(source.tabId);
+      if (owner) {
+        this.registry.removeTab(owner.sessionId, source.tabId);
+        if (owner.tab.ownership === "shared") this.onSharedTabReleased?.(source.tabId);
+      }
+    });
     chrome.tabs.onRemoved.addListener((tabId) => {
+      this.shares.revokeTab(tabId);
       const owner = this.registry.find(tabId);
-      if (owner) this.registry.removeTab(owner.sessionId, tabId);
+      if (owner) {
+        this.registry.removeTab(owner.sessionId, tabId);
+        if (owner.tab.ownership === "shared") this.onSharedTabReleased?.(tabId);
+      }
     });
     chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
       if (changeInfo.groupId === undefined) return;
       const owner = this.registry.find(tabId);
-      if (!owner) return;
+      if (!owner || owner.tab.ownership === "shared") return;
       const expectedGroup = this.registry.session(owner.sessionId).groupId;
       if (changeInfo.groupId !== expectedGroup) {
         this.registry.removeTab(owner.sessionId, tabId);
@@ -323,9 +406,39 @@ export class BrowserController {
 
   async disconnect(): Promise<void> {
     const tabIds = this.registry.cleanupPlan();
+    const createdTabIds = this.registry.createdTabs();
     this.registry.clear();
+    this.shares.clear();
     await detachTabs(tabIds);
-    await clearTaskGroups(tabIds);
+    await clearTaskGroups(createdTabIds);
+  }
+
+  offerTab(tabId: number): string {
+    if (this.registry.find(tabId))
+      throw toolError("tab_already_owned", "This tab already belongs to June.");
+    return this.shares.offer(tabId);
+  }
+
+  shareState(tabId: number): "available" | "pending" | "shared" | "unavailable" {
+    const owner = this.registry.find(tabId);
+    if (owner?.tab.ownership === "shared") return "shared";
+    if (owner) return "unavailable";
+    if (this.shares.hasTab(tabId)) return "pending";
+    return "available";
+  }
+
+  pendingShareId(tabId: number): string | undefined {
+    return this.shares.shareIdForTab(tabId);
+  }
+
+  async revokeSharedTab(tabId: number): Promise<boolean> {
+    const pending = this.shares.revokeTab(tabId);
+    const owner = this.registry.find(tabId);
+    if (owner?.tab.ownership !== "shared") return pending;
+    this.registry.removeTab(owner.sessionId, tabId);
+    this.onSharedTabReleased?.(tabId);
+    await detach(tabId);
+    return true;
   }
 
   async execute(
@@ -355,8 +468,18 @@ export class BrowserController {
     }
   }
 
-  private async requireMarkedTaskTab(sessionId: string, tabId: number): Promise<TaskTab> {
+  private async requireOwnedTaskTab(sessionId: string, tabId: number): Promise<TaskTab> {
     const taskTab = this.registry.tab(sessionId, tabId);
+    if (taskTab.ownership === "shared") {
+      try {
+        await chrome.tabs.get(tabId);
+        return taskTab;
+      } catch {
+        this.registry.removeTab(sessionId, tabId);
+        await detach(tabId);
+        throw toolError("tab_not_owned", "The shared tab is no longer available.");
+      }
+    }
     const expectedGroup = this.registry.session(sessionId).groupId;
     try {
       const tab = await chrome.tabs.get(tabId);
@@ -384,8 +507,29 @@ export class BrowserController {
       return { sessionId };
     }
     if (tool === "close_session") {
-      await closeTabs(this.registry.removeSession(sessionId));
+      const cleanup = this.registry.removeSession(sessionId);
+      await Promise.all([closeTabs(cleanup.created), detachTabs(cleanup.shared)]);
       return { closed: true };
+    }
+    if (tool === "accept_shared_tab") {
+      this.registry.session(sessionId);
+      const shareId = stringArg(args, "share_id");
+      const tabId = this.shares.consume(shareId);
+      this.registry.addShared(sessionId, tabId);
+      try {
+        await chrome.tabs.get(tabId);
+        await attach(tabId);
+        const owner = this.registry.find(tabId);
+        if (owner?.sessionId !== sessionId || owner.tab.ownership !== "shared") {
+          throw toolError("share_revoked", "The tab share was revoked before it was accepted.");
+        }
+        return { tabId, shared: true };
+      } catch (error) {
+        const owner = this.registry.find(tabId);
+        if (owner?.sessionId === sessionId) this.registry.removeTab(sessionId, tabId);
+        await detach(tabId);
+        throw error;
+      }
     }
     if (tool === "open_tab") {
       this.registry.session(sessionId);
@@ -399,7 +543,7 @@ export class BrowserController {
         await chrome.tabGroups.update(groupId, { title: GROUP_TITLE });
         session.groupId = groupId;
         await attach(tabId);
-        this.registry.add(sessionId, tabId);
+        this.registry.addCreated(sessionId, tabId);
         return { tabId, url: "about:blank" };
       } catch (error) {
         await closeTabs([tabId]);
@@ -410,7 +554,7 @@ export class BrowserController {
       const tabs = [];
       for (const ownedId of [...this.registry.session(sessionId).tabs.keys()]) {
         try {
-          await this.requireMarkedTaskTab(sessionId, ownedId);
+          await this.requireOwnedTaskTab(sessionId, ownedId);
           const tab = await chrome.tabs.get(ownedId);
           tabs.push({ tabId: ownedId, title: tab.title ?? "", url: tab.url ?? "" });
         } catch {
@@ -420,10 +564,11 @@ export class BrowserController {
       return { tabs, activeTabId: this.registry.session(sessionId).activeTabId };
     }
     const tabId = tabArg(args);
-    const taskTab = await this.requireMarkedTaskTab(sessionId, tabId);
+    const taskTab = await this.requireOwnedTaskTab(sessionId, tabId);
     if (tool === "close_tab") {
       this.registry.removeTab(sessionId, tabId);
-      await closeTabs([tabId]);
+      if (taskTab.ownership === "created") await closeTabs([tabId]);
+      else await detach(tabId);
       return { closed: true };
     }
     if (tool === "switch_tab") {

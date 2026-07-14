@@ -4,6 +4,16 @@
 import type { PairingState } from "./pairing";
 
 type PopupCopy = { title: string; detail: string; retry: boolean };
+type ShareState = "available" | "pending" | "shared" | "unavailable";
+type ShareResponse = {
+  success: boolean;
+  state?: ShareState;
+  shareId?: string;
+  message?: string;
+};
+
+let pairingState: PairingState | undefined;
+let activeShareId: string | undefined;
 
 const copy: Record<Exclude<PairingState["status"], "incompatible">, PopupCopy> = {
   disconnected: {
@@ -54,6 +64,68 @@ function render(state: PairingState) {
   title.textContent = entry.title;
   detail.textContent = entry.detail;
   retry.hidden = !entry.retry;
+  pairingState = state;
+  void refreshShare();
+}
+
+async function activeTabId(): Promise<number | undefined> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab?.id;
+}
+
+function renderShare(state: ShareState, detail?: string) {
+  const section = document.getElementById("tab-share");
+  const shareDetail = document.getElementById("share-detail");
+  const share = document.getElementById("share") as HTMLButtonElement | null;
+  const revoke = document.getElementById("revoke-share") as HTMLButtonElement | null;
+  if (!section || !shareDetail || !share || !revoke) return;
+  section.hidden = pairingState?.status !== "paired";
+  if (section.hidden) return;
+
+  shareDetail.textContent =
+    detail ??
+    (state === "shared"
+      ? "This tab is shared with the current June task."
+      : state === "unavailable"
+        ? "This tab already belongs to the current June task."
+        : state === "pending"
+          ? `Share code: ${activeShareId ?? "Preparing..."}. Paste it into your June chat.`
+          : "Only the tab you choose becomes available to the current June task.");
+  share.hidden = state === "shared" || state === "unavailable";
+  share.textContent = state === "pending" ? "Copy share code" : "Share this tab";
+  revoke.hidden = state === "available" || state === "unavailable";
+  revoke.textContent = state === "pending" ? "Cancel share" : "Stop sharing";
+}
+
+async function refreshShare() {
+  if (pairingState?.status !== "paired") {
+    renderShare("available");
+    return;
+  }
+  const tabId = await activeTabId();
+  if (tabId === undefined) {
+    renderShare("available", "Open a browser tab before sharing.");
+    return;
+  }
+  const response = (await chrome.runtime.sendMessage({
+    type: "getTabShareState",
+    tabId,
+  })) as ShareResponse | undefined;
+  if (!response?.success || !response.state) {
+    renderShare("available", response?.message ?? "This tab cannot be shared.");
+    return;
+  }
+  activeShareId = response.shareId;
+  renderShare(response.state);
+}
+
+async function copyShareCode(shareId: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(shareId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function refresh(reconnect = false) {
@@ -69,6 +141,41 @@ document.getElementById("retry")?.addEventListener("click", () => {
   // reflects the outcome without a manual reopen.
   setTimeout(() => void refresh(), 500);
   setTimeout(() => void refresh(), 1500);
+});
+
+document.getElementById("share")?.addEventListener("click", async () => {
+  const tabId = await activeTabId();
+  if (tabId === undefined) {
+    renderShare("available", "Open a browser tab before sharing.");
+    return;
+  }
+  let shareId = activeShareId;
+  if (!shareId) {
+    const response = (await chrome.runtime.sendMessage({ type: "shareTab", tabId })) as
+      | ShareResponse
+      | undefined;
+    if (!response?.success || !response.shareId) {
+      renderShare("available", response?.message ?? "This tab could not be shared.");
+      return;
+    }
+    shareId = response.shareId;
+    activeShareId = shareId;
+  }
+  const copied = await copyShareCode(shareId);
+  renderShare(
+    "pending",
+    copied
+      ? "Share code copied. Paste it into your June chat."
+      : `Share code: ${shareId}. Paste it into your June chat.`,
+  );
+});
+
+document.getElementById("revoke-share")?.addEventListener("click", async () => {
+  const tabId = await activeTabId();
+  if (tabId === undefined) return;
+  await chrome.runtime.sendMessage({ type: "revokeTabShare", tabId });
+  activeShareId = undefined;
+  await refreshShare();
 });
 
 void refresh();

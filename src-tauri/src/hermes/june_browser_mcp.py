@@ -135,7 +135,10 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "accept_shared_tab",
-        "description": "Accept a user-shared tab. Not implemented yet.",
+        "description": (
+            "Accept the one-use share code shown by the June browser extension "
+            "and add that explicitly shared tab to this Browser use session."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
