@@ -2927,6 +2927,18 @@ input:focus-visible,
   background: transparent;
 }
 
+/* Condensed tool run (JUN-326): settled rows tuck behind one count line so a
+ * long command run reads as a single quiet row instead of a column of them.
+ * The fold reuses the disclosure row treatment; only the body is new — the
+ * folded rows indent under the summary label so the hierarchy is legible. */
+.agent-tool-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+  padding-left: calc(15px + var(--sp-2));
+}
+
 .agent-tool-output {
   overflow: auto;
   max-height: 220px;

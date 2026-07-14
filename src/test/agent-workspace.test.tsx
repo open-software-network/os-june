@@ -7583,6 +7583,86 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Done.")).toBeInTheDocument();
   });
 
+  it("condenses long tool runs behind a count line while running rows stay visible (JUN-326)", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "audit the project",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "audit the project",
+      }),
+    );
+
+    const emit = (type: string, payload: Record<string, unknown>) => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type, session_id: "runtime-session-2", payload });
+      }
+    };
+
+    act(() => {
+      emit("tool.start", { tool_id: "tool-1", tool_name: "read_file", path: "notes.md" });
+      emit("tool.complete", { tool_id: "tool-1", tool_name: "read_file", path: "notes.md" });
+      emit("tool.start", { tool_id: "tool-2", tool_name: "bash", command: "./scripts/build.sh" });
+      emit("tool.complete", {
+        tool_id: "tool-2",
+        tool_name: "bash",
+        command: "./scripts/build.sh",
+      });
+      emit("tool.start", { tool_id: "tool-3", tool_name: "web_search", search_query: "june" });
+      emit("tool.complete", {
+        tool_id: "tool-3",
+        tool_name: "web_search",
+        search_query: "june",
+      });
+    });
+
+    // At the threshold the stack still renders flat: three rows, no fold.
+    expect(await screen.findByText("Reading files")).toBeInTheDocument();
+    expect(screen.getByText("Running command")).toBeInTheDocument();
+    expect(screen.getByText("Searching web")).toBeInTheDocument();
+    expect(document.querySelector(".agent-tool-fold")).toBeNull();
+
+    act(() => {
+      emit("tool.start", { tool_id: "tool-4", tool_name: "fetch_url", url: "https://june.dev" });
+      emit("tool.failed", {
+        tool_id: "tool-4",
+        tool_name: "fetch_url",
+        url: "https://june.dev",
+        text: "Request timed out.",
+      });
+      emit("tool.start", { tool_id: "tool-5", tool_name: "edit_file", path: "notes.md" });
+    });
+
+    // Past the threshold, the four settled calls fold behind one count line
+    // that also carries the failed count; the fold starts collapsed.
+    const foldName = await screen.findByText("4 actions");
+    const fold = foldName.closest("details");
+    expect(fold).toHaveClass("agent-tool-fold");
+    expect(fold).not.toHaveAttribute("open");
+    expect(within(fold as HTMLElement).getByText("1 failed")).toBeInTheDocument();
+
+    // Settled rows (including the failure) live inside the fold and keep their
+    // per-row status when expanded.
+    expect(fold).toContainElement(screen.getByText("Reading files"));
+    expect(fold).toContainElement(screen.getByText("Running command"));
+    expect(fold).toContainElement(screen.getByText("Browsing"));
+    expect(fold).toContainElement(screen.getByText("Failed"));
+
+    // The running row stays outside the fold, spinner and all.
+    const runningLabel = screen.getByText("Editing files");
+    expect(fold).not.toContainElement(runningLabel);
+    expect(runningLabel.closest(".agent-tool-stack")).toBeTruthy();
+    expect(fold).not.toContainElement(screen.getByRole("status", { name: "Running" }));
+  });
+
   it("holds space with a generation placeholder while an image tool runs and never paints streamed MEDIA text", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,

@@ -234,6 +234,54 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
+      label: "Tool stack: condensed",
+      description:
+        "Past three tool rows, settled calls fold behind one count line (failed count on the fold); the running row stays visible below it.",
+      turns: [
+        assistantTurn(
+          "tool-fold",
+          [
+            {
+              type: "tool",
+              id: "fold-1",
+              name: "Running command",
+              text: "$ git status -sb\n## main",
+              status: "complete",
+            },
+            {
+              type: "tool",
+              id: "fold-2",
+              name: "Searching files",
+              text: "$ rg -n 'recap' notes/\nnotes/monday.md:4: recap with the team",
+              status: "complete",
+            },
+            {
+              type: "tool",
+              id: "fold-3",
+              name: "Running command",
+              text: "$ pnpm test\n47 passed",
+              status: "complete",
+            },
+            {
+              type: "tool",
+              id: "fold-4",
+              name: "Fetch Url",
+              text: "Request timed out after 30s.",
+              status: "failed",
+            },
+            {
+              type: "tool",
+              id: "fold-5",
+              name: "Running command",
+              text: "",
+              status: "running",
+            },
+          ],
+          "running",
+        ),
+      ],
+    },
+    {
       label: ERROR_SECTION_LABEL,
       description: "A surfaced error renders as a failed tool row named “Error”.",
       turns: [

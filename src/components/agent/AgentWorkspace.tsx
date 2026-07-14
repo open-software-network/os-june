@@ -12902,13 +12902,7 @@ function AgentChatTurnRow({
             onOpenChange={(open) => onThinkingOpenChange(thinkingKey, open)}
           />
         ) : null}
-        {visibleToolParts.length > 0 ? (
-          <div className="agent-tool-stack">
-            {visibleToolParts.map((tool) => (
-              <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
-            ))}
-          </div>
-        ) : null}
+        {visibleToolParts.length > 0 ? <AgentToolStack parts={visibleToolParts} /> : null}
         {runningMediaTools.map((tool) =>
           tool.media === "image" ? (
             <AgentGeneratedImage
@@ -15068,6 +15062,60 @@ function AgentToolPartRow({ part }: { part: Extract<AgentChatPart, { type: "tool
         ) : null
       }
     />
+  );
+}
+
+// Long tool runs stop growing the transcript a row per call: past this many
+// rows, settled (complete/failed) calls fold behind a single count line while
+// running calls stay visible below it, so what June is doing right now is
+// never hidden and failures are still called out on the fold itself.
+const AGENT_TOOL_STACK_FOLD_THRESHOLD = 3;
+
+function AgentToolStack({ parts }: { parts: Extract<AgentChatPart, { type: "tool" }>[] }) {
+  const settled = parts.filter((part) => part.status !== "running");
+  const folded = parts.length > AGENT_TOOL_STACK_FOLD_THRESHOLD && settled.length >= 2;
+  if (!folded) {
+    return (
+      <div className="agent-tool-stack">
+        {parts.map((tool) => (
+          <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
+        ))}
+      </div>
+    );
+  }
+  const running = parts.filter((part) => part.status === "running");
+  const failedCount = settled.filter((part) => part.status === "failed").length;
+  return (
+    <div className="agent-tool-stack">
+      {/* Uncontrolled like the per-row disclosures: the browser owns the open
+       * state, so rows settling into the fold don't snap it shut. */}
+      <details
+        className="agent-tool-disclosure agent-tool-fold"
+        data-status={failedCount > 0 ? "failed" : "complete"}
+      >
+        <summary>
+          <span className="agent-tool-icon">
+            <IconConsoleSimple size={15} className="agent-tool-icon-glyph" />
+            <span className="agent-tool-icon-expand">+</span>
+            <span className="agent-tool-icon-minimize">−</span>
+          </span>
+          <span className="agent-tool-name">{settled.length} actions</span>
+          {failedCount > 0 ? (
+            <span className="agent-tool-live-status" data-status="failed">
+              {failedCount} failed
+            </span>
+          ) : null}
+        </summary>
+        <div className="agent-tool-fold-body">
+          {settled.map((tool) => (
+            <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
+          ))}
+        </div>
+      </details>
+      {running.map((tool) => (
+        <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
+      ))}
+    </div>
   );
 }
 
