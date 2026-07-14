@@ -159,6 +159,10 @@ export async function createRoutine(input: {
   schedule: string;
   name?: string;
   unrestricted?: boolean;
+  /** Explicit toolset override for the new job. Used by the connectors trust
+   * flow (routineToolsetsFor in lib/connectors.ts composes the list); when
+   * present it wins over the boolean `unrestricted` expansion. */
+  enabledToolsets?: string[];
 }): Promise<RoutineJob> {
   return withScheduler(async () => {
     const created = await createHermesBridgeCronJob({
@@ -166,9 +170,11 @@ export async function createRoutine(input: {
       schedule: input.schedule,
       name: input.name,
     });
-    if (!input.unrestricted) return routineFromRecord(created);
+    const toolsets =
+      input.enabledToolsets ?? (input.unrestricted ? UNRESTRICTED_ROUTINE_TOOLSETS : undefined);
+    if (!toolsets) return routineFromRecord(created);
     const widened = await updateHermesBridgeCronJob(created.id, {
-      enabled_toolsets: UNRESTRICTED_ROUTINE_TOOLSETS,
+      enabled_toolsets: toolsets,
     });
     return routineFromRecord(widened);
   });
@@ -182,6 +188,10 @@ export type RoutineUpdates = {
    * the sandboxed cron default — clearing the toolset override AND any
    * attached script, since scripts run outside the toolset gate. */
   unrestricted?: boolean;
+  /** Explicit toolset override (the connectors trust flow composes it via
+   * routineToolsetsFor). Wins over the boolean `unrestricted` expansion;
+   * null clears the override back to the sandboxed cron default. */
+  enabledToolsets?: string[] | null;
 };
 
 /** Update keys that are purely cosmetic and have no effect on a future run,
@@ -197,7 +207,9 @@ export async function updateRoutine(jobId: string, updates: RoutineUpdates): Pro
   if (updates.name !== undefined) payload.name = updates.name;
   if (updates.schedule !== undefined) payload.schedule = updates.schedule;
   if (updates.prompt !== undefined) payload.prompt = updates.prompt;
-  if (updates.unrestricted === true) {
+  if (updates.enabledToolsets !== undefined) {
+    payload.enabled_toolsets = updates.enabledToolsets;
+  } else if (updates.unrestricted === true) {
     payload.enabled_toolsets = UNRESTRICTED_ROUTINE_TOOLSETS;
   } else if (updates.unrestricted === false) {
     payload.enabled_toolsets = null;

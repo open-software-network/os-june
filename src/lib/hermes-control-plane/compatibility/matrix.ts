@@ -133,10 +133,16 @@ const methods: HermesCompatibilitySection = {
       "AgentWorkspace's session menu opens a SessionUsagePanel that calls getSessionUsage and renders normalized tokens, context, and estimated cost; covered by hermes-session-usage tests.",
     since: PIN,
   },
-  "command.dispatch": {
+  "config.set": {
     status: "supported",
     rationale:
-      "The typed switchActiveSessionModel seam dispatches /model via command.dispatch and returns the gateway ack; the composer keeps existing threads model-locked and only changes the default before session creation.",
+      "Before the next user message, AgentWorkspace applies a queued session model with session-scoped config.set; Hermes rejects the mutation with 4009 while the agent run is active.",
+    since: PIN,
+  },
+  "command.dispatch": {
+    status: "planned",
+    rationale:
+      "A typed generic command.dispatch wrapper exists, but no shipping user flow calls it; model selection uses the runtime's config.set method instead.",
     since: PIN,
   },
   "subagent.interrupt": {
@@ -305,7 +311,7 @@ export const OWNERSHIP: Readonly<Record<string, readonly string[]>> = Object.fre
   "07": ["methods.session.branch"],
   "08": ["methods.session.compress"],
   "09": ["methods.session.usage"],
-  "10": ["methods.command.dispatch"],
+  "10": ["methods.config.set"],
   "11": ["events.subagent"],
   "12": ["events.subagent", "features.backgroundSubagentWatch"],
   "13": ["methods.subagent.interrupt"],

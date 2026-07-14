@@ -36,6 +36,7 @@ import { NoteChatPanel } from "../components/note-chat/NoteChatPanel";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
 import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
 import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
+import type { RecordNoticesDemoApi } from "../lib/record-notices-demo";
 import type { UpdateCardDemoApi } from "../lib/update-card-demo";
 import { NotesList, type NotesListHandle } from "../components/notes-list/NotesList";
 import { PermissionBanner } from "../components/permissions/PermissionBanner";
@@ -50,6 +51,14 @@ import { IconProjects } from "central-icons/IconProjects";
 import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
+import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
+import {
+  OPEN_REFERRAL_DIALOG_EVENT,
+  ReferralNudge,
+  type ReferralNudgeMoment,
+} from "../components/referral/ReferralNudge";
+import { markReferralNudgeClickedThrough, recordDictationFinished } from "../lib/referral-nudge";
+import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import { Dialog } from "../components/ui/Dialog";
 import {
   assignNoteToFolder,
@@ -73,6 +82,7 @@ import {
   listSessionProfiles,
   openPrivacySettings,
   osAccountsLogout,
+  osAccountsOpenPortal,
   pauseRecording,
   removeNoteFromFolder,
   removeSessionFromFolder,
@@ -167,20 +177,44 @@ import {
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
-import { runDepletedBalanceAction } from "../lib/billing-actions";
 import {
+  type DepletedBalanceOutcome,
+  type MaxUpgradeTransport,
+  runDepletedBalanceAction,
+} from "../lib/billing-actions";
+import {
+  MAX_GRANT_HOSTED_POLL_TIMEOUT_MS,
+  MAX_UPGRADE_BROWSER_STATUS,
   MAX_UPGRADE_BUSY_LABEL,
+  MAX_UPGRADE_CHARGE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_BODY,
   MAX_UPGRADE_CONFIRM_LABEL,
   MAX_UPGRADE_CONFIRM_TITLE,
+  MAX_UPGRADE_PORTAL_LABEL,
   MAX_UPGRADE_READY_STATUS,
-  MAX_UPGRADE_SLOW_STATUS,
+  MAX_UPGRADE_STALE_ACTION_NOTICE,
   MAX_UPGRADE_WAITING_STATUS,
+  type MaxGrantWait,
+  accountLooksPreGrant,
+  beginMaxGrantWait,
+  clearMaxGrantWait,
+  isMaxGrantWaitCurrent,
+  isMaxUpgradeWaitStatus,
+  markMaxGrantWaitSlow,
+  markMaxGrantWaitWaiting,
+  maxGrantLanded,
+  maxGrantWaitForAccount,
+  maxUpgradeSlowStatus,
+  maxUpgradeWaitStatus,
   pollForMaxGrant,
 } from "../lib/max-upgrade";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import { checkJuneUpdate, reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
-import { PROCESSING_DEMO_NOTE_ID, shouldPollProcessingStatus } from "./processing-polling";
+import {
+  PROCESSING_DEMO_NOTE_ID,
+  RECORD_NOTICES_DEMO_SESSION_ID,
+  shouldPollProcessingStatus,
+} from "./processing-polling";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import { createInitialState, notesReducer } from "./state/app-state";
 import { handleSidebarResizeStart } from "./sidebar-resize";
@@ -437,8 +471,8 @@ export function App() {
   const [preparingUpdate, setPreparingUpdate] = useState(false);
   const [relaunchingUpdate, setRelaunchingUpdate] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<UpdateInstallProgress | null>(null);
-  // `ready` only says this Mac is capable of system capture; the grant is the
-  // permission state, which only a microphone-plus-system probe establishes.
+  // `ready` only says this device is capable of system capture; the platform
+  // grant/status is established by a microphone-plus-system probe.
   const systemSourceReadiness = sourceReadiness?.sources.find(
     (source) => source.source === "system",
   );
@@ -518,6 +552,79 @@ export function App() {
         seedNote: (note) => {
           dispatch({ type: "noteLoaded", note });
           setActiveView("meetings");
+        },
+      }));
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
+  // Dev-only console driver (window.__recordNoticesDemo) that parks the
+  // recorder-area notices (consent reminder, source warning, mic-blocked) on the
+  // selected note without a real recording, so their styling can be inspected.
+  // The synthetic status runs under RECORD_NOTICES_DEMO_SESSION_ID, which the
+  // status poll and the pause/resume/finish handlers skip so no backend call
+  // fires; consent pinning bypasses the recorder bar's reveal/auto-hide timers.
+  const [recordNoticesConsentPinned, setRecordNoticesConsentPinned] = useState(false);
+  const [recordNoticesMicOverride, setRecordNoticesMicOverride] = useState<boolean | null>(null);
+  const recordNoticesDemoRef = useRef<RecordNoticesDemoApi | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    void import("../lib/record-notices-demo").then(({ registerRecordNoticesDemo }) => {
+      if (cancelled) return;
+      recordNoticesDemoRef.current = registerRecordNoticesDemo({
+        seedNote: (note) => {
+          dispatch({ type: "noteLoaded", note });
+          setActiveView("meetings");
+        },
+        setStatus: (status) => {
+          // Defense in depth: never let the demo's synthetic status stomp a real
+          // recording, even if the driver's hasRealRecording check somehow raced.
+          const active = recordingStatusRef.current;
+          if (active && active.sessionId !== RECORD_NOTICES_DEMO_SESSION_ID) return;
+          if (status) {
+            dispatch({ type: "recordingStatusChanged", status });
+            setRecordingNote(status.noteId);
+          } else {
+            dispatch({ type: "recordingStatusCleared" });
+            setRecordingNote(undefined);
+            setLiveTranscriptEvents([]);
+          }
+        },
+        setConsentPinned: setRecordNoticesConsentPinned,
+        setMicOverride: setRecordNoticesMicOverride,
+        getSelectedNoteId: () => selectedNoteIdRef.current,
+        hasRealRecording: () => {
+          const active = recordingStatusRef.current;
+          return !!active && active.sessionId !== RECORD_NOTICES_DEMO_SESSION_ID;
+        },
+      });
+    });
+    return () => {
+      cancelled = true;
+      recordNoticesDemoRef.current?.dispose();
+      recordNoticesDemoRef.current = null;
+    };
+  }, [setRecordingNote]);
+  // The referral delight nudge (bottom-left card). Real shows come from the
+  // trigger layer (useReferralNudgeTriggers below); the dev console driver
+  // (window.__referralNudge) parks the card without touching the persisted
+  // caps, which is why the source is tracked — only trigger-shown cards may
+  // record a click-through.
+  const [referralNudgeMoment, setReferralNudgeMoment] = useState<ReferralNudgeMoment | null>(null);
+  const referralNudgeSourceRef = useRef<"trigger" | "demo">("trigger");
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/referral-nudge-demo").then(({ registerReferralNudgeDemo }) => {
+      if (cancelled) return;
+      ({ dispose } = registerReferralNudgeDemo({
+        setMoment: (moment) => {
+          referralNudgeSourceRef.current = "demo";
+          setReferralNudgeMoment(moment);
         },
       }));
     });
@@ -606,15 +713,22 @@ export function App() {
     ? shouldBlockOnFunding(fundingDemoAccount)
     : !devAccountsUnconfigured && !signInRequired && shouldBlockOnFunding(account);
   const topUpLabel = depletedBalanceActionLabel(account);
-  // Confirm gate for the Pro -> Max upgrade reached from depleted-balance
-  // surfaces (note failure banner, agent workspace notice). The change
-  // charges the saved card the moment it runs, so it never fires straight
-  // from those buttons.
-  const [maxUpgradePromptOpen, setMaxUpgradePromptOpen] = useState(false);
+  // Confirm gate for the Pro -> Max plan change reached from depleted-balance
+  // surfaces (note failure banner, agent workspace notice). Capture the action
+  // at click time so a later account refresh cannot reroute confirmation to a
+  // different billing transport. `transport` flips to charge_now only after a
+  // hosted capability signal, swapping the dialog to the charge-now copy that
+  // the next confirm actually consents to.
+  const [maxUpgradePrompt, setMaxUpgradePrompt] = useState<{
+    action: "upgrade_to_max";
+    plan: "max";
+    transport: MaxUpgradeTransport;
+  } | null>(null);
   const [maxUpgradeError, setMaxUpgradeError] = useState<string>();
-  // Transient billing feedback ("You are on Max now...") shown beside the
-  // error banner; cleared automatically once it has been seen.
+  // Transient billing feedback shown beside the error banner. Success is only
+  // announced after the credit grant poll observes a higher credit balance.
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
+  const appMaxGrantWaitRef = useRef<MaxGrantWait>();
   const billingNoticeTimerRef = useRef<number | undefined>(undefined);
   const showBillingNotice = useCallback((notice: string, autoClearMs?: number) => {
     window.clearTimeout(billingNoticeTimerRef.current);
@@ -624,41 +738,163 @@ export function App() {
     }
   }, []);
   const confirmMaxUpgrade = useCallback(async () => {
+    if (!maxUpgradePrompt) return;
+    // A wait can begin on another surface while this dialog sits open (an
+    // upgrade confirmed in Billing settings). Never stack a second purchase
+    // on it; adopt the wait and show its status. A slow wait stays
+    // retryable - the dispatch below supersedes it.
+    const pendingWait = maxGrantWaitForAccount(account.user?.id);
+    if (pendingWait && pendingWait.phase !== "slow") {
+      setMaxUpgradePrompt(null);
+      appMaxGrantWaitRef.current = pendingWait;
+      showBillingNotice(
+        pendingWait.phase === "browser" ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS,
+      );
+      return;
+    }
+    if (depletedBalanceAction(account) !== maxUpgradePrompt.action) {
+      // The account reclassified between click and confirm (plan changed,
+      // subscription lapsed). Never dispatch the stale intent - and never
+      // just vanish: say why the dialog closed.
+      setMaxUpgradePrompt(null);
+      showBillingNotice(MAX_UPGRADE_STALE_ACTION_NOTICE, 8000);
+      return;
+    }
     const baselineCredits = account.balance?.credits ?? 0;
+    let outcome: DepletedBalanceOutcome;
     try {
-      const outcome = await runDepletedBalanceAction(account);
-      if (outcome !== "changed_plan") {
-        // Stale snapshot resolved another way (subscribe prompt): refresh and
-        // let the surfaces re-render; nothing was charged.
-        void refreshAccount();
-        return;
-      }
+      outcome = await runDepletedBalanceAction(
+        account,
+        maxUpgradePrompt.action,
+        maxUpgradePrompt.plan,
+        maxUpgradePrompt.transport,
+      );
     } catch (err) {
       // Keep the dialog open with the failure inside it, next to retry.
       setMaxUpgradeError(messageFromError(err));
       throw err;
     }
-    // The PATCH resolves before the webhook grants the credits: show interim
-    // feedback and poll briefly until the new balance lands.
-    showBillingNotice(MAX_UPGRADE_WAITING_STATUS);
-    // No separate refresh: the poll's first tick refreshes immediately, and a
-    // parallel request could resolve out of order and overwrite the poll's
-    // fresher snapshot with a stale pre-grant one.
-    void pollForMaxGrant(refreshAccount, baselineCredits).then((landed) => {
-      showBillingNotice(landed ? MAX_UPGRADE_READY_STATUS : MAX_UPGRADE_SLOW_STATUS, 8000);
-    });
-  }, [account, refreshAccount, showBillingNotice]);
-  const handleTopUp = useCallback(() => {
-    // Tier-aware: Max tops up, Pro upgrades in place to Max, Free subscribes.
-    // The upgrade is a charge, so it routes through an explicit confirm
-    // dialog. upgrade_required / subscribe_required mean the server proved
-    // our snapshot stale (top-up gated behind Max, or no active
-    // subscription): refresh so the depleted-balance surfaces re-render as
-    // the right prompt and the user chooses explicitly; no raw error, and
-    // never an automatic purchase.
-    if (depletedBalanceAction(account) === "upgrade_to_max") {
+    if (outcome === "charge_confirmation_required") {
+      // Definitive capability signal: nothing was charged. Swap the dialog to
+      // the charge-now copy and keep it open (ConfirmDialog stays up on a
+      // rejection) so the PATCH gets its own explicit confirm.
       setMaxUpgradeError(undefined);
-      setMaxUpgradePromptOpen(true);
+      setMaxUpgradePrompt({ ...maxUpgradePrompt, transport: "charge_now" });
+      throw new Error("charge_confirmation_required");
+    }
+    if (outcome === "already_on_plan") {
+      // The server already has the plan. One refresh decides between a grant
+      // still landing (poll) and a long-settled Max account, where a poll
+      // could never succeed and the surface must re-derive its prompt.
+      const refreshed = await refreshAccount();
+      if (!accountLooksPreGrant(refreshed, baselineCredits)) {
+        // Settled: any wait for this account is obsolete and must not keep
+        // suppressing the depleted-balance surfaces. A retry dispatched from
+        // a slow wait lands here.
+        const staleWait = maxGrantWaitForAccount(account.user?.id);
+        if (staleWait) clearMaxGrantWait(staleWait);
+        appMaxGrantWaitRef.current = undefined;
+        window.clearTimeout(billingNoticeTimerRef.current);
+        setBillingNotice(null);
+        return;
+      }
+    } else if (outcome !== "opened_upgrade_session" && outcome !== "changed_plan") {
+      // The server no longer sees an active subscription. Refresh and let
+      // the depleted-balance surface render the correct subscribe action.
+      void refreshAccount();
+      return;
+    }
+    // Hosted confirmation and the credit grant arrive asynchronously. The
+    // consented PATCH skips only the browser-confirmation phase; both paths
+    // stay neutral until the account refresh poll observes landed credits.
+    const hostedReview = outcome === "opened_upgrade_session";
+    const grantWait = beginMaxGrantWait(
+      baselineCredits,
+      account.user?.id,
+      hostedReview ? "browser" : "waiting",
+    );
+    appMaxGrantWaitRef.current = grantWait;
+    showBillingNotice(hostedReview ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS);
+    void pollForMaxGrant(
+      refreshAccount,
+      baselineCredits,
+      hostedReview ? { timeoutMs: MAX_GRANT_HOSTED_POLL_TIMEOUT_MS } : {},
+    ).then((landed) => {
+      if (!isMaxGrantWaitCurrent(grantWait)) return;
+      if (landed) {
+        clearMaxGrantWait(grantWait);
+        appMaxGrantWaitRef.current = undefined;
+        showBillingNotice(MAX_UPGRADE_READY_STATUS, 8000);
+      } else {
+        markMaxGrantWaitSlow(grantWait);
+        showBillingNotice(maxUpgradeSlowStatus(grantWait));
+      }
+    });
+  }, [account, maxUpgradePrompt, refreshAccount, showBillingNotice]);
+
+  useEffect(() => {
+    const grantWait = appMaxGrantWaitRef.current;
+    if (grantWait && grantWait.accountId !== account.user?.id) {
+      clearMaxGrantWait(grantWait);
+      appMaxGrantWaitRef.current = undefined;
+      window.clearTimeout(billingNoticeTimerRef.current);
+      setBillingNotice(null);
+      return;
+    }
+    if (grantWait && !isMaxGrantWaitCurrent(grantWait)) {
+      // Cancelled or superseded on a coexisting surface (funding notice,
+      // sidebar chip, Billing settings). Drop the cached copy so the banner
+      // cannot claim a wait that no longer exists; the surface owning the
+      // live wait shows its status, and interaction guards re-adopt it here.
+      appMaxGrantWaitRef.current = undefined;
+      window.clearTimeout(billingNoticeTimerRef.current);
+      setBillingNotice(null);
+      return;
+    }
+    if (grantWait) {
+      // A coexisting surface's poll advances the shared wait's phase by
+      // in-place mutation, which the identity checks above cannot see. Swap
+      // a stale phase line for the live one - and only a phase line, never
+      // an error or the ready notice.
+      const phaseCopy = maxUpgradeWaitStatus(grantWait);
+      setBillingNotice((notice) =>
+        notice !== null && notice !== phaseCopy && isMaxUpgradeWaitStatus(notice)
+          ? phaseCopy
+          : notice,
+      );
+    }
+    if (grantWait?.phase === "browser" && account.subscription?.plan === "max") {
+      markMaxGrantWaitWaiting(grantWait);
+      showBillingNotice(MAX_UPGRADE_WAITING_STATUS);
+    }
+    if (!grantWait || !maxGrantLanded(account, grantWait.baselineCredits)) return;
+    clearMaxGrantWait(grantWait);
+    appMaxGrantWaitRef.current = undefined;
+    showBillingNotice(MAX_UPGRADE_READY_STATUS, 8000);
+  }, [account, showBillingNotice]);
+
+  const handleTopUp = useCallback(() => {
+    // An upgrade already waiting for this account (started here or on any
+    // other surface) must never be offered a second purchase: adopt the wait
+    // and re-show its status instead of opening a new confirm. A slow wait
+    // (an abandoned Stripe page) keeps the retry path - reopening a hosted
+    // session charges nothing until the Stripe confirm.
+    const pendingWait = maxGrantWaitForAccount(account.user?.id);
+    if (pendingWait && pendingWait.phase !== "slow") {
+      appMaxGrantWaitRef.current = pendingWait;
+      showBillingNotice(
+        pendingWait.phase === "browser" ? MAX_UPGRADE_BROWSER_STATUS : MAX_UPGRADE_WAITING_STATUS,
+      );
+      return;
+    }
+    // Tier-aware: Max tops up, Pro changes its plan in place, Free subscribes.
+    // The Max path routes through an explicit confirmation. A stale top-up
+    // gate refreshes the snapshot so the surface can render the right prompt
+    // without an automatic purchase.
+    const action = depletedBalanceAction(account);
+    if (action === "upgrade_to_max") {
+      setMaxUpgradeError(undefined);
+      setMaxUpgradePrompt({ action, plan: "max", transport: "hosted" });
       return;
     }
     runDepletedBalanceAction(account)
@@ -666,7 +902,7 @@ export function App() {
         if (outcome !== "opened_browser") void refreshAccount();
       })
       .catch((err: unknown) => setError(messageFromError(err)));
-  }, [account, refreshAccount]);
+  }, [account, refreshAccount, showBillingNotice]);
   const [onboardingDone, setOnboardingDone] = useState(() => {
     applyOnboardingReplayFlag();
     return isOnboardingComplete();
@@ -679,6 +915,21 @@ export function App() {
   // holds bootstrap, update checks, and eager permission probes because the
   // wizard owns the permission prompts while it is on screen.
   const appBlocked = accountLoading || signInRequired || onboardingRequired;
+  // The referral delight nudge's trigger layer: counts the moments (5th note,
+  // first agent completion, 25th dictation) and surfaces the card when the
+  // caps and gates allow. T4 (positive feedback) records from the report flow
+  // directly.
+  // Gated on captureActive too: a growth card sliding in mid-meeting is the
+  // one timing guaranteed to annoy. A moment that fires during a recording is
+  // consumed without showing (the caps never queue).
+  useReferralNudgeTriggers({
+    notes: state.notes,
+    enabled: account.signedIn && !account.localDev && onboardingDone && !captureActive,
+    onShow: (moment) => {
+      referralNudgeSourceRef.current = "trigger";
+      setReferralNudgeMoment(moment);
+    },
+  });
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
@@ -1717,6 +1968,12 @@ export function App() {
     void listen<string>("dictation-event", (event) => {
       const helperEvent = parseDictationHelperEvent(event.payload);
       if (!helperEvent) return;
+      if (helperEvent.type === "final_transcript") {
+        // T3 of the referral delight nudge: a dictation landed (often while
+        // June is backgrounded; the card waits to be found).
+        recordDictationFinished();
+        return;
+      }
       if (helperEvent.type === "agent_session_prompt") {
         const prompt = stringPayloadValue(helperEvent.payload?.prompt) ?? "";
         dispatchAgentSessionStatus({
@@ -1794,7 +2051,10 @@ export function App() {
   // TCC denial. Trust the dictation helper's AVCaptureDevice status
   // instead — that's the authoritative macOS API for the mic privacy
   // entry.
-  const microphoneBlocked = isDeniedPermission(microphoneStatus);
+  // recordNoticesMicOverride is the dev __recordNoticesDemo hook parking the
+  // mic-blocked notice; it is always null in production (the state never leaves
+  // its initial value), so real behavior is untouched.
+  const microphoneBlocked = recordNoticesMicOverride ?? isDeniedPermission(microphoneStatus);
 
   const refreshPermissionStatuses = useCallback(() => {
     void dictationHelperCommand({ type: "get_permission_status" }).catch(() => undefined);
@@ -1834,7 +2094,7 @@ export function App() {
   }, [appBlocked]);
 
   // A profile switch swaps the visible data, not just the agent runtime
-  // (ADR 0019): re-read the profile-scoped notes and projects and reselect
+  // (ADR 0020): re-read the profile-scoped notes and projects and reselect
   // from the new profile's list, mirroring the delete flows. Chats refresh
   // through the profile-aware session effects. If a recording is running its
   // note keeps the selection (get_note is unscoped) so the recording view is
@@ -2011,6 +2271,13 @@ export function App() {
       return;
     }
     const sessionId = state.recordingStatus.sessionId;
+    // The dev __recordNoticesDemo session lives only in the reducer — there is
+    // no backend recording to poll, and getRecordingStatus would clear the
+    // synthetic bar with a "recording not found". Stripped from production via
+    // import.meta.env.DEV. See lib/record-notices-demo.ts.
+    if (import.meta.env.DEV && sessionId === RECORD_NOTICES_DEMO_SESSION_ID) {
+      return;
+    }
     // Drops in-flight responses once this effect is torn down. Without it, a
     // poll that was already in flight when the user hit stop resolves after
     // recordingStatusCleared and resurrects the recorder bar with a stale
@@ -2926,6 +3193,13 @@ export function App() {
   }, []);
 
   async function handleFinishRecording(sessionId: string, options: { rethrow?: boolean } = {}) {
+    // The dev __recordNoticesDemo session has no backend recording — stopping it
+    // just tears the demo down (clears the synthetic status and pins) instead of
+    // calling finishRecording, which would fail with "recording not found".
+    if (import.meta.env.DEV && sessionId === RECORD_NOTICES_DEMO_SESSION_ID) {
+      recordNoticesDemoRef.current?.clear();
+      return;
+    }
     // The recorder bar stays mounted (and clickable) for the duration of its
     // exit animation after the first stop click, so a fast double-click would
     // fire finishRecording twice — the second call fails with a scary
@@ -2979,6 +3253,12 @@ export function App() {
   }
 
   const handlePauseRecording = useCallback(async (sessionId: string) => {
+    // The dev __recordNoticesDemo session has no backend recording; report
+    // success without a pauseRecording IPC round-trip. Its own ticker keeps the
+    // bar live, so pause is a visual no-op here.
+    if (import.meta.env.DEV && sessionId === RECORD_NOTICES_DEMO_SESSION_ID) {
+      return true;
+    }
     try {
       const status = await pauseRecording(sessionId);
       dispatch({ type: "recordingStatusChanged", status });
@@ -2991,6 +3271,11 @@ export function App() {
   }, []);
 
   async function handleResumeRecording(sessionId: string) {
+    // The dev __recordNoticesDemo session has no backend recording; its ticker
+    // already keeps the bar in the recording state, so resume is a no-op.
+    if (import.meta.env.DEV && sessionId === RECORD_NOTICES_DEMO_SESSION_ID) {
+      return;
+    }
     playRecordingSound("start");
     try {
       const status = await resumeRecording(sessionId);
@@ -3358,7 +3643,18 @@ export function App() {
             {error ? <p className="error-banner">{error}</p> : null}
             {billingNotice ? (
               <p className="notice-banner" role="status">
-                {billingNotice}
+                {billingNotice}{" "}
+                {appMaxGrantWaitRef.current?.phase === "slow" ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      void osAccountsOpenPortal().catch((err) => setError(messageFromError(err)));
+                    }}
+                  >
+                    {MAX_UPGRADE_PORTAL_LABEL}
+                  </button>
+                ) : null}
               </p>
             ) : null}
             <div className="workspace">
@@ -3757,6 +4053,11 @@ export function App() {
                       onEnableSystemAudio={handleEnableSystemAudio}
                       onEnableMicrophone={handleEnableMicrophone}
                       microphoneBlocked={microphoneBlocked}
+                      consentReminderPinned={
+                        import.meta.env.DEV &&
+                        recordNoticesConsentPinned &&
+                        selectedNoteId === recordingNoteId
+                      }
                       onTabChange={(activeTab) =>
                         void updateNote({
                           noteId: selectedNote.id,
@@ -3957,14 +4258,38 @@ export function App() {
         onMoved={() => agentSessionsListRef.current?.resetSelection()}
       />
       <ConfirmDialog
-        open={maxUpgradePromptOpen}
-        onClose={() => setMaxUpgradePromptOpen(false)}
+        open={maxUpgradePrompt !== null}
+        onClose={() => setMaxUpgradePrompt(null)}
         onConfirm={confirmMaxUpgrade}
         title={MAX_UPGRADE_CONFIRM_TITLE}
-        description={maxUpgradeError ?? MAX_UPGRADE_CONFIRM_BODY}
+        description={
+          maxUpgradeError ??
+          (maxUpgradePrompt?.transport === "charge_now"
+            ? MAX_UPGRADE_CHARGE_CONFIRM_BODY
+            : MAX_UPGRADE_CONFIRM_BODY)
+        }
         confirmLabel={MAX_UPGRADE_CONFIRM_LABEL}
         confirmBusyLabel={MAX_UPGRADE_BUSY_LABEL}
       />
+      {/* Connector action approvals (approval trust mode) can arrive from a
+          routine or chat in any view, so the tray is mounted at the shell. */}
+      <ConnectorApprovalsTray />
+      {/* The referral delight nudge floats bottom-left at the shell so it can
+          appear over any view; click-through opens the sidebar-owned referral
+          dialog by event. */}
+      {referralNudgeMoment ? (
+        <ReferralNudge
+          moment={referralNudgeMoment}
+          onInvite={() => {
+            // Ends all future nudging, per the frequency rules — but only for
+            // real trigger shows; demo cards must not poison the caps.
+            if (referralNudgeSourceRef.current === "trigger") markReferralNudgeClickedThrough();
+            setReferralNudgeMoment(null);
+            window.dispatchEvent(new Event(OPEN_REFERRAL_DIALOG_EVENT));
+          }}
+          onDismiss={() => setReferralNudgeMoment(null)}
+        />
+      ) : null}
     </main>
   );
 }

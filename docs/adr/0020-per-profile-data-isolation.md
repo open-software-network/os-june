@@ -1,11 +1,11 @@
-# ADR 0019: Profiles isolate user data; profile is the first data-partition key
+# ADR 0020: Profiles isolate user data; profile is the first data-partition key
 
 Date: 2026-07-09
 Status: accepted
 
 ## Context
 
-ADR 0018 made a profile switch retarget the *agent runtime* (which Hermes
+ADR 0019 made a profile switch retarget the *agent runtime* (which Hermes
 profile new sessions run under, plus per-profile voice/image model overrides).
 But every piece of *user data* June stores still lives in one app-global
 SQLite database (`<app_data>/notes.sqlite3`) with **no partition key at all**:
@@ -22,7 +22,7 @@ Two ownership regimes complicate this:
 2. **Hermes-owned chat sessions** — the real conversation lives in Hermes's
    own store inside the Hermes home; June only talks to it over REST and has
    no column to add. June already stamps `profile` on `session.create`
-   (ADR 0018) but has never had a profile-aware *read*: the chat list calls
+   (ADR 0019) but has never had a profile-aware *read*: the chat list calls
    `GET /api/sessions`, which carries no profile field, and the profile-aware
    `GET /api/profiles/sessions` returns only live/recent sessions, not the
    full paginated history the list needs.
@@ -61,7 +61,7 @@ a dialog reporting the counts (notes · chats · dictation · projects) and
 offering: **Move to default** (re-tag its rows `profile = 'default'`) or
 **Delete permanently** (remove them, behind a hard confirm), or Cancel. There
 is no silent fixed policy; the user chooses per deletion. (June still refuses
-to delete the *active* profile without switching first — ADR 0018.)
+to delete the *active* profile without switching first — ADR 0019.)
 
 ## Consequences
 
@@ -98,5 +98,5 @@ to delete the *active* profile without switching first — ADR 0018.)
   creation paths for free, but the pinned build's `/api/sessions` contract does
   not document a profile filter, and depending on an unverified contract is
   fragile. Revisit if a future pin confirms it.
-- **Gateway-per-profile.** Already rejected in ADR 0018 for memory/spawn cost
+- **Gateway-per-profile.** Already rejected in ADR 0019 for memory/spawn cost
   and the one-gateway-per-mode sandbox invariant.

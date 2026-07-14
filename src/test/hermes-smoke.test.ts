@@ -5,9 +5,10 @@ import {
   buildStatusUrl,
   buildWsUrl,
   generateSessionToken,
-  isControlledModelDispatchError,
+  isControlledModelConfigSetError,
   parseReadinessBody,
   parseRpcFrame,
+  retryModelConfigSetUntilAccepted,
   resolveHermesCommand,
 } from "../lib/hermes-smoke/helpers";
 
@@ -102,34 +103,107 @@ describe("parseReadinessBody — mirrors the /api/status gateway_running read", 
   });
 });
 
-describe("isControlledModelDispatchError — gates the /model smoke PASS", () => {
-  it("treats a Hermes application code (4018 not-a-command) as controlled", () => {
-    // The real controlled response to a bare /model dispatch.
-    expect(isControlledModelDispatchError({ code: 4018 })).toBe(true);
+describe("isControlledModelConfigSetError - identifies retryable model-setting errors", () => {
+  it("treats 4009 session-busy as retryable", () => {
+    expect(isControlledModelConfigSetError({ code: 4009 })).toBe(true);
   });
 
-  it("treats 4009 session-busy as controlled", () => {
-    expect(isControlledModelDispatchError({ code: 4009 })).toBe(true);
+  it("rejects 4018 unknown-command instead of blessing a broken RPC shape", () => {
+    expect(isControlledModelConfigSetError({ code: 4018 })).toBe(false);
   });
 
   it("rejects a JSON-RPC protocol error (-32601 method-not-found)", () => {
     // A vanished/renamed method is a real regression, not a controlled PASS.
-    expect(isControlledModelDispatchError({ code: -32601 })).toBe(false);
+    expect(isControlledModelConfigSetError({ code: -32601 })).toBe(false);
   });
 
   it("rejects a rejection with no code", () => {
-    expect(isControlledModelDispatchError(new Error("connection closed"))).toBe(false);
-    expect(isControlledModelDispatchError({})).toBe(false);
+    expect(isControlledModelConfigSetError(new Error("connection closed"))).toBe(false);
+    expect(isControlledModelConfigSetError({})).toBe(false);
   });
 
   it("rejects a non-numeric code", () => {
-    expect(isControlledModelDispatchError({ code: "4018" })).toBe(false);
-    expect(isControlledModelDispatchError({ code: null })).toBe(false);
+    expect(isControlledModelConfigSetError({ code: "4009" })).toBe(false);
+    expect(isControlledModelConfigSetError({ code: null })).toBe(false);
   });
 
   it("does not throw on null/undefined input", () => {
-    expect(isControlledModelDispatchError(null)).toBe(false);
-    expect(isControlledModelDispatchError(undefined)).toBe(false);
+    expect(isControlledModelConfigSetError(null)).toBe(false);
+    expect(isControlledModelConfigSetError(undefined)).toBe(false);
+  });
+});
+
+describe("retryModelConfigSetUntilAccepted", () => {
+  it("returns only after config.set is accepted", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+
+    await expect(
+      retryModelConfigSetUntilAccepted(
+        async () => {
+          attempts += 1;
+          if (attempts < 3) throw Object.assign(new Error("session busy"), { code: 4009 });
+          return { accepted: true };
+        },
+        {
+          timeoutMs: 1_000,
+          wait: async (delayMs) => {
+            waits.push(delayMs);
+          },
+        },
+      ),
+    ).resolves.toEqual({ accepted: true });
+
+    expect(attempts).toBe(3);
+    expect(waits).toEqual([50, 100]);
+  });
+
+  it("fails when 4009 remains busy for the full retry budget", async () => {
+    let attempts = 0;
+    const waits: number[] = [];
+
+    const result = retryModelConfigSetUntilAccepted(
+      async () => {
+        attempts += 1;
+        throw Object.assign(new Error("session busy"), { code: 4009 });
+      },
+      {
+        timeoutMs: 100,
+        wait: async (delayMs) => {
+          waits.push(delayMs);
+        },
+      },
+    );
+
+    await expect(result).rejects.toThrow("remained busy for 100ms and was not accepted");
+    await expect(result).rejects.toMatchObject({ code: 4009 });
+
+    expect(attempts).toBe(3);
+    expect(waits).toEqual([50, 50]);
+  });
+
+  it("fails immediately on a non-busy rejection", async () => {
+    let attempts = 0;
+    let waits = 0;
+    const rejection = Object.assign(new Error("method missing"), { code: -32601 });
+
+    await expect(
+      retryModelConfigSetUntilAccepted(
+        async () => {
+          attempts += 1;
+          throw rejection;
+        },
+        {
+          timeoutMs: 1_000,
+          wait: async () => {
+            waits += 1;
+          },
+        },
+      ),
+    ).rejects.toBe(rejection);
+
+    expect(attempts).toBe(1);
+    expect(waits).toBe(0);
   });
 });
 

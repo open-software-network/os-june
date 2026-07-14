@@ -6,8 +6,8 @@ import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconMicrophone as IconMicrophoneLine } from "central-icons/IconMicrophone";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
+import { IconCheckmark2 } from "central-icons-filled/IconCheckmark2";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
-import { IconCheckmark1 } from "central-icons-filled/IconCheckmark1";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
@@ -64,6 +64,10 @@ type NoteEditorProps = {
   onEnableSystemAudio: () => void;
   onEnableMicrophone: () => void;
   microphoneBlocked: boolean;
+  /** Dev-only: pin the consent reminder open past its reveal/auto-hide timers so
+   * the dev console driver (window.__recordNoticesDemo) can park it for styling
+   * review. Undefined in production, so the recorder timers run untouched. */
+  consentReminderPinned?: boolean;
   onStartRecording: () => void;
   onPauseRecording: (sessionId: string) => void;
   onResumeRecording: (sessionId: string) => void;
@@ -148,6 +152,7 @@ export function NoteEditor({
   onEnableSystemAudio,
   onEnableMicrophone,
   microphoneBlocked,
+  consentReminderPinned,
   onStartRecording,
   onPauseRecording,
   onResumeRecording,
@@ -224,6 +229,14 @@ export function NoteEditor({
   }, [recordingForNote]);
   const consentEdgeRef = useRef({ noteId: note.id, recording: false });
   useEffect(() => {
+    // Dev driver (window.__recordNoticesDemo): show the reminder immediately and
+    // skip the reveal timer so it can be parked for styling review. The edge ref
+    // is still synced so releasing the pin resumes normal behavior cleanly.
+    if (consentReminderPinned) {
+      consentEdgeRef.current = { noteId: note.id, recording: recordingActive };
+      setConsentReminderVisible(true);
+      return;
+    }
     const prev = consentEdgeRef.current;
     const shouldReveal =
       prev.noteId !== note.id ? recordingActive : recordingActive && !prev.recording;
@@ -252,16 +265,18 @@ export function NoteEditor({
       window.clearTimeout(timer);
       restoreEdge();
     };
-  }, [note.id, recordingActive]);
+  }, [note.id, recordingActive, consentReminderPinned]);
 
   useEffect(() => {
-    if (!consentReminderVisible) return;
+    // A pinned reminder (dev driver) is held until "clear" or Dismiss, never
+    // auto-hidden.
+    if (!consentReminderVisible || consentReminderPinned) return;
     const timer = window.setTimeout(
       () => setConsentReminderVisible(false),
       RECORD_CONSENT_AUTO_HIDE_MS,
     );
     return () => window.clearTimeout(timer);
-  }, [consentReminderVisible]);
+  }, [consentReminderVisible, consentReminderPinned]);
   const processingStatus = processingStageStatus(note.processingStatus);
   const processingLock = processingStatus !== null;
   const recordButtonDisabled = recordingDisabled || Boolean(recordingBlockedReason);
@@ -469,7 +484,7 @@ export function NoteEditor({
                 aria-label="Recording needs credits"
                 body={recordingBlockedReason}
                 actions={
-                  <button type="button" className="primary-action" onClick={onTopUp}>
+                  <button type="button" className="btn btn-secondary" onClick={onTopUp}>
                     {topUpLabel ?? "Upgrade"}
                   </button>
                 }
@@ -1117,7 +1132,7 @@ function TranscriptTurn({
           title={copied ? "Copied" : "Copy"}
           onClick={() => void handleCopy()}
         >
-          {copied ? <IconCheckmark1 size={14} /> : <IconClipboard size={14} />}
+          {copied ? <IconCheckmark2 size={14} /> : <IconClipboard size={14} />}
         </button>
       ) : null}
     </article>
@@ -1159,7 +1174,7 @@ function CopyTranscriptButton({ text }: { text: string }) {
       aria-label={copied ? "Transcript copied" : "Copy transcript"}
       title={copied ? "Copied" : "Copy transcript"}
     >
-      {copied ? <IconCheckmark1 size={14} /> : <IconClipboard size={14} />}
+      {copied ? <IconCheckmark2 size={14} /> : <IconClipboard size={14} />}
       {copied ? "Copied" : "Copy"}
     </button>
   );

@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 // A port is "free" when a connection is refused. Mirrors the probe in
 // tauri-before-dev.mjs so both scripts agree on which port to use.
@@ -68,20 +70,24 @@ if (config && !hasConfigOverride) {
 }
 
 const frontendPort = await resolveFrontendPort();
-// Merge a devUrl override last so it wins over the file configs, pointing the
-// native window at the Vite server that before-dev will start on this port.
-tauriArgs.push(
-  "--config",
+// Write a tiny config overlay file so Windows shell invocation does not have to
+// preserve inline JSON quoting for `--config`.
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const devConfigPath = resolve(scriptDir, "..", "src-tauri", ".tauri.dev.generated.json");
+writeFileSync(
+  devConfigPath,
   JSON.stringify({ build: { devUrl: `http://127.0.0.1:${frontendPort}` } }),
 );
+// Merge a devUrl override last so it wins over the file configs, pointing the
+// native window at the Vite server that before-dev will start on this port.
+tauriArgs.push("--config", devConfigPath);
 
-const child = spawn(tauriCommand(), ["dev", ...tauriArgs], {
+const child = spawn(tauriCommand(), tauriCommandArgs(["dev", ...tauriArgs]), {
   env: {
     ...process.env,
     VITE_PORT: String(frontendPort),
     ...(replayOnboarding ? { VITE_JUNE_REPLAY_ONBOARDING: "1" } : {}),
   },
-  shell: process.platform === "win32",
   stdio: "inherit",
 });
 
@@ -95,8 +101,41 @@ child.on("error", (error) => {
 });
 
 function tauriCommand() {
-  const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const binary = process.platform === "win32" ? "tauri.cmd" : "tauri";
-  const localBinary = resolve(scriptDir, "..", "node_modules", ".bin", binary);
-  return existsSync(localBinary) ? localBinary : "tauri";
+  if (process.platform === "win32") {
+    return process.execPath;
+  }
+  const localBinary = findNodeModulesPath(".bin", "tauri");
+  return localBinary ?? "tauri";
+}
+
+function tauriCommandArgs(args) {
+  if (process.platform !== "win32") {
+    return args;
+  }
+  return [tauriJsEntryPoint(), ...args];
+}
+
+function tauriJsEntryPoint() {
+  const tauriJs = findNodeModulesPath("@tauri-apps", "cli", "tauri.js");
+  if (!tauriJs) {
+    throw new Error(
+      `Tauri CLI entry point not found from "${SCRIPT_DIR}". Run pnpm install first.`,
+    );
+  }
+  return tauriJs;
+}
+
+function findNodeModulesPath(...segments) {
+  let current = resolve(SCRIPT_DIR, "..");
+  while (true) {
+    const candidate = resolve(current, "node_modules", ...segments);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+    const parent = resolve(current, "..");
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
 }

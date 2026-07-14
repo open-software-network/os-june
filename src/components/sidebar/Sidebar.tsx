@@ -1,4 +1,4 @@
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
@@ -29,6 +29,7 @@ import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPeople } from "central-icons/IconPeople";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconPin } from "central-icons/IconPin";
+import { IconPlugin1 } from "central-icons/IconPlugin1";
 import { IconGithub } from "central-icons/IconGithub";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconToolbox } from "central-icons/IconToolbox";
@@ -96,6 +97,7 @@ import {
   type SessionProfileMap,
 } from "../../lib/session-profile-filter";
 import { JuneMark } from "../account/AccountGate";
+import { OPEN_REFERRAL_DIALOG_EVENT } from "../referral/ReferralNudge";
 import { SETTINGS_TABS, type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
@@ -283,6 +285,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
       { id: "agent", label: "Agent", icon: <IconRobot2 size={16} /> },
       {
+        id: "connectors",
+        label: "Connectors",
+        icon: <IconPlugin1 size={16} />,
+      },
+      {
         id: "skills",
         label: "Installed skills",
         icon: <IconElements size={16} />,
@@ -426,7 +433,7 @@ export function Sidebar({
   const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
   const [allAgentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
-  // Chats belong to the profile they were created under (ADR 0019): the
+  // Chats belong to the profile they were created under (ADR 0020): the
   // sidebar filters its list through the session→profile map and re-filters
   // live when the active profile switches, without waiting for a re-fetch.
   const [sessionProfiles, setSessionProfiles] = useState<SessionProfileMap>({});
@@ -567,6 +574,19 @@ export function Sidebar({
       void loadReferralSummary();
     }
   }
+
+  // Shell surfaces outside the sidebar (the referral delight nudge) open the
+  // referral dialog by window event, since the dialog lives here. Re-attached
+  // every render (the command-prompt keydown pattern below) so the handler
+  // never closes over stale account state.
+  useEffect(() => {
+    function onOpenReferralDialog() {
+      openReferralDialog();
+    }
+
+    window.addEventListener(OPEN_REFERRAL_DIALOG_EVENT, onOpenReferralDialog);
+    return () => window.removeEventListener(OPEN_REFERRAL_DIALOG_EVENT, onOpenReferralDialog);
+  });
 
   async function copyReferralLink() {
     if (!referralSummary) return;
@@ -1949,7 +1969,7 @@ function ReferralDialog({
                   onFocus={(event) => event.currentTarget.select()}
                 />
                 <button type="button" className="referral-copy-inset" onClick={onCopy}>
-                  {copied ? <IconCheckmark1Small size={14} /> : <IconClipboard size={14} />}
+                  {copied ? <IconCheckmark2Small size={14} /> : <IconClipboard size={14} />}
                   {copied ? "Copied" : "Copy"}
                 </button>
               </div>

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { preferredVisionFallbackModel } from "../lib/suggested-models";
+import {
+  autoPillDesignation,
+  preferredVisionFallbackModel,
+  suggestedModelsForMode,
+} from "../lib/suggested-models";
 import type { VeniceModelDto } from "../lib/tauri";
 
 const model = (id: string, name: string, capabilities: string[]): VeniceModelDto => ({
@@ -49,5 +53,31 @@ describe("preferredVisionFallbackModel", () => {
     const glm51 = model("zai-org-glm-5-1", "GLM 5.1", ["supportsFunctionCalling"]);
     expect(preferredVisionFallbackModel([glm52, glm51])).toBeUndefined();
     expect(preferredVisionFallbackModel([])).toBeUndefined();
+  });
+});
+
+describe("suggestedModelsForMode", () => {
+  it("returns the curated concrete picks present in the catalog, in curated order", () => {
+    // Auto is not a suggested row — it lives in the picker's pinned toggle
+    // section — so the catalog's Auto entry never surfaces here.
+    const auto = model("open-software/auto", "Auto", ["supportsFunctionCalling"]);
+    const suggestions = suggestedModelsForMode("generation", [auto, kimi, glm52]);
+
+    expect(suggestions.map(({ model: suggestion }) => suggestion.id)).toEqual([
+      "zai-org-glm-5-2",
+      "kimi-k2-6",
+    ]);
+  });
+});
+
+describe("autoPillDesignation", () => {
+  it("buckets the persisted cost-to-quality value onto the preset designations", () => {
+    expect(autoPillDesignation(20)).toBe("Lower");
+    expect(autoPillDesignation(50)).toBe("Balanced");
+    expect(autoPillDesignation(100)).toBe("Higher");
+    // Off-preset values (a hand-edited settings file) land on the nearest tier.
+    expect(autoPillDesignation(0)).toBe("Lower");
+    expect(autoPillDesignation(67)).toBe("Higher");
+    expect(autoPillDesignation(undefined)).toBeUndefined();
   });
 });

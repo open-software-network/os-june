@@ -17,7 +17,7 @@ function normalizedHermesProfileName(profile: string | undefined): string {
 }
 
 /** A session with no mapping row belongs to `default` (pre-profiles data and
- * sessions created outside June's create path — see ADR 0019). */
+ * sessions created outside June's create path — see ADR 0020). */
 export function sessionMatchesProfile(
   session: HermesSessionInfo,
   profiles: SessionProfileMap,

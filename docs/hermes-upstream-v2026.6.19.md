@@ -61,7 +61,7 @@ No required app code migration was found for the existing June agent, skills, me
 - Expose Automation Blueprints by deciding how they fit with June's Routines editor instead of routing users to raw cron fields.
 - Expose image editing by wiring existing file/image attachments into the upstream `image_generate` edit inputs.
 - Expose background subagent watch handles by adding UI for pending work, completion events, and reopened sessions.
-- Decide whether upstream dashboard profile builder and Skills Hub browsing should remain hidden behind June-native settings or become first-class June surfaces. (Resolved for profiles in JUN-145/JUN-210: profiles are a first-class June-native settings surface — list, switch, delete, create — with new sessions following the active profile; see ADR 0018. Skills Hub browsing remains open.)
+- Decide whether upstream dashboard profile builder and Skills Hub browsing should remain hidden behind June-native settings or become first-class June surfaces. (Resolved for profiles in JUN-145/JUN-210: profiles are a first-class June-native settings surface — list, switch, delete, create — with new sessions following the active profile; see ADR 0019. Skills Hub browsing remains open.)
 
 ## Compatibility matrix
 
@@ -97,8 +97,10 @@ pnpm test:hermes-smoke
 Two phases, gated independently:
 
 - Protocol smoke (default; no provider key): start, status, ws connect,
-  `session.create`, `session.active_list`, `command.dispatch /model` (accepted
-  or a known controlled error), `session.interrupt`. No model tokens are spent.
+  `session.create`, `session.active_list`, session-scoped model `config.set`
+  (4009 busy is retried, but only acceptance passes), `session.interrupt`. A local
+  `/v1/models` stub validates a switch from the configured model to an alternate
+  listed model; no model tokens are spent.
 - Model smoke (opt-in): set `HERMES_SMOKE_MODEL=1` and ensure the runtime config
   has a real provider key. This adds a minimal no-tool `prompt.submit` and waits
   for a completion. It costs provider tokens, so it is off by default.

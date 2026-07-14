@@ -21,6 +21,8 @@ pub const PROVIDER_VENICE: &str = "venice";
 pub const PROVIDER_LOCAL: &str = "local";
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
+pub const AUTO_GENERATION_MODEL: &str = "open-software/auto";
+pub const DEFAULT_COST_QUALITY: u8 = 100;
 pub const DEFAULT_IMAGE_MODEL: &str = "venice-sd35";
 pub const DEFAULT_VIDEO_MODEL: &str = "wan-2.2-a14b-text-to-video";
 /// Currently curated text-to-video model ids (mirrors `VIDEO_MODELS` in
@@ -39,7 +41,6 @@ pub const DEFAULT_VIDEO_RESOLUTION: &str = "720p";
 /// Some models (for example wan-2.2-a14b) reject a queue request that omits
 /// `aspect_ratio`, so the fast path injects a default when the caller names none.
 pub const DEFAULT_VIDEO_ASPECT_RATIO: &str = "16:9";
-const VENICE_API_KEY_PREFIX: &str = "VENICE_INFERENCE_KEY_";
 const VENICE_API_BASE_URL: &str = "https://api.venice.ai/api/v1";
 const VENICE_API_KEY_VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_VENICE_API_KEY_CHARS: usize = 4_096;
@@ -70,6 +71,8 @@ pub struct ProviderModelSettings {
     pub transcription_model: String,
     #[serde(default = "default_generation_model")]
     pub generation_model: String,
+    #[serde(default = "default_cost_quality")]
+    pub cost_quality: u8,
     #[serde(default = "default_generation_model")]
     pub remote_generation_model: String,
     // Defaulted so provider-settings.json files written before image
@@ -137,6 +140,7 @@ pub struct ProviderModelSettingsDto {
     pub generation_provider: String,
     pub transcription_model: String,
     pub generation_model: String,
+    pub cost_quality: u8,
     pub remote_generation_model: String,
     pub image_model: String,
     pub video_model: String,
@@ -153,6 +157,7 @@ impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
             generation_provider: settings.generation_provider.clone(),
             transcription_model: settings.transcription_model.clone(),
             generation_model: settings.generation_model.clone(),
+            cost_quality: settings.cost_quality,
             remote_generation_model: settings.remote_generation_model.clone(),
             image_model: settings.image_model.clone(),
             video_model: settings.video_model.clone(),
@@ -216,6 +221,12 @@ impl From<ProfileModelOverridesDto> for ProfileModelOverrides {
 pub struct SetVeniceModelRequest {
     pub mode: ModelMode,
     pub model_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetCostQualityRequest {
+    pub value: u8,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -349,6 +360,12 @@ pub fn transcription_model() -> String {
 
 pub fn generation_model() -> String {
     current_settings().generation_model
+}
+
+pub fn cost_quality() -> f64 {
+    // Keep the wire value safe even if a user manually edits the settings file
+    // after it has been loaded but before a future accessor refactor.
+    f64::from(current_settings().cost_quality.min(100)) / 100.0
 }
 
 pub fn generation_provider() -> String {
@@ -575,6 +592,20 @@ pub fn set_venice_model(
         ModelMode::Image => settings.image_model = model_id.to_string(),
         ModelMode::Video => settings.video_model = model_id.to_string(),
     })
+}
+
+#[tauri::command]
+pub fn set_cost_quality(
+    state: State<'_, ProviderSettingsState>,
+    request: SetCostQualityRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    if request.value > 100 {
+        return Err(AppError::new(
+            "cost_quality_invalid",
+            "Preference must be from 0 to 100.",
+        ));
+    }
+    update_settings(&state, |settings| settings.cost_quality = request.value)
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -1167,8 +1198,9 @@ fn default_settings() -> ProviderModelSettings {
         transcription_provider: PROVIDER_VENICE.to_string(),
         generation_provider: PROVIDER_VENICE.to_string(),
         transcription_model: DEFAULT_TRANSCRIPTION_MODEL.to_string(),
-        generation_model: DEFAULT_GENERATION_MODEL.to_string(),
-        remote_generation_model: DEFAULT_GENERATION_MODEL.to_string(),
+        generation_model: default_generation_model_for_release(),
+        cost_quality: DEFAULT_COST_QUALITY,
+        remote_generation_model: default_generation_model_for_release(),
         image_model: DEFAULT_IMAGE_MODEL.to_string(),
         video_model: DEFAULT_VIDEO_MODEL.to_string(),
         venice_api_key: None,
@@ -1194,6 +1226,20 @@ fn default_transcription_model() -> String {
 
 fn default_generation_model() -> String {
     DEFAULT_GENERATION_MODEL.to_string()
+}
+
+fn default_cost_quality() -> u8 {
+    DEFAULT_COST_QUALITY
+}
+
+fn default_generation_model_for_release() -> String {
+    let enabled = option_env!("OS_JUNE_AUTO_MODE_DEFAULT")
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
+    if enabled {
+        AUTO_GENERATION_MODEL.to_string()
+    } else {
+        DEFAULT_GENERATION_MODEL.to_string()
+    }
 }
 
 fn default_image_model() -> String {
@@ -1282,6 +1328,7 @@ fn sanitize_settings(
         },
         transcription_model,
         generation_model,
+        cost_quality: settings.cost_quality.min(100),
         remote_generation_model,
         image_model: non_empty_or(settings.image_model, &defaults.image_model),
         video_model: sanitize_video_model(settings.video_model, &defaults.video_model),
@@ -1351,12 +1398,6 @@ fn normalize_api_key(value: &str) -> Option<String> {
 }
 
 fn validate_venice_api_key_format(value: &str) -> Result<(), AppError> {
-    if !value.starts_with(VENICE_API_KEY_PREFIX) {
-        return Err(AppError::new(
-            "venice_api_key_invalid",
-            "Venice API keys must start with VENICE_INFERENCE_KEY_.",
-        ));
-    }
     if value.chars().count() > MAX_VENICE_API_KEY_CHARS
         || value.chars().any(|character| character.is_control())
     {
@@ -1656,6 +1697,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_settings_default_cost_quality_to_higher_quality() {
+        let settings: ProviderModelSettings =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(settings.cost_quality, 100);
+    }
+
+    #[test]
     fn capabilities_include_vision_matches_normalized_supports_vision() {
         // Mirrors the frontend `modelSupportsImageInput`: normalize (lowercase,
         // strip non-letters) then match `supportsvision`, so a rename to
@@ -1862,12 +1910,22 @@ mod tests {
     }
 
     #[test]
-    fn venice_api_key_requires_inference_prefix() {
+    fn venice_api_key_format_treats_credentials_as_opaque() {
+        assert!(validate_venice_api_key_format("VENICE_INFERENCE_KEY_valid").is_ok());
+        assert!(validate_venice_api_key_format("VENICE_ADMIN_KEY_valid").is_ok());
+        assert!(validate_venice_api_key_format("legacy-or-future-key-format").is_ok());
         assert_eq!(
-            validate_venice_api_key_format("sk_wrong").unwrap_err().code,
+            validate_venice_api_key_format("invalid\tkey")
+                .unwrap_err()
+                .code,
             "venice_api_key_invalid"
         );
-        assert!(validate_venice_api_key_format("VENICE_INFERENCE_KEY_valid").is_ok());
+        assert_eq!(
+            validate_venice_api_key_format(&"x".repeat(MAX_VENICE_API_KEY_CHARS + 1))
+                .unwrap_err()
+                .code,
+            "venice_api_key_invalid"
+        );
     }
 
     #[test]

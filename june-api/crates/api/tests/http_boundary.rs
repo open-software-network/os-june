@@ -206,7 +206,7 @@ async fn integration_p3a_report_uses_user_auth_and_forwards_anonymous_bucket()
             "/v1/p3a/reports",
             &serde_json::json!({
                 "schema": 1,
-                "questionId": "dictation.sessions",
+                "questionId": "onboarding.use-case.work",
                 "epoch": "2026-W28",
                 "platform": "macos",
                 "versionSeries": "0.0.x",
@@ -228,7 +228,7 @@ async fn integration_p3a_report_uses_user_auth_and_forwards_anonymous_bucket()
         sink.reports()?,
         vec![P3aReport {
             product_slug: "june".to_string(),
-            question_id: "dictation.sessions".to_string(),
+            question_id: "onboarding.use-case.work".to_string(),
             epoch: "2026-W28".to_string(),
             platform: "macos".to_string(),
             version_series: "0.0.x".to_string(),
@@ -313,6 +313,66 @@ async fn integration_agent_chat_stream_returns_upstream_sse_body() -> Result<(),
 }
 
 #[tokio::test]
+async fn integration_agent_chat_routes_stale_model_through_auto() -> Result<(), Box<dyn Error>> {
+    let response = send(json_request(
+        "/v1/chat/completions",
+        &serde_json::json!({
+            "model": "retired-venice-model",
+            "messages": [{ "role": "user", "content": "hello" }]
+        }),
+        Some(AUTHORIZATION),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["id"], "chatcmpl_test");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_rejects_byok_when_stale_model_would_fallback()
+-> Result<(), Box<dyn Error>> {
+    let response = send(json_request_with_venice_api_key(
+        "/v1/chat/completions",
+        &serde_json::json!({
+            "model": "retired-venice-model",
+            "messages": [{ "role": "user", "content": "hello" }]
+        }),
+        "opaque_user_venice_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["message"], "venice_api_key_model_unavailable");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_rejects_byok_when_stale_model_would_fallback()
+-> Result<(), Box<dyn Error>> {
+    let response = send(json_request_with_venice_api_key(
+        "/v1/notes/generate",
+        &serde_json::json!({
+            "noteId": "note-1",
+            "promptVersion": "prompt-v1",
+            "title": "Planning",
+            "transcript": "System: launch is Friday",
+            "model": "retired-venice-model"
+        }),
+        "opaque_user_venice_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "venice_api_key_model_unavailable");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_note_generate_forwards_venice_api_key_header() -> Result<(), Box<dyn Error>> {
     let response = send(json_request_with_venice_api_key(
         "/v1/notes/generate",
@@ -321,9 +381,9 @@ async fn integration_note_generate_forwards_venice_api_key_header() -> Result<()
             "promptVersion": "prompt-v1",
             "title": "Planning",
             "transcript": "System: launch is Friday",
-            "model": "text-model"
+            "model": "venice-text-model"
         }),
-        "VENICE_INFERENCE_KEY_user",
+        "opaque_user_venice_key",
     )?)
     .await;
 
@@ -334,7 +394,30 @@ async fn integration_note_generate_forwards_venice_api_key_header() -> Result<()
         body["data"]["content"],
         "Generated note body with user Venice key"
     );
-    assert!(!body.to_string().contains("VENICE_INFERENCE_KEY_user"));
+    assert!(!body.to_string().contains("opaque_user_venice_key"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_rejects_byok_for_current_non_venice_model()
+-> Result<(), Box<dyn Error>> {
+    let response = send(json_request_with_venice_api_key(
+        "/v1/notes/generate",
+        &serde_json::json!({
+            "noteId": "note-1",
+            "promptVersion": "prompt-v1",
+            "title": "Planning",
+            "transcript": "System: launch is Friday",
+            "model": "text-model"
+        }),
+        "opaque_user_venice_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "venice_api_key_model_unavailable");
     Ok(())
 }
 
@@ -350,14 +433,14 @@ async fn integration_note_generate_rejects_malformed_venice_api_key_header()
             "transcript": "System: launch is Friday",
             "model": "text-model"
         }),
-        "sk_wrong",
+        &"x".repeat(4_097),
     )?)
     .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = response_json(response).await?;
     assert_eq!(body["success"], false);
-    assert_eq!(body["message"], "venice_api_key_invalid");
+    assert_eq!(body["message"], "venice_api_key_too_long");
     Ok(())
 }
 
@@ -780,6 +863,50 @@ async fn integration_note_transcribe_accepts_valid_audio_multipart() -> Result<(
 }
 
 #[tokio::test]
+async fn integration_note_transcribe_keeps_byok_for_current_venice_model()
+-> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request_with_venice_api_key(
+        "/v1/notes/transcribe",
+        multipart_body([
+            text_part("model", "nvidia/parakeet-tdt-0.6b-v3"),
+            text_part("title", "Standup"),
+            text_part("noteId", "note-1"),
+            file_part("audio", "recording.wav", valid_wav()),
+        ]),
+        "opaque_user_venice_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["text"], "Transcribed audio");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_transcribe_rejects_byok_for_current_non_venice_model()
+-> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request_with_venice_api_key(
+        "/v1/notes/transcribe",
+        multipart_body([
+            text_part("model", "asr-model"),
+            text_part("title", "Standup"),
+            text_part("noteId", "note-1"),
+            file_part("audio", "recording.wav", valid_wav()),
+        ]),
+        "opaque_user_venice_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "venice_api_key_model_unavailable");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_note_transcribe_rejects_unsupported_audio() -> Result<(), Box<dyn Error>> {
     let response = send(multipart_request(
         "/v1/notes/transcribe",
@@ -796,6 +923,49 @@ async fn integration_note_transcribe_rejects_unsupported_audio() -> Result<(), B
     let body = response_json(response).await?;
     assert_eq!(body["success"], false);
     assert_eq!(body["message"], "unsupported_audio_format");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_dictate_routes_retired_asr_model_through_priced_fallback()
+-> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request(
+        "/v1/dictate",
+        multipart_body([
+            text_part("model", "retired-asr-model"),
+            text_part("sessionId", "session-stale-asr"),
+            text_part("utteranceId", "utterance-stale-asr"),
+            file_part("audio", "dictation.wav", valid_wav()),
+        ]),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["text"], "Transcribed audio");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_dictate_keeps_byok_when_retired_asr_model_falls_back_to_venice()
+-> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request_with_venice_api_key(
+        "/v1/dictate",
+        multipart_body([
+            text_part("model", "retired-asr-model"),
+            text_part("sessionId", "session-stale-asr"),
+            text_part("utteranceId", "utterance-stale-asr"),
+            file_part("audio", "dictation.wav", valid_wav()),
+        ]),
+        "opaque_user_venice_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["text"], "Transcribed audio");
     Ok(())
 }
 
@@ -1643,6 +1813,24 @@ fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
 fn models() -> BTreeMap<String, ModelPriceConfig> {
     [
         (
+            "nvidia/parakeet-tdt-0.6b-v3",
+            ModelPriceConfig {
+                unit: PriceUnit::Seconds,
+                credits_per_million_seconds: Some(250_000),
+                input_credits_per_million_tokens: None,
+                output_credits_per_million_tokens: None,
+                provider: ModelProvider::Venice,
+                model_type: ModelType::Asr,
+                display_name: "Private ASR Model".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
+            },
+        ),
+        (
             "asr-model",
             ModelPriceConfig {
                 unit: PriceUnit::Seconds,
@@ -1670,6 +1858,42 @@ fn models() -> BTreeMap<String, ModelPriceConfig> {
                 provider: ModelProvider::Openai,
                 model_type: ModelType::Text,
                 display_name: "Text Model".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
+            },
+        ),
+        (
+            "venice-text-model",
+            ModelPriceConfig {
+                unit: PriceUnit::Tokens,
+                credits_per_million_seconds: None,
+                input_credits_per_million_tokens: Some(500),
+                output_credits_per_million_tokens: Some(500),
+                provider: ModelProvider::Venice,
+                model_type: ModelType::Text,
+                display_name: "Venice Text Model".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
+            },
+        ),
+        (
+            "open-software/auto",
+            ModelPriceConfig {
+                unit: PriceUnit::Tokens,
+                credits_per_million_seconds: None,
+                input_credits_per_million_tokens: Some(500),
+                output_credits_per_million_tokens: Some(500),
+                provider: ModelProvider::Venice,
+                model_type: ModelType::Text,
+                display_name: "Auto".to_string(),
                 description: None,
                 privacy: None,
                 pricing: None,
@@ -1801,6 +2025,23 @@ fn get_request_with_auth(
 
 fn multipart_request(uri: &str, body: Vec<u8>) -> Result<Request<Body>, axum::http::Error> {
     multipart_request_with_auth(uri, body, Some(AUTHORIZATION))
+}
+
+fn multipart_request_with_venice_api_key(
+    uri: &str,
+    body: Vec<u8>,
+    venice_api_key: &str,
+) -> Result<Request<Body>, axum::http::Error> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={}", boundary()),
+        )
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .header("x-venice-api-key", venice_api_key)
+        .body(Body::from(body))
 }
 
 fn multipart_request_with_auth(
@@ -2131,9 +2372,7 @@ impl Generator for FakeGenerator {
         if request.transcript.contains("boom") {
             return Err(DomainError::UpstreamProvider);
         }
-        let content = if request.provider_credentials.venice_api_key.as_deref()
-            == Some("VENICE_INFERENCE_KEY_user")
-        {
+        let content = if request.provider_credentials.has_venice_api_key() {
             "Generated note body with user Venice key"
         } else {
             "Generated note body"
@@ -2182,10 +2421,15 @@ struct FakeChatCompleter;
 impl AgentChatCompleter for FakeChatCompleter {
     async fn complete(
         &self,
-        _request: AgentChatRequest,
+        request: AgentChatRequest,
     ) -> Result<AgentChatCompletion, DomainError> {
+        let id = if request.provider_credentials.has_venice_api_key() {
+            "chatcmpl_user_key"
+        } else {
+            "chatcmpl_test"
+        };
         Ok(AgentChatCompletion {
-            body: br#"{"id":"chatcmpl_test"}"#.to_vec(),
+            body: format!(r#"{{"id":"{id}"}}"#).into_bytes(),
             content_type: "application/json".to_string(),
             provider: "fake-chat".to_string(),
             usage: TokenUsage {

@@ -15,6 +15,20 @@ function model(overrides: Partial<VeniceModelDto>): VeniceModelDto {
 }
 
 describe("modelSpecEntries", () => {
+  it("omits fixed pricing and context for the Auto router", () => {
+    const entries = modelSpecEntries(
+      model({
+        id: "open-software/auto",
+        priceUnit: "tokens",
+        inputCreditsPerMillionTokens: 2_100,
+        outputCreditsPerMillionTokens: 6_900,
+        contextTokens: 2_000_000,
+      }),
+    );
+
+    expect(entries).toEqual([]);
+  });
+
   it("shows June's billed credit price, never the raw upstream pricing", () => {
     // Raw upstream pricing ($2/$6) is present but must be ignored: the backend
     // keeps `pricing` as reference metadata and bills from the credit price

@@ -16,12 +16,28 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import type { AgentChatPart, AgentChatTurn } from "../../lib/agent-chat-runtime";
 import { messageFromError } from "../../lib/errors";
 import { attachmentStateFrom } from "../../lib/hermes-image-attach";
+import {
+  decodeHermesModelSelection,
+  type SessionModelSelection,
+} from "../../lib/hermes-session-model-selection";
+import {
+  isLoopbackUrl,
+  LOCAL_GENERATION_OPTION_ID_PREFIX,
+  localGenerationOptionId,
+  unavailableLocalGenerationOption,
+  withLocalGenerationOption,
+} from "../../lib/local-generation";
 import { useScrollFade } from "../../lib/use-scroll-fade";
+import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
 import {
   dictationHelperCommand,
   importHermesBridgeFile,
   listVeniceModels,
   providerModelSettings,
+  setCostQuality,
+  setLocalGenerationEnabled,
+  setVeniceModel,
+  type LocalGenerationSettingsDto,
   type VeniceModelDto,
 } from "../../lib/tauri";
 import { FileTypeIcon } from "../agent/FileTypeIcon";
@@ -32,7 +48,8 @@ import {
   ComposerModelPopover,
   type ComposerModelFlyout,
 } from "../agent/composer/ModelPicker";
-import { modelOptions } from "../settings/ModelPickerDialog";
+import { autoPillDesignation } from "../../lib/suggested-models";
+import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import type { NoteChat, NoteChatAttachment } from "./useNoteChat";
 
 /** Note-tailored presets, shown as the main session view's preset chips (icon
@@ -78,6 +95,23 @@ function clampNoteChatWidth(width: number) {
     typeof window === "undefined" ? NOTE_CHAT_MAX_W : Math.round(window.innerWidth * 0.48);
   const max = Math.max(NOTE_CHAT_MIN_W, Math.min(NOTE_CHAT_MAX_W, viewportCap));
   return Math.min(Math.max(Math.round(width), NOTE_CHAT_MIN_W), max);
+}
+
+function selectionForAppliedHermesModel(
+  appliedHermesModelId: string | undefined,
+  localGeneration: LocalGenerationSettingsDto,
+): SessionModelSelection | undefined {
+  const modelId = appliedHermesModelId?.trim();
+  if (!modelId) return undefined;
+  const configuredLocalModelId = localGeneration.modelId.trim();
+  if (
+    !modelId.startsWith("__june_") &&
+    configuredLocalModelId &&
+    modelId === configuredLocalModelId
+  ) {
+    return { modelId: localGenerationOptionId(configuredLocalModelId) };
+  }
+  return decodeHermesModelSelection(modelId);
 }
 
 /** The first message of a note chat carries the note reference token so
@@ -161,7 +195,18 @@ export function NoteChatPanel({
   onClose: () => void;
   onOpenInAgent: (sessionId: string | undefined) => void;
 }) {
-  const { turns, working, loading, error, storedSessionId, submit, stop, setSessionModel } = chat;
+  const {
+    turns,
+    working,
+    loading,
+    error,
+    storedSessionId,
+    modelSelection,
+    appliedHermesModelId,
+    submit,
+    stop,
+    setSessionModel,
+  } = chat;
   // Block escalation only during the pure first-send race — the session is
   // being created and there's no id to hand off yet. Once an id exists the
   // agent view resolves the conversation by it, so opening is always safe.
@@ -229,15 +274,30 @@ export function NoteChatPanel({
 
   // Model picking: the exact trigger + popover the agent composer uses,
   // loaded from the same catalog. Selection routes through the hook (applied
-  // at session.create or as a /model switch before the next message).
+  // at session.create or as a session-scoped switch before the next message).
   const [models, setModels] = useState<VeniceModelDto[]>([]);
+  const [localGeneration, setLocalGeneration] = useState<LocalGenerationSettingsDto>({
+    baseUrl: "",
+    modelId: "",
+    apiKey: "",
+  });
   const [modelId, setModelId] = useState("");
+  const [costQuality, setCostQualityState] = useState<number | undefined>();
   const [modelOpen, setModelOpen] = useState(false);
   const [modelFlyout, setModelFlyout] = useState<ComposerModelFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
   const modelSearchRef = useRef<HTMLInputElement>(null);
+  const modelSelectionRef = useRef(modelSelection);
+  const appliedHermesModelIdRef = useRef(appliedHermesModelId);
+  const storedSessionIdRef = useRef(storedSessionId);
+  const generationSelectionSaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const generationSelectionIntentRevisionRef = useRef(0);
+  const localEnableConfirmArmedForRef = useRef<string | null>(null);
+  modelSelectionRef.current = modelSelection;
+  appliedHermesModelIdRef.current = appliedHermesModelId;
+  storedSessionIdRef.current = storedSessionId;
   useEffect(() => {
     let stale = false;
     void (async () => {
@@ -246,16 +306,137 @@ export function NoteChatPanel({
         listVeniceModels("generation"),
       ]);
       if (stale) return;
-      setModels(catalog.models);
-      setModelId(settings.settings.generationModel || catalog.selectedModel);
+      const local = settings.settings.localGeneration ?? {
+        baseUrl: "",
+        modelId: "",
+        apiKey: "",
+      };
+      setLocalGeneration(local);
+      setModels(withLocalGenerationOption(catalog.models, local));
+      const fallbackModelId =
+        settings.settings.generationProvider === "local" && local.modelId.trim()
+          ? localGenerationOptionId(local.modelId)
+          : settings.settings.generationModel || catalog.selectedModel;
+      const initialSelection = modelSelectionRef.current ??
+        selectionForAppliedHermesModel(appliedHermesModelIdRef.current, local) ?? {
+          modelId: fallbackModelId,
+          ...(fallbackModelId === AUTO_MODEL_ID && settings.settings.costQuality !== undefined
+            ? { costQuality: settings.settings.costQuality }
+            : {}),
+        };
+      setModelId(initialSelection.modelId);
+      setCostQualityState(
+        initialSelection.modelId === AUTO_MODEL_ID
+          ? (initialSelection.costQuality ?? settings.settings.costQuality)
+          : settings.settings.costQuality,
+      );
+      if (!modelSelectionRef.current && !storedSessionId) setSessionModel(initialSelection);
     })().catch(() => {
       // No catalog (bridge down, browser preview): the picker simply hides.
     });
     return () => {
       stale = true;
     };
-  }, []);
-  const model = models.find((candidate) => candidate.id === modelId);
+  }, [setSessionModel, storedSessionId]);
+
+  // The hook owns the durable queued/applied choice. Reflect note switches and
+  // changes made while an agent run is active without consulting the mutable
+  // app-wide default.
+  useEffect(() => {
+    const displayedSelection =
+      modelSelection ?? selectionForAppliedHermesModel(appliedHermesModelId, localGeneration);
+    if (!displayedSelection) return;
+    setModelId(displayedSelection.modelId);
+    if (
+      displayedSelection.modelId === AUTO_MODEL_ID &&
+      displayedSelection.costQuality !== undefined
+    ) {
+      setCostQualityState(displayedSelection.costQuality);
+    }
+  }, [appliedHermesModelId, localGeneration, modelSelection]);
+  const model = modelId
+    ? models.some((candidate) => candidate.id === modelId)
+      ? selectedModel(models, modelId)
+      : (unavailableLocalGenerationOption(modelId) ?? selectedModel(models, modelId))
+    : undefined;
+
+  function saveGenerationSelection(write: () => Promise<unknown>): Promise<void> {
+    const save = generationSelectionSaveChainRef.current.then(async () => {
+      await write();
+    });
+    generationSelectionSaveChainRef.current = save.catch(() => undefined);
+    return save;
+  }
+
+  async function selectModel(nextModelId: string, nextCostQuality?: number) {
+    try {
+      if (nextModelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) {
+        const baseUrl = localGeneration.baseUrl.trim();
+        if (!isLoopbackUrl(baseUrl)) {
+          if (localEnableConfirmArmedForRef.current !== baseUrl) {
+            localEnableConfirmArmedForRef.current = baseUrl;
+            setComposerError(
+              "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
+            );
+            setModelOpen(false);
+            return;
+          }
+        }
+      }
+      localEnableConfirmArmedForRef.current = null;
+      const selectedCostQuality =
+        nextModelId === AUTO_MODEL_ID ? (nextCostQuality ?? costQuality) : undefined;
+      const selection: SessionModelSelection = {
+        modelId: nextModelId,
+        ...(selectedCostQuality !== undefined ? { costQuality: selectedCostQuality } : {}),
+      };
+      const previousSelection: SessionModelSelection = {
+        modelId,
+        ...(modelId === AUTO_MODEL_ID && costQuality !== undefined ? { costQuality } : {}),
+      };
+      const previousCostQuality = costQuality;
+      setModelId(nextModelId);
+      if (selectedCostQuality !== undefined) setCostQualityState(selectedCostQuality);
+      setSessionModel(selection);
+      setModelOpen(false);
+      setComposerError(null);
+      // Before the first session.create returns there is no stored id yet, but
+      // a picker change already belongs to this chat's following agent run.
+      // Keep it session-local instead of mutating unrelated future sessions.
+      if (storedSessionId || chat.submissionPending) return;
+
+      const intentRevision = ++generationSelectionIntentRevisionRef.current;
+      try {
+        await saveGenerationSelection(async () => {
+          if (nextModelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) {
+            await setLocalGenerationEnabled(true);
+            return;
+          }
+          if (selectedCostQuality !== undefined) {
+            await setCostQuality(selectedCostQuality);
+          }
+          await setVeniceModel("generation", nextModelId);
+        });
+        if (generationSelectionIntentRevisionRef.current === intentRevision) {
+          dispatchProviderModelSettingsChanged({
+            mode: "generation",
+            modelId: nextModelId,
+          });
+        }
+      } catch (err) {
+        if (generationSelectionIntentRevisionRef.current === intentRevision) {
+          if (!storedSessionIdRef.current) {
+            setModelId(previousSelection.modelId);
+            setCostQualityState(previousCostQuality);
+            setSessionModel(previousSelection);
+          }
+          setComposerError(messageFromError(err));
+        }
+      }
+    } catch (err) {
+      setComposerError(messageFromError(err));
+    }
+  }
 
   useEffect(() => {
     if (!modelOpen) return;
@@ -528,6 +709,9 @@ export function NoteChatPanel({
                 <ComposerModelPicker
                   open={modelOpen}
                   model={model}
+                  detail={
+                    model?.id === AUTO_MODEL_ID ? autoPillDesignation(costQuality) : undefined
+                  }
                   triggerRef={modelTriggerRef}
                   onToggleOpen={() => {
                     setModelFlyout(null);
@@ -583,16 +767,15 @@ export function NoteChatPanel({
               flyout={modelFlyout}
               model={model}
               options={modelOptions(models, model?.id ?? "")}
+              costQuality={costQuality}
               search={modelSearch}
               popoverRef={modelPopoverRef}
               searchRef={modelSearchRef}
               onFlyoutChange={setModelFlyout}
               onSearchChange={setModelSearch}
-              onSelect={(nextModelId) => {
-                setModelId(nextModelId);
-                setSessionModel(nextModelId);
-                setModelOpen(false);
-              }}
+              onSelect={(nextModelId, nextCostQuality) =>
+                void selectModel(nextModelId, nextCostQuality)
+              }
             />
           ) : null}
         </footer>

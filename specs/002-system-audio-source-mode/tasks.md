@@ -71,7 +71,7 @@
 - [x] T023 [US2] Add macOS helper source, build script, and process manager for system audio capture in `src-tauri/native/mac-system-audio-recorder/main.swift`, `src-tauri/build.rs`, and `src-tauri/src/audio/system_macos.rs`
 - [x] T024 [US2] Implement dual-source start, pause, resume, status, finish, validation, and partial-source warnings in `src-tauri/src/audio/capture.rs` and `src-tauri/src/commands.rs`
 - [x] T025 [US2] Persist source artifacts and source-labeled transcripts from finished recordings in `src-tauri/src/db/repositories.rs` and `src-tauri/src/domain/processing.rs`
-- [x] T026 [US2] Render per-source levels, bytes, silence warnings, source labels, and labeled transcript content in `src/components/recorder/RecorderBar.tsx`, `src/components/recorder/Waveform.tsx`, and `src/components/note-editor/NoteEditor.tsx`
+- [x] T026 [US2] Render per-source levels, bytes, post-validation source warnings, source labels, and labeled transcript content in `src/components/recorder/RecorderBar.tsx`, `src/components/recorder/Waveform.tsx`, and `src/components/note-editor/NoteEditor.tsx`
 - [x] T027 [US2] Run US2 frontend and Rust tests, then mark the story complete only after they pass
 
 ---

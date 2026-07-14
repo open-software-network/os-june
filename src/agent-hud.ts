@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
@@ -21,6 +21,8 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "./lib/agent-hud-settings";
+import { isAgentSessionTitleCandidate, sessionSettledTitleKind } from "./lib/agent-session-titles";
+import { titleFromPrompt } from "./lib/hermes-adapter";
 import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import type { HermesSessionInfo } from "./lib/tauri";
@@ -85,6 +87,7 @@ const state = {
   workingSessionIds: new Set<string>(),
   waitingSessionIds: new Set<string>(),
   statusBySessionId: new Map<string, StatusRecord>(),
+  promptBySessionId: new Map<string, string>(),
   pendingStatuses: [] as StatusRecord[],
   // Transient auto-expand triggered when an entry newly needs input. Unlike
   // `expanded` it is not persisted to EXPANDED_KEY: it grabs attention once,
@@ -114,6 +117,11 @@ function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
   state.waitingSessionIds = new Set(detail.waitingSessionIds ?? []);
   const activeSessionIds = new Set([...state.workingSessionIds, ...state.waitingSessionIds]);
   const knownSessionIds = new Set(state.sessions.map((session) => session.id));
+  for (const sessionId of state.promptBySessionId.keys()) {
+    if (!knownSessionIds.has(sessionId) && !activeSessionIds.has(sessionId)) {
+      state.promptBySessionId.delete(sessionId);
+    }
+  }
   for (const [sessionId, record] of state.statusBySessionId) {
     if (
       knownSessionIds.has(sessionId) &&
@@ -136,7 +144,20 @@ function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
 
 function applyStatus(detail?: AgentSessionStatusDetail) {
   if (!detail) return;
-  const record: StatusRecord = { ...detail, receivedAt: Date.now() };
+  const previous = detail.sessionId ? state.statusBySessionId.get(detail.sessionId) : undefined;
+  const prompt =
+    detail.prompt ??
+    (detail.sessionId
+      ? (previous?.prompt ?? state.promptBySessionId.get(detail.sessionId))
+      : undefined);
+  if (detail.sessionId && prompt) {
+    state.promptBySessionId.set(detail.sessionId, prompt);
+  }
+  const record: StatusRecord = {
+    ...detail,
+    prompt,
+    receivedAt: Date.now(),
+  };
   if (detail.sessionId) {
     if (detail.status === "completed" || detail.status === "cancelled") {
       state.workingSessionIds.delete(detail.sessionId);
@@ -462,9 +483,35 @@ function sessionStatus(session: HermesSessionInfo, record?: StatusRecord): HudSe
 }
 
 function sessionTitle(session: HermesSessionInfo, record?: StatusRecord) {
-  return (
-    record?.title?.trim() || session.title?.trim() || session.preview?.trim() || "Agent session"
-  );
+  const storedTitle = session.title?.trim();
+  const settledTitleKind = sessionSettledTitleKind(session.id);
+  const storedTitleIsAuthoritative =
+    storedTitle &&
+    (settledTitleKind ||
+      (storedTitle !== session.preview?.trim() &&
+        !isPromptDerivedTitle(storedTitle, session.preview))) &&
+    isHudStoredSessionTitleSafe(storedTitle, session.id, record?.prompt, session.preview);
+  if (storedTitleIsAuthoritative) {
+    return storedTitle;
+  }
+  const recordTitle = record?.title?.trim();
+  if (recordTitle) {
+    if (isHudStatusTitleSafe(recordTitle, session.id, record?.prompt)) return recordTitle;
+    const safeSessionTitle = storedTitle;
+    if (
+      safeSessionTitle &&
+      isHudStoredSessionTitleSafe(safeSessionTitle, session.id, record?.prompt, session.preview)
+    ) {
+      return safeSessionTitle;
+    }
+    return record?.prompt?.trim() || session.preview?.trim() || "Agent session";
+  }
+  if (storedTitle) {
+    return isHudStoredSessionTitleSafe(storedTitle, session.id, record?.prompt, session.preview)
+      ? storedTitle
+      : record?.prompt?.trim() || session.preview?.trim() || "Agent session";
+  }
+  return record?.prompt?.trim() || session.preview?.trim() || "Agent session";
 }
 
 function sessionSummary(
@@ -490,7 +537,35 @@ function sessionTimestamp(session: HermesSessionInfo, record?: StatusRecord) {
 }
 
 function statusTitle(record: StatusRecord) {
-  return record.title?.trim() || record.prompt?.trim() || "Agent session";
+  const title = record.title?.trim();
+  return title && isHudStatusTitleSafe(title, record.sessionId, record.prompt)
+    ? title
+    : record.prompt?.trim() || "Agent session";
+}
+
+function isHudStatusTitleSafe(title: string, sessionId?: string, prompt?: string) {
+  const settledTitleKind = sessionSettledTitleKind(sessionId);
+  if (settledTitleKind === "manual") return true;
+  if (settledTitleKind === "exchange") return isAgentSessionTitleCandidate(title);
+  return isPromptDerivedTitle(title, prompt) || isAgentSessionTitleCandidate(title);
+}
+
+function isHudStoredSessionTitleSafe(
+  title: string,
+  sessionId: string,
+  ...promptCandidates: Array<string | undefined>
+) {
+  const settledTitleKind = sessionSettledTitleKind(sessionId);
+  if (settledTitleKind === "manual") return true;
+  if (settledTitleKind === "exchange") return isAgentSessionTitleCandidate(title);
+  return (
+    promptCandidates.some((prompt) => isPromptDerivedTitle(title, prompt)) ||
+    isAgentSessionTitleCandidate(title)
+  );
+}
+
+function isPromptDerivedTitle(title: string, prompt?: string) {
+  return Boolean(prompt?.trim() && titleFromPrompt(prompt) === title);
 }
 
 function statusSummary(record: StatusRecord) {
@@ -678,7 +753,7 @@ function sameStatusSubject(a: StatusRecord, b: StatusRecord) {
 }
 
 function statusSubject(record: StatusRecord) {
-  return statusTitle(record).trim().toLowerCase();
+  return (record.title?.trim() || record.prompt?.trim() || "Agent session").toLowerCase();
 }
 
 async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries: boolean) {
@@ -803,7 +878,7 @@ function appendStatusIcon(parent: HTMLElement, status: HudSessionStatus) {
       appendIcon(parent, IconCircleQuestionmark, 14);
       return;
     case "completed":
-      appendIcon(parent, IconCheckmark1Small, 14);
+      appendIcon(parent, IconCheckmark2Small, 14);
       return;
     case "failed":
     case "cancelled":

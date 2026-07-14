@@ -945,12 +945,27 @@ pub fn reveal_path(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        // `explorer` wants the selection flag and path in a single `/select,<path>`
-        // token; pass it as one argument so nothing is shell-interpolated.
-        let mut arg = std::ffi::OsString::from("/select,");
-        arg.push(target);
-        std::process::Command::new("explorer")
-            .arg(arg)
+        use std::ffi::OsString;
+        use std::os::windows::process::CommandExt;
+
+        // Explorer has its own legacy command-line parser. Build the exact
+        // argument string it expects and pass it with `raw_arg` so Rust does
+        // not escape the inner quotes as `\"`, which makes Explorer fall
+        // back to the default folder instead of selecting the file. Keep the
+        // path as an OsString so non-UTF-8 Windows paths are not lossy-formatted.
+        let mut command = std::process::Command::new("explorer.exe");
+        let mut arg = OsString::new();
+        if target.is_dir() {
+            arg.push("\"");
+            arg.push(target.as_os_str());
+            arg.push("\"");
+        } else {
+            arg.push("/select,\"");
+            arg.push(target.as_os_str());
+            arg.push("\"");
+        }
+        command
+            .raw_arg(arg)
             .spawn()
             .map(|_| ())
             .map_err(|error| format!("Failed to reveal path in Explorer: {error}"))
@@ -1028,6 +1043,61 @@ pub async fn start_recording(
             started.device_label.clone(),
         )
         .await?;
+    if let Err(error) = repos
+        .add_checkpoint(
+            &started.session_id,
+            "source_readiness",
+            Some(
+                serde_json::json!({
+                    "sourceMode": readiness.source_mode,
+                    "ready": readiness.ready,
+                    "checkedAt": readiness.checked_at,
+                    "sourceCount": readiness.sources.len(),
+                    "requiredSourceCount": readiness.sources.iter().filter(|source| source.required).count(),
+                    "readySourceCount": readiness.sources.iter().filter(|source| source.ready).count(),
+                })
+                .to_string(),
+            ),
+        )
+        .await
+    {
+        eprintln!(
+            "failed to persist source_readiness checkpoint for {}: {}",
+            started.session_id, error
+        );
+    }
+    for source in &readiness.sources {
+        if let Err(error) = repos
+            .add_source_checkpoint(
+                &started.session_id,
+                None,
+                Some(source.source.as_db()),
+                "source_readiness",
+                Some(
+                    serde_json::json!({
+                        "source": source.source.as_db(),
+                        "required": source.required,
+                        "ready": source.ready,
+                        "permissionState": source.permission_state,
+                        "deviceAvailable": source.device_available,
+                        "captureAvailable": source.capture_available,
+                        "recoveryAction": source.recovery_action,
+                        "message": source.message,
+                        "taxonomyCode": readiness_taxonomy_code(source),
+                    })
+                    .to_string(),
+                ),
+            )
+            .await
+        {
+            eprintln!(
+                "failed to persist source_readiness checkpoint for {} source {}: {}",
+                started.session_id,
+                source.source.as_db(),
+                error
+            );
+        }
+    }
     for source in &started.sources {
         repos
             .create_pending_source_artifact(
@@ -1247,7 +1317,7 @@ async fn finish_recording_session(
         .elapsed()
         .as_millis()
         .min(i64::MAX as u128) as i64;
-    repos
+    if let Err(error) = repos
         .add_checkpoint(
             &finished.session_id,
             "recording_finalization",
@@ -1259,10 +1329,22 @@ async fn finish_recording_session(
                 .to_string(),
             ),
         )
-        .await?;
-    repos
+        .await
+    {
+        eprintln!(
+            "failed to persist recording_finalization checkpoint for {}: {}",
+            finished.session_id, error
+        );
+    }
+    if let Err(error) = repos
         .add_checkpoint(&finished.session_id, "done", None)
-        .await?;
+        .await
+    {
+        eprintln!(
+            "failed to persist done checkpoint for {}: {}",
+            finished.session_id, error
+        );
+    }
     let source_artifacts = repos
         .source_artifacts_for_session(&finished.session_id)
         .await?;
@@ -1278,7 +1360,7 @@ async fn finish_recording_session(
             .iter()
             .find(|artifact| artifact.source == source.source.as_db());
         if let Some(issue) = source.capture_issue.as_ref() {
-            repos
+            if let Err(error) = repos
                 .add_source_checkpoint(
                     &finished.session_id,
                     source_artifact.map(|artifact| artifact.id.as_str()),
@@ -1292,7 +1374,40 @@ async fn finish_recording_session(
                         .to_string(),
                     ),
                 )
-                .await?;
+                .await
+            {
+                eprintln!(
+                    "failed to persist capture_stream_error checkpoint for {} source {}: {}",
+                    finished.session_id,
+                    source.source.as_db(),
+                    error
+                );
+            }
+        }
+        if let Some(failure) = source.failure.as_ref() {
+            if let Err(error) = repos
+                .add_source_checkpoint(
+                    &finished.session_id,
+                    source_artifact.map(|artifact| artifact.id.as_str()),
+                    Some(source.source.as_db()),
+                    "capture_stream_error",
+                    Some(
+                        serde_json::json!({
+                            "message": failure.message,
+                            "code": failure.code,
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await
+            {
+                eprintln!(
+                    "failed to persist capture_stream_error checkpoint for {} source {}: {}",
+                    finished.session_id,
+                    source.source.as_db(),
+                    error
+                );
+            }
         }
         let validation = validate_audio_artifact(
             &source.final_path,
@@ -1304,12 +1419,34 @@ async fn finish_recording_session(
         let file_size = std::fs::metadata(&source.final_path)
             .map(|metadata| metadata.len() as i64)
             .unwrap_or_default();
+        let valid =
+            source.failure.is_none() && source_audio_passes_validation(source.source, &validation);
+        let validation_taxonomy = validation_taxonomy_code(&validation, valid);
+        let validation_checkpoint_details = serde_json::json!({
+            "path": source.final_path.to_string_lossy(),
+            "elapsedMs": source.elapsed_ms,
+            "fileSizeBytes": file_size,
+            "checksum": checksum,
+            "fileExists": validation.file_exists,
+            "nonZeroSize": validation.non_zero_size,
+            "readableAudio": validation.readable_audio,
+            "expectedDurationMs": validation.expected_duration_ms,
+            "actualDurationMs": validation.actual_duration_ms,
+            "durationWithinTolerance": validation.duration_within_tolerance,
+            "nonSilentSignal": validation.non_silent_signal,
+            "recordedSilence": validation.recorded_silence,
+            "peakAmplitude": validation.peak_amplitude,
+            "rmsAmplitude": validation.rms_amplitude,
+            "valid": valid,
+            "taxonomyCode": validation_taxonomy,
+            "warnings": validation.warnings,
+        })
+        .to_string();
         if source.source == RecordingSource::Microphone {
             primary_validation = Some(validation.clone());
             primary_checksum = checksum.clone();
             primary_file_size = file_size;
         }
-        let valid = source_audio_passes_validation(source.source, &validation);
         if let Some(artifact) = source_artifact {
             let final_path = source.final_path.to_string_lossy().into_owned();
             repos
@@ -1329,6 +1466,23 @@ async fn finish_recording_session(
                     },
                 )
                 .await?;
+            if let Err(error) = repos
+                .add_source_checkpoint(
+                    &finished.session_id,
+                    Some(artifact.id.as_str()),
+                    Some(source.source.as_db()),
+                    "source_audio_validation",
+                    Some(validation_checkpoint_details.clone()),
+                )
+                .await
+            {
+                eprintln!(
+                    "failed to persist source_audio_validation checkpoint for {} source {}: {}",
+                    finished.session_id,
+                    source.source.as_db(),
+                    error
+                );
+            }
             if valid {
                 valid_sources.push((
                     artifact.id.clone(),
@@ -1339,13 +1493,18 @@ async fn finish_recording_session(
             }
         }
         if !valid {
+            let failure_message = source
+                .failure
+                .as_ref()
+                .map(|failure| failure.message.clone())
+                .unwrap_or_else(|| validation.warnings.join("; "));
             warnings.push(crate::domain::types::SourceWarningDto {
                 source: source.source,
                 code: "source_validation_failed".to_string(),
                 message: format!(
                     "{} source did not pass validation: {}",
                     source.source.as_db(),
-                    validation.warnings.join("; ")
+                    failure_message
                 ),
             });
         }
@@ -1365,7 +1524,11 @@ async fn finish_recording_session(
             error: if valid {
                 None
             } else {
-                Some(validation.warnings.join("; "))
+                source
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.message.clone())
+                    .or_else(|| Some(validation.warnings.join("; ")))
             },
         });
     }
@@ -1425,7 +1588,7 @@ async fn finish_recording_session(
         });
     }
 
-    repos
+    if let Err(error) = repos
         .add_checkpoint(
             &finished.session_id,
             "audio_validation",
@@ -1438,7 +1601,13 @@ async fn finish_recording_session(
                 .to_string(),
             ),
         )
-        .await?;
+        .await
+    {
+        eprintln!(
+            "failed to persist audio_validation checkpoint for {}: {}",
+            finished.session_id, error
+        );
+    }
 
     // Capture is single-instance, but processing runs asynchronously — so the
     // user may have already recorded (and stopped) another message on this note
@@ -1533,6 +1702,45 @@ async fn finish_recording_session(
     })
 }
 
+fn readiness_taxonomy_code(source: &SourceReadinessDto) -> &'static str {
+    if source.ready {
+        return "ready";
+    }
+    match source.permission_state.as_str() {
+        "unsupported" => "readiness_unsupported",
+        "denied" => "permission_denied",
+        "restricted" => "permission_restricted",
+        _ if !source.device_available => "device_unavailable",
+        _ if !source.capture_available => "capture_unavailable",
+        _ => "readiness_unknown",
+    }
+}
+
+fn validation_taxonomy_code(
+    validation: &crate::domain::types::AudioValidationDto,
+    valid: bool,
+) -> &'static str {
+    if valid {
+        return "valid";
+    }
+    if !validation.file_exists {
+        return "missing_file";
+    }
+    if !validation.non_zero_size {
+        return "empty_file";
+    }
+    if !validation.readable_audio {
+        return "unreadable_wav";
+    }
+    if validation.recorded_silence {
+        return "recorded_silence";
+    }
+    if !validation.duration_within_tolerance {
+        return "duration_mismatch";
+    }
+    "validation_unknown"
+}
+
 fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSourceReadinessDto {
     let (microphone_state, microphone_hint) = microphone_permission_state();
     // TCC grants are bundle-scoped, so the dictation helper's grant never
@@ -1562,11 +1770,11 @@ fn recording_source_readiness(source_mode: RecordingSourceMode) -> RecordingSour
             .then(|| "openMicrophoneSettings".to_string()),
         message: microphone_message,
     };
-    let mut system = crate::audio::system_macos::system_audio_readiness();
+    let mut system = crate::audio::system_audio::system_audio_readiness();
     if should_probe_system_audio_permission(source_mode, system.ready, is_capture_active()) {
         system = apply_system_audio_permission_probe_result(
             system,
-            crate::audio::system_macos::helper_permission_check(),
+            crate::audio::system_audio::helper_permission_check(),
         );
     }
 

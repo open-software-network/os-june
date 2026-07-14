@@ -19,7 +19,7 @@ A user opens the desktop app, creates a new note, records from the microphone, s
 
 1. **Given** the user has granted microphone access and is on the new note screen, **When** they start recording and speak, **Then** the recording UI shows elapsed time, active waveform movement, and a non-idle recording state.
 2. **Given** the user has been recording for at least 10 seconds, **When** they select Done, **Then** the app finalizes the audio file, validates that it contains usable audio, transcribes it, and generates note content without requiring the user to copy/paste the transcript.
-3. **Given** the microphone is muted, disconnected, or producing no meaningful signal, **When** the user records, **Then** the app warns that audio capture appears silent before allowing them to generate a note.
+3. **Given** the microphone is muted, disconnected, or producing no meaningful signal, **When** the user finishes recording, **Then** validation explains that the audio is unusable before allowing note generation.
 4. **Given** transcription or AI note generation fails after audio was saved, **When** the user views the note, **Then** the saved audio and recording metadata remain available for retry.
 
 ---
@@ -121,7 +121,7 @@ A user does not lose a recording if the app is closed, crashes, or loses network
 - **RR-001**: Recording MUST NOT be considered successful until an audio file has been finalized and verified as readable.
 - **RR-002**: The app MUST record session checkpoints at start, pause, resume, done, validation, transcription, generation, and completion.
 - **RR-003**: The app MUST compare expected elapsed recording time with actual saved audio duration and flag mismatches above tolerance.
-- **RR-004**: The app MUST detect sustained silence during active recording and make that state visible to the user before Done.
+- **RR-004**: The app MUST detect sustained silence for recording validation without showing a live silence prompt; unusable audio is explained after Done through validation or recovery UI.
 - **RR-005**: The app MUST support retrying transcription/generation from saved audio without requiring a new recording.
 - **RR-006**: The app MUST make it visually obvious when it is listening, paused, validating, transcribing, generating, failed, or ready.
 
@@ -156,7 +156,7 @@ A user does not lose a recording if the app is closed, crashes, or loses network
 
 - **SC-001**: In 20 consecutive manual recordings of at least 30 seconds each with audible speech, the app saves a readable audio file every time.
 - **SC-002**: For a valid 60-second recording, the user can complete capture, validation, transcription, and note generation without manually copying transcript text.
-- **SC-003**: When the microphone is muted or silent for 10 seconds during active recording, the app visibly warns the user before Done.
+- **SC-003**: When a finished recording contains only silence, validation visibly explains that the audio is unusable before note generation.
 - **SC-004**: When network access is disabled after recording, the audio remains saved locally and the note can be retried after network access returns.
 - **SC-005**: The notes list, folder selection, and note editor remain responsive with at least 500 local notes.
 - **SC-006**: A long transcript of at least 10,000 characters can be opened and scrolled without blocking note editing.

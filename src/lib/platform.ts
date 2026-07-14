@@ -1,3 +1,9 @@
+export function isWindowsPlatform() {
+  const platform =
+    typeof navigator === "undefined" ? "" : `${navigator.platform} ${navigator.userAgent}`;
+  return /Windows|Win32|Win64/i.test(platform);
+}
+
 export function isMacLikePlatform() {
   const platform =
     typeof navigator === "undefined" ? "" : `${navigator.platform} ${navigator.userAgent}`;
@@ -5,6 +11,10 @@ export function isMacLikePlatform() {
     return false;
   }
   return true;
+}
+
+export function isSystemAudioSupportedPlatform() {
+  return isMacLikePlatform() || isWindowsPlatform();
 }
 
 export function primaryShortcutLabel(key: string) {

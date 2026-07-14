@@ -52,8 +52,7 @@ Expected result: saved readable audio, transcript, generated note, and persisted
 1. Create a note.
 2. Mute or disconnect microphone input if possible.
 3. Record for at least 10 seconds.
-4. Verify the UI warns that input appears silent.
-5. Click Done.
+4. Select Done and verify validation explains that the audio is unusable.
 
 Expected result: validation fails or warns before provider processing, and the app does not generate a note from unusable audio.
 

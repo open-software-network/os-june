@@ -198,6 +198,7 @@ export type ProviderModelSettingsDto = {
   generationProvider: string;
   transcriptionModel: string;
   generationModel: string;
+  costQuality: number;
   remoteGenerationModel: string;
   imageModel: string;
   videoModel: string;
@@ -1100,7 +1101,9 @@ export async function hermesBridgeFilesystemSnapshot() {
 }
 
 export async function downloadHermesBridgeFile(path: string) {
-  return invoke<string>("download_hermes_bridge_file", { request: { path } });
+  return invoke<string>("download_hermes_bridge_file", {
+    request: { path },
+  });
 }
 
 export async function hermesBridgeFilePreview(path: string) {
@@ -1721,11 +1724,18 @@ export async function osAccountsUpgrade(plan?: SubscriptionPlan) {
   return invoke<void>("os_accounts_upgrade", { plan });
 }
 
+/** Opens a hosted billing-portal session for an existing subscriber to review
+ * and confirm a full-price plan upgrade that restarts the billing cycle. */
+export async function osAccountsUpgradeSession(plan: SubscriptionPlan) {
+  return invoke<void>("os_accounts_upgrade_session", { plan });
+}
+
 /** Changes the plan on the caller's existing subscription in place (Pro to
- * Max). OS Accounts prorates the charge and grants the new plan's credits
- * immediately, so there is no browser round-trip; the resolved subscription
- * reflects the new plan. Callers should refresh account status afterwards to
- * pick up the freshly granted balance. */
+ * Max), charging the saved card immediately with no browser review. This is
+ * the compatibility fallback for deployments without hosted upgrade
+ * sessions, and callers must only dispatch it behind the charge-now consent
+ * copy. Credits still arrive only through the invoice webhook, so callers
+ * poll account status until the grant lands. */
 export async function osAccountsChangePlan(plan: SubscriptionPlan) {
   return invoke<AccountSubscription>("os_accounts_change_plan", { plan });
 }
@@ -1800,6 +1810,12 @@ export async function listVeniceModels(mode: ProviderModelMode) {
 export async function setVeniceModel(mode: ProviderModelMode, modelId: string) {
   return invoke<ProviderModelSettingsDto>("set_venice_model", {
     request: { mode, modelId },
+  });
+}
+
+export async function setCostQuality(value: number) {
+  return invoke<ProviderModelSettingsDto>("set_cost_quality", {
+    request: { value },
   });
 }
 
@@ -1988,4 +2004,201 @@ export async function dictationHotkeyStatus() {
 export async function latestDictationEvent() {
   const payload = await invoke<string | undefined>("latest_dictation_event");
   return payload ? (JSON.parse(payload) as DictationHelperEvent) : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Private Google connectors (local mode)
+// ---------------------------------------------------------------------------
+
+/** Feature bundle wire names the connect flow requests. Mirrors the Rust
+ * `ScopeBundle::name()` registry in src-tauri/src/connectors/scopes.rs. */
+export type ConnectorScopeBundle =
+  | "gmail_read"
+  | "gmail_draft"
+  | "gmail_modify"
+  | "gmail_send"
+  | "calendar_read"
+  | "calendar_events";
+
+export type ConnectorAccountStatus = "connected" | "reconnect_required";
+
+/** One connected Google account, as the connectors module reports it. Carries
+ * only metadata (email, granted scope URLs, health) — never a token. */
+export type ConnectorAccount = {
+  accountId: string;
+  provider: "google";
+  email: string;
+  /** Granted Google scope URLs (not bundle names). */
+  scopes: string[];
+  status: ConnectorAccountStatus;
+};
+
+/** Per-routine trust mode for connector action tools. Distinct from the
+ * Sandboxed/Unrestricted machine-access choice: trust governs what a routine
+ * may do with your Google account, not with your machine. */
+export type RoutineTrustMode = "read_only" | "approval" | "autonomous";
+
+export type RoutineTrust = {
+  trustMode: RoutineTrustMode;
+  /** Completed approval-mode runs; >= 3 unlocks autonomous. */
+  approvalRunCount: number;
+  /** Connector action tool names the user granted for autonomous runs. */
+  autonomousTools: string[];
+  /** Per-job auto MCP server names minted for an autonomous grant (e.g.
+   * "june_gmail_auto_ab12cd34"). Returned by routine_trust_set; the job's
+   * enabled_toolsets swaps the actions servers for these. */
+  autonomousServers?: string[];
+};
+
+export type ConnectorTriggerKind = "email_received" | "event_upcoming";
+
+export type ConnectorTrigger = {
+  id: string;
+  jobId: string;
+  kind: ConnectorTriggerKind;
+  accountId: string;
+  /** Kind-specific settings: event_upcoming carries `leadMinutes` (number)
+   * and `externalOnly` (boolean); email_received carries none today. */
+  config: Record<string, unknown>;
+};
+
+/** One connector action call parked in the Rust proxy waiting for the user.
+ * `argsPreview` is already redacted on the Rust side. */
+export type PendingConnectorApproval = {
+  approvalId: string;
+  tool: string;
+  server: string;
+  accountEmail: string;
+  summary: string;
+  argsPreview: string;
+  requestedAtMs: number;
+};
+
+/** Tauri event: the connected-accounts list changed (connect, disconnect, or
+ * a reconnect_required transition). Payload carries no account data; listeners
+ * re-fetch via connectorsList(). */
+export const CONNECTORS_CHANGED_EVENT = "june://connectors-changed";
+
+/** Tauri event: the pending connector-approval set changed.
+ * Payload: `{ pendingCount: number }`. */
+export const CONNECTOR_APPROVALS_CHANGED_EVENT = "june://connector-approvals-changed";
+
+export async function connectorsList() {
+  return invoke<ConnectorAccount[]>("connectors_list");
+}
+
+/** Runs the Google OAuth connect flow for the given feature bundles. Blocks
+ * until the browser flow completes (the Rust side enforces a 300s timeout).
+ * `loginHint` pre-selects the Google account, for reconnects. */
+export async function connectorsConnect(input: {
+  scopes: ConnectorScopeBundle[];
+  loginHint?: string;
+}) {
+  return invoke<ConnectorAccount>("connectors_connect", {
+    request: { scopes: input.scopes, loginHint: input.loginHint },
+  });
+}
+
+export async function connectorsCancelConnect() {
+  return invoke<void>("connectors_cancel_connect");
+}
+
+/** Removes a connected account. With `revoke`, also revokes June's grant with
+ * Google before clearing the Keychain item. */
+export async function connectorsDisconnect(input: { accountId: string; revoke: boolean }) {
+  return invoke<void>("connectors_disconnect", {
+    request: { accountId: input.accountId, revoke: input.revoke },
+  });
+}
+
+/** Restarts the Hermes runtimes so a connect/disconnect/grant change lands in
+ * the rendered MCP config. Call after connectorsConnect resolves. */
+export async function connectorsApplyRuntime() {
+  return invoke<void>("connectors_apply_runtime");
+}
+
+export async function routineTrustGet(jobId: string) {
+  return invoke<RoutineTrust | null>("routine_trust_get", { jobId });
+}
+
+/** Persists a routine's trust mode. Errors with code
+ * "routine_trust_not_earned" when autonomous is requested before the earned
+ * threshold. Returns the stored record, including any minted
+ * `autonomousServers` for an autonomous grant. */
+export async function routineTrustSet(input: {
+  jobId: string;
+  trustMode: RoutineTrustMode;
+  autonomousTools?: string[];
+}) {
+  return invoke<RoutineTrust>("routine_trust_set", {
+    request: {
+      jobId: input.jobId,
+      trustMode: input.trustMode,
+      autonomousTools: input.autonomousTools,
+    },
+  });
+}
+
+/** Credits a completed run toward the earned-autonomy threshold. Idempotent
+ * per run id and gated on the routine being in approval mode with the run
+ * finishing after approval was enabled, so it is safe to call for every
+ * finished run. Returns the updated record, or null when nothing was credited. */
+export async function routineTrustRecordRun(input: {
+  jobId: string;
+  runId: string;
+  runEndedAt: string;
+}) {
+  return invoke<RoutineTrust | null>("routine_trust_record_run", {
+    request: {
+      jobId: input.jobId,
+      runId: input.runId,
+      runEndedAt: input.runEndedAt,
+    },
+  });
+}
+
+export async function connectorTriggersList(jobId?: string) {
+  return invoke<ConnectorTrigger[]>("connector_triggers_list", { jobId });
+}
+
+/** Upserts the event trigger for a routine (one trigger per job). */
+export async function connectorTriggerSet(input: {
+  jobId: string;
+  kind: ConnectorTriggerKind;
+  accountId: string;
+  config: Record<string, unknown>;
+}) {
+  return invoke<ConnectorTrigger>("connector_trigger_set", {
+    request: {
+      jobId: input.jobId,
+      kind: input.kind,
+      accountId: input.accountId,
+      config: input.config,
+    },
+  });
+}
+
+export async function connectorTriggerDelete(id: string) {
+  return invoke<void>("connector_trigger_delete", { id });
+}
+
+export async function connectorApprovalsPending() {
+  return invoke<PendingConnectorApproval[]>("connector_approvals_pending");
+}
+
+export async function connectorApprovalRespond(input: { approvalId: string; approve: boolean }) {
+  return invoke<void>("connector_approval_respond", {
+    approvalId: input.approvalId,
+    approve: input.approve,
+  });
+}
+
+export async function connectorApprovalsRespondAll(input: {
+  approve: boolean;
+  approvalIds: string[];
+}) {
+  return invoke<void>("connector_approvals_respond_all", {
+    approve: input.approve,
+    approvalIds: input.approvalIds,
+  });
 }

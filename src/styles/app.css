@@ -803,6 +803,39 @@ input:focus-visible,
   line-height: 1.35;
 }
 
+.agent-gallery-shimmer-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.agent-gallery-shimmer-sample {
+  display: grid;
+  grid-template-columns: calc(var(--sp-12) + var(--sp-2)) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.agent-gallery-shimmer-sample dt {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-gallery-shimmer-sample dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.agent-gallery-shimmer-text {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: bottom;
+}
+
 .agent-management-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -3010,25 +3043,147 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-/* Generated image (the /image slash command) — rendered inline in the assistant
- * turn. Running shows a square shimmer placeholder; complete shows the image in
- * a quiet button that opens the file viewer (zoom-in cursor), with a download
- * action in the caption bar. Sized to sit in the chat column without dominating
- * it. */
+/* Generated image (the /image slash command and agent image tools) — rendered
+ * inline in the assistant turn. Running reserves the finished image's canvas;
+ * complete shows the image in a quiet button that opens the file viewer
+ * (zoom-in cursor), with a download action in the caption bar. Sized to sit in
+ * the chat column without dominating it. */
 .agent-generated-image {
   max-width: 320px;
-  margin-block: var(--sp-2);
+  /* Figures carry a UA margin-inline of 40px - without this reset the
+   * completed card lands indented relative to the generating placeholder. */
+  margin: var(--sp-2) 0;
 }
 
-.agent-generated-image-placeholder {
-  display: grid;
-  place-items: center;
-  aspect-ratio: 1 / 1;
-  border: 1px solid var(--border-subtle);
+/* Completed media is one card: the picture on top, the caption bar as the
+ * card's footer - the same chrome family as the generating card. The 4px
+ * padding insets the picture so it nests concentrically inside the card
+ * (inner radius = outer - inset), the same idiom as the artifact icon tile. */
+.agent-generated-image[data-status="complete"],
+.agent-generated-video[data-status="complete"] {
+  overflow: hidden;
   border-radius: var(--r-lg);
-  background: var(--muted);
+  padding: var(--sp-1);
+  background: var(--card);
+  box-shadow: var(--shadow-sm), var(--shadow-inset);
+}
+
+/* Generating state: a particle dot field inside a quiet card - the lattice,
+ * the June Agents mark, the traveling sheen, and the pointer ripples are all
+ * drawn by GeneratedMediaDotField on a canvas; these rules supply the surface
+ * and the per-theme ink the canvas reads (color + the alpha custom props).
+ * The status lives in its own footer, so the sheen never crosses the text. */
+.agent-generated-media-placeholder-card {
+  overflow: hidden;
+  border-radius: var(--r-lg);
+  padding: var(--sp-1);
+  background: var(--card);
+  box-shadow: var(--shadow-sm), var(--shadow-inset);
+}
+
+.agent-generated-image-placeholder,
+.agent-generated-video-placeholder,
+.agent-generated-media-reveal {
+  --agent-generated-dot-alpha: 0.08;
+  --agent-generated-sheen-glow: 0.24;
+  --agent-generated-mark-alpha: 0.32;
+  position: relative;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  /* Concentric with the card: inner radius = outer - the card's 4px inset. */
+  border-radius: calc(var(--r-lg) - var(--sp-1));
+  /* The gray canvas itself gradates into the card surface at the bottom (and
+   * the dot field thins out over the same run), so the footer transition is
+   * owned by the background rather than an overlay fading in on top. */
+  background: linear-gradient(to bottom, var(--secondary) 62%, var(--card));
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+}
+
+.agent-generated-video-placeholder {
+  aspect-ratio: 16 / 9;
+}
+
+[data-theme="dark"] .agent-generated-image-placeholder,
+[data-theme="dark"] .agent-generated-video-placeholder,
+[data-theme="dark"] .agent-generated-media-reveal {
+  --agent-generated-dot-alpha: 0.05;
+  --agent-generated-sheen-glow: 0.27;
+  --agent-generated-mark-alpha: 0.3;
+  color: var(--foreground);
+}
+
+/* Completion reveal: the finished image develops out of the generating field.
+ * The field surface (same ink and gradient as the placeholder above) mounts
+ * over the picture - its entrance ripple doubles as the completion burst -
+ * then dissolves. The frame border and caption bar hold back until the field
+ * has mostly cleared, so the chrome lands on a visible image. */
+.agent-generated-media-reveal {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+  animation: agent-generated-reveal-dissolve 650ms var(--ease-in-out) 150ms forwards;
+}
+
+@keyframes agent-generated-reveal-dissolve {
+  to {
+    opacity: 0;
+  }
+}
+
+.agent-generated-image[data-revealing="true"] .agent-generated-image-bar,
+.agent-generated-video[data-revealing="true"] .agent-generated-image-bar {
+  animation: agent-generated-reveal-chrome-in 300ms var(--ease-out) 500ms backwards;
+}
+
+@keyframes agent-generated-reveal-chrome-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-generated-media-reveal {
+    display: none;
+  }
+}
+
+.agent-generated-media-field {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* The theme accent for the mark's glints and the press ripple's wash; the
+   * canvas reads the computed value (accent-color paints nothing here). */
+  accent-color: var(--brand);
+}
+
+/* The label sits on the card surface the canvas gradient lands on - no
+ * overlay of its own, so there is no seam to hide. Padding is set against
+ * the card's 4px inset (matching the completed caption bar). */
+.agent-generated-media-status-bar {
+  display: flex;
+  align-items: center;
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+}
+
+/* The label rides the shared shimmer system's cadence and theme contrast;
+ * only the sweep spread widens to suit the short standalone phrase. */
+.agent-generated-media-label {
+  --shimmer-spread: calc(2ch + var(--sp-8));
+  max-width: 100%;
+  font-size: var(--fs-lg);
+}
+
+/* Caption under a generating frame (video's elapsed-time note). */
+.agent-generated-media-caption {
+  margin-top: var(--sp-2);
+}
+
+.agent-generated-media-note {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
 }
 
 .agent-generated-image-error {
@@ -3057,26 +3212,24 @@ input:focus-visible,
   background: var(--muted);
 }
 
+/* The picture nests concentrically inside the card (inner radius = outer -
+ * the card's 4px inset); position anchors the completion-reveal overlay. */
 .agent-generated-image-frame {
+  position: relative;
   display: block;
   width: 100%;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border: 0;
   padding: 0;
+  border-radius: calc(var(--r-lg) - var(--sp-1));
   background: var(--card);
   overflow: hidden;
   cursor: zoom-in;
-}
-
-.agent-generated-image-frame:hover {
-  border-color: var(--border);
 }
 
 .agent-generated-image-frame img {
   display: block;
   width: 100%;
   height: auto;
-  border-radius: inherit;
 }
 
 .agent-generated-image-loading {
@@ -3087,18 +3240,21 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
+/* The caption bar is the card's footer, sized like the rest of the app's
+ * chrome rather than a fine-print strip under the picture. Padding is set
+ * against the card's 4px inset so the label lands a comfortable step in. */
 .agent-generated-image-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--sp-3);
-  margin-top: var(--sp-1);
+  padding: var(--sp-2) var(--sp-2) var(--sp-1) var(--sp-3);
 }
 
 .agent-generated-image-name {
   overflow: hidden;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-md);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3110,10 +3266,10 @@ input:focus-visible,
   gap: var(--sp-1);
   border: 0;
   border-radius: var(--r-sm);
-  padding: calc(var(--sp-1) / 2) var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
   background: transparent;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  font-size: var(--fs-md);
   cursor: pointer;
 }
 
@@ -3125,34 +3281,19 @@ input:focus-visible,
 
 .agent-generated-video {
   max-width: min(100%, 520px);
-  margin-block: var(--sp-2);
+  /* Same UA figure margin-inline reset as .agent-generated-image. */
+  margin: var(--sp-2) 0;
 }
 
-.agent-generated-video-placeholder {
-  display: grid;
-  place-items: center;
-  gap: var(--sp-2);
-  aspect-ratio: 16 / 9;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  background: var(--muted);
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  text-align: center;
-}
-
-.agent-generated-video-progress {
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-}
-
+/* Nests concentrically inside the card like the image frame; position
+ * anchors the completion-reveal overlay. */
 .agent-generated-video-frame {
+  position: relative;
   display: grid;
   place-items: center;
   width: 100%;
   aspect-ratio: 16 / 9;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: calc(var(--r-lg) - var(--sp-1));
   background: var(--card);
   overflow: hidden;
 }
@@ -3661,41 +3802,28 @@ input:focus-visible,
   overflow-y: auto;
 }
 
-.agent-usage-body[aria-busy="true"] {
+/* A refresh dims the stale card so it reads as reloading while the prior data
+   stays visible. The first-load body is aria-busy too (its skeleton is genuinely
+   busy), but must NOT dim — the static --surface-subtle skeleton bars already
+   sit close to the popover background, so a 60% dim would render them nearly
+   invisible. [data-first-load] carries that exemption. */
+.agent-usage-body[aria-busy="true"]:not([data-first-load]) {
   opacity: 0.6;
 }
 
-/* First-load skeleton bars: block-shaped shimmer standing in for the model name
-   and the legend reading/percent while the real meter track renders empty
+/* First-load skeleton bars: quiet static placeholders standing in for the model
+   name and the legend reading/percent while the real meter track renders empty
    beneath. The body structure is shared with the loaded content, and the live
    track starts from a pixel-identical empty frame before lighting up, so the
-   swap has no visible jump. The bars run their own background-position sweep on
-   a wide muted gradient — a block sweep, not a text-clip, so it is independent
-   of the shared .shimmer text utility (which clips to glyphs). Muted base, pill
-   radius; sizes come from spacing tokens with a small local width var. */
+   swap has no visible jump. Same treatment as the other first-load skeletons
+   (settings sections, messaging detail): a flat --surface-subtle bar with the
+   small radius — no sweep. Bars stay 1em tall so they occupy exactly the line
+   the real text will. */
 .agent-usage-skeleton {
   display: inline-block;
   height: 1em;
-  border-radius: var(--r-pill);
-  background: linear-gradient(
-    90deg,
-    var(--muted) 0%,
-    var(--muted) 35%,
-    var(--muted-foreground) 50%,
-    var(--muted) 65%,
-    var(--muted) 100%
-  );
-  background-size: 200% 100%;
-  animation: usage-skeleton-sweep 1.6s linear infinite;
-}
-
-@keyframes usage-skeleton-sweep {
-  0% {
-    background-position: 150% 0;
-  }
-  100% {
-    background-position: -50% 0;
-  }
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
 }
 
 .agent-usage-skeleton-model {
@@ -3953,12 +4081,6 @@ input:focus-visible,
   .agent-usage-panel,
   .agent-usage-model-row,
   .agent-usage-meter-legend {
-    animation: none;
-  }
-
-  /* Static shimmer bars: no sweep, a flat muted fill. */
-  .agent-usage-skeleton {
-    background: var(--muted);
     animation: none;
   }
 
@@ -4562,6 +4684,17 @@ input:focus-visible,
   font-weight: 400;
 }
 
+/* Thinking -> Thought crossfades in one grid cell. Keeping both keyed labels
+ * in flow avoids popLayout's absolute-positioned inline clone, which can paint
+ * a clipped-text gradient outside its glyph bounds in some browser engines. */
+.agent-reasoning-label-swap {
+  display: inline-grid;
+}
+
+.agent-reasoning .agent-reasoning-label-swap > span {
+  grid-area: 1 / 1;
+}
+
 .agent-reasoning[open] > summary p {
   display: none;
 }
@@ -4855,8 +4988,9 @@ input:focus-visible,
  * where the user just acted, and clears itself when the turn finishes. A
  * content-sized pill (not another full-width box, which read as a second
  * composer) with the rolling dot spinner tying it to the working state. Same
- * surface recipe as the recording-consent note and the "Generating notes…"
- * pill so the app's status messages read as one family. */
+ * surface recipe as the "Generating notes…" pill so the app's progress
+ * statuses read as one family. (The recording-consent note left this family
+ * for the funding-notice card chrome — it asks, it doesn't report progress.) */
 .agent-composer-notice {
   pointer-events: auto;
   display: inline-flex;
@@ -4899,7 +5033,9 @@ input:focus-visible,
   gap: var(--sp-2) var(--sp-3);
   width: 100%;
   max-width: min(var(--chat-max), var(--content-max));
-  margin: 0 auto var(--sp-3);
+  /* sp-2 below, like every card docked on the composer box (the steer queue,
+   * the image warning), so a stacked column keeps one even rhythm. */
+  margin: 0 auto var(--sp-2);
   padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
   /* Ring-in-shadow like the composer box: the transparent border only holds
    * the layout box (see --composer-ring). */
@@ -5072,13 +5208,14 @@ input:focus-visible,
   min-width: 16ch;
   /* Centers a single line inside the control-height zone the badge and CTA
    * occupy; a wrapped second line grows downward from there. */
-  margin: calc((var(--control-md) - 1.5 * var(--fs-sm)) / 2) 0 0;
+  margin: calc((var(--control-md) - 1.5 * var(--fs-md)) / 2) 0 0;
   /* A shade under full foreground: present, but not competing with the
    * conversation. */
   color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
-  /* Two steps below conversation text: this annotates the chat rather than
-   * competing with it, while the CTA remains the clear action at the right. */
-  font-size: var(--fs-sm);
+  /* One step below conversation text: this annotates the chat rather than
+   * competing with it, while the CTA remains the clear action at the right.
+   * (Shared with the composer image warning — move them together.) */
+  font-size: var(--fs-md);
   line-height: 1.5;
 }
 
@@ -5209,6 +5346,7 @@ input:focus-visible,
   appearance: none;
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: var(--sp-1);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
@@ -5325,6 +5463,21 @@ input:focus-visible,
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
   line-height: 1.5;
+}
+
+.june-download-toast-message {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.june-download-toast-file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Tone accents: the leading glyph only. */
@@ -5981,6 +6134,10 @@ input:focus-visible,
 }
 
 .agent-composer-model-trigger {
+  /* A touch above the toolbar's resting grey: the pill names the active
+   * model, so it reads as content, not chrome. Hover still lifts it to full
+   * foreground. */
+  color: color-mix(in oklch, var(--foreground) 40%, var(--muted-foreground));
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
@@ -6004,6 +6161,14 @@ input:focus-visible,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The Auto preference designation beside the pill's model name ("Auto
+ * Higher"): one step quieter than the name in every state — it stays at
+ * muted while hover lifts the name to full foreground. */
+.agent-composer-model-trigger-detail {
+  flex: 0 1 auto;
+  color: var(--muted-foreground);
 }
 
 .agent-composer-model-popover {
@@ -6184,8 +6349,11 @@ input:focus-visible,
   overflow: hidden;
   border: 1px solid var(--popover-border);
   border-radius: var(--r-md);
+  /* No background-clip here: the translucent border must blend over the
+   * surface's own fill, exactly like the root popover's, or the same token
+   * reads darker on flyouts (it would composite over the page and the
+   * neighboring panel's shadow halo instead). */
   background: var(--popover);
-  background-clip: padding-box;
   color: var(--popover-foreground);
   /* The surface owns the only elevation for this layer. Scroll fades and
    * search/list content are descendants clipped inside this rounded box, so
@@ -6502,6 +6670,74 @@ input:focus-visible,
   line-height: 1.3;
 }
 
+/* Automatic-routing section pinned above the suggested rows in the root
+ * popover: the Auto label + switch on the shared content gutter, and the
+ * Preference drill-in row underneath while Auto is on. The hairline splits
+ * the section from the model list, running the popover's full width. */
+.agent-composer-model-auto {
+  display: flex;
+  flex-direction: column;
+  margin: 0 calc(-1 * var(--sp-2)) var(--sp-1);
+  padding: 0 var(--sp-2) var(--sp-1);
+  border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
+}
+
+/* The filter recipe's bleed/padding are tuned for the flyout surface; re-seat
+ * the toggle row on the root popover's gutter (title text at --sp-3, switch on
+ * the rows' --sp-2 inset) and drop the recipe's own hairline — the section
+ * draws one for the whole block. */
+.agent-composer-model-auto .agent-composer-model-auto-toggle {
+  margin: 0;
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  border-bottom: 0;
+}
+
+/* The Preference drill-in row while Auto is on: label left, the active preset
+ * as a quiet value beside the chevron. The auto margin sits on the value, so
+ * the chevron's own auto margin has to stand down or the pair splits apart. */
+.agent-composer-model-auto-value {
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-composer-model-auto-row .agent-composer-model-row-chevron {
+  margin-left: 0;
+}
+
+/* The preference flyout hangs off the popover's top edge (its trigger row
+ * lives in the pinned Auto section) instead of the bottom like the catalog. */
+.agent-composer-model-flyout.agent-composer-model-auto-panel {
+  top: -1px;
+  bottom: auto;
+  width: 248px;
+}
+
+/* Same inset as the catalog panel: an --sp-1 gutter between the surface
+ * border and the option rows, so hover fills never touch the edge. */
+.agent-composer-model-auto-panel .agent-composer-model-surface {
+  gap: 0;
+  width: 248px;
+  padding: var(--sp-1);
+}
+
+.agent-composer-model-pref-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-composer-model-pref-desc {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+  white-space: normal;
+}
+
 /* Catalog list scroller. Fades come from the shared `.scroll-fade` primitive
  * (contained overlays, WKWebView-safe for this popover); only the fade size is
  * tuned here so rows melt into the popover surface at the boundary. */
@@ -6571,15 +6807,76 @@ input:focus-visible,
   padding: var(--sp-1) var(--sp-1) 0;
 }
 
-/* Non-vision model + image attachment: a quiet inline row between the chips and
- * the editor. The active model can't read the image, so warn before send and
- * offer a one-tap switch to an image-capable model (the send-time fallback in
- * unsupportedImageInputPrompt still degrades gracefully if the user sends
- * anyway). */
-.agent-composer-image-warning,
+/* Non-vision model + image attachment: docks above the composer box in the
+ * FundingNotice family — the same row anatomy (leading glyph, fs-sm body,
+ * trailing CTA) on the composer box's own surface recipe (card,
+ * ring-in-shadow, --shadow-md) so the pair reads as one floating unit. The
+ * warm triangle carries the caution tone; the one-tap switch is the way out
+ * (the send-time fallback in unsupportedImageInputPrompt still degrades
+ * gracefully if the user sends anyway). */
+.agent-composer-image-warning {
+  pointer-events: auto;
+  display: flex;
+  flex-wrap: wrap;
+  /* First-line anchoring, like the funding notice: the glyph and the CTA pin
+   * to the first text line instead of floating centered if the body wraps. */
+  align-items: flex-start;
+  gap: var(--sp-2) var(--sp-3);
+  width: 100%;
+  max-width: min(var(--chat-max), var(--content-max));
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  border: 1px solid transparent;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+}
+
+/* Track the hero box's deliberate 640px cap so their edges align. */
+.agent-composer[data-hero="true"] .agent-composer-image-warning {
+  max-width: 640px;
+}
+
+.agent-composer-image-warning-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  /* CTA-height zone so the glyph centers on the first text line. */
+  height: var(--control-md);
+  color: var(--warm-strong);
+}
+
+.agent-composer-image-warning-text {
+  flex: 1;
+  min-width: 16ch;
+  /* Centers a single line inside the control-height zone the glyph and CTA
+   * occupy; a wrapped second line grows downward from there. */
+  margin: calc((var(--control-md) - 1.5 * var(--fs-md)) / 2) 0 0;
+  color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
+  /* One step below conversation text, matching .funding-notice-body — the
+   * two dock on the same surface, so their bodies move together. */
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.agent-composer-image-warning-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  margin-left: auto;
+}
+
+.agent-composer-image-warning-actions .btn {
+  white-space: nowrap;
+}
+
+/* Oversize draft: a quiet inline row between the chips and the editor. */
 .agent-composer-size-warning {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: var(--sp-1);
   margin: var(--sp-1) var(--sp-1) 0;
   padding: var(--sp-1) var(--sp-2);
@@ -6589,23 +6886,13 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-.agent-composer-size-warning {
-  align-items: flex-start;
-  flex-wrap: wrap;
-}
-
-.agent-composer-image-warning-icon,
 .agent-composer-size-warning-icon {
   flex: 0 0 auto;
   color: var(--muted-foreground);
 }
 
-.agent-composer-image-warning-text,
 .agent-composer-size-warning-text {
   min-width: 0;
-}
-
-.agent-composer-size-warning-text {
   flex: 1 1 240px;
 }
 
@@ -6615,11 +6902,6 @@ input:focus-visible,
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--sp-1);
-  margin-left: auto;
-}
-
-.agent-composer-image-warning-action {
-  flex: 0 0 auto;
   margin-left: auto;
 }
 
@@ -10651,16 +10933,15 @@ input:focus-visible,
 
 /* Truncation layout plus the shimmer base color for the agent-chat working
  * labels. Pairs with the shared .shimmer utility in markup, which owns the
- * sweep; here we only keep the ellipsis clamp and the base color it sweeps. The
- * agent shimmer runs quicker than the 2s default — the slower cadence read
- * sluggish in the chat — so it sets a shorter --shimmer-duration. */
+ * sweep and theme contrast; here we keep the ellipsis clamp, base color, and
+ * agent-chat cadence between the old abrupt 1.2s and the shared 2s default. */
 .text-shimmer {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted-foreground);
-  --shimmer-duration: 1200ms;
+  --shimmer-duration: 1600ms;
 }
 
 /* Count chip — how many follow-up recordings are queued behind the one
@@ -10979,42 +11260,48 @@ input:focus-visible,
 
 /* Scoped to .record-dock to outrank the later, equal-specificity base
  * .inline-notice rule, which would otherwise win on background/border/padding. */
-/* Matches the "Generating notes…" pill's padding/height/radius/surface so the
- * two status messages read as the same family. */
+/* Same surface recipe as the chat funding notice (.funding-notice): card,
+ * ring-in-shadow, --shadow-md, --r-xl — notices docked on the composer and on
+ * the recorder read as one family. Move them together. */
 .record-dock .record-consent-note-surface {
+  align-items: center;
   gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
   border-color: transparent;
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--muted) 68%, var(--card));
-  color: var(--muted-foreground);
-  box-shadow: none;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+}
+
+/* The Dismiss button hugs the corner radius like the funding notice's CTA. */
+.record-dock .record-consent-note-surface:has(.inline-notice-actions) {
+  padding-right: var(--sp-2);
 }
 
 .record-dock .record-consent-note-surface .inline-notice-message {
   flex-wrap: nowrap;
   font-size: var(--fs-md);
-  font-weight: 400;
-  line-height: 1;
   white-space: nowrap;
 }
 
-/* Dismiss reads as a quiet text link, not a button — no underline, just a
- * medium-weight label in the app's link color (matching .agent-markdown a)
- * that deepens to foreground on hover. line-height matches the message so the
- * two text runs share a baseline. */
-.record-dock .record-consent-note-surface .inline-notice-actions .btn {
-  height: auto;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--primary);
-  font-weight: 400;
-  line-height: 1;
+/* The warning-only variant has no button to set the row's control height, so
+ * the text alone must reach it. */
+.record-dock .record-consent-note-surface .inline-notice-body {
+  min-height: var(--control-md);
+  display: inline-flex;
+  align-items: center;
+  color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
 }
 
-.record-dock .record-consent-note-surface .inline-notice-actions .btn:hover {
-  background: none;
+/* Quiet secondary action, recolored like the funding notice's ghost buttons
+ * ("Or go Max", reopen links). */
+.record-dock .record-consent-note-surface .inline-notice-actions .btn-ghost {
+  color: var(--muted-foreground);
+}
+
+.record-dock .record-consent-note-surface .inline-notice-actions .btn-ghost:hover {
   color: var(--foreground);
 }
 
@@ -11109,16 +11396,33 @@ input:focus-visible,
   background: color-mix(in oklch, var(--warm-strong) 12%, transparent);
 }
 
-/* Mic-blocked strip — persistent inline notice that sits above the
- * chevron popover when microphone access is denied. Mirrors the
- * .record-options-row shape so it feels like part of the same family
- * of inline status surfaces. */
+/* Mic-blocked and needs-credits notices — persistent inline notices that sit
+ * above the record pill. They occupy the same footer slot the FundingNotice
+ * renders into, so they wear the same chrome (card, ring-in-shadow,
+ * --shadow-md, --r-xl, content-max column) — see .funding-notice; move them
+ * together. Scoped to .editor-footer to outrank the later, equal-specificity
+ * base .inline-notice rule. */
 /* Inline notice layout slot for the editor footer — forces the notice
  * onto its own row so the recorder shell (if rendered) sits below. */
-.record-mic-blocked,
-.record-funding-blocked {
+.editor-footer .record-mic-blocked,
+.editor-footer .record-funding-blocked {
   flex: 0 0 100%;
   width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  align-items: center;
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+  border-color: transparent;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+}
+
+.editor-footer .record-mic-blocked .inline-notice-body,
+.editor-footer .record-funding-blocked .inline-notice-body {
+  color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
 }
 
 /* The out-of-credits notice in the editor footer sits on its own row above
@@ -11395,15 +11699,6 @@ input:focus-visible,
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-sm);
   font-weight: 400;
-}
-
-/* A live mic that has produced only silence is a session about to be lost;
- * the hint reads as a problem (destructive), not ambience. */
-.recorder-silence-warning,
-.global-recorder-warning {
-  color: var(--destructive);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
 }
 
 /* Waveform ---------------------------------------------------------- */
@@ -12601,9 +12896,11 @@ input:focus-visible,
   color: var(--muted-foreground);
 }
 
+/* The granted pill follows the active theme accent rather than a generic
+ * green, so it sits in the earthy palette like the rest of the app. */
 .settings-permission-status[data-status="allowed"] {
-  background: color-mix(in oklch, var(--success) 14%, transparent);
-  color: color-mix(in oklch, var(--success) 72%, var(--foreground));
+  background: color-mix(in oklch, var(--brand) 14%, transparent);
+  color: color-mix(in oklch, var(--brand) 72%, var(--foreground));
 }
 
 .settings-permission-status[data-status="attention"] {
@@ -21012,6 +21309,212 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
+/* Referral delight nudge --------------------------------------------
+   A rare invite card parked bottom-left of the window at delight moments
+   (5th meeting note, first agent completion, 25th dictation). Fixed like
+   the connector approvals tray but in the opposite corner, so the two
+   never collide; under the dialog layer. Visually a small cousin of the
+   referral dialog above — the same terracotta hero recipe (gradient,
+   grain, June mark) — so the click-through feels continuous. */
+.referral-nudge {
+  position: fixed;
+  /* Window bottom-left, on the main-panel card's --sp-3 inset so the two
+     share a bottom line (a near-miss offset here reads as misalignment).
+     Keep this a static inset: anchoring to the animated --sidebar-w-current
+     made the compositor move a blend-mode + WebGL stack continuously, which
+     read as noise flashing on the hero. It overlaps the sidebar footer while
+     parked; Escape and the X both clear it. */
+  left: var(--sp-3);
+  bottom: var(--sp-3);
+  z-index: 60;
+  width: min(300px, calc(100vw - 2 * var(--sp-3)));
+  overflow: hidden;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  animation: referral-nudge-enter var(--t-med) var(--ease-out) both;
+  transition:
+    opacity var(--t-med) var(--ease-out),
+    transform var(--t-med) var(--ease-out);
+}
+
+/* Dismissing: drop the (filled) enter animation so the exit transition can
+   drive the same properties, then fade back down. */
+.referral-nudge[data-leaving] {
+  animation: none;
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+@keyframes referral-nudge-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .referral-nudge {
+    animation-name: referral-nudge-enter-reduced;
+  }
+
+  .referral-nudge[data-leaving] {
+    transform: none;
+  }
+}
+
+@keyframes referral-nudge-enter-reduced {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The dialog hero's gradient recipe, shrunk to a banner that carries the
+   title. Inset and concentric with the card (r-xl minus the --sp-2 frame
+   = r-md), the steer queue's 6px-frame recipe. */
+.referral-nudge-hero {
+  position: relative;
+  overflow: hidden;
+  /* Contain the grain's soft-light blend to this hero's own stacking context
+     so the compositor never reads back through the card/canvas layers. */
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  min-height: 128px;
+  margin: var(--sp-2) var(--sp-2) 0;
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  color: var(--on-solid);
+  background:
+    radial-gradient(
+      120% 120% at 12% 8%,
+      color-mix(in oklch, var(--brand) 82%, white),
+      transparent 55%
+    ),
+    linear-gradient(152deg, var(--brand) 0%, color-mix(in oklch, var(--brand) 68%, black) 100%);
+}
+
+/* The signature grain, as on the dialog hero. */
+.referral-nudge-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* The 3D glass June mark (the welcome surface's centerpiece) at gift scale,
+   centered above the title. The square box reserves identical space for the
+   canvas and its fallbacks, as .welcome-mark-glass does. */
+.referral-nudge-mark-glass {
+  /* Above the grain ::after — the soft-light blend must never paint over the
+     WebGL canvas (compositors alternate-rasterize that stack, which shows as
+     noise flashing on the mark). Same layering as .referral-hero > *. */
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 96px;
+  height: 96px;
+  line-height: 0;
+  /* The gradient-mark fallback derives its stops from --brand, which would
+     vanish brand-on-brand against this terracotta hero; remapping --brand to
+     the hero's ink renders it as the white mark instead. The WebGL palette
+     is JS-side and unaffected. */
+  --brand: var(--on-solid);
+}
+
+.referral-nudge-mark-glass svg {
+  display: block;
+  width: 48px;
+  height: auto;
+}
+
+/* The per-moment title lives in the hero (the dialog hero's title, one
+   type step down for the card's width). */
+.referral-nudge-title {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-medium);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+/* The system dismiss (.dialog-close's geometry and ghost hover), recolored
+   for the terracotta it floats over; its focus ring is on-solid rather
+   than the neutral --ring-focus for the same reason. */
+.referral-nudge-dismiss {
+  position: absolute;
+  top: var(--sp-4);
+  right: var(--sp-4);
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: color-mix(in oklch, var(--on-solid) 85%, transparent);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.referral-nudge-dismiss:hover {
+  background: color-mix(in oklch, var(--on-solid) 18%, transparent);
+  color: var(--on-solid);
+}
+
+.referral-nudge-dismiss:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--on-solid) 80%, transparent);
+  outline-offset: 2px;
+}
+
+/* Body and footer share the hero text's left edge (--sp-2 frame + --sp-4
+   hero padding). */
+.referral-nudge-body {
+  padding: var(--sp-4) var(--sp-6) 0;
+}
+
+/* Same size as .funding-notice-body — the other floating card in this
+   region — so the two surfaces read as one family. */
+.referral-nudge-copy {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+/* The action is the stock solid primary button (.primary-action
+   .primary-solid), so only the footer's frame lives here. */
+.referral-nudge-footer {
+  display: flex;
+  justify-content: flex-start;
+  padding: var(--sp-4) var(--sp-6) var(--sp-5);
+}
+
 /* Generous padding (+ negative outer margin) so the inputs' focus
  * rings (3px outer box-shadow) can paint without being clipped by the
  * dialog-card or by overflow on inner scrollers. */
@@ -25384,6 +25887,664 @@ input:focus-visible,
 .app-shell[data-note-chat-resizing="true"] .editor-footer,
 .app-shell[data-note-chat-resizing="true"] .note-chat-panel {
   transition: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * Private Google connectors (local mode): the Connectors settings page, the
+ * routine trust picker, and event triggers. Follows the .settings-* /
+ * .routines-* conventions above.
+ * ------------------------------------------------------------------------- */
+
+/* Trust-mode badge on routine rows: same recipe as .routines-item-badge with
+ * the accent wash, so "Approval" / "Autonomous" reads as a capability, not an
+ * error. */
+.routines-item-badge-trust {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: color-mix(in oklch, var(--primary) 12%, transparent);
+  color: var(--primary);
+}
+
+/* Connector template cards: the tool summary under the description ("This
+ * routine can: read your mail, draft replies"). */
+.routines-template-tools {
+  margin: 2px 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+
+.routines-template-trust {
+  color: var(--foreground);
+}
+
+/* The create page's template access summary above the sections. */
+.routines-tool-summary {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+/* Trust-mode picker (read only / approval / autonomous). */
+.trust-mode-picker {
+  display: flex;
+  flex-direction: column;
+}
+
+.trust-mode-locked-hint {
+  color: var(--muted-foreground);
+}
+
+.trust-mode-grants {
+  margin: var(--sp-3) 0 0;
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.trust-mode-grants-legend {
+  padding: 0 var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.trust-mode-grant {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+/* Event-trigger picker: the "When" control's extra pieces beside the reused
+ * schedule-picker layout. */
+.trigger-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.trigger-picker-unit {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.trigger-picker-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+/* The house checkbox (ui/Checkbox): the notes list's rounded-square select
+ * box promoted to a shared primitive. The native input is invisible but
+ * stretched over the box so it stays the click target and keeps the
+ * semantics; the box carries the visual — outline unchecked, brand fill +
+ * checkmark checked. */
+.checkbox-control {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+}
+
+.checkbox-control input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.checkbox-control input:disabled {
+  cursor: default;
+}
+
+.checkbox-box {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: var(--card);
+  color: var(--on-solid);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.checkbox-control:hover input:not(:disabled) + .checkbox-box {
+  border-color: color-mix(in oklch, var(--muted-foreground) 35%, var(--border));
+}
+
+.checkbox-control:has(input:checked) .checkbox-box {
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+.checkbox-control:has(input:focus-visible) .checkbox-box {
+  outline: 2px solid color-mix(in oklch, var(--ring) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.checkbox-control:has(input:disabled) {
+  opacity: 0.55;
+}
+
+/* Connectors settings page: a provider directory (Linear's connected-accounts
+ * pattern). Every provider is always listed — logo tile, name, one capability
+ * line — with the connection status pill and actions on the right. The row
+ * recipe mirrors .mcp-server-row so integration lists read the same across
+ * settings. */
+.connectors-card {
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.connectors-list {
+  display: grid;
+  gap: var(--sp-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.connector-row {
+  display: grid;
+  grid-template-columns: var(--control-lg) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.connector-row:hover {
+  background: var(--secondary);
+}
+
+/* Brand marks are monochrome (central-icons currentColor), so the tile keeps
+ * the quiet surface-subtle wash and the mark renders in foreground — no
+ * multicolor logo tiles. */
+.connector-logo {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.connector-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.connector-name {
+  overflow: hidden;
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-subtitle {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: max-content;
+}
+
+.connectors-bundle-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: var(--sp-2) 0 var(--sp-4);
+}
+
+.connectors-bundle-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  cursor: pointer;
+}
+
+.connectors-bundle-option .checkbox-control {
+  margin-top: 3px;
+}
+
+.connectors-bundle-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.connectors-bundle-label {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+}
+
+.connectors-bundle-description {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.connectors-revoke-option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-4);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+/* Connector approvals tray: a shell-level queue for parked action calls under
+   the approval trust mode. Fixed bottom-right — the only fixed occupant of
+   that corner, inset from it the way toasts are from the top-right (--sp-6) —
+   under the dialog layer (z 112) and the panel resize handles. Wears the
+   floating-surface recipe the steer queue and funding notice share (solid
+   card, hairline ring folded into the shadow), and collapses to its header
+   line so an unanswered batch stops covering the composer corner. */
+.connector-approvals {
+  position: fixed;
+  right: var(--sp-6);
+  bottom: var(--sp-6);
+  z-index: 60;
+  width: min(360px, calc(100vw - var(--sp-8)));
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  animation: connector-approvals-settle var(--t-med) var(--ease-out) both;
+}
+
+/* The funding notice's settle: a short rise as the tray appears. */
+@keyframes connector-approvals-settle {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connector-approvals {
+    animation: none;
+  }
+}
+
+.connector-approvals-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+/* The title doubles as the collapse trigger (the steer queue's fold): its
+ * hover wash hugs the button, and the count pill appears only while
+ * collapsed — expanded, the list itself carries the count. */
+.connector-approvals-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-md);
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.connector-approvals-trigger:hover {
+  background: var(--secondary);
+}
+
+/* The queue's providers as an overlapping logo stack (the avatar-group
+ * treatment). The separation between marks is a true transparent cutout, not
+ * a painted ring: each mark carves away where the next one overlaps (the
+ * tiles are translucent surface-subtle, so a painted ring would let the
+ * underlying logo show through, and a card-colored ring would halo on the
+ * trigger's gray hover wash — the cutout lets whatever is behind show). */
+.connector-approvals-stack {
+  display: inline-flex;
+  align-items: center;
+}
+
+.connector-approvals-stack-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--r-pill);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.connector-approvals-stack-mark + .connector-approvals-stack-mark {
+  margin-left: -2px;
+}
+
+/* The next mark sits 6px right of this tile's right edge center (16px tile,
+ * -2px overlap → its center lands at x=22px); carving a 10px circle there
+ * leaves a 2px see-through gap around the overlapping mark. */
+.connector-approvals-stack-mark:not(:last-child) {
+  -webkit-mask: radial-gradient(circle 10px at 22px 50%, transparent 98%, #000 100%);
+  mask: radial-gradient(circle 10px at 22px 50%, transparent 98%, #000 100%);
+}
+
+.connector-approvals-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.connector-approvals-chevron-button {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.connector-approvals-chevron-button:hover {
+  background: var(--secondary);
+  color: var(--foreground);
+}
+
+/* Open, the chevron points down (fold the list away); collapsed it turns up,
+ * toward where the queue reopens. */
+.connector-approvals-chevron {
+  transition: rotate var(--t-med) var(--ease-out);
+}
+
+.connector-approvals-chevron[data-expanded="false"] {
+  rotate: 180deg;
+}
+
+.connector-approvals-bulk {
+  display: inline-flex;
+  gap: var(--sp-1);
+}
+
+/* Compact controls throughout: the tray is a floating queue, so its buttons
+ * sit at the small control height and body type size. */
+.connector-approvals .btn {
+  height: var(--control-sm);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+/* Deny is the quiet choice (the agent approval-card language): muted at rest,
+ * firming to the soft subtle-gray hover — never red, which stays reserved for
+ * genuinely destructive states. */
+.connector-approvals-deny {
+  color: var(--muted-foreground);
+}
+
+.connector-approvals .btn-ghost:hover:not(:disabled) {
+  background: var(--surface-subtle);
+}
+
+/* Bleeds to the tray edges so the row dividers run full width; the rows
+ * carry the matching inline inset themselves. */
+.connector-approvals-list {
+  list-style: none;
+  margin: 0 calc(-1 * var(--sp-2));
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: min(420px, 50vh);
+  overflow-y: auto;
+}
+
+/* One compact row per action (the Deel action-required mold): provider mark,
+ * summary + meta + one preview line, deny/approve icon buttons at the end.
+ * Dividers run the full tray width in the detail-bar edge weight (the
+ * breadcrumb bar's lighter hairline, not the standard border-subtle). */
+.connector-approvals-item {
+  position: relative;
+  display: grid;
+  /* Two columns only: the verdict buttons overlay the row's right edge (the
+   * tab-close treatment), so at rest the text runs the full width instead of
+   * reserving a blank gutter. */
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: var(--sp-3);
+  /* One geometry all the way around: the hover wash insets --sp-1/--sp-2 from
+   * the row bounds, and this padding keeps the content exactly --sp-2 inside
+   * the wash on every side (12 - 4 vertically, 16 - 8 horizontally). */
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--detail-bar-border);
+}
+
+.connector-approvals-item:first-child {
+  border-top: 0;
+}
+
+/* The row hover wash, inset and concentric with the tray: the rows bleed to
+ * the tray edges (full-width dividers), so the wash pulls back in by the
+ * tray's own frame (--sp-2) and its corners follow (r-xl minus that inset).
+ * Painted behind the row content on the tray's stacking context. */
+.connector-approvals-item::before {
+  content: "";
+  position: absolute;
+  inset: var(--sp-1) var(--sp-2);
+  z-index: -1;
+  border-radius: calc(var(--r-xl) - var(--sp-2));
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.connector-approvals-item:hover::before,
+.connector-approvals-item:focus-within::before,
+.connector-approvals-item[data-expanded]::before {
+  background: var(--secondary);
+}
+
+/* The provider's monochrome mark, optically aligned with the summary's first
+ * line (rows top-align so expanded detail grows downward from the mark). */
+.connector-approvals-mark {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 3px;
+  color: var(--muted-foreground);
+}
+
+/* When a row carries a preview the info block is a button (click opens the
+ * full request), so it resets the button chrome and keeps the text stack. */
+.connector-approvals-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+
+button.connector-approvals-info {
+  cursor: pointer;
+}
+
+.connector-approvals-summary {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--fs-md);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-approvals-meta {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* One line of the redacted args preview; clicking the row un-clamps it. */
+.connector-approvals-preview {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--fs-xs);
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-approvals-item[data-expanded] .connector-approvals-preview {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* While the verdicts are shown, the top text lines fade out under them (the
+ * tab-label treatment: a mask fade on the right tail, with the buttons
+ * overlaid on the cleared patch). The expanded preview is exempt — it wraps
+ * below the buttons, so fading every wrapped line's tail would read broken. */
+.connector-approvals-item:hover .connector-approvals-summary,
+.connector-approvals-item:focus-within .connector-approvals-summary,
+.connector-approvals-item[data-expanded] .connector-approvals-summary,
+.connector-approvals-item:hover .connector-approvals-meta,
+.connector-approvals-item:focus-within .connector-approvals-meta,
+.connector-approvals-item[data-expanded] .connector-approvals-meta,
+.connector-approvals-item:hover:not([data-expanded]) .connector-approvals-preview,
+.connector-approvals-item:focus-within:not([data-expanded]) .connector-approvals-preview {
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - 88px),
+    transparent calc(100% - 58px)
+  );
+  mask-image: linear-gradient(to right, #000 calc(100% - 88px), transparent calc(100% - 58px));
+}
+
+/* Verdicts overlay the row's right edge (the tab-close treatment) and reveal
+ * on hover, keyboard focus, or while the row's detail is open — not from
+ * every row at once. The swap is instant on purpose: a fade left outgoing
+ * rows' verdicts lingering, so quick pointer moves read as several rows
+ * hovered at once. Top-anchored on the summary's line so an expanded row's
+ * detail grows below them. */
+.connector-approvals-actions {
+  position: absolute;
+  /* On the same inner grid as the content: --sp-2 inside the wash's top and
+   * right edges, so the buttons read as perfectly inset in the washed row. */
+  top: var(--sp-3);
+  right: var(--sp-4);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.connector-approvals-item:hover .connector-approvals-actions,
+.connector-approvals-item:focus-within .connector-approvals-actions,
+.connector-approvals-item[data-expanded] .connector-approvals-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Per-row verdicts as compact icon buttons (Deny ✕ quiet, Approve ✓ filled),
+ * following the agent approval-card weighting: approve reads as primary by
+ * being filled, deny stays muted, neither shouts. */
+.connector-approvals-item-deny,
+.connector-approvals-item-approve {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* Both sit on the row's secondary wash when visible, so deny hovers with the
+ * tab-close ink wash and approve rests on card (a raised chip on the wash). */
+.connector-approvals-item-deny {
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.connector-approvals-item-deny:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+  color: var(--foreground);
+}
+
+.connector-approvals-item-approve {
+  background: var(--card);
+  color: var(--secondary-foreground);
+}
+
+.connector-approvals-item-approve:hover:not(:disabled) {
+  background: var(--muted);
+}
+
+.connector-approvals-item-deny:disabled,
+.connector-approvals-item-approve:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* PDF export uses the platform print sheet. Strip the application chrome and

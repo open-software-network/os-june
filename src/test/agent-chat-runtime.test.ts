@@ -7,6 +7,7 @@ import {
   displayedComposerUserMessageText,
   mediaVideoReferences,
   repairContractionSpacing,
+  stripRenderedMediaReferences,
   videoPartsFromHermesContent,
 } from "../lib/agent-chat-runtime";
 import { categoryPrompt } from "../lib/issue-report-prompt";
@@ -150,6 +151,82 @@ describe("repairContractionSpacing", () => {
     // guard keeps it untouched rather than mis-splitting into "kids't oys".
     expect(repairContractionSpacing("kids'toys")).toBe("kids'toys");
     expect(repairContractionSpacing("the cars'doors")).toBe("the cars'doors");
+  });
+});
+
+describe("stripRenderedMediaReferences", () => {
+  it("strips a complete MEDIA reference from still-streaming text", () => {
+    // Regression: while a reply streams, the raw deltas paint verbatim, so a
+    // `MEDIA:generated-image-….png` line showed as literal prose above the
+    // rest of the answer until the turn completed.
+    const name =
+      "generated-image-a560d9fac0df4bce9e2705a7f80594c5.june-source-19f6ef064f13d83400f1e17444abbc6f7f2d1d81cdaf54d22f21db7d4120ed60.png";
+    expect(stripRenderedMediaReferences(`MEDIA:${name}\n\nHere is the mountain peak.`)).toBe(
+      "\n\nHere is the mountain peak.",
+    );
+    expect(
+      stripRenderedMediaReferences("MEDIA:/tmp/hermes/image_cache/img_ab12.png\n\nDone."),
+    ).toBe("\n\nDone.");
+  });
+
+  it("holds back split and space-containing trailing MEDIA references", () => {
+    expect(stripRenderedMediaReferences("Here you go:\n\nMEDIA:generated-ima", true)).toBe(
+      "Here you go:\n\n",
+    );
+    expect(
+      stripRenderedMediaReferences(
+        "Here you go:\n\nMEDIA:/Users/alex/Library/Application Support/June/generated-ima",
+        true,
+      ),
+    ).toBe("Here you go:\n\n");
+    for (const prefix of ["M", "ME", "MED", "MEDI", "MEDIA", "MEDIA:"]) {
+      expect(stripRenderedMediaReferences(`Here you go:\n\n${prefix}`, true)).toBe(
+        "Here you go:\n\n",
+      );
+    }
+  });
+
+  it("leaves plain prose untouched", () => {
+    expect(stripRenderedMediaReferences("A calm mountain lake at dawn.")).toBe(
+      "A calm mountain lake at dawn.",
+    );
+    // MEDIA mid-sentence followed by prose is not a trailing partial.
+    expect(stripRenderedMediaReferences("the MEDIA: prefix marks a file")).toBe(
+      "the MEDIA: prefix marks a file",
+    );
+    for (const line of ["M", "Me", "Media", "MEDIA: prefix marks a file"]) {
+      expect(stripRenderedMediaReferences(line)).toBe(line);
+    }
+  });
+});
+
+describe("terminal media reference cleanup", () => {
+  function terminalMediaTurn(text: string) {
+    return buildHermesSessionChatTurns(
+      [],
+      [
+        toolEvent({ key: "image-tool", name: "generate_image" }),
+        transcriptEvent({ delta: text }),
+        lifecycleEvent({
+          flavor: "terminal",
+          status: "lifecycle.complete",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+        }),
+      ],
+    )[0];
+  }
+
+  it("hides an unfinished media path without deleting completed prose", () => {
+    const partialPath = terminalMediaTurn(
+      "MEDIA:/Users/alex/Library/Application Support/June/generated-images/generated-ima",
+    );
+    expect(partialPath?.parts.find((part) => part.type === "text")).toMatchObject({ text: "" });
+
+    const ordinaryProse = terminalMediaTurn("MEDIA: prefix marks a file");
+    expect(ordinaryProse?.parts.find((part) => part.type === "text")).toMatchObject({
+      text: "MEDIA: prefix marks a file",
+      status: "complete",
+    });
   });
 });
 
@@ -1589,6 +1666,7 @@ describe("Agent chat runtime", () => {
       name: "generated-image-abc.png",
     });
     const tool = turns[0]?.parts.find((part) => part.type === "tool");
+    expect(tool).toMatchObject({ media: "image" });
     expect(tool?.type === "tool" ? tool.text : "").not.toContain("aGVsbG8=");
   });
 
@@ -1634,6 +1712,7 @@ describe("Agent chat runtime", () => {
           label: "make the bicycle blue",
         }),
         status: "complete",
+        media: "image",
       },
       {
         type: "image",
@@ -1646,6 +1725,40 @@ describe("Agent chat runtime", () => {
         type: "text",
         text: "Done.",
         status: "complete",
+      },
+    ]);
+  });
+
+  it("hands a live video tool result from its placeholder to an inline video", () => {
+    const path =
+      "/Users/alex/Library/Application Support/June/generated-videos/generated-video-ab12.mp4";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        toolEvent({
+          key: "tool-call-video-1",
+          name: "generate_video",
+          phase: "complete",
+          content: [{ type: "text", text: `MEDIA:${path}` }],
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "tool",
+        id: "tool-call-video-1",
+        name: "Working with video",
+        text: "",
+        status: "complete",
+        media: "video",
+      },
+      {
+        type: "video",
+        status: "complete",
+        prompt: "Generated video",
+        path,
+        name: "generated-video-ab12.mp4",
       },
     ]);
   });
@@ -1802,6 +1915,33 @@ describe("Agent chat runtime", () => {
         prompt: "Generated image",
         path: mediaPath,
         name: "img_stream.png",
+      },
+    ]);
+  });
+
+  it("tags a running generation tool part with its media kind", () => {
+    // The turn view keys the in-progress generation placeholder off this tag,
+    // so the canvas holds space while the tool runs instead of the image
+    // popping in from nothing on completion.
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        toolEvent({
+          key: "tool-call-1",
+          name: "generate_image",
+          sanitizedPayload: { prompt: "a calm mountain lake at dawn" },
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "tool",
+        id: "tool-call-1",
+        name: "Working with images",
+        text: "",
+        status: "running",
+        media: "image",
       },
     ]);
   });

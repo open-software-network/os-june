@@ -33,6 +33,35 @@ export function toolActivitySentence(toolName: string | undefined, payload?: unk
   return label === "Tool" ? "Using a tool." : `${label}.`;
 }
 
+/** What a running tool call is expected to PRODUCE, so the chat can hold space
+ * with a generation placeholder while it runs. Deliberately narrower than the
+ * "Working with images" label family: a screenshot, vision, or analysis tool
+ * must not open a canvas that never fills, so the name has to carry a
+ * generative verb as well as a media segment. Video is checked first —
+ * `animate_image` (image-to-video) produces video. */
+export function generatedMediaToolKind(
+  toolName: string | undefined,
+  payload?: unknown,
+): "image" | "video" | undefined {
+  const records = payloadRecords(payload);
+  const rawName =
+    nonEmptyString(toolName) ?? firstString(records, ["name", "tool_name", "tool"]) ?? "";
+  const normalized = normalizeToolName(rawName);
+  const generative = hasSegment(normalized, [
+    "generate",
+    "create",
+    "make",
+    "draw",
+    "render",
+    "edit",
+    "animate",
+    "upscale",
+  ]);
+  if (!generative) return undefined;
+  if (isVideoToolName(normalized)) return "video";
+  return hasSegment(normalized, ["image"]) ? "image" : undefined;
+}
+
 export function humanizeToolName(value: string) {
   const cleaned = value
     .replace(/^tools?[._-]/i, "")

@@ -24,9 +24,9 @@
  * Two phases, gated independently:
  * - PROTOCOL smoke (always, when a binary exists; no provider key needed):
  *   start, status, ws connect, session.create, session.active_list,
- *   session.interrupt, and command.dispatch /model (accepted or a known
- *   controlled error). These exercise the gateway contract without spending
- *   model tokens.
+ *   session.interrupt, and an accepted session-scoped Hermes model setting via
+ *   config.set. A 4009 busy response is retried, never counted as a pass. These
+ *   exercise the gateway contract without spending model tokens.
  * - MODEL smoke (opt-in via HERMES_SMOKE_MODEL=1, requires a provider key in
  *   the runtime's config): additionally runs prompt.submit with a minimal
  *   no-tool prompt and waits for a streamed completion.
@@ -49,6 +49,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -61,9 +62,9 @@ import {
   buildStatusUrl,
   buildWsUrl,
   generateSessionToken,
-  isControlledModelDispatchError,
   parseReadinessBody,
   parseRpcFrame,
+  retryModelConfigSetUntilAccepted,
   resolveHermesCommand,
   type HermesInboundFrame,
 } from "../src/lib/hermes-smoke/helpers.ts";
@@ -113,7 +114,8 @@ async function main(): Promise<void> {
   const port = await allocatePort();
   const token = generateSessionToken();
   const home = mkdtempSync(join(tmpdir(), "june-hermes-smoke-"));
-  writeMinimalConfig(home);
+  const smokeProvider = await startSmokeProvider();
+  writeMinimalConfig(home, smokeProvider.port);
 
   const log: string[] = [];
   const record = (line: string) => {
@@ -169,11 +171,11 @@ async function main(): Promise<void> {
       title: "Release-gate smoke",
       cols: 96,
     });
-    const sessionId = sessionIdFrom(created);
-    if (!sessionId) {
-      throw new Error(`session.create returned no session id: ${safeJson(created)}`);
+    const runtimeSessionId = runtimeSessionIdFrom(created);
+    if (!runtimeSessionId) {
+      throw new Error(`session.create returned no runtime session id: ${safeJson(created)}`);
     }
-    record(`hermes-smoke: PASS session.create -> ${sessionId}`);
+    record(`hermes-smoke: PASS session.create -> ${runtimeSessionId}`);
 
     // session.active_list — June polls this as ground truth for what runs.
     const active = await rpc.request("session.active_list", {});
@@ -182,12 +184,13 @@ async function main(): Promise<void> {
     }
     record("hermes-smoke: PASS session.active_list returned a sessions list");
 
-    // command.dispatch /model — accepted, or a known controlled error.
-    await dispatchModelCommand(rpc, sessionId, record);
+    // Session-scoped Hermes model setting via config.set. Busy is retryable,
+    // but the release gate passes only after the mutation is accepted.
+    await setSessionModel(rpc, runtimeSessionId, record);
 
     // MODEL phase: only when explicitly opted in (spends provider tokens).
     if (RUN_MODEL_PHASE) {
-      await runModelPhase(rpc, sessionId, record);
+      await runModelPhase(rpc, runtimeSessionId, record);
     } else {
       record(
         "hermes-smoke: SKIP model phase (prompt.submit). Set HERMES_SMOKE_MODEL=1 " +
@@ -198,7 +201,7 @@ async function main(): Promise<void> {
     // session.interrupt — halting a turn must be accepted by the gateway. After
     // the model phase a turn may be settling; in protocol-only mode the session
     // is idle, and interrupting an idle session is still a valid, accepted call.
-    await rpc.request("session.interrupt", { session_id: sessionId });
+    await rpc.request("session.interrupt", { session_id: runtimeSessionId });
     record("hermes-smoke: PASS session.interrupt accepted");
 
     record("hermes-smoke: all selected phases passed");
@@ -221,6 +224,7 @@ async function main(): Promise<void> {
     } else {
       rmSync(home, { recursive: true, force: true });
     }
+    await smokeProvider.close();
   }
 
   process.exit(failed ? 1 : 0);
@@ -269,15 +273,15 @@ function allocatePort(): Promise<number> {
 }
 
 /** Writes the minimum config.yaml Hermes needs to boot its dashboard. The
- * model block is a placeholder: the protocol phase never calls the model, and
- * the model phase expects the operator to supply real provider config (or wire
- * JUNE_HERMES_COMMAND at a runtime that already has one). */
-function writeMinimalConfig(home: string): void {
+ * protocol phase validates the model against the local listing stub but never
+ * calls it for inference. The model phase still expects the operator to supply
+ * real provider config through the runtime environment. */
+function writeMinimalConfig(home: string, providerPort: number): void {
   const config = [
     "model:",
     "  default: smoke-model",
     "  provider: custom",
-    `  base_url: http://${HOST}:9/v1`,
+    `  base_url: http://${HOST}:${providerPort}/v1`,
     "  api_key: smoke-no-credential",
     "  api_mode: chat_completions",
     "agent:",
@@ -287,6 +291,49 @@ function writeMinimalConfig(home: string): void {
     "",
   ].join("\n");
   writeFileSync(join(home, "config.yaml"), config, "utf8");
+}
+
+/** Starts a token-free local `/v1/models` endpoint for the protocol phase.
+ * `config.set` validates custom-provider model ids even though it does not run
+ * inference, so using port 9 would turn this protocol gate into a guaranteed
+ * endpoint failure. The stub lists only the configured smoke model and never
+ * implements chat completions. */
+function startSmokeProvider(): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolveProvider, reject) => {
+    const server = createHttpServer((request, response) => {
+      if (request.method === "GET" && request.url === "/v1/models") {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            object: "list",
+            data: [
+              { id: "smoke-model", object: "model" },
+              { id: "smoke-model-alt", object: "model" },
+            ],
+          }),
+        );
+        return;
+      }
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "not found" }));
+    });
+    server.once("error", reject);
+    server.listen(0, HOST, () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("could not allocate the smoke provider port"));
+        return;
+      }
+      resolveProvider({
+        port: address.port,
+        close: () =>
+          new Promise<void>((resolveClose, rejectClose) => {
+            server.close((error) => (error ? rejectClose(error) : resolveClose()));
+          }),
+      });
+    });
+  });
 }
 
 /** Polls GET /api/status with the Bearer token until it succeeds, the deadline
@@ -472,35 +519,31 @@ function makeRpcClient(socket: WebSocket): RpcClient {
   };
 }
 
-/** command.dispatch for /model: a release gate must confirm the runtime still
- * accepts the dispatch, OR returns a recognizable APPLICATION-level controlled
- * error (rather than crashing the gateway or regressing the protocol). Accept +
- * a controlled 4xxx error both pass; a protocol error (e.g. -32601
- * method-not-found), a missing code, or any other rejection shape FAILS the
- * gate by rethrowing — the same mechanism every other failed step uses. */
-async function dispatchModelCommand(
+/** Session-scoped Hermes model setting: the release gate must confirm the
+ * runtime accepts the exact mutation June uses. The documented 4009 busy guard
+ * is retried within the RPC budget; it never counts as acceptance. */
+async function setSessionModel(
   rpc: RpcClient,
-  sessionId: string,
+  runtimeSessionId: string,
   record: (line: string) => void,
 ): Promise<void> {
   try {
-    await rpc.request("command.dispatch", {
-      session_id: sessionId,
-      command: "/model",
-    });
-    record("hermes-smoke: PASS command.dispatch /model accepted");
+    await retryModelConfigSetUntilAccepted(
+      () =>
+        rpc.request("config.set", {
+          session_id: runtimeSessionId,
+          key: "model",
+          value: "smoke-model-alt --session",
+          confirm_expensive_model: true,
+        }),
+      { timeoutMs: RPC_TIMEOUT_MS, wait: delay },
+    );
+    record("hermes-smoke: PASS session-scoped Hermes model setting accepted");
   } catch (error) {
-    if (!isControlledModelDispatchError(error)) {
-      const code = (error as { code?: unknown }).code;
-      throw new Error(
-        `command.dispatch /model failed with an uncontrolled error ` +
-          `(code=${code ?? "none"}): ${describeError(error)}`,
-      );
-    }
-    const code = (error as { code?: number }).code;
-    record(
-      `hermes-smoke: PASS command.dispatch /model returned a controlled error ` +
-        `(code=${code ?? "none"}: ${describeError(error)})`,
+    const code = (error as { code?: unknown }).code;
+    throw new Error(
+      `session-scoped Hermes model setting was not accepted ` +
+        `(code=${code ?? "none"}): ${describeError(error)}`,
     );
   }
 }
@@ -509,7 +552,7 @@ async function dispatchModelCommand(
  * stream to complete. Skipped unless HERMES_SMOKE_MODEL=1. */
 async function runModelPhase(
   rpc: RpcClient,
-  sessionId: string,
+  runtimeSessionId: string,
   record: (line: string) => void,
 ): Promise<void> {
   record("hermes-smoke: running model phase (prompt.submit, spends tokens)");
@@ -529,7 +572,7 @@ async function runModelPhase(
     });
   });
   await rpc.request("prompt.submit", {
-    session_id: sessionId,
+    session_id: runtimeSessionId,
     text: "Reply with the single word: ok",
   });
   await completed;
@@ -554,14 +597,13 @@ function writeArtifact(log: string[]): string {
   return path;
 }
 
-function sessionIdFrom(result: unknown): string | undefined {
+function runtimeSessionIdFrom(result: unknown): string | undefined {
   if (!result || typeof result !== "object") return undefined;
   const record = result as Record<string, unknown>;
-  for (const key of ["session_id", "stored_session_id", "id"]) {
-    const value = record[key];
-    if (typeof value === "string" && value.length > 0) return value;
-  }
-  return undefined;
+  const runtimeSessionId = record.session_id;
+  return typeof runtimeSessionId === "string" && runtimeSessionId.length > 0
+    ? runtimeSessionId
+    : undefined;
 }
 
 function delay(ms: number): Promise<void> {

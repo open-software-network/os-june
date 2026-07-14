@@ -14,7 +14,6 @@ type RecorderBarProps = {
 export function RecorderBar({ status, onPause, onResume, onDone }: RecorderBarProps) {
   const paused = status.state === "paused";
   const controlsEnabled = status.state === "recording" || status.state === "paused";
-  const microphoneSilent = hasMicrophoneSilenceWarning(status);
   // status.level is mic-only; status.sources carries mic+system when available.
   const meterLevel =
     status.sources && status.sources.length > 0
@@ -43,9 +42,6 @@ export function RecorderBar({ status, onPause, onResume, onDone }: RecorderBarPr
       <div className="recorder-meter">
         <span className="elapsed">{formatElapsed(status.elapsedMs)}</span>
         <Waveform level={meterLevel} active={status.state === "recording"} />
-        {microphoneSilent ? (
-          <span className="recorder-silence-warning">Mic looks silent</span>
-        ) : null}
       </div>
       <button
         type="button"
@@ -59,11 +55,6 @@ export function RecorderBar({ status, onPause, onResume, onDone }: RecorderBarPr
       </button>
     </div>
   );
-}
-
-export function hasMicrophoneSilenceWarning(status: RecordingStatusDto) {
-  const microphone = status.sources?.find((source) => source.source === "microphone");
-  return microphone?.silenceWarning ?? status.silenceWarning;
 }
 
 export function formatElapsed(ms: number) {

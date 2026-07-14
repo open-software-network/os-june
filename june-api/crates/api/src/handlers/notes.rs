@@ -14,7 +14,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
-use june_domain::{ModelId, ModelKind};
+use june_domain::{ModelId, ModelKind, ProviderCredentials};
 use june_services::{
     NoteGenerateOutput, NoteGenerateParams, NoteTranscribeOutput, NoteTranscribeParams,
     PricingError, PricingTable,
@@ -38,6 +38,12 @@ pub(crate) async fn transcribe(
     let model_id = form.required_text("model")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
     require_priced_model(&state, &model_id, ModelKind::Asr)?;
+    let provider_credentials = credentials_for_resolved_model(
+        provider_credentials,
+        &model_id,
+        &model_id,
+        state.pricing().is_venice_model(&model_id),
+    )?;
     // Accepted and validated for wire compatibility, but deliberately not
     // carried into the transcription pipeline: the note title is user data
     // an ASR provider has no business seeing.
@@ -90,9 +96,15 @@ pub(crate) async fn generate(
     let user_id = authenticated_user(&state, &headers).await?;
     let provider_credentials = provider_credentials(&headers)?;
     request.validate()?;
-    let model_id = required(request.model, "model_required")?;
-    validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
-    require_priced_model(&state, &model_id, ModelKind::Text)?;
+    let requested_model_id = required(request.model, "model_required")?;
+    validation::validate_text_len("model", &requested_model_id, validation::MAX_MODEL_CHARS)?;
+    let model_id = resolve_priced_text_model(&state, &requested_model_id)?;
+    let provider_credentials = credentials_for_resolved_model(
+        provider_credentials,
+        &requested_model_id,
+        &model_id,
+        state.pricing().is_venice_model(&model_id),
+    )?;
 
     let stream = request.stream;
     let params = NoteGenerateParams {
@@ -107,6 +119,7 @@ pub(crate) async fn generate(
         existing_generated_note: request.existing_generated_note,
         model_id: ModelId(model_id),
         provider_credentials,
+        cost_quality: request.cost_quality,
     };
 
     if stream {
@@ -222,6 +235,12 @@ fn error_event(
 
 impl GenerateRequest {
     fn validate(&self) -> Result<(), ApiError> {
+        if self
+            .cost_quality
+            .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+        {
+            return Err(ApiError::unprocessable("cost_quality_invalid"));
+        }
         validation::validate_optional_text_len(
             "note_id",
             self.note_id.as_deref(),
@@ -270,6 +289,7 @@ pub struct GenerateRequest {
     pub language: Option<String>,
     pub existing_generated_note: Option<String>,
     pub model: Option<String>,
+    pub cost_quality: Option<f64>,
     #[serde(default)]
     pub stream: bool,
 }
@@ -339,6 +359,92 @@ pub(crate) fn require_priced_model(
     require_priced_model_kind(state.pricing(), model_id, kind)
 }
 
+const AUTO_TEXT_MODEL: &str = "open-software/auto";
+const DEFAULT_ASR_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
+
+/// Older June clients may retain a Venice model that disappeared when the
+/// production catalog moved behind os-api. Preserve those sessions by routing
+/// an unpriced text selection through Auto; wrong-kind models still fail.
+pub(crate) fn resolve_priced_text_model(
+    state: &ApiState,
+    requested_model_id: &str,
+) -> Result<String, ApiError> {
+    resolve_priced_text_model_kind(state.pricing(), requested_model_id)
+}
+
+/// Auto is a June-managed route. Strip BYOK from an explicit Auto selection,
+/// and reject every other non-Venice resolution instead of forwarding the key
+/// across a provider boundary. Callers may preserve a legacy ASR fallback only
+/// when it resolves to another Venice model.
+pub(crate) fn credentials_for_resolved_model(
+    mut credentials: ProviderCredentials,
+    requested_model_id: &str,
+    resolved_model_id: &str,
+    resolved_supports_venice_byok: bool,
+) -> Result<ProviderCredentials, ApiError> {
+    if credentials.has_venice_api_key()
+        && ((resolved_model_id == AUTO_TEXT_MODEL && requested_model_id != AUTO_TEXT_MODEL)
+            || (resolved_model_id != AUTO_TEXT_MODEL && !resolved_supports_venice_byok))
+    {
+        return Err(ApiError::unprocessable("venice_api_key_model_unavailable"));
+    }
+    if resolved_model_id == AUTO_TEXT_MODEL {
+        credentials.venice_api_key = None;
+    }
+    Ok(credentials)
+}
+
+fn resolve_priced_text_model_kind(
+    pricing: &PricingTable,
+    requested_model_id: &str,
+) -> Result<String, ApiError> {
+    match pricing.ensure_model_kind(requested_model_id, ModelKind::Text) {
+        Ok(()) => Ok(requested_model_id.to_string()),
+        Err(PricingError::NotPriced | PricingError::MissingRate) => {
+            require_priced_model_kind(pricing, AUTO_TEXT_MODEL, ModelKind::Text)?;
+            Ok(AUTO_TEXT_MODEL.to_string())
+        }
+        Err(PricingError::WrongUnit) => Err(ApiError::unprocessable("model_type_invalid")),
+        Err(PricingError::Overflow) => Err(ApiError::unprocessable("price_overflow")),
+    }
+}
+
+/// Preserve dictation for clients with a retired ASR selection. Prefer June's
+/// default private transcription model, then any currently priced ASR model.
+/// A text-model selection remains a hard type error.
+pub(crate) fn resolve_priced_asr_model(
+    state: &ApiState,
+    requested_model_id: &str,
+) -> Result<String, ApiError> {
+    resolve_priced_asr_model_kind(state.pricing(), requested_model_id)
+}
+
+fn resolve_priced_asr_model_kind(
+    pricing: &PricingTable,
+    requested_model_id: &str,
+) -> Result<String, ApiError> {
+    match pricing.ensure_model_kind(requested_model_id, ModelKind::Asr) {
+        Ok(()) => Ok(requested_model_id.to_string()),
+        Err(PricingError::NotPriced | PricingError::MissingRate) => {
+            if pricing
+                .ensure_model_kind(DEFAULT_ASR_MODEL, ModelKind::Asr)
+                .is_ok()
+            {
+                return Ok(DEFAULT_ASR_MODEL.to_string());
+            }
+            pricing
+                .priced_models(Some(ModelKind::Asr))
+                .into_iter()
+                .map(|(model_id, _)| model_id)
+                .find(|model_id| pricing.ensure_model_kind(model_id, ModelKind::Asr).is_ok())
+                .cloned()
+                .ok_or_else(|| ApiError::unprocessable("model_not_priced"))
+        }
+        Err(PricingError::WrongUnit) => Err(ApiError::unprocessable("model_type_invalid")),
+        Err(PricingError::Overflow) => Err(ApiError::unprocessable("price_overflow")),
+    }
+}
+
 fn require_priced_model_kind(
     pricing: &PricingTable,
     model_id: &str,
@@ -360,10 +466,13 @@ fn parse_preview_flag(value: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_preview_flag, require_priced_model_kind};
+    use super::{
+        AUTO_TEXT_MODEL, credentials_for_resolved_model, parse_preview_flag,
+        require_priced_model_kind, resolve_priced_asr_model_kind, resolve_priced_text_model_kind,
+    };
     use crate::ApiError;
     use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
-    use june_domain::ModelKind;
+    use june_domain::{ModelKind, ProviderCredentials};
     use june_services::PricingTable;
     use std::collections::BTreeMap;
 
@@ -379,6 +488,24 @@ mod tests {
                 provider: ModelProvider::Openai,
                 model_type: ModelType::Asr,
                 display_name: "ASR".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
+            },
+        );
+        models.insert(
+            AUTO_TEXT_MODEL.to_string(),
+            ModelPriceConfig {
+                unit: PriceUnit::Tokens,
+                credits_per_million_seconds: None,
+                input_credits_per_million_tokens: Some(1),
+                output_credits_per_million_tokens: Some(1),
+                provider: ModelProvider::Venice,
+                model_type: ModelType::Text,
+                display_name: "Auto".to_string(),
                 description: None,
                 privacy: None,
                 pricing: None,
@@ -406,6 +533,116 @@ mod tests {
             },
         );
         PricingTable::new(models)
+    }
+
+    #[test]
+    fn stale_text_model_falls_back_to_auto() {
+        let resolved = resolve_priced_text_model_kind(&pricing_table(), "retired-venice-model")
+            .expect("stale model should remain usable through Auto");
+        assert_eq!(resolved, AUTO_TEXT_MODEL);
+    }
+
+    #[test]
+    fn byok_rejects_retired_asr_fallback_to_non_venice_model() {
+        let credentials = ProviderCredentials {
+            venice_api_key: Some("opaque-user-key".to_string()),
+        };
+
+        let error =
+            credentials_for_resolved_model(credentials, "retired-venice-asr", "openai-asr", false)
+                .expect_err("provider-changing BYOK fallback should fail");
+
+        assert!(matches!(
+            error,
+            ApiError::Unprocessable { message, .. }
+                if message == "venice_api_key_model_unavailable"
+        ));
+    }
+
+    #[test]
+    fn byok_rejects_current_non_venice_model() {
+        let credentials = ProviderCredentials {
+            venice_api_key: Some("opaque-user-key".to_string()),
+        };
+
+        let error = credentials_for_resolved_model(
+            credentials,
+            "openai/current-model",
+            "openai/current-model",
+            false,
+        )
+        .expect_err("Venice BYOK must not cross into a non-Venice provider");
+
+        assert!(matches!(
+            error,
+            ApiError::Unprocessable { message, .. }
+                if message == "venice_api_key_model_unavailable"
+        ));
+    }
+
+    #[test]
+    fn explicit_auto_strips_byok() {
+        let credentials = ProviderCredentials {
+            venice_api_key: Some("opaque-user-key".to_string()),
+        };
+
+        let credentials =
+            credentials_for_resolved_model(credentials, AUTO_TEXT_MODEL, AUTO_TEXT_MODEL, false)
+                .expect("explicit Auto remains a June-managed request");
+
+        assert!(!credentials.has_venice_api_key());
+    }
+
+    #[test]
+    fn stale_text_byok_rejects_fallback_to_auto() {
+        let credentials = ProviderCredentials {
+            venice_api_key: Some("opaque-user-key".to_string()),
+        };
+
+        let error = credentials_for_resolved_model(
+            credentials,
+            "venice/retired-model",
+            AUTO_TEXT_MODEL,
+            true,
+        )
+        .expect_err("stale Venice BYOK must not silently switch to Auto billing");
+
+        assert!(matches!(
+            error,
+            ApiError::Unprocessable { message, .. }
+                if message == "venice_api_key_model_unavailable"
+        ));
+    }
+
+    #[test]
+    fn priced_text_model_is_preserved() {
+        let resolved = resolve_priced_text_model_kind(&pricing_table(), "text-model")
+            .expect("priced text model should remain explicit");
+        assert_eq!(resolved, "text-model");
+    }
+
+    #[test]
+    fn stale_asr_model_falls_back_to_a_priced_asr_model() {
+        let resolved = resolve_priced_asr_model_kind(&pricing_table(), "retired-asr-model")
+            .expect("stale ASR model should remain usable");
+        assert_eq!(resolved, "asr-model");
+    }
+
+    #[test]
+    fn priced_asr_model_is_preserved() {
+        let resolved = resolve_priced_asr_model_kind(&pricing_table(), "asr-model")
+            .expect("priced ASR model should remain explicit");
+        assert_eq!(resolved, "asr-model");
+    }
+
+    #[test]
+    fn text_model_cannot_fall_back_into_asr() {
+        let error = resolve_priced_asr_model_kind(&pricing_table(), "text-model")
+            .expect_err("text model must not be accepted for transcription");
+        assert!(matches!(
+            error,
+            ApiError::Unprocessable { message, .. } if message == "model_type_invalid"
+        ));
     }
 
     #[test]

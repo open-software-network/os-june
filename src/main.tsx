@@ -7,7 +7,7 @@ import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { replayOnboarding } from "./lib/onboarding";
 import { initTheme } from "./lib/theme";
 import { initBrand } from "./lib/brand";
-import { initFontScale } from "./lib/font-scale";
+import { initFontScale, installFontScaleShortcuts } from "./lib/font-scale";
 import { installExternalLinkOpener } from "./lib/external-links";
 import "./styles/app.css";
 
@@ -27,6 +27,7 @@ if (import.meta.env.DEV) {
 initTheme();
 initBrand();
 initFontScale();
+installFontScaleShortcuts();
 installExternalLinkOpener();
 installNativeContextMenuGuard();
 

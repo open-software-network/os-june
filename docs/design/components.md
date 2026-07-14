@@ -96,11 +96,19 @@ warnings use `InlineNotice` (`src/components/ui/InlineNotice.tsx`) with
 `data-tone="warning"` or `"destructive"`; full-width banners are a separate
 treatment.
 
+First-load skeleton bars are quiet and static: flat `var(--surface-subtle)`
+blocks with `var(--r-sm)` radius, sized to the line they stand in for, on an
+`aria-hidden` (or `aria-busy`) container — no sweep, no pulse (the settings
+sections and the session usage panel are the reference call sites). Don't
+hand-roll an animated gradient for a skeleton; `.shimmer` below is for working
+*text*, not placeholder blocks.
+
 ## Shimmer
 
 `.shimmer` (`src/styles/shimmer.css`, imported by `app.css`) is the canonical
 sweep for "this text is working" states: thinking labels, image-generation and
-transcription progress, first-load skeleton bars. It is a vendored plain-CSS
+transcription progress. It clips to glyphs, so it never applies to block
+placeholders (see the skeleton-bar rule above). It is a vendored plain-CSS
 port of the shadcn shimmer utility, kept API-compatible with upstream, so its
 knobs (`--shimmer-duration`, `--shimmer-spread`, `--shimmer-angle`,
 `--shimmer-color`) tune per call site.

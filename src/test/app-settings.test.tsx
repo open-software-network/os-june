@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
+import { beginMaxGrantWait, clearMaxGrantWait, markMaxGrantWaitSlow } from "../lib/max-upgrade";
 import type { AccountStatus, DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
 import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
@@ -13,6 +14,7 @@ import {
   setActiveHermesProfileName,
 } from "../lib/active-hermes-profile";
 import { DATE_FORMAT_STORAGE_KEY } from "../lib/date-format";
+import { setStoredFontScale } from "../lib/font-scale";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -28,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   setVeniceApiKey: vi.fn(),
   clearVeniceApiKey: vi.fn(),
   setImageSafeMode: vi.fn(),
+  setCostQuality: vi.fn(),
   setImageSafeModePromptDismissed: vi.fn(),
   setProfileModelOverrides: vi.fn(),
   deleteProfileModelOverrides: vi.fn(),
@@ -43,6 +46,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsLogout: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
   osAccountsUpgrade: vi.fn(),
+  osAccountsUpgradeSession: vi.fn(),
   osAccountsChangePlan: vi.fn(),
   hermesBridgeStatus: vi.fn(),
   hermesBridgeSkills: vi.fn(),
@@ -100,6 +104,7 @@ vi.mock("../lib/tauri", () => ({
   setVeniceApiKey: mocks.setVeniceApiKey,
   clearVeniceApiKey: mocks.clearVeniceApiKey,
   setImageSafeMode: mocks.setImageSafeMode,
+  setCostQuality: mocks.setCostQuality,
   setImageSafeModePromptDismissed: mocks.setImageSafeModePromptDismissed,
   setProfileModelOverrides: mocks.setProfileModelOverrides,
   deleteProfileModelOverrides: mocks.deleteProfileModelOverrides,
@@ -115,6 +120,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
+  osAccountsUpgradeSession: mocks.osAccountsUpgradeSession,
   osAccountsChangePlan: mocks.osAccountsChangePlan,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
@@ -216,6 +222,7 @@ function buildProviderSettings() {
     },
     imageSafeMode: true,
     imageSafeModePromptDismissed: false,
+    costQuality: 50,
   };
 }
 
@@ -246,6 +253,7 @@ function stubNavigatorPlatform(platform: string, userAgent: string) {
 
 describe("AppSettings", () => {
   beforeEach(() => {
+    clearMaxGrantWait();
     vi.clearAllMocks();
     localStorage.clear();
     resetActiveHermesProfileForTests();
@@ -349,6 +357,16 @@ describe("AppSettings", () => {
             ]
           : [
               {
+                provider: "open-software",
+                id: "open-software/auto",
+                name: "Automatic private model",
+                modelType: "text",
+                description: "Routes each request to the best available private model.",
+                privacy: "private",
+                traits: [],
+                capabilities: ["supportsFunctionCalling"],
+              },
+              {
                 provider: "venice",
                 id: "zai-org-glm-5-2",
                 name: "GLM 5.2",
@@ -445,10 +463,15 @@ describe("AppSettings", () => {
       },
       imageSafeMode: true,
       imageSafeModePromptDismissed: false,
+      costQuality: 50,
     }));
     mocks.setImageSafeMode.mockImplementation(async (enabled: boolean) => ({
       ...buildProviderSettings(),
       imageSafeMode: enabled,
+    }));
+    mocks.setCostQuality.mockImplementation(async (costQuality: number) => ({
+      ...buildProviderSettings(),
+      costQuality,
     }));
     mocks.setVeniceApiKey.mockResolvedValue({
       ...buildProviderSettings(),
@@ -474,6 +497,7 @@ describe("AppSettings", () => {
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
+    mocks.osAccountsUpgradeSession.mockResolvedValue(undefined);
     mocks.osAccountsChangePlan.mockResolvedValue({
       subscribed: true,
       plan: "max",
@@ -726,6 +750,34 @@ describe("AppSettings", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("keeps the appearance text-size control in sync with zoom shortcuts", () => {
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+    expect(screen.getByRole("button", { name: "Default text size" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    act(() => setStoredFontScale("large"));
+
+    expect(screen.getByRole("button", { name: "Large text size" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("changes the sidebar date format through the appearance picker", () => {
@@ -991,13 +1043,14 @@ describe("AppSettings", () => {
   function renderProBillingSettings(
     onAccountRefresh: () => Promise<AccountStatus | undefined> = vi.fn(async () => undefined),
   ) {
-    render(
+    const proAccount: AccountStatus = {
+      ...signedInAccount,
+      balance: { credits: 1200, usdMillis: 1200, usageRemainingPercent: 40 },
+      subscription: { subscribed: true, status: "active", plan: "pro" },
+    };
+    const settings = (account: AccountStatus) => (
       <AppSettings
-        account={{
-          ...signedInAccount,
-          balance: { credits: 1200, usdMillis: 1200, usageRemainingPercent: 40 },
-          subscription: { subscribed: true, status: "active", plan: "pro" },
-        }}
+        account={account}
         accountLoading={false}
         sourceMode="microphoneOnly"
         checkingSourceReadiness={false}
@@ -1005,13 +1058,190 @@ describe("AppSettings", () => {
         onAccountRefresh={onAccountRefresh}
         onSourceModeChange={vi.fn()}
         onEnableSystemAudio={vi.fn()}
-      />,
+      />
     );
-    return onAccountRefresh;
+    const view = render(settings(proAccount));
+    return {
+      rerenderAccount: (account: AccountStatus) => view.rerender(settings(account)),
+    };
   }
 
   const MAX_CONFIRM_BODY =
-    "Max is $100 per month, charged to your saved card now. Your billing cycle restarts today.";
+    "Max is $100 per month. A secure Stripe page will open in your browser to review and confirm. Your billing cycle restarts today.";
+
+  it("inherits a pending Max grant from another surface without claiming Max", async () => {
+    const user = userEvent.setup();
+    beginMaxGrantWait(1200, signedInAccount.user?.id);
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: { credits: 1200, usdMillis: 1200, usageRemainingPercent: 40 },
+          subscription: { subscribed: true, status: "active", plan: "max" },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    expect(
+      screen.getByText("Upgrade started. Waiting for payment confirmation."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Max plan" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Upgrade to Max" })).toBeNull();
+  });
+
+  it("inherits a timed-out Max grant with billing recovery and no Max claim", async () => {
+    const user = userEvent.setup();
+    const grantWait = beginMaxGrantWait(1200, signedInAccount.user?.id);
+    markMaxGrantWaitSlow(grantWait);
+    const settings = (account: AccountStatus) => (
+      <AppSettings
+        account={account}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />
+    );
+    const view = render(
+      settings({
+        ...signedInAccount,
+        balance: { credits: 1200, usdMillis: 1200, usageRemainingPercent: 40 },
+        subscription: { subscribed: true, status: "active", plan: "max" },
+      }),
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    expect(
+      screen.getByText("Payment not confirmed yet. Check billing in your account portal."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Max plan" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Manage billing" })).toBeInTheDocument();
+
+    view.rerender(
+      settings({
+        ...signedInAccount,
+        balance: { credits: 50_000, usdMillis: 50_000, usageRemainingPercent: 100 },
+        subscription: { subscribed: true, status: "active", plan: "max" },
+      }),
+    );
+
+    expect(await screen.findByText("Max is active.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Max plan" })).toBeInTheDocument();
+  });
+
+  it("restores the upgrade CTA when a hosted wait outlasts its poll window", async () => {
+    const user = userEvent.setup();
+    // An abandoned Stripe page leaves the hosted wait in the slow phase. The
+    // status copy points at trying again, so the retry affordance must exist:
+    // reopening a hosted session charges nothing until the Stripe confirm.
+    const grantWait = beginMaxGrantWait(1200, signedInAccount.user?.id, "browser");
+    markMaxGrantWaitSlow(grantWait);
+    renderProBillingSettings();
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    expect(
+      screen.getByText(
+        "Still waiting for payment confirmation. If you closed the Stripe page, you can try again.",
+      ),
+    ).toBeInTheDocument();
+    // The plan claim stays suppressed, but the retry path is back.
+    expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+    const retry = screen.getByRole("button", { name: "Upgrade to Max" });
+
+    await user.click(retry);
+    expect(await screen.findByText(MAX_CONFIRM_BODY)).toBeInTheDocument();
+    expect(mocks.osAccountsUpgradeSession).not.toHaveBeenCalled();
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+  });
+
+  it("adopts a wait begun after mount on the next account refresh", async () => {
+    const user = userEvent.setup();
+    const proAccount: AccountStatus = {
+      ...signedInAccount,
+      balance: { credits: 1200, usdMillis: 1200, usageRemainingPercent: 40 },
+      subscription: { subscribed: true, status: "active", plan: "pro" },
+    };
+    const { rerenderAccount } = renderProBillingSettings();
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+    expect(screen.getByRole("button", { name: "Upgrade to Max" })).toBeInTheDocument();
+
+    // An upgrade begins on a coexisting surface (the funding notice or the
+    // sidebar chip) while this card is on screen. The next refresh tick must
+    // pull it in: no second purchase path, waiting status shown.
+    beginMaxGrantWait(1200, signedInAccount.user?.id, "browser");
+    rerenderAccount?.({ ...proAccount });
+
+    expect(
+      await screen.findByText("Waiting for you to confirm in the browser"),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Upgrade to Max" })).toBeNull();
+  });
+
+  it("re-derives the status line when another surface's poll advances the wait phase", async () => {
+    const user = userEvent.setup();
+    const proAccount: AccountStatus = {
+      ...signedInAccount,
+      balance: { credits: 1200, usdMillis: 1200, usageRemainingPercent: 40 },
+      subscription: { subscribed: true, status: "active", plan: "pro" },
+    };
+    const grantWait = beginMaxGrantWait(1200, signedInAccount.user?.id, "browser");
+    const { rerenderAccount } = renderProBillingSettings();
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+    expect(screen.getByText("Waiting for you to confirm in the browser")).toBeInTheDocument();
+
+    // Another surface's poll times out and mutates the shared wait in place.
+    // Identity comparison cannot see it; the next refresh tick must still
+    // swap the stale phase line for the live one.
+    markMaxGrantWaitSlow(grantWait);
+    rerenderAccount?.({ ...proAccount });
+
+    expect(
+      await screen.findByText(
+        "Still waiting for payment confirmation. If you closed the Stripe page, you can try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Waiting for you to confirm in the browser")).toBeNull();
+  });
+
+  it("drops a wait cancelled on another surface and restores the upgrade CTA", async () => {
+    const user = userEvent.setup();
+    const proAccount: AccountStatus = {
+      ...signedInAccount,
+      balance: { credits: 1200, usdMillis: 1200, usageRemainingPercent: 40 },
+      subscription: { subscribed: true, status: "active", plan: "pro" },
+    };
+    const grantWait = beginMaxGrantWait(1200, signedInAccount.user?.id, "browser");
+    const { rerenderAccount } = renderProBillingSettings();
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+    expect(screen.getByText("Waiting for you to confirm in the browser")).toBeInTheDocument();
+
+    // The user cancels from the funding notice ("I closed the Stripe page").
+    // The cached copy must not keep this card parked on the dead wait.
+    clearMaxGrantWait(grantWait);
+    rerenderAccount?.({ ...proAccount });
+
+    expect(await screen.findByRole("button", { name: "Upgrade to Max" })).toBeInTheDocument();
+    expect(screen.queryByText("Waiting for you to confirm in the browser")).toBeNull();
+  });
 
   it("never changes plans without an explicit confirm", async () => {
     const user = userEvent.setup();
@@ -1020,49 +1250,74 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("tab", { name: "Billing" }));
     await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
 
-    // The CTA opens the charge confirm; nothing has been billed yet.
+    // The CTA opens the charge confirm; no plan change has started yet.
     expect(await screen.findByText(MAX_CONFIRM_BODY)).toBeInTheDocument();
+    expect(mocks.osAccountsUpgradeSession).not.toHaveBeenCalled();
     expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
     expect(screen.queryByText(MAX_CONFIRM_BODY)).toBeNull();
   });
 
-  it("lets a Pro subscriber upgrade in place to Max after confirming", async () => {
+  it("lets a Pro subscriber open a hosted Max upgrade after confirming", async () => {
     const user = userEvent.setup();
-    // The poll's first refresh already shows the granted Max balance.
-    const onAccountRefresh = renderProBillingSettings(
-      vi.fn(async () => ({
-        ...signedInAccount,
-        balance: { credits: 50_000, usdMillis: 50_000, usageRemainingPercent: 100 },
-        subscription: { subscribed: true, status: "active", plan: "max" },
-      })),
-    );
+    renderProBillingSettings();
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
     await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
     await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
 
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledTimes(1);
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
-    // In-place change is not a browser checkout.
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
     expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
-    // The PATCH lands before the webhook grant, so the poll refreshes until
-    // the balance reflects Max and the status flips to "ready".
     expect(
-      await screen.findByText("You are on Max now. Your new credits are ready."),
+      await screen.findByText("Waiting for you to confirm in the browser"),
     ).toBeInTheDocument();
-    // Single ordered refresh path: the poll's immediate tick is the only
-    // refresh, so a stale parallel response can never overwrite the granted
-    // Max snapshot.
-    await waitFor(() => expect(onAccountRefresh).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("Max is active.")).toBeNull();
   });
 
-  it("shows a pending confirm state and blocks double-fires while the change is in flight", async () => {
+  it("requires a second, charge-now confirm before falling back to PATCH", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
+      code: "upgrade_session_unavailable",
+      message: "Upgrade sessions are not available yet.",
+    });
+    renderProBillingSettings();
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+    await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
+    await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
+
+    // The capability signal swaps the dialog to the charge-now copy without
+    // charging anything: hosted-copy consent never precedes a PATCH.
+    expect(
+      await screen.findByText(
+        "Max is $100 per month, charged to your saved card now. Your billing cycle restarts today.",
+      ),
+    ).toBeInTheDocument();
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Upgrade now" }));
+
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledOnce();
+    expect(mocks.osAccountsChangePlan).toHaveBeenCalledWith("max");
+    // The consented PATCH retry never re-runs the hosted transport.
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledOnce();
+    expect(
+      await screen.findByText("Upgrade started. Waiting for payment confirmation."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Max is active.")).toBeNull();
+  });
+
+  it("shows a pending confirm state and blocks double-fires while the change runs", async () => {
     const user = userEvent.setup();
     let resolveChange: ((value: unknown) => void) | undefined;
-    mocks.osAccountsChangePlan.mockImplementation(
+    mocks.osAccountsUpgradeSession.mockImplementation(
       () =>
         new Promise((resolve) => {
           resolveChange = resolve;
@@ -1075,19 +1330,25 @@ describe("AppSettings", () => {
     const confirm = await screen.findByRole("button", { name: "Upgrade now" });
     await user.click(confirm);
 
-    // Busy feedback while the PATCH is in flight, disabled against a second
-    // fire; a rapid second click must not charge twice.
+    // Busy feedback while the hosted session is in flight, disabled against a
+    // second request.
     const busy = await screen.findByRole("button", { name: "Upgrading..." });
     expect(busy).toBeDisabled();
     fireEvent.click(busy);
-    expect(mocks.osAccountsChangePlan).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledTimes(1);
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
 
     resolveChange?.({ subscribed: true, plan: "max", status: "active" });
     await waitFor(() => expect(screen.queryByText(MAX_CONFIRM_BODY)).toBeNull());
   });
 
-  it("keeps the confirm open showing the failure when the change errors", async () => {
+  it("keeps the confirm open showing the failure when the plan change fails", async () => {
     const user = userEvent.setup();
+    mocks.osAccountsUpgradeSession.mockRejectedValueOnce({
+      code: "network_error",
+      message: "Could not reach OS Accounts.",
+    });
     mocks.osAccountsChangePlan.mockRejectedValueOnce({
       code: "network_error",
       message: "Could not reach OS Accounts.",
@@ -1101,25 +1362,61 @@ describe("AppSettings", () => {
     // The dialog stays up as the retry affordance, with the error inside it.
     expect(await screen.findByText("Could not reach OS Accounts.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Upgrade now" })).toBeEnabled();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
   });
 
-  it("treats already_on_plan as a benign refresh, not an error", async () => {
+  it("announces Max only after the refreshed account shows the credit grant", async () => {
     const user = userEvent.setup();
-    const onAccountRefresh = vi.fn(async () => undefined);
-    mocks.osAccountsChangePlan.mockRejectedValueOnce({
-      code: "already_on_plan",
-      message: "You are already on this plan.",
-    });
-    renderProBillingSettings(onAccountRefresh);
+    const proAccount: AccountStatus = {
+      ...signedInAccount,
+      balance: { credits: 1200, usdMillis: 1200, usageRemainingPercent: 40 },
+      subscription: { subscribed: true, status: "active", plan: "pro" },
+    };
+    const optimisticMaxAccount: AccountStatus = {
+      ...proAccount,
+      subscription: { subscribed: true, status: "active", plan: "max" },
+    };
+    const maxAccount: AccountStatus = {
+      ...proAccount,
+      balance: { credits: 50_000, usdMillis: 50_000, usageRemainingPercent: 100 },
+      subscription: { subscribed: true, status: "active", plan: "max" },
+    };
+    let resolveGrantRefresh: ((account: AccountStatus) => void) | undefined;
+    const onAccountRefresh = vi.fn<() => Promise<AccountStatus | undefined>>(
+      () =>
+        new Promise((resolve) => {
+          resolveGrantRefresh = resolve;
+        }),
+    );
+    const { rerenderAccount } = renderProBillingSettings(onAccountRefresh);
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
     await user.click(screen.getByRole("button", { name: "Upgrade to Max" }));
     await user.click(await screen.findByRole("button", { name: "Upgrade now" }));
 
-    // Benign copy plus a refresh so the card shows the server's current plan.
-    expect(await screen.findByText("You are already on Max.")).toBeInTheDocument();
-    await waitFor(() => expect(onAccountRefresh).toHaveBeenCalled());
-    expect(screen.queryByText("You are already on this plan.")).toBeNull();
+    expect(
+      await screen.findByText("Waiting for you to confirm in the browser"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Max is active.")).toBeNull();
+
+    // The subscription can show Max before its invoice-backed grant. That alone
+    // must not advance the status while the credit balance is unchanged.
+    rerenderAccount?.(optimisticMaxAccount);
+    await waitFor(() => expect(onAccountRefresh).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("Max is active.")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Max plan" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Pro plan" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Upgrade to Max" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Manage billing" })).toBeInTheDocument();
+
+    rerenderAccount?.(maxAccount);
+    resolveGrantRefresh?.(maxAccount);
+
+    expect(await screen.findByText("Max is active.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Max plan" })).toBeInTheDocument();
+    expect(mocks.osAccountsUpgradeSession).toHaveBeenCalledWith("max");
+    expect(mocks.osAccountsChangePlan).not.toHaveBeenCalled();
+    expect(mocks.osAccountsUpgrade).not.toHaveBeenCalled();
   });
 
   it("shows Max subscribers only billing management, no upgrade path", async () => {
@@ -1692,7 +1989,7 @@ describe("AppSettings", () => {
     }
   });
 
-  it("only lists microphone permissions on Windows", async () => {
+  it("lists system audio controls but no dictation-only controls on Windows", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -1700,6 +1997,7 @@ describe("AppSettings", () => {
     const onEnableMicrophone = vi.fn();
     const onEnableAccessibility = vi.fn();
     const onEnableSystemAudio = vi.fn();
+    const onSourceModeChange = vi.fn();
 
     try {
       render(
@@ -1724,11 +2022,10 @@ describe("AppSettings", () => {
               {
                 source: "system",
                 required: true,
-                ready: false,
-                permissionState: "denied",
+                ready: true,
+                permissionState: "granted",
                 deviceAvailable: true,
-                captureAvailable: false,
-                recoveryAction: "openSystemAudioSettings",
+                captureAvailable: true,
               },
             ],
           }}
@@ -1737,17 +2034,20 @@ describe("AppSettings", () => {
           accessibilityPermissionStatus="missing"
           onAccountChanged={vi.fn()}
           onAccountRefresh={vi.fn()}
-          onSourceModeChange={vi.fn()}
+          onSourceModeChange={onSourceModeChange}
           onEnableMicrophone={onEnableMicrophone}
           onEnableAccessibility={onEnableAccessibility}
           onEnableSystemAudio={onEnableSystemAudio}
         />,
       );
 
-      expect(screen.getByText("Access used for recording audio.")).toBeInTheDocument();
+      expect(screen.getByText("Audio access")).toBeInTheDocument();
+      expect(
+        screen.getByText("Audio sources available for recording microphone and app audio."),
+      ).toBeInTheDocument();
       expect(screen.getByText("Microphone")).toBeInTheDocument();
       expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
-      expect(screen.queryByText("System audio")).not.toBeInTheDocument();
+      expect(screen.getByText("System audio")).toBeInTheDocument();
 
       const microphoneRow = screen.getByText("Microphone").closest(".settings-row");
       expect(microphoneRow).not.toBeNull();
@@ -1761,12 +2061,23 @@ describe("AppSettings", () => {
       expect(onEnableAccessibility).not.toHaveBeenCalled();
       expect(onEnableSystemAudio).not.toHaveBeenCalled();
 
+      const systemAudioRow = screen.getByText("System audio").closest(".settings-row");
+      expect(systemAudioRow).not.toBeNull();
+      expect(within(systemAudioRow as HTMLElement).getByLabelText("Available")).toBeInTheDocument();
+      await userEvent.click(
+        within(systemAudioRow as HTMLElement).getByRole("button", {
+          name: "Open sound settings",
+        }),
+      );
+      expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
+
       await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
-      expect(
-        screen.queryByRole("switch", {
+      await userEvent.click(
+        screen.getByRole("switch", {
           name: "Capture system audio for notes",
         }),
-      ).not.toBeInTheDocument();
+      );
+      expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
       expect(
         screen.queryByRole("button", {
           name: "Start test",
@@ -2394,6 +2705,110 @@ describe("AppSettings", () => {
     expect(mocks.setVeniceModel).not.toHaveBeenCalled();
   });
 
+  it("serializes rapid preset saves and keeps the latest automatic preference", async () => {
+    const autoSettings = {
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      costQuality: 50,
+    };
+    mocks.providerModelSettings.mockResolvedValueOnce({ settings: autoSettings });
+    let resolveFirst!: (settings: typeof autoSettings) => void;
+    let resolveSecond!: (settings: typeof autoSettings) => void;
+    const first = new Promise<typeof autoSettings>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const second = new Promise<typeof autoSettings>((resolve) => {
+      resolveSecond = resolve;
+    });
+    mocks.setCostQuality.mockReset();
+    mocks.setCostQuality.mockImplementationOnce(() => first).mockImplementationOnce(() => second);
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await screen.findByRole("tab", { name: "Models" });
+    fireEvent.click(screen.getByRole("tab", { name: "Models" }));
+    const preference = await screen.findByRole("group", {
+      name: "Auto preference",
+    });
+    const lowerCost = within(preference).getByRole("button", { name: "Lower cost" });
+    const balanced = within(preference).getByRole("button", { name: "Balanced" });
+    const higherQuality = within(preference).getByRole("button", { name: "Higher quality" });
+    expect(balanced).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByText("Choose how June balances model quality and usage cost."),
+    ).toBeVisible();
+
+    fireEvent.click(lowerCost);
+    fireEvent.click(higherQuality);
+
+    await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledTimes(1));
+    expect(mocks.setCostQuality).toHaveBeenNthCalledWith(1, 20);
+    expect(higherQuality).toHaveAttribute("aria-pressed", "true");
+
+    await act(async () => {
+      resolveFirst({ ...autoSettings, costQuality: 20 });
+      await first;
+    });
+    await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledTimes(2));
+    expect(mocks.setCostQuality).toHaveBeenNthCalledWith(2, 100);
+    expect(higherQuality).toHaveAttribute("aria-pressed", "true");
+
+    await act(async () => {
+      resolveSecond({ ...autoSettings, costQuality: 100 });
+      await second;
+    });
+    await waitFor(() =>
+      expect(screen.getByText("Automatic model preference updated.")).toBeInTheDocument(),
+    );
+    expect(higherQuality).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("restores the last confirmed automatic preference when saving fails", async () => {
+    const autoSettings = {
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      costQuality: 50,
+    };
+    mocks.providerModelSettings.mockResolvedValueOnce({ settings: autoSettings });
+    mocks.setCostQuality.mockRejectedValueOnce(new Error("Could not save preference."));
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Models" }));
+    const preference = await screen.findByRole("group", { name: "Auto preference" });
+    const balanced = within(preference).getByRole("button", { name: "Balanced" });
+    const higherQuality = within(preference).getByRole("button", { name: "Higher quality" });
+
+    fireEvent.click(higherQuality);
+    expect(higherQuality).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(screen.getByText("Could not save preference.")).toBeInTheDocument());
+    expect(balanced).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("keeps local endpoint fields hidden until local setup starts", async () => {
     const user = userEvent.setup();
 
@@ -2931,6 +3346,39 @@ describe("AppSettings", () => {
     await waitFor(() => expect(screen.queryByText("Key saved.")).not.toBeInTheDocument());
   });
 
+  it("explains that Auto does not use the saved Venice API key", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+        veniceApiKeyConfigured: true,
+      },
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+
+    expect(
+      await screen.findByText(
+        "Auto does not use your Venice API key for notes or chat. Choose a Venice model above to use your key for notes and new chats.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("defaults the model picker to curated suggestions", async () => {
     const user = userEvent.setup();
     render(
@@ -2950,12 +3398,20 @@ describe("AppSettings", () => {
     await user.click(await screen.findByRole("button", { name: "Change text model" }));
 
     // Suggested is the default view: only the curated picks present in the
-    // catalog show in the compact root menu.
+    // catalog show in the compact root menu. Auto lives in the pinned toggle
+    // section, not the suggested rows.
     expect(await screen.findByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
-    expect(await screen.findByRole("option", { name: /GLM 5\.1/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /GLM 5\.1/ })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /Kimi K2\.6/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Auto/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Venice Uncensored/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "All models" })).toBeInTheDocument();
+
+    // The toggle selects the router and keeps the popover open.
+    await user.click(screen.getByRole("switch", { name: "Choose the model automatically" }));
+    await waitFor(() =>
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "open-software/auto"),
+    );
 
     // All models shows the full available catalog in the flyout.
     await user.click(screen.getByRole("button", { name: "All models" }));

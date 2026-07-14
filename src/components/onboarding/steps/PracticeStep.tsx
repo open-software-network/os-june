@@ -1,4 +1,4 @@
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { useEffect, useState } from "react";
 import { JuneMark } from "../../account/AccountGate";
 import { KeycapShortcut } from "../../shortcuts/KeycapShortcut";
@@ -101,7 +101,7 @@ export function DictationPracticeStep({
                   role="status"
                   aria-label="Dictation is working"
                 >
-                  <IconCheckmark1Small size={15} aria-hidden />
+                  <IconCheckmark2Small size={15} aria-hidden />
                 </span>
               ) : null}
             </div>

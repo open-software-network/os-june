@@ -42,6 +42,16 @@ const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
 // per-call output budget than the backend accepts, which otherwise trips a
 // validation error that it misclassifies as prompt context overflow.
 const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
+/// Internal Hermes model id used to carry a per-run Auto preference through
+/// session-scoped `config.set`. June's on-device provider proxy rewrites it
+/// before forwarding, so June API never sees this implementation detail.
+const AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__june_auto_generation__:";
+/// Internal Hermes model id that preserves an explicitly remote selection
+/// even when a configured local endpoint exposes the same raw model id.
+const AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__june_remote_generation__:";
+/// The frontend's synthetic catalog id prefix for the local model option
+/// (`LOCAL_GENERATION_OPTION_ID_PREFIX` in `src/lib/local-generation.ts`).
+const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
 const AGENT_TITLE_MAX_CHARS: usize = 48;
 const VENICE_API_KEY_HEADER: &str = "x-venice-api-key";
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
@@ -240,6 +250,7 @@ struct GenerateBody {
     language: Option<String>,
     existing_generated_note: Option<String>,
     model: String,
+    cost_quality: Option<f64>,
     stream: bool,
 }
 
@@ -343,6 +354,9 @@ pub async fn generate_note_from_transcript(
         language: request.language,
         existing_generated_note: request.existing_generated_note,
         model,
+        cost_quality: (crate::providers::generation_model()
+            == crate::providers::AUTO_GENERATION_MODEL)
+            .then(crate::providers::cost_quality),
         stream: true,
     };
     let response: GenerateResponse =
@@ -829,28 +843,19 @@ fn job_id_from_status_path(path: &str) -> &str {
 pub async fn proxy_agent_chat_completions(
     mut body: serde_json::Value,
 ) -> Result<AgentChatCompletionsResponse, AppError> {
-    normalize_agent_chat_request_for_proxy(&mut body);
-    if crate::providers::generation_provider() == PROVIDER_LOCAL {
-        return proxy_local_agent_chat_completions(body).await;
-    }
-    // Existing sessions are model-locked. A session created while local mode was
-    // active keeps sending the raw local model id even if the global default is
-    // later changed back to Venice from the new-session composer. Honor that
-    // stored model by routing it to the local proxy while the endpoint remains
-    // configured, so the locked session does not silently move off-device.
     let local_settings = crate::providers::local_generation_settings();
-    let local_model_id = local_settings.model_id.trim().to_string();
-    if should_proxy_request_to_configured_local_model(&body, &local_settings) {
+    let route = agent_generation_route(
+        &body,
+        &local_settings,
+        &crate::providers::generation_provider(),
+    )?;
+    normalize_agent_chat_request_for_proxy(&mut body);
+    // Route from the tagged model Hermes stored for this session, not from a
+    // mutable process-wide provider setting. Every inference in one agent run
+    // therefore keeps the route selected at its prompt boundary.
+    if route == AgentGenerationRoute::Local {
         return proxy_local_agent_chat_completions(body).await;
     }
-    // Legacy safety net for invalid/stale local references that cannot be
-    // served locally (for example a prefixed synthetic id after settings were
-    // cleared): degrade to the current global model rather than sending an id
-    // the remote backend rejects via require_priced_model.
-    let global_model = crate::providers::generation_model();
-    redirect_stale_local_model(&mut body, &local_model_id, &global_model);
-    // Computed after the redirect so a degraded stale-local body is gated on the
-    // real (global) model, not the local id it arrived with.
     let send_venice_api_key = body_model_accepts_venice_api_key(&body);
     let url = format!("{}/v1/chat/completions", june_api_url());
     let mut token = crate::os_accounts::access_token().await?;
@@ -1136,70 +1141,136 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
             serde_json::Value::String(crate::providers::generation_model()),
         );
     }
+    let mut request_model = object
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
+    for prefix in [
+        AGENT_RUN_REMOTE_MODEL_PREFIX,
+        LOCAL_GENERATION_OPTION_ID_PREFIX,
+    ] {
+        if request_model.starts_with(prefix) {
+            if let Some(decoded) = decode_tagged_model(&request_model, prefix) {
+                request_model = decoded;
+                object.insert(
+                    "model".to_string(),
+                    serde_json::Value::String(request_model.clone()),
+                );
+            }
+            break;
+        }
+    }
+    let auto_cost_quality =
+        if let Some(encoded) = request_model.strip_prefix(AGENT_RUN_AUTO_MODEL_PREFIX) {
+            Some(
+                encoded
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|value| *value <= 100)
+                    .map_or_else(crate::providers::cost_quality, |value| {
+                        f64::from(value) / 100.0
+                    }),
+            )
+        } else if request_model == crate::providers::AUTO_GENERATION_MODEL {
+            Some(crate::providers::cost_quality())
+        } else {
+            None
+        };
+    if let Some(cost_quality) = auto_cost_quality {
+        object.insert(
+            "model".to_string(),
+            serde_json::Value::String(crate::providers::AUTO_GENERATION_MODEL.to_string()),
+        );
+        object.insert(
+            "auto".to_string(),
+            serde_json::json!({
+                "cost_quality": cost_quality
+            }),
+        );
+    }
     clamp_agent_chat_output_tokens(object, "max_tokens");
     clamp_agent_chat_output_tokens(object, "max_completion_tokens");
 }
 
-/// The frontend's synthetic catalog id prefix for the local model option
-/// (`LOCAL_GENERATION_OPTION_ID_PREFIX` in `src/lib/local-generation.ts`).
-/// The prefix exists so the synthetic id can never collide with a real
-/// remote model id, which makes it sufficient on its own to identify a local
-/// reference — no need to decode the percent-encoded remainder.
-const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
-
-/// True when `model` names a local model: the configured raw id, or ANY id in
-/// the frontend's prefixed synthetic catalog form. Defense in depth: the
-/// synthetic id is translated to the raw id at the Hermes boundary, but
-/// sessions persisted before that fix can still carry the prefixed form —
-/// and a prefixed id is by construction never a valid remote model, even
-/// when it encodes a since-changed local id.
-fn is_local_model_reference(model: &str, local_model_id: &str) -> bool {
-    (!local_model_id.is_empty() && model == local_model_id)
-        || model.starts_with(LOCAL_GENERATION_OPTION_ID_PREFIX)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentGenerationRoute {
+    Local,
+    Remote,
 }
 
-fn should_proxy_request_to_configured_local_model(
+fn decode_tagged_model(model: &str, prefix: &str) -> Option<String> {
+    let encoded = model.strip_prefix(prefix)?;
+    let decoded = urlencoding::decode(encoded).ok()?.trim().to_string();
+    (!decoded.is_empty()).then_some(decoded)
+}
+
+/// Resolve provider provenance before normalization removes internal tags.
+/// New June sessions are always tagged. The raw-id comparison remains only
+/// for sessions created by older app versions, where provenance was not
+/// persisted and a configured local match is the safest compatibility choice.
+fn agent_generation_route(
     body: &serde_json::Value,
     settings: &LocalGenerationSettings,
-) -> bool {
-    let local_model_id = settings.model_id.trim();
-    if settings.base_url.trim().is_empty() || local_model_id.is_empty() {
-        return false;
-    }
-    body.as_object()
+    global_provider: &str,
+) -> Result<AgentGenerationRoute, AppError> {
+    let requested_model = body
+        .as_object()
         .and_then(|object| object.get("model"))
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
-        .is_some_and(|model| is_local_model_reference(model, local_model_id))
-}
-
-/// Rewrites a request that carries an unservable local model reference to the
-/// current global generation model, for the remote proxy path only. Configured
-/// local references are routed to the local proxy before this runs; this guard
-/// remains for legacy synthetic ids or cleared local settings that would never
-/// be valid remote model ids. Genuine remote per-session overrides (any
-/// non-synthetic id other than the configured local model id) are left
-/// untouched, so an explicit `/model` switch to a real remote model still wins.
-fn redirect_stale_local_model(
-    body: &mut serde_json::Value,
-    local_model_id: &str,
-    global_model: &str,
-) {
-    let local_model_id = local_model_id.trim();
-    let Some(object) = body.as_object_mut() else {
-        return;
-    };
-    let is_stale_local = object
-        .get("model")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .is_some_and(|model| is_local_model_reference(model, local_model_id));
-    if is_stale_local {
-        object.insert(
-            "model".to_string(),
-            serde_json::Value::String(global_model.to_string()),
-        );
+        .unwrap_or_default();
+    let local_model_id = settings.model_id.trim();
+    if requested_model.starts_with(LOCAL_GENERATION_OPTION_ID_PREFIX) {
+        let selected_local_model =
+            decode_tagged_model(requested_model, LOCAL_GENERATION_OPTION_ID_PREFIX).ok_or_else(
+                || {
+                    AppError::new(
+                "local_model_invalid",
+                "The local model selected for this session is invalid. Choose the model again.",
+            )
+                },
+            )?;
+        if settings.base_url.trim().is_empty() || selected_local_model != local_model_id {
+            return Err(AppError::new(
+                "local_model_unavailable",
+                "The local model selected for this session is no longer configured. Reconfigure it or choose another model.",
+            ));
+        }
+        return Ok(AgentGenerationRoute::Local);
     }
+    if requested_model.starts_with(AGENT_RUN_REMOTE_MODEL_PREFIX) {
+        decode_tagged_model(requested_model, AGENT_RUN_REMOTE_MODEL_PREFIX).ok_or_else(|| {
+            AppError::new(
+                "remote_model_invalid",
+                "The model selected for this session is invalid. Choose the model again.",
+            )
+        })?;
+        return Ok(AgentGenerationRoute::Remote);
+    }
+    if requested_model.starts_with(AGENT_RUN_AUTO_MODEL_PREFIX)
+        || requested_model == crate::providers::AUTO_GENERATION_MODEL
+    {
+        return Ok(AgentGenerationRoute::Remote);
+    }
+    if requested_model.is_empty() {
+        return Ok(if global_provider == PROVIDER_LOCAL {
+            AgentGenerationRoute::Local
+        } else {
+            AgentGenerationRoute::Remote
+        });
+    }
+    Ok(
+        if !settings.base_url.trim().is_empty()
+            && !local_model_id.is_empty()
+            && requested_model == local_model_id
+        {
+            AgentGenerationRoute::Local
+        } else {
+            AgentGenerationRoute::Remote
+        },
+    )
 }
 
 fn clamp_agent_chat_output_tokens(
@@ -1956,10 +2027,28 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         .trim()
         .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
         .replace(['\r', '\n'], " ");
-    let prefixes = [
-        "Title:",
-        "Session title:",
-        "Request:",
+    let label_prefixes = ["Title:", "Session title:", "Request:"];
+    loop {
+        let mut changed = false;
+        for prefix in label_prefixes {
+            if title.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                title = title[prefix.len()..].trim_start().to_string();
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    title = title
+        .trim()
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
+        .trim()
+        .to_string();
+    if !is_valid_agent_session_title_candidate(&title) {
+        return None;
+    }
+    let request_prefixes = [
         "Please ",
         "Can you ",
         "Could you ",
@@ -1977,7 +2066,7 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
     ];
     loop {
         let mut changed = false;
-        for prefix in prefixes {
+        for prefix in request_prefixes {
             if title.to_lowercase().starts_with(&prefix.to_lowercase()) {
                 title = title[prefix.len()..].trim_start().to_string();
                 changed = true;
@@ -2016,7 +2105,118 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
             .trim_end()
             .to_string();
     }
-    (!title.is_empty()).then_some(title)
+    is_valid_agent_session_title_candidate(&title).then_some(title)
+}
+
+fn is_valid_agent_session_title_candidate(value: &str) -> bool {
+    let normalized = value.trim().replace(['‘', '’'], "'").to_lowercase();
+    if normalized.is_empty() || normalized.contains('?') {
+        return false;
+    }
+    let dialogue_prefixes = [
+        "i'm sorry",
+        "i am sorry",
+        "i'm unable",
+        "i am unable",
+        "i can't",
+        "i cannot",
+        "i won't",
+        "i don't",
+        "i do not",
+        "i found",
+        "i fixed",
+        "i updated",
+        "i created",
+        "i completed",
+        "i finished",
+        "i wrote",
+        "i added",
+        "i removed",
+        "i changed",
+        "i checked",
+        "i reviewed",
+        "i traced",
+        "sorry",
+        "as an ai",
+        "sure",
+        "certainly",
+        "of course",
+        "here's",
+        "here is",
+        "here are",
+        "unable to help",
+        "unable to assist",
+        "unable to comply",
+    ];
+    if dialogue_prefixes
+        .iter()
+        .any(|prefix| starts_with_title_phrase(&normalized, prefix))
+        || ["can't help", "cannot help", "can't assist", "cannot assist"]
+            .iter()
+            .any(|phrase| normalized.contains(phrase))
+    {
+        return false;
+    }
+    let mut words = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '\'')
+        .filter(|word| !word.is_empty());
+    let first = words.next().unwrap_or_default();
+    let second = words.next().unwrap_or_default();
+    let question_words = ["who", "what", "when", "where", "why", "how"];
+    let question_auxiliaries = [
+        "could",
+        "would",
+        "should",
+        "do",
+        "does",
+        "did",
+        "is",
+        "are",
+        "am",
+        "have",
+        "has",
+        "was",
+        "were",
+        "had",
+        "must",
+        "shall",
+        "can't",
+        "couldn't",
+        "wouldn't",
+        "shouldn't",
+        "don't",
+        "doesn't",
+        "didn't",
+        "isn't",
+        "aren't",
+        "won't",
+        "haven't",
+        "hasn't",
+        "wasn't",
+        "weren't",
+        "mustn't",
+        "shan't",
+    ];
+    let ambiguous_question_auxiliaries = ["can", "will", "may", "might"];
+    let question_subjects = [
+        "i", "you", "we", "he", "she", "it", "they", "june", "this", "that", "these", "those",
+        "there", "the", "a", "an", "my", "your", "our", "his", "her", "their",
+    ];
+    let is_how_to_title = first == "how" && second == "to";
+    !(first == "which"
+        || (question_words.contains(&first) && !is_how_to_title)
+        || question_auxiliaries.contains(&first)
+        || (ambiguous_question_auxiliaries.contains(&first) && question_subjects.contains(&second)))
+}
+
+fn starts_with_title_phrase(value: &str, phrase: &str) -> bool {
+    value.strip_prefix(phrase).is_some_and(|suffix| {
+        suffix.is_empty()
+            || suffix
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_whitespace() || ",:;.!".contains(character))
+    })
 }
 
 async fn post_json<T, B>(path: &str, body: &B, send_venice_api_key: bool) -> Result<T, AppError>
@@ -2389,7 +2589,13 @@ where
     if envelope.message.as_deref() == Some("venice_api_key_invalid") {
         return Err(AppError::new(
             "venice_api_key_invalid",
-            "Your saved Venice API key is not an inference key. Open Settings and paste a key that starts with VENICE_INFERENCE_KEY_.",
+            "June could not use your saved Venice API key. If June just updated, try again later. Otherwise, open Settings and replace the key.",
+        ));
+    }
+    if envelope.message.as_deref() == Some("venice_api_key_model_unavailable") {
+        return Err(AppError::new(
+            "venice_api_key_model_unavailable",
+            "Your selected Venice model is no longer available. Open Settings and choose another Venice model.",
         ));
     }
     if envelope.message.as_deref() == Some("venice_api_key_rejected") {
@@ -2454,8 +2660,10 @@ fn request_accepts_venice_api_key(path: &str, model_accepts_venice_api_key: bool
 }
 
 fn model_accepts_venice_api_key(model: &str) -> bool {
-    crate::providers::transcription_provider_for_model(model.trim())
-        == crate::providers::PROVIDER_VENICE
+    let model = model.trim();
+    model != crate::providers::AUTO_GENERATION_MODEL
+        && crate::providers::transcription_provider_for_model(model)
+            == crate::providers::PROVIDER_VENICE
 }
 
 fn body_model_accepts_venice_api_key(body: &serde_json::Value) -> bool {
@@ -2974,6 +3182,98 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
     }
 
     #[test]
+    fn rejects_assistant_dialogue_and_questions_as_agent_session_titles() {
+        assert_eq!(
+            clean_agent_session_title("I'm sorry, but I can't help with that"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("I’m sorry, but I can’t help with that"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("Could you clarify the target?"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("What should I update"), None);
+        assert_eq!(
+            clean_agent_session_title("What, exactly should I update"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("What,exactly should I update"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("Would/you clarify"), None);
+        assert_eq!(clean_agent_session_title("Can June access the note"), None);
+        assert_eq!(clean_agent_session_title("Will June rename this"), None);
+        assert_eq!(
+            clean_agent_session_title("Which email service should I use"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("Would it be okay to rename this"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("Should this use Gmail"), None);
+        assert_eq!(clean_agent_session_title("Are there archived notes"), None);
+        assert_eq!(clean_agent_session_title("Was this already deployed"), None);
+        assert_eq!(clean_agent_session_title("Were there archived notes"), None);
+        assert_eq!(clean_agent_session_title("Had this failed before"), None);
+        assert_eq!(clean_agent_session_title("Must I choose a project"), None);
+        assert_eq!(clean_agent_session_title("Shall I continue"), None);
+        assert_eq!(
+            clean_agent_session_title("Wouldn't this overwrite the note"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("I don't have email access"), None);
+        assert_eq!(
+            clean_agent_session_title("Could you clarify the target"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("Session title: \"Could you clarify the target\""),
+            None
+        );
+    }
+
+    #[test]
+    fn retains_concise_topic_agent_session_titles() {
+        assert_eq!(
+            clean_agent_session_title("Clarification handling").as_deref(),
+            Some("Clarification handling")
+        );
+        assert_eq!(
+            clean_agent_session_title("Assistant refusal guard").as_deref(),
+            Some("Assistant refusal guard")
+        );
+        assert_eq!(
+            clean_agent_session_title("May release planning").as_deref(),
+            Some("May release planning")
+        );
+        assert_eq!(
+            clean_agent_session_title("Will migration review").as_deref(),
+            Some("Will migration review")
+        );
+        assert_eq!(
+            clean_agent_session_title("Can bus diagnostics").as_deref(),
+            Some("Can bus diagnostics")
+        );
+        assert_eq!(
+            clean_agent_session_title("Open GarageBand").as_deref(),
+            Some("Open GarageBand")
+        );
+        assert_eq!(
+            clean_agent_session_title("How to deploy June").as_deref(),
+            Some("How to deploy June")
+        );
+        assert_eq!(
+            clean_agent_session_title("Surefire recovery plan").as_deref(),
+            Some("Surefire recovery plan")
+        );
+    }
+
+    #[test]
     fn agent_session_title_user_content_passes_through_prompt_only() {
         assert_eq!(
             agent_session_title_user_content("  Refactor this parser  ", None),
@@ -3086,7 +3386,7 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             panic!("invalid Venice key should fail");
         };
         assert_eq!(invalid.code, "venice_api_key_invalid");
-        assert!(invalid.message.contains("VENICE_INFERENCE_KEY_"));
+        assert!(invalid.message.contains("try again later"));
 
         let Err(rejected) = parse_response_body::<GenerateResponse>(
             "/v1/notes/generate",
@@ -3098,6 +3398,19 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         };
         assert_eq!(rejected.code, "venice_api_key_rejected");
         assert!(rejected.message.contains("update it"));
+
+        let Err(model_unavailable) = parse_response_body::<GenerateResponse>(
+            "/v1/notes/generate",
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            None,
+            r#"{"data":null,"success":false,"error_code":4000,"message":"venice_api_key_model_unavailable"}"#,
+        ) else {
+            panic!("retired Venice model should fail");
+        };
+        assert_eq!(model_unavailable.code, "venice_api_key_model_unavailable");
+        assert!(model_unavailable
+            .message
+            .contains("choose another Venice model"));
     }
 
     #[test]
@@ -3113,7 +3426,7 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
     }
 
     #[test]
-    fn remote_proxy_routes_configured_local_model_to_local_proxy() {
+    fn agent_proxy_routes_legacy_configured_local_model_locally() {
         let body = serde_json::json!({
             "model": "llama3.1:8b",
             "messages": [{ "role": "user", "content": "hi" }],
@@ -3124,14 +3437,37 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             api_key: String::new(),
         };
 
-        assert!(should_proxy_request_to_configured_local_model(
-            &body, &settings
-        ));
+        assert_eq!(
+            agent_generation_route(&body, &settings, "venice").unwrap(),
+            AgentGenerationRoute::Local
+        );
     }
 
     #[test]
-    fn remote_proxy_routes_configured_synthetic_local_model_to_local_proxy() {
+    fn agent_proxy_preserves_explicit_remote_provenance_when_model_ids_collide() {
         let body = serde_json::json!({
+            "model": "__june_remote_generation__:llama3.1%3A8b",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        let settings = LocalGenerationSettings {
+            base_url: "http://localhost:11434/v1".to_string(),
+            model_id: "llama3.1:8b".to_string(),
+            api_key: String::new(),
+        };
+
+        assert_eq!(
+            agent_generation_route(&body, &settings, PROVIDER_LOCAL).unwrap(),
+            AgentGenerationRoute::Remote
+        );
+
+        let mut normalized = body;
+        normalize_agent_chat_request_for_proxy(&mut normalized);
+        assert_eq!(normalized["model"], serde_json::json!("llama3.1:8b"));
+    }
+
+    #[test]
+    fn agent_proxy_routes_matching_tagged_local_model_locally() {
+        let mut body = serde_json::json!({
             "model": "__june_local_generation__:llama3.1%3A8b",
             "messages": [{ "role": "user", "content": "hi" }],
         });
@@ -3141,15 +3477,19 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             api_key: String::new(),
         };
 
-        assert!(should_proxy_request_to_configured_local_model(
-            &body, &settings
-        ));
+        assert_eq!(
+            agent_generation_route(&body, &settings, "venice").unwrap(),
+            AgentGenerationRoute::Local
+        );
+
+        normalize_agent_chat_request_for_proxy(&mut body);
+        assert_eq!(body["model"], serde_json::json!("llama3.1:8b"));
     }
 
     #[test]
-    fn remote_proxy_does_not_route_unconfigured_local_model_to_local_proxy() {
+    fn agent_proxy_rejects_tagged_local_model_when_endpoint_is_unavailable() {
         let body = serde_json::json!({
-            "model": "llama3.1:8b",
+            "model": "__june_local_generation__:llama3.1%3A8b",
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let settings = LocalGenerationSettings {
@@ -3158,81 +3498,24 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             api_key: String::new(),
         };
 
-        assert!(!should_proxy_request_to_configured_local_model(
-            &body, &settings
-        ));
+        let error = agent_generation_route(&body, &settings, "venice").unwrap_err();
+        assert_eq!(error.code, "local_model_unavailable");
     }
 
     #[test]
-    fn remote_proxy_redirects_unservable_local_model_to_global_model() {
-        // A local model reference with no configured local endpoint cannot be
-        // served locally; on the remote path it degrades to the global model
-        // rather than hard-failing against require_priced_model.
-        let mut body = serde_json::json!({
-            "model": "llama3.1:8b",
-            "messages": [{ "role": "user", "content": "hi" }],
-        });
-
-        redirect_stale_local_model(&mut body, "llama3.1:8b", "zai-org-glm-5-2");
-
-        assert_eq!(body["model"], serde_json::json!("zai-org-glm-5-2"));
-    }
-
-    #[test]
-    fn remote_proxy_redirects_prefixed_synthetic_local_model_to_global_model() {
-        // A session persisted before the Hermes-boundary translation can carry
-        // the frontend's synthetic catalog id (prefix + encodeURIComponent of
-        // the raw id). The guard must recognize and rewrite that form too.
-        let mut body = serde_json::json!({
+    fn agent_proxy_rejects_tagged_local_model_after_configuration_changes() {
+        let body = serde_json::json!({
             "model": "__june_local_generation__:llama3.1%3A8b",
             "messages": [{ "role": "user", "content": "hi" }],
         });
+        let settings = LocalGenerationSettings {
+            base_url: "http://localhost:11434/v1".to_string(),
+            model_id: "qwen3:8b".to_string(),
+            api_key: String::new(),
+        };
 
-        redirect_stale_local_model(&mut body, "llama3.1:8b", "zai-org-glm-5-2");
-
-        assert_eq!(body["model"], serde_json::json!("zai-org-glm-5-2"));
-    }
-
-    #[test]
-    fn remote_proxy_redirects_any_prefixed_synthetic_id_even_without_local_settings() {
-        // A prefixed id is never a valid remote model, so it degrades to the
-        // global model even when the encoded id no longer matches the saved
-        // local settings (here: local settings cleared entirely).
-        let mut body = serde_json::json!({
-            "model": "__june_local_generation__:other-model",
-            "messages": [{ "role": "user", "content": "hi" }],
-        });
-
-        redirect_stale_local_model(&mut body, "", "zai-org-glm-5-2");
-
-        assert_eq!(body["model"], serde_json::json!("zai-org-glm-5-2"));
-    }
-
-    #[test]
-    fn remote_proxy_preserves_genuine_remote_model_override() {
-        // A real remote per-session override (an explicit /model switch) must
-        // survive the guard so the session keeps the model the user chose.
-        let mut body = serde_json::json!({
-            "model": "kimi-k2-6",
-            "messages": [{ "role": "user", "content": "hi" }],
-        });
-
-        redirect_stale_local_model(&mut body, "llama3.1:8b", "zai-org-glm-5-2");
-
-        assert_eq!(body["model"], serde_json::json!("kimi-k2-6"));
-    }
-
-    #[test]
-    fn remote_proxy_stale_local_redirect_is_noop_without_local_model() {
-        // No local model configured: never touch the request model.
-        let mut body = serde_json::json!({
-            "model": "kimi-k2-6",
-            "messages": [{ "role": "user", "content": "hi" }],
-        });
-
-        redirect_stale_local_model(&mut body, "   ", "zai-org-glm-5-2");
-
-        assert_eq!(body["model"], serde_json::json!("kimi-k2-6"));
+        let error = agent_generation_route(&body, &settings, "venice").unwrap_err();
+        assert_eq!(error.code, "local_model_unavailable");
     }
 
     #[test]
@@ -3265,6 +3548,82 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
     }
 
     #[test]
+    fn agent_proxy_injects_auto_cost_quality_preference() {
+        let mut body = serde_json::json!({
+            "model": crate::providers::AUTO_GENERATION_MODEL,
+            "messages": []
+        });
+        normalize_agent_chat_request_for_proxy(&mut body);
+        assert_eq!(
+            body["auto"]["cost_quality"],
+            serde_json::json!(crate::providers::cost_quality())
+        );
+        assert!(!body_model_accepts_venice_api_key(&body));
+    }
+
+    #[test]
+    fn agent_proxy_decodes_per_run_auto_cost_quality_preference() {
+        for (model, expected) in [
+            ("__june_auto_generation__:0", 0.0),
+            ("__june_auto_generation__:73", 0.73),
+            ("__june_auto_generation__:100", 1.0),
+        ] {
+            let mut body = serde_json::json!({
+                "model": model,
+                "messages": []
+            });
+
+            normalize_agent_chat_request_for_proxy(&mut body);
+
+            assert_eq!(
+                body["model"],
+                serde_json::json!(crate::providers::AUTO_GENERATION_MODEL)
+            );
+            assert_eq!(body["auto"]["cost_quality"], serde_json::json!(expected));
+            assert!(!body_model_accepts_venice_api_key(&body));
+        }
+    }
+
+    #[test]
+    fn agent_proxy_falls_back_safely_for_malformed_per_run_auto_model() {
+        let mut body = serde_json::json!({
+            "model": "__june_auto_generation__:not-a-preset",
+            "messages": []
+        });
+
+        normalize_agent_chat_request_for_proxy(&mut body);
+
+        assert_eq!(
+            body["model"],
+            serde_json::json!(crate::providers::AUTO_GENERATION_MODEL)
+        );
+        assert_eq!(
+            body["auto"]["cost_quality"],
+            serde_json::json!(crate::providers::cost_quality())
+        );
+        assert!(!body.to_string().contains("__june_auto_generation__:"));
+    }
+
+    #[test]
+    fn agent_proxy_falls_back_safely_for_out_of_range_per_run_auto_model() {
+        let mut body = serde_json::json!({
+            "model": "__june_auto_generation__:101",
+            "messages": []
+        });
+
+        normalize_agent_chat_request_for_proxy(&mut body);
+
+        assert_eq!(
+            body["model"],
+            serde_json::json!(crate::providers::AUTO_GENERATION_MODEL)
+        );
+        assert_eq!(
+            body["auto"]["cost_quality"],
+            serde_json::json!(crate::providers::cost_quality())
+        );
+    }
+
+    #[test]
     fn venice_key_gate_rejects_openai_transcription_models() {
         assert!(request_accepts_venice_api_key(
             "/v1/notes/transcribe",
@@ -3277,6 +3636,10 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         assert!(!request_accepts_venice_api_key(
             "/v1/dictate",
             model_accepts_venice_api_key("whisper-1")
+        ));
+        assert!(!request_accepts_venice_api_key(
+            "/v1/notes/generate",
+            model_accepts_venice_api_key(crate::providers::AUTO_GENERATION_MODEL)
         ));
         assert!(!request_accepts_venice_api_key(
             "/v1/issue-reports",

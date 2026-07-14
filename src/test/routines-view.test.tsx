@@ -42,6 +42,25 @@ vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
   listScheduledRunSessions: adapterMocks.listScheduledRunSessions,
 }));
 
+// Connector commands the create/detail pages call. Defaults mimic a build
+// with the connectors module present but nothing connected.
+const tauriMocks = vi.hoisted(() => ({
+  connectorsList: vi.fn(),
+  connectorsConnect: vi.fn(),
+  connectorsApplyRuntime: vi.fn(),
+  routineTrustGet: vi.fn(),
+  routineTrustRecordRun: vi.fn(),
+  routineTrustSet: vi.fn(),
+  connectorTriggersList: vi.fn(),
+  connectorTriggerSet: vi.fn(),
+  connectorTriggerDelete: vi.fn(),
+}));
+
+vi.mock("../lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/tauri")>()),
+  ...tauriMocks,
+}));
+
 function job(overrides: Partial<RoutineJob> = {}): RoutineJob {
   return {
     job_id: "abc123",
@@ -121,7 +140,43 @@ beforeEach(() => {
   mocks.createRoutine.mockResolvedValue(job());
   mocks.updateRoutine.mockResolvedValue(job());
   adapterMocks.listScheduledRunSessions.mockResolvedValue([]);
+  tauriMocks.connectorsList.mockResolvedValue([]);
+  tauriMocks.connectorsConnect.mockResolvedValue(googleAccount());
+  tauriMocks.connectorsApplyRuntime.mockResolvedValue(undefined);
+  tauriMocks.routineTrustGet.mockResolvedValue(null);
+  tauriMocks.routineTrustRecordRun.mockResolvedValue(null);
+  tauriMocks.routineTrustSet.mockImplementation(
+    async (input: { trustMode: string; autonomousTools?: string[] }) => ({
+      trustMode: input.trustMode,
+      approvalRunCount: 0,
+      autonomousTools: input.autonomousTools ?? [],
+    }),
+  );
+  tauriMocks.connectorTriggersList.mockResolvedValue([]);
+  tauriMocks.connectorTriggerSet.mockImplementation(
+    async (input: { jobId: string; kind: string; accountId: string; config: object }) => ({
+      id: "trig-1",
+      ...input,
+    }),
+  );
+  tauriMocks.connectorTriggerDelete.mockResolvedValue(undefined);
 });
+
+function googleAccount(overrides: Record<string, unknown> = {}) {
+  return {
+    accountId: "acc-1",
+    provider: "google" as const,
+    email: "alex@example.com",
+    scopes: [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.compose",
+      "https://www.googleapis.com/auth/gmail.modify",
+      "https://www.googleapis.com/auth/calendar.events",
+    ],
+    status: "connected" as const,
+    ...overrides,
+  };
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -442,6 +497,230 @@ describe("RoutinesView templates and creation", () => {
   });
 });
 
+describe("RoutinesView connector templates", () => {
+  it("shows the connector templates with their tool summary and trust mode", async () => {
+    mocks.listRoutines.mockResolvedValue([]);
+    renderView();
+
+    expect(await screen.findByText("Morning briefing")).toBeInTheDocument();
+    expect(screen.getByText("Auto-inbox")).toBeInTheDocument();
+    expect(screen.getByText("Meeting prep")).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/This routine can: read your mail, read your calendar/).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/This routine can: read your mail, draft replies, label and archive/),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/Trust: approval/).length).toBeGreaterThan(0);
+  });
+
+  it("gates a connector template on the required Google scopes and connects inline", async () => {
+    tauriMocks.connectorsList.mockResolvedValueOnce([]).mockResolvedValue([googleAccount()]);
+    mocks.listRoutines.mockResolvedValue([]);
+    renderView();
+    await screen.findByText("Morning briefing");
+
+    await userEvent.click(screen.getByRole("button", { name: "Add Morning briefing" }));
+
+    // Blocked: no account with the template's bundles is connected yet.
+    expect(await screen.findByText(/needs a connected Google account/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Connect Google account" }));
+
+    await waitFor(() =>
+      expect(tauriMocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["gmail_read", "calendar_read"],
+      }),
+    );
+    await waitFor(() => expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create" })).toBeEnabled());
+  });
+
+  it("gates a template on the first connected account, not any account", async () => {
+    // The routine runs against the first connected account, so a later account
+    // holding the scopes must not enable Create while the first one lacks them.
+    tauriMocks.connectorsList.mockResolvedValue([
+      googleAccount({
+        accountId: "acc-first",
+        email: "first@example.com",
+        scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+      }),
+      googleAccount({
+        accountId: "acc-second",
+        email: "second@example.com",
+      }),
+    ]);
+    mocks.listRoutines.mockResolvedValue([]);
+    renderView();
+    await screen.findByText("Morning briefing");
+
+    await userEvent.click(screen.getByRole("button", { name: "Add Morning briefing" }));
+
+    // Morning briefing needs calendar read, which only the second account has,
+    // so Create stays blocked because the first account is the one that runs.
+    expect(await screen.findByText(/needs a connected Google account/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+  });
+
+  it("creates a scheduled connector routine with trust and an immediate first run", async () => {
+    tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
+    mocks.listRoutines.mockResolvedValueOnce([]);
+    renderView();
+    await screen.findByText("Morning briefing");
+
+    await userEvent.click(screen.getByRole("button", { name: "Add Morning briefing" }));
+    mocks.listRoutines.mockResolvedValue([job()]);
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(mocks.createRoutine).toHaveBeenCalled());
+    const createArgs = (mocks.createRoutine.mock.calls[0] as unknown[])[0] as {
+      schedule: string;
+      enabledToolsets?: string[];
+    };
+    expect(createArgs.schedule).toBe("0 8 * * *");
+    // Read-only trust: read servers ambient, no actions servers.
+    expect(createArgs.enabledToolsets).toContain("june_gmail");
+    expect(createArgs.enabledToolsets).toContain("june_gcal");
+    expect(createArgs.enabledToolsets).not.toContain("june_gmail_actions");
+
+    await waitFor(() =>
+      expect(tauriMocks.routineTrustSet).toHaveBeenCalledWith({
+        jobId: "abc123",
+        trustMode: "read_only",
+        autonomousTools: undefined,
+      }),
+    );
+    // The first run fires right away for scheduled connector routines.
+    await waitFor(() => expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"));
+  });
+
+  it("creates an event-triggered routine paused with the trigger subscription", async () => {
+    tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
+    mocks.listRoutines.mockResolvedValueOnce([]);
+    renderView();
+    await screen.findByText("Auto-inbox");
+
+    await userEvent.click(screen.getByRole("button", { name: "Add Auto-inbox" }));
+    // The "When" picker is preset to the email trigger, not a schedule.
+    expect(screen.getByRole("button", { name: "Trigger type" })).toHaveTextContent(
+      "When new email arrives",
+    );
+    mocks.listRoutines.mockResolvedValue([job()]);
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(mocks.createRoutine).toHaveBeenCalled());
+    const createArgs = (mocks.createRoutine.mock.calls[0] as unknown[])[0] as {
+      schedule: string;
+      enabledToolsets?: string[];
+    };
+    // Event routines get the far-future one-time schedule, never a cron.
+    expect(createArgs.schedule).toBe("2099-01-01T09:00:00Z");
+    // Approval trust: the actions servers ride along.
+    expect(createArgs.enabledToolsets).toContain("june_gmail_actions");
+
+    await waitFor(() => expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123"));
+    await waitFor(() =>
+      expect(tauriMocks.connectorTriggerSet).toHaveBeenCalledWith({
+        jobId: "abc123",
+        kind: "email_received",
+        accountId: "acc-1",
+        config: {},
+      }),
+    );
+    // Event template installs still fire an immediate first run (approval-gated),
+    // so value shows in the first session per the install contract; the one-off
+    // trigger leaves the routine paused for its event trigger to own later runs.
+    await waitFor(() => expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"));
+  });
+
+  it("removes a newly created routine when trust setup fails", async () => {
+    tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
+    mocks.listRoutines.mockResolvedValue([]);
+    tauriMocks.routineTrustSet.mockRejectedValueOnce(new Error("trust store unavailable"));
+    renderView();
+    await screen.findByText("Morning briefing");
+
+    await userEvent.click(screen.getByRole("button", { name: "Add Morning briefing" }));
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByText("trust store unavailable")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.removeRoutine).toHaveBeenCalledWith("abc123"));
+    expect(mocks.triggerRoutine).not.toHaveBeenCalled();
+  });
+
+  it("removes a paused placeholder when event trigger setup fails", async () => {
+    tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
+    mocks.listRoutines.mockResolvedValue([]);
+    tauriMocks.connectorTriggerSet.mockRejectedValueOnce(new Error("trigger store unavailable"));
+    renderView();
+    await screen.findByText("Auto-inbox");
+
+    await userEvent.click(screen.getByRole("button", { name: "Add Auto-inbox" }));
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByText("trigger store unavailable")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123"));
+    expect(mocks.removeRoutine).toHaveBeenCalledWith("abc123");
+    expect(mocks.triggerRoutine).not.toHaveBeenCalled();
+  });
+
+  it("reports a finished run to the backend crediting path with its id and end time", async () => {
+    // The backend decides whether to credit (approval mode + after the window);
+    // the view just reports every finished run once, id and end time included.
+    mocks.listRoutines.mockResolvedValue([job()]);
+    adapterMocks.listScheduledRunSessions.mockResolvedValue([
+      {
+        id: "cron_abc123_20260709_100000",
+        status: "completed",
+        ended_at: "2026-07-09T10:05:00Z",
+        active: false,
+      },
+    ]);
+    renderView();
+    await waitFor(() =>
+      expect(tauriMocks.routineTrustRecordRun).toHaveBeenCalledWith({
+        jobId: "abc123",
+        runId: "cron_abc123_20260709_100000",
+        runEndedAt: "2026-07-09T10:05:00Z",
+      }),
+    );
+  });
+
+  it("does not report a still-running or failed run", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    adapterMocks.listScheduledRunSessions.mockResolvedValue([
+      { id: "cron_abc123_20260709_090000", status: "running", active: true },
+      { id: "cron_abc123_20260709_100000", status: "failed", ended_at: "2026-07-09T10:05:00Z" },
+    ]);
+    renderView();
+    await waitFor(() => expect(adapterMocks.listScheduledRunSessions).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(tauriMocks.routineTrustRecordRun).not.toHaveBeenCalled();
+  });
+
+  it("badges rows whose toolsets imply an action-capable trust mode", async () => {
+    mocks.listRoutines.mockResolvedValue([
+      job(),
+      job({
+        job_id: "def456",
+        name: "Inbox triage",
+        enabled_toolsets: ["web", "june_gmail", "june_gmail_actions"],
+      }),
+      job({
+        job_id: "ghi789",
+        name: "Auto archiver",
+        enabled_toolsets: ["web", "june_gmail", "june_gmail_auto_ab12cd34"],
+      }),
+    ]);
+    renderView();
+
+    const list = await screen.findByRole("list", { name: "Routines" });
+    expect(within(list).getByText("Approval")).toBeInTheDocument();
+    expect(within(list).getByText("Autonomous")).toBeInTheDocument();
+  });
+});
+
 describe("RoutinesView detail", () => {
   it("opens a routine with its full instructions", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
@@ -468,6 +747,159 @@ describe("RoutinesView detail", () => {
         prompt: "List my unread notes only.",
       }),
     );
+  });
+
+  it("rolls the trust change back when the cron save fails", async () => {
+    // An autonomous routine (autonomy already unlocked) with one granted tool.
+    tauriMocks.routineTrustGet.mockResolvedValue({
+      trustMode: "autonomous",
+      approvalRunCount: 3,
+      autonomousTools: ["create_draft"],
+      autonomousServers: ["june_gmail_auto_x"],
+    });
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    // Downgrade to read only, then the Hermes cron update fails.
+    await userEvent.click(screen.getByRole("button", { name: /Read only/ }));
+    mocks.updateRoutine.mockRejectedValueOnce(new Error("gateway down"));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The failed save surfaces, and the trust is restored to autonomous so the
+    // DB trust and the job's toolsets do not diverge (the read-only attempt is
+    // rolled back rather than left with a deleted grant and stale toolsets).
+    expect(await screen.findByText("gateway down")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(tauriMocks.routineTrustSet).toHaveBeenLastCalledWith({
+        jobId: "abc123",
+        trustMode: "autonomous",
+        autonomousTools: ["create_draft"],
+      }),
+    );
+    // Restoring autonomous trust mints a new token, so the runtime must reload
+    // the auto MCP server instead of leaving its old token in the environment.
+    expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not write the event trigger when the cron save fails", async () => {
+    // Switching a scheduled routine to an email trigger, but the cron update
+    // fails. The trigger row and pause must not be applied: they run only after
+    // onSave succeeds, so a failed save can never leave a trigger firing a
+    // routine whose far-future schedule never persisted.
+    tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    await userEvent.click(screen.getByRole("button", { name: "Trigger type" }));
+    await userEvent.click(screen.getByRole("option", { name: "When new email arrives" }));
+    mocks.updateRoutine.mockRejectedValueOnce(new Error("gateway down"));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("gateway down")).toBeInTheDocument();
+    // No trigger subscription written, and the routine was never paused: the
+    // save aborted before any trigger side effect.
+    expect(tauriMocks.connectorTriggerSet).not.toHaveBeenCalled();
+    expect(mocks.pauseRoutine).not.toHaveBeenCalled();
+  });
+
+  it("does not mint trust when an event trigger fails validation", async () => {
+    // An autonomous routine downgraded to read only while also switched to an
+    // email trigger, but no Google account is connected. The trigger validation
+    // aborts the save, and it must abort before the trust/grant write so a
+    // rejected save never leaves a half-applied trust change behind.
+    tauriMocks.routineTrustGet.mockResolvedValue({
+      trustMode: "autonomous",
+      approvalRunCount: 3,
+      autonomousTools: ["create_draft"],
+      autonomousServers: ["june_gmail_auto_x"],
+    });
+    tauriMocks.connectorsList.mockResolvedValue([]);
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    await userEvent.click(screen.getByRole("button", { name: /Read only/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Trigger type" }));
+    await userEvent.click(screen.getByRole("option", { name: "When new email arrives" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(
+      await screen.findByText("Connect a Google account before using an event trigger."),
+    ).toBeInTheDocument();
+    // Validation aborted first: neither the trust downgrade nor the cron update
+    // was attempted, so nothing needs rolling back.
+    expect(tauriMocks.routineTrustSet).not.toHaveBeenCalled();
+    expect(mocks.updateRoutine).not.toHaveBeenCalled();
+  });
+
+  it("keeps the event trigger when resuming its scheduled replacement fails", async () => {
+    const storedTrigger = {
+      id: "trig-1",
+      jobId: "abc123",
+      kind: "email_received" as const,
+      accountId: "acc-1",
+      config: {},
+    };
+    tauriMocks.connectorTriggersList.mockResolvedValue([storedTrigger]);
+    tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
+    mocks.listRoutines.mockResolvedValue([
+      job({ schedule: "2099-01-01T09:00:00Z", state: "paused" }),
+    ]);
+    mocks.resumeRoutine.mockRejectedValueOnce(new Error("gateway down"));
+    renderView();
+    await openDetail("Morning summary");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Trigger type" })).toHaveTextContent(
+        "When new email arrives",
+      ),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Trigger type" }));
+    await userEvent.click(screen.getByRole("option", { name: "On a schedule" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("gateway down")).toBeInTheDocument();
+    expect(mocks.updateRoutine).toHaveBeenCalledWith("abc123", {
+      schedule: "0 9 * * *",
+    });
+    expect(mocks.resumeRoutine).toHaveBeenCalledWith("abc123");
+    expect(tauriMocks.connectorTriggerDelete).not.toHaveBeenCalled();
+    expect(tauriMocks.connectorTriggerSet).not.toHaveBeenCalled();
+  });
+
+  it("re-pauses an event routine when deleting its trigger fails", async () => {
+    tauriMocks.connectorTriggersList.mockResolvedValue([
+      {
+        id: "trig-1",
+        jobId: "abc123",
+        kind: "email_received",
+        accountId: "acc-1",
+        config: {},
+      },
+    ]);
+    tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
+    tauriMocks.connectorTriggerDelete.mockRejectedValueOnce(new Error("trigger delete failed"));
+    mocks.listRoutines.mockResolvedValue([
+      job({ schedule: "2099-01-01T09:00:00Z", state: "paused" }),
+    ]);
+    renderView();
+    await openDetail("Morning summary");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Trigger type" })).toHaveTextContent(
+        "When new email arrives",
+      ),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Trigger type" }));
+    await userEvent.click(screen.getByRole("option", { name: "On a schedule" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("trigger delete failed")).toBeInTheDocument();
+    expect(mocks.resumeRoutine).toHaveBeenCalledWith("abc123");
+    expect(tauriMocks.connectorTriggerDelete).toHaveBeenCalledWith("trig-1");
+    expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123");
   });
 
   it("restores a blank local name after saving unrelated changes", async () => {

@@ -153,6 +153,8 @@ jobs:
           PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
+          PRODUCTION_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
+          PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
           PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
         run: |
           set -euo pipefail
@@ -168,6 +170,8 @@ jobs:
             PRODUCTION_OS_ACCOUNTS_URL \
             PRODUCTION_OS_ACCOUNTS_API_URL \
             PRODUCTION_OS_ACCOUNTS_CLIENT_ID \
+            PRODUCTION_GOOGLE_OAUTH_CLIENT_ID \
+            PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET \
             PRODUCTION_JUNE_API_URL
           do
             if [ -z "${!name:-}" ]; then
@@ -250,7 +254,11 @@ jobs:
           OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
           JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          # Preserve the RC's first-run Auto behavior when it is promoted.
+          OS_JUNE_AUTO_MODE_DEFAULT: "true"
         with:
           args: --bundles app,dmg --target universal-apple-darwin -- --locked
           includeUpdaterJson: false

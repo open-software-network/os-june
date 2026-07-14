@@ -62,6 +62,38 @@ const P3A_QUESTIONS: &[P3aQuestionDef] = &[
         id: "onboarding.completed",
         bucket_count: 1,
     },
+    P3aQuestionDef {
+        id: "onboarding.use-case.work",
+        bucket_count: 1,
+    },
+    P3aQuestionDef {
+        id: "onboarding.use-case.personal",
+        bucket_count: 1,
+    },
+    P3aQuestionDef {
+        id: "onboarding.use-case.school",
+        bucket_count: 1,
+    },
+    P3aQuestionDef {
+        id: "onboarding.use-case.creative",
+        bucket_count: 1,
+    },
+    P3aQuestionDef {
+        id: "onboarding.use-case.coding",
+        bucket_count: 1,
+    },
+    P3aQuestionDef {
+        id: "onboarding.use-case.meetings",
+        bucket_count: 1,
+    },
+    P3aQuestionDef {
+        id: "onboarding.use-case.other",
+        bucket_count: 1,
+    },
+    P3aQuestionDef {
+        id: "onboarding.use-case.not-sure",
+        bucket_count: 1,
+    },
 ];
 
 impl P3aReportService {
@@ -167,6 +199,7 @@ mod tests {
     use async_trait::async_trait;
     use june_domain::{DomainError, P3aReport, P3aSink};
     use pretty_assertions::assert_eq;
+    use rstest::rstest;
     use std::sync::{Arc, Mutex};
 
     #[tokio::test]
@@ -217,6 +250,35 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+    }
+
+    #[rstest]
+    #[case("onboarding.use-case.work")]
+    #[case("onboarding.use-case.personal")]
+    #[case("onboarding.use-case.school")]
+    #[case("onboarding.use-case.creative")]
+    #[case("onboarding.use-case.coding")]
+    #[case("onboarding.use-case.meetings")]
+    #[case("onboarding.use-case.other")]
+    #[case("onboarding.use-case.not-sure")]
+    #[tokio::test]
+    async fn accepts_onboarding_use_case_questions(#[case] question_id: &str) {
+        let sink = Arc::new(RecordingP3aSink::default());
+        let service = P3aReportService::new(P3aReportServiceDeps { sink: sink.clone() });
+
+        service
+            .record(P3aReportParams {
+                schema: 1,
+                question_id: question_id.to_string(),
+                epoch: "2026-W29".to_string(),
+                platform: "macos".to_string(),
+                version_series: "0.0.x".to_string(),
+                bucket: 0,
+            })
+            .await
+            .expect("onboarding use case report accepted");
+
+        assert_eq!(sink.reports()[0].question_id, question_id);
     }
 
     #[derive(Default)]

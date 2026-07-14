@@ -1,7 +1,7 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCalendarRepeat } from "central-icons/IconCalendarRepeat";
-import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
@@ -15,6 +15,14 @@ import { IconZap } from "central-icons/IconZap";
 import { IconPause } from "central-icons/IconPause";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { describeHermesError } from "../../lib/errors";
+import {
+  TRUST_MODE_META,
+  eventTriggerScheduleDraft,
+  isCreditableRun,
+  routineToolsetsFor,
+  routineTrustModeFromToolsets,
+  triggerConfigFromDraft,
+} from "../../lib/connectors";
 import {
   isReplaceableScheduledRunTitle,
   listScheduledRunSessions,
@@ -35,7 +43,12 @@ import {
 } from "../../lib/hermes-routines";
 import { compactScheduleLabel, humanizeSchedule } from "../../lib/routine-schedule";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
-import type { HermesSessionInfo } from "../../lib/tauri";
+import {
+  connectorTriggerSet,
+  routineTrustRecordRun,
+  routineTrustSet,
+  type HermesSessionInfo,
+} from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { HoverTip } from "../ui/HoverTip";
 import { RoutineCreate, type RoutineCreateInput } from "./RoutineCreate";
@@ -47,6 +60,34 @@ import { ROUTINE_TEMPLATES, type RoutineTemplate } from "./routine-templates";
 const NO_ROUTINES: RoutineJob[] = [];
 const NO_RUNS: HermesSessionInfo[] = [];
 const RUN_HISTORY_REFRESH_MS = 10000;
+
+/**
+ * Advances the earned-autonomy counter by reporting each finished run to the
+ * backend, which credits it exactly once and only when the routine is in
+ * approval mode with the run finishing after approval was enabled. Reporting
+ * every finished run (rather than seeding a client-side baseline) is what lets
+ * background runs that completed while this view was closed still count on the
+ * next visit. Best-effort: a failure just retries on the next refresh.
+ *
+ * `reported` is a per-mount chatter guard so the 10s refresh does not re-report
+ * the same run repeatedly; the backend is the durable, idempotent ledger, so a
+ * fresh mount re-reporting a run is harmless.
+ */
+async function creditApprovalRuns(runs: HermesSessionInfo[], reported: Set<string>): Promise<void> {
+  for (const run of runs.filter(isCreditableRun)) {
+    if (reported.has(run.id)) continue;
+    const jobId = scheduledRunJobId(run.id);
+    const runEndedAt = run.ended_at ?? run.endedAt ?? null;
+    if (!jobId || !runEndedAt) continue;
+    reported.add(run.id);
+    try {
+      await routineTrustRecordRun({ jobId, runId: run.id, runEndedAt });
+    } catch {
+      // Let a transient failure retry on the next refresh.
+      reported.delete(run.id);
+    }
+  }
+}
 
 type RoutinesViewProps = {
   /** The chat-first creation path: hands off a composed agent prompt and the
@@ -91,6 +132,9 @@ export function RoutinesView({
   const [allRuns, setRuns] = useState<HermesSessionInfo[]>([]);
   const [runsUnavailableState, setRunsUnavailable] = useState(false);
   const runLoadSequenceRef = useRef(0);
+  // Run ids already reported for crediting this mount; the backend is the
+  // durable idempotent ledger, this just avoids re-reporting on every refresh.
+  const reportedRunsRef = useRef<Set<string>>(new Set());
 
   // __emptyStates() preview (dev console): render the page as a fresh
   // install would see it, real data untouched underneath.
@@ -133,6 +177,7 @@ export function RoutinesView({
       if (runLoadSequenceRef.current !== sequence) return;
       setRuns(nextRuns);
       setRunsUnavailable(false);
+      void creditApprovalRuns(nextRuns, reportedRunsRef.current);
     } catch {
       if (runLoadSequenceRef.current !== sequence) return;
       setRunsUnavailable(true);
@@ -247,6 +292,11 @@ export function RoutinesView({
     } catch (err) {
       setDetailError(describeRoutineError(err));
       setDetailErrorRetryable(false);
+      // Re-throw so RoutineDetail can roll back the trust/grant change it made
+      // before this cron update. Swallowing the failure would leave the DB
+      // trust and the job's enabled_toolsets inconsistent (a downgrade could
+      // delete the grant while the job kept its old autonomous toolsets).
+      throw err;
     } finally {
       setSaving(false);
     }
@@ -255,7 +305,73 @@ export function RoutinesView({
   async function submitCreate(input: RoutineCreateInput) {
     setCreating(true);
     try {
-      const created = await createRoutine(input);
+      const eventTrigger = input.trigger.source !== "schedule" ? input.trigger : null;
+      // A routine is connector-aware when anything about it touches Google:
+      // a non-default trust mode, an event trigger, or a connector template's
+      // scope requirements. Plain routines keep the legacy create path
+      // untouched (no toolset override, no trust record).
+      const connectorAware =
+        input.trustMode !== "read_only" ||
+        eventTrigger !== null ||
+        (input.connectorScopes?.length ?? 0) > 0;
+      const created = await createRoutine(
+        connectorAware
+          ? {
+              prompt: input.prompt,
+              // Event routines still need a cron record underneath; a
+              // far-future one-time schedule plus the pause below hands the
+              // firing over to the trigger daemon.
+              schedule: eventTrigger ? eventTriggerScheduleDraft().schedule : input.schedule,
+              name: input.name,
+              enabledToolsets: routineToolsetsFor(input.trustMode, {
+                unrestricted: input.unrestricted,
+              }),
+            }
+          : {
+              prompt: input.prompt,
+              schedule: input.schedule,
+              name: input.name,
+              unrestricted: input.unrestricted,
+            },
+      );
+      if (connectorAware) {
+        try {
+          await routineTrustSet({
+            jobId: created.job_id,
+            trustMode: input.trustMode,
+            autonomousTools: input.trustMode === "autonomous" ? input.autonomousTools : undefined,
+          });
+          if (eventTrigger && input.triggerAccountId) {
+            // Pausing and subscribing are required setup, not best-effort. If
+            // either fails, removeRoutine below deletes the Hermes job and all
+            // connector rows so retrying cannot create a duplicate or leave a
+            // dormant 2099 placeholder behind.
+            await pauseRoutine(created.job_id);
+            await connectorTriggerSet({
+              jobId: created.job_id,
+              kind: eventTrigger.source,
+              accountId: input.triggerAccountId,
+              config: triggerConfigFromDraft(eventTrigger),
+            });
+          }
+        } catch (setupError) {
+          try {
+            await removeRoutine(created.job_id);
+          } catch (cleanupError) {
+            throw new Error(
+              `${describeRoutineError(setupError)} June also could not remove the partially created routine: ${describeRoutineError(cleanupError)}`,
+            );
+          }
+          throw setupError;
+        }
+        // The first run fires right away (still under the chosen trust mode, so
+        // any actions wait for approval), so an install shows value in the first
+        // session instead of waiting for a future email or calendar event. This
+        // one-off trigger does not change the paused state, so an event routine
+        // keeps firing on its trigger for every later run; the schedule owns
+        // later runs for non-event routines. Best-effort.
+        await triggerRoutine(created.job_id).catch(() => {});
+      }
       await loadRoutines();
       setCreateError(null);
       setDetailError(null);
@@ -568,6 +684,17 @@ function TemplateGrid({ onPick }: { onPick: (template: RoutineTemplate) => void 
               ) : null}
             </span>
             <p className="routines-template-description">{template.description}</p>
+            {template.toolSummary ? (
+              <p className="routines-template-tools">
+                {template.toolSummary}
+                {template.trustMode ? (
+                  <span className="routines-template-trust">
+                    {" "}
+                    Trust: {TRUST_MODE_META[template.trustMode].label.toLowerCase()}.
+                  </span>
+                ) : null}
+              </p>
+            ) : null}
           </div>
           <button
             type="button"
@@ -602,6 +729,11 @@ function RoutineRow({
   const menuRef = useRef<HTMLDivElement>(null);
   const paused = routine.state === "paused";
   const completed = routine.state === "completed";
+  // Derived from the stored toolset override (no per-row round trip); only
+  // the action-capable modes get a badge — ambient read access is every
+  // routine's baseline and would read as noise.
+  const trustMode = routineTrustModeFromToolsets(routine.enabled_toolsets);
+  const trustBadge = trustMode === "approval" || trustMode === "autonomous" ? trustMode : null;
   const status = paused ? "Paused" : completed ? "Completed" : null;
   const activity =
     completed && routine.last_run_at ? `Last ran ${formatRunTime(routine.last_run_at)}` : null;
@@ -644,6 +776,15 @@ function RoutineRow({
               >
                 <IconShieldCrossed size={11} aria-hidden />
                 Unrestricted
+              </HoverTip>
+            ) : null}
+            {trustBadge ? (
+              <HoverTip
+                tip={TRUST_MODE_META[trustBadge].description}
+                className="routines-item-badge routines-item-badge-trust"
+                tabIndex={0}
+              >
+                {TRUST_MODE_META[trustBadge].label}
               </HoverTip>
             ) : null}
             {routine.last_status === "error" ? (
@@ -917,7 +1058,7 @@ function DescribeBar({
                   <span className="agent-sandbox-option-desc">{option.description}</span>
                 </span>
                 {unrestricted === option.unrestricted ? (
-                  <IconCheckmark1Small
+                  <IconCheckmark2Small
                     size={16}
                     aria-hidden
                     className="agent-sandbox-option-check"
