@@ -13,11 +13,23 @@ use crate::{
     extension_host::{ExtensionHost, ExtensionResponse},
 };
 
-type TransportFuture<'a> =
+pub(crate) type TransportFuture<'a> =
     Pin<Box<dyn Future<Output = Result<TransportResponse, AppError>> + Send + 'a>>;
 
 pub(crate) trait BrowserTransport: Send + Sync {
+    /// Reserve transport-owned startup state before the broker publishes the
+    /// session. Managed transports use this to make launch cancellation
+    /// visible before their asynchronous startup work begins.
+    fn reserve_session(&self, _session_id: &str) -> Result<(), AppError> {
+        Ok(())
+    }
+
     fn execute<'a>(&'a self, tool: &'a str, arguments: Value) -> TransportFuture<'a>;
+
+    /// Synchronously terminate a transport-owned session. Managed transports
+    /// override this so revoke and app exit kill Chromium even when another
+    /// request still holds the session and is awaiting CDP.
+    fn terminate_session(&self, _session_id: &str) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -33,10 +45,26 @@ pub(crate) struct TransportResponse {
     artifact: Option<TransportArtifact>,
 }
 
-struct TransportArtifact {
-    kind: String,
-    mime_type: String,
-    bytes: Vec<u8>,
+impl TransportResponse {
+    pub(crate) fn data(data: Value) -> Self {
+        Self {
+            data,
+            artifact: None,
+        }
+    }
+
+    pub(crate) fn artifact(data: Value, artifact: TransportArtifact) -> Self {
+        Self {
+            data,
+            artifact: Some(artifact),
+        }
+    }
+}
+
+pub(crate) struct TransportArtifact {
+    pub(crate) kind: String,
+    pub(crate) mime_type: String,
+    pub(crate) bytes: Vec<u8>,
 }
 
 pub(crate) struct ExtensionBrowserTransport {
@@ -115,7 +143,6 @@ impl BrowserTransport for ExtensionBrowserTransport {
 
 pub(crate) struct BrowserBroker {
     state: Mutex<BrowserBrokerState>,
-    policy_gate: tokio::sync::RwLock<()>,
     transition_lock: tokio::sync::Mutex<()>,
 }
 
@@ -123,7 +150,6 @@ impl Default for BrowserBroker {
     fn default() -> Self {
         Self {
             state: Mutex::new(BrowserBrokerState::default()),
-            policy_gate: tokio::sync::RwLock::new(()),
             transition_lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -168,7 +194,7 @@ impl BrowserBroker {
         artifact_root: PathBuf,
     ) {
         let mut state = self.lock();
-        state.transports.insert(kind, transport);
+        state.transports.entry(kind).or_insert(transport);
         state.screenshot_root = Some(screenshot_root);
         state.artifact_root = Some(artifact_root);
     }
@@ -182,7 +208,6 @@ impl BrowserBroker {
     }
 
     pub(crate) async fn set_enabled(&self, enabled: bool) -> Result<(), AppError> {
-        let _transition = self.policy_gate.write().await;
         let (transports, sessions) = {
             let mut state = self.lock();
             state.transition_blocked = !enabled;
@@ -192,14 +217,22 @@ impl BrowserBroker {
             let transports = state.transports.clone();
             let sessions = state
                 .sessions
-                .iter()
+                .drain()
                 .map(|(id, session)| (id.clone(), session.transport_kind))
                 .collect::<Vec<_>>();
             (transports, sessions)
         };
+        // Kill managed Chromium processes before awaiting any graceful close.
+        // This interrupts in-flight CDP commands instead of waiting for them
+        // to finish through a revoked grant.
+        for (session_id, kind) in &sessions {
+            if let Some(transport) = transports.get(kind) {
+                transport.terminate_session(session_id);
+            }
+        }
         let mut first_error = None;
-        for (session_id, kind) in sessions {
-            if let Some(transport) = transports.get(&kind).cloned() {
+        for (session_id, kind) in &sessions {
+            if let Some(transport) = transports.get(kind).cloned() {
                 if let Err(error) = transport
                     .execute("close_session", json!({ "session_id": session_id }))
                     .await
@@ -208,11 +241,9 @@ impl BrowserBroker {
                 }
             }
         }
-        self.lock().sessions.clear();
         if let Some(error) = first_error {
             tracing::warn!(
                 code = %error.code,
-                message = %error.message,
                 "browser session teardown failed during access revocation"
             );
         }
@@ -220,6 +251,27 @@ impl BrowserBroker {
         // acknowledged detach. The broker gate is already closed and the
         // caller must still remove the persisted grant and rotate credentials.
         Ok(())
+    }
+
+    /// App-exit backstop. Managed transports terminate synchronously so no
+    /// in-flight request can keep Chromium or its ephemeral profile alive.
+    pub(crate) fn terminate_sessions(&self) {
+        let (transports, sessions) = {
+            let mut state = self.lock();
+            state.transition_blocked = true;
+            let transports = state.transports.clone();
+            let sessions = state
+                .sessions
+                .drain()
+                .map(|(id, session)| (id, session.transport_kind))
+                .collect::<Vec<_>>();
+            (transports, sessions)
+        };
+        for (session_id, kind) in sessions {
+            if let Some(transport) = transports.get(&kind) {
+                transport.terminate_session(&session_id);
+            }
+        }
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
@@ -261,17 +313,7 @@ impl BrowserBroker {
         tool: &str,
         mut arguments: Value,
     ) -> Result<Value, AppError> {
-        let _operation = self.policy_gate.read().await;
         self.require_enabled()?;
-        if matches!(
-            tool,
-            "click" | "fill" | "press" | "back" | "accept_shared_tab"
-        ) {
-            return Err(AppError::new(
-                "not_implemented",
-                format!("The {tool} browser tool is not implemented yet."),
-            ));
-        }
         if !matches!(
             tool,
             "start_session"
@@ -283,25 +325,105 @@ impl BrowserBroker {
                 | "open_tab"
                 | "switch_tab"
                 | "close_tab"
+                | "click"
+                | "fill"
+                | "press"
+                | "back"
+                | "accept_shared_tab"
         ) {
             return Err(AppError::new(
                 "unknown_browser_tool",
                 "Unknown browser tool.",
             ));
         }
+        match kind {
+            BrowserTransportKind::Attended
+                if matches!(
+                    tool,
+                    "click" | "fill" | "press" | "back" | "accept_shared_tab"
+                ) =>
+            {
+                return Err(AppError::new(
+                    "not_implemented",
+                    format!("The {tool} browser tool is not implemented yet."),
+                ));
+            }
+            BrowserTransportKind::Managed
+                if !matches!(
+                    tool,
+                    "start_session"
+                        | "close_session"
+                        | "navigate"
+                        | "back"
+                        | "snapshot"
+                        | "screenshot"
+                ) =>
+            {
+                return Err(AppError::new(
+                    "browser_tool_unavailable",
+                    format!("The {tool} browser tool is unavailable on managed sessions."),
+                ));
+            }
+            _ => {}
+        }
 
         let transport = self.transport(kind)?;
         if tool == "start_session" {
             let session_id = uuid::Uuid::new_v4().to_string();
-            arguments = json!({ "session_id": session_id });
-            transport.execute(tool, arguments).await?;
-            self.lock().sessions.insert(
-                session_id.clone(),
-                BrowserSession {
-                    transport_kind: kind,
-                    tabs: HashSet::new(),
-                },
-            );
+            arguments = json!({ "session_id": &session_id });
+            let inserted = {
+                transport.reserve_session(&session_id)?;
+                let mut state = self.lock();
+                let enabled = !state.transition_blocked
+                    && state
+                        .access_flag_path
+                        .as_ref()
+                        .is_some_and(|path| path.exists());
+                if enabled {
+                    state.sessions.insert(
+                        session_id.clone(),
+                        BrowserSession {
+                            transport_kind: kind,
+                            tabs: HashSet::new(),
+                        },
+                    );
+                }
+                enabled
+            };
+            if !inserted {
+                transport.terminate_session(&session_id);
+                let _ = transport
+                    .execute("close_session", json!({ "session_id": &session_id }))
+                    .await;
+                return Err(AppError::new(
+                    "browser_access_disabled",
+                    "Browser use is not enabled.",
+                ));
+            }
+
+            if let Err(error) = transport.execute(tool, arguments).await {
+                self.lock().sessions.remove(&session_id);
+                transport.terminate_session(&session_id);
+                return Err(error);
+            }
+            let still_owned = {
+                let state = self.lock();
+                !state.transition_blocked
+                    && state
+                        .sessions
+                        .get(&session_id)
+                        .is_some_and(|session| session.transport_kind == kind)
+            };
+            if !still_owned {
+                transport.terminate_session(&session_id);
+                let _ = transport
+                    .execute("close_session", json!({ "session_id": &session_id }))
+                    .await;
+                return Err(AppError::new(
+                    "browser_access_disabled",
+                    "Browser use is not enabled.",
+                ));
+            }
             return Ok(json!({ "sessionId": session_id }));
         }
 
@@ -326,8 +448,15 @@ impl BrowserBroker {
             return Ok(json!({ "closed": true }));
         }
 
-        if tool == "navigate" {
+        if tool == "navigate" && kind == BrowserTransportKind::Attended {
             validate_attended_url(required_string(&arguments, "url")?)?;
+        }
+
+        // Managed sessions have one page and no task-tab surface. Their
+        // navigate path deliberately bypasses the attended URL check: the
+        // transport enforces the stricter resolve-validate-pin policy instead.
+        if kind == BrowserTransportKind::Managed {
+            return self.finish_response(transport.execute(tool, arguments).await?);
         }
 
         if tool == "open_tab" {
@@ -430,8 +559,25 @@ impl BrowserBroker {
                 session.tabs.remove(&tab_id);
             }
         }
-        if let Some(artifact) = response.artifact {
-            return self.store_artifact(artifact);
+        self.finish_response(response)
+    }
+
+    fn finish_response(&self, mut response: TransportResponse) -> Result<Value, AppError> {
+        if let Some(artifact) = response.artifact.take() {
+            let stored = self.store_artifact(artifact)?;
+            let data = response.data.as_object_mut().ok_or_else(|| {
+                AppError::new(
+                    "browser_transport_invalid",
+                    "The browser transport returned invalid response data.",
+                )
+            })?;
+            let stored = stored.as_object().ok_or_else(|| {
+                AppError::new(
+                    "browser_artifact_unavailable",
+                    "Browser artifact storage returned invalid response data.",
+                )
+            })?;
+            data.extend(stored.clone());
         }
         Ok(response.data)
     }
@@ -520,16 +666,24 @@ mod tests {
     struct BlockingTransport {
         entered: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
+        terminated: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl BrowserTransport for BlockingTransport {
         fn execute<'a>(&'a self, tool: &'a str, _arguments: Value) -> TransportFuture<'a> {
             let entered = Arc::clone(&self.entered);
             let release = Arc::clone(&self.release);
+            let terminated = Arc::clone(&self.terminated);
             Box::pin(async move {
                 if tool == "snapshot" {
                     entered.notify_one();
                     release.notified().await;
+                    if terminated.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Err(AppError::new(
+                            "browser_session_closed",
+                            "The managed browser session was terminated.",
+                        ));
+                    }
                 }
                 let data = match tool {
                     "open_tab" => json!({ "tabId": 7 }),
@@ -541,6 +695,12 @@ mod tests {
                     artifact: None,
                 })
             })
+        }
+
+        fn terminate_session(&self, _session_id: &str) {
+            self.terminated
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.release.notify_waiters();
         }
     }
 
@@ -560,6 +720,90 @@ mod tests {
                     artifact: None,
                 })
             })
+        }
+    }
+
+    #[cfg(unix)]
+    struct StartingProcessState {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        child: Mutex<Option<std::process::Child>>,
+        profile: PathBuf,
+        terminated: std::sync::atomic::AtomicBool,
+        finished: std::sync::atomic::AtomicBool,
+        finished_notify: tokio::sync::Notify,
+    }
+
+    #[cfg(unix)]
+    struct StartingProcessTransport {
+        state: Arc<StartingProcessState>,
+    }
+
+    #[cfg(unix)]
+    impl StartingProcessTransport {
+        fn terminate(state: &StartingProcessState) {
+            state
+                .terminated
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(mut child) = state
+                .child
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            let _ = std::fs::remove_dir_all(&state.profile);
+            state.release.notify_waiters();
+        }
+    }
+
+    #[cfg(unix)]
+    impl BrowserTransport for StartingProcessTransport {
+        fn execute<'a>(&'a self, tool: &'a str, _arguments: Value) -> TransportFuture<'a> {
+            let state = Arc::clone(&self.state);
+            Box::pin(async move {
+                if tool == "start_session" {
+                    std::fs::create_dir_all(&state.profile).expect("starting profile");
+                    let child = std::process::Command::new("/bin/sleep")
+                        .arg("30")
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .expect("starting browser stand-in");
+                    *state
+                        .child
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(child);
+                    state.entered.notify_one();
+                    state.release.notified().await;
+                    state
+                        .finished
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    state.finished_notify.notify_waiters();
+                    if state.terminated.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Err(AppError::new(
+                            "browser_session_closed",
+                            "The managed browser session was terminated.",
+                        ));
+                    }
+                } else if tool == "close_session" {
+                    while !state.finished.load(std::sync::atomic::Ordering::SeqCst) {
+                        let notified = state.finished_notify.notified();
+                        if state.finished.load(std::sync::atomic::Ordering::SeqCst) {
+                            break;
+                        }
+                        notified.await;
+                    }
+                }
+                Ok(TransportResponse::data(json!({})))
+            })
+        }
+
+        fn terminate_session(&self, _session_id: &str) {
+            Self::terminate(&self.state);
         }
     }
 
@@ -589,6 +833,7 @@ mod tests {
     #[test]
     fn attended_url_policy_accepts_web_urls_and_rejects_credentials_and_other_schemes() {
         assert!(validate_attended_url("https://example.com/path?q=1").is_ok());
+        assert!(validate_attended_url("http://127.0.0.1/private").is_ok());
         assert_eq!(
             validate_attended_url("file:///tmp/private")
                 .expect_err("scheme")
@@ -643,7 +888,7 @@ mod tests {
             )
             .await
             .expect_err("sessions cannot cross transports");
-        assert_eq!(crossed.code, "browser_session_not_found");
+        assert_eq!(crossed.code, "browser_tool_unavailable");
         let opened = broker
             .execute(
                 BrowserTransportKind::Attended,
@@ -733,6 +978,80 @@ mod tests {
         }
     }
 
+    struct ManagedPolicyTransport {
+        navigate_called: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl BrowserTransport for ManagedPolicyTransport {
+        fn execute<'a>(&'a self, tool: &'a str, _arguments: Value) -> TransportFuture<'a> {
+            let navigate_called = Arc::clone(&self.navigate_called);
+            Box::pin(async move {
+                match tool {
+                    "navigate" => {
+                        navigate_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Err(AppError::new(
+                            "browser_policy_blocked",
+                            "Navigation blocked: the destination is not on the public web.",
+                        ))
+                    }
+                    _ => Ok(TransportResponse::data(json!({}))),
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_dispatch_uses_transport_policy_and_supports_back_only_on_that_track() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let flag = temp.path().join("browser-access");
+        std::fs::write(&flag, b"1").expect("grant");
+        let navigate_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let broker = BrowserBroker::default();
+        broker.set_access_flag_path(flag);
+        broker.configure_transport(
+            BrowserTransportKind::Managed,
+            Arc::new(ManagedPolicyTransport {
+                navigate_called: Arc::clone(&navigate_called),
+            }),
+            temp.path().join("images"),
+            temp.path().join("artifacts"),
+        );
+        let started = broker
+            .execute(BrowserTransportKind::Managed, "start_session", json!({}))
+            .await
+            .expect("start managed session");
+        let session_id = started["sessionId"].as_str().expect("session id");
+
+        let blocked = broker
+            .execute(
+                BrowserTransportKind::Managed,
+                "navigate",
+                json!({ "session_id": session_id, "url": "http://127.0.0.1/private" }),
+            )
+            .await
+            .expect_err("managed transport must apply its public-web policy");
+        assert_eq!(blocked.code, "browser_policy_blocked");
+        assert!(navigate_called.load(std::sync::atomic::Ordering::SeqCst));
+
+        broker
+            .execute(
+                BrowserTransportKind::Managed,
+                "back",
+                json!({ "session_id": session_id }),
+            )
+            .await
+            .expect("managed back is implemented");
+        let unavailable = broker
+            .execute(
+                BrowserTransportKind::Managed,
+                "click",
+                json!({ "session_id": session_id, "ref": "ref1" }),
+            )
+            .await
+            .expect_err("managed interaction is structurally unavailable");
+        assert_eq!(unavailable.code, "browser_tool_unavailable");
+    }
+
     struct FakeTransport;
     impl BrowserTransport for FakeTransport {
         fn execute<'a>(&'a self, tool: &'a str, _arguments: Value) -> TransportFuture<'a> {
@@ -757,68 +1076,122 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn revocation_waits_for_in_flight_commands_before_closing_sessions() {
+    async fn revocation_terminates_in_flight_managed_commands() {
         let temp = tempfile::tempdir().expect("tempdir");
         let flag = temp.path().join("browser-access");
         std::fs::write(&flag, b"1").expect("grant");
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
+        let terminated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let broker = Arc::new(BrowserBroker::default());
         broker.set_access_flag_path(flag);
         broker.configure_transport(
-            BrowserTransportKind::Attended,
+            BrowserTransportKind::Managed,
             Arc::new(BlockingTransport {
                 entered: Arc::clone(&entered),
                 release: Arc::clone(&release),
+                terminated: Arc::clone(&terminated),
             }),
             temp.path().join("images"),
             temp.path().join("artifacts"),
         );
         let started = broker
-            .execute(BrowserTransportKind::Attended, "start_session", json!({}))
+            .execute(BrowserTransportKind::Managed, "start_session", json!({}))
             .await
             .expect("start");
         let session_id = started["sessionId"]
             .as_str()
             .expect("session id")
             .to_string();
-        broker
-            .execute(
-                BrowserTransportKind::Attended,
-                "open_tab",
-                json!({ "session_id": session_id }),
-            )
-            .await
-            .expect("open");
-
         let command_broker = Arc::clone(&broker);
         let command_session = session_id.clone();
         let command = tokio::spawn(async move {
             command_broker
                 .execute(
-                    BrowserTransportKind::Attended,
+                    BrowserTransportKind::Managed,
                     "snapshot",
-                    json!({ "session_id": command_session, "tab_id": 7 }),
+                    json!({ "session_id": command_session }),
                 )
                 .await
         });
         entered.notified().await;
         let revoke_broker = Arc::clone(&broker);
-        let mut revoke = tokio::spawn(async move { revoke_broker.set_enabled(false).await });
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(25), &mut revoke)
-                .await
-                .is_err(),
-            "revoke must wait for the active browser operation"
-        );
-        release.notify_one();
-        command
+        let revoke = tokio::spawn(async move { revoke_broker.set_enabled(false).await });
+        tokio::time::timeout(std::time::Duration::from_secs(1), revoke)
+            .await
+            .expect("revoke must not wait for the in-flight command")
+            .expect("revoke task")
+            .expect("revoke result");
+        let command_error = command
             .await
             .expect("command task")
-            .expect("command result");
-        revoke.await.expect("revoke task").expect("revoke result");
+            .expect_err("managed command must be interrupted by revoke");
+        assert_eq!(command_error.code, "browser_session_closed");
+        assert!(terminated.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(broker.active_session_count(), 0);
         assert!(!broker.is_enabled());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn revocation_terminates_a_managed_session_during_startup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let flag = temp.path().join("browser-access");
+        std::fs::write(&flag, b"1").expect("grant");
+        let profile = temp.path().join("starting-profile");
+        let state = Arc::new(StartingProcessState {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            child: Mutex::new(None),
+            profile: profile.clone(),
+            terminated: std::sync::atomic::AtomicBool::new(false),
+            finished: std::sync::atomic::AtomicBool::new(false),
+            finished_notify: tokio::sync::Notify::new(),
+        });
+        let broker = Arc::new(BrowserBroker::default());
+        broker.set_access_flag_path(flag);
+        broker.configure_transport(
+            BrowserTransportKind::Managed,
+            Arc::new(StartingProcessTransport {
+                state: Arc::clone(&state),
+            }),
+            temp.path().join("images"),
+            temp.path().join("artifacts"),
+        );
+
+        let start_broker = Arc::clone(&broker);
+        let start = tokio::spawn(async move {
+            start_broker
+                .execute(BrowserTransportKind::Managed, "start_session", json!({}))
+                .await
+        });
+        state.entered.notified().await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), broker.set_enabled(false))
+            .await
+            .expect("revoke must complete during startup")
+            .expect("revoke result");
+
+        let process_survived = state
+            .child
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+            .is_some_and(|child| child.try_wait().expect("child status").is_none());
+        let profile_survived = profile.exists();
+        let terminated = state.terminated.load(std::sync::atomic::Ordering::SeqCst);
+        let startup_finished = start.is_finished();
+
+        // Always clean up the stand-in before asserting, including on the RED
+        // run where the broker cannot see a starting session yet.
+        StartingProcessTransport::terminate(&state);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), start).await;
+
+        assert!(terminated, "revoke never reached the starting transport");
+        assert!(!process_survived, "starting browser survived revoke");
+        assert!(!profile_survived, "starting profile survived revoke");
+        assert!(startup_finished, "revoke returned before startup finished");
+        assert_eq!(broker.active_session_count(), 0);
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 pub mod agent_hud;
 pub mod app_paths;
 pub mod audio;
+pub mod browser;
 mod browser_broker;
 pub mod commands;
 pub mod connectors;
@@ -322,6 +323,7 @@ pub fn run() {
         .manage(extension_host::ExtensionHost::default())
         .manage(connectors::ConnectFlow::default())
         .setup(|app| {
+            browser::setup_on_app_start();
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             providers::setup(app);

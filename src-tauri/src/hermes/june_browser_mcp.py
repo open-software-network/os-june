@@ -23,7 +23,10 @@ from typing import Any
 PROTOCOL_VERSION = "2025-03-26"
 SERVER_INFO = {"name": "june-browser", "version": "0.1.0"}
 REQUEST_TIMEOUT_SECONDS = 30
-TOKEN_ENV_VAR = "JUNE_BROWSER_PROXY_TOKEN"
+ROUTINE_TOKEN_ENV_VAR = "JUNE_BROWSER_ROUTINE_PROXY_TOKEN"
+ATTENDED_TOKEN_ENV_VAR = "JUNE_BROWSER_ATTENDED_PROXY_TOKEN"
+CRON_CONTEXT_ENV_VAR = "JUNE_BROWSER_CRON_SESSION"
+GATEWAY_CONTEXT_ENV_VAR = "JUNE_BROWSER_GATEWAY_SESSION"
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -150,7 +153,7 @@ def main() -> None:
         raise SystemExit("Usage: june_browser_mcp.py <proxy_base_url>")
 
     base_url = sys.argv[1].rstrip("/")
-    token = os.environ.get(TOKEN_ENV_VAR, "")
+    token = browser_proxy_token()
     while True:
         message = read_message()
         if message is None:
@@ -244,7 +247,11 @@ def call_tool(
                 token,
                 "POST",
                 "/browser/execute",
-                {"tool": name, "arguments": arguments},
+                {
+                    "callContext": browser_call_context(),
+                    "tool": name,
+                    "arguments": arguments,
+                },
             )
             data = require_success(result)
             text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
@@ -262,6 +269,33 @@ def call_tool(
         )
 
     return error_response(request_id, -32602, f"Unknown tool: {name}")
+
+
+def browser_call_context() -> str:
+    """Describe the runtime path that owns this MCP subprocess.
+
+    Hermes sets HERMES_CRON_SESSION for scheduled jobs and
+    HERMES_GATEWAY_SESSION for interactive gateway sessions. June's rendered
+    MCP config passes both values through the runtime's filtered subprocess
+    environment. Cron wins if both are present, matching Hermes's own approval
+    context precedence; anything else remains unknown so the Rust broker can
+    fail closed.
+    """
+    if os.environ.get(CRON_CONTEXT_ENV_VAR) == "1":
+        return "routine"
+    if os.environ.get(GATEWAY_CONTEXT_ENV_VAR) == "1":
+        return "attended"
+    return "unknown"
+
+
+def browser_proxy_token() -> str:
+    """Select only the credential minted for this runtime context."""
+    context = browser_call_context()
+    if context == "routine":
+        return os.environ.get(ROUTINE_TOKEN_ENV_VAR, "")
+    if context == "attended":
+        return os.environ.get(ATTENDED_TOKEN_ENV_VAR, "")
+    return ""
 
 
 def proxy_json(
