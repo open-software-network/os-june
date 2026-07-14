@@ -2432,14 +2432,37 @@ fn store_respawned_helper(state: &HelperState, mut helper: HelperProcess) -> Sto
     StoreRespawnedHelper::Stored
 }
 
+const HELPER_SHUTDOWN_GRACE: Duration = Duration::from_millis(750);
+const HELPER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
 /// Stops a helper we spawned but will not install (shutdown raced the respawn).
 /// Dropping a [`Child`] only detaches it, so we kill explicitly to avoid an
-/// orphaned helper holding the global hotkey tap.
+/// orphaned helper holding the global hotkey tap. Give a cooperative shutdown a
+/// short grace period first so the helper can restore clipboard state and remove
+/// temporary recordings before the forced-kill fallback.
 fn abandon_helper(mut helper: HelperProcess) {
     let _ = helper.stdin.write_all(b"{\"type\":\"shutdown\"}\n");
     let _ = helper.stdin.flush();
+    if wait_for_helper_exit(&mut helper.child, HELPER_SHUTDOWN_GRACE) {
+        return;
+    }
     let _ = helper.child.kill();
     let _ = helper.child.wait();
+}
+
+fn wait_for_helper_exit(child: &mut Child, grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            Err(_) => return true,
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(HELPER_SHUTDOWN_POLL_INTERVAL);
+    }
 }
 
 /// Re-applies the persisted microphone and shortcut settings to a just-respawned
