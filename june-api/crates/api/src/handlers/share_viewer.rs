@@ -105,13 +105,15 @@ pub(crate) async fn token_exchange(
     if state.share().is_none() {
         return Err(ApiError::SharingUnavailable);
     }
-    // Two budgets: per-address AND a global one for the endpoint. The
-    // per-address key uses the LAST x-forwarded-for hop (the one our ingress
-    // appended); earlier entries are client-controlled and spoofable. The
-    // global budget bounds the damage even if a caller varies the header.
+    // Rate-limit per address, keyed on the LAST x-forwarded-for hop (the one
+    // our ingress appended); earlier entries are client-controlled and
+    // spoofable, so a caller cannot vary this to escape their own budget. A
+    // single global counter is deliberately NOT used here: sizing one small
+    // enough to bound abuse would let one client's 60/min exhaust it and lock
+    // every recipient out of sign-in platform-wide, and the non-spoofable
+    // per-address key already caps each source.
     let client_key = format!("ip:{}", client_address(&headers));
-    if !state.share_rate().allow(&client_key) || !state.share_rate().allow("token-exchange:global")
-    {
+    if !state.share_rate().allow(&client_key) {
         return Err(ApiError::AuthorizationDenied);
     }
     if request.code.len() > 4096
