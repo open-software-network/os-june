@@ -8,6 +8,7 @@ mod permissions;
 mod protocol;
 
 use audio::Recorder;
+use clipboard::ClipboardReplace;
 use focus::PinnedTarget;
 use hotkeys::{HotkeyEvent, HotkeyManager};
 use permissions::ComApartment;
@@ -320,7 +321,14 @@ impl HelperApp {
             serde_json::json!({ "text": text }),
         ));
         let previous_clipboard = match clipboard::replace_text(&text) {
-            Ok(previous) => previous,
+            Ok(ClipboardReplace::Replaced(previous)) => previous,
+            Ok(ClipboardReplace::UnsafeToReplace) => {
+                self.writer.emit(error_event(
+                    "clipboard_restore_unsafe",
+                    "June did not paste because your clipboard contains rich content it cannot safely restore.",
+                ));
+                return;
+            }
             Err(error) => {
                 self.writer
                     .emit(error_event("clipboard_write_failed", error.to_string()));
@@ -626,6 +634,21 @@ mod tests {
     #[test]
     fn clipboard_backup_is_absent_without_unicode_text() {
         assert!(!clipboard::backup_exists_for_text_for_test(None));
+    }
+
+    #[test]
+    fn text_clipboard_formats_are_safe_to_replace() {
+        assert!(clipboard::formats_are_safe_to_replace_for_test(&[]));
+        assert!(clipboard::formats_are_safe_to_replace_for_test(&[13]));
+        assert!(clipboard::formats_are_safe_to_replace_for_test(&[1, 7, 13]));
+    }
+
+    #[test]
+    fn rich_clipboard_formats_are_not_safe_to_replace() {
+        assert!(!clipboard::formats_are_safe_to_replace_for_test(&[
+            13, 49300
+        ]));
+        assert!(!clipboard::formats_are_safe_to_replace_for_test(&[2]));
     }
 
     #[test]

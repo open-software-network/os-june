@@ -4,8 +4,8 @@ use windows_sys::Win32::{
     Foundation::{GlobalFree, HANDLE, HWND},
     System::{
         DataExchange::{
-            CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable,
-            OpenClipboard, SetClipboardData,
+            CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
+            IsClipboardFormatAvailable, OpenClipboard, SetClipboardData,
         },
         Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT},
     },
@@ -13,12 +13,16 @@ use windows_sys::Win32::{
 
 const CLIPBOARD_RETRY_ATTEMPTS: usize = 12;
 const CLIPBOARD_RETRY_DELAY: Duration = Duration::from_millis(25);
+const CF_TEXT: u32 = 1;
+const CF_OEMTEXT: u32 = 7;
 const CF_UNICODETEXT: u32 = 13;
 
 // v1 clipboard backup only preserves CF_UNICODETEXT. Rich/non-text formats
-// (HTML, RTF, images, file lists, app-specific formats) are not cloned because
-// arbitrary Windows clipboard formats can be delayed-rendered or owned by other
-// processes. The clipboard-based paste path may therefore drop those formats.
+// (HTML, RTF, images, file lists, app-specific formats) can be delayed-rendered
+// or process-owned, so the helper does not try to clone them. Instead, the
+// clipboard-based paste path refuses automatic paste when it sees formats it
+// cannot safely restore. Revisit if we add full-format backup or a non-clipboard
+// insertion path.
 pub struct ClipboardBackup {
     original_text: String,
 }
@@ -36,12 +40,38 @@ impl ClipboardBackup {
     }
 }
 
-pub fn replace_text(text: &str) -> Result<Option<ClipboardBackup>> {
+pub enum ClipboardReplace {
+    Replaced(Option<ClipboardBackup>),
+    UnsafeToReplace,
+}
+
+pub fn replace_text(text: &str) -> Result<ClipboardReplace> {
     with_open_clipboard(|| {
+        if !clipboard_formats_are_safe_to_replace(&open_clipboard_formats()) {
+            return Ok(ClipboardReplace::UnsafeToReplace);
+        }
         let backup = backup_from_clipboard_text(read_open_clipboard_text()?);
         set_open_clipboard_text(text)?;
-        Ok(backup)
+        Ok(ClipboardReplace::Replaced(backup))
     })
+}
+
+fn open_clipboard_formats() -> Vec<u32> {
+    let mut formats = Vec::new();
+    let mut format = 0;
+    loop {
+        format = unsafe { EnumClipboardFormats(format) };
+        if format == 0 {
+            return formats;
+        }
+        formats.push(format);
+    }
+}
+
+fn clipboard_formats_are_safe_to_replace(formats: &[u32]) -> bool {
+    formats
+        .iter()
+        .all(|format| matches!(*format, CF_TEXT | CF_OEMTEXT | CF_UNICODETEXT))
 }
 
 fn backup_from_clipboard_text(original_text: Option<String>) -> Option<ClipboardBackup> {
@@ -51,6 +81,11 @@ fn backup_from_clipboard_text(original_text: Option<String>) -> Option<Clipboard
 #[cfg(test)]
 pub(crate) fn backup_exists_for_text_for_test(original_text: Option<String>) -> bool {
     backup_from_clipboard_text(original_text).is_some()
+}
+
+#[cfg(test)]
+pub(crate) fn formats_are_safe_to_replace_for_test(formats: &[u32]) -> bool {
+    clipboard_formats_are_safe_to_replace(formats)
 }
 
 pub fn restore_clipboard_if_unchanged(expected: &str, backup: &ClipboardBackup) -> Result<()> {
