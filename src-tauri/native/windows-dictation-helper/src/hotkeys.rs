@@ -309,20 +309,23 @@ fn handle_capture_key(
 
     let modifiers = current_modifiers(&state.pressed_keys);
     if !has_standard_modifier(modifiers) {
-        event_sink(HotkeyEvent::CaptureError {
-            kind: capture.kind,
-            code: "modifier_required".to_string(),
-            message: "Shortcut must include Ctrl, Alt, Shift, or Win.".to_string(),
-        });
+        fail_capture(
+            state,
+            capture,
+            "modifier_required",
+            "Shortcut must include Ctrl, Alt, Shift, or Win.",
+            event_sink,
+        );
         return;
     }
     let Some(code) = code_for_virtual_key(vk) else {
-        event_sink(HotkeyEvent::CaptureError {
-            kind: capture.kind,
-            code: "unsupported_key".to_string(),
-            message: "Choose a supported letter, number, punctuation, navigation, or function key."
-                .to_string(),
-        });
+        fail_capture(
+            state,
+            capture,
+            "unsupported_key",
+            "Choose a supported letter, number, punctuation, navigation, or function key.",
+            event_sink,
+        );
         return;
     };
 
@@ -352,6 +355,42 @@ fn cancel_capture(state: &mut HotkeyThreadState, event_sink: &EventSink) {
     state.pressed_keys.clear();
     event_sink(HotkeyEvent::CaptureCancelled { kind: capture.kind });
     register_shortcuts(state, event_sink);
+}
+
+fn fail_capture(
+    state: &mut HotkeyThreadState,
+    capture: CaptureState,
+    code: &str,
+    message: &str,
+    event_sink: &EventSink,
+) {
+    fail_capture_with(
+        state,
+        capture,
+        code,
+        message,
+        event_sink,
+        register_shortcuts,
+    );
+}
+
+fn fail_capture_with(
+    state: &mut HotkeyThreadState,
+    capture: CaptureState,
+    code: &str,
+    message: &str,
+    event_sink: &EventSink,
+    mut register: impl FnMut(&mut HotkeyThreadState, &EventSink),
+) {
+    state.capture = None;
+    kill_timer(&mut state.capture_timer_id);
+    state.pressed_keys.clear();
+    event_sink(HotkeyEvent::CaptureError {
+        kind: capture.kind,
+        code: code.to_string(),
+        message: message.to_string(),
+    });
+    register(state, event_sink);
 }
 
 fn register_shortcuts(state: &mut HotkeyThreadState, event_sink: &EventSink) {
@@ -831,6 +870,55 @@ mod tests {
         assert!(!events
             .iter()
             .any(|event| matches!(event, HotkeyEvent::Ready { .. })));
+    }
+
+    #[test]
+    fn failed_capture_clears_state_and_re_registers_shortcuts() {
+        let mut state = HotkeyThreadState {
+            capture: Some(CaptureState {
+                kind: ShortcutKind::PushToTalk,
+            }),
+            capture_timer_id: Some(42),
+            pressed_keys: HashSet::from([VK_A as u32]),
+            ..HotkeyThreadState::default()
+        };
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_events = Arc::clone(&events);
+        let event_sink: EventSink = Arc::new(move |event| {
+            captured_events.lock().expect("event lock").push(event);
+        });
+        let mut registered = false;
+
+        fail_capture_with(
+            &mut state,
+            CaptureState {
+                kind: ShortcutKind::PushToTalk,
+            },
+            "modifier_required",
+            "Shortcut must include Ctrl, Alt, Shift, or Win.",
+            &event_sink,
+            |state, _| {
+                registered = true;
+                assert!(state.capture.is_none());
+            },
+        );
+
+        assert!(registered);
+        assert!(state.capture.is_none());
+        assert!(state.capture_timer_id.is_none());
+        assert!(state.pressed_keys.is_empty());
+        assert!(events
+            .lock()
+            .expect("event lock")
+            .iter()
+            .any(|event| matches!(
+                event,
+                HotkeyEvent::CaptureError {
+                    kind: ShortcutKind::PushToTalk,
+                    code,
+                    ..
+                } if code == "modifier_required"
+            )));
     }
 
     fn shortcut(kind: ShortcutKind, code: &str, label: &str) -> ShortcutCommand {
