@@ -83,7 +83,7 @@ writeFileSync(
 tauriArgs.push("--config", devConfigPath);
 
 const tauri = tauriInvocation();
-const child = spawn(tauri.command, tauriCommandArgs([...tauri.args, "dev", ...tauriArgs]), {
+const child = spawn(tauri.command, [...tauri.args, "dev", ...tauriArgs], {
   env: {
     ...process.env,
     VITE_PORT: String(frontendPort),
