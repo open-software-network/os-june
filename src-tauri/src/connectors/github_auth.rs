@@ -8,6 +8,7 @@ use crate::domain::types::AppError;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
@@ -16,8 +17,6 @@ const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const API_BASE_URL: &str = "https://api.github.com";
 const GITHUB_API_VERSION: &str = "2026-03-10";
-// Task 5 consumes the narrowly allowed private device-flow primitives below.
-#[allow(dead_code)]
 const GITHUB_VERIFICATION_URI: &str = "https://github.com/login/device";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PAGES: u32 = 100;
@@ -51,7 +50,6 @@ impl std::fmt::Debug for GitHubDevicePrompt {
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]
-#[allow(dead_code)]
 struct PendingDeviceCode {
     device_code: String,
     #[zeroize(skip)]
@@ -60,7 +58,6 @@ struct PendingDeviceCode {
     expires_at_unix: i64,
 }
 
-#[allow(dead_code)]
 impl PendingDeviceCode {
     fn poll_interval(&self) -> Duration {
         Duration::from_secs(self.interval_seconds)
@@ -75,7 +72,6 @@ impl PendingDeviceCode {
     }
 }
 
-#[allow(dead_code)]
 enum PollOutcome {
     Pending,
     SlowDown,
@@ -128,8 +124,223 @@ pub(super) struct GitHubTokenGrant {
     refresh_token_expires_at_unix: i64,
 }
 
+struct ActiveGitHubAttempt {
+    id: u64,
+    cancellation: tokio::sync::watch::Sender<bool>,
+    pending: Option<PendingDeviceCode>,
+}
+
+pub(super) struct AuthorizedGitHubAttempt {
+    pub(super) attempt_id: u64,
+    pub(super) cancellation: tokio::sync::watch::Receiver<bool>,
+    pub(super) tokens: GitHubTokenGrant,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct GitHubCompletionHook {
+    pub(crate) reached: std::sync::Arc<tokio::sync::Notify>,
+    pub(crate) resume: std::sync::Arc<tokio::sync::Notify>,
+}
+
+impl std::fmt::Debug for AuthorizedGitHubAttempt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AuthorizedGitHubAttempt")
+            .field("attempt_id", &self.attempt_id)
+            .field("tokens", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Default)]
+pub struct GitHubConnectFlow {
+    next_attempt_id: AtomicU64,
+    active: tokio::sync::Mutex<Option<ActiveGitHubAttempt>>,
+    completion_lock: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    after_token_hook: std::sync::Mutex<Option<GitHubCompletionHook>>,
+}
+
+impl GitHubConnectFlow {
+    pub async fn start(
+        &self,
+        client: &GitHubAuthClient,
+        client_id: &str,
+    ) -> Result<GitHubDevicePrompt, AppError> {
+        let attempt_id = self
+            .next_attempt_id
+            .fetch_add(1, Ordering::SeqCst)
+            .checked_add(1)
+            .ok_or_else(state_invalid)?;
+        let (cancellation, _) = tokio::sync::watch::channel(false);
+        {
+            let mut active = self.active.lock().await;
+            if let Some(previous) = active.take() {
+                let _ = previous.cancellation.send(true);
+            }
+            *active = Some(ActiveGitHubAttempt {
+                id: attempt_id,
+                cancellation,
+                pending: None,
+            });
+        }
+
+        let (prompt, pending) = match client.start_device_flow(client_id).await {
+            Ok(result) => result,
+            Err(error) => {
+                self.clear_if_current(attempt_id).await;
+                return Err(error);
+            }
+        };
+        let mut active = self.active.lock().await;
+        match active.as_mut() {
+            Some(attempt) if attempt.id == attempt_id && !*attempt.cancellation.borrow() => {
+                attempt.pending = Some(pending);
+                Ok(prompt)
+            }
+            _ => Err(connect_canceled()),
+        }
+    }
+
+    pub(super) async fn wait(
+        &self,
+        client: &GitHubAuthClient,
+        client_id: &str,
+    ) -> Result<AuthorizedGitHubAttempt, AppError> {
+        let (attempt_id, mut cancellation, mut pending) = {
+            let mut active = self.active.lock().await;
+            let attempt = active.as_mut().ok_or_else(connect_canceled)?;
+            let pending = attempt.pending.take().ok_or_else(connect_canceled)?;
+            (attempt.id, attempt.cancellation.subscribe(), pending)
+        };
+
+        loop {
+            if *cancellation.borrow() {
+                return Err(connect_canceled());
+            }
+            tokio::select! {
+                changed = cancellation.changed() => {
+                    if changed.is_err() || *cancellation.borrow() {
+                        return Err(connect_canceled());
+                    }
+                }
+                () = tokio::time::sleep(pending.poll_interval()) => {}
+            }
+            if *cancellation.borrow() {
+                return Err(connect_canceled());
+            }
+            if now_unix() >= pending.expires_at_unix {
+                self.clear_if_current(attempt_id).await;
+                return Err(connect_expired());
+            }
+
+            let outcome = tokio::select! {
+                changed = cancellation.changed() => {
+                    if changed.is_err() || *cancellation.borrow() {
+                        return Err(connect_canceled());
+                    }
+                    continue;
+                }
+                outcome = client.poll_device_flow_once(client_id, &pending) => outcome,
+            };
+            match outcome {
+                Ok(PollOutcome::Pending) => {}
+                Ok(PollOutcome::SlowDown) => {
+                    if let Err(error) = pending.apply_slow_down() {
+                        self.clear_if_current(attempt_id).await;
+                        return Err(error);
+                    }
+                }
+                Ok(PollOutcome::Authorized(tokens)) => {
+                    if !self.is_active(attempt_id).await || *cancellation.borrow() {
+                        return Err(connect_canceled());
+                    }
+                    return Ok(AuthorizedGitHubAttempt {
+                        attempt_id,
+                        cancellation,
+                        tokens,
+                    });
+                }
+                Err(error) => {
+                    self.clear_if_current(attempt_id).await;
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    pub async fn cancel(&self) -> Result<(), AppError> {
+        if let Some(active) = self.active.lock().await.take() {
+            let _ = active.cancellation.send(true);
+        }
+        Ok(())
+    }
+
+    pub(super) async fn is_active(&self, attempt_id: u64) -> bool {
+        self.active
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|attempt| attempt.id == attempt_id && !*attempt.cancellation.borrow())
+    }
+
+    pub(super) async fn completion_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.completion_lock.lock().await
+    }
+
+    pub(super) async fn finish_if_current(&self, attempt_id: u64) -> bool {
+        let mut active = self.active.lock().await;
+        if active
+            .as_ref()
+            .is_some_and(|attempt| attempt.id == attempt_id)
+        {
+            active.take();
+            true
+        } else {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_after_token_hook(&self, hook: GitHubCompletionHook) {
+        *self.after_token_hook.lock().expect("completion hook") = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(super) async fn pause_after_token_for_test(&self) {
+        let hook = self
+            .after_token_hook
+            .lock()
+            .expect("completion hook")
+            .take();
+        if let Some(hook) = hook {
+            hook.reached.notify_one();
+            hook.resume.notified().await;
+        }
+    }
+
+    async fn clear_if_current(&self, attempt_id: u64) {
+        let mut active = self.active.lock().await;
+        if active
+            .as_ref()
+            .is_some_and(|attempt| attempt.id == attempt_id)
+        {
+            active.take();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn active_attempt_id(&self) -> Option<u64> {
+        self.active.lock().await.as_ref().map(|attempt| attempt.id)
+    }
+}
+
 impl GitHubTokenGrant {
-    #[allow(dead_code)]
+    pub(super) fn access_token(&self) -> &str {
+        &self.access_token
+    }
+
     pub(super) fn into_stored(
         mut self,
         github_user_id: String,
@@ -354,7 +565,6 @@ impl GitHubAuthClient {
         })
     }
 
-    #[allow(dead_code)]
     async fn start_device_flow(
         &self,
         client_id: &str,
@@ -399,7 +609,6 @@ impl GitHubAuthClient {
         Ok((prompt, pending))
     }
 
-    #[allow(dead_code)]
     async fn poll_device_flow_once(
         &self,
         client_id: &str,
@@ -1075,7 +1284,7 @@ fn result_limit_exceeded() -> AppError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeSet;
     use tokio::{
@@ -1091,38 +1300,42 @@ mod tests {
         form_field_names: BTreeSet<String>,
     }
 
-    struct SafeScriptCapture {
-        method: String,
-        path: String,
-        headers: BTreeSet<String>,
-        form_field_names: BTreeSet<String>,
-        has_expected_client_id: bool,
-        has_expected_device_code: bool,
-        has_expected_refresh_token: bool,
-        has_expected_grant_type: bool,
-        has_expected_bearer_token: bool,
+    pub(crate) struct SafeScriptCapture {
+        pub(crate) method: String,
+        pub(crate) path: String,
+        pub(crate) headers: BTreeSet<String>,
+        pub(crate) form_field_names: BTreeSet<String>,
+        pub(crate) has_expected_client_id: bool,
+        pub(crate) has_expected_device_code: bool,
+        pub(crate) has_expected_refresh_token: bool,
+        pub(crate) has_expected_grant_type: bool,
+        pub(crate) has_expected_bearer_token: bool,
     }
 
     #[derive(Default)]
-    struct RequestExpectations {
-        client_id: Option<&'static str>,
-        device_code: Option<&'static str>,
-        refresh_token: Option<&'static str>,
-        grant_type: Option<&'static str>,
-        bearer_token: Option<&'static str>,
+    pub(crate) struct RequestExpectations {
+        pub(crate) client_id: Option<&'static str>,
+        pub(crate) device_code: Option<&'static str>,
+        pub(crate) refresh_token: Option<&'static str>,
+        pub(crate) grant_type: Option<&'static str>,
+        pub(crate) bearer_token: Option<&'static str>,
     }
 
-    struct ResponseFixture {
+    pub(crate) struct ResponseFixture {
         status: u16,
         headers: Vec<(String, String)>,
         body: String,
         declared_length: Option<usize>,
         chunked: bool,
         allow_early_close: bool,
+        block: Option<(
+            std::sync::Arc<tokio::sync::Notify>,
+            std::sync::Arc<tokio::sync::Notify>,
+        )>,
     }
 
     impl ResponseFixture {
-        fn json(status: u16, body: impl Into<String>) -> Self {
+        pub(crate) fn json(status: u16, body: impl Into<String>) -> Self {
             Self {
                 status,
                 headers: vec![("Content-Type".into(), "application/json".into())],
@@ -1130,11 +1343,22 @@ mod tests {
                 declared_length: None,
                 chunked: false,
                 allow_early_close: false,
+                block: None,
             }
         }
 
-        fn with_header(mut self, name: &str, value: &str) -> Self {
+        pub(crate) fn with_header(mut self, name: &str, value: &str) -> Self {
             self.headers.push((name.to_owned(), value.to_owned()));
+            self
+        }
+
+        pub(crate) fn blocked(
+            mut self,
+            reached: std::sync::Arc<tokio::sync::Notify>,
+            resume: std::sync::Arc<tokio::sync::Notify>,
+        ) -> Self {
+            self.block = Some((reached, resume));
+            self.allow_early_close = true;
             self
         }
 
@@ -1150,7 +1374,7 @@ mod tests {
         }
     }
 
-    async fn read_safe_request(
+    pub(crate) async fn read_safe_request(
         stream: &mut tokio::net::TcpStream,
         expected: &RequestExpectations,
     ) -> SafeScriptCapture {
@@ -1241,7 +1465,7 @@ mod tests {
         }
     }
 
-    async fn scripted_server(
+    pub(crate) async fn scripted_server(
         script: Vec<(ResponseFixture, RequestExpectations)>,
     ) -> (String, tokio::task::JoinHandle<Vec<SafeScriptCapture>>) {
         let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -1263,6 +1487,10 @@ mod tests {
                     500 => "Internal Server Error",
                     _ => "Response",
                 };
+                if let Some((reached, resume)) = fixture.block.as_ref() {
+                    reached.notify_one();
+                    resume.notified().await;
+                }
                 let mut response = format!("HTTP/1.1 {} {}\r\n", fixture.status, reason);
                 for (name, value) in fixture.headers {
                     response.push_str(&format!("{name}: {value}\r\n"));
@@ -1299,6 +1527,204 @@ mod tests {
             captures
         });
         (base_url, task)
+    }
+
+    async fn write_json_response(
+        stream: &mut tokio::net::TcpStream,
+        body: &str,
+    ) -> std::io::Result<()> {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(), body
+        );
+        stream.write_all(response.as_bytes()).await
+    }
+
+    async fn delayed_device_server() -> (
+        String,
+        std::sync::Arc<tokio::sync::Notify>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind delayed device server");
+        let base_url = format!("http://{}", listener.local_addr().expect("server address"));
+        let first_blocked = std::sync::Arc::new(tokio::sync::Notify::new());
+        let first_blocked_for_task = first_blocked.clone();
+        let task = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.expect("accept first request");
+            let expected = RequestExpectations {
+                client_id: Some("Iv23example"),
+                ..RequestExpectations::default()
+            };
+            let first_capture = read_safe_request(&mut first, &expected).await;
+            assert!(first_capture.has_expected_client_id);
+            first_blocked_for_task.notify_one();
+
+            let (mut second, _) = listener.accept().await.expect("accept second request");
+            let second_capture = read_safe_request(&mut second, &expected).await;
+            assert!(second_capture.has_expected_client_id);
+            write_json_response(
+                &mut second,
+                r#"{"device_code":"new-device","user_code":"NEW-CODE","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}"#,
+            )
+            .await
+            .expect("write second response");
+            write_json_response(
+                &mut first,
+                r#"{"device_code":"old-device","user_code":"OLD-CODE","verification_uri":"https://github.com/login/device","expires_in":900,"interval":5}"#,
+            )
+            .await
+            .expect("write first response");
+        });
+        (base_url, first_blocked, task)
+    }
+
+    #[tokio::test]
+    async fn a_delayed_first_start_cannot_replace_a_faster_second_start() {
+        let (base_url, first_blocked, server) = delayed_device_server().await;
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+        let flow = std::sync::Arc::new(GitHubConnectFlow::default());
+
+        let first_flow = flow.clone();
+        let first_client = client.clone();
+        let first =
+            tokio::spawn(async move { first_flow.start(&first_client, "Iv23example").await });
+        first_blocked.notified().await;
+        let second_flow = flow.clone();
+        let second = tokio::spawn(async move { second_flow.start(&client, "Iv23example").await });
+
+        assert_eq!(
+            second
+                .await
+                .expect("second task")
+                .expect("new prompt")
+                .user_code,
+            "NEW-CODE"
+        );
+        assert_eq!(
+            first
+                .await
+                .expect("first task")
+                .expect_err("older start must be canceled")
+                .code,
+            "github_connect_canceled"
+        );
+        assert_eq!(flow.active_attempt_id().await, Some(2));
+        server.await.expect("delayed server");
+    }
+
+    #[tokio::test]
+    async fn explicit_cancellation_interrupts_a_sleeping_poll_immediately() {
+        let (base_url, server) = scripted_server(vec![(
+            ResponseFixture::json(
+                200,
+                r#"{"device_code":"device-secret","user_code":"ABCD-EFGH","verification_uri":"https://github.com/login/device","expires_in":900,"interval":60}"#,
+            ),
+            RequestExpectations {
+                client_id: Some("Iv23example"),
+                ..RequestExpectations::default()
+            },
+        )])
+        .await;
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+        let flow = std::sync::Arc::new(GitHubConnectFlow::default());
+        flow.start(&client, "Iv23example")
+            .await
+            .expect("device prompt");
+        server.await.expect("device server");
+
+        let waiting_flow = flow.clone();
+        let waiting_client = client.clone();
+        let wait =
+            tokio::spawn(async move { waiting_flow.wait(&waiting_client, "Iv23example").await });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        flow.cancel().await.expect("cancel flow");
+        let error = tokio::time::timeout(Duration::from_millis(200), wait)
+            .await
+            .expect("cancellation must not wait for poll interval")
+            .expect("wait task")
+            .expect_err("canceled wait");
+        assert_eq!(error.code, "github_connect_canceled");
+        assert_eq!(flow.active_attempt_id().await, None);
+    }
+
+    #[tokio::test]
+    async fn failed_device_start_clears_the_active_attempt_marker() {
+        let client = GitHubAuthClient::for_test("http://127.0.0.1:9").expect("test client");
+        let flow = GitHubConnectFlow::default();
+
+        assert_eq!(
+            flow.start(&client, "Iv23example")
+                .await
+                .expect_err("unreachable device endpoint")
+                .code,
+            "github_token_exchange_failed"
+        );
+        assert_eq!(flow.active_attempt_id().await, None);
+    }
+
+    #[tokio::test]
+    async fn denial_returns_no_authorized_attempt() {
+        let (base_url, server) = scripted_server(vec![
+            (
+                ResponseFixture::json(
+                    200,
+                    r#"{"device_code":"device-secret","user_code":"ABCD-EFGH","verification_uri":"https://github.com/login/device","expires_in":30,"interval":1}"#,
+                ),
+                RequestExpectations {
+                    client_id: Some("Iv23example"),
+                    ..RequestExpectations::default()
+                },
+            ),
+            (
+                ResponseFixture::json(200, r#"{"error":"access_denied"}"#),
+                RequestExpectations {
+                    client_id: Some("Iv23example"),
+                    device_code: Some("device-secret"),
+                    grant_type: Some("urn:ietf:params:oauth:grant-type:device_code"),
+                    ..RequestExpectations::default()
+                },
+            ),
+        ])
+        .await;
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+        let flow = GitHubConnectFlow::default();
+        flow.start(&client, "Iv23example")
+            .await
+            .expect("device prompt");
+        let error = flow
+            .wait(&client, "Iv23example")
+            .await
+            .expect_err("denied flow");
+        assert_eq!(error.code, "github_connect_denied");
+        server.await.expect("denial server");
+    }
+
+    #[tokio::test]
+    async fn local_expiry_returns_no_authorized_attempt_or_poll_request() {
+        let (base_url, server) = scripted_server(vec![(
+            ResponseFixture::json(
+                200,
+                r#"{"device_code":"device-secret","user_code":"ABCD-EFGH","verification_uri":"https://github.com/login/device","expires_in":1,"interval":2}"#,
+            ),
+            RequestExpectations {
+                client_id: Some("Iv23example"),
+                ..RequestExpectations::default()
+            },
+        )])
+        .await;
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+        let flow = GitHubConnectFlow::default();
+        flow.start(&client, "Iv23example")
+            .await
+            .expect("device prompt");
+        server.await.expect("device server");
+        let error = flow
+            .wait(&client, "Iv23example")
+            .await
+            .expect_err("expired flow");
+        assert_eq!(error.code, "github_connect_expired");
     }
 
     async fn capture_device_request(
@@ -2385,6 +2811,7 @@ mod tests {
             declared_length: Some(MAX_RESPONSE_BYTES + 1),
             chunked: false,
             allow_early_close: true,
+            block: None,
         };
         let (base_url, server) = scripted_server(vec![(oversized, api_expectation())]).await;
         let client = GitHubAuthClient::for_test(&base_url).expect("test client");

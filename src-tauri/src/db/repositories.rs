@@ -18,6 +18,11 @@ pub struct Repositories {
     pub pool: SqlitePool,
     #[cfg(test)]
     github_snapshot_read_hook: Option<GitHubSnapshotReadHook>,
+    #[cfg(test)]
+    github_snapshot_replace_failure: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    github_snapshot_replace_hook:
+        std::sync::Arc<std::sync::Mutex<Option<GitHubSnapshotReplaceHook>>>,
 }
 
 #[cfg(test)]
@@ -25,6 +30,13 @@ pub struct Repositories {
 struct GitHubSnapshotReadHook {
     connection_read: std::sync::Arc<tokio::sync::Notify>,
     resume: std::sync::Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct GitHubSnapshotReplaceHook {
+    pub(crate) reached: std::sync::Arc<tokio::sync::Notify>,
+    pub(crate) resume: std::sync::Arc<tokio::sync::Notify>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,6 +155,12 @@ impl Repositories {
             pool,
             #[cfg(test)]
             github_snapshot_read_hook: None,
+            #[cfg(test)]
+            github_snapshot_replace_failure: std::sync::Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
+            #[cfg(test)]
+            github_snapshot_replace_hook: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -150,6 +168,20 @@ impl Repositories {
     fn with_github_snapshot_read_hook(mut self, hook: GitHubSnapshotReadHook) -> Self {
         self.github_snapshot_read_hook = Some(hook);
         self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_github_snapshot_replace(&self) {
+        self.github_snapshot_replace_failure
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn block_next_github_snapshot_commit(&self, hook: GitHubSnapshotReplaceHook) {
+        *self
+            .github_snapshot_replace_hook
+            .lock()
+            .expect("snapshot replace hook") = Some(hook);
     }
 
     pub async fn increment_p3a_counter(
@@ -386,6 +418,15 @@ impl Repositories {
         installations: &[GitHubInstallationRecord],
         repositories: &[GitHubRepositoryRecord],
     ) -> Result<(), sqlx::error::Error> {
+        #[cfg(test)]
+        if self
+            .github_snapshot_replace_failure
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(sqlx::error::Error::Protocol(
+                "injected GitHub snapshot replacement failure".into(),
+            ));
+        }
         for installation in installations {
             validate_github_management_url(installation)?;
         }
@@ -461,6 +502,17 @@ impl Repositories {
             .await?;
         }
 
+        #[cfg(test)]
+        let hook = self
+            .github_snapshot_replace_hook
+            .lock()
+            .expect("snapshot replace hook")
+            .take();
+        #[cfg(test)]
+        if let Some(hook) = hook {
+            hook.reached.notify_one();
+            hook.resume.notified().await;
+        }
         tx.commit().await
     }
 
@@ -3973,7 +4025,7 @@ mod tests {
         ];
 
         repos
-            .replace_github_snapshot(&connection, &[installation.clone()], &first)
+            .replace_github_snapshot(&connection, std::slice::from_ref(&installation), &first)
             .await
             .unwrap();
         let stored = repos.github_snapshot().await.unwrap().unwrap();
@@ -4009,7 +4061,11 @@ mod tests {
         )];
 
         repos
-            .replace_github_snapshot(&connection, &[installation.clone()], &repositories)
+            .replace_github_snapshot(
+                &connection,
+                std::slice::from_ref(&installation),
+                &repositories,
+            )
             .await
             .unwrap();
         let original = repos.github_snapshot().await.unwrap().unwrap();
