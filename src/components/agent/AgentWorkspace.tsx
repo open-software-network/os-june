@@ -3784,10 +3784,17 @@ export function AgentWorkspace({
   const loadGenerationModel = useCallback(async () => {
     const requestId = ++generationModelRequestSequence.current;
     try {
-      const [settingsResponse, modelsResponse] = await Promise.all([
-        providerModelSettings(),
-        listVeniceModels("generation"),
-      ]);
+      const settingsPromise = providerModelSettings();
+      const modelsPromise = listVeniceModels("generation");
+      // Surfaced before the catalog await: the settings read is local IPC, so
+      // key-presence state (the Auto billing note) refreshes even when the
+      // remote catalog fetch fails.
+      modelsPromise.catch(() => {});
+      const settingsResponse = await settingsPromise;
+      if (requestId === generationModelRequestSequence.current) {
+        setVeniceApiKeyConfigured(settingsResponse.settings.veniceApiKeyConfigured);
+      }
+      const modelsResponse = await modelsPromise;
       const selectedModelId = generationSelectionId(
         settingsResponse.settings,
         modelsResponse.selectedModel,
