@@ -18,6 +18,37 @@ use tokio::sync::{mpsc, oneshot};
 
 pub const PROVIDER_NAME: &str = "venice";
 
+/// Where BYOK requests go when the config names no `byok_base_url`. The
+/// configured `base_url` may point at a June-managed gateway that only
+/// accepts June's service key; a user's own Venice key is only valid against
+/// Venice itself, so BYOK traffic must target Venice's public API directly.
+const VENICE_PUBLIC_BASE_URL: &str = "https://api.venice.ai/api/v1";
+
+pub(crate) fn byok_base_url(config: &UpstreamConfig) -> String {
+    config
+        .byok_base_url
+        .as_deref()
+        .unwrap_or(VENICE_PUBLIC_BASE_URL)
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Picks the upstream base for one request: BYOK requests carry the user's
+/// key and must go direct to Venice; everything else uses the configured
+/// (June-managed, metered) upstream. Must stay aligned with
+/// [`venice_api_key`], which selects the bearer on the same condition.
+pub(crate) fn request_base_url<'a>(
+    base_url: &'a str,
+    byok_base_url: &'a str,
+    credentials: &ProviderCredentials,
+) -> &'a str {
+    if credentials.has_venice_api_key() {
+        byok_base_url
+    } else {
+        base_url
+    }
+}
+
 const CREDITS_PER_USD: f64 = 1_000.0;
 const RATE_SCALE: f64 = 1_000_000.0;
 #[cfg(not(test))]
@@ -116,6 +147,7 @@ pub struct VeniceTranscriber {
     http: reqwest::Client,
     api_key: String,
     base_url: String,
+    byok_base_url: String,
 }
 
 impl VeniceTranscriber {
@@ -124,6 +156,7 @@ impl VeniceTranscriber {
             http,
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
+            byok_base_url: byok_base_url(config),
         }
     }
 }
@@ -131,7 +164,12 @@ impl VeniceTranscriber {
 #[async_trait]
 impl Transcriber for VeniceTranscriber {
     async fn transcribe(&self, request: TranscriptionRequest) -> Result<Transcript, DomainError> {
-        let url = format!("{}/audio/transcriptions", self.base_url);
+        let base_url = request_base_url(
+            &self.base_url,
+            &self.byok_base_url,
+            &request.provider_credentials,
+        );
+        let url = format!("{base_url}/audio/transcriptions");
         // Bounded retry on transient failures (connection reset, 429, 5xx).
         // Safe to replay: the metering charge only settles after this call
         // succeeds, so a retried attempt can never double-charge.
@@ -453,6 +491,7 @@ struct VeniceChat {
     unmetered_http: Option<reqwest::Client>,
     api_key: String,
     base_url: String,
+    byok_base_url: String,
 }
 
 impl VeniceChat {
@@ -462,6 +501,7 @@ impl VeniceChat {
             unmetered_http: None,
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
+            byok_base_url: byok_base_url(config),
         }
     }
 
@@ -484,13 +524,18 @@ impl VeniceChat {
         }
     }
 
+    fn chat_completions_url(&self, credentials: &ProviderCredentials) -> String {
+        let base_url = request_base_url(&self.base_url, &self.byok_base_url, credentials);
+        format!("{base_url}/chat/completions")
+    }
+
     async fn complete(
         &self,
         mut body: ChatCompletionRequest,
         auth: ChatCallAuth<'_>,
     ) -> Result<ChatCompletionResponse, DomainError> {
         body.messages.insert(0, ChatMessage::safety_context());
-        let url = format!("{}/chat/completions", self.base_url);
+        let url = self.chat_completions_url(auth.provider_credentials);
         // Bounded retry on transient failures — same rationale as the
         // transcribers: metering settles only after success, so a replay
         // can never double-charge.
@@ -565,7 +610,7 @@ impl VeniceChat {
         auth: ChatCallAuth<'_>,
     ) -> Result<AgentChatCompletion, DomainError> {
         let body = prepare_agent_chat_body(body, &model)?;
-        let url = format!("{}/chat/completions", self.base_url);
+        let url = self.chat_completions_url(auth.provider_credentials);
         let response = self
             .client(auth.unmetered)
             .post(&url)
@@ -616,7 +661,7 @@ impl VeniceChat {
         auth: ChatCallAuth<'_>,
     ) -> Result<AgentChatStream, DomainError> {
         let body = prepare_agent_chat_body(body, &model)?;
-        let url = format!("{}/chat/completions", self.base_url);
+        let url = self.chat_completions_url(auth.provider_credentials);
         let mut response = self
             .client(auth.unmetered)
             .post(&url)
@@ -1521,6 +1566,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1579,7 +1625,9 @@ mod tests {
             http::default_client(),
             &UpstreamConfig {
                 api_key: "shared_venice_key".to_string(),
-                base_url: server.uri(),
+                // BYOK requests route to byok_base_url, never base_url.
+                base_url: "http://127.0.0.1:9".to_string(),
+                byok_base_url: Some(server.uri()),
             },
         );
 
@@ -1629,6 +1677,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1677,6 +1726,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1752,6 +1802,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1792,6 +1843,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1833,6 +1885,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1862,6 +1915,92 @@ mod tests {
         assert!(body.contains("filename=\"audio.wav\""), "body: {body}");
     }
 
+    #[test]
+    fn byok_base_url_defaults_to_public_venice() {
+        let config = UpstreamConfig {
+            api_key: "venice_key".to_string(),
+            base_url: "https://june-managed.example/v1".to_string(),
+            byok_base_url: None,
+        };
+
+        assert_eq!(super::byok_base_url(&config), super::VENICE_PUBLIC_BASE_URL);
+    }
+
+    #[tokio::test]
+    async fn byok_transcription_routes_direct_to_byok_base_url() {
+        // Regression: the configured base_url may be a June-managed gateway
+        // that rejects any bearer other than June's service key. A request
+        // carrying a user's own Venice key must go to the BYOK base instead.
+        let byok_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/audio/transcriptions"))
+            .and(header("authorization", "Bearer user_venice_key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "text": "Hello" })))
+            .expect(1)
+            .mount(&byok_server)
+            .await;
+        let transcriber = super::VeniceTranscriber::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: "http://127.0.0.1:9".to_string(),
+                byok_base_url: Some(byok_server.uri()),
+            },
+        );
+
+        let transcript = june_domain::Transcriber::transcribe(
+            &transcriber,
+            june_domain::TranscriptionRequest {
+                audio: b"fake wav".to_vec(),
+                format: june_domain::AudioFormat::Wav,
+                context: None,
+                language: None,
+                model: ModelId("nvidia/parakeet-tdt-0.6b-v3".to_string()),
+                provider_credentials: ProviderCredentials {
+                    venice_api_key: Some("user_venice_key".to_string()),
+                },
+            },
+        )
+        .await;
+
+        assert_eq!(transcript.map(|value| value.text), Ok("Hello".to_string()));
+    }
+
+    #[tokio::test]
+    async fn metered_transcription_ignores_byok_base_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/audio/transcriptions"))
+            .and(header("authorization", "Bearer venice_key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "text": "Hello" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let transcriber = super::VeniceTranscriber::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+                byok_base_url: Some("http://127.0.0.1:9".to_string()),
+            },
+        );
+
+        let transcript = june_domain::Transcriber::transcribe(
+            &transcriber,
+            june_domain::TranscriptionRequest {
+                audio: b"fake wav".to_vec(),
+                format: june_domain::AudioFormat::Wav,
+                context: None,
+                language: None,
+                model: ModelId("nvidia/parakeet-tdt-0.6b-v3".to_string()),
+                provider_credentials: ProviderCredentials::default(),
+            },
+        )
+        .await;
+
+        assert_eq!(transcript.map(|value| value.text), Ok("Hello".to_string()));
+    }
+
     #[tokio::test]
     async fn agent_chat_replaces_non_object_stream_options() {
         // A non-object `stream_options` used to silently skip the
@@ -1883,6 +2022,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1921,7 +2061,9 @@ mod tests {
             http::default_client(),
             &UpstreamConfig {
                 api_key: "shared_venice_key".to_string(),
-                base_url: server.uri(),
+                // BYOK requests route to byok_base_url, never base_url.
+                base_url: "http://127.0.0.1:9".to_string(),
+                byok_base_url: Some(server.uri()),
             },
         );
 
@@ -2105,6 +2247,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -2152,6 +2295,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -2189,6 +2333,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: base_url.to_string(),
+                byok_base_url: None,
             },
         )
     }
@@ -2308,6 +2453,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: base_url.to_string(),
+                byok_base_url: None,
             },
         )
     }

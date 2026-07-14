@@ -532,6 +532,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
             std::time::Duration::from_secs(5),
             100 * 1024 * 1024,
@@ -544,6 +545,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
             std::time::Duration::from_secs(5),
             max_response_bytes,

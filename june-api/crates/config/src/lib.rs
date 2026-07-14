@@ -531,6 +531,12 @@ pub struct UpstreamConfig {
     #[serde(default)]
     pub api_key: String,
     pub base_url: String,
+    /// Base URL for requests authenticated with a user-supplied (BYOK) key.
+    /// `base_url` may point at a June-managed gateway that only accepts
+    /// June's own service key; a user's key must be presented to the provider
+    /// that issued it. `None` falls back to the provider's public API URL.
+    #[serde(default)]
+    pub byok_base_url: Option<String>,
 }
 
 impl Debug for UpstreamConfig {
@@ -539,6 +545,7 @@ impl Debug for UpstreamConfig {
             .debug_struct("UpstreamConfig")
             .field("api_key", &REDACTED)
             .field("base_url", &self.base_url)
+            .field("byok_base_url", &self.byok_base_url)
             .finish()
     }
 }
@@ -914,10 +921,12 @@ impl Default for AppConfig {
                 openai: UpstreamConfig {
                     api_key: String::new(),
                     base_url: "https://api.openai.com/v1".to_string(),
+                    byok_base_url: None,
                 },
                 venice: UpstreamConfig {
                     api_key: String::new(),
                     base_url: "https://api.venice.ai/api/v1".to_string(),
+                    byok_base_url: None,
                 },
             },
             attestation: AttestationConfig {
