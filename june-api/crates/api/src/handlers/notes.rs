@@ -99,6 +99,13 @@ pub(crate) async fn generate(
     let requested_model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &requested_model_id, validation::MAX_MODEL_CHARS)?;
     let model_id = resolve_priced_text_model(&state, &requested_model_id)?;
+    if state.local_dev_enabled() && model_id != AUTO_TEXT_MODEL && model_id != requested_model_id {
+        tracing::warn!(
+            requested_model = %requested_model_id,
+            resolved_model = %model_id,
+            "local dev substituted a concrete text model for unavailable Auto"
+        );
+    }
     let cost_quality = if model_id == AUTO_TEXT_MODEL {
         request.cost_quality
     } else {
@@ -369,7 +376,11 @@ pub(crate) fn resolve_priced_text_model(
     state: &ApiState,
     requested_model_id: &str,
 ) -> Result<String, ApiError> {
-    resolve_priced_text_model_kind(state.pricing(), requested_model_id)
+    resolve_priced_text_model_kind(
+        state.pricing(),
+        requested_model_id,
+        state.local_dev_enabled(),
+    )
 }
 
 /// Auto is a June-managed route. Strip BYOK from an explicit Auto selection,
@@ -401,17 +412,25 @@ pub(crate) fn credentials_for_resolved_model(
 fn resolve_priced_text_model_kind(
     pricing: &PricingTable,
     requested_model_id: &str,
+    allow_concrete_fallback: bool,
 ) -> Result<String, ApiError> {
     match pricing.ensure_model_kind(requested_model_id, ModelKind::Text) {
         Ok(()) => Ok(requested_model_id.to_string()),
         Err(PricingError::NotPriced | PricingError::MissingRate) => {
-            for fallback_model_id in [AUTO_TEXT_MODEL, DEFAULT_TEXT_MODEL] {
-                if pricing
-                    .ensure_model_kind(fallback_model_id, ModelKind::Text)
-                    .is_ok()
-                {
-                    return Ok(fallback_model_id.to_string());
-                }
+            if pricing
+                .ensure_model_kind(AUTO_TEXT_MODEL, ModelKind::Text)
+                .is_ok()
+            {
+                return Ok(AUTO_TEXT_MODEL.to_string());
+            }
+            if !allow_concrete_fallback {
+                return Err(ApiError::unprocessable("model_not_priced"));
+            }
+            if pricing
+                .ensure_model_kind(DEFAULT_TEXT_MODEL, ModelKind::Text)
+                .is_ok()
+            {
+                return Ok(DEFAULT_TEXT_MODEL.to_string());
             }
             pricing
                 .priced_models(Some(ModelKind::Text))
@@ -539,8 +558,9 @@ mod tests {
 
     #[test]
     fn stale_text_model_falls_back_to_auto() {
-        let resolved = resolve_priced_text_model_kind(&pricing_table(), "retired-venice-model")
-            .expect("stale model should remain usable through Auto");
+        let resolved =
+            resolve_priced_text_model_kind(&pricing_table(), "retired-venice-model", false)
+                .expect("stale model should remain usable through Auto");
         assert_eq!(resolved, AUTO_TEXT_MODEL);
     }
 
@@ -556,10 +576,29 @@ mod tests {
             .expect("text model should exist");
         models.insert(DEFAULT_TEXT_MODEL.to_string(), text_model);
 
-        let resolved = resolve_priced_text_model_kind(&PricingTable::new(models), AUTO_TEXT_MODEL)
-            .expect("local Auto should resolve to the built-in concrete default");
+        let resolved =
+            resolve_priced_text_model_kind(&PricingTable::new(models), AUTO_TEXT_MODEL, true)
+                .expect("local Auto should resolve to the built-in concrete default");
 
         assert_eq!(resolved, DEFAULT_TEXT_MODEL);
+    }
+
+    #[test]
+    fn non_local_auto_without_auto_pricing_fails_loudly() {
+        let mut models = pricing_table()
+            .iter()
+            .map(|(model_id, model)| (model_id.clone(), model.clone()))
+            .collect::<BTreeMap<_, _>>();
+        models.remove(AUTO_TEXT_MODEL);
+
+        let error =
+            resolve_priced_text_model_kind(&PricingTable::new(models), AUTO_TEXT_MODEL, false)
+                .expect_err("production must not silently substitute a concrete model");
+
+        assert!(matches!(
+            error,
+            ApiError::Unprocessable { message, .. } if message == "model_not_priced"
+        ));
     }
 
     #[test]
@@ -570,8 +609,9 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
         models.remove(AUTO_TEXT_MODEL);
 
-        let resolved = resolve_priced_text_model_kind(&PricingTable::new(models), "retired-model")
-            .expect("a remaining priced text model should be used");
+        let resolved =
+            resolve_priced_text_model_kind(&PricingTable::new(models), "retired-model", true)
+                .expect("a remaining priced text model should be used");
 
         assert_eq!(resolved, "text-model");
     }
@@ -663,7 +703,7 @@ mod tests {
 
     #[test]
     fn priced_text_model_is_preserved() {
-        let resolved = resolve_priced_text_model_kind(&pricing_table(), "text-model")
+        let resolved = resolve_priced_text_model_kind(&pricing_table(), "text-model", false)
             .expect("priced text model should remain explicit");
         assert_eq!(resolved, "text-model");
     }

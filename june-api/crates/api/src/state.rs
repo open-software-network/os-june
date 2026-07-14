@@ -43,6 +43,7 @@ pub struct ApiState {
 
 struct ApiStateInner {
     pricing: Arc<PricingTable>,
+    local_dev_enabled: bool,
     token_verifier: Arc<dyn TokenVerifier>,
     note_transcribe: Arc<NoteTranscribeService>,
     note_generate: Arc<NoteGenerateService>,
@@ -85,6 +86,7 @@ pub struct AttestationInfo {
 
 pub struct ApiStateParams {
     pub pricing: Arc<PricingTable>,
+    pub local_dev_enabled: bool,
     pub token_verifier: Arc<dyn TokenVerifier>,
     pub note_transcribe: Arc<NoteTranscribeService>,
     pub note_generate: Arc<NoteGenerateService>,
@@ -104,6 +106,7 @@ impl ApiState {
         Self {
             inner: Arc::new(ApiStateInner {
                 pricing: params.pricing,
+                local_dev_enabled: params.local_dev_enabled,
                 token_verifier: params.token_verifier,
                 note_transcribe: params.note_transcribe,
                 note_generate: params.note_generate,
@@ -123,6 +126,10 @@ impl ApiState {
 
     pub(crate) fn pricing(&self) -> &PricingTable {
         &self.inner.pricing
+    }
+
+    pub(crate) fn local_dev_enabled(&self) -> bool {
+        self.inner.local_dev_enabled
     }
 
     pub(crate) fn token_verifier(&self) -> &dyn TokenVerifier {

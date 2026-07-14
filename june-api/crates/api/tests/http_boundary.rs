@@ -367,6 +367,35 @@ async fn integration_agent_chat_local_auto_fallback_strips_auto_policy()
 }
 
 #[tokio::test]
+async fn integration_agent_chat_non_local_missing_auto_fails_loudly() -> Result<(), Box<dyn Error>>
+{
+    let app = router(test_state_with_text_pricing_without_auto(
+        false,
+        Arc::new(FakeGenerator),
+        Arc::new(FakeChatCompleter),
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "messages": [{ "role": "user", "content": "hello" }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["message"], "model_not_priced");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_agent_chat_local_auto_image_and_tools_falls_back_to_compatible_model()
 -> Result<(), Box<dyn Error>> {
     let completer = Arc::new(RecordingChatCompleter::default());
@@ -1790,6 +1819,7 @@ fn test_state_with_issue_sink_and_timeout(
 ) -> ApiState {
     test_state_from_deps(TestStateDeps {
         pricing: models(),
+        local_dev_enabled: false,
         issue_reports: test_issue_report_service(issue_reports),
         attestation,
         transcriber: Arc::new(FakeTranscriber),
@@ -1822,6 +1852,7 @@ fn test_state_with_sinks_and_transcriber(
 ) -> ApiState {
     test_state_from_deps(TestStateDeps {
         pricing: models(),
+        local_dev_enabled: false,
         issue_reports,
         attestation,
         transcriber,
@@ -1838,6 +1869,7 @@ fn test_state_with_generator_and_timeout(
 ) -> ApiState {
     test_state_from_deps(TestStateDeps {
         pricing: models(),
+        local_dev_enabled: false,
         issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
         attestation: test_attestation(),
         transcriber: Arc::new(FakeTranscriber),
@@ -1851,6 +1883,7 @@ fn test_state_with_generator_and_timeout(
 fn test_state_with_p3a_sink(p3a_sink: Arc<dyn P3aSink>) -> ApiState {
     test_state_from_deps(TestStateDeps {
         pricing: models(),
+        local_dev_enabled: false,
         issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
         attestation: test_attestation(),
         transcriber: Arc::new(FakeTranscriber),
@@ -1862,6 +1895,14 @@ fn test_state_with_p3a_sink(p3a_sink: Arc<dyn P3aSink>) -> ApiState {
 }
 
 fn test_state_with_local_text_pricing(
+    generator: Arc<dyn Generator>,
+    chat_completer: Arc<dyn AgentChatCompleter>,
+) -> ApiState {
+    test_state_with_text_pricing_without_auto(true, generator, chat_completer)
+}
+
+fn test_state_with_text_pricing_without_auto(
+    local_dev_enabled: bool,
     generator: Arc<dyn Generator>,
     chat_completer: Arc<dyn AgentChatCompleter>,
 ) -> ApiState {
@@ -1908,6 +1949,7 @@ fn test_state_with_local_text_pricing(
     );
     test_state_from_deps(TestStateDeps {
         pricing,
+        local_dev_enabled,
         issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
         attestation: test_attestation(),
         transcriber: Arc::new(FakeTranscriber),
@@ -1920,6 +1962,7 @@ fn test_state_with_local_text_pricing(
 
 struct TestStateDeps {
     pricing: BTreeMap<String, ModelPriceConfig>,
+    local_dev_enabled: bool,
     issue_reports: Arc<IssueReportService>,
     attestation: AttestationInfo,
     transcriber: Arc<dyn Transcriber>,
@@ -1964,6 +2007,7 @@ fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
 
     ApiState::new(ApiStateParams {
         pricing: pricing.clone(),
+        local_dev_enabled: deps.local_dev_enabled,
         token_verifier: Arc::new(FakeTokenVerifier),
         note_transcribe: Arc::new(NoteTranscribeService::new(NoteTranscribeServiceDeps {
             pricing: pricing.clone(),

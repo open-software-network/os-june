@@ -35,6 +35,13 @@ pub(crate) async fn chat_completions(
     validation::validate_text_len("model", &requested_model_id, validation::MAX_MODEL_CHARS)?;
     validation::validate_agent_chat_body(&body)?;
     let model_id = resolve_priced_agent_text_model(&state, &requested_model_id, &body)?;
+    if state.local_dev_enabled() && model_id != AUTO_TEXT_MODEL && model_id != requested_model_id {
+        tracing::warn!(
+            requested_model = %requested_model_id,
+            resolved_model = %model_id,
+            "local dev substituted a concrete text model for unavailable Auto"
+        );
+    }
     let provider_credentials = credentials_for_resolved_model(
         provider_credentials,
         &requested_model_id,
