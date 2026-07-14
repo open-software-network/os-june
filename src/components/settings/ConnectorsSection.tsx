@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectorProviderIcon } from "../connectors/ConnectorProviderIcon";
 import {
   ALL_SCOPE_BUNDLES,
@@ -16,14 +16,17 @@ import {
   connectorsConnect,
   connectorsDisconnect,
   connectorsList,
+  githubConnectionGet,
   type ConnectorAccount,
   type ConnectorScopeBundle,
+  type GitHubConnection,
 } from "../../lib/tauri";
 import { Checkbox } from "../ui/Checkbox";
 import { Dialog } from "../ui/Dialog";
 import { InlineNotice } from "../ui/InlineNotice";
 import { toast } from "../ui/Toaster";
 import { SettingsPageHeader } from "./AppSettings";
+import { GitHubConnectorRow } from "./GitHubConnectorRow";
 
 // Read-only by default: mail read and calendar read. Write scopes (draft,
 // send, organize, manage calendar) are opt-in checkboxes, so a fresh connect
@@ -62,7 +65,10 @@ function accountSubtitle(account: ConnectorAccount): string {
  */
 export function ConnectorsSection() {
   const [accounts, setAccounts] = useState<ConnectorAccount[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [googleLoadError, setGoogleLoadError] = useState<string | null>(null);
+  const [githubConnection, setGitHubConnection] = useState<GitHubConnection | null>(null);
+  const [githubLoading, setGitHubLoading] = useState(true);
+  const [githubLoadError, setGitHubLoadError] = useState<string | null>(null);
   const [notConfigured, setNotConfigured] = useState<"google" | null>(null);
   const [connectOpen, setConnectOpen] = useState(false);
   const [bundles, setBundles] = useState<ConnectorScopeBundle[]>([...DEFAULT_CONNECT_BUNDLES]);
@@ -75,16 +81,32 @@ export function ConnectorsSection() {
   const [disconnectTarget, setDisconnectTarget] = useState<ConnectorAccount | null>(null);
   const [revoke, setRevoke] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const refreshGeneration = useRef(0);
 
   const refresh = useCallback(async () => {
-    try {
-      const list = await connectorsList();
-      setAccounts(list);
-      setLoadError(null);
-    } catch (err) {
+    const generation = ++refreshGeneration.current;
+    setGitHubLoading(true);
+    const [googleResult, githubResult] = await Promise.allSettled([
+      connectorsList(),
+      githubConnectionGet(),
+    ]);
+    if (generation !== refreshGeneration.current) return;
+
+    if (googleResult.status === "fulfilled") {
+      setAccounts(googleResult.value);
+      setGoogleLoadError(null);
+    } else {
       setAccounts((current) => current ?? []);
-      setLoadError(messageFromError(err));
+      setGoogleLoadError("Google accounts could not be loaded. Try again.");
     }
+
+    if (githubResult.status === "fulfilled") {
+      setGitHubConnection(githubResult.value);
+      setGitHubLoadError(null);
+    } else {
+      setGitHubLoadError("GitHub connection could not be loaded. Try again.");
+    }
+    setGitHubLoading(false);
   }, []);
 
   useEffect(() => {
@@ -198,7 +220,7 @@ export function ConnectorsSection() {
       <SettingsPageHeader
         id="connectors-heading"
         title="Connectors"
-        blurb="Connect Google in local mode. Tokens stay in your Mac's Keychain, provider calls go straight from this device, and OpenSoftware's servers cannot read your mail or calendar."
+        blurb="Connect Google in local mode, or connect GitHub for repository access. Tokens stay in your Mac's Keychain, provider calls go straight from this device, and OpenSoftware's servers cannot read your mail, calendar, or repositories."
       />
 
       {notConfigured ? (
@@ -208,8 +230,19 @@ export function ConnectorsSection() {
           aria-label="Connector not configured"
         />
       ) : null}
-      {loadError ? (
-        <InlineNotice tone="warning" body={loadError} aria-label="Connectors load error" />
+      {googleLoadError ? (
+        <InlineNotice
+          tone="warning"
+          body={googleLoadError}
+          aria-label="Google accounts load error"
+        />
+      ) : null}
+      {githubLoadError ? (
+        <InlineNotice
+          tone="warning"
+          body={githubLoadError}
+          aria-label="GitHub connection load error"
+        />
       ) : null}
 
       <div className="settings-card connectors-card">
@@ -290,6 +323,14 @@ export function ConnectorsSection() {
               </li>
             );
           })}
+          <GitHubConnectorRow
+            connection={githubConnection}
+            loading={githubLoading}
+            onConnectionChanged={(nextConnection) => {
+              setGitHubConnection(nextConnection);
+              setGitHubLoadError(null);
+            }}
+          />
         </ul>
       </div>
 

@@ -1,14 +1,15 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectorsSection } from "../components/settings/ConnectorsSection";
-import type { ConnectorAccount } from "../lib/tauri";
+import type { ConnectorAccount, GitHubConnection } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   connectorsList: vi.fn<() => Promise<ConnectorAccount[]>>(),
   connectorsConnect: vi.fn(),
   connectorsDisconnect: vi.fn(),
   connectorsApplyRuntime: vi.fn(),
+  githubConnectionGet: vi.fn<() => Promise<GitHubConnection | null>>(),
   listen: vi.fn(),
 }));
 
@@ -18,6 +19,7 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   connectorsConnect: mocks.connectorsConnect,
   connectorsDisconnect: mocks.connectorsDisconnect,
   connectorsApplyRuntime: mocks.connectorsApplyRuntime,
+  githubConnectionGet: mocks.githubConnectionGet,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -39,12 +41,54 @@ function account(overrides: Partial<ConnectorAccount> = {}): ConnectorAccount {
   };
 }
 
+function githubConnection(overrides: Partial<GitHubConnection> = {}): GitHubConnection {
+  return {
+    githubUserId: "github-user-583231",
+    login: "octocat",
+    status: "connected",
+    installations: [
+      {
+        installationId: "installation-octo-org",
+        ownerId: "owner-octo-org",
+        ownerLogin: "octo-org",
+        ownerType: "Organization",
+        repositorySelection: "selected",
+        permissions: { contents: "read" },
+        repositories: [
+          {
+            repositoryId: "repository-alpha",
+            installationId: "installation-octo-org",
+            ownerLogin: "octo-org",
+            name: "alpha",
+            fullName: "octo-org/alpha",
+            private: false,
+            archived: false,
+            permissions: { pull: true },
+          },
+        ],
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function deferred<Value>() {
+  let resolve!: (value: Value) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<Value>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.connectorsList.mockResolvedValue([]);
   mocks.connectorsConnect.mockResolvedValue(account());
   mocks.connectorsDisconnect.mockResolvedValue(undefined);
   mocks.connectorsApplyRuntime.mockResolvedValue(undefined);
+  mocks.githubConnectionGet.mockResolvedValue(null);
   mocks.listen.mockResolvedValue(() => {});
 });
 
@@ -181,5 +225,110 @@ describe("ConnectorsSection", () => {
         revoke: false,
       }),
     );
+  });
+
+  it("loads Google and GitHub in parallel and refreshes both from the shared event", async () => {
+    const initialGoogle = deferred<ConnectorAccount[]>();
+    const initialGitHub = deferred<GitHubConnection | null>();
+    mocks.connectorsList.mockReturnValueOnce(initialGoogle.promise);
+    mocks.githubConnectionGet.mockReturnValueOnce(initialGitHub.promise);
+
+    render(<ConnectorsSection />);
+
+    await waitFor(() => {
+      expect(mocks.connectorsList).toHaveBeenCalledTimes(1);
+      expect(mocks.githubConnectionGet).toHaveBeenCalledTimes(1);
+    });
+    await act(async () => {
+      initialGoogle.resolve([account()]);
+      initialGitHub.resolve(githubConnection());
+      await Promise.all([initialGoogle.promise, initialGitHub.promise]);
+    });
+
+    expect(await screen.findByText(/alex@example\.com/)).toBeInTheDocument();
+    expect(await screen.findByText("octocat · 1 repository")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add access" })).toBeInTheDocument();
+
+    await waitFor(() => expect(mocks.listen).toHaveBeenCalledTimes(1));
+    const onConnectorsChanged = mocks.listen.mock.calls[0]?.[1] as () => void;
+    mocks.connectorsList.mockResolvedValueOnce([account({ email: "sam@example.com" })]);
+    mocks.githubConnectionGet.mockResolvedValueOnce(
+      githubConnection({ githubUserId: "github-user-729", login: "hubot" }),
+    );
+    await act(async () => onConnectorsChanged());
+
+    expect(await screen.findByText(/sam@example\.com/)).toBeInTheDocument();
+    expect(await screen.findByText("hubot · 1 repository")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add access" })).toBeInTheDocument();
+    expect(mocks.connectorsList).toHaveBeenCalledTimes(2);
+    expect(mocks.githubConnectionGet).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps Google visible when GitHub loading fails", async () => {
+    mocks.connectorsList.mockResolvedValue([account()]);
+    mocks.githubConnectionGet.mockRejectedValue({
+      code: "github_refresh_failed",
+      message: "raw GitHub provider body",
+    });
+
+    render(<ConnectorsSection />);
+
+    expect(await screen.findByText(/alex@example\.com/)).toBeInTheDocument();
+    expect(screen.getByText("GitHub")).toBeInTheDocument();
+    expect(
+      screen.getByText("GitHub connection could not be loaded. Try again."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/raw GitHub provider body/)).toBeNull();
+  });
+
+  it("keeps GitHub visible when Google loading fails", async () => {
+    mocks.connectorsList.mockRejectedValue({
+      code: "connector_storage_failed",
+      message: "raw Google storage detail",
+    });
+    mocks.githubConnectionGet.mockResolvedValue(githubConnection());
+
+    render(<ConnectorsSection />);
+
+    expect(await screen.findByText("octocat · 1 repository")).toBeInTheDocument();
+    expect(await findEnabledConnect("Connect Google")).toBeInTheDocument();
+    expect(screen.getByText("Google accounts could not be loaded. Try again.")).toBeInTheDocument();
+    expect(screen.queryByText(/raw Google storage detail/)).toBeNull();
+  });
+
+  it("ignores a delayed old refresh after a newer refresh completes", async () => {
+    const oldGoogle = deferred<ConnectorAccount[]>();
+    const oldGitHub = deferred<GitHubConnection | null>();
+    mocks.connectorsList
+      .mockReturnValueOnce(oldGoogle.promise)
+      .mockResolvedValueOnce([account({ email: "new@example.com" })]);
+    mocks.githubConnectionGet
+      .mockReturnValueOnce(oldGitHub.promise)
+      .mockResolvedValueOnce(
+        githubConnection({ githubUserId: "github-user-new", login: "new-login" }),
+      );
+    render(<ConnectorsSection />);
+
+    await waitFor(() => {
+      expect(mocks.connectorsList).toHaveBeenCalledTimes(1);
+      expect(mocks.githubConnectionGet).toHaveBeenCalledTimes(1);
+      expect(mocks.listen).toHaveBeenCalledTimes(1);
+    });
+    const onConnectorsChanged = mocks.listen.mock.calls[0]?.[1] as () => void;
+    await act(async () => onConnectorsChanged());
+
+    expect(await screen.findByText(/new@example\.com/)).toBeInTheDocument();
+    expect(await screen.findByText("new-login · 1 repository")).toBeInTheDocument();
+
+    await act(async () => {
+      oldGoogle.resolve([account({ email: "old@example.com" })]);
+      oldGitHub.resolve(githubConnection({ githubUserId: "github-user-old", login: "old-login" }));
+      await Promise.all([oldGoogle.promise, oldGitHub.promise]);
+    });
+
+    expect(screen.getByText(/new@example\.com/)).toBeInTheDocument();
+    expect(screen.getByText("new-login · 1 repository")).toBeInTheDocument();
+    expect(screen.queryByText(/old@example\.com/)).toBeNull();
+    expect(screen.queryByText(/old-login/)).toBeNull();
   });
 });

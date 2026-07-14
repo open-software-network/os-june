@@ -25996,6 +25996,134 @@ input:focus-visible,
   cursor: pointer;
 }
 
+.github-connector-row .connector-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.github-connector-notice {
+  grid-column: 2 / -1;
+  width: 100%;
+  margin: 0;
+}
+
+.github-avatar {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.github-device-prompt {
+  display: grid;
+  gap: var(--sp-3);
+  margin: var(--sp-2) 0 var(--sp-4);
+}
+
+.github-device-code {
+  display: block;
+  padding: var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xl);
+  line-height: 1.4;
+  text-align: center;
+}
+
+.github-device-actions {
+  display: flex;
+  justify-content: center;
+}
+
+.github-device-pending,
+.github-installation-status {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.github-device-pending {
+  text-align: center;
+}
+
+.github-installation-list,
+.github-repository-list {
+  display: grid;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.github-installation-list {
+  gap: var(--sp-3);
+  margin: var(--sp-2) 0 var(--sp-4);
+}
+
+.github-installation {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+
+.github-installation-header,
+.github-repository {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.github-installation-header {
+  flex-wrap: wrap;
+}
+
+.github-installation-owner {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  font-weight: 400;
+}
+
+.github-repository-list {
+  gap: var(--sp-2);
+}
+
+.github-repository {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.github-repository-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+}
+
+.github-repository-labels {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+}
+
+.github-repository-label {
+  padding: var(--sp-px) var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
 /* Connector approvals tray: a shell-level queue for parked action calls under
    the approval trust mode. Fixed bottom-right — the only fixed occupant of
    that corner, inset from it the way toasts are from the top-right (--sp-6) —
