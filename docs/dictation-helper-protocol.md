@@ -61,7 +61,7 @@ All events have a `type` string and optional `payload` object.
 
 ## Windows shortcut contract
 
-Windows v1 uses `RegisterHotKey` for reservation and initial key-down, with a narrowly scoped low-level keyboard hook for push-to-talk release and shortcut capture. See [ADR-0016](adr/0016-windows-dictation-keyboard-hook.md).
+Windows v1 uses `RegisterHotKey` for reservation and initial key-down, with a narrowly scoped low-level keyboard hook for push-to-talk release and shortcut capture. See [ADR-0020](adr/0020-windows-dictation-keyboard-hook.md).
 
 Supported shortcut shapes contain at least one of `Ctrl`, `Alt`, `Shift`, or `Win`, and exactly one supported non-modifier physical key. Labels use those Windows names, while `code` carries the layout-independent DOM physical-key code. The supported non-modifier allowlist is letters, digits, punctuation keys, `Space`, `Tab`, `Enter`, `Backspace`, `Escape`, arrow keys, and `F1` through `F12`.
 
@@ -71,7 +71,7 @@ Windows v1 does not support bare non-modifier keys, modifier-only chords, `Fn`, 
 
 The helper must pin the paste target when recording stops, before transcription begins. It must not re-resolve the live foreground app/window at paste time.
 
-On Windows, the helper pins the current `HWND` and may include diagnostics such as process id or window title in event payloads. On `paste_text`, it must verify the window still exists, try to bring it foreground, and only send `Ctrl+V` if the pinned window is foreground. If focus is blocked by UIPI or OS focus policy, the helper leaves the transcript on the clipboard and emits a paste-target error.
+On Windows, the helper pins the current `HWND` and may include diagnostics such as process id or window title in event payloads. If no foreground window can be pinned when recording stops, the helper must not substitute another window; `paste_text` leaves the transcript on the clipboard instead. When a target was pinned, `paste_text` must verify the window still exists, try to bring it foreground, and only send `Ctrl+V` if the pinned window is foreground. If focus is blocked by UIPI or OS focus policy, the helper leaves the transcript on the clipboard and emits a paste-target error.
 
 On macOS, the helper pins the running application and only posts `Cmd+V` after the pinned app becomes frontmost.
 
@@ -84,4 +84,5 @@ The first Windows implementation writes temporary WAV files. `recording_ready.pa
 - Windows does not inspect the pinned app to provide email-specific cleanup context; cleanup uses the platform-neutral default context.
 - Microphone device ids are device names and may not be stable or unique across hardware changes.
 - Windows does not support `Fn`, modifier-only, or double-press shortcuts. `fn_monitor_unavailable` is macOS-specific and not emitted on Windows.
+- Windows restores the Unicode text clipboard representation after paste when possible, but does not preserve rich clipboard formats such as HTML, RTF, images, or app-specific formats.
 - Diagnostics and logs must not include dictated text or raw key data. Windows emits only configured shortcut labels, state transitions, device readiness, and paste-target metadata.
