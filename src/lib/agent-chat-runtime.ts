@@ -364,13 +364,7 @@ export function buildHermesSessionChatTurns(
     }
   }
 
-  turns.push(
-    ...syntheticTurns.map((turn) => ({
-      ...turn,
-      parts: [...turn.parts],
-    })),
-  );
-  appendLiveHermesEvents(turns, liveEvents);
+  appendLiveHermesEvents(turns, liveEvents, syntheticTurns);
   const sortedTurns = sortAgentChatTurns(turns);
   deduplicateGeneratedMediaWithinAgentRuns(sortedTurns);
   return sortedTurns.filter((turn) =>
@@ -515,11 +509,28 @@ function assistantTurnForTimestamp(turns: AgentChatTurn[], createdAt: string | u
   return undefined;
 }
 
-function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[]) {
+function appendLiveHermesEvents(
+  turns: AgentChatTurn[],
+  events: JuneHermesEvent[],
+  syntheticTurns: AgentChatTurn[] = [],
+) {
   let currentAssistant: AgentChatTurn | null = null;
   const toolCreatedTurns = new Set<AgentChatTurn>();
+  const pendingSyntheticTurns = sortAgentChatTurns(
+    syntheticTurns.map((turn) => ({
+      ...turn,
+      parts: [...turn.parts],
+    })),
+  );
 
   for (const event of events) {
+    while (pendingSyntheticTurns[0] && pendingSyntheticTurns[0].createdAt <= event.receivedAt) {
+      const syntheticTurn = pendingSyntheticTurns.shift();
+      if (!syntheticTurn) break;
+      turns.push(syntheticTurn);
+      if (syntheticTurn.role !== "assistant") currentAssistant = null;
+    }
+
     switch (event.kind) {
       case "steering": {
         // A user instruction steered into the running turn (feature 06). It is
@@ -820,6 +831,8 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
         break;
     }
   }
+
+  turns.push(...pendingSyntheticTurns);
 }
 
 function createAssistantTurn(turns: AgentChatTurn[], createdAt: string) {

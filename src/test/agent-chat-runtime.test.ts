@@ -1741,6 +1741,41 @@ describe("Agent chat runtime", () => {
     ).toHaveLength(2);
   });
 
+  it("keeps an older buffered reply before a newer optimistic user turn", () => {
+    const media = "MEDIA:generated-image-abc.png";
+    const pendingTurn = (id: string, text: string, createdAt: string) => ({
+      id,
+      role: "user" as const,
+      createdAt,
+      status: "complete" as const,
+      parts: [{ type: "text" as const, text, status: "complete" as const }],
+    });
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          delta: media,
+          complete: true,
+          receivedAt: "2026-06-04T10:00:01.000Z",
+        }),
+        transcriptEvent({
+          delta: media,
+          complete: true,
+          receivedAt: "2026-06-04T10:00:03.000Z",
+        }),
+      ],
+      [
+        pendingTurn("pending-user-1", "Create the image.", "2026-06-04T10:00:00.000Z"),
+        pendingTurn("pending-user-2", "Show it again.", "2026-06-04T10:00:02.000Z"),
+      ],
+    );
+
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(
+      turns.flatMap((turn) => turn.parts.filter((part) => part.type === "image")),
+    ).toHaveLength(2);
+  });
+
   it("keeps distinct inline images that share a display name", () => {
     const imageContent = (data: string) => [
       { type: "image", data, mimeType: "image/png" },
