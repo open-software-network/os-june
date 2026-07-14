@@ -116,6 +116,7 @@ impl BrowserTransport for ExtensionBrowserTransport {
 pub(crate) struct BrowserBroker {
     state: Mutex<BrowserBrokerState>,
     policy_gate: tokio::sync::RwLock<()>,
+    transition_lock: tokio::sync::Mutex<()>,
 }
 
 impl Default for BrowserBroker {
@@ -123,6 +124,7 @@ impl Default for BrowserBroker {
         Self {
             state: Mutex::new(BrowserBrokerState::default()),
             policy_gate: tokio::sync::RwLock::new(()),
+            transition_lock: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -173,6 +175,10 @@ impl BrowserBroker {
 
     pub(crate) fn set_access_flag_path(&self, path: PathBuf) {
         self.lock().access_flag_path = Some(path);
+    }
+
+    pub(crate) async fn lock_transition(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.transition_lock.lock().await
     }
 
     pub(crate) async fn set_enabled(&self, enabled: bool) -> Result<(), AppError> {

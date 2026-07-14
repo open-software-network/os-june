@@ -300,6 +300,25 @@ export class BrowserController {
       const owner = this.registry.find(tabId);
       if (owner) this.registry.removeTab(owner.sessionId, tabId);
     });
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+      if (changeInfo.groupId === undefined) return;
+      const owner = this.registry.find(tabId);
+      if (!owner) return;
+      const expectedGroup = this.registry.session(owner.sessionId).groupId;
+      if (changeInfo.groupId !== expectedGroup) {
+        this.registry.removeTab(owner.sessionId, tabId);
+        void detach(tabId);
+      }
+    });
+    chrome.tabGroups.onUpdated.addListener((group) => {
+      if (group.title === GROUP_TITLE) return;
+      for (const tabId of this.registry.cleanupPlan()) {
+        const owner = this.registry.find(tabId);
+        if (!owner || this.registry.session(owner.sessionId).groupId !== group.id) continue;
+        this.registry.removeTab(owner.sessionId, tabId);
+        void detach(tabId);
+      }
+    });
   }
 
   async disconnect(): Promise<void> {
@@ -336,6 +355,25 @@ export class BrowserController {
     }
   }
 
+  private async requireMarkedTaskTab(sessionId: string, tabId: number): Promise<TaskTab> {
+    const taskTab = this.registry.tab(sessionId, tabId);
+    const expectedGroup = this.registry.session(sessionId).groupId;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (expectedGroup === undefined || tab.groupId !== expectedGroup) throw new Error("group");
+      const group = await chrome.tabGroups.get(expectedGroup);
+      if (group.title !== GROUP_TITLE) throw new Error("label");
+      return taskTab;
+    } catch {
+      this.registry.removeTab(sessionId, tabId);
+      await detach(tabId);
+      throw toolError(
+        "tab_not_owned",
+        "The tab is no longer in this Browser use session's June group.",
+      );
+    }
+  }
+
   private async executeTool(
     tool: BrowserRequestMessage["tool"],
     args: Record<string, unknown>,
@@ -369,16 +407,20 @@ export class BrowserController {
       }
     }
     if (tool === "tabs_list") {
-      const tabs = await Promise.all(
-        [...this.registry.session(sessionId).tabs.keys()].map(async (ownedId) => {
+      const tabs = [];
+      for (const ownedId of [...this.registry.session(sessionId).tabs.keys()]) {
+        try {
+          await this.requireMarkedTaskTab(sessionId, ownedId);
           const tab = await chrome.tabs.get(ownedId);
-          return { tabId: ownedId, title: tab.title ?? "", url: tab.url ?? "" };
-        }),
-      );
+          tabs.push({ tabId: ownedId, title: tab.title ?? "", url: tab.url ?? "" });
+        } catch {
+          // A tab that left the June group is removed from ownership above.
+        }
+      }
       return { tabs, activeTabId: this.registry.session(sessionId).activeTabId };
     }
     const tabId = tabArg(args);
-    const taskTab = this.registry.tab(sessionId, tabId);
+    const taskTab = await this.requireMarkedTaskTab(sessionId, tabId);
     if (tool === "tab_close") {
       this.registry.removeTab(sessionId, tabId);
       await closeTabs([tabId]);

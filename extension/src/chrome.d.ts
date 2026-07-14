@@ -67,6 +67,7 @@ declare namespace chrome {
       id?: number;
       title?: string;
       url?: string;
+      groupId?: number;
     }
     function create(details: { url: string; active?: boolean }): Promise<Tab>;
     function get(tabId: number): Promise<Tab>;
@@ -75,9 +76,20 @@ declare namespace chrome {
     function group(details: { tabIds: number[]; groupId?: number }): Promise<number>;
     function ungroup(tabIds: number[]): Promise<void>;
     const onRemoved: { addListener(callback: (tabId: number) => void): void };
+    const onUpdated: {
+      addListener(
+        callback: (tabId: number, changeInfo: { groupId?: number }, tab: Tab) => void,
+      ): void;
+    };
   }
 
   namespace tabGroups {
+    interface TabGroup {
+      id: number;
+      title?: string;
+    }
+    function get(groupId: number): Promise<TabGroup>;
     function update(groupId: number, details: { title: string }): Promise<void>;
+    const onUpdated: { addListener(callback: (group: TabGroup) => void): void };
   }
 }

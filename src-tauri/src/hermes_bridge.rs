@@ -2587,7 +2587,7 @@ pub async fn set_hermes_browser_access(
     stop_hermes_mode(&bridge, false)?;
     stop_hermes_mode(&bridge, true)?;
     Ok(BrowserAccessStatus {
-        enabled: request.enabled,
+        enabled: bridge.browser_broker.is_enabled(),
     })
 }
 
@@ -2613,6 +2613,7 @@ async fn apply_browser_access_transition(
     persist: impl FnOnce() -> Result<(), AppError>,
     rotate_token: impl FnOnce() -> Result<(), AppError>,
 ) -> Result<(), AppError> {
+    let _transition = browser_broker.lock_transition().await;
     if enabled {
         persist()?;
         rotate_token()?;
