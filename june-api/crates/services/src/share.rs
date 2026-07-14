@@ -7,7 +7,7 @@
 use crate::error::ServiceError;
 use june_domain::{
     MAX_INVITES_PER_SHARE, NewShare, NewShareInvite, ShareInviteRecord, ShareKind, ShareRecord,
-    ShareStore, ShareStoreError, ShareViewRecord, UserId, ViewerIdentity,
+    ShareStore, ShareStoreError, ShareViewRecord, UserId, ViewRequest, ViewerIdentity,
 };
 use std::sync::Arc;
 
@@ -158,14 +158,26 @@ impl ShareService {
     /// Recipient (or owner) fetch. The caller's verified emails are resolved
     /// through OS Accounts with the caller's own token; the store matches,
     /// binds, and stamps access.
+    // Caller identity (viewer + token) and target (share + invite) are all
+    // independent inputs; bundling them would only obscure the call site.
+    #[allow(clippy::too_many_arguments)]
     pub async fn view(
         &self,
         viewer: &UserId,
         access_token: &str,
         share_id: &str,
+        invite_id: Option<&str>,
     ) -> Result<ShareViewRecord, ServiceError> {
         let emails = self.identity.verified_emails(access_token).await?;
-        Ok(self.store.fetch_view(share_id, &viewer.0, &emails).await?)
+        Ok(self
+            .store
+            .fetch_view(ViewRequest {
+                share_id,
+                viewer_user_id: &viewer.0,
+                viewer_emails: &emails,
+                invite_id,
+            })
+            .await?)
     }
 }
 
@@ -248,7 +260,7 @@ mod tests {
     use async_trait::async_trait;
     use june_domain::{
         DomainError, NewShare, NewShareInvite, ShareInviteRecord, ShareKind, ShareRecord,
-        ShareStore, ShareStoreError, ShareViewRecord, UserId, ViewerIdentity,
+        ShareStore, ShareStoreError, ShareViewRecord, UserId, ViewRequest, ViewerIdentity,
     };
     use pretty_assertions::assert_eq;
     use std::sync::{Arc, Mutex};
@@ -297,9 +309,7 @@ mod tests {
         }
         async fn fetch_view(
             &self,
-            _share_id: &str,
-            _viewer_user_id: &str,
-            _viewer_emails: &[String],
+            _request: ViewRequest<'_>,
         ) -> Result<ShareViewRecord, ShareStoreError> {
             Err(ShareStoreError::NotFound)
         }

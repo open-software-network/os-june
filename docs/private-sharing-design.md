@@ -100,13 +100,18 @@ MVP payload by construction.
   create) -> new invite ids.
 - `DELETE /v1/shares/{share_id}/invites/{invite_id}` - owner revokes.
 - `DELETE /v1/shares/{share_id}` - owner unshares entirely.
-- `GET /v1/shares/{share_id}/view` - **recipient** fetch. Resolves the
-  caller's verified emails via OS Accounts `/me` (the access JWT carries
-  only `sub`), matches non-revoked invites, binds `recipient_user_id` on
-  first access, records an access event, and returns
+- `GET /v1/shares/{share_id}/view?invite={invite_id}` - **recipient** fetch.
+  Resolves the caller's verified emails via OS Accounts `/me` (the access JWT
+  carries only `sub`), matches non-revoked invites, binds `recipient_user_id`
+  on first access, records an access event, and returns
   `{ kind, ciphertextB64, ivB64, envelopeB64, envelopeIvB64 }` (the owner's
-  display name travels inside the encrypted payload).
-  Owners can also fetch their own shares here.
+  display name travels inside the encrypted payload). The `invite` query
+  parameter is the invite id from the link fragment (the key material stays
+  in the fragment and never reaches the server); it pins the response to that
+  invite's envelope so a re-invited address always gets its own key, and it
+  only narrows the match (the binding/email authorization still applies).
+  It is optional: an owner fetching their own share is served without an
+  envelope regardless.
 - `GET /s/{share_id}` - the viewer HTML shell (no auth, no content, no
   share-existence signal; the same page is served for any well-formed id).
   `X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: no-referrer`, strict
@@ -145,7 +150,8 @@ explicit self allowances). Flow:
 1. Parse `share_id` from the path and `invite_id.IK` from the fragment.
 2. OS Accounts PKCE sign-in (public OAuth client "June share viewer",
    redirect back to `/s/callback`; the fragment survives via sessionStorage).
-3. `GET /v1/shares/{id}/view` with the Bearer token.
+3. `GET /v1/shares/{id}/view?invite={invite_id}` with the Bearer token (the
+   invite id, not the key, selects the envelope).
 4. Decrypt envelope with IK -> CK; decrypt ciphertext with CK; render
    read-only (markdown for notes, chat transcript for sessions).
 5. First-entry Granola-style prompt: "[Owner] shared this [meeting note /

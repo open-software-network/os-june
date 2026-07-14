@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use june_domain::{
     MAX_INVITES_PER_SHARE, NewShare, NewShareInvite, ShareInviteRecord, ShareKind, ShareRecord,
-    ShareStore, ShareStoreError, ShareViewRecord,
+    ShareStore, ShareStoreError, ShareViewRecord, ViewRequest,
 };
 use sqlx::{
     PgPool, Row,
@@ -231,10 +231,14 @@ impl ShareStore for PgShareStore {
 
     async fn fetch_view(
         &self,
-        share_id: &str,
-        viewer_user_id: &str,
-        viewer_emails: &[String],
+        request: ViewRequest<'_>,
     ) -> Result<ShareViewRecord, ShareStoreError> {
+        let ViewRequest {
+            share_id,
+            viewer_user_id,
+            viewer_emails,
+            invite_id,
+        } = request;
         let mut tx = self.pool.begin().await.map_err(query_error)?;
         let share_row = sqlx::query(
             r"
@@ -266,7 +270,10 @@ impl ShareStore for PgShareStore {
         }
 
         // Match a non-revoked invite: first by an existing recipient binding,
-        // then by any of the caller's verified emails.
+        // then by any of the caller's verified emails. When the viewer carries
+        // an invite id ($4), pin to that invite so a re-invited address always
+        // resolves to its own envelope instead of an older active one. The id
+        // only narrows the match; the binding/email authorization still holds.
         let invite_row = sqlx::query(
             r"
             SELECT id, envelope, envelope_iv
@@ -274,6 +281,7 @@ impl ShareStore for PgShareStore {
             WHERE share_id = $1
               AND revoked_at IS NULL
               AND (recipient_user_id = $2 OR (recipient_user_id IS NULL AND email = ANY($3)))
+              AND ($4::text IS NULL OR invite_id = $4)
             ORDER BY (recipient_user_id = $2) DESC, created_at ASC
             LIMIT 1
             ",
@@ -281,6 +289,7 @@ impl ShareStore for PgShareStore {
         .bind(row_id)
         .bind(viewer_user_id)
         .bind(viewer_emails)
+        .bind(invite_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(query_error)?

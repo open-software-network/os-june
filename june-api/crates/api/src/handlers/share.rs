@@ -12,7 +12,7 @@ use crate::{
 };
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
 };
 use base64::Engine as _;
@@ -229,14 +229,25 @@ pub(crate) async fn delete(
     Ok(Json(ApiResponse::ok(DeletedResponse { deleted: true })))
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct ViewQuery {
+    /// The invite id from the link fragment (`invite_id.IK`). Only the id
+    /// reaches the server; the key material stays in the fragment. Optional so
+    /// an owner opening `/view` without a fragment still works.
+    invite: Option<String>,
+}
+
 pub(crate) async fn view(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Path(share_id): Path<String>,
+    Query(query): Query<ViewQuery>,
 ) -> Result<Json<ApiResponse<ShareViewResponse>>, ApiError> {
     let (service, user) = share_context(&state, &headers).await?;
     let token = bearer_token(&headers)?.to_string();
-    let record = service.view(&user, &token, &share_id).await?;
+    let record = service
+        .view(&user, &token, &share_id, query.invite.as_deref())
+        .await?;
     let (envelope_b64, envelope_iv_b64) = match record.envelope {
         Some((envelope, iv)) => (Some(BASE64.encode(envelope)), Some(BASE64.encode(iv))),
         None => (None, None),

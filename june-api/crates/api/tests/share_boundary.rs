@@ -18,7 +18,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use june_api::ShareViewerInfo;
 use june_domain::{
     DomainError, MAX_INVITES_PER_SHARE, NewShare, NewShareInvite, ShareInviteRecord, ShareKind,
-    ShareRecord, ShareStore, ShareStoreError, ShareViewRecord, ViewerIdentity,
+    ShareRecord, ShareStore, ShareStoreError, ShareViewRecord, ViewRequest, ViewerIdentity,
 };
 use june_services::{ShareService, ShareServiceDeps};
 use pretty_assertions::assert_eq;
@@ -192,10 +192,14 @@ impl ShareStore for MemoryShareStore {
 
     async fn fetch_view(
         &self,
-        share_id: &str,
-        viewer_user_id: &str,
-        viewer_emails: &[String],
+        request: ViewRequest<'_>,
     ) -> Result<ShareViewRecord, ShareStoreError> {
+        let ViewRequest {
+            share_id,
+            viewer_user_id,
+            viewer_emails,
+            invite_id,
+        } = request;
         let mut shares = self.shares.lock().expect("lock");
         let share = shares
             .get_mut(share_id)
@@ -219,6 +223,7 @@ impl ShareStore for MemoryShareStore {
             .iter_mut()
             .find(|invite| {
                 !invite.revoked
+                    && invite_id.is_none_or(|id| invite.invite_id == id)
                     && (invite.recipient_user_id.as_deref() == Some(viewer_user_id)
                         || (invite.recipient_user_id.is_none()
                             && viewer_emails.contains(&invite.email)))
@@ -322,6 +327,100 @@ async fn share_endpoints_answer_501_until_configured() {
     let (status, body) = call(&router, create_request(OWNER, &[invite_wire("a@b.c")])).await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     assert_eq!(body["message"], "sharing_unavailable");
+}
+
+#[tokio::test]
+async fn reinvited_address_resolves_to_its_own_envelope_by_invite_id() {
+    let router = share_router();
+
+    // First invite for the recipient, with a distinctive envelope.
+    let (status, body) = call(
+        &router,
+        create_request(
+            OWNER,
+            &[json!({
+                "email": "friend@example.com",
+                "envelopeB64": BASE64.encode([0x11u8; 48]),
+                "envelopeIvB64": BASE64.encode([0x21u8; 12]),
+            })],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let share_id = body["data"]["shareId"]
+        .as_str()
+        .expect("share id")
+        .to_string();
+    let invite_one = body["data"]["invites"][0]["inviteId"]
+        .as_str()
+        .expect("invite one")
+        .to_string();
+
+    // Re-invite the SAME address with a fresh key, so both invites are active
+    // and carry different envelopes.
+    let (status, body) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/shares/{share_id}/invites")),
+            OWNER,
+        )
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "invites": [{
+                    "email": "friend@example.com",
+                    "envelopeB64": BASE64.encode([0x33u8; 48]),
+                    "envelopeIvB64": BASE64.encode([0x44u8; 12]),
+                }]
+            })
+            .to_string(),
+        ))
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let invite_two = body["data"]["invites"][0]["inviteId"]
+        .as_str()
+        .expect("invite two")
+        .to_string();
+    assert_ne!(invite_one, invite_two);
+
+    // The newer link (invite_two) must get invite_two's envelope, not the
+    // first active invite for the same email.
+    let (status, body) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/shares/{share_id}/view?invite={invite_two}")),
+            RECIPIENT,
+        )
+        .body(Body::empty())
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["envelopeB64"], BASE64.encode([0x33u8; 48]));
+    assert_eq!(body["data"]["envelopeIvB64"], BASE64.encode([0x44u8; 12]));
+
+    // The original link still resolves to its own (older) envelope.
+    let (status, body) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/shares/{share_id}/view?invite={invite_one}")),
+            RECIPIENT,
+        )
+        .body(Body::empty())
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["envelopeB64"], BASE64.encode([0x11u8; 48]));
+    assert_eq!(body["data"]["envelopeIvB64"], BASE64.encode([0x21u8; 12]));
 }
 
 #[tokio::test]

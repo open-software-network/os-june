@@ -714,6 +714,19 @@ pub struct ShareViewRecord {
     pub envelope: Option<(Vec<u8>, Vec<u8>)>,
 }
 
+/// Everything a store needs to resolve a recipient (or owner) view. See
+/// [`ShareStore::fetch_view`] for the matching and authorization rules.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewRequest<'a> {
+    pub share_id: &'a str,
+    pub viewer_user_id: &'a str,
+    /// Lowercased, verified-only emails on the caller's account.
+    pub viewer_emails: &'a [String],
+    /// Invite id from the link fragment (never the key). Pins selection to a
+    /// specific invite; `None` matches by binding-then-oldest.
+    pub invite_id: Option<&'a str>,
+}
+
 /// Hard ceiling on invites per share, enforced by every store so repeated
 /// `add_invites` calls cannot grow a share's ACL without bound.
 pub const MAX_INVITES_PER_SHARE: usize = 50;
@@ -761,11 +774,17 @@ pub trait ShareStore: Send + Sync {
     /// verified-only) against non-revoked invites, binds the recipient user
     /// id on first access, stamps access, and returns the view. Owners are
     /// served their own shares without an envelope.
+    ///
+    /// `ViewRequest::invite_id` pins selection to a specific invite (the id the
+    /// viewer carries in its link fragment). It is authorization-narrowing
+    /// only: the invite must still belong to the share, be non-revoked, and be
+    /// bound to the caller or match one of `viewer_emails`. Pinning matters
+    /// when an email holds more than one active invite (re-invite mints a fresh
+    /// envelope/key), so a link must resolve to *its* envelope, not an older
+    /// one. `None` falls back to matching by binding-then-oldest.
     async fn fetch_view(
         &self,
-        share_id: &str,
-        viewer_user_id: &str,
-        viewer_emails: &[String],
+        request: ViewRequest<'_>,
     ) -> Result<ShareViewRecord, ShareStoreError>;
 }
 
