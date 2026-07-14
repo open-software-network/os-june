@@ -165,6 +165,11 @@ export function ShareDialog({
     invitingRef.current = true;
     setInviteBusy(true);
     setError(null);
+    // Tracks a share minted in *this* call so the catch can delete it if a
+    // local key save fails. A server share whose content key never persisted
+    // is an orphan: the owner can't find it (shareKeyGet is null), can't revoke
+    // it from this item, and future invites mint a second share beside it.
+    let createdShareId: string | null = null;
     try {
       const inviteKey = await generateKey();
       let nextShareId = shareId;
@@ -190,12 +195,9 @@ export function ShareDialog({
         });
         nextShareId = response.shareId;
         nextContentKeyB64 = toBase64Url(contentKey);
-        // Commit the share to state the moment it exists server-side, before
-        // the local key/invite-key saves below. If one of those throws (or the
-        // app quits between them), a retry then takes the add-invite path for
-        // this share instead of minting a second, orphaned server share.
-        setShareId(nextShareId);
-        setContentKeyB64(nextContentKeyB64);
+        // Arm rollback: the share now exists server-side. If either local save
+        // below fails, the catch deletes it rather than leaving an orphan.
+        createdShareId = nextShareId;
         await shareKeySave({
           shareId: nextShareId,
           itemKind: item.kind,
@@ -222,14 +224,25 @@ export function ShareDialog({
         shareId: nextShareId,
         inviteKeyB64,
       });
-      // shareId/contentKeyB64 were already committed to state above (create
-      // branch) or were already set (add branch); no need to set them again.
+      // The share and its first invite key are fully persisted now: commit to
+      // state and disarm rollback so a later failure can't delete this share.
+      setShareId(nextShareId);
+      setContentKeyB64(nextContentKeyB64);
+      createdShareId = null;
       setInvites((current) => [
         ...current,
         { inviteId: created.inviteId, email: created.email, state: "pending", inviteKeyB64 },
       ]);
       setEmail("");
     } catch (err) {
+      if (createdShareId) {
+        // Roll the just-created share back so no locally-unmanageable orphan
+        // survives. Best-effort: if the delete also fails there's nothing more
+        // the client can do, and the original error is what we surface.
+        await shareDelete(createdShareId).catch(() => {});
+        setShareId(null);
+        setContentKeyB64(null);
+      }
       setError(messageFromError(err));
     } finally {
       invitingRef.current = false;

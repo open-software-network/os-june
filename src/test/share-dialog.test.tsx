@@ -304,17 +304,16 @@ describe("ShareDialog", () => {
     expect(screen.queryByRole("button", { name: "Unshare" })).not.toBeInTheDocument();
   });
 
-  it("does not mint a second share when a post-create save fails; a retry uses the add path", async () => {
+  it("rolls the created share back when persisting its content key fails", async () => {
     mocks.shareKeyGet.mockResolvedValue(null); // item not shared yet
     mocks.shareCreate.mockResolvedValue({
       shareId: "shr_1",
       invites: [{ inviteId: "shi_1", email: "first@example.com" }],
     });
-    // The share is created server-side, then the local invite-key save fails.
-    mocks.shareInviteKeySave.mockRejectedValueOnce(new Error("disk full"));
-    mocks.shareAddInvites.mockResolvedValue({
-      invites: [{ inviteId: "shi_2", email: "second@example.com" }],
-    });
+    // The server share is minted, then the local content-key save fails.
+    // Leaving shr_1 alive would orphan it: no local key to manage or revoke it,
+    // and the next invite would mint a second share beside the live link.
+    mocks.shareKeySave.mockRejectedValueOnce(new Error("disk full"));
     const user = userEvent.setup();
     render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
 
@@ -322,17 +321,17 @@ describe("ShareDialog", () => {
     await user.type(field, "first@example.com");
     await user.click(screen.getByRole("button", { name: "Invite" }));
     await waitFor(() => expect(mocks.shareCreate).toHaveBeenCalledTimes(1));
+    // The failed save triggers a best-effort delete of the just-created share.
+    await waitFor(() => expect(mocks.shareDelete).toHaveBeenCalledWith("shr_1"));
     expect(await screen.findByText("disk full")).toBeInTheDocument();
 
-    // Retry with another address: it must add to the existing share, never
-    // create a second (which would orphan the first).
+    // State was reset by the rollback, so a retry starts a fresh share rather
+    // than taking the add path against the rolled-back shr_1.
     await user.clear(field);
     await user.type(field, "second@example.com");
     await user.click(screen.getByRole("button", { name: "Invite" }));
-    await waitFor(() =>
-      expect(mocks.shareAddInvites).toHaveBeenCalledWith("shr_1", expect.anything()),
-    );
-    expect(mocks.shareCreate).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mocks.shareCreate).toHaveBeenCalledTimes(2));
+    expect(mocks.shareAddInvites).not.toHaveBeenCalled();
   });
 
   it("keeps the invite button disabled while an existing share is still loading", async () => {
