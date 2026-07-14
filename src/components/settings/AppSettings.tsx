@@ -89,7 +89,10 @@ import {
 } from "../../lib/platform";
 import { systemAudioAvailability } from "../../lib/source-readiness";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
-import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
+import {
+  dispatchProviderModelSettingsChanged,
+  modelAvailableForMode,
+} from "../../lib/model-privacy";
 import {
   isLoopbackUrl,
   localGenerationOptionId,
@@ -1342,13 +1345,19 @@ export function AppSettings({
   const generationOptions = modelOptions(generationCatalog, modelValueForMode("generation"));
   // Where the billing-choice dialog lands when the user opts out of Auto to
   // use their Venice key: the leading suggested pick, else the first Venice
-  // catalog model, mirroring the Auto toggle's own off-target in the model
-  // picker (the factory default stays the last resort for an empty catalog).
+  // catalog model, drawn from the same selectable list as the model picker so
+  // the dialog can never persist a model the picker would exclude (the factory
+  // default stays the last resort for an empty catalog).
+  const selectableGenerationOptions = generationOptions.filter((option) =>
+    modelAvailableForMode("generation", option),
+  );
   const veniceKeySwitchTarget =
-    suggestedModelsForMode("generation", generationOptions).find(
+    suggestedModelsForMode("generation", selectableGenerationOptions).find(
       (item) => item.model.id !== AUTO_MODEL_ID,
     )?.model ??
-    generationOptions.find((option) => option.provider === "venice" && option.id !== AUTO_MODEL_ID);
+    selectableGenerationOptions.find(
+      (option) => option.provider === "venice" && option.id !== AUTO_MODEL_ID,
+    );
   const imageOptions = IMAGE_GENERATION_ENABLED
     ? modelOptions(IMAGE_MODELS, providerSettings.imageModel)
     : [];
