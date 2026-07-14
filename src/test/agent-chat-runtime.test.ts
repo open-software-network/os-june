@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isTerminalHermesEvent, type JuneHermesEvent } from "../lib/hermes-control-plane";
 import {
+  type AgentChatToolPart,
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   completedHermesMessageText,
@@ -1709,7 +1710,9 @@ describe("Agent chat runtime", () => {
     );
 
     const mediaTools = turns.flatMap((turn) =>
-      turn.parts.filter((part) => part.type === "tool" && part.media === "image"),
+      turn.parts.filter(
+        (part): part is AgentChatToolPart => part.type === "tool" && part.media === "image",
+      ),
     );
     expect(mediaTools).toHaveLength(1);
     expect(mediaTools[0]).toMatchObject({
@@ -1717,6 +1720,113 @@ describe("Agent chat runtime", () => {
       status: "running",
       text: "Still generating",
     });
+  });
+
+  it("assigns id-less completions to separate overlapping media calls", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        toolEvent({
+          key: "image-a",
+          toolCallId: "image-a",
+          phase: "start",
+          name: "generate_image",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+        }),
+        toolEvent({
+          key: "image-b",
+          toolCallId: "image-b",
+          phase: "start",
+          name: "generate_image",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+        }),
+        toolEvent({
+          key: "generate_image",
+          phase: "complete",
+          name: "generate_image",
+          receivedAt: "2026-06-04T10:00:02.000Z",
+        }),
+        toolEvent({
+          key: "generate_image",
+          phase: "complete",
+          name: "generate_image",
+          receivedAt: "2026-06-04T10:00:03.000Z",
+        }),
+      ],
+    );
+
+    const mediaTools = turns.flatMap((turn) =>
+      turn.parts.filter((part) => part.type === "tool" && part.media === "image"),
+    );
+    expect(mediaTools).toHaveLength(2);
+    expect(mediaTools).toEqual([
+      expect.objectContaining({ id: "image-a", status: "complete" }),
+      expect.objectContaining({ id: "image-b", status: "complete" }),
+    ]);
+  });
+
+  it("does not revive a terminal row for a new id-less media start", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        toolEvent({
+          key: "generate_image",
+          phase: "start",
+          name: "generate_image",
+          receivedAt: "2026-06-04T10:00:00.000Z",
+        }),
+        toolEvent({
+          key: "generate_image",
+          phase: "complete",
+          name: "generate_image",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+        }),
+        toolEvent({
+          key: "generate_image",
+          phase: "start",
+          name: "generate_image",
+          receivedAt: "2026-06-04T10:00:02.000Z",
+        }),
+      ],
+    );
+
+    const mediaTools = turns.flatMap((turn) =>
+      turn.parts.filter(
+        (part): part is AgentChatToolPart => part.type === "tool" && part.media === "image",
+      ),
+    );
+    expect(mediaTools).toHaveLength(2);
+    expect(mediaTools.map((part) => part.status)).toEqual(["complete", "running"]);
+  });
+
+  it("does not compare persisted and live clocks when accepting a new id-less start", () => {
+    const turns = buildHermesSessionChatTurns(
+      [
+        {
+          id: "old-tool-result",
+          role: "tool",
+          tool_call_id: "old-image",
+          tool_name: "generate_image",
+          content: "finished",
+          timestamp: "2026-06-04T12:00:00.000Z",
+        },
+      ],
+      [
+        toolEvent({
+          key: "generate_image",
+          phase: "start",
+          name: "generate_image",
+          receivedAt: "2026-06-04T11:00:00.000Z",
+        }),
+      ],
+    );
+
+    const runningMediaTools = turns.flatMap((turn) =>
+      turn.parts.filter(
+        (part) => part.type === "tool" && part.media === "image" && part.status === "running",
+      ),
+    );
+    expect(runningMediaTools).toHaveLength(1);
   });
 
   it("deduplicates the cache path and signed filename Hermes persists for one image", () => {

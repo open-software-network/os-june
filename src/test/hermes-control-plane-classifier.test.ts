@@ -272,6 +272,31 @@ describe("classifyHermesEvent — tools", () => {
     });
   });
 
+  it("combines complementary media from content and result", () => {
+    const mediaPath = "MEDIA:/tmp/generated-image.png";
+    const metadata = { filename: "generated-image-signed.png", label: "river scene" };
+    const result = classifyHermesEvent(
+      event("tool.complete", {
+        tool_id: "img1",
+        name: "mcp_june_image_generate_image",
+        content: [{ type: "text", text: mediaPath }],
+        result: {
+          content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+          structuredContent: metadata,
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "tool",
+      content: [
+        { type: "text", text: mediaPath },
+        { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+        { type: "text", text: JSON.stringify(metadata) },
+      ],
+    });
+  });
+
   it("preserves a video MEDIA result without forwarding unrelated tool text", () => {
     const mediaText =
       "MEDIA:/Users/alex/Library/Application Support/June/generated-videos/generated-video-ab12.mp4";

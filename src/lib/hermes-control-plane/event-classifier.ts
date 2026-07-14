@@ -171,9 +171,9 @@ function classifyTool(
     // Clarify tool calls are action-card plumbing in the builder, not tool rows.
     isClarify: isClarifyTool(payload),
     // The pinned runtime emits completed tool output under `result`; older
-    // fixtures/builds used `content`. Normalize both at this sole raw-frame
-    // boundary so the transcript receives the real media blocks either way.
-    content: toolMediaContent(payload?.content) ?? toolMediaContent(payload?.result),
+    // fixtures/builds used `content`, and some frames carry complementary
+    // blocks in both. Normalize and combine them at this sole raw boundary.
+    content: combinedToolMediaContent(payload?.content, payload?.result),
     // Tool cards render arguments/output, so keep the sanitized payload in case
     // a tool's args happen to embed a secret.
     sanitizedPayload,
@@ -183,6 +183,37 @@ function classifyTool(
 
 const TOOL_MEDIA_REFERENCE_PATTERN =
   /MEDIA:[^\r\n]+\.(?:png|jpe?g|gif|webp|tiff?|bmp|avif|mp4|mov|webm|m4v)(?:[)\].,;:]?)(?=\s|$)/i;
+
+function combinedToolMediaContent(...values: unknown[]): unknown {
+  const items: unknown[] = [];
+  const seen = new Set<string>();
+  let sawArray = false;
+  for (const value of values) {
+    const normalized = toolMediaContent(value);
+    sawArray ||= Array.isArray(normalized);
+    const candidates = Array.isArray(normalized) ? normalized : [normalized];
+    for (const candidate of candidates) {
+      if (candidate === undefined) continue;
+      const key = toolMediaContentKey(candidate);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(candidate);
+    }
+  }
+  if (items.length === 0) return undefined;
+  return items.length === 1 && !sawArray ? items[0] : items;
+}
+
+function toolMediaContentKey(value: unknown): string {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (record.type === "text" && typeof record.text === "string") {
+      const metadata = parseJsonObject(record.text);
+      if (typeof metadata?.filename === "string") return `filename:${metadata.filename}`;
+    }
+  }
+  return JSON.stringify(value);
+}
 
 function toolMediaContent(value: unknown, depth = 0): unknown {
   if (value === null || value === undefined || depth > 4) return undefined;
@@ -225,10 +256,18 @@ function toolMediaContent(value: unknown, depth = 0): unknown {
       return { type: "text", text: record.text };
     }
   }
-  if (Array.isArray(record.content)) {
-    return toolMediaContent(record.content, depth + 1);
+  if (
+    typeof record.filename === "string" ||
+    typeof record.label === "string" ||
+    typeof record.mimeType === "string"
+  ) {
+    return { type: "text", text: JSON.stringify(record) };
   }
-  return undefined;
+  return combinedToolMediaContent(
+    toolMediaContent(record.content, depth + 1),
+    toolMediaContent(record.result, depth + 1),
+    toolMediaContent(record.structuredContent, depth + 1),
+  );
 }
 
 function parseJsonObject(value: string): Record<string, unknown> | undefined {

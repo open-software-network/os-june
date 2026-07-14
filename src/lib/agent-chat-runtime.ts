@@ -267,19 +267,11 @@ export function buildHermesSessionChatTurns(
   const turns: AgentChatTurn[] = [];
   const toolResults = new Map<string, HermesSessionMessage>();
   const persistedToolResultIds = new Set<string>();
-  const persistedToolResultAtByName = new Map<string, string>();
 
   for (const message of messages) {
     if (message.role === "tool") {
       const id = message.tool_call_id ?? message.id;
       persistedToolResultIds.add(id);
-      if (message.tool_name) {
-        const resultAt = messageTimestamp(message);
-        const previousResultAt = persistedToolResultAtByName.get(message.tool_name);
-        if (!previousResultAt || previousResultAt < resultAt) {
-          persistedToolResultAtByName.set(message.tool_name, resultAt);
-        }
-      }
       toolResults.set(id, message);
       const turn =
         lastAssistantTurn(turns) ?? createAssistantTurn(turns, messageTimestamp(message));
@@ -374,13 +366,7 @@ export function buildHermesSessionChatTurns(
     }
   }
 
-  appendLiveHermesEvents(
-    turns,
-    liveEvents,
-    syntheticTurns,
-    persistedToolResultIds,
-    persistedToolResultAtByName,
-  );
+  appendLiveHermesEvents(turns, liveEvents, syntheticTurns, persistedToolResultIds);
   const sortedTurns = sortAgentChatTurns(turns);
   deduplicateGeneratedMediaWithinAgentRuns(sortedTurns);
   return sortedTurns.filter((turn) =>
@@ -530,9 +516,9 @@ function appendLiveHermesEvents(
   events: JuneHermesEvent[],
   syntheticTurns: AgentChatTurn[] = [],
   persistedToolResultIds: ReadonlySet<string> = new Set(),
-  persistedToolResultAtByName: ReadonlyMap<string, string> = new Map(),
 ) {
   let currentAssistant: AgentChatTurn | null = null;
+  let idlessToolSequence = 0;
   const toolCreatedTurns = new Set<AgentChatTurn>();
   const pendingSyntheticTurns = sortAgentChatTurns(
     syntheticTurns.map((turn) => ({
@@ -554,16 +540,11 @@ function appendLiveHermesEvents(
     // the persisted row is authoritative; replaying the stale start would add
     // a second running generation canvas beside a newer run.
     const hasExplicitToolIdentity =
-      event.kind === "tool" &&
-      Boolean(event.toolCallId || (event.name && event.key !== event.name));
+      event.kind === "tool" && Boolean(event.toolCallId || event.key !== event.name);
     if (event.kind === "tool") {
-      const persistedResultAt = event.name
-        ? persistedToolResultAtByName.get(event.name)
-        : undefined;
       if (
         (event.toolCallId && persistedToolResultIds.has(event.toolCallId)) ||
-        persistedToolResultIds.has(event.key) ||
-        (!hasExplicitToolIdentity && persistedResultAt && event.receivedAt <= persistedResultAt)
+        persistedToolResultIds.has(event.key)
       ) {
         continue;
       }
@@ -713,12 +694,22 @@ function appendLiveHermesEvents(
           }
           break;
         }
+        const status: AgentChatToolPart["status"] =
+          event.phase === "complete" ? "complete" : event.phase === "failed" ? "failed" : "running";
+        const name = toolActivityLabel(event.name ?? "tool", event.sanitizedPayload);
+        const media = generatedMediaToolKind(event.name, event.sanitizedPayload);
+        if (!hasExplicitToolIdentity && event.phase !== "start") {
+          currentAssistant ??= latestAssistantTurnWithRunningTool(turns, name, media);
+          // The pinned runtime gives starts a stable tool_id but may omit it
+          // from callbacks. An id-less media callback without a live row is an
+          // orphan from before a reconnect, not enough identity to create a
+          // second placeholder beside persisted history.
+          if (!currentAssistant && media) break;
+        }
         if (!currentAssistant) {
           currentAssistant = createAssistantTurn(turns, event.receivedAt);
           toolCreatedTurns.add(currentAssistant);
         }
-        const status: AgentChatToolPart["status"] =
-          event.phase === "complete" ? "complete" : event.phase === "failed" ? "failed" : "running";
         if (status === "running") {
           currentAssistant.status = "running";
         } else if (toolCreatedTurns.has(currentAssistant)) {
@@ -726,12 +717,12 @@ function appendLiveHermesEvents(
           // stream once its tool reaches a terminal state.
           currentAssistant.status = "complete";
         }
-        const name = toolActivityLabel(event.name ?? "tool", event.sanitizedPayload);
-        const media = generatedMediaToolKind(event.name, event.sanitizedPayload);
         upsertToolPart(
           currentAssistant.parts,
           {
-            id: event.toolCallId ?? event.key,
+            id: hasExplicitToolIdentity
+              ? event.key
+              : `idless:${event.receivedAt}:${event.key}:${idlessToolSequence++}`,
             name,
             text: event.text,
             status,
@@ -740,7 +731,7 @@ function appendLiveHermesEvents(
           // Some runtime progress/completion callbacks omit the stable id and
           // carry only the tool name. Fold those into the most recent matching
           // row; explicit ids remain distinct for genuinely concurrent calls.
-          !hasExplicitToolIdentity,
+          !hasExplicitToolIdentity && event.phase !== "start",
         );
         if (status === "complete") {
           appendImageParts(currentAssistant.parts, imagePartsFromHermesContent(event.content));
@@ -1133,7 +1124,12 @@ function upsertToolPart(
   if (!existing && correlateByName) {
     for (let index = parts.length - 1; index >= 0; index -= 1) {
       const part = parts[index];
-      if (part?.type === "tool" && part.name === next.name && part.media === next.media) {
+      if (
+        part?.type === "tool" &&
+        part.status === "running" &&
+        part.name === next.name &&
+        part.media === next.media
+      ) {
         existing = part;
         break;
       }
@@ -1156,6 +1152,29 @@ function upsertToolPart(
     status: next.status,
     ...(next.media ? { media: next.media } : {}),
   });
+}
+
+function latestAssistantTurnWithRunningTool(
+  turns: AgentChatTurn[],
+  name: string,
+  media: AgentChatToolPart["media"] | undefined,
+) {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (
+      turn?.role === "assistant" &&
+      turn.parts.some(
+        (part) =>
+          part.type === "tool" &&
+          part.status === "running" &&
+          part.name === name &&
+          part.media === media,
+      )
+    ) {
+      return turn;
+    }
+  }
+  return null;
 }
 
 function upsertApprovalPart(
