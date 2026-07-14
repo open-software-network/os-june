@@ -101,7 +101,7 @@ pub(crate) async fn token_exchange(
     State(state): State<ApiState>,
     headers: HeaderMap,
     Json(request): Json<TokenExchangeRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), ApiError> {
     if state.share().is_none() {
         return Err(ApiError::SharingUnavailable);
     }
@@ -136,11 +136,20 @@ pub(crate) async fn token_exchange(
             tracing::error!(%error, "share viewer: token exchange transport error");
             ApiError::Metering
         })?;
-    let body: serde_json::Value = response.json().await.map_err(|error| {
-        tracing::error!(%error, "share viewer: token exchange parse error");
+    // Relay the upstream status AND JSON envelope so the page can tell an
+    // expired code from a provider outage; a non-JSON upstream body (gateway
+    // HTML, timeout text) becomes a clean metering error instead of a parse
+    // panic surfaced as success.
+    let status = response.status();
+    let bytes = response.bytes().await.map_err(|error| {
+        tracing::error!(%error, "share viewer: token exchange body read error");
         ApiError::Metering
     })?;
-    Ok(Json(body))
+    let body: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+        tracing::error!(%error, %status, "share viewer: token exchange non-JSON upstream body");
+        ApiError::Metering
+    })?;
+    Ok((status, Json(body)))
 }
 
 fn client_address(headers: &HeaderMap) -> String {

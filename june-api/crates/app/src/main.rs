@@ -346,6 +346,8 @@ fn build_router(
             max_json_bytes: config.server.max_json_bytes,
             max_issue_report_bytes: config.server.max_issue_report_bytes,
             max_image_edit_bytes: config.server.max_image_edit_bytes,
+            // Base64 inflates by 4/3; leave headroom for envelopes + JSON.
+            max_share_body_bytes: config.share.max_ciphertext_bytes / 3 * 4 + 64 * 1024,
             request_timeout_secs: config.server.request_timeout_secs,
         },
         attestation: AttestationInfo {

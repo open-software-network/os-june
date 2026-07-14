@@ -77,6 +77,9 @@ pub struct ApiLimits {
     pub max_json_bytes: usize,
     pub max_issue_report_bytes: usize,
     pub max_image_edit_bytes: usize,
+    /// Body cap for share create/add-invites: the base64-encoded ciphertext
+    /// plus envelope/JSON overhead (~4/3 of `share.max_ciphertext_bytes`).
+    pub max_share_body_bytes: usize,
     pub request_timeout_secs: u64,
 }
 
@@ -123,9 +126,13 @@ impl ShareRateLimiter {
 
     /// Returns false when the caller is over budget for the current window.
     pub(crate) fn allow(&self, key: &str) -> bool {
-        let Ok(mut hits) = self.hits.lock() else {
-            return true;
-        };
+        // A poisoned lock must not fail OPEN on a security gate: recover the
+        // inner map (the state is a counter table; a panicking writer cannot
+        // corrupt it in a way that matters more than losing the gate).
+        let mut hits = self
+            .hits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = std::time::Instant::now();
         // Opportunistic cleanup keeps the map bounded by active users.
         hits.retain(|_, (start, _)| now.duration_since(*start) < Self::WINDOW);

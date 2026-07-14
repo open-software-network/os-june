@@ -73,7 +73,9 @@ pub fn router(state: ApiState) -> Router {
         )
         .route(
             "/v1/shares",
-            post(handlers::share::create).get(handlers::share::list),
+            post(handlers::share::create)
+                .layer(DefaultBodyLimit::max(limits.max_share_body_bytes))
+                .get(handlers::share::list),
         )
         .route(
             "/v1/shares/{share_id}",
@@ -81,7 +83,8 @@ pub fn router(state: ApiState) -> Router {
         )
         .route(
             "/v1/shares/{share_id}/invites",
-            post(handlers::share::add_invites),
+            post(handlers::share::add_invites)
+                .layer(DefaultBodyLimit::max(limits.max_share_body_bytes)),
         )
         .route(
             "/v1/shares/{share_id}/invites/{invite_id}",

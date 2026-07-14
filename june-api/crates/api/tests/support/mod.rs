@@ -375,6 +375,7 @@ pub(crate) fn test_state_from_deps_with_viewer(
             max_json_bytes: 1024 * 1024,
             max_issue_report_bytes: DEFAULT_MAX_ISSUE_REPORT_BYTES,
             max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
+            max_share_body_bytes: 4 * 1024 * 1024,
             request_timeout_secs: deps.request_timeout_secs,
         },
         attestation: deps.attestation,
