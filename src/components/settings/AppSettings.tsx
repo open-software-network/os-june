@@ -82,7 +82,11 @@ import {
   setReleaseChannel,
   type ReleaseChannel,
 } from "../../lib/updater";
-import { isMacLikePlatform, isSystemAudioSupportedPlatform } from "../../lib/platform";
+import {
+  fallbackDictationCapabilities,
+  isSystemAudioSupportedPlatform,
+  useDictationCapabilities,
+} from "../../lib/platform";
 import { systemAudioAvailability } from "../../lib/source-readiness";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
@@ -240,9 +244,15 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
   language: undefined,
 };
 
-const DEFAULT_SHORTCUTS: Record<DictationShortcutKind, DictationShortcutSetting> = {
-  push_to_talk: DEFAULT_SETTINGS.pushToTalkShortcut,
-  toggle: DEFAULT_SETTINGS.toggleShortcut,
+const WINDOWS_DEFAULT_SHORTCUTS: Record<DictationShortcutKind, DictationShortcutSetting> = {
+  push_to_talk: {
+    ...DEFAULT_SETTINGS.pushToTalkShortcut,
+    label: "Ctrl+Alt+D",
+  },
+  toggle: {
+    ...DEFAULT_SETTINGS.toggleShortcut,
+    label: "Ctrl+Alt+T",
+  },
 };
 
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
@@ -446,6 +456,7 @@ export function AppSettings({
   const [capturingShortcut, setCapturingShortcut] = useState<DictationShortcutKind>();
   const capturingShortcutRef = useRef<DictationShortcutKind>();
   const [shortcutError, setShortcutError] = useState<string>();
+  const [shortcutErrorKind, setShortcutErrorKind] = useState<DictationShortcutKind>();
   const [status, setStatus] = useState<string>();
   // Set when the dictation helper dies (crash or the bundle swap after an
   // update) and cleared once it re-arms the hotkey, so the shortcuts pane never
@@ -515,8 +526,20 @@ export function AppSettings({
   const settingsTabs = account.localDev
     ? SETTINGS_TABS.filter((tab) => tab.id !== "billing")
     : SETTINGS_TABS;
-  const macLikePlatform = isMacLikePlatform();
-  const systemAudioSupportedPlatform = isSystemAudioSupportedPlatform();
+  const capabilities = useDictationCapabilities();
+  const macLikePlatform = capabilities.platform === "macos";
+  const systemAudioSupportedPlatform = capabilities.systemAudio || isSystemAudioSupportedPlatform();
+  const defaultShortcuts =
+    capabilities.platform === "windows"
+      ? WINDOWS_DEFAULT_SHORTCUTS
+      : {
+          push_to_talk: DEFAULT_SETTINGS.pushToTalkShortcut,
+          toggle: DEFAULT_SETTINGS.toggleShortcut,
+        };
+  const modifierRequiredMessage =
+    capabilities.platform === "windows"
+      ? "Shortcut must include Ctrl, Alt, Shift, or Win."
+      : MODIFIER_REQUIRED_MESSAGE;
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
       onTabChange?.(tab);
@@ -739,8 +762,9 @@ export function AppSettings({
       event.preventDefault();
       event.stopPropagation();
       if (result.kind === "needsModifier") {
-        setShortcutError(MODIFIER_REQUIRED_MESSAGE);
-        setStatus(MODIFIER_REQUIRED_MESSAGE);
+        setShortcutError(modifierRequiredMessage);
+        setShortcutErrorKind(kind);
+        setStatus(modifierRequiredMessage);
         return;
       }
       setShortcutError(undefined);
@@ -832,14 +856,33 @@ export function AppSettings({
       setHelperUnavailable(undefined);
       return;
     }
+    if (helperEvent.type === "hotkey_trigger_unavailable") {
+      const message = helperEvent.payload?.message ?? "Dictation shortcut is unavailable.";
+      const kind = shortcutKindPayload(helperEvent.payload?.kind);
+      setHelperUnavailable(undefined);
+      setShortcutError(message);
+      setShortcutErrorKind(kind);
+      setStatus(message);
+      return;
+    }
     if (helperEvent.type === "shortcut_capture_started") {
       setStatus("Press the shortcut to record it.");
       return;
     }
     if (helperEvent.type === "shortcut_capture_error") {
       const message = helperEvent.payload?.message ?? "Shortcut could not be captured.";
+      const kind = shortcutKindPayload(helperEvent.payload?.kind) ?? capturingShortcutRef.current;
+      setCapturingShortcut(undefined);
       setShortcutError(message);
+      setShortcutErrorKind(kind);
       setStatus(message);
+      return;
+    }
+    if (helperEvent.type === "shortcut_capture_cancelled") {
+      setCapturingShortcut(undefined);
+      setShortcutError(undefined);
+      setShortcutErrorKind(undefined);
+      setStatus("Shortcut capture ended.");
       return;
     }
     if (helperEvent.type === "shortcut_captured") {
@@ -856,6 +899,7 @@ export function AppSettings({
         return;
       }
       setShortcutError(undefined);
+      setShortcutErrorKind(undefined);
       void saveShortcut(kind, shortcut);
       return;
     }
@@ -886,24 +930,30 @@ export function AppSettings({
       const next = await setDictationShortcut(kind, shortcut);
       setSettings(next);
       setCapturingShortcut(undefined);
+      setShortcutError(undefined);
+      setShortcutErrorKind(undefined);
       setStatus(`${shortcutKindLabel(kind)} set to ${shortcutForKind(next, kind).label}.`);
     } catch (error) {
       setShortcutError(messageFromError(error));
+      setShortcutErrorKind(kind);
       setStatus(messageFromError(error));
     }
   }
 
   async function startShortcutCapture(kind: DictationShortcutKind) {
     setShortcutError(undefined);
+    setShortcutErrorKind(undefined);
     setCapturingShortcut(kind);
     try {
       await dictationHelperCommand({
         type: "start_shortcut_capture",
+        kind,
         pressCount: 1,
       });
     } catch (error) {
       setCapturingShortcut(undefined);
       setShortcutError(messageFromError(error));
+      setShortcutErrorKind(kind);
       setStatus(messageFromError(error));
     }
   }
@@ -911,6 +961,7 @@ export function AppSettings({
   async function cancelShortcutCapture() {
     setCapturingShortcut(undefined);
     setShortcutError(undefined);
+    setShortcutErrorKind(undefined);
     try {
       await dictationHelperCommand({ type: "cancel_shortcut_capture" });
     } catch (error) {
@@ -1613,34 +1664,36 @@ export function AppSettings({
             ) : null}
             <div className="settings-card">
               <div className="settings-rows">
-                {macLikePlatform ? (
+                {capabilities.shortcuts ? (
                   <>
                     <ShortcutRow
                       title="Push to talk"
                       description="Hold this shortcut to dictate, then release to paste."
                       shortcut={settings.pushToTalkShortcut}
-                      defaultShortcut={DEFAULT_SHORTCUTS.push_to_talk}
+                      defaultShortcut={defaultShortcuts.push_to_talk}
                       capturing={capturingShortcut === "push_to_talk"}
                       disabled={!!capturingShortcut && capturingShortcut !== "push_to_talk"}
-                      error={capturingShortcut === "push_to_talk" ? shortcutError : undefined}
+                      error={shortcutErrorKind === "push_to_talk" ? shortcutError : undefined}
                       onChange={() => void startShortcutCapture("push_to_talk")}
                       onReset={() =>
-                        void saveShortcut("push_to_talk", DEFAULT_SHORTCUTS.push_to_talk)
+                        void saveShortcut("push_to_talk", defaultShortcuts.push_to_talk)
                       }
                       onCancel={() => void cancelShortcutCapture()}
+                      platform={capabilities.platform}
                     />
 
                     <ShortcutRow
                       title="Toggle dictation"
                       description="Press this shortcut to start or stop dictation."
                       shortcut={settings.toggleShortcut}
-                      defaultShortcut={DEFAULT_SHORTCUTS.toggle}
+                      defaultShortcut={defaultShortcuts.toggle}
                       capturing={capturingShortcut === "toggle"}
                       disabled={!!capturingShortcut && capturingShortcut !== "toggle"}
-                      error={capturingShortcut === "toggle" ? shortcutError : undefined}
+                      error={shortcutErrorKind === "toggle" ? shortcutError : undefined}
                       onChange={() => void startShortcutCapture("toggle")}
-                      onReset={() => void saveShortcut("toggle", DEFAULT_SHORTCUTS.toggle)}
+                      onReset={() => void saveShortcut("toggle", defaultShortcuts.toggle)}
                       onCancel={() => void cancelShortcutCapture()}
+                      platform={capabilities.platform}
                     />
                   </>
                 ) : (
@@ -1648,7 +1701,7 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Dictation shortcuts unavailable</h3>
                       <p className="settings-row-description">
-                        Global dictation shortcuts are only supported on macOS.
+                        Global dictation shortcuts are not available on this device.
                       </p>
                     </div>
                   </div>
@@ -1732,7 +1785,11 @@ export function AppSettings({
             <SettingsPageHeader
               id="audio-heading"
               title="Audio"
-              blurb="Control how June captures meeting and system audio."
+              blurb={
+                capabilities.platform === "windows"
+                  ? "Control how June captures microphone audio on this device."
+                  : "Control how June captures meeting and system audio."
+              }
             />
             <div className="settings-card">
               <div className="settings-rows">
@@ -1794,7 +1851,7 @@ export function AppSettings({
                   </div>
                 </div>
 
-                {macLikePlatform ? (
+                {capabilities.platform === "macos" || capabilities.platform === "windows" ? (
                   <MicTestControl
                     state={micTestState}
                     level={micTestLevel}
@@ -2458,7 +2515,7 @@ function PermissionsSettingsSection({
   onEnableAccessibility?: () => void;
   onEnableSystemAudio: () => void;
 }) {
-  const macLikePlatform = isMacLikePlatform();
+  const macLikePlatform = fallbackDictationCapabilities().platform === "macos";
   const systemAudioSupportedPlatform = isSystemAudioSupportedPlatform();
   return (
     <section className="settings-group" aria-labelledby="permissions-heading">
@@ -2582,6 +2639,8 @@ function permissionStatus(state?: string): PermissionStatusView {
       return { label: "Needs access", tone: "attention" };
     case "not_determined":
       return { label: "Not requested", tone: "attention" };
+    case "unavailable":
+      return { label: "No microphone found", tone: "attention" };
     case "unsupported":
       return { label: "Unsupported", tone: "unsupported" };
     case "unknown":
@@ -2798,6 +2857,7 @@ function ShortcutRow({
   onChange,
   onReset,
   onCancel,
+  platform,
 }: {
   title: string;
   description: string;
@@ -2809,6 +2869,7 @@ function ShortcutRow({
   onChange: () => void;
   onReset: () => void;
   onCancel: () => void;
+  platform: "macos" | "windows" | "unsupported";
 }) {
   const canReset = !capturing && !shortcutsMatch(shortcut, defaultShortcut) && !disabled;
 
@@ -2820,7 +2881,7 @@ function ShortcutRow({
         {error ? <p className="settings-row-error">{error}</p> : null}
       </div>
       <div className="settings-row-control">
-        <KeycapShortcut label={shortcut.label} capturing={capturing} />
+        <KeycapShortcut label={shortcut.label} capturing={capturing} platform={platform} />
         <button
           type="button"
           className="btn btn-secondary"
@@ -2842,6 +2903,10 @@ function ShortcutRow({
       </div>
     </div>
   );
+}
+
+function shortcutKindPayload(value: unknown): DictationShortcutKind | undefined {
+  return value === "push_to_talk" || value === "toggle" ? value : undefined;
 }
 
 function shortcutKindLabel(kind: DictationShortcutKind) {

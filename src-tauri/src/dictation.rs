@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+use crate::audio::turns::normalize_wav_for_transcription;
 use crate::domain::{
     processing::{build_dictionary_context, merge_transcription_context},
     types::{AppError, ListDictationHistoryResponse},
@@ -254,6 +256,14 @@ impl DictationStyle {
     }
 }
 
+fn control_option_label(key: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("Ctrl+Alt+{key}")
+    } else {
+        format!("Ctrl+Opt+{key}")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationShortcutSetting {
@@ -331,7 +341,7 @@ impl DictationShortcutSetting {
                 option: true,
                 ..DictationShortcutModifiers::default()
             },
-            label: "Ctrl+Opt+D".to_string(),
+            label: control_option_label("D"),
             press_count: 1,
         }
     }
@@ -345,7 +355,7 @@ impl DictationShortcutSetting {
                 option: true,
                 ..DictationShortcutModifiers::default()
             },
-            label: "Ctrl+Opt+T".to_string(),
+            label: control_option_label("T"),
             press_count: 1,
         }
     }
@@ -358,6 +368,13 @@ impl DictationShortcutSetting {
     }
 
     fn normalized_or_default(mut self, kind: DictationShortcutKind) -> Self {
+        if cfg!(target_os = "windows")
+            && (self.press_count != 1
+                || self.modifiers.function
+                || is_modifier_only_input(&self.code, &self.modifiers))
+        {
+            return default_shortcut_for_kind(kind);
+        }
         if self.is_bare_fn() {
             return DictationShortcutSetting::bare_fn();
         }
@@ -434,6 +451,24 @@ pub struct DictationMicrophoneSetting {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DictationCapabilities {
+    pub available: bool,
+    pub platform: &'static str,
+    pub shortcuts: bool,
+    pub paste: bool,
+    pub microphone_selection: bool,
+    pub accessibility_permission: bool,
+    pub system_audio: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationCapabilitiesResponse {
+    pub capabilities: DictationCapabilities,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DictationSettingsResponse {
     pub settings: DictationSettings,
 }
@@ -487,7 +522,10 @@ impl ShortcutActivationController {
     ) -> Option<DictationCommand> {
         match (kind, edge) {
             (DictationShortcutKind::PushToTalk, ShortcutKeyEdge::Down) => {
-                if self.active_mode.is_some() || self.push_to_talk_is_down {
+                if self.active_mode.is_some()
+                    || self.push_to_talk_is_down
+                    || self.helper_is_finalizing(now)
+                {
                     return None;
                 }
                 self.active_mode = Some(DictationShortcutKind::PushToTalk);
@@ -538,14 +576,16 @@ impl ShortcutActivationController {
             && self
                 .last_toggle_command_at
                 .map_or(true, |last| now.duration_since(last) < TOGGLE_ACK_EXPIRY);
-        let finalizing = self
-            .helper_finalizing_since
-            .is_some_and(|since| now.duration_since(since) < FINALIZING_SUPPRESSION_EXPIRY);
         !in_flight
-            && !finalizing
+            && !self.helper_is_finalizing(now)
             && self.last_toggle_command_at.map_or(true, |last| {
                 now.duration_since(last) >= TOGGLE_SHORTCUT_DEBOUNCE
             })
+    }
+
+    fn helper_is_finalizing(&self, now: Instant) -> bool {
+        self.helper_finalizing_since
+            .is_some_and(|since| now.duration_since(since) < FINALIZING_SUPPRESSION_EXPIRY)
     }
 
     fn mark_toggle_command_sent(&mut self, now: Instant) {
@@ -591,6 +631,13 @@ impl DictationCommand {
 
 impl DictationShortcutInput {
     fn into_setting(self) -> Result<DictationShortcutSetting, AppError> {
+        self.into_setting_for_platform(cfg!(target_os = "windows"))
+    }
+
+    fn into_setting_for_platform(
+        self,
+        windows: bool,
+    ) -> Result<DictationShortcutSetting, AppError> {
         if self.code.trim().is_empty() || self.label.trim().is_empty() {
             return Err(AppError::new(
                 "dictation_shortcut_incomplete",
@@ -598,9 +645,23 @@ impl DictationShortcutInput {
             ));
         }
 
+        let requested_press_count = self.press_count.unwrap_or(1);
+
+        if windows && requested_press_count != 1 {
+            return Err(AppError::new(
+                "dictation_shortcut_unsupported",
+                "Double-press shortcuts are not supported on Windows.",
+            ));
+        }
         let press_count = 1;
 
         if is_bare_fn_input(&self.code, &self.modifiers) {
+            if windows {
+                return Err(AppError::new(
+                    "dictation_shortcut_unsupported",
+                    "The Fn key is not supported for Windows dictation shortcuts.",
+                ));
+            }
             return Ok(DictationShortcutSetting {
                 press_count,
                 label: "Fn".to_string(),
@@ -609,7 +670,32 @@ impl DictationShortcutInput {
         }
 
         if is_modifier_only_input(&self.code, &self.modifiers) {
+            if windows {
+                return Err(AppError::new(
+                    "dictation_shortcut_unsupported",
+                    "Modifier-only shortcuts are not supported on Windows.",
+                ));
+            }
             return Ok(DictationShortcutSetting::modifier_only(self.modifiers));
+        }
+
+        if windows && self.modifiers.function {
+            return Err(AppError::new(
+                "dictation_shortcut_unsupported",
+                "The Fn key is not supported for Windows dictation shortcuts.",
+            ));
+        }
+
+        if windows
+            && !self.modifiers.command
+            && !self.modifiers.control
+            && !self.modifiers.option
+            && !self.modifiers.shift
+        {
+            return Err(AppError::new(
+                "dictation_shortcut_modifier_required",
+                "Shortcut must include at least one modifier key (Ctrl, Alt, Shift, Win).",
+            ));
         }
 
         let key_code = key_code_for_code(&self.code).ok_or_else(|| {
@@ -748,6 +834,27 @@ pub fn setup(app: &mut tauri::App) {
 }
 
 #[tauri::command]
+pub fn dictation_capabilities() -> DictationCapabilitiesResponse {
+    DictationCapabilitiesResponse {
+        capabilities: DictationCapabilities {
+            available: cfg!(any(target_os = "macos", target_os = "windows")),
+            platform: if cfg!(target_os = "macos") {
+                "macos"
+            } else if cfg!(target_os = "windows") {
+                "windows"
+            } else {
+                "unsupported"
+            },
+            shortcuts: cfg!(any(target_os = "macos", target_os = "windows")),
+            paste: cfg!(any(target_os = "macos", target_os = "windows")),
+            microphone_selection: cfg!(any(target_os = "macos", target_os = "windows")),
+            accessibility_permission: cfg!(target_os = "macos"),
+            system_audio: cfg!(target_os = "macos"),
+        },
+    }
+}
+
+#[tauri::command]
 pub fn dictation_settings(
     state: State<'_, DictationSettingsState>,
 ) -> Result<DictationSettingsResponse, AppError> {
@@ -780,12 +887,12 @@ pub async fn delete_dictation_history_item(app: AppHandle, id: String) -> Result
 }
 
 #[tauri::command]
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn set_dictation_shortcut(
     app: AppHandle,
     state: State<'_, DictationSettingsState>,
     helper_state: State<'_, HelperState>,
-    hotkey_status: State<'_, HotkeyStatus>,
+    _hotkey_status: State<'_, HotkeyStatus>,
     kind: DictationShortcutKind,
     shortcut: DictationShortcutInput,
 ) -> Result<DictationSettings, AppError> {
@@ -804,7 +911,8 @@ pub fn set_dictation_shortcut(
     };
 
     if current_shortcut == &shortcut {
-        set_hotkey_status(&hotkey_status, hotkey_ready_event(&current_settings));
+        #[cfg(target_os = "macos")]
+        set_hotkey_status(&_hotkey_status, hotkey_ready_event(&current_settings));
         apply_shortcut_settings(&helper_state, &current_settings)?;
         return Ok(current_settings);
     }
@@ -816,12 +924,13 @@ pub fn set_dictation_shortcut(
     reset_shortcut_activation(&app);
     apply_shortcut_settings(&helper_state, &settings)?;
 
-    set_hotkey_status(&hotkey_status, hotkey_ready_event(&settings));
+    #[cfg(target_os = "macos")]
+    set_hotkey_status(&_hotkey_status, hotkey_ready_event(&settings));
     Ok(settings)
 }
 
 #[tauri::command]
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn set_dictation_shortcut(
     kind: DictationShortcutKind,
     shortcut: DictationShortcutInput,
@@ -829,7 +938,7 @@ pub fn set_dictation_shortcut(
     let _ = (kind, shortcut);
     Err(AppError::new(
         "dictation_shortcut_unsupported",
-        "Dictation shortcuts are only supported on macOS.",
+        "Dictation shortcuts are not supported on this platform.",
     ))
 }
 
@@ -843,7 +952,7 @@ pub fn set_dictation_microphone(
     let settings = update_settings(&state, |settings| {
         settings.microphone = DictationMicrophoneSetting { id, name };
     })?;
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     if helper_state
         .process
         .lock()
@@ -884,12 +993,12 @@ pub fn dictation_helper_command(
     state: State<'_, HelperState>,
     command: serde_json::Value,
 ) -> Result<(), AppError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if helper_command_resets_shortcut_activation(&command) {
         reset_shortcut_activation(&app);
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     if state
         .process
         .lock()
@@ -1494,7 +1603,7 @@ fn send_helper_command(state: &HelperState, command: serde_json::Value) -> Resul
         .map_err(|error| AppError::new("dictation_helper_write_failed", error.to_string()))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn handle_missing_helper_command(
     app: &AppHandle,
     command: &serde_json::Value,
@@ -1529,12 +1638,12 @@ fn handle_missing_helper_command(
         ) => Ok(()),
         _ => Err(AppError::new(
             "dictation_helper_unavailable",
-            "Dictation recording is only supported on macOS.",
+            "Dictation recording is not supported on this platform.",
         )),
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn non_macos_permission_status_event() -> serde_json::Value {
     let (microphone, _) = crate::audio::capture::microphone_permission_state();
     serde_json::json!({
@@ -1732,8 +1841,8 @@ fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_l
                 DictationAuthGate::Proceed => {}
                 // A transient outage at the key press must not kill a live
                 // dictation: let it record. The recording_ready backstop
-                // re-checks at the end and, if still unavailable, keeps the
-                // audio and shows a retriable error.
+                // re-checks at the end and, if still unavailable, cleans up
+                // the finalized audio and shows a retriable error.
                 DictationAuthGate::Unavailable(_) => {}
                 DictationAuthGate::SignedOut => {
                     forward_dictation_command(&app, DictationCommand::DiscardListening, &label);
@@ -1926,6 +2035,7 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
 
     if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
         let manifest_dir = PathBuf::from(manifest_dir);
+        #[cfg(target_os = "macos")]
         if let Some(repo_dir) = manifest_dir.parent() {
             paths.push(
                 repo_dir
@@ -1936,33 +2046,73 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
                     .join("june-dictation-helper"),
             );
         }
+        #[cfg(target_os = "windows")]
+        paths.push(
+            manifest_dir
+                .join("native")
+                .join("bin")
+                .join("june-dictation-helper.exe"),
+        );
     }
 
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            paths.push(exe_dir.join("june-dictation-helper"));
-            paths.push(exe_dir.join("../Resources/june-dictation-helper"));
+            #[cfg(target_os = "windows")]
+            {
+                paths.push(exe_dir.join("june-dictation-helper.exe"));
+                paths.push(
+                    exe_dir
+                        .join("native")
+                        .join("bin")
+                        .join("june-dictation-helper.exe"),
+                );
+                paths.push(
+                    exe_dir
+                        .join("resources")
+                        .join("native")
+                        .join("bin")
+                        .join("june-dictation-helper.exe"),
+                );
+            }
+            #[cfg(target_os = "macos")]
+            {
+                paths.push(exe_dir.join("june-dictation-helper"));
+                paths.push(exe_dir.join("../Resources/june-dictation-helper"));
+            }
         }
     }
 
     if let Ok(resource_dir) = app.path().resource_dir() {
-        paths.push(resource_dir.join("june-dictation-helper"));
-        paths.push(
-            resource_dir
-                .join("native")
-                .join("bin")
-                .join("June Dictation Helper.app")
-                .join("Contents")
-                .join("MacOS")
-                .join("june-dictation-helper"),
-        );
-        paths.push(
-            resource_dir
-                .join("June Dictation Helper.app")
-                .join("Contents")
-                .join("MacOS")
-                .join("june-dictation-helper"),
-        );
+        #[cfg(target_os = "windows")]
+        {
+            paths.push(resource_dir.join("june-dictation-helper.exe"));
+            paths.push(
+                resource_dir
+                    .join("native")
+                    .join("bin")
+                    .join("june-dictation-helper.exe"),
+            );
+        }
+        #[cfg(target_os = "macos")]
+        {
+            paths.push(resource_dir.join("june-dictation-helper"));
+            paths.push(
+                resource_dir
+                    .join("native")
+                    .join("bin")
+                    .join("June Dictation Helper.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("june-dictation-helper"),
+            );
+            paths.push(
+                resource_dir
+                    .join("June Dictation Helper.app")
+                    .join("Contents")
+                    .join("MacOS")
+                    .join("june-dictation-helper"),
+            );
+        }
     }
 
     paths
@@ -2282,14 +2432,37 @@ fn store_respawned_helper(state: &HelperState, mut helper: HelperProcess) -> Sto
     StoreRespawnedHelper::Stored
 }
 
+const HELPER_SHUTDOWN_GRACE: Duration = Duration::from_millis(750);
+const HELPER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
 /// Stops a helper we spawned but will not install (shutdown raced the respawn).
 /// Dropping a [`Child`] only detaches it, so we kill explicitly to avoid an
-/// orphaned helper holding the global hotkey tap.
+/// orphaned helper holding the global hotkey tap. Give a cooperative shutdown a
+/// short grace period first so the helper can restore clipboard state and remove
+/// temporary recordings before the forced-kill fallback.
 fn abandon_helper(mut helper: HelperProcess) {
     let _ = helper.stdin.write_all(b"{\"type\":\"shutdown\"}\n");
     let _ = helper.stdin.flush();
+    if wait_for_helper_exit(&mut helper.child, HELPER_SHUTDOWN_GRACE) {
+        return;
+    }
     let _ = helper.child.kill();
     let _ = helper.child.wait();
+}
+
+fn wait_for_helper_exit(child: &mut Child, grace: Duration) -> bool {
+    let deadline = Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            Err(_) => return true,
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(HELPER_SHUTDOWN_POLL_INTERVAL);
+    }
 }
 
 /// Re-applies the persisted microphone and shortcut settings to a just-respawned
@@ -2307,11 +2480,14 @@ fn reapply_helper_settings(app: &AppHandle) {
     };
     let _ = apply_microphone_setting(&helper_state, &settings.microphone);
     let _ = apply_shortcut_settings(&helper_state, &settings);
-    let event = hotkey_ready_event(&settings);
-    if let Some(status) = app.try_state::<HotkeyStatus>() {
-        set_hotkey_status(&status, event.clone());
+    #[cfg(target_os = "macos")]
+    {
+        let event = hotkey_ready_event(&settings);
+        if let Some(status) = app.try_state::<HotkeyStatus>() {
+            set_hotkey_status(&status, event.clone());
+        }
+        emit_dictation_event_value(app, event);
     }
-    emit_dictation_event_value(app, event);
 }
 
 fn emit_helper_unavailable(app: &AppHandle, reason: &str, message: &str) {
@@ -2328,6 +2504,15 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         .as_ref()
         .and_then(|event| event.get("type"))
         .and_then(serde_json::Value::as_str);
+
+    if matches!(
+        event_type,
+        Some("hotkey_trigger_ready" | "hotkey_trigger_unavailable")
+    ) {
+        if let (Some(status), Some(event)) = (app.try_state::<HotkeyStatus>(), event.as_ref()) {
+            set_hotkey_status(&status, event.clone());
+        }
+    }
 
     handle_shortcut_key_event(app, event_type, event.as_ref());
     if matches!(
@@ -2383,6 +2568,7 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 }
 
 async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInfo) {
+    let audio_path = recording.audio_path.clone();
     // Resolve the paste target before the first await. Prefer the bundle id
     // the helper captured with the recording: the helper pins that same app
     // when the recording stops and pastes into it once we return, so layout
@@ -2400,27 +2586,34 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     match classify_dictation_auth(&crate::os_accounts::access_token().await) {
         DictationAuthGate::Proceed => {}
         DictationAuthGate::Unavailable(error) => {
-            // OS Accounts is momentarily unreachable (e.g. an upstream 5xx
-            // during a post-update restart). The recording is intact and the
-            // user is still signed in, so keep the audio (do NOT discard) and
-            // surface a retriable error instead of a misleading sign-in prompt.
-            // The helper drops the leftover file on the next start_listening.
+            // OS Accounts is temporarily unreachable. The helper has already
+            // finalized this capture to a temp WAV, and there is no retained
+            // retry handle after recording_ready, so remove it before
+            // surfacing the retriable auth error.
+            remove_windows_dictation_audio(&recording.audio_path);
+            update_shortcut_helper_finalizing(&app, false);
             emit_dictation_event_value(&app, app_error_event(error));
             return;
         }
         DictationAuthGate::SignedOut => {
+            remove_windows_dictation_audio(&recording.audio_path);
             let state = app.state::<HelperState>();
             let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
+            update_shortcut_helper_finalizing(&app, false);
             notify_dictation_not_signed_in(&app);
+            let _ = std::fs::remove_file(&audio_path);
             return;
         }
     }
     let provider = match dictation_transcription_provider(configured_transcription_provider()) {
         Ok(provider) => provider,
         Err(error) => {
+            remove_windows_dictation_audio(&recording.audio_path);
             let state = app.state::<HelperState>();
             let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
+            update_shortcut_helper_finalizing(&app, false);
             emit_dictation_event_value(&app, app_error_event(error));
+            let _ = std::fs::remove_file(&audio_path);
             return;
         }
     };
@@ -2434,14 +2627,29 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         dictionary_context.as_deref(),
         Some(dictation_transcription_context(style).as_str()),
     );
+    let transcription_audio = match prepare_dictation_audio(&recording.audio_path, &utterance_id) {
+        Ok(path) => path,
+        Err(error) => {
+            remove_windows_dictation_audio(&recording.audio_path);
+            let state = app.state::<HelperState>();
+            let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
+            update_shortcut_helper_finalizing(&app, false);
+            emit_dictation_event_value(&app, app_error_event(error));
+            return;
+        }
+    };
     let result = dictate_transcribe(DictateTranscribeRequest {
-        audio_path: recording.audio_path,
+        audio_path: transcription_audio.clone(),
         context: transcription_context,
         language,
         session_id: session_id.clone(),
         utterance_id: utterance_id.clone(),
     })
     .await;
+    if transcription_audio != recording.audio_path {
+        let _ = fs::remove_file(&transcription_audio);
+    }
+    remove_windows_dictation_audio(&recording.audio_path);
     let result = maybe_cleanup_dictation_result(
         &app,
         &provider,
@@ -2456,7 +2664,9 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     let outcome = outcome_from_transcription_result(result, recording.observed_audio_level, style);
     let state = app.state::<HelperState>();
     if let Err(error) = send_helper_command(&state, outcome.helper_command) {
+        update_shortcut_helper_finalizing(&app, false);
         emit_dictation_event_value(&app, app_error_event(error));
+        let _ = std::fs::remove_file(&audio_path);
         return;
     }
     if let Some(transcript) = outcome.transcript.as_ref() {
@@ -2469,7 +2679,33 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     if let Some(event) = outcome.event {
         emit_dictation_event_value(&app, event);
     }
+    let _ = std::fs::remove_file(&audio_path);
 }
+
+fn prepare_dictation_audio(
+    input_path: &std::path::Path,
+    utterance_id: &str,
+) -> Result<PathBuf, AppError> {
+    #[cfg(target_os = "windows")]
+    {
+        let output_path =
+            std::env::temp_dir().join(format!("os-june-dictation-{utterance_id}-normalized.wav"));
+        return normalize_wav_for_transcription(input_path, &output_path);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = utterance_id;
+        Ok(input_path.to_path_buf())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn remove_windows_dictation_audio(path: &std::path::Path) {
+    let _ = fs::remove_file(path);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn remove_windows_dictation_audio(_path: &std::path::Path) {}
 
 fn dictation_session_id() -> String {
     use std::sync::OnceLock;
@@ -4077,13 +4313,24 @@ fn initial_hotkey_event(settings: &DictationSettings) -> serde_json::Value {
     hotkey_ready_event(settings)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn initial_hotkey_event(_settings: &DictationSettings) -> serde_json::Value {
+    serde_json::json!({
+        "type": "hotkey_trigger_unavailable",
+        "payload": {
+            "reason": "registering",
+            "message": "Windows is registering dictation shortcuts.",
+        },
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn initial_hotkey_event(_settings: &DictationSettings) -> serde_json::Value {
     serde_json::json!({
         "type": "hotkey_trigger_unavailable",
         "payload": {
             "reason": "unsupported",
-            "message": "Dictation shortcuts are only supported on macOS.",
+            "message": "Dictation shortcuts are not supported on this platform.",
         },
     })
 }
@@ -4159,6 +4406,17 @@ pub fn key_code_for_code(code: &str) -> Option<u32> {
         "Backspace" => 0x33,
         "Escape" => 0x35,
         "F1" => 0x7a,
+        "F2" => 0x78,
+        "F3" => 0x63,
+        "F4" => 0x76,
+        "F5" => 0x60,
+        "F6" => 0x61,
+        "F7" => 0x62,
+        "F8" => 0x64,
+        "F9" => 0x65,
+        "F10" => 0x6d,
+        "F11" => 0x67,
+        "F12" => 0x6f,
         "ArrowLeft" => 0x7b,
         "ArrowRight" => 0x7c,
         "ArrowDown" => 0x7d,
@@ -4355,6 +4613,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn deserializes_new_shortcut_settings_and_preserves_bare_fn_push_to_talk() {
         let settings: DictationSettings = serde_json::from_str(
             r#"{"pushToTalkShortcut":{"keyCode":0,"code":"Fn","modifiers":{"command":false,"control":false,"option":false,"shift":false,"function":true},"label":"Fn","pressCount":1},"toggleShortcut":{"keyCode":49,"code":"Space","modifiers":{"command":false,"control":true,"option":true,"shift":false,"function":false},"label":"Ctrl+Opt+Space","pressCount":1},"microphone":{"id":null,"name":null}}"#,
@@ -4390,6 +4649,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn deserializes_modifier_only_shortcuts() {
         let settings: DictationSettings = serde_json::from_str(
             r#"{"pushToTalkShortcut":{"keyCode":0,"code":"Modifiers","modifiers":{"command":false,"control":true,"option":true,"shift":false,"function":false},"label":"Ctrl+Opt","pressCount":1},"toggleShortcut":{"keyCode":999,"code":"Digit1","modifiers":{"command":false,"control":true,"option":false,"shift":false,"function":false},"label":"Ctrl+1","pressCount":1},"microphone":{"id":null,"name":null}}"#,
@@ -4404,6 +4664,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn shortcut_updates_are_written_in_reloadable_settings_file() {
         let directory = tempfile::tempdir().expect("settings tempdir should be created");
         let state = DictationSettingsState {
@@ -4496,7 +4757,7 @@ mod tests {
             label: "Fn".to_string(),
             press_count: None,
         }
-        .into_setting()
+        .into_setting_for_platform(false)
         .expect("bare Fn should be accepted");
 
         assert_eq!(shortcut, DictationShortcutSetting::bare_fn());
@@ -4513,7 +4774,7 @@ mod tests {
             label: "Fn".to_string(),
             press_count: Some(2),
         }
-        .into_setting()
+        .into_setting_for_platform(false)
         .expect("bare Fn should be accepted");
 
         assert_eq!(shortcut, DictationShortcutSetting::bare_fn());
@@ -4530,12 +4791,101 @@ mod tests {
             label: "Ctrl+T".to_string(),
             press_count: Some(2),
         }
-        .into_setting()
+        .into_setting_for_platform(false)
         .expect("control letter should be accepted");
 
         assert_eq!(shortcut.key_code, 0x11);
         assert_eq!(shortcut.code, "KeyT");
         assert!(shortcut.modifiers.control);
+        assert_eq!(shortcut.press_count, 1);
+    }
+
+    #[test]
+    fn windows_shortcut_input_rejects_bare_fn() {
+        let err = DictationShortcutInput {
+            code: "Fn".to_string(),
+            modifiers: DictationShortcutModifiers {
+                function: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Fn".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting_for_platform(true)
+        .expect_err("Windows must reject bare Fn");
+
+        assert_eq!(err.code, "dictation_shortcut_unsupported");
+    }
+
+    #[test]
+    fn windows_shortcut_input_rejects_modifier_only_combo() {
+        let err = DictationShortcutInput {
+            code: "Modifiers".to_string(),
+            modifiers: DictationShortcutModifiers {
+                control: true,
+                option: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Ctrl+Alt".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting_for_platform(true)
+        .expect_err("Windows must reject modifier-only shortcuts");
+
+        assert_eq!(err.code, "dictation_shortcut_unsupported");
+    }
+
+    #[test]
+    fn windows_shortcut_input_rejects_fn_chord() {
+        let err = DictationShortcutInput {
+            code: "KeyD".to_string(),
+            modifiers: DictationShortcutModifiers {
+                control: true,
+                function: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Ctrl+Fn+D".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting_for_platform(true)
+        .expect_err("Windows must reject Fn chords");
+
+        assert_eq!(err.code, "dictation_shortcut_unsupported");
+    }
+
+    #[test]
+    fn windows_shortcut_input_rejects_double_press() {
+        let err = DictationShortcutInput {
+            code: "KeyD".to_string(),
+            modifiers: DictationShortcutModifiers {
+                control: true,
+                option: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Ctrl+Alt+D".to_string(),
+            press_count: Some(2),
+        }
+        .into_setting_for_platform(true)
+        .expect_err("Windows must reject double-press shortcuts");
+
+        assert_eq!(err.code, "dictation_shortcut_unsupported");
+    }
+
+    #[test]
+    fn windows_shortcut_input_accepts_supported_chord() {
+        let shortcut = DictationShortcutInput {
+            code: "F12".to_string(),
+            modifiers: DictationShortcutModifiers {
+                command: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Win+F12".to_string(),
+            press_count: Some(1),
+        }
+        .into_setting_for_platform(true)
+        .expect("Windows should accept a supported modifier plus key chord");
+
+        assert_eq!(shortcut.code, "F12");
         assert_eq!(shortcut.press_count, 1);
     }
 
@@ -4570,7 +4920,7 @@ mod tests {
             label: "Ctrl+Opt".to_string(),
             press_count: Some(1),
         }
-        .into_setting()
+        .into_setting_for_platform(false)
         .expect("modifier-only combo should be accepted");
 
         assert_eq!(shortcut.key_code, 0);
@@ -4845,6 +5195,30 @@ mod tests {
     }
 
     #[test]
+    fn push_to_talk_during_helper_finalizing_is_dropped() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        controller.helper_finalizing_since = Some(now);
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now
+            ),
+            None
+        );
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now + FINALIZING_SUPPRESSION_EXPIRY
+            ),
+            Some(DictationCommand::StartListening)
+        );
+    }
+
+    #[test]
     fn toggle_during_helper_finalizing_is_dropped_without_parity_flip() {
         let mut controller = ShortcutActivationController::default();
         let now = Instant::now();
@@ -4977,6 +5351,31 @@ mod tests {
         assert!(!helper_command_resets_shortcut_activation(
             &serde_json::json!({ "type": "start_shortcut_capture" })
         ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn dictation_audio_is_normalized_for_transcription() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let input = directory.path().join("captured.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&input, spec).expect("create captured wav");
+        for sample in [500_i16, 500, -500, -500] {
+            writer.write_sample(sample).expect("write sample");
+        }
+        writer.finalize().expect("finalize captured wav");
+
+        let prepared = prepare_dictation_audio(&input, "test-utterance").expect("normalize wav");
+        let reader = hound::WavReader::open(&prepared).expect("open normalized wav");
+        assert_ne!(prepared, input);
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.spec().sample_rate, 16_000);
+        let _ = fs::remove_file(prepared);
     }
 
     #[test]

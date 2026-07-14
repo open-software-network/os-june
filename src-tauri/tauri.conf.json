@@ -82,6 +82,7 @@
         "enable": true,
         "scope": [
           "$TEMP/os-june-dictation-*.m4a",
+          "$TEMP/os-june-dictation-*.wav",
           "$APPDATA/hermes/videos/*"
         ]
       },
