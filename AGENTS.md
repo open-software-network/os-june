@@ -104,6 +104,7 @@ distinct from the `specs/` Spec Kit feature specs.)
 - [control-sizes](spec/control-sizes.md) — control heights from `--control-*`, no raw min/max-heights
 - [scroll-fade](spec/scroll-fade.md) — clipped scrollers use the shared `useScrollFade` + `.scroll-fade` / `.scroll-fade-mask` primitive
 - [package-install-security](spec/package-install-security.md) — pnpm-only; new package installs go through `sfw`; 7-day `minimumReleaseAge` cooldown
+- [mcp-tool-naming](spec/mcp-tool-naming.md) — internal MCP tools are `verb_object`; the owning PRD names them before the code is written
 
 ## PR and description conventions
 

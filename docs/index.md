@@ -38,6 +38,7 @@ feature specs). Full index: [spec/index.md](../spec/index.md).
 - UI styling: [spec/icons-central-only](../spec/icons-central-only.md), [spec/design-tokens](../spec/design-tokens.md), [spec/no-tabular-numerals](../spec/no-tabular-numerals.md)
 - Typography: [spec/type-scale](../spec/type-scale.md), [spec/font-weights](../spec/font-weights.md), [spec/font-families](../spec/font-families.md)
 - Controls: [spec/control-sizes](../spec/control-sizes.md)
+- Agent surface: [spec/mcp-tool-naming](../spec/mcp-tool-naming.md)
 
 ## Design system
 

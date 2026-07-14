@@ -7,6 +7,14 @@
 - **Status:** Accepted direction in JUN-278
 - **Canonical detailed spec:** [../browser-computer-use-prd.md](../browser-computer-use-prd.md)
 
+**Division of authority.** This document is canonical for the *business* half:
+ranking, positioning, packaging and pricing, success measures, strategic risks.
+The detailed spec above is canonical for the *implementation* half: the
+`june_browser` tool contract and its tool names, the trust boundary, the
+transports, policy, distribution mechanics, and tests. Neither re-decides the
+other's half. An implementation detail here that disagrees with the detailed
+spec is a bug in this document.
+
 ## Thesis
 
 Browser use is June's universal adapter for web work that does not yet have a

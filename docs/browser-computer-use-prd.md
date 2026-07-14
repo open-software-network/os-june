@@ -5,14 +5,29 @@ Supersedes the JUN-229 scope proposal (PR #689, closed unmerged); that
 document's surface inventory and gap analysis inform this PRD.
 Date: 2026-07-13
 
-**This is the canonical spec for Browser use and Computer use.** The plugin
-portfolio (JUN-309) carries a product-and-business layer above it:
-[plugins/browser-use-prd.md](plugins/browser-use-prd.md) and
-[plugins/computer-use-prd.md](plugins/computer-use-prd.md), each with an
-implementation plan. Those cover ranking, positioning, packaging, and success
-measures; this document owns the tool contract, the trust boundary, the
-transports, and the tests, and the portfolio docs defer to it by name. When
-the two disagree, this one is right and the other is a bug.
+**Division of authority.** Two documents describe Browser use, and each is
+canonical for one half. They must never re-decide the other's half.
+
+| | Canonical document |
+| --- | --- |
+| **Implementation**: tool contract and tool names, trust boundary, transports, policy, distribution mechanics, tests | **this document** |
+| **Business**: ranking, positioning, packaging and pricing, success measures, strategic risks | [plugins/browser-use-prd.md](plugins/browser-use-prd.md) (portfolio, JUN-309) |
+
+The portfolio also carries
+[plugins/browser-use-implementation-plan.md](plugins/browser-use-implementation-plan.md)
+and the Computer use pair
+([prd](plugins/computer-use-prd.md), [plan](plugins/computer-use-implementation-plan.md));
+those are summaries of this document, not a second source of truth. Where an
+implementation detail disagrees, this document wins and the other is the bug.
+Where a business detail disagrees, the portfolio PRD wins and this one is the
+bug.
+
+**Packaging (from the portfolio PRD, binding on this build).** Attended Browser
+use is available on Hobby at launch, to maximize trust feedback. Routine
+browsing (the managed transport) and higher automation limits are Pro. There is
+no provider API fee; model and support cost set the final packaging. This is a
+capability gate the app must actually enforce, not a marketing line, and it is
+tracked as its own slice.
 
 ## Problem statement
 
