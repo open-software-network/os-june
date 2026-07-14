@@ -33,8 +33,12 @@ pub(crate) async fn chat_completions(
     validation::validate_text_len("model", &requested_model_id, validation::MAX_MODEL_CHARS)?;
     validation::validate_agent_chat_body(&body)?;
     let model_id = resolve_priced_text_model(&state, &requested_model_id)?;
-    let provider_credentials =
-        credentials_for_resolved_model(provider_credentials, &requested_model_id, &model_id)?;
+    let provider_credentials = credentials_for_resolved_model(
+        provider_credentials,
+        &requested_model_id,
+        &model_id,
+        false,
+    )?;
     if let Some(object) = body.as_object_mut() {
         object.insert(
             "model".to_string(),

@@ -881,7 +881,7 @@ async fn integration_dictate_routes_retired_asr_model_through_priced_fallback()
 }
 
 #[tokio::test]
-async fn integration_dictate_rejects_byok_when_retired_asr_model_would_fallback()
+async fn integration_dictate_keeps_byok_when_retired_asr_model_falls_back_to_venice()
 -> Result<(), Box<dyn Error>> {
     let response = send(multipart_request_with_venice_api_key(
         "/v1/dictate",
@@ -895,9 +895,10 @@ async fn integration_dictate_rejects_byok_when_retired_asr_model_would_fallback(
     )?)
     .await;
 
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await?;
-    assert_eq!(body["message"], "venice_api_key_model_unavailable");
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["text"], "Transcribed audio");
     Ok(())
 }
 

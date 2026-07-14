@@ -37,7 +37,7 @@ pub(crate) async fn transcribe(
     validation::validate_text_len("model", &requested_model_id, validation::MAX_MODEL_CHARS)?;
     let model_id = resolve_priced_asr_model(&state, &requested_model_id)?;
     let provider_credentials =
-        credentials_for_resolved_model(provider_credentials, &requested_model_id, &model_id)?;
+        credentials_for_resolved_model(provider_credentials, &requested_model_id, &model_id, true)?;
     let session_id = form.required_text("sessionId")?;
     validation::validate_text_len("session_id", &session_id, validation::MAX_ID_CHARS)?;
     let utterance_id = form.required_text("utteranceId")?;
@@ -87,8 +87,12 @@ pub(crate) async fn cleanup(
     let requested_model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &requested_model_id, validation::MAX_MODEL_CHARS)?;
     let model_id = resolve_priced_text_model(&state, &requested_model_id)?;
-    let provider_credentials =
-        credentials_for_resolved_model(provider_credentials, &requested_model_id, &model_id)?;
+    let provider_credentials = credentials_for_resolved_model(
+        provider_credentials,
+        &requested_model_id,
+        &model_id,
+        false,
+    )?;
     let output = state
         .dictate()
         .cleanup(DictateCleanupParams {

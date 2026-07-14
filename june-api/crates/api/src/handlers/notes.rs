@@ -93,8 +93,12 @@ pub(crate) async fn generate(
     let requested_model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &requested_model_id, validation::MAX_MODEL_CHARS)?;
     let model_id = resolve_priced_text_model(&state, &requested_model_id)?;
-    let provider_credentials =
-        credentials_for_resolved_model(provider_credentials, &requested_model_id, &model_id)?;
+    let provider_credentials = credentials_for_resolved_model(
+        provider_credentials,
+        &requested_model_id,
+        &model_id,
+        false,
+    )?;
 
     let stream = request.stream;
     let params = NoteGenerateParams {
@@ -362,14 +366,18 @@ pub(crate) fn resolve_priced_text_model(
     resolve_priced_text_model_kind(state.pricing(), requested_model_id)
 }
 
-/// Auto is a June-managed route. Reject a stale BYOK selection instead of
-/// silently changing its billing, and never let explicit Auto become BYOK.
+/// Auto is a June-managed route. Reject stale text BYOK selections instead of
+/// silently changing billing; callers may preserve the legacy ASR fallback.
 pub(crate) fn credentials_for_resolved_model(
     mut credentials: ProviderCredentials,
     requested_model_id: &str,
     resolved_model_id: &str,
+    allow_byok_model_fallback: bool,
 ) -> Result<ProviderCredentials, ApiError> {
-    if credentials.has_venice_api_key() && requested_model_id != resolved_model_id {
+    if credentials.has_venice_api_key()
+        && requested_model_id != resolved_model_id
+        && !allow_byok_model_fallback
+    {
         return Err(ApiError::unprocessable("venice_api_key_model_unavailable"));
     }
     if resolved_model_id == AUTO_TEXT_MODEL {
