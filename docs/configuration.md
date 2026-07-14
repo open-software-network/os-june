@@ -28,8 +28,10 @@ built-in fallback ← `config.toml` ← the **live Venice catalog at boot**.
 | `OS_ACCOUNTS_URL` / `OS_ACCOUNTS_API_URL` | OS Accounts portal + API (optional in local mode) | unset |
 | `OS_ACCOUNTS_CLIENT_ID` | OAuth client id (`ocl_...`) sent on `/login` | unset |
 | `OS_ACCOUNTS_LOOPBACK_PORT` | Login redirect loopback port; must match the registered `http://127.0.0.1:<port>/callback` | `8765` |
-| `OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE` | Debug builds: store tokens in a file, not the Keychain (avoids prompts) | `0` |
+| `OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE` | Debug builds only: explicitly opt in to plaintext local OS Accounts, Google, or GitHub token fixtures instead of Keychain. User access and refresh tokens live in Keychain by default; release builds never use the override. Never share or commit the fixtures | `0` |
 | `GOOGLE_OAUTH_CLIENT_ID` / `_SECRET` | Google Desktop OAuth credential for Gmail/Calendar connectors. Google requires both at token exchange; the second value is not confidential in an installed app and grants no user-data access by itself | unset |
+| `GITHUB_APP_CLIENT_ID` | Public GitHub App client identifier used by device flow. It may be supplied at runtime or build time, with the runtime value winning. App ID `4296474` is fixture metadata, not a runtime input. June uses no GitHub client secret, private key, installation token, or webhook secret. User access and rotating refresh tokens live in Keychain, except for the explicit debug-only plaintext override. June API is not in the GitHub credential or repository-discovery path, so this desktop change needs no June API deploy | unset |
+| `GITHUB_APP_SLUG` | Public GitHub App slug used to build the App installation-management URL. It may be supplied at runtime or build time, with the runtime value winning | unset |
 | `VENICE_TRANSCRIPTION_MODEL` / `OPENAI_TRANSCRIPTION_MODEL` | Initial transcription model (Settings can override) | see `.env.example` |
 | `VENICE_GENERATION_MODEL` | Initial note-generation model | `zai-org-glm-5-2` |
 | `VENICE_TITLE_SUGGESTION_MODEL` | Fast model for note-title suggestions | fallback to cleanup model |

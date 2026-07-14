@@ -87,3 +87,48 @@ Disconnecting an account deletes its tokens from the Keychain immediately.
 "Also revoke June's access with Google" additionally calls Google's revoke
 endpoint so the grant is dead server-side. Both paths are in Settings ->
 Connectors.
+
+## GitHub Phase 0
+
+GitHub Phase 0 adds App device authorization and selected-repository discovery
+beside the existing Google connector. It stays within the same local-mode
+boundary, while ending before MCP tools, repository reads, or GitHub writes.
+The Google analysis above remains unchanged.
+
+### Assets and metadata
+
+- The GitHub device-flow user access token and rotating refresh token are bearer
+  assets. June stores them in the dedicated GitHub Keychain service, keyed by
+  the stable GitHub user ID. They never enter SQLite, Tauri payloads, logs,
+  telemetry, or an MCP process.
+- SQLite stores the non-secret discovery cache: the connected user's identity,
+  stable installation and repository IDs, granted permissions, installation
+  status, and selected-repository metadata. This metadata can still disclose
+  account and private-repository names to someone who can read the local app
+  database, so it is not treated as public evidence.
+- June retains an avatar URL only when it is HTTPS on
+  `avatars.githubusercontent.com`; every other avatar origin is discarded
+  before data reaches the webview.
+- Debug builds can explicitly opt into plaintext token fixtures with
+  `OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=1`. The GitHub fixture and its atomic
+  temporary files may contain real local tokens and must never be shared or
+  committed. Release builds do not use this override.
+
+### Defenses and traffic boundary
+
+- Keychain is the default token store. The unsandboxed Rust host owns token
+  custody and provider calls. The Hermes sandbox denies Keychain database reads,
+  Keychain Services IPC, and reads of both the GitHub plaintext fixture and its
+  narrowly matched temporary files, so the embedded agent cannot obtain the
+  GitHub tokens.
+- Device denial, expiry, or cancellation creates no connection row or token
+  entry. If cancellation or attempt replacement races with a Keychain or SQLite
+  side effect, the serialized completion and compensation boundary removes the
+  partial new custody and state or restores the prior connection before the
+  attempt returns.
+- Device flow, token refresh, user lookup, installation discovery, and
+  selected-repository discovery travel directly from the desktop app to GitHub.
+  June API receives no GitHub credential or repository data.
+
+No new ADR is needed for Phase 0 because the approved design keeps ADR-0016's
+existing local-mode boundary and adds no backend signer.

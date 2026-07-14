@@ -74,21 +74,55 @@ from your working tree.
 make dev-staging
 ```
 
-The target runs `pnpm tauri:dev` with five overrides:
+The target runs `pnpm tauri:dev` with eight overrides:
 
 - `JUNE_API_URL=https://june-api-staging.opensoftware.co`
 - `OS_JUNE_LOCAL_DEV=0`
 - `OS_ACCOUNTS_URL=https://os-accounts-portal-staging.up.railway.app`
 - `OS_ACCOUNTS_API_URL=https://os-accounts-api-staging.up.railway.app`
 - `JUNE_DEV_SKIP_LOCAL_API=1`
+- `OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=0`
+- `GITHUB_APP_CLIENT_ID=Iv23lihKGi1yIb8QZm9L`
+- `GITHUB_APP_SLUG=june-staging`
 
 Process env beats `.env`, so these win even when `.env` selects local mode.
 The target does not set `OS_ACCOUNTS_CLIENT_ID`: put the staging client id
 (`ocl_...`) in `.env` or export it in the shell, or login fails with
 `os_accounts_unconfigured`. You also need an OS Accounts staging account with
-credits, because staging meters every request. Set
-`OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=1` in a debug build to avoid a Keychain
-prompt on every run.
+credits, because staging meters every request. The target forces Keychain token
+custody instead of the development plaintext override.
+
+The GitHub staging App must be installed with selected repository
+`open-software-network/test-repo`. The person completing device flow must be
+allowed to authorize the organization-owned App. This flow uses only the public
+client identifier; do not create, document, or request a client secret, private
+key, installation token, or webhook secret.
+
+The `june-staging` App registration must keep all of these settings:
+
+- Device Flow enabled.
+- User-to-server token expiration enabled.
+- Metadata read permission present.
+- The approved Phase 0 repository permissions unchanged.
+- Webhooks disabled.
+
+Where organization SAML applies, the QA user needs an active organization
+session before authorization. Deterministic tests remain the source of truth
+for SSO error classification.
+
+#### One-shot GitHub refresh probe
+
+The forced refresh flag is a QA-only probe for a connected staging account.
+Restart the debug app with:
+
+```sh
+OS_JUNE_GITHUB_FORCE_REFRESH_ONCE=1 make dev-staging
+```
+
+Select `Refresh` once. Verify rotation through expiry timestamps and the
+deterministic service assertions without printing either token value, then
+restart normally with `make dev-staging`. The flag is consumed only once per
+debug process, and release builds ignore it.
 
 Auth is a real Login with Open Software against staging OS Accounts. The
 local-dev bearer token does not work: staging June API boots with
