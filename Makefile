@@ -39,6 +39,9 @@ dev-staging:  ## Run the desktop app against staging June API (real OS Accounts 
 		OS_ACCOUNTS_URL=https://os-accounts-portal-staging.up.railway.app \
 		OS_ACCOUNTS_API_URL=https://os-accounts-api-staging.up.railway.app \
 		JUNE_DEV_SKIP_LOCAL_API=1 \
+		OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=0 \
+		GITHUB_APP_CLIENT_ID=Iv23lihKGi1yIb8QZm9L \
+		GITHUB_APP_SLUG=june-staging \
 		pnpm tauri:dev
 
 dev-api:  ## Run only june-api locally on :8080 (loads june-api/.env)
