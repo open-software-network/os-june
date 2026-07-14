@@ -24,6 +24,12 @@ use os_june_lib::browser::managed::{start_managed_session, ManagedSessionConfig}
 use os_june_lib::browser::policy::{PolicyConfig, Resolver};
 use os_june_lib::browser::BoxFuture;
 
+/// Serialize real-browser tests even when the test runner uses its default
+/// parallelism. Production caps managed sessions at two, and overlapping
+/// browser startup/teardown made this security suite intermittently exhaust
+/// that budget before the port isolated its test sessions.
+static LIVE_BROWSER_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Maps fixture hostnames to fixed addresses; everything else resolves empty
 /// (a policy violation), so the harness never touches real DNS.
 struct FixtureResolver {
@@ -115,6 +121,7 @@ async fn start_fixture_session(
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "launches the real detected browser; run with -- --ignored"]
 async fn navigate_snapshot_screenshot_and_teardown_end_to_end() {
+    let _serial = LIVE_BROWSER_SERIAL.lock().await;
     let artifacts = tempfile::tempdir().expect("artifacts dir");
     let session = start_fixture_session(artifacts.path()).await;
     let profile = session.profile_path();
@@ -155,6 +162,7 @@ async fn navigate_snapshot_screenshot_and_teardown_end_to_end() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "launches the real detected browser; run with -- --ignored"]
 async fn snapshot_never_leaks_sensitive_field_values() {
+    let _serial = LIVE_BROWSER_SERIAL.lock().await;
     let artifacts = tempfile::tempdir().expect("artifacts dir");
     let session = start_fixture_session(artifacts.path()).await;
 
@@ -185,6 +193,7 @@ async fn snapshot_never_leaks_sensitive_field_values() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "launches the real detected browser; run with -- --ignored"]
 async fn blocked_destinations_refuse_before_navigation_and_after_a_redirect() {
+    let _serial = LIVE_BROWSER_SERIAL.lock().await;
     let artifacts = tempfile::tempdir().expect("artifacts dir");
     let session = start_fixture_session(artifacts.path()).await;
 
@@ -219,6 +228,7 @@ async fn blocked_destinations_refuse_before_navigation_and_after_a_redirect() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "launches the real detected browser and reaches the public web; run with -- --ignored"]
 async fn public_page_end_to_end_with_production_policy() {
+    let _serial = LIVE_BROWSER_SERIAL.lock().await;
     let artifacts = tempfile::tempdir().expect("artifacts dir");
     let session = start_managed_session(ManagedSessionConfig::production(
         artifacts.path().to_path_buf(),
@@ -249,6 +259,7 @@ async fn public_page_end_to_end_with_production_policy() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "launches the real detected browser; run with -- --ignored"]
 async fn profile_is_deleted_after_a_browser_kill_and_after_drop() {
+    let _serial = LIVE_BROWSER_SERIAL.lock().await;
     let artifacts = tempfile::tempdir().expect("artifacts dir");
 
     // Kill path: SIGKILL the browser out from under the session; the crash
