@@ -261,23 +261,15 @@ fn run_capture_loop(
             was_paused = false;
         }
         let wrote_packet = backend.write_next_packet(&mut writer, &stats)?;
-        let now = Instant::now();
         if wrote_packet {
-            last_written_at = now;
+            last_written_at = Instant::now();
             pending_silence_frames = 0.0;
             continue;
         }
-        let silent_frames = idle_frames_since(
-            &mut pending_silence_frames,
-            last_written_at,
-            now,
-            backend.sample_rate,
-        );
-        if silent_frames > 0 {
-            write_silence(&mut writer, silent_frames, backend.channels, &stats)?;
-            last_written_at +=
-                Duration::from_secs_f64(silent_frames as f64 / backend.sample_rate as f64);
-        }
+        // A zero packet size means WASAPI has not delivered a packet yet, not
+        // proof that a gap belongs in the WAV at this exact poll. Interior
+        // gaps are filled from the next packet's device position; only a
+        // trailing idle tail falls back to wall-clock padding on stop.
         thread::sleep(CAPTURE_POLL_INTERVAL);
     }
     let trailing_silence_frames = idle_frames_since(
@@ -323,6 +315,7 @@ struct WasapiLoopbackBackend {
     sample_rate: u32,
     bytes_per_frame: usize,
     sample_format: MixSampleFormat,
+    expected_device_position: Option<u64>,
     started: bool,
 }
 
@@ -404,6 +397,7 @@ impl WasapiLoopbackBackend {
             sample_rate,
             bytes_per_frame,
             sample_format,
+            expected_device_position: None,
             started: true,
         })
     }
@@ -424,26 +418,39 @@ impl WasapiLoopbackBackend {
         let mut data = std::ptr::null_mut();
         let mut frames = 0;
         let mut flags = 0;
+        let mut device_position = 0_u64;
         unsafe {
-            self.capture_client
-                .GetBuffer(&mut data, &mut frames, &mut flags, None, None)
+            self.capture_client.GetBuffer(
+                &mut data,
+                &mut frames,
+                &mut flags,
+                Some(&mut device_position),
+                None,
+            )
         }
         .map_err(|error| AppError::new("system_audio_capture_unavailable", error.to_string()))?;
         let is_silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
-        let write_result = if is_silent {
-            write_silence(writer, frames, self.channels, stats)
-        } else {
-            let bytes = frames as usize * self.bytes_per_frame;
-            let samples = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), bytes) };
-            write_pcm16_from_mix_format(
-                writer,
-                samples,
-                self.channels,
-                self.bytes_per_frame,
-                self.sample_format,
-                stats,
-            )
-        };
+        let gap_frames = self.device_gap_frames(device_position);
+        let write_result = (|| {
+            if gap_frames > 0 {
+                write_silence(writer, gap_frames, self.channels, stats)?;
+            }
+            if is_silent {
+                write_silence(writer, frames, self.channels, stats)
+            } else {
+                let bytes = frames as usize * self.bytes_per_frame;
+                let samples = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), bytes) };
+                write_pcm16_from_mix_format(
+                    writer,
+                    samples,
+                    self.channels,
+                    self.bytes_per_frame,
+                    self.sample_format,
+                    stats,
+                )
+            }
+        })();
+        self.expected_device_position = Some(device_position.saturating_add(frames as u64));
         let release_result = unsafe { self.capture_client.ReleaseBuffer(frames) }
             .map_err(|error| AppError::new("system_audio_capture_unavailable", error.to_string()));
         write_result?;
@@ -458,6 +465,7 @@ impl WasapiLoopbackBackend {
             unsafe { self.audio_client.Reset() }.map_err(|error| {
                 AppError::new("system_audio_capture_unavailable", error.to_string())
             })?;
+            self.expected_device_position = None;
             self.started = false;
         }
         Ok(())
@@ -468,9 +476,16 @@ impl WasapiLoopbackBackend {
             unsafe { self.audio_client.Start() }.map_err(|error| {
                 AppError::new("system_audio_capture_unavailable", error.to_string())
             })?;
+            self.expected_device_position = None;
             self.started = true;
         }
         Ok(())
+    }
+
+    fn device_gap_frames(&mut self, device_position: u64) -> u32 {
+        let expected_position = self.expected_device_position.unwrap_or(0);
+        let gap_frames = device_position.saturating_sub(expected_position);
+        gap_frames.min(u32::MAX as u64) as u32
     }
 }
 
