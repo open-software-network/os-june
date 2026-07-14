@@ -35,6 +35,8 @@ import {
 import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
 import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
+import { readSessionModelSelections } from "../lib/hermes-session-model-selection";
+import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -225,16 +227,16 @@ const existingSession = {
 
 function getCurrentModelLabel(name: string) {
   const text = screen.getByText(name, {
-    selector: ".agent-composer-model-label span",
+    selector: ".agent-composer-model-label span, .agent-composer-model-trigger span",
   });
-  return text.closest(".agent-composer-model-label") as HTMLElement;
+  return text.closest(".agent-composer-model-label, .agent-composer-model-trigger") as HTMLElement;
 }
 
 async function findCurrentModelLabel(name: string) {
   const text = await screen.findByText(name, {
-    selector: ".agent-composer-model-label span",
+    selector: ".agent-composer-model-label span, .agent-composer-model-trigger span",
   });
-  return text.closest(".agent-composer-model-label") as HTMLElement;
+  return text.closest(".agent-composer-model-label, .agent-composer-model-trigger") as HTMLElement;
 }
 
 function seedLegacyNewSessionReportDraft() {
@@ -1156,6 +1158,9 @@ describe("AgentWorkspace", () => {
         text: "focus on the API boundary",
       }),
     );
+    const laterSurfaceReservation = reserveHermesSessionDispatch("session-1");
+    expect(laterSurfaceReservation.queuedBehindPrior).toBe(true);
+    laterSurfaceReservation.cancel();
 
     expect(screen.getByRole("region", { name: "Up next" })).toBeInTheDocument();
     expect(screen.queryByText("Steering current turn")).toBeNull();
@@ -1283,6 +1288,10 @@ describe("AgentWorkspace", () => {
     await user.type(composer, "review the brief next");
     await user.click(screen.getByRole("button", { name: "Queue next message" }));
 
+    const laterSurfaceReservation = reserveHermesSessionDispatch("session-1");
+    expect(laterSurfaceReservation.queuedBehindPrior).toBe(true);
+    laterSurfaceReservation.cancel();
+
     expect(await screen.findByText("Up next")).toBeInTheDocument();
     expect(screen.getByText("review the brief next")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Remove queued message" })).toBeInTheDocument();
@@ -1351,6 +1360,371 @@ describe("AgentWorkspace", () => {
     await user.click(removeButtons[0]);
     expect(screen.queryByText("first queued message")).toBeNull();
     expect(screen.getByText("second queued message")).toBeInTheDocument();
+  });
+
+  it("keeps attachment follow-ups in Send order when later preparation finishes first", async () => {
+    const user = userEvent.setup();
+    let resolveFirstSkill: (document: {
+      name: string;
+      relativePath: string;
+      content: string;
+    }) => void = () => undefined;
+    const skillDocument = {
+      name: "repo-build-pr",
+      relativePath: "repo-build-pr/SKILL.md",
+      content: "# Repo build PR\n\nReview the attachment.",
+    };
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveFirstSkill = resolve;
+        }),
+      )
+      .mockResolvedValue(skillDocument);
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "/repo-build-pr first accepted message");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledTimes(1));
+
+    await user.clear(composer);
+    await user.type(composer, "/repo-build-pr second prepared message");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    expect(await screen.findByText("second prepared message")).toBeInTheDocument();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    expect(await screen.findByText("Ready to send")).toBeInTheDocument();
+    expect(
+      mocks.gatewayRequest.mock.calls.some(
+        ([method, params]) =>
+          method === "prompt.submit" && params?.text?.includes("second prepared message"),
+      ),
+    ).toBe(false);
+
+    resolveFirstSkill(skillDocument);
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method, params]) =>
+            method === "prompt.submit" && params?.text?.includes("first accepted message"),
+        ),
+      ).toBe(true),
+    );
+    expect(
+      mocks.gatewayRequest.mock.calls.some(
+        ([method, params]) =>
+          method === "prompt.submit" && params?.text?.includes("second prepared message"),
+      ),
+    ).toBe(false);
+  });
+
+  it("releases queued attachment dispatch reservations when a session is deleted", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "queued before deletion");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    expect(await screen.findByText("queued before deletion")).toBeInTheDocument();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+
+    let laterDispatchRan = false;
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    await laterReservation.run(async () => {
+      laterDispatchRan = true;
+    });
+    expect(laterDispatchRan).toBe(true);
+    expect(screen.queryByText("queued before deletion")).toBeNull();
+  });
+
+  it("invalidates an attachment preparation when its session is deleted", async () => {
+    const user = userEvent.setup();
+    let resolveSkill: (document: { name: string; relativePath: string; content: string }) => void =
+      () => undefined;
+    const skillDocument = {
+      name: "repo-build-pr",
+      relativePath: "repo-build-pr/SKILL.md",
+      content: "# Repo build PR\n\nReview the attachment.",
+    };
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSkill = resolve;
+      }),
+    );
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "/repo-build-pr orphan after deletion");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+    let laterDispatchRan = false;
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    await laterReservation.run(async () => {
+      laterDispatchRan = true;
+    });
+    expect(laterDispatchRan).toBe(true);
+
+    await act(async () => {
+      resolveSkill(skillDocument);
+    });
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method, params]) =>
+            method === "prompt.submit" && params?.text?.includes("orphan after deletion"),
+        ),
+      ).toBe(false),
+    );
+    expect(screen.queryByText("orphan after deletion")).toBeNull();
+  });
+
+  it("releases a pending steer dispatch reservation when a session is deleted", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await user.type(composer, "steer before deletion");
+    await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+        session_id: "session-1",
+        text: "steer before deletion",
+      }),
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+    let laterDispatchRan = false;
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    await laterReservation.run(async () => {
+      laterDispatchRan = true;
+    });
+    expect(laterDispatchRan).toBe(true);
+    expect(screen.queryByText("steer before deletion")).toBeNull();
+  });
+
+  it("invalidates a full composer preparation when its session is deleted", async () => {
+    const user = userEvent.setup();
+    let resolveSkill: (document: { name: string; relativePath: string; content: string }) => void =
+      () => undefined;
+    const skillDocument = {
+      name: "repo-build-pr",
+      relativePath: "repo-build-pr/SKILL.md",
+      content: "# Repo build PR\n\nReview the request.",
+    };
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSkill = resolve;
+      }),
+    );
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/repo-build-pr pending deletion");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+    let laterDispatchRan = false;
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    await laterReservation.run(async () => {
+      laterDispatchRan = true;
+    });
+    expect(laterDispatchRan).toBe(true);
+
+    await act(async () => {
+      resolveSkill(skillDocument);
+    });
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method, params]) =>
+            method === "prompt.submit" && params?.text?.includes("pending deletion"),
+        ),
+      ).toBe(false),
+    );
+    expect(screen.queryByText("pending deletion")).toBeNull();
+  });
+
+  it("keeps another session's media consent open when deleting a preparing session", async () => {
+    const user = userEvent.setup();
+    let resolveSkill: (document: { name: string; relativePath: string; content: string }) => void =
+      () => undefined;
+    const skillDocument = {
+      name: "repo-build-pr",
+      relativePath: "repo-build-pr/SKILL.md",
+      content: "# Repo build PR\n\nReview the attachment.",
+    };
+    const secondSession = {
+      ...existingSession,
+      id: "session-2",
+      title: "Other session",
+      preview: "Other preview",
+    };
+    mocks.listHermesSessions.mockResolvedValue([existingSession, secondSession]);
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSkill = resolve;
+      }),
+    );
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(true);
+    const view = render(<AgentWorkspace initialSession={existingSession} />);
+
+    let composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "/repo-build-pr preparing in session A");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledTimes(1));
+
+    view.rerender(<AgentWorkspace initialSession={secondSession} />);
+    composer = await screen.findByRole("textbox", { name: "Message June" });
+    await waitFor(() => expect(composer).toHaveTextContent(""));
+    await user.type(composer, "/image explicit prompt in session B");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    const dialog = await screen.findByRole("dialog", { name: "Safe mode is on" });
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
+          detail: { sessionId: "session-1" },
+        }),
+      );
+    });
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Safe mode is on" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    await act(async () => {
+      resolveSkill(skillDocument);
+    });
   });
 
   it("sends a queued file follow-up after the current turn completes", async () => {
@@ -1471,6 +1845,129 @@ describe("AgentWorkspace", () => {
         text: expect.stringContaining("review the brief after that"),
       }),
     );
+  });
+
+  it("keeps a later steer fallback behind an earlier attachment follow-up", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+    mocks.eventHandlers.get("tauri://drag-drop")?.({
+      payload: { paths: ["/Users/alex/Desktop/brief.pdf"] },
+    });
+    await user.type(composer, "review the brief first");
+    await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    await user.type(composer, "then check the API boundary");
+    await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: expect.stringMatching(/review the brief first[\s\S]*uploads\/brief\.pdf/),
+      }),
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-1",
+      text: "then check the API boundary",
+    });
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "then check the API boundary",
+      }),
+    );
+  });
+
+  it("advances the remaining follow-up queue when the submitted item completes immediately", async () => {
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { text?: string }) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit" && params?.text?.includes("first queued message")) {
+        for (const handler of [...mocks.gatewayEventHandlers]) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-1",
+            payload: { status: "success" },
+          });
+        }
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "start the audit");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "start the audit",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listen).toHaveBeenCalledWith("tauri://drag-drop", expect.any(Function)),
+    );
+
+    for (const [path, message] of [
+      ["/Users/alex/Desktop/first.pdf", "first queued message"],
+      ["/Users/alex/Desktop/second.pdf", "second queued message"],
+    ]) {
+      mocks.eventHandlers.get("tauri://drag-drop")?.({ payload: { paths: [path] } });
+      expect(await screen.findByText(path.split("/").at(-1) ?? path)).toBeInTheDocument();
+      await user.type(composer, message);
+      await user.click(screen.getByRole("button", { name: "Queue next message" }));
+    }
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: expect.stringContaining("second queued message"),
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Up next" })).toBeNull());
   });
 
   it("attaches a queued image only after the current turn completes", async () => {
@@ -3409,20 +3906,16 @@ describe("AgentWorkspace", () => {
     await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
   });
 
-  it("shows the existing chat model as read-only status", async () => {
+  it("opens the model picker from an existing chat", async () => {
     const user = userEvent.setup();
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    const currentModel = await findCurrentModelLabel("GLM 5.2");
-    expect(currentModel).toHaveClass("agent-composer-model-label");
-    expect(screen.queryByRole("button", { name: "Model: GLM 5.2" })).not.toBeInTheDocument();
-
-    await user.click(currentModel);
-    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+    expect(await screen.findByRole("dialog", { name: "Choose text model" })).toBeInTheDocument();
   });
 
-  it("blocks /model changes in an existing chat", async () => {
+  it("queues /model in an existing chat and applies it before the next message", async () => {
     const catalog = [
       {
         provider: "venice",
@@ -3469,18 +3962,96 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     expect(mocks.setVeniceModel).not.toHaveBeenCalled();
-    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("command.dispatch", expect.anything());
-    expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
-      sessionId: "session-1",
-      model: "anonymous-only",
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("config.set", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+    expect(
+      await screen.findByText("Model changed. It will be used for your next message."),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Model: Anonymous Only" }),
+    ).toBeInTheDocument();
+
+    await user.type(composer, "Continue with the private option");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+        session_id: "runtime-session-1",
+        key: "model",
+        value: "__june_remote_generation__:anonymous-only --session",
+        confirm_expensive_model: true,
+      }),
+    );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-1",
+      text: "Continue with the private option",
     });
-    expect(await screen.findByText("Start a new session to change models.")).toBeInTheDocument();
-    expect(await findCurrentModelLabel("GLM 5.2")).toBeInTheDocument();
-    expect(screen.queryByText("Anonymous mode")).not.toBeInTheDocument();
-    expect(await screen.findByText("Private mode")).toBeInTheDocument();
+    const methods = mocks.gatewayRequest.mock.calls.map(([method]) => method);
+    expect(methods.indexOf("config.set")).toBeLessThan(methods.indexOf("prompt.submit"));
   });
 
-  it("shows each existing chat's stored model as read-only status", async () => {
+  it("keeps a cold /model lookup scoped to the session where Send was pressed", async () => {
+    const catalog = [
+      {
+        provider: "venice",
+        id: "zai-org-glm-5-2",
+        name: "GLM 5.2",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+      {
+        provider: "venice",
+        id: "kimi-k2-6",
+        name: "Kimi K2.6",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      },
+    ];
+    let finishCatalogLoad: ((value: Record<string, unknown>) => void) | undefined;
+    const catalogLoad = new Promise<Record<string, unknown>>((resolve) => {
+      finishCatalogLoad = resolve;
+    });
+    mocks.listVeniceModels.mockReturnValue(catalogLoad);
+    const user = userEvent.setup();
+    const { rerender } = render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/model kimi");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(mocks.listVeniceModels).toHaveBeenCalled());
+
+    rerender(
+      <AgentWorkspace
+        initialSession={{
+          ...existingSession,
+          id: "session-2",
+          title: "Other session",
+          model: "zai-org-glm-5-2",
+        }}
+      />,
+    );
+    await act(async () => {
+      finishCatalogLoad?.({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: catalog,
+      });
+      await catalogLoad;
+    });
+
+    await waitFor(() =>
+      expect(readSessionModelSelections()["session-1"]?.selection).toEqual({
+        modelId: "kimi-k2-6",
+      }),
+    );
+    expect(readSessionModelSelections()["session-2"]).toBeUndefined();
+  });
+
+  it("shows each existing chat's stored model as its picker selection", async () => {
     const catalog = [
       {
         provider: "venice",
@@ -3533,7 +4104,7 @@ describe("AgentWorkspace", () => {
     rerender(<AgentWorkspace initialSession={secondSession} />);
 
     expect(await findCurrentModelLabel("Kimi K2.6")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Model: Kimi K2.6" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Model: Kimi K2.6" })).toBeInTheDocument();
   });
 
   it("keeps an existing chat model when generation model settings change", async () => {
@@ -7736,7 +8307,7 @@ describe("AgentWorkspace", () => {
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
         title: "Summarize Current Page",
         cols: 96,
-        model: "zai-org-glm-5-2",
+        model: "__june_remote_generation__:zai-org-glm-5-2",
       }),
     );
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -8097,6 +8668,56 @@ describe("AgentWorkspace", () => {
     expect(textbox).toHaveTextContent(
       "/repo-build-pr implement issue JUN-46 and keep this draft edit",
     );
+  });
+
+  it("reserves the session dispatch order before skill preparation finishes", async () => {
+    const user = userEvent.setup();
+    let resolveSkillDocument: (document: {
+      name: string;
+      relativePath: string;
+      content: string;
+    }) => void = () => undefined;
+    mocks.hermesBridgeSkills.mockResolvedValue([
+      {
+        name: "repo-build-pr",
+        description: "Build a branch and open a PR",
+        enabled: true,
+      },
+    ]);
+    mocks.getHermesBridgeSkill.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSkillDocument = resolve;
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "/repo-build-pr preserve send order");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(mocks.getHermesBridgeSkill).toHaveBeenCalledWith("repo-build-pr"));
+
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    expect(laterReservation.queuedBehindPrior).toBe(true);
+    const laterDispatch = vi.fn(async () => undefined);
+    const later = laterReservation.run(laterDispatch);
+    await Promise.resolve();
+    expect(laterDispatch).not.toHaveBeenCalled();
+
+    resolveSkillDocument({
+      name: "repo-build-pr",
+      relativePath: "repo-build-pr/SKILL.md",
+      content: "# Repo build PR\n\nOpen a draft PR.",
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ text: expect.stringContaining("preserve send order") }),
+      ),
+    );
+    await expect(later).resolves.toBeUndefined();
+    expect(laterDispatch).toHaveBeenCalledOnce();
   });
 
   it("keeps the draft and suggests matches for an unknown skill command", async () => {
@@ -9045,9 +9666,7 @@ describe("AgentWorkspace", () => {
     );
     expect(screen.getByRole("button", { name: "Proceed" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit message" })).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Switch to Long context" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch to Long context" })).toBeInTheDocument();
     expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
       false,
     );
@@ -9713,6 +10332,25 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
     expect(mocks.generateImage).not.toHaveBeenCalled();
     expect(await screen.findByRole("textbox")).toHaveTextContent("/image a red bicycle");
+  });
+
+  it("releases the session FIFO when unmounting during media consent", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
+    mocks.imagePromptMayBeExplicit.mockResolvedValue(true);
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+    await screen.findByRole("dialog", { name: "Safe mode is on" });
+
+    view.unmount();
+    const laterReservation = reserveHermesSessionDispatch("session-1");
+    const laterDispatch = vi.fn(async () => undefined);
+    await laterReservation.run(laterDispatch);
+    expect(laterDispatch).toHaveBeenCalledOnce();
   });
 
   it("skips an explicit /video generation when the user keeps safe mode on", async () => {
@@ -10531,12 +11169,12 @@ describe("AgentWorkspace", () => {
     await screen.findByRole("img", { name: "a red bicycle" });
     expect(mocks.gatewayRequest).toHaveBeenCalledWith(
       "session.create",
-      expect.objectContaining({ model: "kimi-k2-6" }),
+      expect.objectContaining({ model: "__june_remote_generation__:kimi-k2-6" }),
     );
     expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "session-2",
-        model: "kimi-k2-6",
+        model: "__june_remote_generation__:kimi-k2-6",
       }),
     );
   });
@@ -11497,7 +12135,7 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
     // The rejected prompt never entered the session: no optimistic bubble
     // lingers in the transcript (it would render below later persisted
-    // messages as a send the agent ignored), and the draft comes back.
+    // messages as a send June ignored), and the draft comes back.
     expect(document.querySelector(".agent-user-turn")).toBeNull();
     expect(composer).toHaveTextContent("are the subagents using my CLI?");
     // The previous turn is still running, so the live listener stays attached.
@@ -11927,11 +12565,7 @@ describe("AgentWorkspace", () => {
     expect(onOpenProjects).toHaveBeenCalled();
   });
 
-  // Existing sessions are model-locked. The composer picker only changes the
-  // default before session creation; once a thread exists, the toolbar shows a
-  // passive current-model label and `/model` reports that a new session is
-  // required.
-  describe("session model locking", () => {
+  describe("session model switching", () => {
     const toolCapableCatalog = [
       {
         provider: "venice",
@@ -11953,7 +12587,7 @@ describe("AgentWorkspace", () => {
       },
     ];
 
-    it("renders the open session model as passive status", async () => {
+    it("keeps the open session model picker interactive", async () => {
       mocks.listVeniceModels.mockResolvedValue({
         mode: "generation",
         modelType: "text",
@@ -11964,15 +12598,11 @@ describe("AgentWorkspace", () => {
 
       render(<AgentWorkspace initialSession={existingSession} />);
 
-      const currentModel = await findCurrentModelLabel("GLM 5.2");
-      expect(currentModel).toHaveClass("agent-composer-model-label");
-      expect(screen.queryByRole("button", { name: "Model: GLM 5.2" })).not.toBeInTheDocument();
-
-      await user.click(currentModel);
-      expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+      expect(await screen.findByRole("dialog", { name: "Choose text model" })).toBeInTheDocument();
     });
 
-    it("does not dispatch /model from an existing session slash command", async () => {
+    it("does not switch the active agent run and applies the latest choice before the next prompt", async () => {
       mocks.listVeniceModels.mockResolvedValue({
         mode: "generation",
         modelType: "text",
@@ -11986,20 +12616,468 @@ describe("AgentWorkspace", () => {
       const composer = await screen.findByRole("textbox", {
         name: "Message June",
       });
-      await user.type(composer, "/model kimi");
+      await user.type(composer, "Work through the current response");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "Work through the current response",
+        }),
+      );
+      mocks.gatewayRequest.mockClear();
+
+      await user.click(screen.getByRole("button", { name: "Model: GLM 5.2" }));
+      const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
+      const panel = await screen.findByRole("group", { name: "All text models" });
+      await user.click(within(panel).getByRole("option", { name: /Kimi K2\.6/ }));
+
+      expect(await screen.findByRole("button", { name: "Model: Kimi K2.6" })).toBeInTheDocument();
+      expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("config.set", expect.anything());
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.interrupt", expect.anything());
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "message.complete",
+            session_id: "runtime-session-1",
+            payload: { text: "Current response finished." },
+          });
+        }
+      });
+
+      await user.type(composer, "Start the next response");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+          session_id: "runtime-session-1",
+          key: "model",
+          value: "__june_remote_generation__:kimi-k2-6 --session",
+          confirm_expensive_model: true,
+        }),
+      );
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Start the next response",
+      });
+      const methods = mocks.gatewayRequest.mock.calls.map(([method]) => method);
+      expect(methods.indexOf("config.set")).toBeLessThan(methods.lastIndexOf("prompt.submit"));
+    });
+
+    it("keeps a steer fallback on its Send-time model and leaves a later choice pending", async () => {
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Start the active agent run");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "Start the active agent run",
+        }),
+      );
+      mocks.gatewayRequest.mockClear();
+
+      await user.click(screen.getByRole("button", { name: "Model: GLM 5.2" }));
+      let dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
+      let panel = await screen.findByRole("group", { name: "All text models" });
+      await user.click(within(panel).getByRole("option", { name: /Kimi K2\.6/ }));
+
+      await user.type(composer, "Use Kimi if this becomes a follow-up");
+      await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+          session_id: "session-1",
+          text: "Use Kimi if this becomes a follow-up",
+        }),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Model: Kimi K2.6" }));
+      dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
+      panel = await screen.findByRole("group", { name: "All text models" });
+      await user.click(within(panel).getByRole("option", { name: /GLM 5\.2/ }));
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-1",
+            payload: { status: "success" },
+          });
+        }
+      });
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+          session_id: "runtime-session-1",
+          key: "model",
+          value: "__june_remote_generation__:kimi-k2-6 --session",
+          confirm_expensive_model: true,
+        }),
+      );
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Use Kimi if this becomes a follow-up",
+      });
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-1",
+            payload: { status: "success" },
+          });
+        }
+      });
+      await user.type(composer, "Now use the later GLM choice");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() => {
+        const modelValues = mocks.gatewayRequest.mock.calls
+          .filter(([method]) => method === "config.set")
+          .map(([, params]) => params?.value);
+        expect(modelValues).toEqual([
+          "__june_remote_generation__:kimi-k2-6 --session",
+          "__june_remote_generation__:zai-org-glm-5-2 --session",
+        ]);
+      });
+    });
+
+    it("keeps multiple steer fallbacks on their individual Send-time models", async () => {
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Start the active agent run");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "Start the active agent run",
+        }),
+      );
+      mocks.gatewayRequest.mockClear();
+
+      await user.click(screen.getByRole("button", { name: "Model: GLM 5.2" }));
+      let dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
+      let panel = await screen.findByRole("group", { name: "All text models" });
+      await user.click(within(panel).getByRole("option", { name: /Kimi K2\.6/ }));
+      await user.type(composer, "First fallback uses Kimi");
+      await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+
+      await user.click(screen.getByRole("button", { name: "Model: Kimi K2.6" }));
+      dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
+      panel = await screen.findByRole("group", { name: "All text models" });
+      await user.click(within(panel).getByRole("option", { name: /GLM 5\.2/ }));
+      await user.type(composer, "Second fallback uses GLM");
+      await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+      await waitFor(() =>
+        expect(
+          mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.steer"),
+        ).toHaveLength(2),
+      );
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-1",
+            payload: { status: "success" },
+          });
+        }
+      });
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "First fallback uses Kimi",
+        }),
+      );
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Second fallback uses GLM",
+      });
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-1",
+            payload: { status: "success" },
+          });
+        }
+      });
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "Second fallback uses GLM",
+        }),
+      );
+      const modelValues = mocks.gatewayRequest.mock.calls
+        .filter(([method]) => method === "config.set")
+        .map(([, params]) => params?.value);
+      expect(modelValues).toEqual([
+        "__june_remote_generation__:kimi-k2-6 --session",
+        "__june_remote_generation__:zai-org-glm-5-2 --session",
+      ]);
+    });
+
+    it("keeps a failed switch pending and never submits on the previous model", async () => {
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+      const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
+      const panel = await screen.findByRole("group", { name: "All text models" });
+      await user.click(within(panel).getByRole("option", { name: /Kimi K2\.6/ }));
+
+      let rejectSwitch = true;
+      mocks.gatewayRequest.mockImplementation((method: string) => {
+        if (method === "session.resume") {
+          return Promise.resolve({ session_id: "runtime-session-1" });
+        }
+        if (method === "config.set" && rejectSwitch) {
+          return Promise.reject(new Error("Model switch unavailable"));
+        }
+        return Promise.resolve({});
+      });
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Use the queued model");
       await user.click(screen.getByRole("button", { name: "Send message" }));
 
-      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("command.dispatch", expect.anything());
-      expect(mocks.setVeniceModel).not.toHaveBeenCalled();
-      expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
-        sessionId: "session-1",
-        model: "kimi-k2-6",
-      });
-      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
-        false,
+      expect(
+        await screen.findByText("Model switch unavailable", { selector: "p" }),
+      ).toBeInTheDocument();
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+      expect(composer).toHaveTextContent("Use the queued model");
+
+      rejectSwitch = false;
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "Use the queued model",
+        }),
       );
-      expect(composer.textContent).toBe("");
-      expect(await screen.findByText("Start a new session to change models.")).toBeInTheDocument();
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "config.set"),
+      ).toHaveLength(2);
+    });
+
+    it("keeps a newer draft while a delayed model switch failure remains retryable", async () => {
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+      const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
+      const panel = await screen.findByRole("group", { name: "All text models" });
+      await user.click(within(panel).getByRole("option", { name: /Kimi K2\.6/ }));
+
+      let configAttempts = 0;
+      let rejectDelayedSwitch: (reason?: unknown) => void = () => {};
+      const delayedSwitch = new Promise<never>((_resolve, reject) => {
+        rejectDelayedSwitch = reject;
+      });
+      mocks.gatewayRequest.mockImplementation((method: string) => {
+        if (method === "session.resume") {
+          return Promise.resolve({ session_id: "runtime-session-1" });
+        }
+        if (method === "config.set") {
+          configAttempts += 1;
+          if (configAttempts === 1) {
+            return Promise.reject(new HermesGatewayError("session busy", 4009));
+          }
+          if (configAttempts === 2) return delayedSwitch;
+        }
+        return Promise.resolve({});
+      });
+
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Send with Kimi");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() => expect(configAttempts).toBe(2));
+
+      await user.type(composer, "Keep this newer draft");
+      await act(async () => {
+        rejectDelayedSwitch(new Error("Model switch unavailable"));
+      });
+
+      expect(
+        await screen.findByText("Model switch unavailable", { selector: "p" }),
+      ).toBeInTheDocument();
+      expect(composer).toHaveTextContent("Keep this newer draft");
+      expect(screen.getByText("Send with Kimi")).toBeInTheDocument();
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+      await user.click(screen.getByRole("button", { name: "Retry queued message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "Send with Kimi",
+        }),
+      );
+      expect(composer).toHaveTextContent("Keep this newer draft");
+    });
+
+    it("keeps a failed new-session message retryable without replacing a newer draft", async () => {
+      window.sessionStorage.setItem(
+        AGENT_NEW_SESSION_PENDING_KEY,
+        JSON.stringify({ createdAt: Date.now() }),
+      );
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      let rejectFirstCreate: (reason?: unknown) => void = () => undefined;
+      const firstCreate = new Promise<never>((_resolve, reject) => {
+        rejectFirstCreate = reject;
+      });
+      let createAttempts = 0;
+      mocks.gatewayRequest.mockImplementation((method: string) => {
+        if (method === "session.create") {
+          createAttempts += 1;
+          if (createAttempts === 1) return firstCreate;
+          return Promise.resolve({
+            session_id: "runtime-session-2",
+            stored_session_id: "session-2",
+          });
+        }
+        if (method === "session.resume") {
+          return Promise.resolve({ session_id: "runtime-session-2" });
+        }
+        return Promise.resolve({});
+      });
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      let composer = await screen.findByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Original new-session message");
+      await user.click(screen.getByRole("button", { name: "Start session" }));
+      await waitFor(() => expect(createAttempts).toBe(1));
+
+      composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Newer draft stays here");
+      await act(async () => {
+        rejectFirstCreate(new Error("Session creation unavailable"));
+      });
+
+      expect(await screen.findByText("Original new-session message")).toBeInTheDocument();
+      expect(screen.getByRole("region", { name: "Up next" })).toBeInTheDocument();
+      composer = screen.getByRole("textbox", { name: "Message June" });
+      expect(composer).toHaveTextContent("Newer draft stays here");
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+      await user.click(screen.getByRole("button", { name: "Retry queued message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-2",
+          text: "Original new-session message",
+        }),
+      );
+      expect(composer).toHaveTextContent("Newer draft stays here");
+    });
+
+    it("captures an Auto preference in the session model without changing the global setting", async () => {
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+      const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(
+        within(dialog).getByRole("switch", { name: "Choose the model automatically" }),
+      );
+      expect(dialog).toBeInTheDocument();
+      await user.click(within(dialog).getByRole("button", { name: /Preference/ }));
+      await user.click(await screen.findByRole("menuitemradio", { name: /Lower cost/ }));
+
+      expect(mocks.setCostQuality).not.toHaveBeenCalled();
+      expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Use lower-cost Auto next");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+          session_id: "runtime-session-1",
+          key: "model",
+          value: "__june_auto_generation__:20 --session",
+          confirm_expensive_model: true,
+        }),
+      );
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Use lower-cost Auto next",
+      });
+    });
+
+    it("can turn Auto off for a session before an empty model catalog loads", async () => {
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "open-software/auto",
+        models: [],
+      });
+      const user = userEvent.setup();
+      render(
+        <AgentWorkspace
+          initialSession={{ ...existingSession, model: "__june_auto_generation__:100" }}
+        />,
+      );
+
+      await user.click(await screen.findByRole("button", { name: "Model: Auto (Higher)" }));
+      const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      const autoSwitch = within(dialog).getByRole("switch", {
+        name: "Choose the model automatically",
+      });
+      expect(autoSwitch).toBeChecked();
+      await user.click(autoSwitch);
+
+      expect(dialog).toBeInTheDocument();
+      expect(mocks.setCostQuality).not.toHaveBeenCalled();
+      expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Use the factory fallback next");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+          session_id: "runtime-session-1",
+          key: "model",
+          value: "__june_remote_generation__:zai-org-glm-5-2 --session",
+          confirm_expensive_model: true,
+        }),
+      );
     });
 
     it("changes only the default when no session is active and does not dispatch", async () => {
@@ -12039,7 +13117,224 @@ describe("AgentWorkspace", () => {
       expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("command.dispatch", expect.anything());
     });
 
-    it("keeps tool-incapable models out of the picker for the agent", async () => {
+    it("uses a new-session picker choice even while its settings save is still pending", async () => {
+      window.sessionStorage.setItem(
+        AGENT_NEW_SESSION_PENDING_KEY,
+        JSON.stringify({ createdAt: Date.now() }),
+      );
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: toolCapableCatalog,
+      });
+      let finishModelSave: (() => void) | undefined;
+      const pendingModelSave = new Promise<void>((resolve) => {
+        finishModelSave = resolve;
+      });
+      mocks.setVeniceModel.mockReturnValue(pendingModelSave);
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+      const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
+      const panel = await screen.findByRole("group", { name: "All text models" });
+      await user.click(within(panel).getByRole("option", { name: /Kimi K2\.6/ }));
+      expect(await screen.findByRole("button", { name: "Model: Kimi K2.6" })).toBeInTheDocument();
+      expect(finishModelSave).toBeDefined();
+
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Start before settings finish");
+      await user.click(screen.getByRole("button", { name: "Start session" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+          "session.create",
+          expect.objectContaining({ model: "__june_remote_generation__:kimi-k2-6" }),
+        ),
+      );
+      await act(async () => finishModelSave?.());
+    });
+
+    it("uses a newly chosen Auto preference before its settings save finishes", async () => {
+      window.sessionStorage.setItem(
+        AGENT_NEW_SESSION_PENDING_KEY,
+        JSON.stringify({ createdAt: Date.now() }),
+      );
+      mocks.providerModelSettings.mockResolvedValue({
+        settings: {
+          transcriptionProvider: "venice",
+          transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+          generationModel: "open-software/auto",
+          costQuality: 100,
+        },
+      });
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "open-software/auto",
+        models: [
+          {
+            provider: "open-software",
+            id: "open-software/auto",
+            name: "Automatic private model",
+            modelType: "text",
+            privacy: "private",
+            traits: [],
+            capabilities: ["functionCalling"],
+          },
+        ],
+      });
+      let finishCostQualitySave: (() => void) | undefined;
+      mocks.setCostQuality.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finishCostQualitySave = () =>
+              resolve({
+                transcriptionProvider: "venice",
+                transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+                generationModel: "open-software/auto",
+                costQuality: 20,
+              });
+          }),
+      );
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await user.click(await screen.findByRole("button", { name: "Model: Auto (Higher)" }));
+      const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: /Preference/ }));
+      await user.click(await screen.findByRole("menuitemradio", { name: /Lower cost/ }));
+      expect(mocks.setCostQuality).toHaveBeenCalledWith(20);
+      expect(finishCostQualitySave).toBeDefined();
+      await user.type(composer, "Start with this Auto preference");
+      await user.click(screen.getByRole("button", { name: "Start session" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+          "session.create",
+          expect.objectContaining({ model: "__june_auto_generation__:20" }),
+        ),
+      );
+      await act(async () => finishCostQualitySave?.());
+    });
+
+    it.each([
+      { command: "/image a red bicycle", resultRole: "img" as const, resultName: "a red bicycle" },
+      {
+        command: "/video a red bicycle",
+        resultRole: "button" as const,
+        resultName: "Download video",
+      },
+    ])("keeps a model picked after $command creates its session pending for the next text prompt", async ({
+      command,
+      resultRole,
+      resultName,
+    }) => {
+      window.sessionStorage.setItem(
+        AGENT_NEW_SESSION_PENDING_KEY,
+        JSON.stringify({ createdAt: Date.now() }),
+      );
+      let selectedModel = "zai-org-glm-5-2";
+      mocks.providerModelSettings.mockImplementation(async () => ({
+        settings: {
+          transcriptionProvider: "venice",
+          transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+          generationProvider: "venice",
+          generationModel: selectedModel,
+          remoteGenerationModel: selectedModel,
+          imageModel: "venice-sd35",
+          videoModel: "wan-2.2-a14b-text-to-video",
+          imageSafeMode: false,
+          imageSafeModePromptDismissed: false,
+        },
+      }));
+      mocks.listVeniceModels.mockImplementation(async () => ({
+        mode: "generation",
+        modelType: "text",
+        selectedModel,
+        models: toolCapableCatalog.map((model) => ({
+          ...model,
+          capabilities: [...model.capabilities, "supportsVision"],
+        })),
+      }));
+      mocks.setVeniceModel.mockImplementation(async (_mode: string, modelId: string) => {
+        selectedModel = modelId;
+      });
+      if (resultRole === "img") {
+        mockImageGenerationSuccess();
+      } else {
+        mockVideoGenerationSuccess();
+      }
+
+      let releaseEnsure: (() => void) | undefined;
+      const ensured = new Promise<Record<string, never>>((resolve) => {
+        releaseEnsure = () => resolve({});
+      });
+      mocks.ensureHermesBridgeSession.mockImplementation(async ({ sessionId }) => {
+        if (sessionId === "session-2") return ensured;
+        return {};
+      });
+
+      const user = userEvent.setup();
+      render(<AgentWorkspace />);
+
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await screen.findByRole("button", { name: "Model: GLM 5.2" });
+      await user.type(composer, command);
+      fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+      // The media agent run owns the model that was selected at Send, even though
+      // session persistence is deliberately held open below.
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+          "session.create",
+          expect.objectContaining({
+            model: "__june_remote_generation__:zai-org-glm-5-2",
+          }),
+        ),
+      );
+      await waitFor(() => expect(releaseEnsure).toBeDefined());
+
+      // This happens after session.create, but before skipPrompt selects and
+      // returns the stored session. It must become that session's pending
+      // next-run model rather than rewriting the media agent run.
+      await user.click(screen.getByRole("button", { name: "Model: GLM 5.2" }));
+      const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(dialog).getByRole("button", { name: "All models" }));
+      const panel = await screen.findByRole("group", { name: "All text models" });
+      await user.click(within(panel).getByRole("option", { name: /Kimi K2\.6/ }));
+      expect(await screen.findByRole("button", { name: "Model: Kimi K2.6" })).toBeInTheDocument();
+
+      await act(async () => {
+        releaseEnsure?.();
+        await ensured;
+      });
+      await screen.findByRole(resultRole, { name: resultName });
+
+      await user.type(screen.getByRole("textbox", { name: "Message June" }), "Use Kimi now");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+          session_id: "runtime-session-2",
+          key: "model",
+          value: "__june_remote_generation__:kimi-k2-6 --session",
+          confirm_expensive_model: true,
+        }),
+      );
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({
+          session_id: "runtime-session-2",
+          text: expect.stringContaining("Use Kimi now"),
+        }),
+      );
+    });
+
+    it("keeps tool-incapable models out of June's picker", async () => {
       mocks.listVeniceModels.mockResolvedValue({
         mode: "generation",
         modelType: "text",
@@ -12219,39 +13514,101 @@ describe("AgentWorkspace", () => {
       ).toBeInTheDocument();
     });
 
-    it("does not enable local generation from an existing session", async () => {
+    it("queues local generation session-locally without changing the global provider", async () => {
       mockRemoteWithLocalConfigured();
       mocks.setLocalGenerationEnabled.mockResolvedValue(undefined);
       const user = userEvent.setup();
       render(<AgentWorkspace initialSession={existingSession} />);
 
-      const currentModel = await findCurrentModelLabel("GLM 5.2");
-      await user.click(currentModel);
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+      const panel = await openAllModels(user);
+      await user.click(within(panel).getByRole("option", { name: /Local: llama3\.1:8b/ }));
 
-      expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
+      expect(
+        await screen.findByRole("button", { name: "Model: Local: llama3.1:8b" }),
+      ).toBeInTheDocument();
       expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
-      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("command.dispatch", expect.anything());
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("config.set", expect.anything());
+
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Use the local model next");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+          session_id: "runtime-session-1",
+          key: "model",
+          value: "__june_local_generation__:llama3.1%3A8b --session",
+          confirm_expensive_model: true,
+        }),
+      );
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Use the local model next",
+      });
+      const methods = mocks.gatewayRequest.mock.calls.map(([method]) => method);
+      expect(methods.indexOf("config.set")).toBeLessThan(methods.indexOf("prompt.submit"));
+      expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
     });
 
-    it("shows an open local session model as read-only status", async () => {
+    it("keeps an explicit remote model remote when its raw id matches the local model", async () => {
+      mockRemoteWithLocalConfigured();
+      const collidingRemoteModel = {
+        provider: "venice",
+        id: localGeneration.modelId,
+        name: "Remote Llama",
+        modelType: "text",
+        privacy: "private",
+        traits: [],
+        capabilities: ["functionCalling"],
+      };
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: [...remoteCatalog, collidingRemoteModel],
+      });
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+
+      await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+      const panel = await openAllModels(user);
+      await user.click(within(panel).getByRole("option", { name: /Remote Llama/ }));
+
+      expect(
+        await screen.findByRole("button", { name: "Model: Remote Llama" }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Model: Local: llama3.1:8b" })).toBeNull();
+
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Keep this route remote");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+          session_id: "runtime-session-1",
+          key: "model",
+          value: "__june_remote_generation__:llama3.1%3A8b --session",
+          confirm_expensive_model: true,
+        }),
+      );
+      expect(mocks.setLocalGenerationEnabled).not.toHaveBeenCalled();
+      expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+    });
+
+    it("keeps an open local session model switchable", async () => {
       mockLocalActive();
       mocks.setVeniceModel.mockResolvedValue(undefined);
       const user = userEvent.setup();
       render(<AgentWorkspace initialSession={existingSession} />);
 
-      const currentModel = await findCurrentModelLabel("Local: llama3.1:8b");
-      expect(currentModel).toHaveClass("agent-composer-model-label");
-      expect(
-        screen.queryByRole("button", { name: "Model: Local: llama3.1:8b" }),
-      ).not.toBeInTheDocument();
-
-      await user.click(currentModel);
-      expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
+      await user.click(await screen.findByRole("button", { name: "Model: Local: llama3.1:8b" }));
+      expect(await screen.findByRole("dialog", { name: "Choose text model" })).toBeInTheDocument();
       expect(mocks.setVeniceModel).not.toHaveBeenCalled();
-      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("command.dispatch", expect.anything());
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("config.set", expect.anything());
     });
 
-    it("sends the raw local model id to Hermes when creating a session in local mode", async () => {
+    it("preserves local provenance when creating a session in local mode", async () => {
       mockLocalActive();
       markNewSessionPending();
       const user = userEvent.setup();
@@ -12267,26 +13624,21 @@ describe("AgentWorkspace", () => {
       await user.type(composer, "hello local");
       await user.click(screen.getByRole("button", { name: "Start session" }));
 
-      // Hermes only knows the raw id (the provider proxy advertises it on
-      // /v1/models); the synthetic catalog id must never cross this boundary,
-      // or the session would persist an id no provider accepts once local
-      // mode is turned off.
+      // The tagged id prevents a same-named remote model from stealing this
+      // route. June's on-device proxy unwraps it before calling the endpoint.
       await waitFor(() =>
         expect(mocks.gatewayRequest).toHaveBeenCalledWith(
           "session.create",
-          expect.objectContaining({ model: "llama3.1:8b" }),
+          expect.objectContaining({
+            model: "__june_local_generation__:llama3.1%3A8b",
+          }),
         ),
       );
-      const syntheticModelCalls = mocks.gatewayRequest.mock.calls.filter(
-        ([method, params]) =>
-          method === "session.create" &&
-          typeof (params as { model?: string })?.model === "string" &&
-          (params as { model: string }).model.startsWith("__june_local_generation__:"),
-      );
-      expect(syntheticModelCalls).toEqual([]);
       await waitFor(() =>
         expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith(
-          expect.objectContaining({ model: "llama3.1:8b" }),
+          expect.objectContaining({
+            model: "__june_local_generation__:llama3.1%3A8b",
+          }),
         ),
       );
     });

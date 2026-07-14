@@ -42,12 +42,12 @@ export type DispatchCommandParams = {
   args?: Record<string, unknown>;
 };
 export type SwitchActiveSessionModelParams = {
-  /** The running session's write-access mode. Carried so callers route the
-   * dispatch through the gateway that owns this session's process; the seam
-   * itself does not open gateways. */
+  /** The session's write-access mode. Carried so callers route the request
+   * through the gateway that owns this session's process; the seam itself does
+   * not open gateways. */
   mode: HermesMode;
   sessionId: string;
-  /** The provider model id to switch to (e.g. a Venice model id). */
+  /** The provider model id to use for this session (e.g. a Venice model id). */
   model: string;
 };
 export type RespondToSudoParams = {
@@ -83,11 +83,10 @@ export type HermesMethods = {
   compressSession(params: CompressSessionParams): Promise<unknown>;
   getSessionUsage(params: SessionUsageParams): Promise<unknown>;
   dispatchCommand(params: DispatchCommandParams): Promise<unknown>;
-  /** Switches the model on a LIVE session by dispatching the `/model <model>`
-   * slash command (built on {@link dispatchCommand}). The gateway's result is
-   * the source of truth that the switch took — there is no separate confirming
-   * event June can rely on (raw `model.switch`/`model.changed` frames classify
-   * as `unsupported`). */
+  /** Switches the model on an idle live session with session-scoped
+   * `config.set`. Hermes rejects this mutation with 4009 while the session is
+   * running, so callers must defer it until immediately before the next prompt.
+   * The gateway result is the source of truth that the switch took. */
   switchActiveSessionModel(params: SwitchActiveSessionModelParams): Promise<unknown>;
   respondToSudo(params: RespondToSudoParams): Promise<unknown>;
   respondToSecret(params: RespondToSecretParams): Promise<unknown>;
@@ -128,9 +127,15 @@ export function createHermesMethods(client: HermesRequestLike): HermesMethods {
     switchActiveSessionModel({ sessionId, model }) {
       // The model is selected against the gateway that already owns this
       // session, so `mode` only steers gateway routing at the call site and is
-      // not part of the wire payload. Built on dispatchCommand so the
-      // command.dispatch shape stays defined in exactly one place.
-      return this.dispatchCommand({ sessionId, command: `/model ${model}` });
+      // not part of the wire payload. `--session` keeps Hermes from persisting
+      // the choice as its process-wide default. The user already confirmed the
+      // model in June's picker, including any cost implications.
+      return request("config.set", {
+        session_id: sessionId,
+        key: "model",
+        value: `${model} --session`,
+        confirm_expensive_model: true,
+      });
     },
     respondToSudo({ sessionId, requestId, approved, mode }) {
       return request("sudo.respond", {

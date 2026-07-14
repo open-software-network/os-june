@@ -160,32 +160,64 @@ export function parseRpcFrame(raw: string): HermesInboundFrame {
 }
 
 /**
- * The lowest JSON-RPC code that is still an APPLICATION-level Hermes error
- * (rather than a transport/protocol error). JSON-RPC reserves the band from
- * -32768 to -32000 for protocol errors (e.g. -32601 method-not-found); Hermes
- * raises its own controlled responses with positive codes in the 4xxx range
- * (e.g. 4009 "session busy", 4018 "not a quick/plugin/skill command"). The
- * smoke gate treats only these positive application codes as an acceptable
- * outcome for a bare `/model` dispatch.
+ * Whether a rejection from session-scoped model `config.set` is retryable.
+ * Hermes returns 4009 when a session is still running because mutating the live
+ * agent model would race with the active agent run. The protocol smoke may wait
+ * and retry this response, but it only passes after `config.set` is accepted.
+ *
+ * Every other error fails the gate. In particular, 4018 means a request was
+ * sent through `command.dispatch` as an unknown command; accepting it used to
+ * let a broken model-switch RPC pass the live smoke test.
  */
-export const HERMES_APP_ERROR_CODE_FLOOR = 4000;
+export function isControlledModelConfigSetError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return code === 4009;
+}
+
+export type RetryModelConfigSetOptions = {
+  timeoutMs: number;
+  wait?: (delayMs: number) => Promise<void>;
+};
+
+const INITIAL_MODEL_CONFIG_RETRY_DELAY_MS = 50;
+const MAX_MODEL_CONFIG_RETRY_DELAY_MS = 1_000;
+
+function waitFor(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
 
 /**
- * Whether a rejection from `command.dispatch /model` is a CONTROLLED,
- * application-level Hermes error — the only rejection the smoke gate may treat
- * as a PASS. A bare `/model` legitimately comes back as a controlled refusal
- * (e.g. 4018 "not a quick/plugin/skill command", or 4009 "session busy"), which
- * proves the gateway is alive and speaking the protocol.
- *
- * Returns false for everything that signals a real regression — a missing or
- * non-numeric `code`, or a JSON-RPC protocol error (the reserved band at or
- * below -32000, e.g. -32601 method-not-found) — so a changed error shape, an
- * auth/session failure, or a vanished method FAILS the gate instead of passing.
+ * Retry session-scoped model `config.set` while Hermes reports the documented
+ * 4009 busy guard. A busy response never counts as success: the helper either
+ * returns an accepted RPC result or fails once the retry budget is exhausted.
  */
-export function isControlledModelDispatchError(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null | undefined)?.code;
-  if (typeof code !== "number" || !Number.isFinite(code)) return false;
-  return code >= HERMES_APP_ERROR_CODE_FLOOR;
+export async function retryModelConfigSetUntilAccepted(
+  apply: () => Promise<unknown>,
+  options: RetryModelConfigSetOptions,
+): Promise<unknown> {
+  const timeoutMs = Math.max(0, options.timeoutMs);
+  const wait = options.wait ?? waitFor;
+  let waitedMs = 0;
+  let retryDelayMs = INITIAL_MODEL_CONFIG_RETRY_DELAY_MS;
+
+  while (true) {
+    try {
+      return await apply();
+    } catch (error) {
+      if (!isControlledModelConfigSetError(error)) throw error;
+      if (waitedMs >= timeoutMs) {
+        const timeoutError = new Error(
+          `session-scoped model config.set remained busy for ${timeoutMs}ms and was not accepted`,
+        ) as Error & { code: number };
+        timeoutError.code = 4009;
+        throw timeoutError;
+      }
+      const nextDelayMs = Math.min(retryDelayMs, timeoutMs - waitedMs);
+      await wait(nextDelayMs);
+      waitedMs += nextDelayMs;
+      retryDelayMs = Math.min(retryDelayMs * 2, MAX_MODEL_CONFIG_RETRY_DELAY_MS);
+    }
+  }
 }
 
 /** Where a resolved Hermes command came from, for log clarity. `env_override`

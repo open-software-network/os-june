@@ -48,6 +48,34 @@ leaves config half-mutated.
 June can never read them back. "Edit" therefore only covers non-secret
 connection fields; changing a secret is delete-and-re-add.
 
+**Live-session model changes use `config.set`, not `command.dispatch`.** In the
+pinned runtime, `/model` is implemented by the TUI client and is not a gateway
+quick/plugin/skill command. Sending it through `command.dispatch` returns 4018
+(`not a quick/plugin/skill command`) and changes nothing. The working WebSocket
+request is `config.set` with the runtime `session_id`, `key: "model"`,
+`value: "<model> --session"`, and `confirm_expensive_model: true`. Keep
+`--session`: without it, Hermes can persist the selection as its process-wide
+default and affect unrelated sessions.
+
+**Model `config.set` is idle-only.** Hermes returns 4009 while that session is
+running because changing Hermes' model, provider, endpoint, and client in
+place would race with the active agent run. A picker change during that run is
+therefore June state only. On the next Send, apply its captured choice
+immediately before `prompt.submit`. `message.complete` can precede true idle,
+and automatic goal continuations are still part of the same agent run, so retry
+only 4009 until that run releases the busy guard. If idle `config.set` fails,
+keep the prompt and choice recoverable instead of silently sending with the
+previous model. Serialize this mutation through accepted `prompt.submit` by
+stored session id: AgentWorkspace and Note Chat can dispatch the same session
+from separate gateway clients.
+
+**Internal model ids carry provider provenance.** June stores reserved aliases
+for concrete remote, Auto, and local choices in Hermes. Advertise every alias
+Hermes may validate from the Bridge's `/v1/models` response, decide the route
+before stripping its prefix in the on-device provider proxy, and decode it before forwarding
+to June API or a local endpoint. Never infer a new session's provider from raw
+model-id equality: local and remote catalogs can expose the same id.
+
 ## MCP OAuth
 
 **`hermes mcp login` requires a TTY.** The whole OAuth flow gates on
