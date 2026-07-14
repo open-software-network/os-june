@@ -614,6 +614,18 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_backup_exists_when_unicode_text_is_available() {
+        assert!(clipboard::backup_exists_for_text_for_test(Some(
+            "rich editor text".to_string()
+        )));
+    }
+
+    #[test]
+    fn clipboard_backup_is_absent_without_unicode_text() {
+        assert!(!clipboard::backup_exists_for_text_for_test(None));
+    }
+
+    #[test]
     fn forced_clipboard_restore_failure_drops_backup_on_shutdown() {
         let now = std::time::Instant::now();
         let restore = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
