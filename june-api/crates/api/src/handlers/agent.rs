@@ -1,7 +1,7 @@
 use crate::{
     auth::{authenticated_user, provider_credentials},
     error::ApiError,
-    handlers::notes::resolve_priced_text_model,
+    handlers::notes::{credentials_for_resolved_text_model, resolve_priced_text_model},
     state::ApiState,
     validation,
 };
@@ -33,6 +33,7 @@ pub(crate) async fn chat_completions(
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
     validation::validate_agent_chat_body(&body)?;
     let model_id = resolve_priced_text_model(&state, &model_id)?;
+    let provider_credentials = credentials_for_resolved_text_model(provider_credentials, &model_id);
     if let Some(object) = body.as_object_mut() {
         object.insert(
             "model".to_string(),

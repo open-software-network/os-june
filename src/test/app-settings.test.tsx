@@ -3221,11 +3221,10 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
 
     expect(
       await screen.findByText(
-        "Auto does not use your Venice API key for notes or chat. Choose a Venice model above to use your key there.",
+        "Auto does not use your Venice API key for notes or chat. Choose a Venice model above to use your key for notes and new chats.",
       ),
     ).toBeInTheDocument();
   });

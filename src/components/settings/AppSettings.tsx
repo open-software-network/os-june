@@ -1917,6 +1917,12 @@ export function AppSettings({
                         <span className="settings-row-description">
                           Choose how June balances model quality and usage cost.
                         </span>
+                        {providerSettings.veniceApiKeyConfigured ? (
+                          <span className="settings-row-description settings-row-substatus">
+                            Auto does not use your Venice API key for notes or chat. Choose a Venice
+                            model above to use your key for notes and new chats.
+                          </span>
+                        ) : null}
                       </div>
                       <div className="settings-row-control">
                         <SegmentedControl<AutoPreference>
@@ -1953,7 +1959,6 @@ export function AppSettings({
                     <div id="models-more-options-panel" className="settings-more-options-panel">
                       <VeniceApiKeyRow
                         configured={providerSettings.veniceApiKeyConfigured}
-                        autoSelected={providerSettings.generationModel === "open-software/auto"}
                         value={veniceApiKeyDraft}
                         onValueChange={setVeniceApiKeyDraft}
                         onSave={() => void saveVeniceApiKey()}
@@ -2709,7 +2714,6 @@ function ModelSummaryHoverDetails({ model }: { model: VeniceModelDto }) {
 function VeniceApiKeyRow({
   id,
   configured,
-  autoSelected,
   value,
   onValueChange,
   onSave,
@@ -2717,7 +2721,6 @@ function VeniceApiKeyRow({
 }: {
   id?: string;
   configured: boolean;
-  autoSelected: boolean;
   value: string;
   onValueChange: (value: string) => void;
   onSave: () => void;
@@ -2732,12 +2735,6 @@ function VeniceApiKeyRow({
           Use your own key for Venice models so June credits are not used. Stored locally and sent
           only for Venice requests.
         </p>
-        {autoSelected ? (
-          <p className="settings-row-description settings-row-substatus">
-            Auto does not use your Venice API key for notes or chat. Choose a Venice model above to
-            use your key there.
-          </p>
-        ) : null}
         {configured ? (
           <p className="settings-row-description settings-row-substatus">Key saved.</p>
         ) : null}

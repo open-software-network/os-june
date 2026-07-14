@@ -3,7 +3,10 @@ use crate::{
     auth::{authenticated_user, provider_credentials},
     envelope::ApiResponse,
     error::ApiError,
-    handlers::notes::{required, resolve_priced_asr_model, resolve_priced_text_model},
+    handlers::notes::{
+        credentials_for_resolved_text_model, required, resolve_priced_asr_model,
+        resolve_priced_text_model,
+    },
     multipart::MultipartFields,
     state::ApiState,
     validation,
@@ -82,6 +85,7 @@ pub(crate) async fn cleanup(
     let model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
     let model_id = resolve_priced_text_model(&state, &model_id)?;
+    let provider_credentials = credentials_for_resolved_text_model(provider_credentials, &model_id);
     let output = state
         .dictate()
         .cleanup(DictateCleanupParams {

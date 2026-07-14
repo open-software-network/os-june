@@ -14,7 +14,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
-use june_domain::{ModelId, ModelKind};
+use june_domain::{ModelId, ModelKind, ProviderCredentials};
 use june_services::{
     NoteGenerateOutput, NoteGenerateParams, NoteTranscribeOutput, NoteTranscribeParams,
     PricingError, PricingTable,
@@ -93,6 +93,7 @@ pub(crate) async fn generate(
     let model_id = required(request.model, "model_required")?;
     validation::validate_text_len("model", &model_id, validation::MAX_MODEL_CHARS)?;
     let model_id = resolve_priced_text_model(&state, &model_id)?;
+    let provider_credentials = credentials_for_resolved_text_model(provider_credentials, &model_id);
 
     let stream = request.stream;
     let params = NoteGenerateParams {
@@ -358,6 +359,18 @@ pub(crate) fn resolve_priced_text_model(
     requested_model_id: &str,
 ) -> Result<String, ApiError> {
     resolve_priced_text_model_kind(state.pricing(), requested_model_id)
+}
+
+/// Auto is a June-managed route. Clear any user credential after resolving
+/// stale model ids so an older client cannot accidentally turn Auto into BYOK.
+pub(crate) fn credentials_for_resolved_text_model(
+    mut credentials: ProviderCredentials,
+    model_id: &str,
+) -> ProviderCredentials {
+    if model_id == AUTO_TEXT_MODEL {
+        credentials.venice_api_key = None;
+    }
+    credentials
 }
 
 fn resolve_priced_text_model_kind(

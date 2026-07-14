@@ -314,19 +314,42 @@ async fn integration_agent_chat_stream_returns_upstream_sse_body() -> Result<(),
 
 #[tokio::test]
 async fn integration_agent_chat_routes_stale_model_through_auto() -> Result<(), Box<dyn Error>> {
-    let response = send(json_request(
+    let response = send(json_request_with_venice_api_key(
         "/v1/chat/completions",
         &serde_json::json!({
             "model": "retired-venice-model",
             "messages": [{ "role": "user", "content": "hello" }]
         }),
-        Some(AUTHORIZATION),
+        "opaque_user_venice_key",
     )?)
     .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await?;
     assert_eq!(body["id"], "chatcmpl_test");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_drops_venice_key_when_stale_model_routes_through_auto()
+-> Result<(), Box<dyn Error>> {
+    let response = send(json_request_with_venice_api_key(
+        "/v1/notes/generate",
+        &serde_json::json!({
+            "noteId": "note-1",
+            "promptVersion": "prompt-v1",
+            "title": "Planning",
+            "transcript": "System: launch is Friday",
+            "model": "retired-venice-model"
+        }),
+        "opaque_user_venice_key",
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["content"], "Generated note body");
     Ok(())
 }
 
@@ -2237,10 +2260,15 @@ struct FakeChatCompleter;
 impl AgentChatCompleter for FakeChatCompleter {
     async fn complete(
         &self,
-        _request: AgentChatRequest,
+        request: AgentChatRequest,
     ) -> Result<AgentChatCompletion, DomainError> {
+        let id = if request.provider_credentials.has_venice_api_key() {
+            "chatcmpl_user_key"
+        } else {
+            "chatcmpl_test"
+        };
         Ok(AgentChatCompletion {
-            body: br#"{"id":"chatcmpl_test"}"#.to_vec(),
+            body: format!(r#"{{"id":"{id}"}}"#).into_bytes(),
             content_type: "application/json".to_string(),
             provider: "fake-chat".to_string(),
             usage: TokenUsage {
