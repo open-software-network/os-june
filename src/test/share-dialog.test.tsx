@@ -360,6 +360,52 @@ describe("ShareDialog", () => {
     expect(mocks.shareAddInvites).not.toHaveBeenCalled();
   });
 
+  it("does not commit an in-flight invite after the dialog switches items", async () => {
+    mocks.shareKeyGet.mockResolvedValue(null); // neither item shared yet
+    // Hold shareCreate pending so we can switch items while it is in flight.
+    let resolveCreate: (value: {
+      shareId: string;
+      invites: { inviteId: string; email: string }[];
+    }) => void = () => {};
+    mocks.shareCreate.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ShareDialog open onClose={vi.fn()} item={noteItem({ itemId: "note_A" })} />,
+    );
+
+    const field = await screen.findByLabelText("Invite by email");
+    await user.type(field, "first@example.com");
+    await user.click(screen.getByRole("button", { name: "Invite" }));
+    await waitFor(() => expect(mocks.shareCreate).toHaveBeenCalledTimes(1));
+
+    // The user switches the dialog to a different item mid-flight; the parents
+    // reuse the same component, so the effect reloads for note_B.
+    rerender(<ShareDialog open onClose={vi.fn()} item={noteItem({ itemId: "note_B" })} />);
+    await waitFor(() =>
+      expect(
+        screen.getByText("Not shared yet. This note stays private until you invite someone."),
+      ).toBeInTheDocument(),
+    );
+
+    // Now note_A's create resolves and its continuation runs to completion.
+    resolveCreate({
+      shareId: "shr_A",
+      invites: [{ inviteId: "shi_A", email: "first@example.com" }],
+    });
+    await waitFor(() => expect(mocks.shareInviteKeySave).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Invite" })).toBeInTheDocument());
+
+    // note_A's share was still persisted locally (keyed to note_A)...
+    expect(mocks.shareKeySave).toHaveBeenCalledWith(expect.objectContaining({ itemId: "note_A" }));
+    // ...but nothing from note_A leaked into note_B's dialog.
+    expect(screen.queryByText("first@example.com")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Unshare" })).not.toBeInTheDocument();
+  });
+
   it("keeps the invite button disabled while an existing share is still loading", async () => {
     // Hold shareKeyGet pending so the open effect never settles during the
     // assertion window; a submit now would wrongly take the first-invite path.

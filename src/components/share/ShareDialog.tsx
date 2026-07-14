@@ -82,6 +82,12 @@ export function ShareDialog({
   // submits fired in the same tick could both pass the check and create two
   // separate server shares for the same item. A ref blocks the second entrant.
   const invitingRef = useRef(false);
+  // The item the dialog currently represents, kept fresh on every render. The
+  // parents reuse this component across items rather than remounting it, so an
+  // invite that began for one item must not commit its share into the dialog
+  // after the user has switched to another; async commits compare against this.
+  const activeItemKeyRef = useRef(`${item.kind}:${item.itemId}`);
+  activeItemKeyRef.current = `${item.kind}:${item.itemId}`;
 
   useEffect(() => {
     if (!copiedInviteId) return;
@@ -178,6 +184,11 @@ export function ShareDialog({
     invitingRef.current = true;
     setInviteBusy(true);
     setError(null);
+    // The item this invite is for, captured up front. If the user switches the
+    // dialog to another item while the async work below is in flight, the
+    // commit guards compare against this so a share is never attached to, or an
+    // error shown on, the wrong item.
+    const startedItemKey = `${item.kind}:${item.itemId}`;
     // Tracks a share minted in *this* call so the catch can delete it if a
     // local key save fails. A server share whose content key never persisted
     // is an orphan: the owner can't find it (shareKeyGet is null), can't revoke
@@ -237,26 +248,36 @@ export function ShareDialog({
         shareId: nextShareId,
         inviteKeyB64,
       });
-      // The share and its first invite key are fully persisted now: commit to
-      // state and disarm rollback so a later failure can't delete this share.
-      setShareId(nextShareId);
-      setContentKeyB64(nextContentKeyB64);
+      // The share and its first invite key are fully persisted now (server +
+      // local, keyed to the started item), so disarm rollback regardless. Only
+      // reflect it in the dialog if we're still on that item: committing after
+      // the user switched items would attach this share to the wrong one.
       createdShareId = null;
-      setInvites((current) => [
-        ...current,
-        { inviteId: created.inviteId, email: created.email, state: "pending", inviteKeyB64 },
-      ]);
-      setEmail("");
+      if (activeItemKeyRef.current === startedItemKey) {
+        setShareId(nextShareId);
+        setContentKeyB64(nextContentKeyB64);
+        setInvites((current) => [
+          ...current,
+          { inviteId: created.inviteId, email: created.email, state: "pending", inviteKeyB64 },
+        ]);
+        setEmail("");
+      }
     } catch (err) {
+      const stillOnStartedItem = activeItemKeyRef.current === startedItemKey;
       if (createdShareId) {
         // Roll the just-created share back so no locally-unmanageable orphan
         // survives. Best-effort: if the delete also fails there's nothing more
-        // the client can do, and the original error is what we surface.
+        // the client can do, and the original error is what we surface. The
+        // delete runs regardless of item switches (it targets the started
+        // item's share); the state reset only applies if we're still on it.
         await shareDelete(createdShareId).catch(() => {});
-        setShareId(null);
-        setContentKeyB64(null);
+        if (stillOnStartedItem) {
+          setShareId(null);
+          setContentKeyB64(null);
+        }
       }
-      setError(messageFromError(err));
+      // Don't surface this item's error on a different item's dialog.
+      if (stillOnStartedItem) setError(messageFromError(err));
     } finally {
       invitingRef.current = false;
       setInviteBusy(false);
