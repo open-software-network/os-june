@@ -398,6 +398,50 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("replaces internal Hermes model-change instructions with a short label", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "model-change-1",
+        role: "system",
+        content:
+          "[System: The active model for this chat has changed to " +
+          "__june_auto_generation__:100 via provider custom. From this point " +
+          "forward, use this runtime metadata when answering questions about " +
+          "what model/provider is active.]",
+        timestamp: "2026-07-14T22:57:11.000Z",
+      },
+    ]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.role).toBe("system");
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Model changed to Auto Higher.",
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("leaves unrelated Hermes system messages unchanged", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "system-1",
+        role: "system",
+        content: "A useful system notice.",
+        timestamp: "2026-07-14T22:57:11.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "A useful system notice.",
+        status: "complete",
+      },
+    ]);
+  });
+
   it("hides Hermes' persisted output-length continuation prompt", () => {
     const turns = buildHermesSessionChatTurns([
       {

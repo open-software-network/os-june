@@ -1372,6 +1372,7 @@ function resolveHermesMessageText(message: HermesSessionMessage) {
 
 function displayContentForHermesMessage(message: HermesSessionMessage) {
   const content = resolveHermesMessageText(message);
+  if (message.role === "system") return displayedHermesSystemMessageText(content);
   if (message.role !== "user") return content.trim();
   // Hermes appends this as a synthetic user message when an assistant response
   // reaches the provider's output cap. It belongs in the model's continuation
@@ -1382,6 +1383,29 @@ function displayContentForHermesMessage(message: HermesSessionMessage) {
   return displayedUserPromptText(
     stripImageAnalysisFailureNotice(stripScheduledRunPreamble(stripHermesContextMarkers(content))),
   );
+}
+
+// Hermes persists model switches as a system instruction containing internal
+// provider metadata. That instruction is useful to the model, but the raw
+// routing id and the directive that follows it are implementation details and
+// must not leak into the transcript.
+function displayedHermesSystemMessageText(content: string) {
+  const text = content.trim();
+  const match = text.match(
+    /^(?:\[System:\s*)?The active model for this chat has changed to\s+(.+?)\s+via provider\s+\S+\./i,
+  );
+  if (!match?.[1]) return text;
+  return `Model changed to ${displayNameForHermesModel(match[1])}.`;
+}
+
+function displayNameForHermesModel(modelId: string) {
+  const auto = /^__june_auto_generation__:(\d+(?:\.\d+)?)$/i.exec(modelId.trim());
+  if (!auto?.[1]) return modelId.trim();
+
+  const qualityPreference = Number(auto[1]);
+  if (qualityPreference >= 67) return "Auto Higher";
+  if (qualityPreference <= 33) return "Auto Lower";
+  return "Auto Balanced";
 }
 
 function isHermesOutputLengthContinuationPrompt(content: string) {
