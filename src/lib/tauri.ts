@@ -2182,6 +2182,18 @@ export type ShareCreatedDto = {
   invites: ShareCreatedInviteDto[];
 };
 
+// `POST /v1/shares/{id}/invites` returns only the new invites (no shareId).
+export type ShareInvitesAddedDto = {
+  invites: ShareCreatedInviteDto[];
+};
+
+// `GET /v1/shares` returns summaries only; invites live on the detail response.
+export type ShareSummaryDto = {
+  shareId: string;
+  kind: ShareKind;
+  createdAt?: string;
+};
+
 export type ShareInviteDto = {
   inviteId: string;
   email: string;
@@ -2216,7 +2228,7 @@ export async function shareCreate(input: {
 }
 
 export async function shareList() {
-  return invoke<ShareDto[]>("share_list");
+  return invoke<ShareSummaryDto[]>("share_list");
 }
 
 export async function shareGet(shareId: string) {
@@ -2224,7 +2236,7 @@ export async function shareGet(shareId: string) {
 }
 
 export async function shareAddInvites(shareId: string, invites: ShareInvitePayload[]) {
-  return invoke<ShareCreatedDto>("share_add_invites", { request: { shareId, invites } });
+  return invoke<ShareInvitesAddedDto>("share_add_invites", { request: { shareId, invites } });
 }
 
 export async function shareRevokeInvite(shareId: string, inviteId: string) {

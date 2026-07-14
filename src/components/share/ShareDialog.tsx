@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { messageFromError } from "../../lib/errors";
 import {
@@ -6,6 +6,7 @@ import {
   encryptPayload,
   fromBase64Url,
   generateKey,
+  toBase64,
   toBase64Url,
   wrapKey,
 } from "../../lib/share-crypto";
@@ -71,6 +72,10 @@ export function ShareDialog({
   const [copiedInviteId, setCopiedInviteId] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<InviteRow | null>(null);
   const [confirmUnshare, setConfirmUnshare] = useState(false);
+  // Synchronous guard: React state (inviteBusy) updates asynchronously, so two
+  // submits fired in the same tick could both pass the check and create two
+  // separate server shares for the same item. A ref blocks the second entrant.
+  const invitingRef = useRef(false);
 
   useEffect(() => {
     if (!copiedInviteId) return;
@@ -125,7 +130,8 @@ export function ShareDialog({
 
   const handleInvite = useCallback(async () => {
     const normalized = email.trim().toLowerCase();
-    if (!EMAIL_PATTERN.test(normalized) || inviteBusy) return;
+    if (!EMAIL_PATTERN.test(normalized) || invitingRef.current) return;
+    invitingRef.current = true;
     setInviteBusy(true);
     setError(null);
     try {
@@ -141,13 +147,13 @@ export function ShareDialog({
         const { envelope, iv: envelopeIv } = await wrapKey(inviteKey, contentKey);
         const response = await shareCreate({
           kind: item.kind,
-          ciphertextB64: toBase64Url(ciphertext),
-          ivB64: toBase64Url(iv),
+          ciphertextB64: toBase64(ciphertext),
+          ivB64: toBase64(iv),
           invites: [
             {
               email: normalized,
-              envelopeB64: toBase64Url(envelope),
-              envelopeIvB64: toBase64Url(envelopeIv),
+              envelopeB64: toBase64(envelope),
+              envelopeIvB64: toBase64(envelopeIv),
             },
           ],
         });
@@ -166,8 +172,8 @@ export function ShareDialog({
         const response = await shareAddInvites(nextShareId, [
           {
             email: normalized,
-            envelopeB64: toBase64Url(envelope),
-            envelopeIvB64: toBase64Url(envelopeIv),
+            envelopeB64: toBase64(envelope),
+            envelopeIvB64: toBase64(envelopeIv),
           },
         ]);
         created = response.invites[0];
@@ -189,9 +195,10 @@ export function ShareDialog({
     } catch (err) {
       setError(messageFromError(err));
     } finally {
+      invitingRef.current = false;
       setInviteBusy(false);
     }
-  }, [email, inviteBusy, shareId, contentKeyB64, item]);
+  }, [email, shareId, contentKeyB64, item]);
 
   const handleCopyLink = useCallback(
     async (invite: InviteRow) => {

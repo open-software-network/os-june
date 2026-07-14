@@ -3,9 +3,11 @@ import {
   buildShareFragment,
   decryptPayload,
   encryptPayload,
+  fromBase64,
   fromBase64Url,
   generateKey,
   parseShareFragment,
+  toBase64,
   toBase64Url,
   unwrapKey,
   wrapKey,
@@ -72,6 +74,18 @@ describe("share-crypto", () => {
     const encoded = toBase64Url(bytes);
     expect(encoded).not.toMatch(/[+/=]/);
     expect(Array.from(fromBase64Url(encoded))).toEqual(Array.from(bytes));
+  });
+
+  it("encodes API fields as standard base64 (padded, + and /)", () => {
+    // The share API's *B64 fields are decoded server-side with the standard
+    // alphabet. This byte range forces both + and / so a base64url regression
+    // (which the server would reject) fails the test loudly.
+    const bytes = new Uint8Array(256);
+    for (let index = 0; index < bytes.length; index += 1) bytes[index] = index;
+    const encoded = toBase64(bytes);
+    expect(encoded).toMatch(/[+/]/);
+    expect(encoded).not.toMatch(/[-_]/);
+    expect(Array.from(fromBase64(encoded))).toEqual(Array.from(bytes));
   });
 
   it("builds and parses a share fragment", async () => {

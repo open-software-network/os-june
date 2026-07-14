@@ -985,6 +985,26 @@ pub struct ShareCreatedDto {
     pub invites: Vec<ShareCreatedInviteDto>,
 }
 
+/// `POST /v1/shares/{id}/invites` returns only the new invites, without a
+/// `shareId` (the caller already knows it). Distinct from `ShareCreatedDto`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInvitesAddedDto {
+    pub invites: Vec<ShareCreatedInviteDto>,
+}
+
+/// `GET /v1/shares` returns share summaries (no invite list); the detail
+/// endpoint carries invites. Keeping them separate stops list parsing from
+/// depending on a field the summary response never sends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareSummaryDto {
+    pub share_id: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareInviteDto {

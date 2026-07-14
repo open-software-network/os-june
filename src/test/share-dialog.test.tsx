@@ -159,7 +159,6 @@ describe("ShareDialog", () => {
       { inviteId: "shi_1", inviteKeyB64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8" },
     ]);
     mocks.shareAddInvites.mockResolvedValue({
-      shareId: "shr_1",
       invites: [{ inviteId: "shi_2", email: "second@example.com" }],
     });
     const user = userEvent.setup();

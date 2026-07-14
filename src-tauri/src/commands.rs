@@ -37,11 +37,11 @@ use crate::{
             SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
             SessionRequest, ShareAddInvitesRequest, ShareCreateRequest, ShareCreatedDto,
             ShareDeleteRequest, ShareDto, ShareGetRequest, ShareInviteKeyDto,
-            ShareInviteKeySaveRequest, ShareInviteKeysGetRequest, ShareKeyDto, ShareKeyGetRequest,
-            ShareKeySaveRequest, ShareRevokeInviteRequest, SourceReadinessDto,
-            StartRecordingRequest, SubmitIssueReportRequest, SubmitIssueReportResponse,
-            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
-            UpdateDictionaryEntryRequest, UpdateNoteRequest,
+            ShareInviteKeySaveRequest, ShareInviteKeysGetRequest, ShareInvitesAddedDto,
+            ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest, ShareRevokeInviteRequest,
+            ShareSummaryDto, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
+            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
+            SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
 };
@@ -2409,7 +2409,7 @@ pub async fn share_create(request: ShareCreateRequest) -> Result<ShareCreatedDto
 }
 
 #[tauri::command]
-pub async fn share_list() -> Result<Vec<ShareDto>, AppError> {
+pub async fn share_list() -> Result<Vec<ShareSummaryDto>, AppError> {
     crate::june_api::share_list().await
 }
 
@@ -2421,7 +2421,7 @@ pub async fn share_get(request: ShareGetRequest) -> Result<ShareDto, AppError> {
 #[tauri::command]
 pub async fn share_add_invites(
     request: ShareAddInvitesRequest,
-) -> Result<ShareCreatedDto, AppError> {
+) -> Result<ShareInvitesAddedDto, AppError> {
     crate::june_api::share_add_invites(&request.share_id, &request.invites).await
 }
 
