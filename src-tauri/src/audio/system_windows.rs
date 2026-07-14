@@ -560,8 +560,8 @@ fn sample_to_f32(sample: &[u8], sample_format: MixSampleFormat) -> f32 {
             i32::from_le_bytes([sample[0], sample[1], sample[2], sign]) as f32 / 8_388_608.0
         }
         MixSampleFormat::PcmSigned24In32 => {
-            let sign = if sample[2] & 0x80 == 0 { 0x00 } else { 0xff };
-            i32::from_le_bytes([sample[0], sample[1], sample[2], sign]) as f32 / 8_388_608.0
+            let container = i32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
+            (container >> 8) as f32 / 8_388_608.0
         }
         MixSampleFormat::PcmSigned16 => {
             i16::from_le_bytes([sample[0], sample[1]]) as f32 / i16::MAX as f32
@@ -718,7 +718,24 @@ mod tests {
                 < 0.0001
         );
         assert!(
-            (sample_to_f32(&[0xff, 0xff, 0x7f, 0x00], MixSampleFormat::PcmSigned24In32) - 1.0)
+            (sample_to_f32(&[0xff, 0xff, 0x7f], MixSampleFormat::PcmSigned24) - 1.0).abs()
+                < 0.0001
+        );
+    }
+
+    #[test]
+    fn sample_conversion_handles_left_aligned_24_bit_extensible_pcm() {
+        assert_eq!(
+            sample_to_f32(&[0x00, 0x00, 0x00, 0x00], MixSampleFormat::PcmSigned24In32),
+            0.0
+        );
+        assert!(
+            (sample_to_f32(&[0x00, 0xff, 0xff, 0x7f], MixSampleFormat::PcmSigned24In32) - 1.0)
+                .abs()
+                < 0.0001
+        );
+        assert!(
+            (sample_to_f32(&[0x00, 0x00, 0x00, 0x80], MixSampleFormat::PcmSigned24In32) + 1.0)
                 .abs()
                 < 0.0001
         );
