@@ -262,6 +262,7 @@ export function buildAgentChatTurns(
 export function buildHermesSessionChatTurns(
   messages: HermesSessionMessage[],
   liveEvents: JuneHermesEvent[] = [],
+  syntheticTurns: AgentChatTurn[] = [],
 ): AgentChatTurn[] {
   const turns: AgentChatTurn[] = [];
   const toolResults = new Map<string, HermesSessionMessage>();
@@ -364,6 +365,12 @@ export function buildHermesSessionChatTurns(
   }
 
   appendLiveHermesEvents(turns, liveEvents);
+  turns.push(
+    ...syntheticTurns.map((turn) => ({
+      ...turn,
+      parts: [...turn.parts],
+    })),
+  );
   const sortedTurns = sortAgentChatTurns(turns);
   deduplicateGeneratedMediaWithinAgentRuns(sortedTurns);
   return sortedTurns.filter((turn) =>
@@ -937,15 +944,26 @@ function appendVideoParts(parts: AgentChatPart[], videos: AgentChatVideoPart[]) 
 }
 
 function sameImagePart(left: AgentChatImagePart, right: AgentChatImagePart) {
+  if (left.dataUrl && right.dataUrl) return left.dataUrl === right.dataUrl;
+  if (left.path && right.path && left.path === right.path) return true;
+  const leftName = left.name ?? (left.path ? filenameFromPath(left.path) : undefined);
+  const rightName = right.name ?? (right.path ? filenameFromPath(right.path) : undefined);
   return Boolean(
-    (left.path && left.path === right.path) ||
-      (left.dataUrl && left.dataUrl === right.dataUrl) ||
-      (left.name && left.name === right.name),
+    leftName &&
+      rightName &&
+      leftName === rightName &&
+      // Equal display names bridge an inline MCP image to its trailing MEDIA
+      // reference, but never collapse two distinct inline byte payloads.
+      (!left.dataUrl || !right.dataUrl),
   );
 }
 
 function sameVideoPart(left: AgentChatVideoPart, right: AgentChatVideoPart) {
-  return Boolean(left.path && left.path === right.path);
+  return Boolean(
+    left.path &&
+      right.path &&
+      (left.path === right.path || filenameFromPath(left.path) === filenameFromPath(right.path)),
+  );
 }
 
 /** Live tool output and the assistant's trailing MEDIA reference share one

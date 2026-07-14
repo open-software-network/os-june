@@ -1707,6 +1707,90 @@ describe("Agent chat runtime", () => {
     ).toHaveLength(2);
   });
 
+  it("treats an optimistic user turn as a generated-media boundary", () => {
+    const media = "MEDIA:generated-image-abc.png";
+    const turns = buildHermesSessionChatTurns(
+      [
+        {
+          id: "assistant-1",
+          role: "assistant",
+          content: media,
+          timestamp: "2026-06-04T10:00:00.000Z",
+        },
+      ],
+      [
+        transcriptEvent({
+          delta: media,
+          complete: true,
+          receivedAt: "2026-06-04T10:01:01.000Z",
+        }),
+      ],
+      [
+        {
+          id: "pending-user-1",
+          role: "user",
+          createdAt: "2026-06-04T10:01:00.000Z",
+          status: "complete",
+          parts: [{ type: "text", text: "Show me that image again.", status: "complete" }],
+        },
+      ],
+    );
+
+    expect(
+      turns.flatMap((turn) => turn.parts.filter((part) => part.type === "image")),
+    ).toHaveLength(2);
+  });
+
+  it("keeps distinct inline images that share a display name", () => {
+    const imageContent = (data: string) => [
+      { type: "image", data, mimeType: "image/png" },
+      {
+        type: "text",
+        text: JSON.stringify({ filename: "generated-image.png", label: "Generated image" }),
+      },
+    ];
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: imageContent("Zmlyc3Q="),
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        content: imageContent("c2Vjb25k"),
+        timestamp: "2026-06-04T10:00:01.000Z",
+      },
+    ]);
+
+    expect(
+      turns.flatMap((turn) => turn.parts.filter((part) => part.type === "image")),
+    ).toHaveLength(2);
+  });
+
+  it("deduplicates bare and absolute references to the same generated video", () => {
+    const name = "generated-video-ab12.mp4";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: `MEDIA:${name}`,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        content: `MEDIA:/tmp/generated-videos/${name}`,
+        timestamp: "2026-06-04T10:00:01.000Z",
+      },
+    ]);
+
+    expect(
+      turns.flatMap((turn) => turn.parts.filter((part) => part.type === "video")),
+    ).toHaveLength(1);
+  });
+
   it("renders live june_image tool results inline from tool.complete content", () => {
     const turns = buildHermesSessionChatTurns(
       [],
