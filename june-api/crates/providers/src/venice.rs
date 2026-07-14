@@ -1,7 +1,10 @@
+use crate::gateway_attestation::GatewayAttestationVerifier;
 use crate::retry::{self, UpstreamAttemptError};
 use crate::transcription::TranscriptionWireResponse;
 use async_trait::async_trait;
-use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit, UpstreamConfig};
+use june_config::{
+    GatewayAttestationConfig, ModelPriceConfig, ModelProvider, ModelType, PriceUnit, UpstreamConfig,
+};
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
     AgentChatStreamOutcome, CleanedText, Cleaner, CleanupRequest, DomainError, GeneratedNote,
@@ -295,6 +298,22 @@ impl VeniceGenerator {
             chat: VeniceChat::with_unmetered(http, unmetered_http, config),
         }
     }
+
+    pub fn from_config_with_gateway_attestation(
+        http: reqwest::Client,
+        unmetered_http: reqwest::Client,
+        config: &UpstreamConfig,
+        gateway_attestation: &GatewayAttestationConfig,
+    ) -> Self {
+        Self {
+            chat: VeniceChat::with_unmetered_and_gateway_attestation(
+                http,
+                unmetered_http,
+                config,
+                gateway_attestation,
+            ),
+        }
+    }
 }
 
 #[async_trait]
@@ -386,6 +405,22 @@ impl VeniceAgentChat {
             chat: VeniceChat::with_unmetered(http, unmetered_http, config),
         }
     }
+
+    pub fn from_config_with_gateway_attestation(
+        http: reqwest::Client,
+        unmetered_http: reqwest::Client,
+        config: &UpstreamConfig,
+        gateway_attestation: &GatewayAttestationConfig,
+    ) -> Self {
+        Self {
+            chat: VeniceChat::with_unmetered_and_gateway_attestation(
+                http,
+                unmetered_http,
+                config,
+                gateway_attestation,
+            ),
+        }
+    }
 }
 
 #[async_trait]
@@ -427,6 +462,16 @@ impl VeniceCleaner {
     pub fn from_config(http: reqwest::Client, config: &UpstreamConfig) -> Self {
         Self {
             chat: VeniceChat::new(http, config),
+        }
+    }
+
+    pub fn from_config_with_gateway_attestation(
+        http: reqwest::Client,
+        config: &UpstreamConfig,
+        gateway_attestation: &GatewayAttestationConfig,
+    ) -> Self {
+        Self {
+            chat: VeniceChat::new_with_gateway_attestation(http, config, gateway_attestation),
         }
     }
 }
@@ -503,6 +548,7 @@ struct VeniceChat {
     api_key: String,
     base_url: String,
     byok_base_url: String,
+    gateway_attestation: Option<GatewayAttestationVerifier>,
 }
 
 impl VeniceChat {
@@ -513,6 +559,7 @@ impl VeniceChat {
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
             byok_base_url: byok_base_url(config),
+            gateway_attestation: None,
         }
     }
 
@@ -525,6 +572,42 @@ impl VeniceChat {
             unmetered_http: Some(unmetered_http),
             ..Self::new(http, config)
         }
+    }
+
+    fn new_with_gateway_attestation(
+        http: reqwest::Client,
+        config: &UpstreamConfig,
+        gateway_attestation: &GatewayAttestationConfig,
+    ) -> Self {
+        Self {
+            gateway_attestation: Some(GatewayAttestationVerifier::new(
+                http.clone(),
+                gateway_attestation,
+            )),
+            ..Self::new(http, config)
+        }
+    }
+
+    fn with_unmetered_and_gateway_attestation(
+        http: reqwest::Client,
+        unmetered_http: reqwest::Client,
+        config: &UpstreamConfig,
+        gateway_attestation: &GatewayAttestationConfig,
+    ) -> Self {
+        Self {
+            unmetered_http: Some(unmetered_http),
+            ..Self::new_with_gateway_attestation(http, config, gateway_attestation)
+        }
+    }
+
+    async fn verify_gateway(&self, auth: ChatCallAuth<'_>) -> Result<(), DomainError> {
+        if auth.provider_credentials.has_venice_api_key() {
+            return Ok(());
+        }
+        if let Some(verifier) = &self.gateway_attestation {
+            verifier.verify(&self.api_key).await?;
+        }
+        Ok(())
     }
 
     fn client(&self, unmetered: bool) -> &reqwest::Client {
@@ -545,6 +628,7 @@ impl VeniceChat {
         mut body: ChatCompletionRequest,
         auth: ChatCallAuth<'_>,
     ) -> Result<RoutedChatCompletion, DomainError> {
+        self.verify_gateway(auth).await?;
         body.messages.insert(0, ChatMessage::safety_context());
         let url = self.chat_completions_url(auth.provider_credentials);
         // Bounded retry on transient failures — same rationale as the
@@ -627,6 +711,7 @@ impl VeniceChat {
         model: june_domain::ModelId,
         auth: ChatCallAuth<'_>,
     ) -> Result<AgentChatCompletion, DomainError> {
+        self.verify_gateway(auth).await?;
         let body = prepare_agent_chat_body(body, &model)?;
         let url = self.chat_completions_url(auth.provider_credentials);
         let request = self
@@ -685,6 +770,7 @@ impl VeniceChat {
         model: june_domain::ModelId,
         auth: ChatCallAuth<'_>,
     ) -> Result<AgentChatStream, DomainError> {
+        self.verify_gateway(auth).await?;
         let body = prepare_agent_chat_body(body, &model)?;
         let url = self.chat_completions_url(auth.provider_credentials);
         let request = self

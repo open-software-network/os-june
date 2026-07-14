@@ -82,6 +82,9 @@ pub struct AttestationInfo {
     pub source_repo_url: String,
     pub image_repo: String,
     pub trust_center_url: String,
+    pub gateway_attestation_required: bool,
+    pub gateway_attestation_url: String,
+    pub gateway_image_digest: String,
 }
 
 pub struct ApiStateParams {

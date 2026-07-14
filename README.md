@@ -107,7 +107,9 @@ verifiable.
 3. **Minimal retention.** Open Software's services store account, login, and
    billing records. Prompts, audio, transcripts, and files are not among them.
 4. **Verifiable, not promised.** June API runs in an Intel TDX confidential VM
-   on Phala Cloud, and its trust chain has three public anchors:
+   on Phala Cloud. Its model routing service runs in Google Confidential Space on
+   Intel TDX. Both services are open source and independently attested. June's
+   trust chain starts with three public anchors:
    - **Source:** this repository. The production image records its source
      commit in the OCI `org.opencontainers.image.revision` label.
    - **Image:** [`build-june-api.yml`](.github/workflows/build-june-api.yml)
@@ -117,9 +119,12 @@ verifiable.
      proves that image is what actually runs inside the TEE.
 
    Every deployment serves a self-contained walkthrough at
-   [`/verify`](https://june-api.opensoftware.co/verify). The chain proves the
-   code running in the confidential VM, not what upstream model providers do
-   with what they receive, which is why zero-retention routing is the default.
+   [`/verify`](https://june-api.opensoftware.co/verify). It also generates a
+   fresh browser nonce, verifies Google's os-api signature and workload claims,
+   and compares the running service to the exact approved image digest. The
+   chain proves the June and routing-service code. Model privacy and attestation remain
+   explicit provider evidence, which is why zero-retention private routing is
+   the default.
 
 ## Download
 

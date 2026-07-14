@@ -37,6 +37,17 @@ fn render_page(info: &AttestationInfo) -> String {
     let repo_url = escape_html(&info.source_repo_url);
     let image_repo = escape_html(&info.image_repo);
     let trust_center_url = escape_html(&info.trust_center_url);
+    let gateway_url = escape_html(&info.gateway_attestation_url);
+    let gateway_digest = escape_html(&info.gateway_image_digest);
+    let gateway_status = if info.gateway_attestation_required {
+        "required and verified before startup"
+    } else {
+        "not required in this deployment"
+    };
+    let gateway_url_json =
+        serde_json::to_string(&info.gateway_attestation_url).unwrap_or_else(|_| "\"\"".to_string());
+    let gateway_digest_json =
+        serde_json::to_string(&info.gateway_image_digest).unwrap_or_else(|_| "\"\"".to_string());
 
     let (commit_value, short_sha) = match short_commit(&info.source_commit) {
         Some(short) => {
@@ -63,6 +74,11 @@ fn render_page(info: &AttestationInfo) -> String {
         .replace("@REPO_URL@", &repo_url)
         .replace("@IMAGE_REPO@", &image_repo)
         .replace("@TRUST_CENTER_URL@", &trust_center_url)
+        .replace("@GATEWAY_STATUS@", gateway_status)
+        .replace("@GATEWAY_URL@", &gateway_url)
+        .replace("@GATEWAY_DIGEST@", &gateway_digest)
+        .replace("@GATEWAY_URL_JSON@", &gateway_url_json)
+        .replace("@GATEWAY_DIGEST_JSON@", &gateway_digest_json)
 }
 
 const PAGE_TEMPLATE: &str = r#"<!doctype html>
@@ -153,6 +169,17 @@ const PAGE_TEMPLATE: &str = r#"<!doctype html>
     color: var(--muted);
     margin-bottom: 1.25rem;
   }
+  button {
+    border: 0;
+    border-radius: 8px;
+    padding: 0.65rem 0.9rem;
+    background: var(--accent);
+    color: var(--bg);
+    font: inherit;
+    cursor: pointer;
+  }
+  button:disabled { cursor: wait; opacity: 0.65; }
+  #gateway-result { overflow-wrap: anywhere; }
   footer {
     margin-top: 3.5rem;
     padding-top: 1.25rem;
@@ -178,7 +205,16 @@ const PAGE_TEMPLATE: &str = r#"<!doctype html>
   <div><dt>Source code</dt><dd><a href="@REPO_URL@">@REPO_URL@</a></dd></div>
   <div><dt>Image</dt><dd><code>@IMAGE_REPO@:@SHORT_SHA@</code></dd></div>
   <div><dt>Attestation</dt><dd><a href="@TRUST_CENTER_URL@">Phala Trust Center report</a></dd></div>
+  <div><dt>os-api policy</dt><dd>@GATEWAY_STATUS@</dd></div>
+  <div><dt>os-api image</dt><dd><code>@GATEWAY_DIGEST@</code></dd></div>
 </dl>
+
+<h2>Verify the Open Software API now</h2>
+<p>Generate a fresh nonce and verify the model routing service's Google Confidential Space
+signature and workload claims in your browser. The proof must name a stable,
+non-debug Intel TDX workload running the exact image digest above.</p>
+<p><button id="verify-gateway" type="button">Verify model routing</button></p>
+<p id="gateway-result" class="muted">No proof checked in this browser yet.</p>
 
 <h2>Why this matters</h2>
 <p>Audio, transcripts, and notes pass through this server. Because the running
@@ -222,19 +258,85 @@ and recorded for that commit. Bit-for-bit reproducible rebuilds (regenerating
 the digest yourself instead of trusting our CI) are in progress; see
 <a href="@REPO_URL@/blob/main/docs/reproducible-builds.md">docs/reproducible-builds.md</a>.</p>
 
-<h2>What this does not cover</h2>
-<p>The chain verifies the <strong>code</strong> running in the confidential VM,
-not what upstream providers do. Everything leaving the TEE for model inference
-(audio for transcription, prompts and context for note generation and the
-agent) goes through Venice. By default it runs on Venice private models: zero
-data retention, no training. If you select an anonymized model not run by
-Venice, the request is still routed and anonymized by Venice, but the
-underlying model provider may retain data under its own privacy policy.
-End-to-end private inference is a separate workstream.</p>
+<h2>The complete inference chain</h2>
+<p>June verifies the model routing proof before startup and refreshes it for
+service-managed text inference. A missing, expired, debug, wrong-hardware, or
+wrong-image proof fails closed. The service can receive its provider keys only
+when Google verifies that same workload policy. The final model privacy and
+attestation evidence remains visible in each os-api inference receipt.</p>
 
 <footer>
   <p>Open Software · <a href="@REPO_URL@">source</a> · <a href="@TRUST_CENTER_URL@">attestation</a></p>
 </footer>
+<script>
+const gatewayUrl = @GATEWAY_URL_JSON@;
+const expectedDigest = @GATEWAY_DIGEST_JSON@;
+const expectedAudience = "https://june-api.opensoftware.co/os-api-gateway";
+const issuer = "https://confidentialcomputing.googleapis.com";
+const jwksUrl = "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com";
+const decodePart = value => JSON.parse(new TextDecoder().decode(base64url(value)));
+function base64url(value) {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "="));
+  return Uint8Array.from(binary, character => character.charCodeAt(0));
+}
+function has(value, expected) {
+  return Array.isArray(value) ? value.includes(expected) : value === expected;
+}
+async function verifyGateway() {
+  const button = document.getElementById("verify-gateway");
+  const result = document.getElementById("gateway-result");
+  button.disabled = true;
+  result.textContent = "Checking a fresh nonce-bound proof...";
+  try {
+    if (!gatewayUrl || !expectedDigest) throw new Error("model routing policy is not enabled here");
+    const nonceBytes = crypto.getRandomValues(new Uint8Array(24));
+    const nonce = Array.from(nonceBytes, byte => byte.toString(16).padStart(2, "0")).join("");
+    const response = await fetch(gatewayUrl, {method: "POST", body: JSON.stringify({nonce})});
+    if (!response.ok) throw new Error(`model routing service returned HTTP ${response.status}`);
+    const envelope = await response.json();
+    if (envelope.nonce !== nonce || envelope.audience !== expectedAudience) {
+      throw new Error("response is not bound to this browser's nonce and audience");
+    }
+    const parts = envelope.token.split(".");
+    if (parts.length !== 3) throw new Error("proof is not a JWT");
+    const header = decodePart(parts[0]);
+    const claims = decodePart(parts[1]);
+    const jwks = await (await fetch(jwksUrl)).json();
+    const jwk = jwks.keys.find(key => key.kid === header.kid);
+    if (!jwk) throw new Error("Google signing key was not found");
+    if (header.alg !== "RS256") throw new Error("unsupported Google signing algorithm");
+    const importAlgorithm = {name: "RSASSA-PKCS1-v1_5", hash: "SHA-256"};
+    const verifyAlgorithm = {name: "RSASSA-PKCS1-v1_5"};
+    const key = await crypto.subtle.importKey("jwk", jwk, importAlgorithm, false, ["verify"]);
+    const validSignature = await crypto.subtle.verify(
+      verifyAlgorithm,
+      key,
+      base64url(parts[2]),
+      new TextEncoder().encode(`${parts[0]}.${parts[1]}`)
+    );
+    const stable = claims.submods?.confidential_space?.support_attributes || [];
+    const digest = claims.submods?.container?.image_digest;
+    const validClaims = validSignature
+      && claims.iss === issuer
+      && has(claims.aud, expectedAudience)
+      && has(claims.eat_nonce, nonce)
+      && Number(claims.exp) > Date.now() / 1000
+      && claims.swname === "CONFIDENTIAL_SPACE"
+      && claims.dbgstat === "disabled-since-boot"
+      && claims.hwmodel === "GCP_INTEL_TDX"
+      && stable.includes("STABLE")
+      && has(digest, expectedDigest);
+    if (!validClaims) throw new Error("signature is valid but workload claims do not match policy");
+    result.textContent = `Verified now: Google signed ${expectedDigest} on stable Intel TDX, bound to this browser's nonce.`;
+  } catch (error) {
+    result.textContent = `Verification failed closed: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+document.getElementById("verify-gateway").addEventListener("click", verifyGateway);
+</script>
 </body>
 </html>
 "#;
@@ -250,6 +352,10 @@ mod tests {
             source_repo_url: "https://github.com/open-software-network/os-june".to_string(),
             image_repo: "ghcr.io/open-software-network/june-api".to_string(),
             trust_center_url: "https://trust.phala.com/app/15f8d2fd".to_string(),
+            gateway_attestation_required: true,
+            gateway_attestation_url: "https://api.opensoftware.co/v1/gateway/attestation"
+                .to_string(),
+            gateway_image_digest: format!("sha256:{}", "a".repeat(64)),
         }
     }
 
@@ -287,6 +393,9 @@ mod tests {
         ));
         assert!(html.contains("ghcr.io/open-software-network/june-api:0123abc"));
         assert!(html.contains("https://trust.phala.com/app/15f8d2fd"));
+        assert!(html.contains("required and verified before startup"));
+        assert!(html.contains(&format!("sha256:{}", "a".repeat(64))));
+        assert!(html.contains("Verify the Open Software API now"));
         assert!(!html.contains("@SHORT_SHA@"));
     }
 
