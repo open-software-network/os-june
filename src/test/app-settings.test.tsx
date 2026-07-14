@@ -52,10 +52,6 @@ const mocks = vi.hoisted(() => ({
   agentHudHide: vi.fn(),
   hermesAgentCliAccess: vi.fn(),
   setHermesAgentCliAccess: vi.fn(),
-  hermesBrowserAccess: vi.fn(),
-  setHermesBrowserAccess: vi.fn(),
-  extensionPairingStatus: vi.fn(),
-  registerBrowserExtensionHost: vi.fn(),
   juneCharacter: vi.fn(),
   setJuneCharacter: vi.fn(),
   revealPath: vi.fn(),
@@ -126,11 +122,6 @@ vi.mock("../lib/tauri", () => ({
   agentHudHide: mocks.agentHudHide,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
   setHermesAgentCliAccess: mocks.setHermesAgentCliAccess,
-  hermesBrowserAccess: mocks.hermesBrowserAccess,
-  setHermesBrowserAccess: mocks.setHermesBrowserAccess,
-  EXTENSION_PAIRING_CHANGED_EVENT: "june://extension-pairing-changed",
-  extensionPairingStatus: mocks.extensionPairingStatus,
-  registerBrowserExtensionHost: mocks.registerBrowserExtensionHost,
   juneCharacter: mocks.juneCharacter,
   setJuneCharacter: mocks.setJuneCharacter,
   revealPath: mocks.revealPath,
@@ -256,7 +247,6 @@ describe("AppSettings", () => {
     localState = { baseUrl: "", modelId: "", apiKey: "", enabled: false };
     mocks.eventHandler = undefined;
     mocks.listen.mockResolvedValue(vi.fn());
-    mocks.extensionPairingStatus.mockResolvedValue({ paired: false, listenerRunning: true });
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
     mocks.dictationHotkeyStatus.mockResolvedValue({
       type: "hotkey_trigger_ready",
@@ -502,8 +492,6 @@ describe("AppSettings", () => {
     mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
     mocks.setHermesAgentCliAccess.mockImplementation(async (enabled: boolean) => ({ enabled }));
-    mocks.hermesBrowserAccess.mockResolvedValue({ enabled: false });
-    mocks.setHermesBrowserAccess.mockImplementation(async (enabled: boolean) => ({ enabled }));
     mocks.juneCharacter.mockResolvedValue({
       character: "You are helpful, knowledgeable, and direct.",
       isCustom: false,
@@ -3845,7 +3833,7 @@ describe("AppSettings", () => {
     expect(cliSwitch).toHaveAttribute("aria-checked", "false");
   });
 
-  it("updates the Browser access grant from Agent settings", async () => {
+  it("does not show an independent Browser use control in Agent settings", async () => {
     const user = userEvent.setup();
     render(
       <AppSettings
@@ -3861,80 +3849,9 @@ describe("AppSettings", () => {
     );
 
     await user.click(screen.getByRole("tab", { name: "Agent" }));
-    const browserSwitch = await screen.findByRole("switch", {
-      name: "Allow browser use",
-    });
-
-    await waitFor(() => expect(browserSwitch).toBeEnabled());
-    expect(browserSwitch).toHaveAttribute("aria-checked", "false");
-
-    await user.click(browserSwitch);
-    await waitFor(() => expect(mocks.setHermesBrowserAccess).toHaveBeenCalledWith(true));
-    expect(browserSwitch).toHaveAttribute("aria-checked", "true");
-
-    await user.click(browserSwitch);
-    await waitFor(() => expect(mocks.setHermesBrowserAccess).toHaveBeenCalledWith(false));
-    expect(browserSwitch).toHaveAttribute("aria-checked", "false");
-  });
-
-  it("shows browser extension pairing state and registers the host manifest", async () => {
-    const user = userEvent.setup();
-    mocks.registerBrowserExtensionHost.mockResolvedValue({
-      manifestPath: "/tmp/co.opensoftware.june.extension.json",
-      shimPath: "/tmp/june-nm-shim",
-    });
-    render(
-      <AppSettings
-        account={signedInAccount}
-        accountLoading={false}
-        sourceMode="microphoneOnly"
-        checkingSourceReadiness={false}
-        onAccountChanged={vi.fn()}
-        onAccountRefresh={vi.fn()}
-        onSourceModeChange={vi.fn()}
-        onEnableSystemAudio={vi.fn()}
-      />,
-    );
-
-    await user.click(screen.getByRole("tab", { name: "Agent" }));
-    expect(await screen.findByText("Not paired")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Set up browser extension" }));
-    await waitFor(() => expect(mocks.registerBrowserExtensionHost).toHaveBeenCalled());
-    expect(await screen.findByText(/Chrome is set up/)).toBeInTheDocument();
-  });
-
-  it("flips to paired when the extension host emits a pairing change", async () => {
-    const user = userEvent.setup();
-    const handlers = new Map<string, (event: { payload: unknown }) => void>();
-    mocks.listen.mockImplementation((event: string, handler: (e: { payload: unknown }) => void) => {
-      handlers.set(event, handler);
-      return Promise.resolve(vi.fn());
-    });
-    render(
-      <AppSettings
-        account={signedInAccount}
-        accountLoading={false}
-        sourceMode="microphoneOnly"
-        checkingSourceReadiness={false}
-        onAccountChanged={vi.fn()}
-        onAccountRefresh={vi.fn()}
-        onSourceModeChange={vi.fn()}
-        onEnableSystemAudio={vi.fn()}
-      />,
-    );
-
-    await user.click(screen.getByRole("tab", { name: "Agent" }));
-    expect(await screen.findByText("Not paired")).toBeInTheDocument();
-    await waitFor(() => expect(handlers.has("june://extension-pairing-changed")).toBe(true));
-
-    act(() => {
-      handlers.get("june://extension-pairing-changed")?.({
-        payload: { paired: true, listenerRunning: true, extensionVersion: "0.1.0" },
-      });
-    });
-    expect(await screen.findByText("Paired")).toBeInTheDocument();
-    expect(await screen.findByText(/version 0\.1\.0/)).toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Agent" });
+    expect(screen.queryByText("Browser use")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Allow browser use" })).toBeNull();
   });
 
   it("drills into a messaging platform as a pinned detail with bar actions", async () => {

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectorsSection } from "../components/settings/ConnectorsSection";
@@ -9,6 +9,10 @@ const mocks = vi.hoisted(() => ({
   connectorsConnect: vi.fn(),
   connectorsDisconnect: vi.fn(),
   connectorsApplyRuntime: vi.fn(),
+  hermesBrowserAccess: vi.fn(),
+  setHermesBrowserAccess: vi.fn(),
+  extensionPairingStatus: vi.fn(),
+  registerBrowserExtensionHost: vi.fn(),
   listen: vi.fn(),
 }));
 
@@ -18,6 +22,11 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   connectorsConnect: mocks.connectorsConnect,
   connectorsDisconnect: mocks.connectorsDisconnect,
   connectorsApplyRuntime: mocks.connectorsApplyRuntime,
+  hermesBrowserAccess: mocks.hermesBrowserAccess,
+  setHermesBrowserAccess: mocks.setHermesBrowserAccess,
+  extensionPairingStatus: mocks.extensionPairingStatus,
+  registerBrowserExtensionHost: mocks.registerBrowserExtensionHost,
+  EXTENSION_PAIRING_CHANGED_EVENT: "june://extension-pairing-changed",
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -45,6 +54,13 @@ beforeEach(() => {
   mocks.connectorsConnect.mockResolvedValue(account());
   mocks.connectorsDisconnect.mockResolvedValue(undefined);
   mocks.connectorsApplyRuntime.mockResolvedValue(undefined);
+  mocks.hermesBrowserAccess.mockResolvedValue({ enabled: false });
+  mocks.setHermesBrowserAccess.mockImplementation(async (enabled: boolean) => ({ enabled }));
+  mocks.extensionPairingStatus.mockResolvedValue({ paired: false, listenerRunning: true });
+  mocks.registerBrowserExtensionHost.mockResolvedValue({
+    manifestPath: "/tmp/co.opensoftware.june.extension.json",
+    shimPath: "/tmp/june-nm-shim",
+  });
   mocks.listen.mockResolvedValue(() => {});
 });
 
@@ -56,6 +72,81 @@ async function findEnabledConnect(name: string) {
 }
 
 describe("ConnectorsSection", () => {
+  it("lists Browser use as a capability beside the account directory", async () => {
+    render(<ConnectorsSection />);
+
+    const row = (await screen.findByText("Browser use")).closest("li");
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByRole("button", { name: "Connect" })).toBeEnabled();
+    expect(within(row as HTMLElement).getByText(/page text and screenshots/i)).toBeInTheDocument();
+  });
+
+  it("connects Browser use by granting access before registering the native host", async () => {
+    render(<ConnectorsSection />);
+
+    const row = (await screen.findByText("Browser use")).closest("li") as HTMLElement;
+    await userEvent.click(within(row).getByRole("button", { name: "Connect" }));
+
+    await waitFor(() => expect(mocks.setHermesBrowserAccess).toHaveBeenCalledWith(true));
+    expect(mocks.registerBrowserExtensionHost).toHaveBeenCalledOnce();
+    expect(mocks.setHermesBrowserAccess.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.registerBrowserExtensionHost.mock.invocationCallOrder[0],
+    );
+    expect(await within(row).findByText(/Browser access is on/i)).toBeInTheDocument();
+  });
+
+  it("shows a granted but unpaired capability as actionable setup", async () => {
+    mocks.hermesBrowserAccess.mockResolvedValue({ enabled: true });
+    render(<ConnectorsSection />);
+
+    const row = (await screen.findByText("Browser use")).closest("li") as HTMLElement;
+    expect(await within(row).findByText("Finish setup")).toBeInTheDocument();
+    expect(within(row).getByText(/Browser access is on/i)).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Set up extension" })).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+    expect(within(row).queryByRole("alert")).toBeNull();
+  });
+
+  it("updates Browser use to connected when the extension pairing event arrives", async () => {
+    const handlers = new Map<string, (event: { payload: unknown }) => void>();
+    mocks.listen.mockImplementation((event: string, handler: (e: { payload: unknown }) => void) => {
+      handlers.set(event, handler);
+      return Promise.resolve(() => {});
+    });
+    render(<ConnectorsSection />);
+
+    const row = (await screen.findByText("Browser use")).closest("li") as HTMLElement;
+    await userEvent.click(await within(row).findByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(mocks.setHermesBrowserAccess).toHaveBeenCalledWith(true));
+    await waitFor(() => expect(handlers.has("june://extension-pairing-changed")).toBe(true));
+    act(() => {
+      handlers.get("june://extension-pairing-changed")?.({
+        payload: { paired: true, listenerRunning: true, extensionVersion: "0.1.0" },
+      });
+    });
+
+    expect(await within(row).findByText("Connected")).toBeInTheDocument();
+    expect(within(row).getByText(/version 0\.1\.0/)).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: "Set up extension" })).toBeNull();
+    expect(within(row).queryByText(/finish connecting/i)).toBeNull();
+  });
+
+  it("disconnects Browser use by revoking the shared grant", async () => {
+    mocks.hermesBrowserAccess.mockResolvedValue({ enabled: true });
+    mocks.extensionPairingStatus.mockResolvedValue({
+      paired: true,
+      listenerRunning: true,
+      extensionVersion: "0.1.0",
+    });
+    render(<ConnectorsSection />);
+
+    const row = (await screen.findByText("Browser use")).closest("li") as HTMLElement;
+    await userEvent.click(await within(row).findByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() => expect(mocks.setHermesBrowserAccess).toHaveBeenCalledWith(false));
+    expect(await within(row).findByRole("button", { name: "Connect" })).toBeInTheDocument();
+  });
+
   it("lists Google with a capability blurb", async () => {
     render(<ConnectorsSection />);
     await findEnabledConnect("Connect Google");
@@ -84,7 +175,7 @@ describe("ConnectorsSection", () => {
     // connector servers, triggers, and grants all bind to that single account.
     expect(screen.queryByRole("button", { name: "Connect Google" })).toBeNull();
     expect(screen.getByRole("button", { name: "Add access" })).toBeInTheDocument();
-    expect(screen.getByText(/Connect Google in local mode/i)).toBeInTheDocument();
+    expect(screen.getByText(/Google tokens stay in your Mac's Keychain/i)).toBeInTheDocument();
   });
 
   it("connects an account from the feature-bundle dialog and applies the runtime", async () => {

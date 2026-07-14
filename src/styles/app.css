@@ -25873,11 +25873,10 @@ input:focus-visible,
   opacity: 0.55;
 }
 
-/* Connectors settings page: a provider directory (Linear's connected-accounts
- * pattern). Every provider is always listed — logo tile, name, one capability
- * line — with the connection status pill and actions on the right. The row
- * recipe mirrors .mcp-server-row so integration lists read the same across
- * settings. */
+/* Connectors settings page: a capability and provider directory. Every entry
+ * is always listed with a logo tile, name, one capability line, status, and
+ * actions. The row recipe mirrors .mcp-server-row so integration lists read
+ * the same across settings. */
 .connectors-card {
   padding: var(--sp-2) var(--sp-3);
 }
@@ -25940,6 +25939,12 @@ input:focus-visible,
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.connector-capability-error {
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
 }
 
 .connector-actions {

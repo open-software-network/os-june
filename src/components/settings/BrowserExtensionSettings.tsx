@@ -1,28 +1,41 @@
-import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { IconBrowserTabs } from "central-icons/IconBrowserTabs";
+import { useEffect, useState } from "react";
 import {
   EXTENSION_PAIRING_CHANGED_EVENT,
   extensionPairingStatus,
+  hermesBrowserAccess,
   registerBrowserExtensionHost,
+  setHermesBrowserAccess,
   type ExtensionPairingStatus,
 } from "../../lib/tauri";
-import { SettingsPageHeader } from "./AppSettings";
+import { messageFromError } from "../../lib/errors";
 
 /**
- * Browser use pairing skeleton (JUN-287): shows whether the June extension is
- * paired and registers the Chrome native messaging host manifest. Kept
- * self-contained; final placement in the Plugins area follows the plugins
- * design work.
+ * Browser use is a capability, not a ConnectorAccount: it has one stored grant
+ * plus extension readiness. This row owns the settings-side write path for the
+ * grant and keeps pairing live without teaching the OAuth account directory
+ * about account-less capabilities.
  */
-export function BrowserExtensionGroup() {
+export function BrowserUseCapabilityRow() {
+  const [grantEnabled, setGrantEnabled] = useState<boolean | null>(null);
   const [status, setStatus] = useState<ExtensionPairingStatus | null>(null);
-  const [registering, setRegistering] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [saving, setSaving] = useState<"connect" | "disconnect" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
+    void hermesBrowserAccess()
+      .then((current) => {
+        if (!cancelled) setGrantEnabled(current.enabled);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setGrantEnabled(false);
+          setError(messageFromError(err));
+        }
+      });
     void extensionPairingStatus()
       .then((current) => {
         if (!cancelled) setStatus(current);
@@ -42,63 +55,104 @@ export function BrowserExtensionGroup() {
     };
   }, []);
 
-  async function handleSetUp() {
-    setRegistering(true);
+  async function handleConnect() {
+    setSaving("connect");
     setError(null);
-    setNotice(null);
     try {
+      const access = await setHermesBrowserAccess(true);
+      setGrantEnabled(access.enabled);
       await registerBrowserExtensionHost();
-      setNotice(
-        "Chrome is set up. Load the June extension in chrome://extensions (Developer mode, Load unpacked), and it will connect to June.",
-      );
     } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : ((err as { message?: string })?.message ?? "Could not set up the browser extension."),
-      );
+      setError(messageFromError(err));
     } finally {
-      setRegistering(false);
+      setSaving(null);
     }
   }
 
-  const paired = status?.paired === true;
+  async function handleDisconnect() {
+    setSaving("disconnect");
+    setError(null);
+    try {
+      const access = await setHermesBrowserAccess(false);
+      setGrantEnabled(access.enabled);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  const paired = grantEnabled === true && status?.paired === true;
+  const partial = grantEnabled === true && !paired;
+  const subtitle = paired
+    ? `Paired with the June extension${
+        status?.extensionVersion ? ` version ${status.extensionVersion}` : ""
+      }. Browser access is on.`
+    : partial
+      ? "Browser access is on. Install or load the June extension in Chrome to finish setup."
+      : "Operate task tabs and tabs you share. Page text and screenshots go to your chosen model for inference and may leave your device unless you use a local model.";
 
   return (
-    <section className="settings-group" aria-labelledby="browser-extension-heading">
-      <SettingsPageHeader
-        id="browser-extension-heading"
-        title="Browser extension"
-        blurb="Pair the June extension so the agent can work in your browser."
-      />
-      <div className="settings-card">
-        <div className="settings-rows">
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <h3 className="settings-row-title">{paired ? "Paired" : "Not paired"}</h3>
-              <p className="settings-row-description">
-                {paired
-                  ? `The June extension is connected${
-                      status?.extensionVersion ? ` (version ${status.extensionVersion})` : ""
-                    }.`
-                  : "Set up Chrome, then load the June extension to connect it to this app."}
-              </p>
-            </div>
-            <div className="settings-row-control">
+    <li className="connector-row" data-capability="browser-use">
+      <span className="connector-logo" aria-hidden>
+        <IconBrowserTabs size={20} ariaHidden />
+      </span>
+      <div className="connector-main">
+        <span className="connector-name">Browser use</span>
+        <p className="connector-subtitle" title={subtitle}>
+          {subtitle}
+        </p>
+        {error ? (
+          <p className="settings-row-error connector-capability-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </div>
+      <div className="connector-actions">
+        {paired ? (
+          <span className="status-pill" data-tone="ok">
+            Connected
+          </span>
+        ) : partial ? (
+          <span className="status-pill" data-tone="warning">
+            Finish setup
+          </span>
+        ) : null}
+        {grantEnabled === true ? (
+          <>
+            {!paired ? (
               <button
                 type="button"
                 className="btn btn-secondary"
-                disabled={registering}
-                onClick={() => void handleSetUp()}
+                disabled={saving !== null}
+                aria-busy={saving === "connect" || undefined}
+                onClick={() => void handleConnect()}
               >
-                {registering ? "Setting up..." : "Set up browser extension"}
+                {saving === "connect" ? "Setting up..." : "Set up extension"}
               </button>
-            </div>
-          </div>
-        </div>
+            ) : null}
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={saving !== null}
+              aria-busy={saving === "disconnect" || undefined}
+              onClick={() => void handleDisconnect()}
+            >
+              {saving === "disconnect" ? "Disconnecting..." : "Disconnect"}
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={grantEnabled === null || saving !== null}
+            aria-busy={saving === "connect" || undefined}
+            onClick={() => void handleConnect()}
+          >
+            {saving === "connect" ? "Connecting..." : "Connect"}
+          </button>
+        )}
       </div>
-      {notice ? <p className="settings-row-description">{notice}</p> : null}
-      {error ? <p className="settings-row-error">{error}</p> : null}
-    </section>
+    </li>
   );
 }

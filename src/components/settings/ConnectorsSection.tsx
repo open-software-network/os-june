@@ -24,6 +24,7 @@ import { Dialog } from "../ui/Dialog";
 import { InlineNotice } from "../ui/InlineNotice";
 import { toast } from "../ui/Toaster";
 import { SettingsPageHeader } from "./AppSettings";
+import { BrowserUseCapabilityRow } from "./BrowserExtensionSettings";
 
 // Read-only by default: mail read and calendar read. Write scopes (draft,
 // send, organize, manage calendar) are opt-in checkboxes, so a fresh connect
@@ -54,11 +55,9 @@ function accountSubtitle(account: ConnectorAccount): string {
 }
 
 /**
- * The Connectors settings page: a provider directory (one row per provider,
- * always listed) with Google's feature-bundle picker, reconnect for lapsed
- * grants, and disconnect with optional provider-side revoke. Local mode only:
- * tokens live in the Mac's Keychain and provider calls originate on this
- * device.
+ * The Connectors settings page: an OAuth provider directory plus a separate
+ * capability row. Browser use stays out of ConnectorAccount because its grant
+ * and extension pairing have no account, email, or scopes.
  */
 export function ConnectorsSection() {
   const [accounts, setAccounts] = useState<ConnectorAccount[] | null>(null);
@@ -198,7 +197,7 @@ export function ConnectorsSection() {
       <SettingsPageHeader
         id="connectors-heading"
         title="Connectors"
-        blurb="Connect Google in local mode. Tokens stay in your Mac's Keychain, provider calls go straight from this device, and OpenSoftware's servers cannot read your mail or calendar."
+        blurb="Set up Browser use and connect Google in local mode. Google tokens stay in your Mac's Keychain, provider calls go straight from this device, and OpenSoftware's servers cannot read your mail or calendar."
       />
 
       {notConfigured ? (
@@ -214,6 +213,7 @@ export function ConnectorsSection() {
 
       <div className="settings-card connectors-card">
         <ul className="connectors-list">
+          <BrowserUseCapabilityRow />
           {PROVIDER_ORDER.map((provider) => {
             const account = accounts?.[0] ?? null;
             const name = PROVIDER_NAMES[provider];
