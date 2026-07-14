@@ -82,10 +82,12 @@ import {
   setReleaseChannel,
   type ReleaseChannel,
 } from "../../lib/updater";
-import { isMacLikePlatform } from "../../lib/platform";
+import {
+  fallbackDictationCapabilities,
+  isMacLikePlatform,
+  useDictationCapabilities,
+} from "../../lib/platform";
 import { systemAudioAvailability } from "../../lib/source-readiness";
-import { fallbackDictationCapabilities } from "../../lib/platform";
-import { fallbackDictationCapabilities, useDictationCapabilities } from "../../lib/platform";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
 import {
