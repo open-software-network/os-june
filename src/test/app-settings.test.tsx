@@ -3348,6 +3348,54 @@ describe("AppSettings", () => {
     );
   });
 
+  it("keeps the billing choice dialog open when the model switch fails", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+      },
+    });
+    mocks.setVeniceApiKey.mockResolvedValue({
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      veniceApiKeyConfigured: true,
+    });
+    mocks.setVeniceModel.mockRejectedValueOnce(new Error("switch failed"));
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use GLM 5.2" }));
+
+    // The failed save must not read as a completed switch: the dialog stays
+    // open for a retry or an explicit Keep Auto.
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use GLM 5.2" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument(),
+    );
+    expect(mocks.setVeniceModel).toHaveBeenLastCalledWith("generation", "zai-org-glm-5-2");
+  });
+
   it("keeps Auto when the billing choice dialog is declined", async () => {
     const user = userEvent.setup();
     mocks.providerModelSettings.mockResolvedValueOnce({

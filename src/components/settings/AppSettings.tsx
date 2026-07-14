@@ -1021,7 +1021,9 @@ export function AppSettings({
     }
   }
 
-  async function selectVeniceModel(mode: ProviderModelMode, modelId: string) {
+  // Returns whether the switch persisted, so confirmation flows (the Venice
+  // key billing choice) can stay open instead of closing over a failed save.
+  async function selectVeniceModel(mode: ProviderModelMode, modelId: string): Promise<boolean> {
     try {
       const next = await setVeniceModel(mode, modelId);
       setProviderSettings(next);
@@ -1035,8 +1037,10 @@ export function AppSettings({
               ? "Video model updated."
               : "Text model updated.",
       );
+      return true;
     } catch (error) {
       setStatus(messageFromError(error));
+      return false;
     }
   }
 
@@ -1337,11 +1341,16 @@ export function AppSettings({
   // model when clicked.
   const generationOptions = modelOptions(generationCatalog, modelValueForMode("generation"));
   // Where the billing-choice dialog lands when the user opts out of Auto to
-  // use their Venice key: the leading suggested pick, mirroring the Auto
-  // toggle's own off-target in the model picker.
-  const veniceKeySwitchTarget = suggestedModelsForMode("generation", generationOptions).find(
-    (item) => item.model.id !== AUTO_MODEL_ID,
-  )?.model;
+  // use their Venice key: the leading suggested pick, else the first Venice
+  // catalog model, mirroring the Auto toggle's own off-target in the model
+  // picker (the factory default stays the last resort for an empty catalog).
+  const veniceKeySwitchTarget =
+    suggestedModelsForMode("generation", generationOptions).find(
+      (item) => item.model.id !== AUTO_MODEL_ID,
+    )?.model ??
+    generationOptions.find(
+      (option) => option.provider === "venice" && option.id !== AUTO_MODEL_ID,
+    );
   const imageOptions = IMAGE_GENERATION_ENABLED
     ? modelOptions(IMAGE_MODELS, providerSettings.imageModel)
     : [];
@@ -2186,12 +2195,15 @@ export function AppSettings({
             <ConfirmDialog
               open={veniceKeyAutoBillingChoiceOpen}
               onClose={() => setVeniceKeyAutoBillingChoiceOpen(false)}
-              onConfirm={() =>
-                selectVeniceModel(
+              onConfirm={async () => {
+                const switched = await selectVeniceModel(
                   "generation",
                   veniceKeySwitchTarget?.id ?? DEFAULT_GENERATION_SUGGESTION_ID,
-                )
-              }
+                );
+                // Keep the dialog open over a failed save so the choice is
+                // never silently dropped; the status line carries the error.
+                if (!switched) throw new Error("venice_model_switch_failed");
+              }}
               title="Auto does not use your Venice API key"
               description={`Notes and chat are billed to June credits while Auto is selected. Switch to ${veniceKeySwitchTarget?.name ?? "a Venice model"} to use your key for notes and new chats.`}
               confirmLabel={`Use ${veniceKeySwitchTarget?.name ?? "a Venice model"}`}
