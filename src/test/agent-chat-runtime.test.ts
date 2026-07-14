@@ -1775,7 +1775,7 @@ describe("Agent chat runtime", () => {
     });
   });
 
-  it("assigns id-less completions to separate overlapping media calls", () => {
+  it("does not assign ambiguous id-less completions across overlapping media calls", () => {
     const turns = buildHermesSessionChatTurns(
       [],
       [
@@ -1813,8 +1813,8 @@ describe("Agent chat runtime", () => {
     );
     expect(mediaTools).toHaveLength(2);
     expect(mediaTools).toEqual([
-      expect.objectContaining({ id: "image-a", status: "complete" }),
-      expect.objectContaining({ id: "image-b", status: "complete" }),
+      expect.objectContaining({ id: "image-a", status: "running" }),
+      expect.objectContaining({ id: "image-b", status: "running" }),
     ]);
   });
 
@@ -1823,13 +1823,15 @@ describe("Agent chat runtime", () => {
       [],
       [
         toolEvent({
-          key: "generate_image",
+          key: "image-a",
+          toolCallId: "image-a",
           phase: "start",
           name: "generate_image",
           receivedAt: "2026-06-04T10:00:00.000Z",
         }),
         toolEvent({
-          key: "generate_image",
+          key: "image-a",
+          toolCallId: "image-a",
           phase: "complete",
           name: "generate_image",
           receivedAt: "2026-06-04T10:00:01.000Z",

@@ -511,12 +511,6 @@ function assistantTurnForTimestamp(turns: AgentChatTurn[], createdAt: string | u
   return undefined;
 }
 
-function liveToolCorrelationKey(event: Extract<JuneHermesEvent, { kind: "tool" }>) {
-  const name = toolActivityLabel(event.name ?? "tool", event.sanitizedPayload);
-  const media = generatedMediaToolKind(event.name, event.sanitizedPayload) ?? "none";
-  return `${name}\u0000${media}`;
-}
-
 function appendLiveHermesEvents(
   turns: AgentChatTurn[],
   events: JuneHermesEvent[],
@@ -525,7 +519,6 @@ function appendLiveHermesEvents(
 ) {
   let currentAssistant: AgentChatTurn | null = null;
   let idlessToolSequence = 0;
-  const suppressedPersistedToolCorrelations = new Set<string>();
   const toolCreatedTurns = new Set<AgentChatTurn>();
   const pendingSyntheticTurns = sortAgentChatTurns(
     syntheticTurns.map((turn) => ({
@@ -549,15 +542,10 @@ function appendLiveHermesEvents(
     const hasExplicitToolIdentity =
       event.kind === "tool" && Boolean(event.toolCallId || event.key !== event.name);
     if (event.kind === "tool") {
-      const correlation = liveToolCorrelationKey(event);
       if (
         (event.toolCallId && persistedToolResultIds.has(event.toolCallId)) ||
         persistedToolResultIds.has(event.key)
       ) {
-        if (hasExplicitToolIdentity) suppressedPersistedToolCorrelations.add(correlation);
-        continue;
-      }
-      if (!hasExplicitToolIdentity && suppressedPersistedToolCorrelations.has(correlation)) {
         continue;
       }
     }
@@ -710,6 +698,12 @@ function appendLiveHermesEvents(
           event.phase === "complete" ? "complete" : event.phase === "failed" ? "failed" : "running";
         const name = toolActivityLabel(event.name ?? "tool", event.sanitizedPayload);
         const media = generatedMediaToolKind(event.name, event.sanitizedPayload);
+        // The pinned gateway's terminal media callback always carries
+        // tool_id; only tool.generating is id-less. A terminal frame without
+        // identity is ambiguous after reconnect and must not complete another
+        // same-name invocation or attach the wrong image/video to it. Hydrated
+        // history remains the fallback source of truth for older gateways.
+        if (!hasExplicitToolIdentity && media && status !== "running") break;
         if (!hasExplicitToolIdentity && event.phase !== "start") {
           currentAssistant ??= latestAssistantTurnWithRunningTool(turns, name, media);
           // The pinned runtime gives starts a stable tool_id but may omit it
@@ -740,10 +734,10 @@ function appendLiveHermesEvents(
             status,
             media,
           },
-          // Some runtime progress/completion callbacks omit the stable id and
-          // carry only the tool name. Fold those into the most recent matching
-          // row; explicit ids remain distinct for genuinely concurrent calls.
-          !hasExplicitToolIdentity && event.phase !== "start",
+          // Runtime progress callbacks can omit the stable id and carry only
+          // the tool name. Fold those into the most recent matching row;
+          // explicit ids remain distinct for genuinely concurrent calls.
+          !hasExplicitToolIdentity && status === "running" && event.phase !== "start",
         );
         if (status === "complete") {
           appendImageParts(currentAssistant.parts, imagePartsFromHermesContent(event.content));
