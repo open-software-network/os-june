@@ -40,6 +40,10 @@ pub struct AppNotificationRequest {
     body: String,
     #[serde(default)]
     sound: Option<String>,
+    /// Per-session grouping, honored by the plugin fallback (the macOS
+    /// native path has no NSUserNotification equivalent).
+    #[serde(default)]
+    group: Option<String>,
     /// Agent session to open when the user clicks the notification.
     #[serde(default)]
     session_id: Option<String>,
@@ -63,16 +67,16 @@ impl AgentOpenQueue {
     }
 
     /// Records a notification click. Returns the session id when the frontend
-    /// can receive it immediately; otherwise queues it for `mark_ready`.
+    /// can receive it immediately. The click stays queued either way: the
+    /// ready flag can outlive the listeners it describes (webview reload
+    /// tears them down without telling the native side), so an emitted event
+    /// may land on no listener. The frontend drains the queue after handling
+    /// an event, and the next `mark_ready` recovers anything that was lost.
     fn on_activation(&mut self, session_id: Option<String>) -> Option<String> {
         let session_id = session_id?;
-        if self.frontend_ready {
-            Some(session_id)
-        } else {
-            // Last click wins: the user's most recent choice is the one to honor.
-            self.pending_session_id = Some(session_id);
-            None
-        }
+        // Last click wins: the user's most recent choice is the one to honor.
+        self.pending_session_id = Some(session_id.clone());
+        self.frontend_ready.then_some(session_id)
     }
 
     /// Frontend listeners are registered; returns any click that arrived early.
@@ -121,6 +125,9 @@ fn send_via_plugin(app: &AppHandle, request: &AppNotificationRequest) -> Result<
         .body(&request.body);
     if let Some(sound) = &request.sound {
         builder = builder.sound(sound);
+    }
+    if let Some(group) = &request.group {
+        builder = builder.group(group);
     }
     builder.show().map_err(|error| error.to_string())
 }
@@ -373,6 +380,20 @@ mod tests {
     }
 
     #[test]
+    fn delivered_click_stays_queued_until_drained() {
+        // The ready flag can be stale across a webview reload, so an emitted
+        // click must remain recoverable by the next ready handshake.
+        let mut queue = AgentOpenQueue::new();
+        queue.mark_ready();
+        assert_eq!(
+            queue.on_activation(Some("session-2".to_string())),
+            Some("session-2".to_string())
+        );
+        assert_eq!(queue.mark_ready(), Some("session-2".to_string()));
+        assert_eq!(queue.mark_ready(), None);
+    }
+
+    #[test]
     fn later_click_replaces_a_queued_one() {
         let mut queue = AgentOpenQueue::new();
         assert_eq!(queue.on_activation(Some("session-old".to_string())), None);
@@ -401,10 +422,12 @@ mod tests {
             "title": "June finished",
             "body": "Make a PDF",
             "sound": "Ping",
+            "group": "june-agent-session-4",
             "sessionId": "session-4"
         }))
         .expect("request should deserialize");
         assert_eq!(request.session_id.as_deref(), Some("session-4"));
         assert_eq!(request.sound.as_deref(), Some("Ping"));
+        assert_eq!(request.group.as_deref(), Some("june-agent-session-4"));
     }
 }

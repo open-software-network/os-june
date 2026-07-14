@@ -66,6 +66,7 @@ export async function notifyAgentSessionStatus(detail: AgentSessionStatusDetail)
       title: copy.title,
       body: copy.body,
       sound: NOTIFICATION_SOUND,
+      group,
       sessionId: detail.sessionId,
     });
   } catch {

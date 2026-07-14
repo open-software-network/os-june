@@ -24,11 +24,7 @@ async function canNotify() {
 // (JUN-327). No sessionId here; clicking still just opens the app.
 async function deliver(notification: { title: string; body: string; group: string }) {
   try {
-    await sendAppNotification({
-      title: notification.title,
-      body: notification.body,
-      sound: NOTIFICATION_SOUND,
-    });
+    await sendAppNotification({ ...notification, sound: NOTIFICATION_SOUND });
   } catch {
     await sendNotification({ ...notification, sound: NOTIFICATION_SOUND });
   }

@@ -1633,15 +1633,19 @@ export function App() {
     // changed since the notification was posted). Resolve it against the
     // known sessions, refreshing from the bridge when it is not cached; a
     // session that no longer exists still opens the agent workspace rather
-    // than dropping the click on an unrelated view.
+    // than dropping the click on an unrelated view. The sequence counter
+    // keeps a slow lookup for an older click from overriding a newer one.
+    let openSequence = 0;
     async function openAgentSessionById(sessionId: string) {
+      openSequence += 1;
+      const sequence = openSequence;
       const cached = agentMenuBarSessionsRef.current.find((session) => session.id === sessionId);
       if (cached) {
         openAgentWorkspace(cached);
         return;
       }
       const sessions = await listHermesSessions({}).catch(() => []);
-      if (aborted) return;
+      if (aborted || sequence !== openSequence) return;
       openAgentWorkspace(sessions.find((session) => session.id === sessionId));
     }
 
@@ -1652,6 +1656,9 @@ export function App() {
       }
       if (payload?.sessionId) {
         void openAgentSessionById(payload.sessionId);
+        // The backend keeps the clicked session queued in case the emit
+        // raced a webview reload; this event was received, so drain it.
+        void agentOpenReady().catch(() => {});
         return;
       }
       openAgentWorkspace(undefined);

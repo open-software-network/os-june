@@ -75,6 +75,7 @@ describe("agent notifications", () => {
       title: "June needs your input",
       body: "Approve execute_code.",
       sound: "Ping",
+      group: "june-agent-session-1",
       sessionId: "session-1",
     });
     expect(notificationMocks.sendNotification).not.toHaveBeenCalled();
@@ -98,6 +99,7 @@ describe("agent notifications", () => {
       title: "June finished",
       body: "Make a PDF",
       sound: "Ping",
+      group: "june-agent-session-2",
       sessionId: "session-2",
     });
   });

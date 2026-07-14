@@ -865,6 +865,7 @@ export async function sendAppNotification(input: {
   title: string;
   body: string;
   sound?: string;
+  group?: string;
   sessionId?: string;
 }) {
   return invoke<void>("send_app_notification", { request: input });
