@@ -59,11 +59,18 @@ struct Expect {
     /// for opaque proxy responses where the client only reads the status.
     #[serde(default = "default_true")]
     envelope: bool,
+    /// For proxy responses (`envelope: false`): the exact JSON body the
+    /// route must return for this request. Pins passthrough behavior; a
+    /// route that starts wrapping or reshaping the upstream body fails.
+    #[serde(default)]
+    raw_json: Option<serde_json::Value>,
     /// Response arrives as SSE; the envelope is the `result` event payload.
     #[serde(default)]
     sse: bool,
     /// Fields the pinned client version deserializes from `data` as
-    /// required (non-`Option`). Must be present and non-null.
+    /// required (non-`Option`), as `"name"` or `"name:type"` where type is
+    /// one of string, number, boolean, array, object. Must be present,
+    /// non-null, and of the pinned type.
     #[serde(default)]
     required_data_fields: Vec<String>,
     /// When the required-item checks apply to `data[itemsField]` instead of
@@ -178,6 +185,10 @@ async fn check_fixture(
         response_text(response).await?
     );
     if !fixture.expect.envelope {
+        if let Some(expected) = &fixture.expect.raw_json {
+            let body = response_json(response).await?;
+            assert_eq!(&body, expected, "{label}: proxied body changed");
+        }
         return Ok(());
     }
 
@@ -193,12 +204,8 @@ async fn check_fixture(
     );
     let data = &envelope["data"];
     assert!(!data.is_null(), "{label}: envelope data is null");
-    for field in &fixture.expect.required_data_fields {
-        assert!(
-            data.get(field).is_some_and(|value| !value.is_null()),
-            "{label}: data.{field} is missing or null; the pinned client \
-             requires it: {data}"
-        );
+    for spec in &fixture.expect.required_data_fields {
+        check_required_field(data, spec, label, "data")?;
     }
     if !fixture.expect.required_item_fields.is_empty() {
         let items = match &fixture.expect.items_field {
@@ -210,13 +217,52 @@ async fn check_fixture(
         };
         assert!(!items.is_empty(), "{label}: checked array is empty");
         for item in items {
-            for field in &fixture.expect.required_item_fields {
-                assert!(
-                    item.get(field).is_some_and(|value| !value.is_null()),
-                    "{label}: item field {field} is missing or null; the \
-                     pinned client requires it: {item}"
+            for spec in &fixture.expect.required_item_fields {
+                check_required_field(item, spec, label, "item")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks one `"name"` / `"name:type"` field spec. The pinned client's serde
+/// needs the field present, non-null, and of the shipped JSON type; a type
+/// change (say `provider` becoming a number) breaks its deserialization just
+/// as hard as a removal.
+fn check_required_field(
+    container: &serde_json::Value,
+    spec: &str,
+    label: &str,
+    scope: &str,
+) -> Result<(), Box<dyn Error>> {
+    let (field, kind) = match spec.split_once(':') {
+        Some((field, kind)) => (field, Some(kind)),
+        None => (spec, None),
+    };
+    let Some(value) = container.get(field).filter(|value| !value.is_null()) else {
+        return Err(format!(
+            "{label}: {scope}.{field} is missing or null; the pinned client requires it: {container}"
+        )
+        .into());
+    };
+    if let Some(kind) = kind {
+        let matches = match kind {
+            "string" => value.is_string(),
+            "number" => value.is_number(),
+            "boolean" => value.is_boolean(),
+            "array" => value.is_array(),
+            "object" => value.is_object(),
+            other => {
+                return Err(
+                    format!("{label}: unknown type {other:?} in field spec {spec:?}").into(),
                 );
             }
+        };
+        if !matches {
+            return Err(format!(
+                "{label}: {scope}.{field} must be a JSON {kind} for the pinned client, got: {value}"
+            )
+            .into());
         }
     }
     Ok(())

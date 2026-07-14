@@ -3,6 +3,15 @@
   "endpoint": "/v1/models?type=text",
   "auth": false,
   "expect": {
-    "requiredItemFields": ["provider", "id", "name", "modelType", "traits", "capabilities", "priceUnit", "priceDescription"]
+    "requiredItemFields": [
+      "provider:string",
+      "id:string",
+      "name:string",
+      "modelType:string",
+      "traits:array",
+      "capabilities:array",
+      "priceUnit:string",
+      "priceDescription:string"
+    ]
   }
 }

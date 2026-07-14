@@ -6,9 +6,17 @@
     "stream": true,
     "max_tokens": 32768,
     "messages": [
-      { "role": "system", "content": "You are Hermes." },
-      { "role": "user", "content": "hello" }
+      {
+        "role": "system",
+        "content": "You are Hermes."
+      },
+      {
+        "role": "user",
+        "content": "hello"
+      }
     ]
   },
-  "expect": { "envelope": false }
+  "expect": {
+    "envelope": false
+  }
 }

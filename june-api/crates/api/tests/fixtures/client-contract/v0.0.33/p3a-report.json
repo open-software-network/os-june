@@ -9,5 +9,9 @@
     "versionSeries": "0.0.x",
     "bucket": 0
   },
-  "expect": { "requiredDataFields": ["accepted"] }
+  "expect": {
+    "requiredDataFields": [
+      "accepted:boolean"
+    ]
+  }
 }

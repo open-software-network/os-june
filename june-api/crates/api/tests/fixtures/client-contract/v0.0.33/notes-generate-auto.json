@@ -14,5 +14,11 @@
     "costQuality": 0.5,
     "stream": true
   },
-  "expect": { "sse": true, "requiredDataFields": ["content", "provider"] }
+  "expect": {
+    "sse": true,
+    "requiredDataFields": [
+      "content:string",
+      "provider:string"
+    ]
+  }
 }
