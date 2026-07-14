@@ -78,6 +78,17 @@ Per-repo config the engineering skills read before acting (see the
   - [Linear](plugins/linear-prd.md) — [implementation plan](plugins/linear-implementation-plan.md)
   - [Documents](plugins/documents-prd.md) — [implementation plan](plugins/documents-implementation-plan.md)
   - [Spreadsheets](plugins/spreadsheets-prd.md) — [implementation plan](plugins/spreadsheets-implementation-plan.md)
+- [plugins/integrations-next-ten.md](plugins/integrations-next-ten.md) - follow-on provider portfolio: ranks 11-20, auth feasibility, sequencing, and decision gates
+  - [HubSpot](plugins/hubspot-prd.md) - [implementation plan](plugins/hubspot-implementation-plan.md)
+  - [Salesforce](plugins/salesforce-prd.md) - [implementation plan](plugins/salesforce-implementation-plan.md)
+  - [Asana](plugins/asana-prd.md) - [implementation plan](plugins/asana-implementation-plan.md)
+  - [Box](plugins/box-prd.md) - [implementation plan](plugins/box-implementation-plan.md)
+  - [GitLab](plugins/gitlab-prd.md) - [implementation plan](plugins/gitlab-implementation-plan.md)
+  - [ClickUp](plugins/clickup-prd.md) - [implementation plan](plugins/clickup-implementation-plan.md)
+  - [Dropbox](plugins/dropbox-prd.md) - [implementation plan](plugins/dropbox-implementation-plan.md)
+  - [Pipedrive](plugins/pipedrive-prd.md) - [implementation plan](plugins/pipedrive-implementation-plan.md)
+  - [Azure Boards](plugins/azure-boards-prd.md) - [implementation plan](plugins/azure-boards-implementation-plan.md)
+  - [Canva](plugins/canva-prd.md) - [implementation plan](plugins/canva-implementation-plan.md)
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
 - [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
 - [telemetry.md](telemetry.md) — public overview of June telemetry, current behavior, and policies
