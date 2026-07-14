@@ -56,6 +56,14 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     ensure_column(_pool, "recording_checkpoints", "source", "TEXT").await?;
     ensure_column(_pool, "recording_checkpoints", "source_artifact_id", "TEXT").await?;
     ensure_column(_pool, "folders", "description", "TEXT").await?;
+    ensure_column(_pool, "folders", "instructions", "TEXT").await?;
+    ensure_column(
+        _pool,
+        "folders",
+        "memory_disabled",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
     // Folder names don't need to be unique — each folder has a stable
     // UUID, and the user may legitimately want two "Inbox"es etc.
     drop_index_if_exists(_pool, "idx_folders_active_name").await?;
@@ -151,6 +159,12 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
         }
     }
     for statement in include_str!("../../migrations/013_connector_credited_runs.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/014_memories.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;

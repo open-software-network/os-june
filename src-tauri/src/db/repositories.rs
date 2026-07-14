@@ -2,8 +2,9 @@ use crate::domain::types::{
     AgentMessageDto, AgentMessageRole, AgentSafetyProfile, AgentTaskDto, AgentTaskListResponse,
     AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
     AudioValidationDto, DictationHistoryItemDto, DictionaryEntryDto, FolderDto,
-    ListDictationHistoryResponse, ListNotesResponse, NoteDto, NoteListItemDto, ProcessingStatus,
-    RecordingSourceMode, RecordingState, SessionFolderDto, TranscriptCoverageDto, TranscriptDto,
+    ListDictationHistoryResponse, ListNotesResponse, MemoryDto, NoteDto, NoteListItemDto,
+    ProcessingStatus, RecordingSourceMode, RecordingState, SessionFolderDto, TranscriptCoverageDto,
+    TranscriptDto,
 };
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use sqlx::query::query;
@@ -709,7 +710,10 @@ impl Repositories {
 
     pub async fn list_folders(&self) -> Result<Vec<FolderDto>, sqlx::error::Error> {
         let rows = query(
-            "SELECT id, name, description, created_at, updated_at FROM folders WHERE deleted_at IS NULL ORDER BY lower(name) ASC",
+            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+             FROM folders
+             WHERE deleted_at IS NULL
+             ORDER BY lower(name) ASC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -730,6 +734,8 @@ impl Repositories {
             id: Uuid::new_v4().to_string(),
             name: name.as_ref().trim().to_string(),
             description: description.clone(),
+            instructions: None,
+            memory_disabled: false,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -776,13 +782,225 @@ impl Repositories {
         }
 
         let row = query(
-            "SELECT id, name, description, created_at, updated_at FROM folders WHERE id = ? AND deleted_at IS NULL",
+            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+             FROM folders
+             WHERE id = ? AND deleted_at IS NULL",
         )
         .bind(folder_id)
         .fetch_one(&self.pool)
         .await?;
 
         Ok(folder_from_row(row))
+    }
+
+    pub async fn folder_exists(&self, folder_id: &str) -> Result<bool, sqlx::error::Error> {
+        let row = query("SELECT 1 FROM folders WHERE id = ? AND deleted_at IS NULL")
+            .bind(folder_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.is_some())
+    }
+
+    pub async fn set_folder_instructions(
+        &self,
+        folder_id: &str,
+        instructions: Option<&str>,
+    ) -> Result<FolderDto, AppError> {
+        let instructions = instructions
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let result = query(
+            "UPDATE folders
+             SET instructions = ?, updated_at = ?
+             WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(instructions)
+        .bind(timestamp())
+        .bind(folder_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::new(
+                "folder_not_found",
+                "Folder was not found or has already been deleted.",
+            ));
+        }
+        self.get_folder(folder_id).await
+    }
+
+    pub async fn set_folder_memory_disabled(
+        &self,
+        folder_id: &str,
+        disabled: bool,
+    ) -> Result<FolderDto, AppError> {
+        let result = query(
+            "UPDATE folders
+             SET memory_disabled = ?, updated_at = ?
+             WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(if disabled { 1 } else { 0 })
+        .bind(timestamp())
+        .bind(folder_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::new(
+                "folder_not_found",
+                "Folder was not found or has already been deleted.",
+            ));
+        }
+        self.get_folder(folder_id).await
+    }
+
+    async fn get_folder(&self, folder_id: &str) -> Result<FolderDto, AppError> {
+        let row = query(
+            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+             FROM folders
+             WHERE id = ? AND deleted_at IS NULL",
+        )
+        .bind(folder_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| {
+            AppError::new(
+                "folder_not_found",
+                "Folder was not found or has already been deleted.",
+            )
+        })?;
+        Ok(folder_from_row(row))
+    }
+
+    pub async fn list_memories(
+        &self,
+        folder_id: Option<&str>,
+        include_global: bool,
+    ) -> Result<Vec<MemoryDto>, sqlx::error::Error> {
+        let rows = match (folder_id, include_global) {
+            (Some(folder_id), true) => {
+                query(
+                    "SELECT m.id, m.folder_id, m.content, m.source, m.created_at, m.updated_at
+                     FROM memories m
+                     WHERE m.folder_id IS NULL
+                        OR (m.folder_id = ? AND EXISTS (
+                            SELECT 1 FROM folders f
+                            WHERE f.id = m.folder_id AND f.deleted_at IS NULL
+                        ))
+                     ORDER BY m.created_at DESC, m.rowid DESC",
+                )
+                .bind(folder_id)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (Some(folder_id), false) => {
+                query(
+                    "SELECT m.id, m.folder_id, m.content, m.source, m.created_at, m.updated_at
+                     FROM memories m
+                     INNER JOIN folders f ON f.id = m.folder_id
+                     WHERE m.folder_id = ? AND f.deleted_at IS NULL
+                     ORDER BY m.created_at DESC, m.rowid DESC",
+                )
+                .bind(folder_id)
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (None, true) => {
+                query(
+                    "SELECT id, folder_id, content, source, created_at, updated_at
+                     FROM memories
+                     ORDER BY created_at DESC, rowid DESC",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+            (None, false) => {
+                query(
+                    "SELECT id, folder_id, content, source, created_at, updated_at
+                     FROM memories
+                     WHERE folder_id IS NULL
+                     ORDER BY created_at DESC, rowid DESC",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+        Ok(rows.into_iter().map(memory_from_row).collect())
+    }
+
+    pub async fn create_memory(
+        &self,
+        folder_id: Option<&str>,
+        content: &str,
+        source: &str,
+    ) -> Result<MemoryDto, AppError> {
+        if let Some(folder_id) = folder_id {
+            if !self.folder_exists(folder_id).await? {
+                return Err(AppError::new(
+                    "folder_not_found",
+                    "Folder was not found or has already been deleted.",
+                ));
+            }
+        }
+        let now = timestamp();
+        let memory = MemoryDto {
+            id: Uuid::new_v4().to_string(),
+            folder_id: folder_id.map(str::to_string),
+            content: content.trim().to_string(),
+            source: source.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        query(
+            "INSERT INTO memories (id, folder_id, content, source, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&memory.id)
+        .bind(&memory.folder_id)
+        .bind(&memory.content)
+        .bind(&memory.source)
+        .bind(&memory.created_at)
+        .bind(&memory.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(memory)
+    }
+
+    pub async fn update_memory(&self, id: &str, content: &str) -> Result<MemoryDto, AppError> {
+        let result = query("UPDATE memories SET content = ?, updated_at = ? WHERE id = ?")
+            .bind(content.trim())
+            .bind(timestamp())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::new("memory_not_found", "Memory was not found."));
+        }
+        let row = query(
+            "SELECT id, folder_id, content, source, created_at, updated_at
+             FROM memories
+             WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(memory_from_row(row))
+    }
+
+    pub async fn delete_memory(&self, id: &str) -> Result<(), AppError> {
+        let mut tx = self.pool.begin().await?;
+        let result = query("DELETE FROM memories WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        if result.rows_affected() == 0 {
+            return Err(AppError::new("memory_not_found", "Memory was not found."));
+        }
+        query("INSERT INTO memory_tombstones (id, deleted_at) VALUES (?, ?)")
+            .bind(id)
+            .bind(timestamp())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn create_note(
@@ -3440,6 +3658,29 @@ fn folder_from_row(row: sqlx_sqlite::SqliteRow) -> FolderDto {
                     Some(trimmed)
                 }
             }),
+        instructions: row
+            .try_get::<Option<String>, _>("instructions")
+            .unwrap_or(None)
+            .and_then(|value| {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }),
+        memory_disabled: row.try_get::<i64, _>("memory_disabled").unwrap_or_default() != 0,
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
+}
+
+fn memory_from_row(row: sqlx_sqlite::SqliteRow) -> MemoryDto {
+    MemoryDto {
+        id: row.get("id"),
+        folder_id: row.get("folder_id"),
+        content: row.get("content"),
+        source: row.get("source"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
@@ -3541,6 +3782,8 @@ fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::Repositories;
+    use sqlx::query::query;
+    use sqlx::row::Row;
 
     async fn test_repositories() -> Repositories {
         let pool = sqlx_sqlite::SqlitePoolOptions::new()
@@ -3556,6 +3799,162 @@ mod tests {
 
     fn scopes(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn memory_create_list_and_update_round_trip_across_scopes() {
+        let repos = test_repositories().await;
+        let folder = repos
+            .create_folder("Client work", None)
+            .await
+            .expect("create folder");
+        let other_folder = repos
+            .create_folder("Internal", None)
+            .await
+            .expect("create other folder");
+        let global = repos
+            .create_memory(None, "Use concise summaries", "user")
+            .await
+            .expect("create global memory");
+        let scoped = repos
+            .create_memory(Some(&folder.id), "The launch is Friday", "agent")
+            .await
+            .expect("create scoped memory");
+        repos
+            .create_memory(Some(&other_folder.id), "The budget is approved", "agent")
+            .await
+            .expect("create other scoped memory");
+
+        let scoped_only = repos
+            .list_memories(Some(&folder.id), false)
+            .await
+            .expect("list scoped");
+        assert_eq!(scoped_only, vec![scoped.clone()]);
+
+        let scoped_and_global = repos
+            .list_memories(Some(&folder.id), true)
+            .await
+            .expect("list scoped and global");
+        assert_eq!(scoped_and_global.len(), 2);
+        assert!(scoped_and_global
+            .iter()
+            .any(|memory| memory.id == global.id));
+        assert!(scoped_and_global
+            .iter()
+            .any(|memory| memory.id == scoped.id));
+
+        let global_only = repos.list_memories(None, false).await.expect("list global");
+        assert_eq!(global_only, vec![global]);
+        assert_eq!(
+            repos
+                .list_memories(None, true)
+                .await
+                .expect("list everything")
+                .len(),
+            3
+        );
+
+        let updated = repos
+            .update_memory(&scoped.id, "  The launch moved to Monday  ")
+            .await
+            .expect("update memory");
+        assert_eq!(updated.content, "The launch moved to Monday");
+        assert_eq!(updated.id, scoped.id);
+        assert_eq!(updated.folder_id.as_deref(), Some(folder.id.as_str()));
+        assert_eq!(updated.source, "agent");
+    }
+
+    #[tokio::test]
+    async fn memory_delete_is_permanent_and_writes_tombstone() {
+        let repos = test_repositories().await;
+        let memory = repos
+            .create_memory(None, "Remember this briefly", "agent")
+            .await
+            .expect("create memory");
+
+        repos
+            .delete_memory(&memory.id)
+            .await
+            .expect("delete memory");
+
+        assert!(repos
+            .list_memories(None, true)
+            .await
+            .expect("list memories")
+            .is_empty());
+        let tombstone = query("SELECT id, deleted_at FROM memory_tombstones WHERE id = ?")
+            .bind(&memory.id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("tombstone");
+        assert_eq!(tombstone.get::<String, _>("id"), memory.id);
+        assert!(!tombstone.get::<String, _>("deleted_at").is_empty());
+    }
+
+    #[tokio::test]
+    async fn soft_deleted_folder_keeps_memory_but_hides_it_from_folder_filter() {
+        let repos = test_repositories().await;
+        let folder = repos
+            .create_folder("Archived project", None)
+            .await
+            .expect("create folder");
+        let memory = repos
+            .create_memory(Some(&folder.id), "Keep this for later sync", "user")
+            .await
+            .expect("create memory");
+
+        repos
+            .delete_folder(&folder.id, false)
+            .await
+            .expect("soft delete folder");
+
+        assert!(repos
+            .list_memories(Some(&folder.id), false)
+            .await
+            .expect("list deleted folder")
+            .is_empty());
+        let all = repos
+            .list_memories(None, true)
+            .await
+            .expect("list all memories");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, memory.id);
+    }
+
+    #[tokio::test]
+    async fn folder_instructions_and_memory_disabled_persist_and_round_trip() {
+        let repos = test_repositories().await;
+        let folder = repos
+            .create_folder("Research", Some("Background"))
+            .await
+            .expect("create folder");
+        assert_eq!(folder.instructions, None);
+        assert!(!folder.memory_disabled);
+
+        let folder = repos
+            .set_folder_instructions(&folder.id, Some("  Prefer primary sources.  "))
+            .await
+            .expect("set instructions");
+        assert_eq!(
+            folder.instructions.as_deref(),
+            Some("Prefer primary sources.")
+        );
+        let folder = repos
+            .set_folder_memory_disabled(&folder.id, true)
+            .await
+            .expect("disable memory");
+        assert!(folder.memory_disabled);
+
+        let listed = repos.list_folders().await.expect("list folders");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].instructions, folder.instructions);
+        assert!(listed[0].memory_disabled);
+
+        let cleared = repos
+            .set_folder_instructions(&folder.id, Some("   "))
+            .await
+            .expect("clear instructions");
+        assert_eq!(cleared.instructions, None);
     }
 
     #[tokio::test]

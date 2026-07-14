@@ -21,7 +21,9 @@ function note(overrides: Partial<NoteDto> = {}): NoteDto {
 describe("notesReducer", () => {
   it("loads bootstrap data and selects the first note", () => {
     const payload: BootstrapResponse = {
-      folders: [{ id: "folder-1", name: "Ideas", createdAt: now, updatedAt: now }],
+      folders: [
+        { id: "folder-1", name: "Ideas", memoryDisabled: false, createdAt: now, updatedAt: now },
+      ],
       notes: [note({ id: "note-2", title: "Second" }), note({ id: "note-1", title: "First" })],
       activeRecoveries: [],
       providerConfigured: true,
@@ -295,8 +297,14 @@ describe("notesReducer", () => {
       type: "bootstrapLoaded",
       payload: {
         folders: [
-          { id: "folder-1", name: "Inbox", createdAt: now, updatedAt: now },
-          { id: "folder-2", name: "Archive", createdAt: now, updatedAt: now },
+          { id: "folder-1", name: "Inbox", memoryDisabled: false, createdAt: now, updatedAt: now },
+          {
+            id: "folder-2",
+            name: "Archive",
+            memoryDisabled: false,
+            createdAt: now,
+            updatedAt: now,
+          },
         ],
         notes: [
           { ...note({ id: "note-1", title: "A" }), folderIds: ["folder-1"] },
@@ -317,6 +325,7 @@ describe("notesReducer", () => {
       folder: {
         id: "folder-1",
         name: "Triage",
+        memoryDisabled: false,
         createdAt: now,
         updatedAt: now,
       },

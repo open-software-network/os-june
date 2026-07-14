@@ -22,11 +22,12 @@ vi.mock("../lib/tauri", async (importOriginal) => {
 const now = "2026-05-19T10:00:00Z";
 
 const folders: FolderDto[] = [
-  { id: "folder-1", name: "Ideas", createdAt: now, updatedAt: now },
+  { id: "folder-1", name: "Ideas", memoryDisabled: false, createdAt: now, updatedAt: now },
   {
     id: "folder-2",
     name: "Work",
     description: "Client projects in flight",
+    memoryDisabled: false,
     createdAt: now,
     updatedAt: now,
   },

@@ -29,11 +29,11 @@ use crate::{
             DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
             DeleteNotesRequest, DictionaryEntryDto, ExplainAgentApprovalRequest,
             ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
-            GetNoteRequest, ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse,
-            NoteDto, OpenPrivacySettingsRequest, ProcessingStatus, RecordingSessionDto,
-            RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
-            RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
-            RetryProcessingRequest, SaveAgentAssistantMessageRequest,
+            GetNoteRequest, ListNotesRequest, ListNotesResponse, MemoryDto, MemorySettingsDto,
+            MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest, ProcessingStatus,
+            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
+            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
+            RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
             SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
             SessionRequest, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
             SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
@@ -48,14 +48,18 @@ use sqlx::row::Row;
 use sqlx_sqlite::SqlitePool;
 use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::HashSet;
+use std::fs;
 use std::str::FromStr;
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::{sync::OnceCell, time::sleep};
+
+const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
+static MEMORY_SETTINGS_LOCK: Mutex<()> = Mutex::new(());
 
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
@@ -289,6 +293,150 @@ pub async fn remove_session_from_folder(
 #[tauri::command]
 pub async fn list_dictionary_entries(app: AppHandle) -> Result<Vec<DictionaryEntryDto>, AppError> {
     Ok(repositories(&app).await?.list_dictionary_entries().await?)
+}
+
+#[tauri::command]
+pub async fn list_memories(
+    app: AppHandle,
+    folder_id: Option<String>,
+    include_global: bool,
+) -> Result<Vec<MemoryDto>, AppError> {
+    Ok(repositories(&app)
+        .await?
+        .list_memories(folder_id.as_deref(), include_global)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn create_memory(
+    app: AppHandle,
+    folder_id: Option<String>,
+    content: String,
+    source: String,
+) -> Result<MemoryDto, AppError> {
+    let content = validated_memory_content(&content)?;
+    let source = source.trim();
+    if !matches!(source, "agent" | "user") {
+        return Err(AppError::new(
+            "memory_source_invalid",
+            "Memory source must be agent or user.",
+        ));
+    }
+    let repos = repositories(&app).await?;
+    if let Some(folder_id) = folder_id.as_deref() {
+        if !repos.folder_exists(folder_id).await? {
+            return Err(AppError::new(
+                "folder_not_found",
+                "Folder was not found or has already been deleted.",
+            ));
+        }
+    }
+    repos
+        .create_memory(folder_id.as_deref(), content, source)
+        .await
+}
+
+#[tauri::command]
+pub async fn update_memory(
+    app: AppHandle,
+    id: String,
+    content: String,
+) -> Result<MemoryDto, AppError> {
+    let content = validated_memory_content(&content)?;
+    repositories(&app).await?.update_memory(&id, content).await
+}
+
+#[tauri::command]
+pub async fn delete_memory(app: AppHandle, id: String) -> Result<(), AppError> {
+    repositories(&app).await?.delete_memory(&id).await
+}
+
+#[tauri::command]
+pub async fn set_folder_instructions(
+    app: AppHandle,
+    folder_id: String,
+    instructions: Option<String>,
+) -> Result<crate::domain::types::FolderDto, AppError> {
+    repositories(&app)
+        .await?
+        .set_folder_instructions(&folder_id, instructions.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn set_folder_memory_disabled(
+    app: AppHandle,
+    folder_id: String,
+    disabled: bool,
+) -> Result<crate::domain::types::FolderDto, AppError> {
+    repositories(&app)
+        .await?
+        .set_folder_memory_disabled(&folder_id, disabled)
+        .await
+}
+
+#[tauri::command]
+pub fn memory_settings(app: AppHandle) -> Result<MemorySettingsDto, AppError> {
+    let _guard = MEMORY_SETTINGS_LOCK.lock().map_err(|_| {
+        AppError::new(
+            "memory_settings_unavailable",
+            "Memory settings lock failed.",
+        )
+    })?;
+    Ok(load_memory_settings(&app))
+}
+
+#[tauri::command]
+pub fn set_memory_enabled(app: AppHandle, enabled: bool) -> Result<MemorySettingsDto, AppError> {
+    let _guard = MEMORY_SETTINGS_LOCK.lock().map_err(|_| {
+        AppError::new(
+            "memory_settings_unavailable",
+            "Memory settings lock failed.",
+        )
+    })?;
+    let settings = MemorySettingsDto { enabled };
+    let path = memory_settings_path(&app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| AppError::new("memory_settings_save_failed", error.to_string()))?;
+    }
+    let serialized = serde_json::to_string_pretty(&settings)
+        .map_err(|error| AppError::new("memory_settings_save_failed", error.to_string()))?;
+    fs::write(path, serialized)
+        .map_err(|error| AppError::new("memory_settings_save_failed", error.to_string()))?;
+    Ok(settings)
+}
+
+fn validated_memory_content(content: &str) -> Result<&str, AppError> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err(AppError::new(
+            "memory_content_required",
+            "Memory content is required.",
+        ));
+    }
+    if content.chars().count() > MEMORY_CONTENT_MAX_CHARS {
+        return Err(AppError::new(
+            "memory_content_too_long",
+            format!("Memory content cannot exceed {MEMORY_CONTENT_MAX_CHARS} characters."),
+        ));
+    }
+    Ok(content)
+}
+
+fn memory_settings_path(app: &AppHandle) -> Result<PathBuf, AppError> {
+    app.path()
+        .app_config_dir()
+        .map(|directory| directory.join("memory-settings.json"))
+        .map_err(|error| AppError::new("memory_settings_unavailable", error.to_string()))
+}
+
+fn load_memory_settings(app: &AppHandle) -> MemorySettingsDto {
+    memory_settings_path(app)
+        .ok()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|settings| serde_json::from_str(&settings).ok())
+        .unwrap_or_default()
 }
 
 #[tauri::command]

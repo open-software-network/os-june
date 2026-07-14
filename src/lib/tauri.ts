@@ -24,8 +24,23 @@ export type FolderDto = {
   id: string;
   name: string;
   description?: string;
+  instructions?: string;
+  memoryDisabled: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+export type MemoryDto = {
+  id: string;
+  folderId?: string;
+  content: string;
+  source: "agent" | "user";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MemorySettingsDto = {
+  enabled: boolean;
 };
 
 /** Which project (folder) an agent session is filed under. Sessions live in
@@ -835,6 +850,51 @@ export async function deleteDictionaryEntry(entryId: string) {
   return invoke<void>("delete_dictionary_entry", {
     request: { entryId },
   });
+}
+
+export async function listMemories(folderId?: string, includeGlobal = false) {
+  return invoke<MemoryDto[]>("list_memories", {
+    folderId,
+    includeGlobal,
+  });
+}
+
+export async function createMemory(input: {
+  folderId?: string;
+  content: string;
+  source: "agent" | "user";
+}) {
+  return invoke<MemoryDto>("create_memory", input);
+}
+
+export async function updateMemory(id: string, content: string) {
+  return invoke<MemoryDto>("update_memory", { id, content });
+}
+
+export async function deleteMemory(id: string) {
+  return invoke<void>("delete_memory", { id });
+}
+
+export async function setFolderInstructions(folderId: string, instructions?: string) {
+  return invoke<FolderDto>("set_folder_instructions", {
+    folderId,
+    instructions,
+  });
+}
+
+export async function setFolderMemoryDisabled(folderId: string, disabled: boolean) {
+  return invoke<FolderDto>("set_folder_memory_disabled", {
+    folderId,
+    disabled,
+  });
+}
+
+export async function memorySettings() {
+  return invoke<MemorySettingsDto>("memory_settings");
+}
+
+export async function setMemoryEnabled(enabled: boolean) {
+  return invoke<MemorySettingsDto>("set_memory_enabled", { enabled });
 }
 
 export async function listAgentTasks() {
