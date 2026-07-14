@@ -16,6 +16,15 @@ const DICTATION_HISTORY_RETENTION_DAYS: i64 = 7;
 #[derive(Clone)]
 pub struct Repositories {
     pub pool: SqlitePool,
+    #[cfg(test)]
+    github_snapshot_read_hook: Option<GitHubSnapshotReadHook>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct GitHubSnapshotReadHook {
+    connection_read: std::sync::Arc<tokio::sync::Notify>,
+    resume: std::sync::Arc<tokio::sync::Notify>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,7 +139,17 @@ pub struct ConnectorGrant {
 
 impl Repositories {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            #[cfg(test)]
+            github_snapshot_read_hook: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_github_snapshot_read_hook(mut self, hook: GitHubSnapshotReadHook) -> Self {
+        self.github_snapshot_read_hook = Some(hook);
+        self
     }
 
     pub async fn increment_p3a_counter(
@@ -448,13 +467,20 @@ impl Repositories {
     pub async fn github_snapshot(
         &self,
     ) -> Result<Option<GitHubSnapshotRecord>, sqlx::error::Error> {
-        let Some(connection_row) = query(
+        let mut tx = self.pool.begin().await?;
+        let connection_row = query(
             "SELECT github_user_id, login, avatar_url, status
              FROM github_connections ORDER BY created_at, github_user_id LIMIT 1",
         )
-        .fetch_optional(&self.pool)
-        .await?
-        else {
+        .fetch_optional(&mut *tx)
+        .await?;
+        #[cfg(test)]
+        if let Some(hook) = &self.github_snapshot_read_hook {
+            hook.connection_read.notify_one();
+            hook.resume.notified().await;
+        }
+        let Some(connection_row) = connection_row else {
+            tx.commit().await?;
             return Ok(None);
         };
         let connection = github_connection_from_row(connection_row);
@@ -467,7 +493,7 @@ impl Repositories {
              ORDER BY owner_login, installation_id",
         )
         .bind(&connection.github_user_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
         let repository_rows = query(
             "SELECT repository.repository_id, repository.installation_id,
@@ -480,10 +506,10 @@ impl Repositories {
              ORDER BY repository.full_name, repository.repository_id",
         )
         .bind(&connection.github_user_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
 
-        Ok(Some(GitHubSnapshotRecord {
+        let snapshot = GitHubSnapshotRecord {
             connection,
             installations: installation_rows
                 .into_iter()
@@ -493,7 +519,9 @@ impl Repositories {
                 .into_iter()
                 .map(github_repository_from_row)
                 .collect(),
-        }))
+        };
+        tx.commit().await?;
+        Ok(Some(snapshot))
     }
 
     pub async fn get_github_installation(
@@ -3840,6 +3868,8 @@ fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use super::Repositories;
 
     async fn test_repositories() -> Repositories {
@@ -3852,6 +3882,27 @@ mod tests {
             .await
             .expect("migrations");
         Repositories::new(pool)
+    }
+
+    async fn concurrent_test_repositories() -> (Repositories, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "os-june-github-snapshot-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let options =
+            sqlx_sqlite::SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
+                .expect("sqlite options")
+                .create_if_missing(true)
+                .journal_mode(sqlx_sqlite::SqliteJournalMode::Wal);
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .expect("sqlite WAL pool");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        (Repositories::new(pool), path)
     }
 
     fn scopes(values: &[&str]) -> Vec<String> {
@@ -4063,6 +4114,60 @@ mod tests {
             .await
             .is_err());
         assert!(repos.github_snapshot().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn github_snapshot_is_consistent_during_concurrent_replacement() {
+        let (repos, database_path) = concurrent_test_repositories().await;
+        let original_connection = github_connection_fixture("123", "octocat", "connected");
+        let original_installation =
+            github_installation_fixture("456", "123", "open-software-network");
+        let original_repositories = vec![github_repository_fixture(
+            "789",
+            "456",
+            "open-software-network/test-repo",
+        )];
+        repos
+            .replace_github_snapshot(
+                &original_connection,
+                &[original_installation],
+                &original_repositories,
+            )
+            .await
+            .unwrap();
+        let original = repos.github_snapshot().await.unwrap().unwrap();
+
+        let connection_read = std::sync::Arc::new(tokio::sync::Notify::new());
+        let resume = std::sync::Arc::new(tokio::sync::Notify::new());
+        let reader = repos
+            .clone()
+            .with_github_snapshot_read_hook(super::GitHubSnapshotReadHook {
+                connection_read: connection_read.clone(),
+                resume: resume.clone(),
+            });
+        let snapshot_task = tokio::spawn(async move { reader.github_snapshot().await });
+        connection_read.notified().await;
+
+        let replacement_connection = github_connection_fixture("999", "hubot", "setup_incomplete");
+        let replacement_installation = github_installation_fixture("888", "999", "hubot");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            repos.replace_github_snapshot(
+                &replacement_connection,
+                &[replacement_installation],
+                &[],
+            ),
+        )
+        .await
+        .expect("WAL replacement must not wait for the snapshot reader")
+        .unwrap();
+        resume.notify_one();
+
+        let concurrent_snapshot = snapshot_task.await.unwrap().unwrap().unwrap();
+        assert_eq!(concurrent_snapshot, original);
+
+        repos.pool.close().await;
+        std::fs::remove_file(database_path).expect("remove sqlite test database");
     }
 
     #[tokio::test]
