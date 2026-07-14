@@ -522,7 +522,10 @@ impl ShortcutActivationController {
     ) -> Option<DictationCommand> {
         match (kind, edge) {
             (DictationShortcutKind::PushToTalk, ShortcutKeyEdge::Down) => {
-                if self.active_mode.is_some() || self.push_to_talk_is_down {
+                if self.active_mode.is_some()
+                    || self.push_to_talk_is_down
+                    || self.helper_is_finalizing(now)
+                {
                     return None;
                 }
                 self.active_mode = Some(DictationShortcutKind::PushToTalk);
@@ -573,14 +576,16 @@ impl ShortcutActivationController {
             && self
                 .last_toggle_command_at
                 .map_or(true, |last| now.duration_since(last) < TOGGLE_ACK_EXPIRY);
-        let finalizing = self
-            .helper_finalizing_since
-            .is_some_and(|since| now.duration_since(since) < FINALIZING_SUPPRESSION_EXPIRY);
         !in_flight
-            && !finalizing
+            && !self.helper_is_finalizing(now)
             && self.last_toggle_command_at.map_or(true, |last| {
                 now.duration_since(last) >= TOGGLE_SHORTCUT_DEBOUNCE
             })
+    }
+
+    fn helper_is_finalizing(&self, now: Instant) -> bool {
+        self.helper_finalizing_since
+            .is_some_and(|since| now.duration_since(since) < FINALIZING_SUPPRESSION_EXPIRY)
     }
 
     fn mark_toggle_command_sent(&mut self, now: Instant) {
@@ -5158,6 +5163,30 @@ mod tests {
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
             Some(DictationCommand::ToggleListening)
+        );
+    }
+
+    #[test]
+    fn push_to_talk_during_helper_finalizing_is_dropped() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        controller.mark_helper_finalizing();
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now
+            ),
+            None
+        );
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now + FINALIZING_SUPPRESSION_EXPIRY
+            ),
+            Some(DictationCommand::StartListening)
         );
     }
 
