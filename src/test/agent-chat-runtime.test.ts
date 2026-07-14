@@ -1618,9 +1618,10 @@ describe("Agent chat runtime", () => {
 
   it("renders an MCP image tool result as an inline image part (JUN-171 Phase B)", () => {
     // The june_image MCP returns an image content block plus a JSON text block
-    // carrying the filename/label. The image must render in-thread (so it also
-    // enters the model's context) and its base64 must NOT leak into the
-    // collapsed tool row's text.
+    // carrying the filename/label. Hermes may then persist the assistant's
+    // MEDIA reference as a separate message. Both representations belong to
+    // one agent run and must render as one image block, while the base64 stays
+    // out of the collapsed tool row's text.
     const turns = buildHermesSessionChatTurns([
       {
         id: "assistant-1",
@@ -1655,9 +1656,17 @@ describe("Agent chat runtime", () => {
         ],
         timestamp: "2026-06-04T10:00:01.000Z",
       },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        content: "Done.\n\nMEDIA:generated-image-abc.png",
+        timestamp: "2026-06-04T10:00:02.000Z",
+      },
     ]);
 
-    const image = turns[0]?.parts.find((part) => part.type === "image");
+    const images = turns.flatMap((turn) => turn.parts.filter((part) => part.type === "image"));
+    expect(images).toHaveLength(1);
+    const image = images[0];
     expect(image).toMatchObject({
       type: "image",
       status: "complete",
@@ -1668,6 +1677,34 @@ describe("Agent chat runtime", () => {
     const tool = turns[0]?.parts.find((part) => part.type === "tool");
     expect(tool).toMatchObject({ media: "image" });
     expect(tool?.type === "tool" ? tool.text : "").not.toContain("aGVsbG8=");
+  });
+
+  it("allows a generated image to be shown again after a new user turn", () => {
+    const media = "MEDIA:generated-image-abc.png";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: media,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+      {
+        id: "user-1",
+        role: "user",
+        content: "Show me that image again.",
+        timestamp: "2026-06-04T10:01:00.000Z",
+      },
+      {
+        id: "assistant-2",
+        role: "assistant",
+        content: media,
+        timestamp: "2026-06-04T10:01:01.000Z",
+      },
+    ]);
+
+    expect(
+      turns.flatMap((turn) => turn.parts.filter((part) => part.type === "image")),
+    ).toHaveLength(2);
   });
 
   it("renders live june_image tool results inline from tool.complete content", () => {

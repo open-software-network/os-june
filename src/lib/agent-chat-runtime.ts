@@ -282,12 +282,8 @@ export function buildHermesSessionChatTurns(
       // Media tool results render inline so they show in-thread instead of
       // being lost to the collapsed tool row. Image base64 and MEDIA refs are
       // stripped from the tool text above.
-      for (const imagePart of imagePartsFromHermesContent(message.content)) {
-        turn.parts.push(imagePart);
-      }
-      for (const videoPart of videoPartsFromHermesContent(message.content)) {
-        turn.parts.push(videoPart);
-      }
+      appendImageParts(turn.parts, imagePartsFromHermesContent(message.content));
+      appendVideoParts(turn.parts, videoPartsFromHermesContent(message.content));
       turn.status = "complete";
       continue;
     }
@@ -368,10 +364,10 @@ export function buildHermesSessionChatTurns(
   }
 
   appendLiveHermesEvents(turns, liveEvents);
-  return sortAgentChatTurns(
-    turns.filter((turn) =>
-      turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    ),
+  const sortedTurns = sortAgentChatTurns(turns);
+  deduplicateGeneratedMediaWithinAgentRuns(sortedTurns);
+  return sortedTurns.filter((turn) =>
+    turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
   );
 }
 
@@ -928,23 +924,54 @@ function removeAssistantTextParts(parts: AgentChatPart[]) {
 
 function appendImageParts(parts: AgentChatPart[], images: AgentChatImagePart[]) {
   for (const image of images) {
-    const exists = parts.some(
-      (part) =>
-        part.type === "image" &&
-        ((image.path && part.path === image.path) ||
-          (image.dataUrl && part.dataUrl === image.dataUrl) ||
-          (image.name && part.name === image.name)),
-    );
+    const exists = parts.some((part) => part.type === "image" && sameImagePart(part, image));
     if (!exists) parts.push(image);
   }
 }
 
 function appendVideoParts(parts: AgentChatPart[], videos: AgentChatVideoPart[]) {
   for (const video of videos) {
-    const exists = parts.some(
-      (part) => part.type === "video" && video.path && part.path === video.path,
-    );
+    const exists = parts.some((part) => part.type === "video" && sameVideoPart(part, video));
     if (!exists) parts.push(video);
+  }
+}
+
+function sameImagePart(left: AgentChatImagePart, right: AgentChatImagePart) {
+  return Boolean(
+    (left.path && left.path === right.path) ||
+      (left.dataUrl && left.dataUrl === right.dataUrl) ||
+      (left.name && left.name === right.name),
+  );
+}
+
+function sameVideoPart(left: AgentChatVideoPart, right: AgentChatVideoPart) {
+  return Boolean(left.path && left.path === right.path);
+}
+
+/** Live tool output and the assistant's trailing MEDIA reference share one
+ * turn, but Hermes persists them as consecutive assistant messages. Keep one
+ * inline block per generated file until the next user/system turn so reloading
+ * history matches the live transcript. */
+function deduplicateGeneratedMediaWithinAgentRuns(turns: AgentChatTurn[]) {
+  let images: AgentChatImagePart[] = [];
+  let videos: AgentChatVideoPart[] = [];
+
+  for (const turn of turns) {
+    if (turn.role !== "assistant") {
+      images = [];
+      videos = [];
+      continue;
+    }
+    turn.parts = turn.parts.filter((part) => {
+      if (part.type === "image") {
+        if (images.some((image) => sameImagePart(image, part))) return false;
+        images.push(part);
+      } else if (part.type === "video") {
+        if (videos.some((video) => sameVideoPart(video, part))) return false;
+        videos.push(part);
+      }
+      return true;
+    });
   }
 }
 
