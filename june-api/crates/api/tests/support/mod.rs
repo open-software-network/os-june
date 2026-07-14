@@ -855,10 +855,13 @@ impl VideoProvider for FakeVideoProvider {
             return Err(DomainError::UpstreamProvider);
         }
         // A prompt mentioning "instantly" yields a job whose first poll is
-        // already complete (VPS-backed URL), so tests can pin the completed
-        // status shape; every other job stays processing forever.
+        // already complete (VPS-backed URL) and "inline" one whose bytes came
+        // back inline (non-VPS), so tests can pin both completed status
+        // shapes; every other job stays processing forever.
         let venice_queue_id = if request.prompt.contains("instantly") {
             "vq_completed".to_string()
+        } else if request.prompt.contains("inline") {
+            "vq_completed_inline".to_string()
         } else {
             "vq_boundary".to_string()
         };
@@ -882,6 +885,12 @@ impl VideoProvider for FakeVideoProvider {
         if queue_id == "vq_completed" {
             return Ok(VideoRetrieved::CompletedUrl {
                 download_url: "https://videos.example.com/generated.mp4".to_string(),
+            });
+        }
+        if queue_id == "vq_completed_inline" {
+            return Ok(VideoRetrieved::CompletedBytes {
+                bytes: b"fake-mp4-bytes".to_vec(),
+                mime_type: "video/mp4".to_string(),
             });
         }
         Ok(VideoRetrieved::Processing {

@@ -206,16 +206,26 @@ async fn check_fixture(fixture: &Fixture, label: &str) -> Result<(), Box<dyn Err
         "{label}: expected success, got {status}: {}",
         response_text(response).await?
     );
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
     if let Some(expected) = &fixture.expect.content_type {
-        let content_type = response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
         assert!(
             content_type.starts_with(expected.as_str()),
             "{label}: content type changed from {expected} to {content_type}"
+        );
+    }
+    // Shipped clients route a response through their SSE parser only when
+    // the Content-Type says event-stream; anything else falls to the JSON
+    // envelope path and fails to parse. The header is part of the contract
+    // for every SSE fixture, opted in or not.
+    if fixture.expect.sse {
+        assert!(
+            content_type.starts_with("text/event-stream"),
+            "{label}: SSE responses must be text/event-stream, got {content_type:?}"
         );
     }
     if !fixture.expect.envelope {

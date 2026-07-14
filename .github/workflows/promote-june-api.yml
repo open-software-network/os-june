@@ -111,6 +111,15 @@ jobs:
           ref: ${{ needs.verify.outputs.source-sha }}
           fetch-depth: 0
 
+      # The fixture registry must be the one this workflow ran from, not the
+      # promoted commit's: a rollback target predates fixtures added for app
+      # versions shipped since, and replaying only its own fixture set would
+      # let the rollback break those clients unchecked.
+      - name: Check out current fixture registry
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          path: .current-fixtures
+
       - uses: ./.github/actions/setup-rust
 
       - name: Run client contract suite at the promoted commit
@@ -125,6 +134,13 @@ jobs:
             echo "::warning::No client contract suite at this commit; skipping."
             exit 0
           fi
+          # Replay the CURRENT fixture registry against the promoted commit's
+          # server. Fixture parsing is deny_unknown_fields, so a fixture that
+          # needs a newer replay engine than this commit ships fails the gate
+          # loudly instead of silently under-testing.
+          fixtures="crates/api/tests/fixtures/client-contract"
+          rm -rf "$fixtures"
+          cp -R "${GITHUB_WORKSPACE}/.current-fixtures/june-api/${fixtures}" "$fixtures"
           cargo test -p june-api --test client_contract --locked
 
   deploy:

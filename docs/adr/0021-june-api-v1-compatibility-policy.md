@@ -55,8 +55,12 @@ the exact requests it sends (including fields that ride as JSON `null`)
 and the response fields its DTOs require. The suite replays every snapshot
 against the real router on every PR, and the production promote workflow
 re-runs it against the exact commit being promoted before the deploy job
-starts. A red contract test means "this breaks a shipped app version"; the
-fix is to change the API change, not the fixture.
+starts. Promotes always replay the fixture registry as of the workflow's
+own ref, overlaid onto the promoted commit: a rollback target predates
+fixtures added for versions shipped since, and must still prove it serves
+those clients before it reaches production. A red contract test means
+"this breaks a shipped app version"; the fix is to change the API change,
+not the fixture.
 
 Fixture lifecycle:
 
