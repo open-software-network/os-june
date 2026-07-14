@@ -12,6 +12,7 @@ import {
 import { ConnectorProviderIcon } from "../connectors/ConnectorProviderIcon";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
+import { HoverTip } from "../ui/HoverTip";
 import { InlineNotice } from "../ui/InlineNotice";
 
 export type GitHubConnectorRowProps = {
@@ -85,16 +86,22 @@ export function GitHubConnectorRow({
   const [refreshing, setRefreshing] = useState(false);
   const flowGeneration = useRef(0);
   const flowPending = useRef(false);
+  const lifecycleGeneration = useRef(0);
 
   useEffect(
     () => () => {
       flowGeneration.current += 1;
+      lifecycleGeneration.current += 1;
       if (!flowPending.current) return;
       flowPending.current = false;
       void githubConnectCancel().catch(() => undefined);
     },
     [],
   );
+
+  useEffect(() => {
+    if (connection?.status !== "connected") setDetailsOpen(false);
+  }, [connection?.status]);
 
   async function beginConnect() {
     if (connecting) return;
@@ -131,14 +138,18 @@ export function GitHubConnectorRow({
     flowPending.current = false;
     setDeviceDialogOpen(false);
     setPrompt(null);
-    setConnecting(false);
-    if (!wasPending) return;
+    if (!wasPending) {
+      setConnecting(false);
+      return;
+    }
     try {
       await githubConnectCancel();
     } catch {
       if (generation === flowGeneration.current) {
         setError("GitHub authorization could not be canceled. Try again.");
       }
+    } finally {
+      if (generation === flowGeneration.current) setConnecting(false);
     }
   }
 
@@ -154,14 +165,18 @@ export function GitHubConnectorRow({
 
   async function refreshInstallations() {
     if (refreshing) return;
+    const generation = lifecycleGeneration.current;
     setRefreshing(true);
     setError(null);
     try {
-      onConnectionChanged(await githubInstallationsRefresh());
+      const nextConnection = await githubInstallationsRefresh();
+      if (generation !== lifecycleGeneration.current) return;
+      onConnectionChanged(nextConnection);
     } catch (cause) {
+      if (generation !== lifecycleGeneration.current) return;
       setError(githubErrorMessage(cause));
     } finally {
-      setRefreshing(false);
+      if (generation === lifecycleGeneration.current) setRefreshing(false);
     }
   }
 
@@ -176,13 +191,16 @@ export function GitHubConnectorRow({
   }
 
   async function disconnect() {
+    const generation = ++lifecycleGeneration.current;
+    setRefreshing(false);
+    setDetailsOpen(false);
     setError(null);
     try {
       await githubDisconnect();
-      setDetailsOpen(false);
+      if (generation !== lifecycleGeneration.current) return;
       onConnectionChanged(null);
     } catch (cause) {
-      setError(githubErrorMessage(cause));
+      if (generation === lifecycleGeneration.current) setError(githubErrorMessage(cause));
       throw cause;
     }
   }
@@ -215,9 +233,13 @@ export function GitHubConnectorRow({
       </span>
       <div className="connector-main">
         <span className="connector-name">GitHub</span>
-        <p className="connector-subtitle" title={subtitle}>
+        <HoverTip
+          tip={subtitle}
+          className="connector-subtitle github-connector-subtitle"
+          tabIndex={0}
+        >
           {subtitle}
-        </p>
+        </HoverTip>
       </div>
       <div className="connector-actions">
         {connection && status ? (
@@ -396,14 +418,12 @@ export function GitHubConnectorRow({
                     {installation.repositories.map((repository) => (
                       <li key={repository.repositoryId} className="github-repository">
                         <span className="github-repository-name">{repository.name}</span>
-                        <span className="github-repository-labels">
-                          {repository.private ? (
-                            <span className="github-repository-label">Private</span>
-                          ) : null}
-                          {repository.archived ? (
-                            <span className="github-repository-label">Archived</span>
-                          ) : null}
-                        </span>
+                        {repository.private || repository.archived ? (
+                          <span className="github-repository-metadata">
+                            {repository.private ? <span>Private</span> : null}
+                            {repository.archived ? <span>Archived</span> : null}
+                          </span>
+                        ) : null}
                       </li>
                     ))}
                   </ul>

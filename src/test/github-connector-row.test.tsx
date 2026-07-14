@@ -201,6 +201,61 @@ describe("GitHubConnectorRow", () => {
     expect(onConnectionChanged).not.toHaveBeenCalled();
   });
 
+  it("keeps retry disabled until native cancellation settles", async () => {
+    const firstWait = deferred<GitHubConnection>();
+    const secondWait = deferred<GitHubConnection>();
+    const pendingCancel = deferred<void>();
+    mocks.githubConnectWait
+      .mockReturnValueOnce(firstWait.promise)
+      .mockReturnValueOnce(secondWait.promise);
+    mocks.githubConnectCancel.mockReturnValue(pendingCancel.promise);
+    render(<GitHubConnectorRow connection={null} loading={false} onConnectionChanged={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Connect GitHub" }));
+    const dialog = await screen.findByRole("dialog", { name: "Connect GitHub" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+
+    const retry = screen.getByRole("button", { name: "Connect GitHub" });
+    expect(retry).toBeDisabled();
+    await userEvent.click(retry);
+    expect(mocks.githubConnectStart).toHaveBeenCalledTimes(1);
+
+    await act(async () => pendingCancel.resolve());
+    await waitFor(() => expect(retry).toBeEnabled());
+    await userEvent.click(retry);
+
+    expect(mocks.githubConnectStart).toHaveBeenCalledTimes(2);
+    expect(mocks.githubConnectWait).toHaveBeenCalledTimes(2);
+  });
+
+  it("sanitizes a cancel failure and leaves no stale device flow", async () => {
+    const pendingWait = deferred<GitHubConnection>();
+    const onConnectionChanged = vi.fn();
+    mocks.githubConnectWait.mockReturnValue(pendingWait.promise);
+    mocks.githubConnectCancel.mockRejectedValue({ message: "raw native cancel details" });
+    render(
+      <GitHubConnectorRow
+        connection={null}
+        loading={false}
+        onConnectionChanged={onConnectionChanged}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Connect GitHub" }));
+    const dialog = await screen.findByRole("dialog", { name: "Connect GitHub" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+
+    expect(
+      await screen.findByText("GitHub authorization could not be canceled. Try again."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/raw native cancel details/)).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Connect GitHub" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeEnabled();
+
+    await act(async () => pendingWait.resolve(connection()));
+    expect(onConnectionChanged).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["github_connect_denied", "GitHub authorization was denied. Try again."],
     ["github_connect_expired", "The GitHub authorization code expired. Try again."],
@@ -324,6 +379,42 @@ describe("GitHubConnectorRow", () => {
     ).toBeEnabled();
   });
 
+  it("discloses the truncated subtitle with the shared keyboard-accessible tooltip", async () => {
+    const { container } = render(
+      <GitHubConnectorRow
+        connection={connection()}
+        loading={false}
+        onConnectionChanged={vi.fn()}
+      />,
+    );
+    const subtitle = container.querySelector<HTMLElement>(
+      ".github-connector-row .connector-subtitle",
+    );
+
+    expect(subtitle).not.toHaveAttribute("title");
+    expect(subtitle).toHaveAttribute("tabindex", "0");
+    subtitle?.focus();
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("octocat · 2 repositories");
+  });
+
+  it("renders only true repository flags as plain metadata", async () => {
+    render(
+      <GitHubConnectorRow
+        connection={connection()}
+        loading={false}
+        onConnectionChanged={vi.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "View GitHub repositories" }));
+    const dialog = screen.getByRole("dialog", { name: "GitHub repositories" });
+
+    expect(within(dialog).getAllByText("Private")).toHaveLength(1);
+    expect(within(dialog).getAllByText("Archived")).toHaveLength(1);
+    expect(within(dialog).queryByText("Public")).toBeNull();
+    expect(dialog.querySelector(".github-repository-label")).toBeNull();
+  });
+
   it("does not render an avatar from any other remote origin", () => {
     render(
       <GitHubConnectorRow
@@ -352,6 +443,37 @@ describe("GitHubConnectorRow", () => {
     expect(screen.queryByText("alpha")).toBeNull();
   });
 
+  it("does not reopen details after the connection leaves and returns to connected", async () => {
+    const onConnectionChanged = vi.fn();
+    const { rerender } = render(
+      <GitHubConnectorRow
+        connection={connection()}
+        loading={false}
+        onConnectionChanged={onConnectionChanged}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "View GitHub repositories" }));
+    expect(screen.getByRole("dialog", { name: "GitHub repositories" })).toBeInTheDocument();
+
+    rerender(
+      <GitHubConnectorRow
+        connection={connection({ status: "setup_incomplete" })}
+        loading={false}
+        onConnectionChanged={onConnectionChanged}
+      />,
+    );
+    expect(screen.queryByRole("dialog", { name: "GitHub repositories" })).toBeNull();
+
+    rerender(
+      <GitHubConnectorRow
+        connection={connection()}
+        loading={false}
+        onConnectionChanged={onConnectionChanged}
+      />,
+    );
+    expect(screen.queryByRole("dialog", { name: "GitHub repositories" })).toBeNull();
+  });
+
   it("refreshes from Rust and removes repositories absent from the replacement DTO", async () => {
     const refreshed = connection({
       installations: [installation({ repositories: [repository("beta")] })],
@@ -368,6 +490,31 @@ describe("GitHubConnectorRow", () => {
     expect(within(dialog).queryByText("alpha")).toBeNull();
     expect(within(dialog).queryByText("legacy")).toBeNull();
     expect(mocks.githubInstallationsRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a refresh result that arrives after disconnect completes", async () => {
+    const pendingRefresh = deferred<GitHubConnection>();
+    mocks.githubInstallationsRefresh.mockReturnValue(pendingRefresh.promise);
+    render(<StatefulRow initial={connection()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh GitHub repositories" }));
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect GitHub" }));
+    const disconnectDialog = screen.getByRole("dialog", { name: "Disconnect GitHub?" });
+    await userEvent.click(within(disconnectDialog).getByRole("button", { name: "Disconnect" }));
+    expect(await screen.findByRole("button", { name: "Connect GitHub" })).toBeEnabled();
+
+    await act(async () =>
+      pendingRefresh.resolve(
+        connection({
+          login: "stale-login",
+          installations: [installation({ repositories: [repository("stale-repository")] })],
+        }),
+      ),
+    );
+
+    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeEnabled();
+    expect(screen.queryByText(/stale-login/)).toBeNull();
+    expect(screen.queryByText("stale-repository")).toBeNull();
   });
 
   it("opens each installation using only its stable installation id", async () => {

@@ -26001,6 +26001,10 @@ input:focus-visible,
   justify-content: flex-end;
 }
 
+.github-connector-subtitle {
+  display: block;
+}
+
 .github-connector-notice {
   grid-column: 2 / -1;
   width: 100%;
@@ -26108,17 +26112,11 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
-.github-repository-labels {
+.github-repository-metadata {
   display: inline-flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--sp-1);
-}
-
-.github-repository-label {
-  padding: var(--sp-px) var(--sp-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
   line-height: 1.4;
