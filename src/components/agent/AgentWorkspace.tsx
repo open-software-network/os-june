@@ -8475,8 +8475,16 @@ export function AgentWorkspace({
         return;
       }
       const title = suggestion.title;
+      const rejectedThisAttempt = suggestion.rejected && hasReply;
+      if (rejectedThisAttempt) settleRejectedTitle();
       const nextSource: AgentSessionTitleSource =
-        suggestion.fromModel && hasReply ? "exchange" : "prompt";
+        suggestion.fromModel && hasReply
+          ? "exchange"
+          : rejectedThisAttempt
+            ? wasRejected
+              ? "rejected-final"
+              : "rejected"
+            : "prompt";
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
         [sessionId]: title,
@@ -8492,7 +8500,6 @@ export function AgentWorkspace({
       // stored: marking first and failing the PATCH would freeze a stale
       // stored title as settled on the next launch.
       const settleExchangeAfterPersist = suggestion.fromModel && nextSource === "exchange";
-      const settleRejectionAfterPersist = suggestion.rejected && hasReply;
       setHermesSessionItems((current) =>
         current.map((item) => (item.id === sessionId ? { ...item, title } : item)),
       );
@@ -8509,7 +8516,6 @@ export function AgentWorkspace({
             return;
           }
           if (settleExchangeAfterPersist) rememberSessionExchangeTitled(sessionId);
-          if (settleRejectionAfterPersist) settleRejectedTitle();
         })
         .catch(() => {});
     } finally {

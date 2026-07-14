@@ -21,11 +21,7 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "./lib/agent-hud-settings";
-import {
-  isAgentSessionTitleCandidate,
-  isRefusalLikeAgentSessionTitle,
-  sessionSettledTitleKind,
-} from "./lib/agent-session-titles";
+import { isAgentSessionTitleCandidate, sessionSettledTitleKind } from "./lib/agent-session-titles";
 import { titleFromPrompt } from "./lib/hermes-adapter";
 import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
@@ -549,15 +545,9 @@ function statusTitle(record: StatusRecord) {
 
 function isHudStatusTitleSafe(title: string, sessionId?: string, prompt?: string) {
   const settledTitleKind = sessionSettledTitleKind(sessionId);
-  if (
-    settledTitleKind === "manual" ||
-    settledTitleKind === "rejected" ||
-    settledTitleKind === "rejected-final"
-  ) {
-    return true;
-  }
+  if (settledTitleKind === "manual") return true;
   if (settledTitleKind === "exchange") return isAgentSessionTitleCandidate(title);
-  return isPromptDerivedTitle(title, prompt) || !isRefusalLikeAgentSessionTitle(title);
+  return isPromptDerivedTitle(title, prompt) || isAgentSessionTitleCandidate(title);
 }
 
 function isHudStoredSessionTitleSafe(
@@ -566,17 +556,11 @@ function isHudStoredSessionTitleSafe(
   ...promptCandidates: Array<string | undefined>
 ) {
   const settledTitleKind = sessionSettledTitleKind(sessionId);
-  if (
-    settledTitleKind === "manual" ||
-    settledTitleKind === "rejected" ||
-    settledTitleKind === "rejected-final"
-  ) {
-    return true;
-  }
+  if (settledTitleKind === "manual") return true;
   if (settledTitleKind === "exchange") return isAgentSessionTitleCandidate(title);
   return (
     promptCandidates.some((prompt) => isPromptDerivedTitle(title, prompt)) ||
-    !isRefusalLikeAgentSessionTitle(title)
+    isAgentSessionTitleCandidate(title)
   );
 }
 

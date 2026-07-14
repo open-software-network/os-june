@@ -267,6 +267,33 @@ describe("agent HUD", () => {
     expect(stackElement()).not.toHaveTextContent(refusal);
   });
 
+  it("keeps a valid session title when an unknown status title is a clarification", async () => {
+    const clarification = "Could you clarify the target";
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [
+        {
+          ...sessionFixture("session-1", "Session naming review"),
+          preview: "Review the session naming behavior",
+        },
+      ],
+      workingSessionIds: [],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "waitingForUser",
+      title: clarification,
+      prompt: "Review the session naming behavior",
+      summary: "June has a question.",
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent("Session naming review");
+    expect(stackElement()).not.toHaveTextContent(clarification);
+  });
+
   it("keeps question-shaped prompt and manual titles", async () => {
     await loadAgentHud();
 

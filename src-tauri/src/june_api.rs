@@ -2105,8 +2105,42 @@ fn is_valid_agent_session_title_candidate(value: &str) -> bool {
     let second = words.next().unwrap_or_default();
     let question_words = ["who", "what", "when", "where", "why", "how"];
     let question_auxiliaries = [
-        "can", "could", "would", "should", "do", "does", "did", "is", "are", "am", "will", "may",
-        "might", "have", "has",
+        "can",
+        "could",
+        "would",
+        "should",
+        "do",
+        "does",
+        "did",
+        "is",
+        "are",
+        "am",
+        "will",
+        "may",
+        "might",
+        "have",
+        "has",
+        "was",
+        "were",
+        "had",
+        "must",
+        "shall",
+        "can't",
+        "couldn't",
+        "wouldn't",
+        "shouldn't",
+        "don't",
+        "doesn't",
+        "didn't",
+        "isn't",
+        "aren't",
+        "won't",
+        "haven't",
+        "hasn't",
+        "wasn't",
+        "weren't",
+        "mustn't",
+        "shan't",
     ];
     !(first == "which"
         || question_words.contains(&first) && question_auxiliaries.contains(&second)
@@ -3104,6 +3138,15 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         );
         assert_eq!(clean_agent_session_title("Should this use Gmail"), None);
         assert_eq!(clean_agent_session_title("Are there archived notes"), None);
+        assert_eq!(clean_agent_session_title("Was this already deployed"), None);
+        assert_eq!(clean_agent_session_title("Were there archived notes"), None);
+        assert_eq!(clean_agent_session_title("Had this failed before"), None);
+        assert_eq!(clean_agent_session_title("Must I choose a project"), None);
+        assert_eq!(clean_agent_session_title("Shall I continue"), None);
+        assert_eq!(
+            clean_agent_session_title("Wouldn't this overwrite the note"),
+            None
+        );
         assert_eq!(clean_agent_session_title("I don't have email access"), None);
         assert_eq!(
             clean_agent_session_title("Could you clarify the target"),

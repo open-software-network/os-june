@@ -404,6 +404,12 @@ describe("AgentWorkspace", () => {
     expect(isAgentSessionTitleCandidate("Would it be okay to rename this")).toBe(false);
     expect(isAgentSessionTitleCandidate("Should this use Gmail")).toBe(false);
     expect(isAgentSessionTitleCandidate("Are there archived notes")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Was this already deployed")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Were there archived notes")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Had this failed before")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Must I choose a project")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Shall I continue")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Wouldn't this overwrite the note")).toBe(false);
     expect(isAgentSessionTitleCandidate("I don't have email access")).toBe(false);
   });
 
@@ -4329,6 +4335,64 @@ describe("AgentWorkspace", () => {
     // be able to retry, or a stale stored title would be frozen forever.
     expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBeNull();
   });
+
+  it("latches a rejected loaded-session title before fallback persistence", async () => {
+    const rawTitle = "I need you to inspect the flaky tests";
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-rejected-unsaved",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "inspect the flaky tests",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Could you clarify which failures you mean?",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+    mocks.suggestAgentSessionTitle.mockRejectedValue({
+      code: "agent_title_empty",
+      message: "Title generation returned an empty title.",
+    });
+    mocks.ensureHermesBridgeSession.mockRejectedValue(new Error("bridge offline"));
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1));
+    expect((await screen.findAllByText("inspect the flaky tests")).length).toBeGreaterThan(0);
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem("june.agent.manuallyTitledSessions") ?? "{}"),
+      ).toEqual({ "session-rejected-unsaved": "rejected" }),
+    );
+
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-rejected-unsaved",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:02Z",
+      },
+      "sandboxed",
+    );
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1);
+  }, 5_000);
 
   it("re-asserts a manual rename that lands while the auto-title persist is in flight", async () => {
     const rawTitle = "I need you to inspect the flaky tests";
