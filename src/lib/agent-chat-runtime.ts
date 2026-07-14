@@ -1373,10 +1373,23 @@ function resolveHermesMessageText(message: HermesSessionMessage) {
 function displayContentForHermesMessage(message: HermesSessionMessage) {
   const content = resolveHermesMessageText(message);
   if (message.role !== "user") return content.trim();
+  // Hermes appends this as a synthetic user message when an assistant response
+  // reaches the provider's output cap. It belongs in the model's continuation
+  // context, but never in June's transcript as something the user said.
+  if (isHermesOutputLengthContinuationPrompt(content)) return "";
   // Scheduled runs lead with the cron delivery preamble; show the routine's
   // own instructions, not the machine scaffolding.
   return displayedUserPromptText(
     stripImageAnalysisFailureNotice(stripScheduledRunPreamble(stripHermesContextMarkers(content))),
+  );
+}
+
+function isHermesOutputLengthContinuationPrompt(content: string) {
+  return (
+    content.trim() ===
+    "[System: Your previous response was truncated by the output length limit. " +
+      "Continue exactly where you left off. Do not restart or repeat prior text. " +
+      "Finish the answer directly.]"
   );
 }
 

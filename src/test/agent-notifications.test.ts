@@ -7,10 +7,15 @@ const notificationMocks = vi.hoisted(() => ({
   playAgentSound: vi.fn(),
 }));
 
+const tauriMocks = vi.hoisted(() => ({
+  sendAppNotification: vi.fn(),
+}));
+
 vi.mock("@tauri-apps/plugin-notification", () => notificationMocks);
 vi.mock("../lib/agent-sounds", () => ({
   playAgentSound: notificationMocks.playAgentSound,
 }));
+vi.mock("../lib/tauri", () => tauriMocks);
 
 import {
   agentAttentionDecision,
@@ -98,6 +103,7 @@ describe("agent notifications", () => {
       notifyAgentSessionStatus({ status, title: "Make a PDF" }, FOCUSED_ELSEWHERE),
     ).resolves.toBe(false);
     expect(notificationMocks.playAgentSound).not.toHaveBeenCalled();
+    expect(tauriMocks.sendAppNotification).not.toHaveBeenCalled();
     expect(notificationMocks.sendNotification).not.toHaveBeenCalled();
   });
 
@@ -116,6 +122,7 @@ describe("agent notifications", () => {
 
     expect(notificationMocks.playAgentSound).toHaveBeenCalledWith("needsInput");
     expect(notificationMocks.isPermissionGranted).not.toHaveBeenCalled();
+    expect(tauriMocks.sendAppNotification).not.toHaveBeenCalled();
     expect(notificationMocks.sendNotification).not.toHaveBeenCalled();
   });
 
@@ -134,8 +141,9 @@ describe("agent notifications", () => {
     expect(notificationMocks.playAgentSound).toHaveBeenCalledWith("ready");
   });
 
-  it("posts a silent native notification when the app is away", async () => {
+  it("posts a silent, session-routed native notification when the app is away", async () => {
     notificationMocks.isPermissionGranted.mockResolvedValue(true);
+    tauriMocks.sendAppNotification.mockResolvedValue(undefined);
 
     await expect(
       notifyAgentRunSettled(
@@ -148,10 +156,35 @@ describe("agent notifications", () => {
       ),
     ).resolves.toBe(true);
 
-    expect(notificationMocks.sendNotification).toHaveBeenCalledWith({
+    expect(tauriMocks.sendAppNotification).toHaveBeenCalledWith({
       title: "June is ready",
       body: "Make a PDF",
       group: "june-agent-session-3",
+      sessionId: "session-3",
+    });
+    expect(tauriMocks.sendAppNotification.mock.calls[0]?.[0]).not.toHaveProperty("sound");
+    expect(notificationMocks.sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a silent plugin notification when click routing is unavailable", async () => {
+    notificationMocks.isPermissionGranted.mockResolvedValue(true);
+    tauriMocks.sendAppNotification.mockRejectedValue(new Error("unknown command"));
+
+    await expect(
+      notifyAgentRunSettled(
+        {
+          sessionId: "session-fallback",
+          title: "Make a PDF",
+          summary: "June finished.",
+        },
+        { ...FOCUSED_ELSEWHERE, away: true, captureActive: true },
+      ),
+    ).resolves.toBe(true);
+
+    expect(notificationMocks.sendNotification).toHaveBeenCalledWith({
+      title: "June is ready",
+      body: "Make a PDF",
+      group: "june-agent-session-fallback",
     });
     expect(notificationMocks.sendNotification.mock.calls[0]?.[0]).not.toHaveProperty("sound");
   });
@@ -172,11 +205,13 @@ describe("agent notifications", () => {
     ).resolves.toBe(true);
 
     expect(notificationMocks.playAgentSound).toHaveBeenCalledWith("needsInput");
+    expect(tauriMocks.sendAppNotification).not.toHaveBeenCalled();
     expect(notificationMocks.sendNotification).not.toHaveBeenCalled();
   });
 
   it("keeps native visuals but suppresses their sound while capture is active", async () => {
     notificationMocks.isPermissionGranted.mockResolvedValue(true);
+    tauriMocks.sendAppNotification.mockResolvedValue(undefined);
 
     await notifyAgentSessionStatus(
       {
@@ -188,8 +223,8 @@ describe("agent notifications", () => {
     );
 
     expect(notificationMocks.playAgentSound).not.toHaveBeenCalled();
-    expect(notificationMocks.sendNotification).toHaveBeenCalledOnce();
-    expect(notificationMocks.sendNotification.mock.calls[0]?.[0]).not.toHaveProperty("sound");
+    expect(tauriMocks.sendAppNotification).toHaveBeenCalledOnce();
+    expect(tauriMocks.sendAppNotification.mock.calls[0]?.[0]).not.toHaveProperty("sound");
   });
 
   it("dedupes duplicate attention events", async () => {
@@ -213,6 +248,7 @@ describe("agent notifications", () => {
           resolvePermission = resolve;
         }),
     );
+    tauriMocks.sendAppNotification.mockResolvedValue(undefined);
     const detail = {
       sessionId: "session-concurrent",
       title: "Make a PDF",
@@ -225,11 +261,61 @@ describe("agent notifications", () => {
     resolvePermission?.(true);
 
     await expect(Promise.all([first, second])).resolves.toEqual([true, false]);
-    expect(notificationMocks.sendNotification).toHaveBeenCalledOnce();
+    expect(tauriMocks.sendAppNotification).toHaveBeenCalledOnce();
+  });
+
+  it("does not consume the dedupe slot when native permission is denied", async () => {
+    notificationMocks.isPermissionGranted.mockResolvedValue(false);
+    notificationMocks.requestPermission.mockResolvedValue("denied");
+    tauriMocks.sendAppNotification.mockResolvedValue(undefined);
+    const detail = {
+      sessionId: "session-retry",
+      title: "Make a PDF",
+      summary: "June finished.",
+    };
+    const context = { ...FOCUSED_ELSEWHERE, away: true, captureActive: true };
+
+    await expect(notifyAgentRunSettled(detail, context)).resolves.toBe(false);
+    expect(tauriMocks.sendAppNotification).not.toHaveBeenCalled();
+
+    notificationMocks.isPermissionGranted.mockResolvedValue(true);
+
+    await expect(notifyAgentRunSettled(detail, context)).resolves.toBe(true);
+    expect(tauriMocks.sendAppNotification).toHaveBeenCalledOnce();
+  });
+
+  it("prunes dedupe entries older than the window", async () => {
+    vi.useFakeTimers();
+    try {
+      notificationMocks.isPermissionGranted.mockResolvedValue(true);
+      tauriMocks.sendAppNotification.mockResolvedValue(undefined);
+      const context = { ...FOCUSED_ELSEWHERE, away: true, captureActive: true };
+
+      await notifyAgentRunSettled(
+        { sessionId: "session-old", title: "First", summary: "First" },
+        context,
+      );
+      vi.advanceTimersByTime(20_000);
+      await notifyAgentRunSettled(
+        { sessionId: "session-new", title: "Second", summary: "Second" },
+        context,
+      );
+
+      expect(tauriMocks.sendAppNotification).toHaveBeenCalledTimes(2);
+      const recent = (
+        globalThis as typeof globalThis & {
+          __juneAgentNotificationTimes?: Map<string, number>;
+        }
+      ).__juneAgentNotificationTimes;
+      expect(recent?.size).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("swallows native delivery errors after the local cue", async () => {
     notificationMocks.isPermissionGranted.mockResolvedValue(true);
+    tauriMocks.sendAppNotification.mockRejectedValue(new Error("backend unavailable"));
     notificationMocks.sendNotification.mockImplementation(() => {
       throw new Error("notification center unavailable");
     });

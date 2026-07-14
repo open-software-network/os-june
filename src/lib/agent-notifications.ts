@@ -9,6 +9,7 @@ import type {
   AgentSessionStatusKind,
 } from "./agent-events";
 import { playAgentSound, type AgentSound } from "./agent-sounds";
+import { sendAppNotification } from "./tauri";
 
 type NotificationCopy = {
   title: string;
@@ -124,14 +125,26 @@ async function deliverAgentAttention({
 
   if (decision.showNative && (await notificationPermissionGranted())) {
     try {
-      sendNotification({
+      await sendAppNotification({
         title: copy.title,
         body: copy.body,
         group,
+        sessionId: detail.sessionId,
       });
       delivered = true;
     } catch {
-      // The branded local cue remains useful if native delivery fails.
+      // The backend command owns click routing. Older app shells may not have
+      // it yet, so keep the plugin as a silent visual fallback.
+      try {
+        sendNotification({
+          title: copy.title,
+          body: copy.body,
+          group,
+        });
+        delivered = true;
+      } catch {
+        // The branded local cue remains useful if native delivery also fails.
+      }
     }
   }
 
