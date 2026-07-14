@@ -176,6 +176,194 @@ describe("agent HUD", () => {
     expect(document.querySelector(".agent-hud-chevron svg")).toBeTruthy();
   });
 
+  it("keeps the prompt when a waiting status carries a refusal-like title", async () => {
+    const prompt = "Review the session naming behavior";
+    const refusal = "I'm sorry, but I can't help with that";
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [
+        {
+          ...sessionFixture("session-1", refusal),
+          preview: prompt,
+        },
+      ],
+      workingSessionIds: [],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "running",
+      prompt,
+      summary: "June is working.",
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "waitingForUser",
+      title: refusal,
+      summary: "June has a question.",
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent(prompt);
+    expect(stackElement()).toHaveTextContent("June has a question.");
+    expect(stackElement()).not.toHaveTextContent(refusal);
+  });
+
+  it("keeps the prompt across an inactive sessions snapshot", async () => {
+    const prompt = "Review the session naming behavior";
+    const refusal = "I'm sorry, but I can't help with that";
+    const session = { ...sessionFixture("session-1", refusal), preview: "Earlier preview" };
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [session],
+      workingSessionIds: ["session-1"],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "running",
+      prompt,
+      summary: "June is working.",
+    });
+    emitSessionsChanged({
+      sessions: [session],
+      workingSessionIds: [],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "waitingForUser",
+      title: refusal,
+      summary: "June has a question.",
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent(prompt);
+    expect(stackElement()).toHaveTextContent("June has a question.");
+    expect(stackElement()).not.toHaveTextContent(refusal);
+  });
+
+  it("keeps a valid session title when only the status title is refusal-like", async () => {
+    const refusal = "I'm sorry, but I can't help with that";
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Session naming review")],
+      workingSessionIds: [],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "waitingForUser",
+      title: refusal,
+      prompt: "Review the session naming behavior",
+      summary: "June has a question.",
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent("Session naming review");
+    expect(stackElement()).not.toHaveTextContent(refusal);
+  });
+
+  it("keeps a valid session title when an unknown status title is a clarification", async () => {
+    const clarification = "Could you clarify the target";
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [
+        {
+          ...sessionFixture("session-1", "Session naming review"),
+          preview: "Review the session naming behavior",
+        },
+      ],
+      workingSessionIds: [],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "waitingForUser",
+      title: clarification,
+      prompt: "Review the session naming behavior",
+      summary: "June has a question.",
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent("Session naming review");
+    expect(stackElement()).not.toHaveTextContent(clarification);
+  });
+
+  it("keeps question-shaped prompt and manual titles", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Why is the microphone muted?")],
+      workingSessionIds: ["session-1"],
+      waitingSessionIds: [],
+    });
+    await flushPromises();
+    expect(stackElement()).toHaveTextContent("Why is the microphone muted?");
+
+    localStorage.setItem(
+      "june.agent.manuallyTitledSessions",
+      JSON.stringify({ "session-1": "manual" }),
+    );
+    emitSessionsChanged({
+      sessions: [sessionFixture("session-1", "Could you clarify this?")],
+      workingSessionIds: ["session-1"],
+      waitingSessionIds: [],
+    });
+    await flushPromises();
+    expect(stackElement()).toHaveTextContent("Could you clarify this?");
+  });
+
+  it("prefers a current stored title before its settlement marker arrives", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [
+        {
+          ...sessionFixture("session-1", "Persistence fix"),
+          preview: "Summarize latest failures",
+        },
+      ],
+      workingSessionIds: ["session-1"],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "running",
+      title: "Summarize latest failures",
+      prompt: "Summarize latest failures",
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent("Persistence fix");
+    expect(stackElement()).not.toHaveTextContent("Summarize latest failures");
+  });
+
+  it("keeps an unsettled prompt-derived title that resembles assistant dialogue", async () => {
+    const prompt = "I can't get the microphone to work in meetings";
+    const promptTitle = "I can't get the microphone to";
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [{ ...sessionFixture("session-1", promptTitle), preview: prompt }],
+      workingSessionIds: ["session-1"],
+      waitingSessionIds: [],
+    });
+    emitStatus({
+      sessionId: "session-1",
+      status: "running",
+      title: promptTitle,
+      prompt,
+    });
+    await flushPromises();
+
+    expect(stackElement()).toHaveTextContent(promptTitle);
+  });
+
   it("stays collapsed after an explicit collapse while a session still needs input", async () => {
     await loadAgentHud();
 
@@ -592,8 +780,9 @@ function emitStatus(detail: {
   activeCount?: number;
   sessionId?: string;
   status: string;
-  title: string;
-  summary: string;
+  title?: string;
+  prompt?: string;
+  summary?: string;
 }) {
   window.dispatchEvent(new CustomEvent(AGENT_SESSION_STATUS_EVENT, { detail }));
 }

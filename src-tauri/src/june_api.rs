@@ -1970,10 +1970,28 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         .trim()
         .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
         .replace(['\r', '\n'], " ");
-    let prefixes = [
-        "Title:",
-        "Session title:",
-        "Request:",
+    let label_prefixes = ["Title:", "Session title:", "Request:"];
+    loop {
+        let mut changed = false;
+        for prefix in label_prefixes {
+            if title.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                title = title[prefix.len()..].trim_start().to_string();
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    title = title
+        .trim()
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
+        .trim()
+        .to_string();
+    if !is_valid_agent_session_title_candidate(&title) {
+        return None;
+    }
+    let request_prefixes = [
         "Please ",
         "Can you ",
         "Could you ",
@@ -1991,7 +2009,7 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
     ];
     loop {
         let mut changed = false;
-        for prefix in prefixes {
+        for prefix in request_prefixes {
             if title.to_lowercase().starts_with(&prefix.to_lowercase()) {
                 title = title[prefix.len()..].trim_start().to_string();
                 changed = true;
@@ -2030,7 +2048,118 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
             .trim_end()
             .to_string();
     }
-    (!title.is_empty()).then_some(title)
+    is_valid_agent_session_title_candidate(&title).then_some(title)
+}
+
+fn is_valid_agent_session_title_candidate(value: &str) -> bool {
+    let normalized = value.trim().replace(['‘', '’'], "'").to_lowercase();
+    if normalized.is_empty() || normalized.contains('?') {
+        return false;
+    }
+    let dialogue_prefixes = [
+        "i'm sorry",
+        "i am sorry",
+        "i'm unable",
+        "i am unable",
+        "i can't",
+        "i cannot",
+        "i won't",
+        "i don't",
+        "i do not",
+        "i found",
+        "i fixed",
+        "i updated",
+        "i created",
+        "i completed",
+        "i finished",
+        "i wrote",
+        "i added",
+        "i removed",
+        "i changed",
+        "i checked",
+        "i reviewed",
+        "i traced",
+        "sorry",
+        "as an ai",
+        "sure",
+        "certainly",
+        "of course",
+        "here's",
+        "here is",
+        "here are",
+        "unable to help",
+        "unable to assist",
+        "unable to comply",
+    ];
+    if dialogue_prefixes
+        .iter()
+        .any(|prefix| starts_with_title_phrase(&normalized, prefix))
+        || ["can't help", "cannot help", "can't assist", "cannot assist"]
+            .iter()
+            .any(|phrase| normalized.contains(phrase))
+    {
+        return false;
+    }
+    let mut words = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '\'')
+        .filter(|word| !word.is_empty());
+    let first = words.next().unwrap_or_default();
+    let second = words.next().unwrap_or_default();
+    let question_words = ["who", "what", "when", "where", "why", "how"];
+    let question_auxiliaries = [
+        "could",
+        "would",
+        "should",
+        "do",
+        "does",
+        "did",
+        "is",
+        "are",
+        "am",
+        "have",
+        "has",
+        "was",
+        "were",
+        "had",
+        "must",
+        "shall",
+        "can't",
+        "couldn't",
+        "wouldn't",
+        "shouldn't",
+        "don't",
+        "doesn't",
+        "didn't",
+        "isn't",
+        "aren't",
+        "won't",
+        "haven't",
+        "hasn't",
+        "wasn't",
+        "weren't",
+        "mustn't",
+        "shan't",
+    ];
+    let ambiguous_question_auxiliaries = ["can", "will", "may", "might"];
+    let question_subjects = [
+        "i", "you", "we", "he", "she", "it", "they", "june", "this", "that", "these", "those",
+        "there", "the", "a", "an", "my", "your", "our", "his", "her", "their",
+    ];
+    let is_how_to_title = first == "how" && second == "to";
+    !(first == "which"
+        || (question_words.contains(&first) && !is_how_to_title)
+        || question_auxiliaries.contains(&first)
+        || (ambiguous_question_auxiliaries.contains(&first) && question_subjects.contains(&second)))
+}
+
+fn starts_with_title_phrase(value: &str, phrase: &str) -> bool {
+    value.strip_prefix(phrase).is_some_and(|suffix| {
+        suffix.is_empty()
+            || suffix
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_whitespace() || ",:;.!".contains(character))
+    })
 }
 
 async fn post_json<T, B>(path: &str, body: &B, send_venice_api_key: bool) -> Result<T, AppError>
@@ -2987,6 +3116,98 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             Some("界".repeat(AGENT_TITLE_MAX_CHARS))
         );
         assert_eq!(clean_agent_session_title("   "), None);
+    }
+
+    #[test]
+    fn rejects_assistant_dialogue_and_questions_as_agent_session_titles() {
+        assert_eq!(
+            clean_agent_session_title("I'm sorry, but I can't help with that"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("I’m sorry, but I can’t help with that"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("Could you clarify the target?"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("What should I update"), None);
+        assert_eq!(
+            clean_agent_session_title("What, exactly should I update"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("What,exactly should I update"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("Would/you clarify"), None);
+        assert_eq!(clean_agent_session_title("Can June access the note"), None);
+        assert_eq!(clean_agent_session_title("Will June rename this"), None);
+        assert_eq!(
+            clean_agent_session_title("Which email service should I use"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("Would it be okay to rename this"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("Should this use Gmail"), None);
+        assert_eq!(clean_agent_session_title("Are there archived notes"), None);
+        assert_eq!(clean_agent_session_title("Was this already deployed"), None);
+        assert_eq!(clean_agent_session_title("Were there archived notes"), None);
+        assert_eq!(clean_agent_session_title("Had this failed before"), None);
+        assert_eq!(clean_agent_session_title("Must I choose a project"), None);
+        assert_eq!(clean_agent_session_title("Shall I continue"), None);
+        assert_eq!(
+            clean_agent_session_title("Wouldn't this overwrite the note"),
+            None
+        );
+        assert_eq!(clean_agent_session_title("I don't have email access"), None);
+        assert_eq!(
+            clean_agent_session_title("Could you clarify the target"),
+            None
+        );
+        assert_eq!(
+            clean_agent_session_title("Session title: \"Could you clarify the target\""),
+            None
+        );
+    }
+
+    #[test]
+    fn retains_concise_topic_agent_session_titles() {
+        assert_eq!(
+            clean_agent_session_title("Clarification handling").as_deref(),
+            Some("Clarification handling")
+        );
+        assert_eq!(
+            clean_agent_session_title("Assistant refusal guard").as_deref(),
+            Some("Assistant refusal guard")
+        );
+        assert_eq!(
+            clean_agent_session_title("May release planning").as_deref(),
+            Some("May release planning")
+        );
+        assert_eq!(
+            clean_agent_session_title("Will migration review").as_deref(),
+            Some("Will migration review")
+        );
+        assert_eq!(
+            clean_agent_session_title("Can bus diagnostics").as_deref(),
+            Some("Can bus diagnostics")
+        );
+        assert_eq!(
+            clean_agent_session_title("Open GarageBand").as_deref(),
+            Some("Open GarageBand")
+        );
+        assert_eq!(
+            clean_agent_session_title("How to deploy June").as_deref(),
+            Some("How to deploy June")
+        );
+        assert_eq!(
+            clean_agent_session_title("Surefire recovery plan").as_deref(),
+            Some("Surefire recovery plan")
+        );
     }
 
     #[test]

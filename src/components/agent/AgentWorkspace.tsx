@@ -191,8 +191,10 @@ import {
 } from "../../lib/hermes-image-attach";
 import { parseSessionUsage, type SessionUsage } from "../../lib/hermes-session-usage";
 import {
+  isAgentSessionTitleCandidate,
   rememberSessionExchangeTitled,
   rememberSessionManuallyTitled,
+  rememberSessionTitleRejected,
   sessionSettledTitleKind,
 } from "../../lib/agent-session-titles";
 import {
@@ -260,6 +262,7 @@ import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPic
 import {
   HERMES_SERVER_ERROR_MESSAGE,
   describeHermesError,
+  errorCode,
   isHermesServerError,
   isHermesSessionsStartupRequestError,
   isTopUpRequiresMaxError,
@@ -1747,7 +1750,7 @@ type AgentSessionContinuity = {
   queuedAttachmentFollowUps: Record<string, QueuedAttachmentFollowUp[]>;
 };
 
-type AgentSessionTitleSource = "prompt" | "exchange" | "manual";
+type AgentSessionTitleSource = "prompt" | "exchange" | "manual" | "rejected" | "rejected-final";
 
 type IssueReportDeliveryResult = { sent: true } | { sent: false; errorMessage: string };
 
@@ -8395,8 +8398,10 @@ export function AgentWorkspace({
     if (
       source === "manual" ||
       source === "exchange" ||
+      source === "rejected-final" ||
       settledTitleKind === "manual" ||
-      settledTitleKind === "exchange"
+      settledTitleKind === "exchange" ||
+      settledTitleKind === "rejected-final"
     ) {
       return;
     }
@@ -8411,19 +8416,38 @@ export function AgentWorkspace({
       firstUserMessageIndex >= 0 ? messages[firstUserMessageIndex] : undefined;
     const prompt = firstUserMessage ? visibleHermesMessageText(firstUserMessage).trim() : "";
     if (!prompt) return;
-    const firstAssistantReply =
-      firstUserMessageIndex >= 0
-        ? messages
-            .slice(firstUserMessageIndex + 1)
-            .find(
-              (message) => message.role === "assistant" && visibleHermesMessageText(message).trim(),
-            )
-        : undefined;
+    let titlePrompt = prompt;
+    const wasRejected = source === "rejected" || settledTitleKind === "rejected";
+    const firstAssistantReplyIndex = messages.findIndex(
+      (message, index) =>
+        index > firstUserMessageIndex &&
+        message.role === "assistant" &&
+        Boolean(visibleHermesMessageText(message).trim()),
+    );
+    let assistantReply =
+      firstAssistantReplyIndex >= 0 ? messages[firstAssistantReplyIndex] : undefined;
+    if (wasRejected) {
+      const laterUserMessageIndex = messages.findIndex(
+        (message, index) =>
+          index > firstAssistantReplyIndex &&
+          message.role === "user" &&
+          Boolean(visibleHermesMessageText(message).trim()),
+      );
+      const laterAssistantReplyIndex = messages.findIndex(
+        (message, index) =>
+          index > laterUserMessageIndex &&
+          message.role === "assistant" &&
+          Boolean(visibleHermesMessageText(message).trim()),
+      );
+      if (laterUserMessageIndex < 0 || laterAssistantReplyIndex < 0) return;
+      titlePrompt = visibleHermesMessageText(messages[laterUserMessageIndex]).trim();
+      assistantReply = messages[laterAssistantReplyIndex];
+    }
     const reply = truncateAgentTitleResponseExcerpt(
-      visibleHermesMessageText(firstAssistantReply).trim(),
+      assistantReply ? visibleHermesMessageText(assistantReply).trim() : "",
     );
     const hasReply = Boolean(reply);
-    if (source === "prompt") {
+    if (source === "prompt" || wasRejected) {
       if (!hasReply) return;
     } else if (sessionTitleOverridesRef.current[sessionId]) {
       return;
@@ -8431,17 +8455,42 @@ export function AgentWorkspace({
       const session = hermesSessionItems.find((item) => item.id === sessionId);
       if (!session || !isReplaceableAgentSessionTitle(session.title)) return;
     }
+    const settleRejectedTitle = () => {
+      if (sessionTitleSourceRef.current[sessionId] === "manual") return;
+      const rejectionIsFinal = wasRejected;
+      sessionTitleSourceRef.current = {
+        ...sessionTitleSourceRef.current,
+        [sessionId]: rejectionIsFinal ? "rejected-final" : "rejected",
+      };
+      rememberSessionTitleRejected(sessionId, rejectionIsFinal);
+    };
+    // A rejected title gets exactly one retry, and only after a later user and
+    // assistant exchange. Consume that retry before the metered request so a
+    // timeout, refresh, or concurrent poll cannot issue it again.
+    if (wasRejected) settleRejectedTitle();
     titleSuggestionInFlightSessionIdsRef.current.add(sessionId);
     let shouldRecheckLatestMessages = false;
     try {
-      const suggestion = await agentSessionTitleForPrompt(prompt, hasReply ? reply : undefined);
+      const suggestion = await agentSessionTitleForPrompt(
+        titlePrompt,
+        hasReply ? reply : undefined,
+      );
       if (titleSuggestionSessionIdsRef.current.has(sessionId)) return;
       if (!suggestion.fromModel && sessionTitleOverridesRef.current[sessionId]) {
+        if (suggestion.rejected && hasReply) settleRejectedTitle();
         return;
       }
       const title = suggestion.title;
+      const rejectedThisAttempt = suggestion.rejected && hasReply;
+      if (rejectedThisAttempt) settleRejectedTitle();
       const nextSource: AgentSessionTitleSource =
-        suggestion.fromModel && hasReply ? "exchange" : "prompt";
+        suggestion.fromModel && hasReply
+          ? "exchange"
+          : rejectedThisAttempt
+            ? wasRejected
+              ? "rejected-final"
+              : "rejected"
+            : "prompt";
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
         [sessionId]: title,
@@ -10507,11 +10556,15 @@ async function agentSessionTitleForPrompt(prompt: string, response?: string) {
       AGENT_TITLE_TIMEOUT_MS,
     );
     const title = suggestion.title.trim();
-    return title
-      ? { title, fromModel: true }
-      : { title: titleFromPrompt(prompt), fromModel: false };
-  } catch {
-    return { title: titleFromPrompt(prompt), fromModel: false };
+    return isAgentSessionTitleCandidate(title)
+      ? { title, fromModel: true, rejected: false }
+      : { title: titleFromPrompt(prompt), fromModel: false, rejected: true };
+  } catch (error) {
+    return {
+      title: titleFromPrompt(prompt),
+      fromModel: false,
+      rejected: errorCode(error) === "agent_title_empty",
+    };
   }
 }
 

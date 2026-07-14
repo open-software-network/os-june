@@ -26,6 +26,12 @@ import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../li
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
 import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-activity-store";
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
+import {
+  isAgentSessionTitleCandidate,
+  rememberSessionTitleRejected,
+  resetAgentSessionTitleVolatileStoreForTest,
+  sessionSettledTitleKind,
+} from "../lib/agent-session-titles";
 import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
 import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
@@ -389,6 +395,44 @@ async function settleUnderFakeTimers(
 }
 
 describe("AgentWorkspace", () => {
+  it("accepts concise topic titles without treating their first word as dialogue", () => {
+    expect(isAgentSessionTitleCandidate("How to deploy June")).toBe(true);
+    expect(isAgentSessionTitleCandidate("Surefire recovery plan")).toBe(true);
+    expect(isAgentSessionTitleCandidate("May release planning")).toBe(true);
+    expect(isAgentSessionTitleCandidate("Will migration review")).toBe(true);
+    expect(isAgentSessionTitleCandidate("Can bus diagnostics")).toBe(true);
+    expect(isAgentSessionTitleCandidate("I'm sorry, but I can't help with that")).toBe(false);
+    expect(isAgentSessionTitleCandidate("What should I update")).toBe(false);
+    expect(isAgentSessionTitleCandidate("What, exactly should I update")).toBe(false);
+    expect(isAgentSessionTitleCandidate("What,exactly should I update")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Would/you clarify")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Can June access the note")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Will June rename this")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Which email service should I use")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Would it be okay to rename this")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Should this use Gmail")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Are there archived notes")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Was this already deployed")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Were there archived notes")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Had this failed before")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Must I choose a project")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Shall I continue")).toBe(false);
+    expect(isAgentSessionTitleCandidate("Wouldn't this overwrite the note")).toBe(false);
+    expect(isAgentSessionTitleCandidate("I don't have email access")).toBe(false);
+  });
+
+  it("keeps a rejected title decision in memory when local storage fails", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+
+    rememberSessionTitleRejected("storage-failure-session");
+
+    expect(sessionSettledTitleKind("storage-failure-session")).toBe("rejected");
+    setItem.mockRestore();
+    resetAgentSessionTitleVolatileStoreForTest();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.suggestAgentSessionTitle.mockReset();
@@ -412,6 +456,7 @@ describe("AgentWorkspace", () => {
     }
     window.sessionStorage.clear();
     window.localStorage.clear();
+    resetAgentSessionTitleVolatileStoreForTest();
     mocks.openFileDialog.mockResolvedValue(null);
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
     mocks.providerModelSettings.mockResolvedValue({
@@ -4299,6 +4344,64 @@ describe("AgentWorkspace", () => {
     expect(window.localStorage.getItem("june.agent.manuallyTitledSessions")).toBeNull();
   });
 
+  it("latches a rejected loaded-session title before fallback persistence", async () => {
+    const rawTitle = "I need you to inspect the flaky tests";
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-rejected-unsaved",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "u1",
+        role: "user",
+        content: "inspect the flaky tests",
+        timestamp: "2026-06-04T12:00:00Z",
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Could you clarify which failures you mean?",
+        timestamp: "2026-06-04T12:00:01Z",
+      },
+    ]);
+    mocks.suggestAgentSessionTitle.mockRejectedValue({
+      code: "agent_title_empty",
+      message: "Title generation returned an empty title.",
+    });
+    mocks.ensureHermesBridgeSession.mockRejectedValue(new Error("bridge offline"));
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1));
+    expect((await screen.findAllByText("inspect the flaky tests")).length).toBeGreaterThan(0);
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem("june.agent.manuallyTitledSessions") ?? "{}"),
+      ).toEqual({ "session-rejected-unsaved": "rejected" }),
+    );
+
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-rejected-unsaved",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:02Z",
+      },
+      "sandboxed",
+    );
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1);
+  }, 5_000);
+
   it("re-asserts a manual rename that lands while the auto-title persist is in flight", async () => {
     const rawTitle = "I need you to inspect the flaky tests";
     mocks.listHermesSessions.mockResolvedValue([
@@ -4593,6 +4696,142 @@ describe("AgentWorkspace", () => {
     await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(3));
     expect(await screen.findByText("Persistence Fix")).toBeInTheDocument();
   }, 10_000);
+
+  it("keeps a prompt title when the first-exchange suggestion is assistant dialogue", async () => {
+    const rawTitle = "I want you to summarize latest failures";
+    const userMessage = {
+      id: "u1",
+      role: "user",
+      content: "summarize latest failures",
+      timestamp: "2026-06-04T12:00:00Z",
+    };
+    const assistantMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "Could you clarify which failures you mean?",
+      timestamp: "2026-06-04T12:00:01Z",
+    };
+    const followUpUserMessage = {
+      id: "u2",
+      role: "user",
+      content: "the staging failures",
+      timestamp: "2026-06-04T12:00:02Z",
+    };
+    const substantiveAssistantMessage = {
+      id: "a2",
+      role: "assistant",
+      content: "I fixed the staging persistence race and verified the regression test.",
+      timestamp: "2026-06-04T12:00:03Z",
+    };
+    const extraAssistantMessage = {
+      id: "a-tool",
+      role: "assistant",
+      content: "I checked one more source.",
+      timestamp: "2026-06-04T12:00:02Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-invalid-exchange-title",
+        title: rawTitle,
+        preview: rawTitle,
+        last_active: "2026-06-04T12:00:00Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages
+      .mockResolvedValueOnce([userMessage])
+      .mockResolvedValue([userMessage, assistantMessage]);
+    mocks.suggestAgentSessionTitle
+      .mockResolvedValueOnce({ title: "Failure summary" })
+      .mockRejectedValueOnce({
+        code: "agent_title_empty",
+        message: "Title generation returned an empty title.",
+      })
+      .mockResolvedValueOnce({ title: "Staging persistence fix" });
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-invalid-exchange-title",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:00Z",
+      },
+      "sandboxed",
+    );
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Failure summary")).toBeInTheDocument();
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Failure summary")).toBeInTheDocument();
+    expect(screen.queryByText("I'm sorry, but I can't help with that")).toBeNull();
+    expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
+      sessionId: "session-invalid-exchange-title",
+      title: "I'm sorry, but I can't help with that",
+    });
+    expect(
+      JSON.parse(window.localStorage.getItem("june.agent.manuallyTitledSessions") ?? "{}"),
+    ).toEqual({ "session-invalid-exchange-title": "rejected" });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2);
+
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      userMessage,
+      assistantMessage,
+      extraAssistantMessage,
+    ]);
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-invalid-exchange-title",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:03Z",
+      },
+      "sandboxed",
+    );
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2);
+
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      userMessage,
+      assistantMessage,
+      followUpUserMessage,
+      substantiveAssistantMessage,
+    ]);
+    hermesActivityStore.record(
+      {
+        kind: "lifecycle",
+        sessionId: "session-invalid-exchange-title",
+        flavor: "running",
+        status: "running",
+        text: "",
+        receivedAt: "2026-06-04T12:00:04Z",
+      },
+      "sandboxed",
+    );
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+    });
+
+    await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(3));
+    expect(mocks.suggestAgentSessionTitle).toHaveBeenLastCalledWith(
+      "the staging failures",
+      "I fixed the staging persistence race and verified the regression test.",
+    );
+    expect(await screen.findByText("Staging persistence fix")).toBeInTheDocument();
+  }, 15_000);
 
   it("keeps a failed fresh title fallback retry to a later natural refresh", async () => {
     const rawTitle = "I want you to summarize latest failures";
