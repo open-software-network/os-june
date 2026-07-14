@@ -63,6 +63,11 @@ export function ShareDialog({
 }) {
   const emailInputId = useId();
   const [loading, setLoading] = useState(false);
+  // Set when opening an already-shared item but loading its invite state fails
+  // transiently. shareId is pinned yet `invites` is unknown, so inviting is
+  // blocked until a clean reload rather than acting on an empty list that can't
+  // see the existing invites.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [shareId, setShareId] = useState<string | null>(null);
   const [contentKeyB64, setContentKeyB64] = useState<string | null>(null);
   const [invites, setInvites] = useState<InviteRow[]>([]);
@@ -94,6 +99,7 @@ export function ShareDialog({
     setShareId(null);
     setContentKeyB64(null);
     setInvites([]);
+    setLoadFailed(false);
     void (async () => {
       const base = await getShareBaseUrl().catch(() => null);
       if (!cancelled && base) setBaseUrl(base);
@@ -137,6 +143,13 @@ export function ShareDialog({
           setContentKeyB64(null);
           setInvites([]);
         } else {
+          // Loading the existing share's invite state failed transiently.
+          // Keep shareId pinned so a later action still targets the right
+          // share, but block inviting: `invites` is unknown, and adding against
+          // an empty list could duplicate an invite the client can't see.
+          // Server-side active-invite uniqueness is the backstop; the client
+          // still must not knowingly act on unknown state.
+          setLoadFailed(true);
           setError(messageFromError(err));
         }
       } finally {
@@ -153,7 +166,7 @@ export function ShareDialog({
     // `loading` guards the async open effect that resolves an existing share:
     // submitting before it settles would take the first-invite path and mint a
     // second, orphaned share for an already-shared item.
-    if (!EMAIL_PATTERN.test(normalized) || invitingRef.current || loading) return;
+    if (!EMAIL_PATTERN.test(normalized) || invitingRef.current || loading || loadFailed) return;
     // Reject a duplicate active invite for the same address. The viewer
     // authorizes by any non-revoked invite matching the email, so a second
     // active row would survive revoking the first and leave that person able
@@ -248,7 +261,7 @@ export function ShareDialog({
       invitingRef.current = false;
       setInviteBusy(false);
     }
-  }, [email, loading, invites, shareId, contentKeyB64, item]);
+  }, [email, loading, loadFailed, invites, shareId, contentKeyB64, item]);
 
   const handleCopyLink = useCallback(
     async (invite: InviteRow) => {
@@ -287,6 +300,7 @@ export function ShareDialog({
     setShareId(null);
     setContentKeyB64(null);
     setInvites([]);
+    setLoadFailed(false);
   }, [shareId]);
 
   const emailValid = EMAIL_PATTERN.test(email.trim().toLowerCase());
@@ -344,7 +358,7 @@ export function ShareDialog({
               <button
                 type="submit"
                 className="primary-action primary-solid"
-                disabled={!emailValid || inviteBusy || loading}
+                disabled={!emailValid || inviteBusy || loading || loadFailed}
               >
                 {inviteBusy ? "Inviting..." : "Invite"}
               </button>
@@ -357,6 +371,10 @@ export function ShareDialog({
           ) : null}
           {loading ? (
             <p className="share-dialog-caption">Loading share...</p>
+          ) : loadFailed ? (
+            <p className="share-dialog-caption">
+              Couldn't load who's invited. Close and reopen to try again.
+            </p>
           ) : invites.length > 0 ? (
             <ul className="share-invite-list" aria-label="Invited people">
               {invites.map((invite) => {

@@ -304,6 +304,32 @@ describe("ShareDialog", () => {
     expect(screen.queryByRole("button", { name: "Unshare" })).not.toBeInTheDocument();
   });
 
+  it("blocks inviting when an existing share's invite state fails to load", async () => {
+    mocks.shareKeyGet.mockResolvedValue({
+      shareId: "shr_1",
+      contentKeyB64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    });
+    // Transient failure (NOT share_not_found): shareId is pinned but the invite
+    // list can't be loaded. Inviting must stay disabled so we never add against
+    // an empty list that can't see the existing invites (a second active invite
+    // would survive revoking the first). Reopening retries the load.
+    mocks.shareGet.mockRejectedValue({ code: "june_request_failed", message: "network error" });
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    expect(
+      await screen.findByText("Couldn't load who's invited. Close and reopen to try again."),
+    ).toBeInTheDocument();
+    // The share id is known (Unshare is still offered), but inviting is blocked
+    // even with a valid address entered.
+    expect(screen.getByRole("button", { name: "Unshare" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Invite by email"), "friend@example.com");
+    expect(screen.getByRole("button", { name: "Invite" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Invite" }));
+    expect(mocks.shareAddInvites).not.toHaveBeenCalled();
+    expect(mocks.shareCreate).not.toHaveBeenCalled();
+  });
+
   it("rolls the created share back when persisting its content key fails", async () => {
     mocks.shareKeyGet.mockResolvedValue(null); // item not shared yet
     mocks.shareCreate.mockResolvedValue({
