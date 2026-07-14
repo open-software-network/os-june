@@ -1,8 +1,9 @@
 import { fireEvent } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   FONT_SCALE_CHANGED_EVENT,
   getStoredFontScale,
+  initFontScale,
   installFontScaleShortcuts,
 } from "../lib/font-scale";
 
@@ -12,6 +13,7 @@ describe("font scale shortcuts", () => {
   beforeEach(() => {
     localStorage.clear();
     document.documentElement.style.removeProperty("--font-scale");
+    initFontScale();
     uninstall = installFontScaleShortcuts();
   });
 
@@ -89,6 +91,28 @@ describe("font scale shortcuts", () => {
     } finally {
       if (platform) Object.defineProperty(navigator, "platform", platform);
       if (userAgent) Object.defineProperty(navigator, "userAgent", userAgent);
+    }
+  });
+
+  it("keeps stepping and reset working when persistence fails", () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage quota exceeded", "QuotaExceededError");
+    });
+
+    try {
+      fireEvent.keyDown(window, { key: "+", metaKey: true, shiftKey: true });
+      expect(getStoredFontScale()).toBe("large");
+      expect(document.documentElement.style.getPropertyValue("--font-scale")).toBe("1.1");
+
+      fireEvent.keyDown(window, { key: "+", metaKey: true, shiftKey: true });
+      expect(getStoredFontScale()).toBe("larger");
+      expect(document.documentElement.style.getPropertyValue("--font-scale")).toBe("1.2");
+
+      fireEvent.keyDown(window, { key: "0", metaKey: true });
+      expect(getStoredFontScale()).toBe("default");
+      expect(document.documentElement.style.getPropertyValue("--font-scale")).toBe("1");
+    } finally {
+      setItem.mockRestore();
     }
   });
 });
