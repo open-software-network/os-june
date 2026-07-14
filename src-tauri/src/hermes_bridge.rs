@@ -6482,7 +6482,7 @@ fn sandbox_secret_read_paths(manifest_dir: &Path, image_source_key_path: PathBuf
             .join("dev-google-connector-tokens.json"),
         manifest_dir
             .join("target")
-            .join("dev-github-connector-tokens.json"),
+            .join(crate::connectors::github_store::DEV_TOKEN_FILENAME),
     ]
 }
 
@@ -6642,6 +6642,22 @@ fn sandbox_config_temp_prefix(hermes_home: &Path) -> PathBuf {
 /// deny the securityd services used by Keychain Services. Pure (no IO) so it
 /// can be unit-tested.
 #[cfg(target_os = "macos")]
+fn github_connector_temp_file_sbpl_regex(final_fixture_path: &Path) -> Option<String> {
+    if final_fixture_path.file_name()?.to_str()?
+        != crate::connectors::github_store::DEV_TOKEN_FILENAME
+    {
+        return None;
+    }
+    let temp_prefix_path = final_fixture_path
+        .parent()?
+        .join(crate::connectors::github_store::DEV_TOKEN_TEMP_FILE_PREFIX);
+    Some(format!(
+        "^{}[0-9]+\\.[0-9]+\\.tmp$",
+        sbpl_regex_escape(&temp_prefix_path.to_string_lossy())
+    ))
+}
+
+#[cfg(target_os = "macos")]
 fn build_sandbox_profile(
     home: &Path,
     write_roots: &[PathBuf],
@@ -6782,6 +6798,9 @@ fn build_sandbox_profile(
             "  (literal {})\n",
             sbpl_quote(&path.to_string_lossy())
         ));
+        if let Some(regex) = github_connector_temp_file_sbpl_regex(path) {
+            out.push_str(&format!("  (regex #\"{regex}\")\n"));
+        }
     }
     out.push_str(")\n");
     out
@@ -8204,7 +8223,8 @@ fn is_sensitive_path_component(name: &str) -> bool {
 
 fn is_sensitive_file_name(name: &str) -> bool {
     let normalized = name.to_ascii_lowercase();
-    normalized == ".env"
+    is_github_connector_token_temp_file_name(&normalized)
+        || normalized == ".env"
         || normalized.starts_with(".env.")
         || matches!(
             normalized.as_str(),
@@ -8227,6 +8247,22 @@ fn is_sensitive_file_name(name: &str) -> bool {
         || normalized.ends_with(".pem")
         || normalized.ends_with(".p12")
         || normalized.ends_with(".pfx")
+}
+
+fn is_github_connector_token_temp_file_name(normalized_name: &str) -> bool {
+    let Some(suffix) = normalized_name
+        .strip_prefix(crate::connectors::github_store::DEV_TOKEN_TEMP_FILE_PREFIX)
+        .and_then(|suffix| suffix.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((process_id, sequence)) = suffix.split_once('.') else {
+        return false;
+    };
+    !process_id.is_empty()
+        && !sequence.is_empty()
+        && process_id.bytes().all(|byte| byte.is_ascii_digit())
+        && sequence.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn system_time_to_iso(value: std::time::SystemTime) -> String {
@@ -12078,11 +12114,24 @@ mod tests {
         ] {
             assert!(is_hidden_secret_path(Path::new(path)), "{path}");
         }
+
+        let temp_path = Path::new("/workspace").join(
+            crate::connectors::github_store::dev_token_temp_file_name(4_242, 7),
+        );
+        assert!(is_hidden_secret_path(&temp_path), "{temp_path:?}");
     }
 
     #[test]
-    fn hidden_secret_filter_allows_non_sensitive_dotfiles() {
+    fn hidden_secret_filter_allows_non_sensitive_dotfiles_and_temp_near_misses() {
         assert!(!is_hidden_secret_path(Path::new("/workspace/.gitignore")));
+        for path in [
+            "/workspace/build.tmp",
+            "/workspace/.dev-github-connector-tokens.json.pid.7.tmp",
+            "/workspace/.dev-github-connector-tokens.json.4242.7.log",
+            "/workspace/.dev-github-connector-tokens.json.4242.7.tmp.backup",
+        ] {
+            assert!(!is_hidden_secret_path(Path::new(path)), "{path}");
+        }
     }
 
     #[test]
@@ -14059,6 +14108,24 @@ mcp_servers:
             let deny_rule = format!("(literal {})", sbpl_quote(&fixture.to_string_lossy()));
             assert!(profile.contains(&deny_rule), "missing deny for {fixture:?}");
         }
+
+        let temp_file_name = crate::connectors::github_store::dev_token_temp_file_name(4_242, 7);
+        assert_eq!(
+            temp_file_name,
+            ".dev-github-connector-tokens.json.4242.7.tmp"
+        );
+        let temp_path = manifest_dir.join("target").join(&temp_file_name);
+        let temp_prefix = manifest_dir
+            .join("target")
+            .join(crate::connectors::github_store::DEV_TOKEN_TEMP_FILE_PREFIX);
+        let deny_rule = format!(
+            r##"(regex #"^{}[0-9]+\.[0-9]+\.tmp$")"##,
+            sbpl_regex_escape(&temp_prefix.to_string_lossy())
+        );
+        assert!(
+            profile.contains(&deny_rule),
+            "missing narrow temp-file deny for {temp_path:?}: {deny_rule}"
+        );
     }
 
     #[cfg(target_os = "macos")]

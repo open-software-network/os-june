@@ -13,8 +13,8 @@ const RELEASE_KEYCHAIN_SERVICE: &str = "co.opensoftware.june.github";
 const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.june-dev.github";
 #[cfg(debug_assertions)]
 const PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE";
-#[cfg(any(debug_assertions, test))]
-const DEV_TOKEN_FILENAME: &str = "dev-github-connector-tokens.json";
+pub(crate) const DEV_TOKEN_FILENAME: &str = "dev-github-connector-tokens.json";
+pub(crate) const DEV_TOKEN_TEMP_FILE_PREFIX: &str = ".dev-github-connector-tokens.json.";
 
 const INVALID_ERROR_CODE: &str = "github_token_store_invalid";
 const INVALID_ERROR_MESSAGE: &str = "Stored GitHub tokens are invalid.";
@@ -199,6 +199,11 @@ fn dev_plaintext_token_path() -> std::path::PathBuf {
         .join(DEV_TOKEN_FILENAME)
 }
 
+#[cfg(any(debug_assertions, test))]
+pub(crate) fn dev_token_temp_file_name(process_id: u32, sequence: u64) -> String {
+    format!("{DEV_TOKEN_TEMP_FILE_PREFIX}{process_id}.{sequence}.tmp")
+}
+
 #[cfg(debug_assertions)]
 async fn store_dev_plaintext_tokens(
     github_user_id: &str,
@@ -259,16 +264,12 @@ fn dev_file_write_map(path: &std::path::Path, map: &DevTokenMap) -> Result<(), A
         .unwrap_or_else(|| std::path::Path::new("."));
     std::fs::create_dir_all(parent).map_err(|_| unavailable_store())?;
 
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy())
-        .unwrap_or_else(|| std::borrow::Cow::Borrowed("tokens.json"));
     let (temp_path, mut temp_file) = (0..32)
         .find_map(|_| {
             static NEXT_TEMP_FILE_ID: std::sync::atomic::AtomicU64 =
                 std::sync::atomic::AtomicU64::new(0);
             let id = NEXT_TEMP_FILE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let temp_path = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), id));
+            let temp_path = parent.join(dev_token_temp_file_name(std::process::id(), id));
             let mut options = std::fs::OpenOptions::new();
             options.create_new(true).write(true);
             #[cfg(unix)]
