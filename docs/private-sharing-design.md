@@ -97,7 +97,10 @@ MVP payload by construction.
 - `GET /v1/shares/{share_id}` - owner detail: invites with
   `state` (`pending` | `accepted` | `revoked`) and `lastAccessAt`.
 - `POST /v1/shares/{share_id}/invites` - owner adds invites (same shape as
-  create) -> new invite ids.
+  create) -> new invite ids. An email that already holds a non-revoked invite
+  on the share is rejected (400): the viewer authorizes by any active invite
+  for a verified email, so a second active row would survive revoking the
+  first. Re-inviting is allowed once the prior invite is revoked.
 - `DELETE /v1/shares/{share_id}/invites/{invite_id}` - owner revokes.
 - `DELETE /v1/shares/{share_id}` - owner unshares entirely.
 - `GET /v1/shares/{share_id}/view?invite={invite_id}` - **recipient** fetch.
@@ -108,8 +111,10 @@ MVP payload by construction.
   display name travels inside the encrypted payload). The `invite` query
   parameter is the invite id from the link fragment (the key material stays
   in the fragment and never reaches the server); it pins the response to that
-  invite's envelope so a re-invited address always gets its own key, and it
-  only narrows the match (the binding/email authorization still applies).
+  invite's envelope, so a caller whose account holds more than one active
+  invite (e.g. two verified emails each invited separately) gets the envelope
+  for the link they opened rather than whichever active invite matches first.
+  It only narrows the match (the binding/email authorization still applies).
   It is optional: an owner fetching their own share is served without an
   envelope regardless.
 - `GET /s/{share_id}` - the viewer HTML shell (no auth, no content, no

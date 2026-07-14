@@ -184,7 +184,7 @@ impl ShareService {
 fn normalized_invites(
     invites: Vec<InviteInput>,
 ) -> Result<Vec<(String, NewShareInvite)>, ServiceError> {
-    invites
+    let normalized = invites
         .into_iter()
         .map(|invite| {
             let email = invite.email.trim().to_ascii_lowercase();
@@ -208,7 +208,19 @@ fn normalized_invites(
                 },
             ))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    // Reject duplicate emails within one request: two active invites for the
+    // same address let revoking one leave the other open. (Collisions with
+    // existing invites are caught atomically by the store.)
+    let mut seen = std::collections::HashSet::new();
+    for (_, invite) in &normalized {
+        if !seen.insert(invite.email.as_str()) {
+            return Err(ServiceError::InvalidInput {
+                reason: "an email appears more than once in the invite list".to_string(),
+            });
+        }
+    }
+    Ok(normalized)
 }
 
 fn validate_iv(iv: &[u8]) -> Result<(), ServiceError> {
@@ -242,6 +254,9 @@ impl From<ShareStoreError> for ServiceError {
             ShareStoreError::NotFound => Self::ShareNotFound,
             ShareStoreError::InviteLimitExceeded => Self::InvalidInput {
                 reason: format!("a share can have at most {MAX_INVITES_PER_SHARE} invites"),
+            },
+            ShareStoreError::DuplicateActiveInvite => Self::InvalidInput {
+                reason: "that email already has an active invite on this share".to_string(),
             },
             ShareStoreError::Unavailable { reason } => {
                 tracing::error!(%reason, "share store unavailable");

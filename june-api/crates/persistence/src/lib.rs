@@ -170,6 +170,27 @@ impl ShareStore for PgShareStore {
         if total.saturating_add(invites.len()) > MAX_INVITES_PER_SHARE {
             return Err(ShareStoreError::InviteLimitExceeded);
         }
+        // Reject any email that already holds a non-revoked invite on this
+        // share. The viewer authorizes by any active invite for a verified
+        // email, so a second active row would survive revoking the first.
+        let new_emails: Vec<String> = invites
+            .iter()
+            .map(|(_, invite)| invite.email.clone())
+            .collect();
+        let clash = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*) FROM share_invites
+            WHERE share_id = $1 AND revoked_at IS NULL AND email = ANY($2)
+            ",
+        )
+        .bind(row_id)
+        .bind(&new_emails)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(query_error)?;
+        if clash > 0 {
+            return Err(ShareStoreError::DuplicateActiveInvite);
+        }
         for (invite_id, invite) in &invites {
             insert_invite(&mut tx, row_id, invite_id, invite).await?;
         }

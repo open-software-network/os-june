@@ -741,6 +741,11 @@ pub enum ShareStoreError {
     /// The share already carries `MAX_INVITES_PER_SHARE` invites.
     #[error("invite limit exceeded")]
     InviteLimitExceeded,
+    /// One of the invited emails already holds a non-revoked invite on the
+    /// share. The viewer authorizes by any active invite for a verified email,
+    /// so a second active row would survive revoking the first.
+    #[error("duplicate active invite")]
+    DuplicateActiveInvite,
     #[error("share store unavailable: {reason}")]
     Unavailable { reason: String },
 }

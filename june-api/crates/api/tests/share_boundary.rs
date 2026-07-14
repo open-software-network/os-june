@@ -145,6 +145,14 @@ impl ShareStore for MemoryShareStore {
         if share.invites.len() + invites.len() > MAX_INVITES_PER_SHARE {
             return Err(ShareStoreError::InviteLimitExceeded);
         }
+        if invites.iter().any(|(_, invite)| {
+            share
+                .invites
+                .iter()
+                .any(|existing| !existing.revoked && existing.email == invite.email)
+        }) {
+            return Err(ShareStoreError::DuplicateActiveInvite);
+        }
         for (invite_id, invite) in invites {
             share.invites.push(StoredInvite {
                 invite_id,
@@ -330,16 +338,20 @@ async fn share_endpoints_answer_501_until_configured() {
 }
 
 #[tokio::test]
-async fn reinvited_address_resolves_to_its_own_envelope_by_invite_id() {
-    let router = share_router();
+async fn each_invite_link_resolves_to_its_own_envelope_by_invite_id() {
+    // One recipient user holding two verified emails, each with its own invite.
+    // The addresses differ, so both invites stay active (per-email uniqueness
+    // still holds). A link's invite id must select that invite's envelope, not
+    // merely the first active invite the caller's emails happen to match.
+    const RECIPIENT_TWO: &str = "user:usr_friend|first@example.com,second@example.com";
 
-    // First invite for the recipient, with a distinctive envelope.
+    let router = share_router();
     let (status, body) = call(
         &router,
         create_request(
             OWNER,
             &[json!({
-                "email": "friend@example.com",
+                "email": "first@example.com",
                 "envelopeB64": BASE64.encode([0x11u8; 48]),
                 "envelopeIvB64": BASE64.encode([0x21u8; 12]),
             })],
@@ -356,8 +368,6 @@ async fn reinvited_address_resolves_to_its_own_envelope_by_invite_id() {
         .expect("invite one")
         .to_string();
 
-    // Re-invite the SAME address with a fresh key, so both invites are active
-    // and carry different envelopes.
     let (status, body) = call(
         &router,
         authed(
@@ -370,7 +380,7 @@ async fn reinvited_address_resolves_to_its_own_envelope_by_invite_id() {
         .body(Body::from(
             json!({
                 "invites": [{
-                    "email": "friend@example.com",
+                    "email": "second@example.com",
                     "envelopeB64": BASE64.encode([0x33u8; 48]),
                     "envelopeIvB64": BASE64.encode([0x44u8; 12]),
                 }]
@@ -387,15 +397,14 @@ async fn reinvited_address_resolves_to_its_own_envelope_by_invite_id() {
         .to_string();
     assert_ne!(invite_one, invite_two);
 
-    // The newer link (invite_two) must get invite_two's envelope, not the
-    // first active invite for the same email.
+    // The second link resolves to invite_two's envelope for this user.
     let (status, body) = call(
         &router,
         authed(
             Request::builder()
                 .method("GET")
                 .uri(format!("/v1/shares/{share_id}/view?invite={invite_two}")),
-            RECIPIENT,
+            RECIPIENT_TWO,
         )
         .body(Body::empty())
         .expect("request builds"),
@@ -405,14 +414,14 @@ async fn reinvited_address_resolves_to_its_own_envelope_by_invite_id() {
     assert_eq!(body["data"]["envelopeB64"], BASE64.encode([0x33u8; 48]));
     assert_eq!(body["data"]["envelopeIvB64"], BASE64.encode([0x44u8; 12]));
 
-    // The original link still resolves to its own (older) envelope.
+    // The first link still resolves to its own envelope for the same user.
     let (status, body) = call(
         &router,
         authed(
             Request::builder()
                 .method("GET")
                 .uri(format!("/v1/shares/{share_id}/view?invite={invite_one}")),
-            RECIPIENT,
+            RECIPIENT_TWO,
         )
         .body(Body::empty())
         .expect("request builds"),
@@ -421,6 +430,76 @@ async fn reinvited_address_resolves_to_its_own_envelope_by_invite_id() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["envelopeB64"], BASE64.encode([0x11u8; 48]));
     assert_eq!(body["data"]["envelopeIvB64"], BASE64.encode([0x21u8; 12]));
+}
+
+#[tokio::test]
+async fn create_with_the_same_email_twice_in_one_request_is_rejected() {
+    let router = share_router();
+    let (status, _) = call(
+        &router,
+        create_request(
+            OWNER,
+            &[
+                invite_wire("dup@example.com"),
+                invite_wire("Dup@example.com"),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn duplicate_active_invite_is_rejected_but_reinvite_after_revoke_is_allowed() {
+    let router = share_router();
+    let (status, body) = call(
+        &router,
+        create_request(OWNER, &[invite_wire("friend@example.com")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let share_id = body["data"]["shareId"]
+        .as_str()
+        .expect("share id")
+        .to_string();
+    let invite_id = body["data"]["invites"][0]["inviteId"]
+        .as_str()
+        .expect("invite id")
+        .to_string();
+
+    let add = |email: &str| {
+        let body = json!({ "invites": [invite_wire(email)] });
+        authed(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/shares/{share_id}/invites")),
+            OWNER,
+        )
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request builds")
+    };
+
+    // The address is already active (case-insensitively): re-inviting is refused.
+    let (status, _) = call(&router, add("Friend@Example.com")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Revoke that invite, then the same address can be invited again.
+    let (status, _) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/shares/{share_id}/invites/{invite_id}")),
+            OWNER,
+        )
+        .body(Body::empty())
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(&router, add("friend@example.com")).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
