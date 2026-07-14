@@ -260,4 +260,26 @@ describe("ShareDialog", () => {
       await screen.findByText("Not shared yet. This note stays private until you invite someone."),
     ).toBeInTheDocument();
   });
+
+  it("keeps the invite button disabled while an existing share is still loading", async () => {
+    // Hold shareKeyGet pending so the open effect never settles during the
+    // assertion window; a submit now would wrongly take the first-invite path.
+    let resolveKey: (value: unknown) => void = () => {};
+    mocks.shareKeyGet.mockReturnValue(
+      new Promise((resolve) => {
+        resolveKey = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    await user.type(await screen.findByLabelText("Invite by email"), "friend@example.com");
+    expect(screen.getByRole("button", { name: "Invite" })).toBeDisabled();
+    expect(mocks.shareCreate).not.toHaveBeenCalled();
+
+    // Once the load settles with no existing share, inviting is enabled again.
+    resolveKey(null);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Invite" })).toBeEnabled());
+    expect(mocks.shareCreate).not.toHaveBeenCalled();
+  });
 });

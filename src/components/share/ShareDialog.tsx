@@ -130,7 +130,10 @@ export function ShareDialog({
 
   const handleInvite = useCallback(async () => {
     const normalized = email.trim().toLowerCase();
-    if (!EMAIL_PATTERN.test(normalized) || invitingRef.current) return;
+    // `loading` guards the async open effect that resolves an existing share:
+    // submitting before it settles would take the first-invite path and mint a
+    // second, orphaned share for an already-shared item.
+    if (!EMAIL_PATTERN.test(normalized) || invitingRef.current || loading) return;
     invitingRef.current = true;
     setInviteBusy(true);
     setError(null);
@@ -198,7 +201,7 @@ export function ShareDialog({
       invitingRef.current = false;
       setInviteBusy(false);
     }
-  }, [email, shareId, contentKeyB64, item]);
+  }, [email, loading, shareId, contentKeyB64, item]);
 
   const handleCopyLink = useCallback(
     async (invite: InviteRow) => {
@@ -294,7 +297,7 @@ export function ShareDialog({
               <button
                 type="submit"
                 className="primary-action primary-solid"
-                disabled={!emailValid || inviteBusy}
+                disabled={!emailValid || inviteBusy || loading}
               >
                 {inviteBusy ? "Inviting..." : "Invite"}
               </button>
