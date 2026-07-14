@@ -45,6 +45,11 @@ pub use handlers::video::{
 pub use handlers::web::{WebFetchRequest, WebSearchRequest};
 pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
 
+/// Real shipped app version, sent by the desktop client on every request.
+/// Old stable builds keep calling production long after main moves on; this
+/// header is how logs and metrics tell them apart (ADR 0019).
+pub const JUNE_APP_VERSION_HEADER: &str = "x-june-app-version";
+
 pub fn router(state: ApiState) -> Router {
     let limits = state.limits();
     let timeout = ServiceBuilder::new()
@@ -135,7 +140,25 @@ pub fn router(state: ApiState) -> Router {
             post(handlers::p3a::submit).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .layer(timeout)
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            // The request span carries the calling app version so a deploy
+            // that hurts only older shipped clients shows up in logs as a
+            // per-version error spike instead of support tickets.
+            TraceLayer::new_for_http().make_span_with(|request: &Request| {
+                let app_version = request
+                    .headers()
+                    .get(JUNE_APP_VERSION_HEADER)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("");
+                tracing::info_span!(
+                    "request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    version = ?request.version(),
+                    app_version,
+                )
+            }),
+        )
         .layer(CorsLayer::new())
         .with_state(state)
 }

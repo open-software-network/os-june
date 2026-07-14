@@ -54,6 +54,14 @@ const AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__june_remote_generation__:";
 const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
 const AGENT_TITLE_MAX_CHARS: usize = 48;
 const VENICE_API_KEY_HEADER: &str = "x-venice-api-key";
+// Every June API request carries the real shipped app version so the server
+// can segment logs and metrics by client version and, if ever needed, gate
+// releases that predate a wire change. Older stable builds keep calling the
+// production API long after main moves on; this header is how the server
+// tells them apart. src-tauri/Cargo.toml stays in lockstep with
+// tauri.conf.json (asserted by app_version_matches_tauri_conf below).
+const JUNE_APP_VERSION_HEADER: &str = "x-june-app-version";
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
 const INVALID_JUNE_RESPONSE_MESSAGE: &str = "The processing service returned an invalid response.";
@@ -2679,7 +2687,8 @@ fn http_client() -> &'static reqwest::Client {
             .timeout(HTTP_TIMEOUT)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent("os-june/0.1")
+            .user_agent(concat!("os-june/", env!("CARGO_PKG_VERSION")))
+            .default_headers(app_version_headers())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
@@ -2692,10 +2701,19 @@ fn agent_http_client() -> &'static reqwest::Client {
             .timeout(AGENT_HTTP_TIMEOUT)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent("os-june-agent/0.1")
+            .user_agent(concat!("os-june-agent/", env!("CARGO_PKG_VERSION")))
+            .default_headers(app_version_headers())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
+}
+
+fn app_version_headers() -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Ok(value) = reqwest::header::HeaderValue::from_str(APP_VERSION) {
+        headers.insert(JUNE_APP_VERSION_HEADER, value);
+    }
+    headers
 }
 
 // June API requires a non-empty `title` on transcribe and generate calls
@@ -2777,6 +2795,27 @@ mod tests {
 
     const NOTE_GENERATE_PATH: &str = "/v1/notes/generate";
     const ISSUE_REPORT_PATH: &str = "/v1/issue-reports";
+
+    // APP_VERSION (from Cargo.toml) is what the x-june-app-version header
+    // reports, while tauri.conf.json is what releases actually ship as. If
+    // they drift, the server would segment traffic by the wrong version.
+    #[test]
+    fn app_version_matches_tauri_conf() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        assert_eq!(conf["version"].as_str(), Some(APP_VERSION));
+    }
+
+    #[test]
+    fn app_version_header_is_present_and_valid() {
+        let headers = app_version_headers();
+        assert_eq!(
+            headers
+                .get(JUNE_APP_VERSION_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(APP_VERSION)
+        );
+    }
 
     fn generate_success_envelope(content: &str) -> String {
         serde_json::json!({

@@ -27,6 +27,7 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       from-tag: ${{ steps.validate.outputs.from-tag }}
+      source-sha: ${{ steps.source.outputs.source-sha }}
     env:
       FROM_TAG: ${{ inputs.from-tag }}
     steps:
@@ -59,9 +60,57 @@ jobs:
           fi
           echo "Found $image"
 
+      - name: Resolve source commit
+        id: source
+        run: |
+          set -euo pipefail
+          source="${{ env.IMAGE }}:${FROM_TAG}"
+          rev=$(docker buildx imagetools inspect "$source" --format '{{json .Image}}' \
+            | jq -r 'first(.. | objects | select(.config?.Labels?["org.opencontainers.image.revision"] != null) | .config.Labels["org.opencontainers.image.revision"]) // empty')
+          if [[ -z "$rev" && "$FROM_TAG" =~ ^[0-9a-f]{7,40}$ ]]; then
+            rev="$FROM_TAG"
+          fi
+          if [[ -z "$rev" ]]; then
+            echo "::error::Could not resolve the source commit for $source. Use an image built by this repository, or pass a SHA tag directly."
+            exit 1
+          fi
+          echo "source-sha=${rev}" >> "$GITHUB_OUTPUT"
+          echo "Resolved $source → commit ${rev}"
+
+  # Shipped stable app versions keep calling production with their baked-in
+  # wire types. Replay their pinned request/response snapshots against the
+  # exact commit being promoted so a compatibility break stops the promote
+  # instead of reaching production. See ADR 0019 and
+  # june-api/crates/api/tests/client_contract.rs.
+  contract-check:
+    name: Client contract suite
+    needs: verify
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.verify.outputs.source-sha }}
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-rust
+
+      - name: Run client contract suite at the promoted commit
+        working-directory: june-api
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          set -euo pipefail
+          # Rollback targets may predate the suite; promoting them must not
+          # be blocked on a test that did not exist yet.
+          if [[ ! -f crates/api/tests/client_contract.rs ]]; then
+            echo "::warning::No client contract suite at this commit; skipping."
+            exit 0
+          fi
+          cargo test -p june-api --test client_contract --locked
+
   deploy:
     name: Deploy to production
-    needs: verify
+    needs: [verify, contract-check]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: production
     permissions:

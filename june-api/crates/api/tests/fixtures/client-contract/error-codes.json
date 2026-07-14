@@ -1,0 +1,13 @@
+{
+  "badRequest": 2001,
+  "unauthorized": 3001,
+  "unprocessable": 4201,
+  "notFound": 4041,
+  "insufficientCredits": 4301,
+  "payloadTooLarge": 4131,
+  "authorizationDenied": 4401,
+  "internal": 5000,
+  "upstream": 5001,
+  "metering": 5031,
+  "timeout": 5041
+}

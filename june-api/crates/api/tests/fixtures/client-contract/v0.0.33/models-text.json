@@ -1,0 +1,8 @@
+{
+  "description": "list_models: text model catalog; every field the client ModelDto requires",
+  "endpoint": "/v1/models?type=text",
+  "auth": false,
+  "expect": {
+    "requiredItemFields": ["provider", "id", "name", "modelType", "traits", "capabilities", "priceUnit", "priceDescription"]
+  }
+}

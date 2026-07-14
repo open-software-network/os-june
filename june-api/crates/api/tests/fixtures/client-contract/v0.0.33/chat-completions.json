@@ -1,0 +1,11 @@
+{
+  "description": "proxy_agent_chat_completions: buffered agent call (session titles); response is opaque to the client",
+  "endpoint": "/v1/chat/completions",
+  "body": {
+    "model": "venice-text-model",
+    "stream": false,
+    "max_tokens": 32768,
+    "messages": [{ "role": "user", "content": "Suggest a short session title." }]
+  },
+  "expect": { "envelope": false }
+}

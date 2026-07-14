@@ -50,6 +50,13 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/setup-rust
+      # Also part of the full run below; the named step makes a shipped-client
+      # compatibility break unmissable in the check list. See ADR 0019.
+      - name: client contract suite
+        working-directory: june-api
+        env:
+          RUST_BACKTRACE: 1
+        run: cargo test -p june-api --test client_contract --locked
       - name: cargo test
         working-directory: june-api
         env:
