@@ -398,6 +398,41 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("hides Hermes' persisted output-length continuation prompt", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "1",
+        role: "user",
+        content: "Create an image of a desert at sunrise.",
+        timestamp: "2026-07-14T20:00:00.000Z",
+      },
+      {
+        id: "2",
+        role: "assistant",
+        content: "MEDIA:generated-image.png",
+        timestamp: "2026-07-14T20:00:01.000Z",
+      },
+      {
+        id: "3",
+        role: "user",
+        content:
+          "[System: Your previous response was truncated by the output length limit. " +
+          "Continue exactly where you left off. Do not restart or repeat prior text. " +
+          "Finish the answer directly.]",
+        timestamp: "2026-07-14T20:00:02.000Z",
+      },
+      {
+        id: "4",
+        role: "assistant",
+        content: "Here it is.",
+        timestamp: "2026-07-14T20:00:03.000Z",
+      },
+    ]);
+
+    expect(turns.map((turn) => turn.id)).toEqual(["1", "2", "4"]);
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant", "assistant"]);
+  });
+
   it("preserves same-timestamp Hermes user-before-assistant source order", () => {
     const createdAt = "2026-06-11T12:00:00.000Z";
     const turns = buildHermesSessionChatTurns([
