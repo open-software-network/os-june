@@ -61,7 +61,7 @@ import {
   type AgentSessionsChangedDetail,
 } from "../agent/AgentWorkspace";
 import { CategoryIcon } from "../agent/composer/CategoryIcon";
-import { JuneWordmark } from "../brand/JuneWordmark";
+import { HoverTip } from "../ui/HoverTip";
 import { type ReportCategory, reportCategoryDef } from "../agent/composer/reportCategory";
 import {
   AGENT_DELETE_SESSION_EVENT,
@@ -1098,9 +1098,32 @@ export function Sidebar({
     >
       {inSettings ? null : (
         <header className="sidebar-header">
-          <a className="sidebar-brand" href="#" aria-label="June">
-            <JuneWordmark className="sidebar-brand-mark" />
-          </a>
+          {/* The bare brand mark (no squircle) anchors the corner in the theme
+              color; search moved up from its own full-width row to a compact
+              trigger beside it, and the recording indicator keeps its quiet
+              pill on the right while a recording is on. */}
+          <span className="sidebar-mark" aria-hidden>
+            <JuneMark />
+          </span>
+          <HoverTip
+            compact
+            width={120}
+            tip={
+              <span className="sidebar-search-tip">
+                Search
+                <span className="sidebar-search-tip-kbd">{searchShortcut}</span>
+              </span>
+            }
+          >
+            <button
+              type="button"
+              className="sidebar-search-button"
+              aria-label="Search"
+              onClick={openCommandPrompt}
+            >
+              <IconMagnifyingGlass size={15} />
+            </button>
+          </HoverTip>
           {recordingStatus ? (
             <SidebarRecordingIndicator
               status={recordingStatus}
@@ -1120,27 +1143,6 @@ export function Sidebar({
         />
       ) : (
         <>
-          <label
-            className="sidebar-search"
-            onMouseDown={(event) => {
-              event.preventDefault();
-              openCommandPrompt();
-            }}
-          >
-            <IconMagnifyingGlass size={15} />
-            <input
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-              placeholder="Search"
-              aria-label="Search"
-              readOnly
-            />
-            <span className="sidebar-search-kbd" aria-hidden="true">
-              {searchShortcut}
-            </span>
-          </label>
-
           <nav className="sidebar-nav" aria-label="Primary">
             <button
               type="button"

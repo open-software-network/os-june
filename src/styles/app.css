@@ -8111,11 +8111,14 @@ input:focus-visible,
 }
 
 /* The macOS traffic lights float above this row (the sidebar reserves
- * --titlebar-h of top padding), so the brand can sit flush-left. */
+ * --titlebar-h of top padding), so the brand mark can sit flush-left.
+ * The row clusters the mark and the compact search trigger on the left; the
+ * recording indicator (when a recording session exists) pushes to the right
+ * via its auto margin. */
 .sidebar-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: var(--sp-2);
   position: relative;
   padding: 0 var(--sp-1);
@@ -8123,16 +8126,72 @@ input:focus-visible,
   flex-wrap: nowrap;
 }
 
-.sidebar-brand {
+/* The bare June mark in the theme accent — the sidebar's brand anchor. Fixed
+ * chrome like the glyph icons beside it (not text), so no font-scale ride.
+ * The inner svg (shared JuneMark, a tight 12x14 glyph) is resized from its
+ * default sign-in dimensions. */
+.sidebar-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--brand);
+}
+
+.sidebar-mark svg {
+  width: 12px;
+  height: 14px;
+}
+
+/* Compact search trigger: card bg with a real border and the standard soft
+ * shadow so the lone icon reads as a control rather than a stray glyph (both
+ * tokens carry their own dark-theme values). Hover shifts the background only;
+ * the border never changes. */
+.sidebar-search-button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--control-sm);
+  height: var(--control-sm);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--card);
+  color: var(--muted-foreground);
+  box-shadow: var(--shadow-sm);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.sidebar-search-button:hover {
+  background: color-mix(in oklch, var(--card) 80%, transparent);
+}
+
+/* Optical centering: the magnifier's visual mass (the lens circle) sits at
+ * (11,11) in its 24-unit viewBox — up-left of geometric center — so the glyph
+ * gets a half-pixel nudge down-right to look centered in the square. */
+.sidebar-search-button svg {
+  transform: translate(0.5px, 0.5px);
+}
+
+/* Compact shortcut tooltip on the search trigger: label + keycap on one row
+ * (same shape as .tab-tip on the "+" tab button). */
+.sidebar-search-tip {
   display: inline-flex;
   align-items: center;
-  /* Matches .sidebar-brand-mark: the wordmark scales with the text-size
-   * preference, so its wrapper must grow with it. */
-  height: calc(14px * var(--font-scale));
-  color: var(--foreground);
-  text-decoration: none;
-  flex: 0 1 auto;
-  min-width: 0;
+  justify-content: center;
+  gap: var(--sp-2);
+  width: 100%;
+}
+
+.sidebar-search-tip-kbd {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-2xs);
+  font-weight: 400;
+  white-space: nowrap;
 }
 
 .sidebar-recording-indicator {
@@ -8143,6 +8202,7 @@ input:focus-visible,
   justify-content: center;
   gap: 5px;
   flex: 0 0 auto;
+  margin-left: auto;
   width: 52px;
   height: 22px;
   padding: 0 7px;
@@ -8214,25 +8274,13 @@ input:focus-visible,
   opacity: 0.38;
 }
 
-/* Two wordmarks ship side by side; CSS picks the right one per theme. */
-/* Inline wordmark: lettering rides on currentColor (the foreground), the mark
- * squircle derives from --brand, so one element covers light/dark AND every
- * accent. Replaces the old light/dark <img> swap. */
-.sidebar-brand-mark {
-  display: block;
-  /* The wordmark is brand *text*, so it rides the text-size preference like
-   * the nav labels beside it — unlike glyph icons, which stay fixed chrome. */
-  height: calc(14px * var(--font-scale));
-  width: auto;
-  color: var(--foreground);
-}
-
 .sidebar[data-collapsed="true"] .sidebar-header {
   padding: var(--sp-1) 0 0;
   justify-content: center;
 }
 
-.sidebar[data-collapsed="true"] .sidebar-brand {
+/* The collapsed rail keeps only the search trigger, centered. */
+.sidebar[data-collapsed="true"] .sidebar-mark {
   display: none;
 }
 
@@ -8277,82 +8325,6 @@ input:focus-visible,
 .icon-button:hover {
   background: var(--sidebar-accent);
   color: var(--foreground);
-}
-
-/* Sidebar search ---------------------------------------------------- */
-
-/* Search trigger — port of Fellow's SidebarSearchTrigger:
- * card bg, top-inner highlight, soft drop, 1px ring all in box-shadow;
- * kbd hint on the right uses muted/60 bg + mono-ish font. */
-.sidebar-search {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--sp-2);
-  height: var(--control-lg);
-  padding: 0 var(--sp-2) 0 var(--sp-3);
-  border: 0;
-  border-radius: var(--r-md);
-  background: var(--card);
-  color: var(--muted-foreground);
-  cursor: text;
-  box-shadow:
-    inset 0 1px 0 0 oklch(100% 0 none / 60%),
-    0 1px 2px 0 oklch(0% 0 none / 4%),
-    0 0 0 1px oklch(0% 0 none / 4%);
-  transition: background-color var(--t-fast) var(--ease-out);
-}
-
-.sidebar-search:hover {
-  background: color-mix(in oklch, var(--card) 80%, transparent);
-}
-
-.sidebar-search input {
-  width: 100%;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--foreground);
-  font-size: var(--fs-md);
-}
-
-.sidebar-search input::placeholder {
-  color: var(--muted-foreground);
-}
-
-.sidebar-search-kbd {
-  display: inline-flex;
-  align-items: center;
-  gap: 1px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: var(--r-xs);
-  background: color-mix(in oklch, var(--muted) 60%, transparent);
-  color: var(--muted-foreground);
-  font-family: var(--font-sans);
-  font-size: var(--fs-2xs);
-  font-weight: 400;
-  letter-spacing: 0;
-  white-space: nowrap;
-  pointer-events: none;
-}
-
-@media (prefers-color-scheme: dark) {
-  .sidebar-search {
-    box-shadow:
-      inset 0 1px 0 0 oklch(100% 0 none / 4%),
-      0 0 0 1px oklch(100% 0 none / 6%);
-  }
-}
-
-[data-theme="dark"] .sidebar-search {
-  box-shadow:
-    inset 0 1px 0 0 oklch(100% 0 none / 4%),
-    0 0 0 1px oklch(100% 0 none / 6%);
-}
-
-.sidebar[data-collapsed="true"] .sidebar-search {
-  display: none;
 }
 
 /* Command prompt ----------------------------------------------------- */

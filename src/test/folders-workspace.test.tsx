@@ -162,7 +162,10 @@ describe("Sidebar primary navigation", () => {
       />,
     );
 
-    expect(screen.getByText("⌘K")).toBeInTheDocument();
+    // The shortcut hint lives in the search button's hover tip (keyboard focus
+    // opens it immediately, no hover-intent delay).
+    screen.getByRole("button", { name: "Search" }).focus();
+    expect(await screen.findByText("⌘K")).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "k", metaKey: true });
 
@@ -233,7 +236,8 @@ describe("Sidebar primary navigation", () => {
         />,
       );
 
-      expect(screen.getByText("Ctrl K")).toBeInTheDocument();
+      screen.getByRole("button", { name: "Search" }).focus();
+      expect(await screen.findByText("Ctrl K")).toBeInTheDocument();
 
       fireEvent.keyDown(window, { key: "k", ctrlKey: true });
 
@@ -262,7 +266,7 @@ describe("Sidebar primary navigation", () => {
       />,
     );
 
-    await user.click(screen.getByRole("searchbox", { name: "Search" }));
+    await user.click(screen.getByRole("button", { name: "Search" }));
 
     const prompt = screen.getByRole("dialog", { name: "Search" });
     await waitFor(() =>
@@ -478,7 +482,7 @@ describe("Sidebar primary navigation", () => {
       );
 
     const openPromptAndSearch = async () => {
-      await user.click(screen.getByRole("searchbox", { name: "Search" }));
+      await user.click(screen.getByRole("button", { name: "Search" }));
       const prompt = screen.getByRole("dialog", { name: "Search" });
       const search = within(prompt).getByRole("textbox", { name: "Search" });
       await user.type(search, "billing");
