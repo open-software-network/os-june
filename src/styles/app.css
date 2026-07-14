@@ -4899,8 +4899,9 @@ input:focus-visible,
  * where the user just acted, and clears itself when the turn finishes. A
  * content-sized pill (not another full-width box, which read as a second
  * composer) with the rolling dot spinner tying it to the working state. Same
- * surface recipe as the recording-consent note and the "Generating notes…"
- * pill so the app's status messages read as one family. */
+ * surface recipe as the "Generating notes…" pill so the app's progress
+ * statuses read as one family. (The recording-consent note left this family
+ * for the funding-notice card chrome — it asks, it doesn't report progress.) */
 .agent-composer-notice {
   pointer-events: auto;
   display: inline-flex;
@@ -11170,42 +11171,48 @@ input:focus-visible,
 
 /* Scoped to .record-dock to outrank the later, equal-specificity base
  * .inline-notice rule, which would otherwise win on background/border/padding. */
-/* Matches the "Generating notes…" pill's padding/height/radius/surface so the
- * two status messages read as the same family. */
+/* Same surface recipe as the chat funding notice (.funding-notice): card,
+ * ring-in-shadow, --shadow-md, --r-xl — notices docked on the composer and on
+ * the recorder read as one family. Move them together. */
 .record-dock .record-consent-note-surface {
+  align-items: center;
   gap: var(--sp-3);
-  padding: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
   border-color: transparent;
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--muted) 68%, var(--card));
-  color: var(--muted-foreground);
-  box-shadow: none;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+}
+
+/* The Dismiss button hugs the corner radius like the funding notice's CTA. */
+.record-dock .record-consent-note-surface:has(.inline-notice-actions) {
+  padding-right: var(--sp-2);
 }
 
 .record-dock .record-consent-note-surface .inline-notice-message {
   flex-wrap: nowrap;
   font-size: var(--fs-md);
-  font-weight: 400;
-  line-height: 1;
   white-space: nowrap;
 }
 
-/* Dismiss reads as a quiet text link, not a button — no underline, just a
- * medium-weight label in the app's link color (matching .agent-markdown a)
- * that deepens to foreground on hover. line-height matches the message so the
- * two text runs share a baseline. */
-.record-dock .record-consent-note-surface .inline-notice-actions .btn {
-  height: auto;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--primary);
-  font-weight: 400;
-  line-height: 1;
+/* The warning-only variant has no button to set the row's control height, so
+ * the text alone must reach it. */
+.record-dock .record-consent-note-surface .inline-notice-body {
+  min-height: var(--control-md);
+  display: inline-flex;
+  align-items: center;
+  color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
 }
 
-.record-dock .record-consent-note-surface .inline-notice-actions .btn:hover {
-  background: none;
+/* Quiet secondary action, recolored like the funding notice's ghost buttons
+ * ("Or go Max", reopen links). */
+.record-dock .record-consent-note-surface .inline-notice-actions .btn-ghost {
+  color: var(--muted-foreground);
+}
+
+.record-dock .record-consent-note-surface .inline-notice-actions .btn-ghost:hover {
   color: var(--foreground);
 }
 
@@ -11300,16 +11307,33 @@ input:focus-visible,
   background: color-mix(in oklch, var(--warm-strong) 12%, transparent);
 }
 
-/* Mic-blocked strip — persistent inline notice that sits above the
- * chevron popover when microphone access is denied. Mirrors the
- * .record-options-row shape so it feels like part of the same family
- * of inline status surfaces. */
+/* Mic-blocked and needs-credits notices — persistent inline notices that sit
+ * above the record pill. They occupy the same footer slot the FundingNotice
+ * renders into, so they wear the same chrome (card, ring-in-shadow,
+ * --shadow-md, --r-xl, content-max column) — see .funding-notice; move them
+ * together. Scoped to .editor-footer to outrank the later, equal-specificity
+ * base .inline-notice rule. */
 /* Inline notice layout slot for the editor footer — forces the notice
  * onto its own row so the recorder shell (if rendered) sits below. */
-.record-mic-blocked,
-.record-funding-blocked {
+.editor-footer .record-mic-blocked,
+.editor-footer .record-funding-blocked {
   flex: 0 0 100%;
   width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  align-items: center;
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);
+  border-color: transparent;
+  border-radius: var(--r-xl);
+  background: var(--card);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+}
+
+.editor-footer .record-mic-blocked .inline-notice-body,
+.editor-footer .record-funding-blocked .inline-notice-body {
+  color: color-mix(in oklch, var(--foreground) 72%, var(--muted-foreground));
 }
 
 /* The out-of-credits notice in the editor footer sits on its own row above
