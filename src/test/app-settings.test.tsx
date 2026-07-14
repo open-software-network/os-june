@@ -1992,8 +1992,9 @@ describe("AppSettings", () => {
         />,
       );
 
+      expect(screen.getByText("Audio access")).toBeInTheDocument();
       expect(
-        screen.getByText("Access used for recording audio and capturing system sound."),
+        screen.getByText("Audio sources available for recording microphone and app audio."),
       ).toBeInTheDocument();
       expect(screen.getByText("Microphone")).toBeInTheDocument();
       expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
@@ -2013,9 +2014,10 @@ describe("AppSettings", () => {
 
       const systemAudioRow = screen.getByText("System audio").closest(".settings-row");
       expect(systemAudioRow).not.toBeNull();
+      expect(within(systemAudioRow as HTMLElement).getByLabelText("Available")).toBeInTheDocument();
       await userEvent.click(
         within(systemAudioRow as HTMLElement).getByRole("button", {
-          name: "Manage System audio permission",
+          name: "Open sound settings",
         }),
       );
       expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
