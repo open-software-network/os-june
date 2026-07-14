@@ -398,8 +398,12 @@ describe("AgentWorkspace", () => {
   it("accepts concise topic titles without treating their first word as dialogue", () => {
     expect(isAgentSessionTitleCandidate("How to deploy June")).toBe(true);
     expect(isAgentSessionTitleCandidate("Surefire recovery plan")).toBe(true);
+    expect(isAgentSessionTitleCandidate("May release planning")).toBe(true);
+    expect(isAgentSessionTitleCandidate("Will migration review")).toBe(true);
+    expect(isAgentSessionTitleCandidate("Can bus diagnostics")).toBe(true);
     expect(isAgentSessionTitleCandidate("I'm sorry, but I can't help with that")).toBe(false);
     expect(isAgentSessionTitleCandidate("What should I update")).toBe(false);
+    expect(isAgentSessionTitleCandidate("What, exactly should I update")).toBe(false);
     expect(isAgentSessionTitleCandidate("Which email service should I use")).toBe(false);
     expect(isAgentSessionTitleCandidate("Would it be okay to rename this")).toBe(false);
     expect(isAgentSessionTitleCandidate("Should this use Gmail")).toBe(false);

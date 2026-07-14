@@ -2100,12 +2100,13 @@ fn is_valid_agent_session_title_candidate(value: &str) -> bool {
     {
         return false;
     }
-    let mut words = normalized.split_whitespace();
+    let mut words = normalized.split_whitespace().map(|word| {
+        word.trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '\'')
+    });
     let first = words.next().unwrap_or_default();
     let second = words.next().unwrap_or_default();
     let question_words = ["who", "what", "when", "where", "why", "how"];
     let question_auxiliaries = [
-        "can",
         "could",
         "would",
         "should",
@@ -2115,9 +2116,6 @@ fn is_valid_agent_session_title_candidate(value: &str) -> bool {
         "is",
         "are",
         "am",
-        "will",
-        "may",
-        "might",
         "have",
         "has",
         "was",
@@ -2142,9 +2140,16 @@ fn is_valid_agent_session_title_candidate(value: &str) -> bool {
         "mustn't",
         "shan't",
     ];
+    let ambiguous_question_auxiliaries = ["can", "will", "may", "might"];
+    let question_subjects = [
+        "i", "you", "we", "he", "she", "it", "they", "this", "that", "these", "those", "there",
+        "the", "a", "an", "my", "your", "our", "his", "her", "their",
+    ];
+    let is_how_to_title = first == "how" && second == "to";
     !(first == "which"
-        || question_words.contains(&first) && question_auxiliaries.contains(&second)
-        || question_auxiliaries.contains(&first))
+        || (question_words.contains(&first) && !is_how_to_title)
+        || question_auxiliaries.contains(&first)
+        || (ambiguous_question_auxiliaries.contains(&first) && question_subjects.contains(&second)))
 }
 
 fn starts_with_title_phrase(value: &str, phrase: &str) -> bool {
@@ -3129,6 +3134,10 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         );
         assert_eq!(clean_agent_session_title("What should I update"), None);
         assert_eq!(
+            clean_agent_session_title("What, exactly should I update"),
+            None
+        );
+        assert_eq!(
             clean_agent_session_title("Which email service should I use"),
             None
         );
@@ -3167,6 +3176,18 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         assert_eq!(
             clean_agent_session_title("Assistant refusal guard").as_deref(),
             Some("Assistant refusal guard")
+        );
+        assert_eq!(
+            clean_agent_session_title("May release planning").as_deref(),
+            Some("May release planning")
+        );
+        assert_eq!(
+            clean_agent_session_title("Will migration review").as_deref(),
+            Some("Will migration review")
+        );
+        assert_eq!(
+            clean_agent_session_title("Can bus diagnostics").as_deref(),
+            Some("Can bus diagnostics")
         );
         assert_eq!(
             clean_agent_session_title("Open GarageBand").as_deref(),

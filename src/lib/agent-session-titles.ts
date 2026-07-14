@@ -53,7 +53,6 @@ const ASSISTANT_DIALOGUE_PREFIXES = [
 
 const QUESTION_WORDS = new Set(["who", "what", "when", "where", "why", "how"]);
 const QUESTION_AUXILIARIES = new Set([
-  "can",
   "could",
   "would",
   "should",
@@ -63,9 +62,6 @@ const QUESTION_AUXILIARIES = new Set([
   "is",
   "are",
   "am",
-  "will",
-  "may",
-  "might",
   "have",
   "has",
   "was",
@@ -90,6 +86,30 @@ const QUESTION_AUXILIARIES = new Set([
   "mustn't",
   "shan't",
 ]);
+const AMBIGUOUS_QUESTION_AUXILIARIES = new Set(["can", "will", "may", "might"]);
+const QUESTION_SUBJECTS = new Set([
+  "i",
+  "you",
+  "we",
+  "he",
+  "she",
+  "it",
+  "they",
+  "this",
+  "that",
+  "these",
+  "those",
+  "there",
+  "the",
+  "a",
+  "an",
+  "my",
+  "your",
+  "our",
+  "his",
+  "her",
+  "their",
+]);
 function startsWithPhrase(value: string, phrase: string) {
   if (!value.startsWith(phrase)) return false;
   const next = value[phrase.length];
@@ -110,11 +130,13 @@ export function isAgentSessionTitleCandidate(value: unknown): value is string {
   if (typeof value !== "string" || !value.trim()) return false;
   const normalized = value.trim().replace(/[‘’]/g, "'").toLowerCase();
   if (normalized.includes("?") || isRefusalLikeAgentSessionTitle(normalized)) return false;
-  const [first = "", second = ""] = normalized.split(/\s+/, 2);
+  const [first = "", second = ""] = normalized.match(/[a-z']+/g) ?? [];
+  const isHowToTitle = first === "how" && second === "to";
   return !(
     first === "which" ||
-    (QUESTION_WORDS.has(first) && QUESTION_AUXILIARIES.has(second)) ||
-    QUESTION_AUXILIARIES.has(first)
+    (QUESTION_WORDS.has(first) && !isHowToTitle) ||
+    QUESTION_AUXILIARIES.has(first) ||
+    (AMBIGUOUS_QUESTION_AUXILIARIES.has(first) && QUESTION_SUBJECTS.has(second))
   );
 }
 
