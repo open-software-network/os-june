@@ -367,6 +367,100 @@ async fn integration_agent_chat_local_auto_fallback_strips_auto_policy()
 }
 
 #[tokio::test]
+async fn integration_agent_chat_local_auto_image_and_tools_falls_back_to_compatible_model()
+-> Result<(), Box<dyn Error>> {
+    let completer = Arc::new(RecordingChatCompleter::default());
+    let app = router(test_state_with_local_text_pricing(
+        Arc::new(FakeGenerator),
+        completer.clone(),
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "auto": { "cost_quality": 0.75 },
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": "describe this image" },
+                        {
+                            "type": "image_url",
+                            "image_url": { "url": "https://example.com/image.png" }
+                        }
+                    ]
+                }],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "save_description",
+                        "parameters": { "type": "object" }
+                    }
+                }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = completer
+        .requests
+        .lock()
+        .map_err(|_| "chat request mutex poisoned")?;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model.0, "kimi-k2-6");
+    assert!(requests[0].body.get("auto").is_none());
+    assert!(requests[0].body.get("tools").is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_local_auto_input_image_falls_back_to_vision_model()
+-> Result<(), Box<dyn Error>> {
+    let completer = Arc::new(RecordingChatCompleter::default());
+    let app = router(test_state_with_local_text_pricing(
+        Arc::new(FakeGenerator),
+        completer.clone(),
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "auto": { "cost_quality": 0.25 },
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "input_image",
+                        "image_url": "data:image/png;base64,eA=="
+                    }]
+                }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = completer
+        .requests
+        .lock()
+        .map_err(|_| "chat request mutex poisoned")?;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model.0, "kimi-k2-6");
+    assert!(requests[0].body.get("auto").is_none());
+    assert!(requests[0].body.get("tools").is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_note_generate_local_auto_fallback_omits_cost_quality()
 -> Result<(), Box<dyn Error>> {
     let generator = Arc::new(RecordingGenerator::default());
@@ -1831,6 +1925,27 @@ fn test_state_with_local_text_pricing(
             context_tokens: None,
             traits: Vec::new(),
             capabilities: Vec::new(),
+        },
+    );
+    pricing.insert(
+        "kimi-k2-6".to_string(),
+        ModelPriceConfig {
+            unit: PriceUnit::Tokens,
+            credits_per_million_seconds: None,
+            input_credits_per_million_tokens: Some(500),
+            output_credits_per_million_tokens: Some(500),
+            provider: ModelProvider::Venice,
+            model_type: ModelType::Text,
+            display_name: "Kimi K2.6".to_string(),
+            description: None,
+            privacy: None,
+            pricing: None,
+            context_tokens: None,
+            traits: Vec::new(),
+            capabilities: vec![
+                "supportsFunctionCalling".to_string(),
+                "supportsVision".to_string(),
+            ],
         },
     );
     test_state_from_deps(TestStateDeps {

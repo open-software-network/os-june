@@ -12,9 +12,11 @@ use axum::{
     http::{HeaderMap, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
-use june_domain::ModelId;
-use june_services::AgentChatParams;
+use june_domain::{ModelId, ModelKind};
+use june_services::{AgentChatParams, PricingTable};
 use tokio_stream::wrappers::UnboundedReceiverStream;
+
+const PREFERRED_VISION_TEXT_MODEL: &str = "kimi-k2-6";
 
 pub(crate) async fn chat_completions(
     State(state): State<ApiState>,
@@ -32,7 +34,7 @@ pub(crate) async fn chat_completions(
         .to_string();
     validation::validate_text_len("model", &requested_model_id, validation::MAX_MODEL_CHARS)?;
     validation::validate_agent_chat_body(&body)?;
-    let model_id = resolve_priced_text_model(&state, &requested_model_id)?;
+    let model_id = resolve_priced_agent_text_model(&state, &requested_model_id, &body)?;
     let provider_credentials = credentials_for_resolved_model(
         provider_credentials,
         &requested_model_id,
@@ -82,4 +84,186 @@ pub(crate) async fn chat_completions(
         output.completion.body,
     )
         .into_response())
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct AgentModelRequirements {
+    vision: bool,
+    tools: bool,
+}
+
+impl AgentModelRequirements {
+    fn from_body(body: &serde_json::Value) -> Self {
+        Self {
+            vision: ["messages", "input"]
+                .into_iter()
+                .filter_map(|key| body.get(key))
+                .any(chat_items_contain_image),
+            tools: body
+                .get("tools")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|tools| !tools.is_empty()),
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        !self.vision && !self.tools
+    }
+}
+
+fn resolve_priced_agent_text_model(
+    state: &ApiState,
+    requested_model_id: &str,
+    body: &serde_json::Value,
+) -> Result<String, ApiError> {
+    let resolved_model_id = resolve_priced_text_model(state, requested_model_id)?;
+    let requirements = AgentModelRequirements::from_body(body);
+    if resolved_model_id == AUTO_TEXT_MODEL
+        || resolved_model_id == requested_model_id
+        || requirements.is_empty()
+        || model_supports_requirements(state.pricing(), &resolved_model_id, requirements)
+    {
+        return Ok(resolved_model_id);
+    }
+
+    [PREFERRED_VISION_TEXT_MODEL]
+        .into_iter()
+        .filter(|model_id| {
+            state
+                .pricing()
+                .ensure_model_kind(model_id, ModelKind::Text)
+                .is_ok()
+        })
+        .find(|model_id| model_supports_requirements(state.pricing(), model_id, requirements))
+        .map(str::to_string)
+        .or_else(|| {
+            state
+                .pricing()
+                .priced_models(Some(ModelKind::Text))
+                .into_iter()
+                .map(|(model_id, _)| model_id)
+                .filter(|model_id| *model_id != AUTO_TEXT_MODEL)
+                .find(|model_id| {
+                    state
+                        .pricing()
+                        .ensure_model_kind(model_id, ModelKind::Text)
+                        .is_ok()
+                        && model_supports_requirements(state.pricing(), model_id, requirements)
+                })
+                .cloned()
+        })
+        .ok_or_else(|| ApiError::unprocessable("model_not_priced"))
+}
+
+fn chat_items_contain_image(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(values) => values.iter().any(chat_items_contain_image),
+        serde_json::Value::Object(object) => {
+            matches!(
+                object.get("type").and_then(serde_json::Value::as_str),
+                Some("image_url" | "input_image")
+            ) || object.get("content").is_some_and(chat_items_contain_image)
+        }
+        _ => false,
+    }
+}
+
+fn model_supports_requirements(
+    pricing: &PricingTable,
+    model_id: &str,
+    requirements: AgentModelRequirements,
+) -> bool {
+    pricing
+        .iter()
+        .find(|(candidate_id, _)| candidate_id.as_str() == model_id)
+        .is_some_and(|(_, model)| {
+            (!requirements.vision || has_capability(&model.capabilities, "supportsvision"))
+                && (!requirements.tools
+                    || has_capability(&model.capabilities, "supportsfunctioncalling"))
+        })
+}
+
+fn has_capability(capabilities: &[String], expected: &str) -> bool {
+    capabilities.iter().any(|capability| {
+        capability
+            .chars()
+            .filter(char::is_ascii_alphabetic)
+            .map(|character| character.to_ascii_lowercase())
+            .collect::<String>()
+            == expected
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentModelRequirements, chat_items_contain_image, has_capability};
+
+    #[test]
+    fn infers_image_and_tool_requirements_from_chat_content() {
+        let body = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "image_url",
+                    "image_url": { "url": "https://example.com/image.png" }
+                }]
+            }],
+            "tools": [{ "type": "function" }]
+        });
+
+        assert_eq!(
+            AgentModelRequirements::from_body(&body),
+            AgentModelRequirements {
+                vision: true,
+                tools: true,
+            }
+        );
+    }
+
+    #[test]
+    fn infers_input_image_without_inventing_a_tool_requirement() {
+        let body = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [{ "type": "input_image", "image_url": "data:image/png;base64,eA==" }]
+            }]
+        });
+
+        assert!(chat_items_contain_image(&body["messages"]));
+        assert_eq!(
+            AgentModelRequirements::from_body(&body),
+            AgentModelRequirements {
+                vision: true,
+                tools: false,
+            }
+        );
+    }
+
+    #[test]
+    fn ignores_image_like_metadata_outside_message_content() {
+        let body = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": "hello",
+                "metadata": { "type": "image_url" }
+            }]
+        });
+
+        assert_eq!(
+            AgentModelRequirements::from_body(&body),
+            AgentModelRequirements::default()
+        );
+    }
+
+    #[test]
+    fn capability_matching_uses_the_catalog_names_normalized() {
+        assert!(has_capability(
+            &["supports_vision".to_string()],
+            "supportsvision"
+        ));
+        assert!(!has_capability(
+            &["supportsVision".to_string()],
+            "supportsfunctioncalling"
+        ));
+    }
 }
