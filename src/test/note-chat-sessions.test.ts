@@ -400,6 +400,43 @@ describe("note chat session map", () => {
     window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, settingsChanged);
   });
 
+  it("shows the Auto billing note in the picker while a Venice key is saved", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        generationProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: autoModel.id,
+        remoteGenerationModel: autoModel.id,
+        costQuality: 100,
+        imageModel: "venice-sd35",
+        videoModel: "wan-2.2-a14b-text-to-video",
+        veniceApiKeyConfigured: true,
+        localGeneration: { baseUrl: "", modelId: "", apiKey: "" },
+        imageSafeMode: true,
+        imageSafeModePromptDismissed: false,
+      },
+    });
+
+    render(
+      createElement(NoteChatPanel, {
+        note: { id: "note-1", title: "Launch planning" },
+        chat: noteChat(),
+        onClose: vi.fn(),
+        onOpenInAgent: vi.fn(),
+      }),
+    );
+
+    await user.click(await screen.findByRole("button", { name: /^Model: Auto/ }));
+    const picker = screen.getByRole("dialog", { name: "Choose text model" });
+    expect(
+      within(picker).getByText(
+        "Auto is billed to June credits and does not use your Venice API key.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("keeps a first-run picker change session-local while session creation is pending", async () => {
     const user = userEvent.setup();
     const chat = noteChat({
