@@ -13,7 +13,7 @@ import { isScheduledRunPreamble, stripScheduledRunPreamble } from "./hermes-adap
 import { displayedUserMessageText } from "./issue-report-prompt";
 import { displayedSkillInvocationText } from "./skill-slash-commands";
 import type { JuneHermesEvent } from "./hermes-control-plane";
-import { toolActivityLabel } from "./agent-tool-labels";
+import { generatedMediaToolKind, toolActivityLabel } from "./agent-tool-labels";
 
 export type AgentChatTextPart = {
   type: "text";
@@ -40,6 +40,10 @@ export type AgentChatToolPart = {
   name: string;
   text: string;
   status: "running" | "complete" | "failed";
+  /** Set when the call is expected to produce media (an image/video generation
+   * tool), so the turn can hold space with a generation placeholder while the
+   * part is running and let the inline result own the completed state. */
+  media?: "image" | "video";
 };
 
 export type AgentApprovalChoice = "once" | "session" | "always" | "deny";
@@ -273,6 +277,7 @@ export function buildHermesSessionChatTurns(
         name: toolActivityLabel(message.tool_name ?? undefined),
         text: textFromHermesContent(message.content) ?? "",
         status: "complete",
+        media: generatedMediaToolKind(message.tool_name ?? undefined),
       });
       // Media tool results render inline so they show in-thread instead of
       // being lost to the collapsed tool row. Image base64 and MEDIA refs are
@@ -327,12 +332,14 @@ export function buildHermesSessionChatTurns(
 
       for (const call of parseToolCalls(message.tool_calls)) {
         const result = toolResults.get(call.id);
+        const media = generatedMediaToolKind(call.name, call.arguments);
         turn.parts.push({
           type: "tool",
           id: call.id,
           name: toolActivityLabel(call.name, call.arguments),
           text: textFromHermesContent(result?.content) ?? stringifyObject(call.arguments) ?? "",
           status: "complete",
+          ...(media ? { media } : {}),
         });
       }
 
@@ -672,9 +679,11 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
           name: toolActivityLabel(event.name ?? "tool", event.sanitizedPayload),
           text: event.text,
           status,
+          media: generatedMediaToolKind(event.name, event.sanitizedPayload),
         });
         if (status === "complete") {
           appendImageParts(currentAssistant.parts, imagePartsFromHermesContent(event.content));
+          appendVideoParts(currentAssistant.parts, videoPartsFromHermesContent(event.content));
         }
         break;
       }
@@ -981,9 +990,13 @@ function replaceReasoningPart(parts: AgentChatPart[], text: string) {
 }
 
 function completeRunningParts(parts: AgentChatPart[]) {
+  const hasMediaTool = parts.some((part) => part.type === "tool" && part.media !== undefined);
   for (const part of parts) {
     if (part.type === "reasoning") part.status = "complete";
-    if (part.type === "text") part.status = "complete";
+    if (part.type === "text") {
+      if (hasMediaTool) part.text = stripTerminalMediaReferences(part.text);
+      part.status = "complete";
+    }
     if (part.type === "tool" && part.status === "running") part.status = "complete";
     if (part.type === "approval" && part.status === "pending") part.status = "resolved";
     if (part.type === "clarify" && part.status === "pending") part.status = "resolved";
@@ -994,7 +1007,8 @@ function completeRunningParts(parts: AgentChatPart[]) {
 
 function upsertToolPart(
   parts: AgentChatPart[],
-  next: Pick<AgentChatToolPart, "id" | "name" | "text" | "status">,
+  next: Pick<AgentChatToolPart, "id" | "name" | "text" | "status"> &
+    Partial<Pick<AgentChatToolPart, "media">>,
 ) {
   const existing = parts.find(
     (part): part is AgentChatToolPart =>
@@ -1004,6 +1018,7 @@ function upsertToolPart(
   if (existing) {
     existing.name = next.name && next.name !== "Tool" ? next.name : existing.name;
     existing.status = next.status;
+    existing.media ??= next.media;
     if (next.text && next.text !== existing.text) {
       existing.text = appendLogText(existing.text, next.text);
     }
@@ -1015,6 +1030,7 @@ function upsertToolPart(
     name: next.name,
     text: next.text,
     status: next.status,
+    ...(next.media ? { media: next.media } : {}),
   });
 }
 
@@ -1318,6 +1334,25 @@ function stripMediaReferences(value: string) {
     .replace(mediaVideoReferencePattern(), "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n");
+}
+
+/** Pure display-time scrub for assistant text that still contains media
+ * transport references. Complete references are removed in every state. While
+ * streaming, also hold back a final line that is a split `MEDIA:` prefix or a
+ * still-arriving reference (absolute paths can contain spaces). Terminal paths
+ * normalize media turns before changing status, so completed ordinary prose
+ * such as "Media" remains untouched. */
+export function stripRenderedMediaReferences(value: string, holdTrailingPartial = false): string {
+  const stripped = stripMediaReferences(value);
+  if (!holdTrailingPartial) return stripped;
+  return stripped.replace(/(^|\r?\n)[ \t]*(?:M|ME|MED|MEDI|MEDIA|MEDIA:.*)$/i, "$1");
+}
+
+function stripTerminalMediaReferences(value: string): string {
+  return stripMediaReferences(value).replace(
+    /(^|\r?\n)[ \t]*MEDIA:(?:[ \t]*|\/.*|[A-Za-z0-9._-]*[._-][A-Za-z0-9._-]*)$/i,
+    "$1",
+  );
 }
 
 function mediaImageReferences(value: unknown, depth = 0): string[] {

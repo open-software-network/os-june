@@ -340,6 +340,9 @@
   --t-fast: 100ms;
   --t-med: 160ms;
   --t-slow: 240ms;
+  /* Shimmer on the generated-media working label. This working state
+   * deliberately lives outside the short control timings above. */
+  --t-generated-media-label-shimmer: 1800ms;
   transition: --brand 220ms var(--ease-out);
 
   /* Shadows ---------------------------------------------------------- */

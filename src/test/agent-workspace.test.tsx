@@ -6640,6 +6640,137 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Done.")).toBeInTheDocument();
   });
 
+  it("holds space with a generation placeholder while an image tool runs and never paints streamed MEDIA text", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "make me a picture",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "make me a picture",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "tool.start",
+          session_id: "runtime-session-2",
+          payload: {
+            tool_id: "tool-1",
+            tool_name: "generate_image",
+            prompt: "a calm mountain lake at dawn",
+          },
+        });
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-2",
+          payload: {
+            delta:
+              "MEDIA:/Users/alex/Library/Application Support/June/generated-images/generated-ima",
+          },
+        });
+      }
+    });
+
+    // The generation placeholder holds the image's slot while the tool runs.
+    expect(await screen.findByRole("status", { name: "Generating image" })).toBeInTheDocument();
+    expect(screen.getByText("Generating image…")).toBeInTheDocument();
+    expect(document.querySelector(".agent-generated-image-placeholder")).not.toBeNull();
+    expect(document.querySelector("canvas.agent-generated-media-field")).not.toBeNull();
+    expect(screen.getByText("Generating image…")).toHaveClass(
+      "agent-generated-media-label",
+      "text-shimmer",
+      "shimmer",
+    );
+    expect(
+      screen.getByText("Generating image…").closest(".agent-generated-media-status-bar"),
+    ).not.toBeNull();
+    expect(document.querySelector(".agent-generated-media-morph")).toBeNull();
+    // The media canvas owns this running state, so the generic tool spinner is
+    // neither painted nor announced alongside it.
+    expect(screen.queryByRole("status", { name: "Running" })).not.toBeInTheDocument();
+    // The raw MEDIA reference in the streamed delta never paints as prose
+    // (regression: it used to show as a literal file line above the reply).
+    expect(screen.queryByText(/MEDIA:/)).not.toBeInTheDocument();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-2",
+          payload: {},
+        });
+      }
+    });
+    // A terminal frame without message.complete must not reveal the raw delta
+    // when it flips the accumulated text part from running to complete.
+    expect(screen.queryByText(/MEDIA:/)).not.toBeInTheDocument();
+  });
+
+  it("keeps one placeholder per concurrent or subsequent image generation", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "make three pictures" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() => expect(mocks.gatewayRequest).toHaveBeenCalled());
+
+    const emitToolStart = (toolId: string) => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "tool.start",
+          session_id: "runtime-session-2",
+          payload: { tool_id: toolId, tool_name: "generate_image" },
+        });
+      }
+    };
+    const emitToolComplete = (toolId: string, name: string, data: string) => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "tool.complete",
+          session_id: "runtime-session-2",
+          payload: {
+            tool_id: toolId,
+            tool_name: "generate_image",
+            content: [
+              { type: "image", data, mimeType: "image/png" },
+              { type: "text", text: JSON.stringify({ filename: `${name}.png`, label: name }) },
+            ],
+          },
+        });
+      }
+    };
+
+    act(() => {
+      emitToolStart("tool-1");
+      emitToolStart("tool-2");
+    });
+    await waitFor(() =>
+      expect(document.querySelectorAll(".agent-generated-image-placeholder")).toHaveLength(2),
+    );
+
+    act(() => emitToolComplete("tool-1", "first image", "Zmlyc3Q="));
+    expect(await screen.findByRole("img", { name: "first image" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".agent-generated-image-placeholder")).toHaveLength(1);
+
+    act(() => emitToolComplete("tool-2", "second image", "c2Vjb25k"));
+    expect(await screen.findByRole("img", { name: "second image" })).toBeInTheDocument();
+    expect(document.querySelector(".agent-generated-image-placeholder")).toBeNull();
+
+    act(() => emitToolStart("tool-3"));
+    await waitFor(() =>
+      expect(document.querySelectorAll(".agent-generated-image-placeholder")).toHaveLength(1),
+    );
+  });
+
   it("does not force the transcript to the bottom while subagent progress streams", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
@@ -7947,6 +8078,77 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
     expect(screen.getAllByLabelText("Generated files")).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Download report.md" })).toHaveLength(1);
+  });
+
+  it("does not render a download card for a file already shown inline as generated media", async () => {
+    // JUN-305: a generated image renders inline with its own open/download
+    // affordances; a workspace-file card for the same file would duplicate it
+    // (and could paint above the generation when an earlier turn names the
+    // file), so the artifact assignment must skip media-claimed files.
+    const generatedPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/generated-image-abc.png";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "generated-image-abc.png",
+              path: generatedPath,
+              kind: "file",
+              size: 1768,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-06-04T18:38:00Z",
+        tool_calls: JSON.stringify([
+          {
+            id: "call-1",
+            function: { name: "generate_image", arguments: { prompt: "a red bicycle" } },
+          },
+        ]),
+      },
+      {
+        id: "message-2",
+        role: "tool",
+        tool_call_id: "call-1",
+        tool_name: "generate_image",
+        content: [
+          { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+          {
+            type: "text",
+            text: JSON.stringify({ filename: "generated-image-abc.png", label: "a red bicycle" }),
+          },
+        ],
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+      {
+        id: "message-3",
+        role: "assistant",
+        content: "Saved it as generated-image-abc.png.",
+        timestamp: "2026-06-04T18:40:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByRole("img", { name: "a red bicycle" })).toBeInTheDocument();
+    expect(screen.queryByText("Working with images")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Generated files")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Download generated-image-abc.png" }),
+    ).not.toBeInTheDocument();
   });
 
   it("opens a markdown artifact in the viewer panel with rendered content", async () => {

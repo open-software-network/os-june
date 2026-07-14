@@ -3010,25 +3010,99 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-/* Generated image (the /image slash command) — rendered inline in the assistant
- * turn. Running shows a square shimmer placeholder; complete shows the image in
- * a quiet button that opens the file viewer (zoom-in cursor), with a download
- * action in the caption bar. Sized to sit in the chat column without dominating
- * it. */
+/* Generated image (the /image slash command and agent image tools) — rendered
+ * inline in the assistant turn. Running reserves the finished image's canvas;
+ * complete shows the image in a quiet button that opens the file viewer
+ * (zoom-in cursor), with a download action in the caption bar. Sized to sit in
+ * the chat column without dominating it. */
 .agent-generated-image {
   max-width: 320px;
   margin-block: var(--sp-2);
 }
 
-.agent-generated-image-placeholder {
-  display: grid;
-  place-items: center;
-  aspect-ratio: 1 / 1;
-  border: 1px solid var(--border-subtle);
+/* Generating state: a particle dot field inside a quiet card - the lattice,
+ * the June Agents mark, the traveling sheen, and the pointer ripples are all
+ * drawn by GeneratedMediaDotField on a canvas; these rules supply the surface
+ * and the per-theme ink the canvas reads (color + the alpha custom props).
+ * The status lives in its own footer, so the sheen never crosses the text. */
+.agent-generated-media-placeholder-card {
+  overflow: hidden;
   border-radius: var(--r-lg);
-  background: var(--muted);
+  background: var(--secondary);
+  box-shadow: var(--shadow-sm), var(--shadow-inset);
+}
+
+.agent-generated-image-placeholder,
+.agent-generated-video-placeholder {
+  --agent-generated-dot-alpha: 0.08;
+  --agent-generated-sheen-glow: 0.24;
+  --agent-generated-mark-alpha: 0.32;
+  position: relative;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  background: var(--secondary);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+}
+
+.agent-generated-video-placeholder {
+  aspect-ratio: 16 / 9;
+}
+
+[data-theme="dark"] .agent-generated-image-placeholder,
+[data-theme="dark"] .agent-generated-video-placeholder {
+  --agent-generated-dot-alpha: 0.05;
+  --agent-generated-sheen-glow: 0.27;
+  --agent-generated-mark-alpha: 0.3;
+  color: var(--foreground);
+}
+
+.agent-generated-media-field {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The status remains solid behind the label, then masks gently upward into the
+ * canvas so there is no hard seam across the card. */
+.agent-generated-media-status-bar {
+  --agent-generated-status-fade: calc(var(--sp-8) + var(--sp-4));
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  isolation: isolate;
+  margin-top: calc(-1 * var(--agent-generated-status-fade));
+  padding: var(--agent-generated-status-fade) var(--sp-5) var(--sp-4);
+}
+
+.agent-generated-media-status-bar::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  pointer-events: none;
+  background: var(--secondary);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, rgb(0 0 0 / 35%) 34%, black 58%);
+  mask-image: linear-gradient(to bottom, transparent 0%, rgb(0 0 0 / 35%) 34%, black 58%);
+}
+
+.agent-generated-media-label.text-shimmer {
+  --shimmer-duration: var(--t-generated-media-label-shimmer);
+  --shimmer-spread: calc(2ch + var(--sp-8));
+  max-width: 100%;
+  font-size: var(--fs-lg);
+}
+
+/* Caption under a generating frame (video's elapsed-time note). */
+.agent-generated-media-caption {
+  margin-top: var(--sp-2);
+}
+
+.agent-generated-media-note {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
 }
 
 .agent-generated-image-error {
@@ -3126,24 +3200,6 @@ input:focus-visible,
 .agent-generated-video {
   max-width: min(100%, 520px);
   margin-block: var(--sp-2);
-}
-
-.agent-generated-video-placeholder {
-  display: grid;
-  place-items: center;
-  gap: var(--sp-2);
-  aspect-ratio: 16 / 9;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  background: var(--muted);
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  text-align: center;
-}
-
-.agent-generated-video-progress {
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
 }
 
 .agent-generated-video-frame {

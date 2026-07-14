@@ -169,7 +169,7 @@ function classifyTool(
     text: eventText(payload),
     // Clarify tool calls are action-card plumbing in the builder, not tool rows.
     isClarify: isClarifyTool(payload),
-    content: toolImageContent(payload?.content),
+    content: toolMediaContent(payload?.content),
     // Tool cards render arguments/output, so keep the sanitized payload in case
     // a tool's args happen to embed a secret.
     sanitizedPayload,
@@ -177,18 +177,22 @@ function classifyTool(
   };
 }
 
-function toolImageContent(value: unknown, depth = 0): unknown {
+const TOOL_MEDIA_REFERENCE_PATTERN =
+  /MEDIA:[^\r\n]+\.(?:png|jpe?g|gif|webp|tiff?|bmp|avif|mp4|mov|webm|m4v)(?:[)\].,;:]?)(?=\s|$)/i;
+
+function toolMediaContent(value: unknown, depth = 0): unknown {
   if (value === null || value === undefined || depth > 4) return undefined;
   if (typeof value === "string") {
-    // Content may arrive as a JSON string of the MCP content-block ARRAY, not
-    // just an object — parse either and recurse so a stringified array of image
-    // blocks still yields the inline image.
+    // Content may arrive as a JSON string of the MCP content-block ARRAY. A
+    // video tool can also return its MEDIA path as plain text; preserve only a
+    // valid media reference rather than forwarding arbitrary tool output.
     const parsed = parseJsonValue(value);
-    return parsed !== undefined ? toolImageContent(parsed, depth + 1) : undefined;
+    if (parsed !== undefined) return toolMediaContent(parsed, depth + 1);
+    return TOOL_MEDIA_REFERENCE_PATTERN.test(value) ? { type: "text", text: value } : undefined;
   }
   if (Array.isArray(value)) {
     const items = value
-      .map((item) => toolImageContent(item, depth + 1))
+      .map((item) => toolMediaContent(item, depth + 1))
       .filter((item) => item !== undefined);
     return items.length ? items : undefined;
   }
@@ -208,16 +212,17 @@ function toolImageContent(value: unknown, depth = 0): unknown {
   if (record.type === "text" && typeof record.text === "string") {
     const parsed = parseJsonObject(record.text);
     if (
-      parsed &&
-      (typeof parsed.filename === "string" ||
-        typeof parsed.label === "string" ||
-        typeof parsed.mimeType === "string")
+      (parsed &&
+        (typeof parsed.filename === "string" ||
+          typeof parsed.label === "string" ||
+          typeof parsed.mimeType === "string")) ||
+      TOOL_MEDIA_REFERENCE_PATTERN.test(record.text)
     ) {
       return { type: "text", text: record.text };
     }
   }
   if (Array.isArray(record.content)) {
-    return toolImageContent(record.content, depth + 1);
+    return toolMediaContent(record.content, depth + 1);
   }
   return undefined;
 }
@@ -234,7 +239,7 @@ function parseJsonObject(value: string): Record<string, unknown> | undefined {
 }
 
 /** Parses a JSON string to its object OR array value (both recurse in
- * `toolImageContent`); `undefined` for scalars, null, or invalid JSON. */
+ * `toolMediaContent`); `undefined` for scalars, null, or invalid JSON. */
 function parseJsonValue(value: string): unknown {
   try {
     const parsed: unknown = JSON.parse(value);

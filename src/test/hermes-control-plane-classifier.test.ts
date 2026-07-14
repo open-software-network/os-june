@@ -247,6 +247,25 @@ describe("classifyHermesEvent — tools", () => {
     }
   });
 
+  it("preserves a video MEDIA result without forwarding unrelated tool text", () => {
+    const mediaText =
+      "MEDIA:/Users/alex/Library/Application Support/June/generated-videos/generated-video-ab12.mp4";
+    const result = classifyHermesEvent(
+      event("tool.complete", {
+        tool_call_id: "video1",
+        name: "generate_video",
+        content: [
+          { type: "text", text: mediaText },
+          { type: "text", text: "internal log" },
+        ],
+      }),
+    );
+    expect(result.kind).toBe("tool");
+    if (result.kind === "tool") {
+      expect(result.content).toEqual([{ type: "text", text: mediaText }]);
+    }
+  });
+
   it("falls back across tool_name / tool field aliases", () => {
     const byToolName = classifyHermesEvent(event("tool.start", { tool_name: "shell" }));
     if (byToolName.kind === "tool") expect(byToolName.name).toBe("shell");

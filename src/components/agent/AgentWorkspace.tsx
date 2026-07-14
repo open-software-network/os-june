@@ -322,6 +322,7 @@ import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   displayedComposerUserMessageText,
+  stripRenderedMediaReferences,
   textFromHermesContent,
   type AgentApprovalChoice,
   type AgentChatPart,
@@ -8590,9 +8591,43 @@ export function AgentWorkspace({
         ? "Up next preview shown. Run __upNextDemo(false) to hide it."
         : "Up next preview hidden.";
     };
+    // __imageGenDemo parks a generating-image turn (the dot-field placeholder)
+    // in the selected session so the animation can be judged without paying for
+    // a real generation. Purely in-memory: never persisted, never retried.
+    w.__imageGenDemo = (show: boolean = true, prompt = "a calm mountain lake at dawn") => {
+      if (!selectedHermesSessionId || selectedHermesSessionIsProvisional) {
+        return "Open a real session first, then run __imageGenDemo().";
+      }
+      const turnId = `image-demo:${selectedHermesSessionId}`;
+      const startedAt = Date.now();
+      setImageTurnsBySession((current) => {
+        const others = (current[selectedHermesSessionId] ?? []).filter(
+          (turn) => !turn.id.startsWith(turnId),
+        );
+        return {
+          ...current,
+          [selectedHermesSessionId]: show
+            ? [
+                ...others,
+                ...runningImageSlashTurns({
+                  id: turnId,
+                  prompt,
+                  requestId: "image-demo-request",
+                  createdAt: new Date(startedAt).toISOString(),
+                  imageCreatedAt: new Date(startedAt + 1).toISOString(),
+                }),
+              ]
+            : others,
+        };
+      });
+      return show
+        ? "Parked a generating-image turn. Run __imageGenDemo(false) to clear it."
+        : "Cleared the generating-image demo turn.";
+    };
     return () => {
       delete w.__steerSubmitDemo;
       delete w.__upNextDemo;
+      delete w.__imageGenDemo;
     };
   }, [selectedHermesSessionId, selectedHermesSessionIsProvisional]);
 
@@ -11578,8 +11613,27 @@ function AgentChatTurnRow({
   const toolParts = turn.parts.filter(
     (part): part is Extract<AgentChatPart, { type: "tool" }> => part.type === "tool",
   );
+  // A running generation tool holds space with the same placeholder the /image
+  // fast path uses, so the result doesn't pop in from nothing when the tool
+  // completes and its real image/video part takes over the slot.
+  const runningMediaTools = toolParts.filter(
+    (part): part is Extract<AgentChatPart, { type: "tool" }> & { media: "image" | "video" } =>
+      part.status === "running" && part.media !== undefined,
+  );
+  const hasGeneratedImage = turn.parts.some((part) => part.type === "image");
+  const hasGeneratedVideo = turn.parts.some((part) => part.type === "video");
+  // The media canvas owns successful generation from start through result.
+  // Keeping the generic tool row alongside it would show two activity states,
+  // then make that row pop back in above the finished media. Failed media tools
+  // and unrelated tools still render normally.
+  const visibleToolParts = toolParts.filter((part) => {
+    if (!part.media || part.status === "failed") return true;
+    if (part.status === "running") return false;
+    return part.media === "image" ? !hasGeneratedImage : !hasGeneratedVideo;
+  });
   // The disclosure owns internal reasoning only. Tool/action rows stay visible
-  // outside it so users can see what June is doing without expanding Thought.
+  // outside it so users can see what June is doing without expanding Thought;
+  // a running media tool is represented by its canvas instead, just above.
   const thinkingRunning = reasoningParts.some((part) => part.status === "running");
   const completedThinkingKey = `turn:${turn.id}:thinking`;
   const thinkingKey =
@@ -11771,13 +11825,26 @@ function AgentChatTurnRow({
             onOpenChange={(open) => onThinkingOpenChange(thinkingKey, open)}
           />
         ) : null}
-        {toolParts.length > 0 ? (
+        {visibleToolParts.length > 0 ? (
           <div className="agent-tool-stack">
-            {toolParts.map((tool) => (
+            {visibleToolParts.map((tool) => (
               <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
             ))}
           </div>
         ) : null}
+        {runningMediaTools.map((tool) =>
+          tool.media === "image" ? (
+            <AgentGeneratedImage
+              key={`generating:${tool.id}`}
+              part={{ type: "image", status: "running", prompt: "" }}
+            />
+          ) : (
+            <AgentGeneratedVideo
+              key={`generating:${tool.id}`}
+              part={{ type: "video", status: "running", prompt: "" }}
+            />
+          ),
+        )}
         {turn.parts.map((part, index) =>
           part.type === "text" ? (
             hasAgentCliAccessRequest(part.text) ? (
@@ -11792,7 +11859,13 @@ function AgentChatTurnRow({
               </div>
             ) : (
               <div key={`${turn.id}:text:${index}`}>
-                <MarkdownContent markdown={part.text} repairProse />
+                {/* A part can retain raw MEDIA deltas while streaming or when
+                    a terminal/error event arrives without message.complete.
+                    Those transport references never belong in assistant prose. */}
+                <MarkdownContent
+                  markdown={stripRenderedMediaReferences(part.text, part.status === "running")}
+                  repairProse
+                />
               </div>
             )
           ) : part.type === "context" ? (
@@ -12193,10 +12266,285 @@ function SteeringPart({ part }: { part: Extract<AgentChatPart, { type: "steering
   );
 }
 
-// The `/image` result, inline in the assistant turn. Running -> shimmer loader;
+// The `/image` result, inline in the assistant turn. Running -> generation state;
 // complete -> the image (click to enlarge in the file viewer) with a download
 // action; error -> the failure message. The bytes ride in `part.dataUrl` for an
 // instant thumbnail; open/download key off the imported workspace path.
+/* The June Agents mark sampled onto the generating dot lattice, one character
+ * per 6px cell ("o" = dot). Derived from src/assets/june-agents-mark.svg by
+ * rasterizing and thresholding per-cell coverage at 0.45 - whole dots keep
+ * the glyph from fragmenting at its narrow diagonal step necks. */
+const GENERATED_MEDIA_MARK_CELLS = [
+  "...................ooooo",
+  "...................ooooo",
+  "...................ooooo",
+  "...................ooooo",
+  "..................oooooo",
+  ".....ooooooooooooooo....",
+  ".....oooooooooooooo.....",
+  ".....oooooooooooooo.....",
+  ".....oooooooooooooo.....",
+  "....ooooooooooooooo.....",
+  "oooooo..................",
+  "ooooo...................",
+  "ooooo...................",
+  "ooooo..............ooooo",
+  "ooooo..............ooooo",
+  "...................ooooo",
+  "...................ooooo",
+  "..................oooooo",
+  ".....ooooooooooooooo....",
+  ".....oooooooooooooo.....",
+  ".....oooooooooooooo.....",
+  ".....oooooooooooooo.....",
+  "....ooooooooooooooo.....",
+  "oooooo..................",
+  "ooooo...................",
+  "ooooo...................",
+  "ooooo...................",
+  "ooooo...................",
+];
+
+/* One shared parameter set so the two wave kinds stay in the same physical
+ * register: a wavefront is a gaussian band that brightens dots and pushes
+ * them away from its source; dots ease back as the band moves on. */
+const GENERATED_MEDIA_FIELD = {
+  pitch: 6,
+  dotRadius: 1,
+  markDotRadius: 1.5,
+  markGlowGain: 1.2,
+  maxAlpha: 0.85,
+  /* The ambient sheen: a plane wavefront crossing left to right, both ends
+   * fully off-canvas so the loop reset is invisible, then a rest beat. */
+  sweepCycleMs: 3600,
+  sweepTravelMs: 2400,
+  sweepSigma: 34,
+  sweepPush: 2.2,
+  /* Pointer ripples: a radial wavefront expanding from the tap point. */
+  ripplePxPerMs: 0.24,
+  rippleSigma: 24,
+  rippleTauMs: 950,
+  ripplePush: 5,
+  rippleGlow: 0.4,
+};
+
+type GeneratedMediaRipple = { x: number; y: number; startedAt: number };
+
+/** The particle dot field behind a generating image/video: a fine stationary
+ * lattice carrying the June Agents mark as brighter dots, with a soft sheen
+ * wavefront sweeping across on a fixed cadence. Pointer taps drop radial
+ * ripples that push dots outward and let them settle back. Dot positions are
+ * a pure function of time (no per-dot state), so dropped frames never desync
+ * the motion; reduced motion renders a single static frame. */
+function GeneratedMediaDotField() {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const ripplesRef = useRef<GeneratedMediaRipple[]>([]);
+  const reducedMotionRef = useRef(false);
+
+  useEffect(() => {
+    const F = GENERATED_MEDIA_FIELD;
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) return; // test env has no 2d context
+
+    let width = 0;
+    let height = 0;
+    let dots: Array<{ x: number; y: number; mark: boolean }> = [];
+    let raf = 0;
+    let idle = false;
+
+    /* The ink color and per-theme alphas live in CSS so the field follows the
+     * design tokens; the canvas reads their computed values. */
+    const readInk = () => {
+      const style = getComputedStyle(canvas);
+      return {
+        color: style.color,
+        dotAlpha: Number.parseFloat(style.getPropertyValue("--agent-generated-dot-alpha")) || 0.08,
+        sheenGlow:
+          Number.parseFloat(style.getPropertyValue("--agent-generated-sheen-glow")) || 0.24,
+        markAlpha:
+          Number.parseFloat(style.getPropertyValue("--agent-generated-mark-alpha")) || 0.32,
+      };
+    };
+    let ink = readInk();
+
+    const rebuild = () => {
+      const rect = canvas.getBoundingClientRect();
+      width = Math.round(rect.width);
+      height = Math.round(rect.height);
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.round(width * dpr));
+      canvas.height = Math.max(1, Math.round(height * dpr));
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const cols = Math.ceil(width / F.pitch);
+      const rows = Math.ceil(height / F.pitch);
+      const markCols = GENERATED_MEDIA_MARK_CELLS[0].length;
+      const markRows = GENERATED_MEDIA_MARK_CELLS.length;
+      // Centered on the lattice, lifted one row to balance the footer bar.
+      const markCol = Math.round((cols - markCols) / 2);
+      const markRow = Math.round((rows - markRows) / 2) - 1;
+      dots = [];
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const mark =
+            row >= markRow &&
+            row < markRow + markRows &&
+            col >= markCol &&
+            col < markCol + markCols &&
+            GENERATED_MEDIA_MARK_CELLS[row - markRow][col - markCol] === "o";
+          dots.push({ x: col * F.pitch + F.pitch / 2, y: row * F.pitch + F.pitch / 2, mark });
+        }
+      }
+    };
+
+    const epoch = performance.now();
+
+    const draw = (t: number, animated: boolean) => {
+      const ripples = ripplesRef.current;
+      for (let i = ripples.length - 1; i >= 0; i--) {
+        if (t - ripples[i].startedAt > 6 * F.rippleTauMs) ripples.splice(i, 1);
+      }
+      let front: number | null = null;
+      if (animated) {
+        const phase = ((t - epoch) % F.sweepCycleMs) / F.sweepTravelMs;
+        if (phase <= 1) front = -3 * F.sweepSigma + phase * (width + 6 * F.sweepSigma);
+      }
+      // Nothing in motion: keep the last static frame instead of repainting.
+      if (front === null && ripples.length === 0) {
+        if (idle) return;
+        idle = true;
+      } else {
+        idle = false;
+      }
+      context.clearRect(0, 0, width, height);
+      context.fillStyle = ink.color;
+      for (const dot of dots) {
+        let glow = 0;
+        let dx = 0;
+        let dy = 0;
+        if (front !== null) {
+          const band = Math.exp(-((dot.x - front) ** 2) / (2 * F.sweepSigma ** 2));
+          glow += ink.sheenGlow * band;
+          dx += F.sweepPush * band;
+        }
+        for (const ripple of ripples) {
+          const age = t - ripple.startedAt;
+          if (age < 0) continue;
+          const rx = dot.x - ripple.x;
+          const ry = dot.y - ripple.y;
+          const dist = Math.hypot(rx, ry) || 1;
+          const band =
+            Math.exp(-((dist - F.ripplePxPerMs * age) ** 2) / (2 * F.rippleSigma ** 2)) *
+            Math.exp(-age / F.rippleTauMs);
+          glow += F.rippleGlow * band;
+          dx += (rx / dist) * F.ripplePush * band;
+          dy += (ry / dist) * F.ripplePush * band;
+        }
+        const base = dot.mark ? ink.markAlpha : ink.dotAlpha;
+        context.globalAlpha = Math.min(F.maxAlpha, base + glow * (dot.mark ? F.markGlowGain : 1));
+        context.beginPath();
+        context.arc(
+          dot.x + dx,
+          dot.y + dy,
+          dot.mark ? F.markDotRadius : F.dotRadius,
+          0,
+          Math.PI * 2,
+        );
+        context.fill();
+      }
+      context.globalAlpha = 1;
+    };
+
+    const frame = () => {
+      raf = requestAnimationFrame(frame);
+      draw(performance.now(), true);
+    };
+    const stop = () => {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+    };
+
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const applyMotionPreference = () => {
+      reducedMotionRef.current = reducedMotion.matches;
+      stop();
+      if (reducedMotion.matches) {
+        ripplesRef.current = [];
+        idle = false;
+        draw(performance.now(), false);
+      } else {
+        idle = false;
+        raf = requestAnimationFrame(frame);
+      }
+    };
+
+    rebuild();
+    // The generation "lands" with one ripple from the center of the canvas.
+    ripplesRef.current = [{ x: width / 2, y: height / 2, startedAt: epoch + 50 }];
+    applyMotionPreference();
+    reducedMotion.addEventListener("change", applyMotionPreference);
+
+    const resizeObserver = new ResizeObserver(() => {
+      rebuild();
+      idle = false;
+      if (reducedMotionRef.current) draw(performance.now(), false);
+    });
+    resizeObserver.observe(canvas);
+
+    // Theme flips swap the computed ink; repaint with the new values.
+    const themeObserver = new MutationObserver(() => {
+      ink = readInk();
+      idle = false;
+      if (reducedMotionRef.current) draw(performance.now(), false);
+    });
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+
+    return () => {
+      stop();
+      reducedMotion.removeEventListener("change", applyMotionPreference);
+      resizeObserver.disconnect();
+      themeObserver.disconnect();
+    };
+  }, []);
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (reducedMotionRef.current) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    ripplesRef.current.push({
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      startedAt: performance.now(),
+    });
+  };
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="agent-generated-media-field"
+      onPointerDown={handlePointerDown}
+    />
+  );
+}
+
+/** A quiet particle dot-field canvas — carrying the June Agents mark — with
+ * its working label in a separate footer. */
+function AgentGeneratedMediaPlaceholder({ kind }: { kind: "image" | "video" }) {
+  const label = kind === "image" ? "Generating image…" : "Generating video…";
+  return (
+    <div className="agent-generated-media-placeholder-card">
+      <div className={`agent-generated-${kind}-placeholder`} aria-hidden>
+        <GeneratedMediaDotField />
+      </div>
+      <div className="agent-generated-media-status-bar">
+        <span className="agent-generated-media-label text-shimmer shimmer">{label}</span>
+      </div>
+    </div>
+  );
+}
+
 function AgentGeneratedImage({
   part,
   onOpen,
@@ -12231,10 +12579,14 @@ function AgentGeneratedImage({
 
   if (part.status === "running") {
     return (
-      <div className="agent-generated-image" data-status="running" role="status" aria-live="polite">
-        <div className="agent-generated-image-placeholder">
-          <span className="text-shimmer shimmer">Generating image…</span>
-        </div>
+      <div
+        className="agent-generated-image"
+        data-status="running"
+        role="status"
+        aria-label="Generating image"
+        aria-live="polite"
+      >
+        <AgentGeneratedMediaPlaceholder kind="image" />
       </div>
     );
   }
@@ -12312,10 +12664,16 @@ function AgentGeneratedVideo({
   if (part.status === "running") {
     const progress = videoProgressLabel(part);
     return (
-      <div className="agent-generated-video" data-status="running" role="status" aria-live="polite">
-        <div className="agent-generated-video-placeholder">
-          <span className="text-shimmer">Generating video, this can take a minute</span>
-          {progress ? <span className="agent-generated-video-progress">{progress}</span> : null}
+      <div
+        className="agent-generated-video"
+        data-status="running"
+        role="status"
+        aria-label="Generating video"
+        aria-live="polite"
+      >
+        <AgentGeneratedMediaPlaceholder kind="video" />
+        <div className="agent-generated-media-caption">
+          <span className="agent-generated-media-note">{progress ?? "This can take a minute"}</span>
         </div>
       </div>
     );
@@ -14185,7 +14543,10 @@ function filesystemEntriesToArtifacts(
 // either the full artifact path or the workspace-relative path injected for
 // attachments, so a file the user just handed us shouldn't bounce back as a
 // download. Name-only matches are also deduplicated by name, so two workspace
-// copies of the same file don't produce twin cards.
+// copies of the same file don't produce twin cards. A file already rendered
+// inline as a generated image/video part never gets a card at all — the inline
+// figure carries its own open/download affordances, and a duplicate file card
+// would otherwise paint above the generation it came from (JUN-305).
 function assignArtifactsToTurns(
   turns: AgentChatTurn[],
   artifacts: AgentArtifact[],
@@ -14194,6 +14555,15 @@ function assignArtifactsToTurns(
   if (!artifacts.length) return byTurn;
   const claimedPaths = new Set<string>();
   const claimedNames = new Set<string>();
+  const mediaPaths = new Set<string>();
+  const mediaNames = new Set<string>();
+  for (const turn of turns) {
+    for (const part of turn.parts) {
+      if (part.type !== "image" && part.type !== "video") continue;
+      if (part.path) mediaPaths.add(part.path);
+      if (part.name) mediaNames.add(part.name.toLowerCase());
+    }
+  }
   for (const turn of turns) {
     const text = turn.parts
       .map((part) => (part.type === "text" ? part.text : ""))
@@ -14204,6 +14574,7 @@ function assignArtifactsToTurns(
     for (const artifact of artifacts) {
       const name = artifact.name.toLowerCase();
       if (!name || claimedPaths.has(artifact.path)) continue;
+      if (mediaPaths.has(artifact.path) || mediaNames.has(name)) continue;
       const pathMentioned =
         text.includes(artifact.path.toLowerCase()) ||
         text.includes(attachmentPromptPath(artifact.path).toLowerCase());
