@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   shareRevokeInvite: vi.fn(),
   shareDelete: vi.fn(),
   shareKeyGet: vi.fn(),
+  shareKeysForget: vi.fn(),
   shareKeySave: vi.fn(),
   shareInviteKeySave: vi.fn(),
   shareInviteKeysGet: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock("../lib/tauri", () => ({
   shareRevokeInvite: mocks.shareRevokeInvite,
   shareDelete: mocks.shareDelete,
   shareKeyGet: mocks.shareKeyGet,
+  shareKeysForget: mocks.shareKeysForget,
   shareKeySave: mocks.shareKeySave,
   shareInviteKeySave: mocks.shareInviteKeySave,
   shareInviteKeysGet: mocks.shareInviteKeysGet,
@@ -67,6 +69,7 @@ beforeEach(() => {
   mocks.shareInviteKeysGet.mockResolvedValue([]);
   mocks.shareRevokeInvite.mockResolvedValue(undefined);
   mocks.shareDelete.mockResolvedValue(undefined);
+  mocks.shareKeysForget.mockResolvedValue(undefined);
 });
 
 describe("ShareDialog", () => {
@@ -259,6 +262,46 @@ describe("ShareDialog", () => {
     expect(
       await screen.findByText("Not shared yet. This note stays private until you invite someone."),
     ).toBeInTheDocument();
+  });
+
+  it("rejects a duplicate active invite for the same address", async () => {
+    mocks.shareKeyGet.mockResolvedValue({
+      shareId: "shr_1",
+      contentKeyB64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    });
+    mocks.shareGet.mockResolvedValue({
+      shareId: "shr_1",
+      kind: "note",
+      invites: [{ inviteId: "shi_1", email: "friend@example.com", state: "accepted" }],
+    });
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    expect(await screen.findByText("friend@example.com")).toBeInTheDocument();
+    // Same address, different casing: still a duplicate.
+    await user.type(screen.getByLabelText("Invite by email"), "Friend@Example.com");
+    await user.click(screen.getByRole("button", { name: "Invite" }));
+
+    expect(await screen.findByText("That person is already invited.")).toBeInTheDocument();
+    expect(mocks.shareAddInvites).not.toHaveBeenCalled();
+    expect(mocks.shareCreate).not.toHaveBeenCalled();
+  });
+
+  it("forgets a stale local key when the server reports the share gone", async () => {
+    mocks.shareKeyGet.mockResolvedValue({
+      shareId: "shr_dead",
+      contentKeyB64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    });
+    // The share no longer exists for this account (definitive 404).
+    mocks.shareGet.mockRejectedValue({ code: "june_request_failed", message: "share_not_found" });
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    // The stale key is dropped and the item resets to the unshared state.
+    await waitFor(() => expect(mocks.shareKeysForget).toHaveBeenCalledWith("shr_dead"));
+    expect(
+      await screen.findByText("Not shared yet. This note stays private until you invite someone."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Unshare" })).not.toBeInTheDocument();
   });
 
   it("keeps the invite button disabled while an existing share is still loading", async () => {

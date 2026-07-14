@@ -2442,6 +2442,22 @@ pub async fn share_delete(app: AppHandle, request: ShareDeleteRequest) -> Result
     Ok(())
 }
 
+/// Drop a share's locally retained keys without touching the server. Used when
+/// the owner dialog finds a local key for a share that the server reports as
+/// gone or not-owned (e.g. after re-signing in as a different account), so the
+/// item can be shared again from scratch instead of pointing at a dead share.
+#[tauri::command]
+pub async fn share_keys_forget(
+    app: AppHandle,
+    request: ShareDeleteRequest,
+) -> Result<(), AppError> {
+    repositories(&app)
+        .await?
+        .delete_share_keys(&request.share_id)
+        .await?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn share_key_save(app: AppHandle, request: ShareKeySaveRequest) -> Result<(), AppError> {
     let content_key = decode_share_key_b64(&request.content_key_b64)?;

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
-import { messageFromError } from "../../lib/errors";
+import { isShareNotFoundError, messageFromError } from "../../lib/errors";
 import {
   buildShareFragment,
   encryptPayload,
@@ -19,6 +19,7 @@ import {
   shareInviteKeySave,
   shareInviteKeysGet,
   shareKeyGet,
+  shareKeysForget,
   shareKeySave,
   shareRevokeInvite,
   type ShareInviteState,
@@ -96,19 +97,20 @@ export function ShareDialog({
     void (async () => {
       const base = await getShareBaseUrl().catch(() => null);
       if (!cancelled && base) setBaseUrl(base);
+      let existing: { shareId: string; contentKeyB64: string } | null = null;
       try {
-        const key = await shareKeyGet(item.kind, item.itemId);
-        if (cancelled || !key) return;
+        existing = await shareKeyGet(item.kind, item.itemId);
+        if (cancelled || !existing) return;
         // This item is already shared locally. Pin its share id and content
         // key up front, before fetching invite state: if shareGet then fails
-        // (transient network error), the dialog must not fall back into the
+        // with a transient error, the dialog must not fall back into the
         // first-invite path, which would mint a duplicate server share and
         // orphan this one. A later invite adds to the existing share instead.
-        setShareId(key.shareId);
-        setContentKeyB64(key.contentKeyB64);
+        setShareId(existing.shareId);
+        setContentKeyB64(existing.contentKeyB64);
         const [share, inviteKeys] = await Promise.all([
-          shareGet(key.shareId),
-          shareInviteKeysGet(key.shareId),
+          shareGet(existing.shareId),
+          shareInviteKeysGet(existing.shareId),
         ]);
         if (cancelled) return;
         const keyByInvite = new Map(
@@ -123,7 +125,20 @@ export function ShareDialog({
           })),
         );
       } catch (err) {
-        if (!cancelled) setError(messageFromError(err));
+        if (cancelled) return;
+        if (existing && isShareNotFoundError(err)) {
+          // The share is definitively gone or owned by a different account
+          // (e.g. re-signed-in on the same local notes). Forget the stale
+          // local key and reset to the unshared state so the item can be
+          // shared again, rather than pointing Invite/Unshare at a dead share.
+          await shareKeysForget(existing.shareId).catch(() => {});
+          if (cancelled) return;
+          setShareId(null);
+          setContentKeyB64(null);
+          setInvites([]);
+        } else {
+          setError(messageFromError(err));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -139,6 +154,14 @@ export function ShareDialog({
     // submitting before it settles would take the first-invite path and mint a
     // second, orphaned share for an already-shared item.
     if (!EMAIL_PATTERN.test(normalized) || invitingRef.current || loading) return;
+    // Reject a duplicate active invite for the same address. The viewer
+    // authorizes by any non-revoked invite matching the email, so a second
+    // active row would survive revoking the first and leave that person able
+    // to open the share.
+    if (invites.some((invite) => invite.state !== "revoked" && invite.email === normalized)) {
+      setError("That person is already invited.");
+      return;
+    }
     invitingRef.current = true;
     setInviteBusy(true);
     setError(null);
@@ -206,7 +229,7 @@ export function ShareDialog({
       invitingRef.current = false;
       setInviteBusy(false);
     }
-  }, [email, loading, shareId, contentKeyB64, item]);
+  }, [email, loading, invites, shareId, contentKeyB64, item]);
 
   const handleCopyLink = useCallback(
     async (invite: InviteRow) => {
