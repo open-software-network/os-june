@@ -93,6 +93,7 @@ import {
   updateNote,
   agentHudHide,
   agentHudShow,
+  agentOpenReady,
   type LiveTranscriptEventDto,
 } from "../lib/tauri";
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
@@ -1620,26 +1621,64 @@ export function App() {
   }, [openSettings]);
 
   useEffect(() => {
+    let aborted = false;
+
     function openAgentWorkspace(session?: HermesSessionInfo) {
       setAgentOrigin(undefined);
       setActiveAgentSession(session);
       setActiveView("agent");
     }
 
-    function handleOpenEvent(event: Event) {
-      const detail = (event as CustomEvent<{ session?: HermesSessionInfo }>).detail;
-      openAgentWorkspace(detail?.session);
+    // Notification clicks carry only a session id (the session may have
+    // changed since the notification was posted). Resolve it against the
+    // known sessions, refreshing from the bridge when it is not cached; a
+    // session that no longer exists still opens the agent workspace rather
+    // than dropping the click on an unrelated view.
+    async function openAgentSessionById(sessionId: string) {
+      const cached = agentMenuBarSessionsRef.current.find((session) => session.id === sessionId);
+      if (cached) {
+        openAgentWorkspace(cached);
+        return;
+      }
+      const sessions = await listHermesSessions({}).catch(() => []);
+      if (aborted) return;
+      openAgentWorkspace(sessions.find((session) => session.id === sessionId));
     }
 
-    let aborted = false;
+    function handleOpenPayload(payload?: { session?: HermesSessionInfo; sessionId?: string }) {
+      if (payload?.session) {
+        openAgentWorkspace(payload.session);
+        return;
+      }
+      if (payload?.sessionId) {
+        void openAgentSessionById(payload.sessionId);
+        return;
+      }
+      openAgentWorkspace(undefined);
+    }
+
+    function handleOpenEvent(event: Event) {
+      handleOpenPayload(
+        (event as CustomEvent<{ session?: HermesSessionInfo; sessionId?: string }>).detail,
+      );
+    }
+
     let unlisten: (() => void) | undefined;
     window.addEventListener(AGENT_OPEN_EVENT, handleOpenEvent);
-    void listen<{ session?: HermesSessionInfo }>(AGENT_OPEN_EVENT, (event) => {
-      openAgentWorkspace(event.payload?.session);
+    void listen<{ session?: HermesSessionInfo; sessionId?: string }>(AGENT_OPEN_EVENT, (event) => {
+      handleOpenPayload(event.payload);
     }).then((cleanup) => {
       if (aborted) cleanup();
       else unlisten = cleanup;
     });
+
+    // Listeners are registered; drain a notification click that launched the
+    // app before the webview could hear the open event.
+    void agentOpenReady()
+      .then((sessionId) => {
+        if (!aborted && sessionId) void openAgentSessionById(sessionId);
+      })
+      .catch(() => {});
 
     return () => {
       aborted = true;

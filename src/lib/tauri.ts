@@ -861,6 +861,24 @@ export async function agentHudOpenAgent(session?: HermesSessionInfo) {
   return invoke<void>("agent_hud_open_agent", { session });
 }
 
+export async function sendAppNotification(input: {
+  title: string;
+  body: string;
+  sound?: string;
+  sessionId?: string;
+}) {
+  return invoke<void>("send_app_notification", { request: input });
+}
+
+/**
+ * Tells the backend the webview can receive "june:agent:open" events and
+ * returns the session id of a notification clicked before that (the click
+ * launched the app), so bootstrap can navigate straight to it.
+ */
+export async function agentOpenReady() {
+  return invoke<string | null>("agent_open_ready");
+}
+
 export async function createAgentTask(input: {
   prompt: string;
   title?: string;

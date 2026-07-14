@@ -6,7 +6,12 @@ const notificationMocks = vi.hoisted(() => ({
   sendNotification: vi.fn(),
 }));
 
+const tauriMocks = vi.hoisted(() => ({
+  sendAppNotification: vi.fn(),
+}));
+
 vi.mock("@tauri-apps/plugin-notification", () => notificationMocks);
+vi.mock("../lib/tauri", () => tauriMocks);
 
 import { agentNotificationCopy, notifyAgentSessionStatus } from "../lib/agent-notifications";
 
@@ -53,8 +58,9 @@ describe("agent notifications", () => {
     expect(notificationMocks.sendNotification).not.toHaveBeenCalled();
   });
 
-  it("sends notifications for user attention and completion", async () => {
+  it("sends notifications for user attention and completion with the session id", async () => {
     notificationMocks.isPermissionGranted.mockResolvedValue(true);
+    tauriMocks.sendAppNotification.mockResolvedValue(undefined);
 
     await expect(
       notifyAgentSessionStatus({
@@ -65,17 +71,19 @@ describe("agent notifications", () => {
       }),
     ).resolves.toBe(true);
 
-    expect(notificationMocks.sendNotification).toHaveBeenCalledWith({
+    expect(tauriMocks.sendAppNotification).toHaveBeenCalledWith({
       title: "June needs your input",
       body: "Approve execute_code.",
-      group: "june-agent-session-1",
       sound: "Ping",
+      sessionId: "session-1",
     });
+    expect(notificationMocks.sendNotification).not.toHaveBeenCalled();
   });
 
   it("requests native notification permission when needed", async () => {
     notificationMocks.isPermissionGranted.mockResolvedValue(false);
     notificationMocks.requestPermission.mockResolvedValue("granted");
+    tauriMocks.sendAppNotification.mockResolvedValue(undefined);
 
     await expect(
       notifyAgentSessionStatus({
@@ -86,16 +94,37 @@ describe("agent notifications", () => {
     ).resolves.toBe(true);
 
     expect(notificationMocks.requestPermission).toHaveBeenCalledOnce();
+    expect(tauriMocks.sendAppNotification).toHaveBeenCalledWith({
+      title: "June finished",
+      body: "Make a PDF",
+      sound: "Ping",
+      sessionId: "session-2",
+    });
+  });
+
+  it("falls back to the plugin when the backend command is unavailable", async () => {
+    notificationMocks.isPermissionGranted.mockResolvedValue(true);
+    tauriMocks.sendAppNotification.mockRejectedValue(new Error("unknown command"));
+
+    await expect(
+      notifyAgentSessionStatus({
+        sessionId: "session-fallback",
+        status: "completed",
+        title: "Make a PDF",
+      }),
+    ).resolves.toBe(true);
+
     expect(notificationMocks.sendNotification).toHaveBeenCalledWith({
       title: "June finished",
       body: "Make a PDF",
-      group: "june-agent-session-2",
+      group: "june-agent-session-fallback",
       sound: "Ping",
     });
   });
 
   it("dedupes duplicate status notifications", async () => {
     notificationMocks.isPermissionGranted.mockResolvedValue(true);
+    tauriMocks.sendAppNotification.mockResolvedValue(undefined);
 
     await notifyAgentSessionStatus({
       sessionId: "session-3",
@@ -108,12 +137,13 @@ describe("agent notifications", () => {
       title: "Make a PDF",
     });
 
-    expect(notificationMocks.sendNotification).toHaveBeenCalledOnce();
+    expect(tauriMocks.sendAppNotification).toHaveBeenCalledOnce();
   });
 
   it("does not consume the dedupe slot when permission is not granted", async () => {
     notificationMocks.isPermissionGranted.mockResolvedValue(false);
     notificationMocks.requestPermission.mockResolvedValue("denied");
+    tauriMocks.sendAppNotification.mockResolvedValue(undefined);
 
     await expect(
       notifyAgentSessionStatus({
@@ -122,7 +152,7 @@ describe("agent notifications", () => {
         title: "Make a PDF",
       }),
     ).resolves.toBe(false);
-    expect(notificationMocks.sendNotification).not.toHaveBeenCalled();
+    expect(tauriMocks.sendAppNotification).not.toHaveBeenCalled();
 
     notificationMocks.isPermissionGranted.mockResolvedValue(true);
 
@@ -133,13 +163,14 @@ describe("agent notifications", () => {
         title: "Make a PDF",
       }),
     ).resolves.toBe(true);
-    expect(notificationMocks.sendNotification).toHaveBeenCalledOnce();
+    expect(tauriMocks.sendAppNotification).toHaveBeenCalledOnce();
   });
 
   it("prunes dedupe entries older than the window", async () => {
     vi.useFakeTimers();
     try {
       notificationMocks.isPermissionGranted.mockResolvedValue(true);
+      tauriMocks.sendAppNotification.mockResolvedValue(undefined);
 
       await notifyAgentSessionStatus({
         sessionId: "session-5",
@@ -153,7 +184,7 @@ describe("agent notifications", () => {
         title: "Second",
       });
 
-      expect(notificationMocks.sendNotification).toHaveBeenCalledTimes(2);
+      expect(tauriMocks.sendAppNotification).toHaveBeenCalledTimes(2);
       const recent = (
         globalThis as typeof globalThis & {
           __juneAgentNotificationTimes?: Map<string, number>;
