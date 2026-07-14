@@ -18,16 +18,19 @@ export function SmoothedStreamingMarkdown({
   markdown,
   running,
   repairProse = false,
+  onVisibleMarkdownChange,
 }: {
   markdown: string;
   running: boolean;
   repairProse?: boolean;
+  onVisibleMarkdownChange?: (visibleMarkdown: string) => void;
 }) {
   const reducedMotion = useReducedMotion() ?? false;
   const [visibleMarkdown, setVisibleMarkdown] = useState(markdown);
   const visibleRef = useRef(markdown);
   const targetRef = useRef(markdown);
   const timerRef = useRef<number | null>(null);
+  const visibleMarkdownMountedRef = useRef(false);
 
   const reveal = useCallback((next: string) => {
     visibleRef.current = next;
@@ -69,7 +72,13 @@ export function SmoothedStreamingMarkdown({
 
   useLayoutEffect(() => {
     targetRef.current = markdown;
-    if (!running || reducedMotion || !markdown.startsWith(visibleRef.current)) {
+    if (
+      !running ||
+      reducedMotion ||
+      document.hidden ||
+      visibleRef.current.length === 0 ||
+      !markdown.startsWith(visibleRef.current)
+    ) {
       stopTimer();
       reveal(markdown);
       return;
@@ -90,6 +99,14 @@ export function SmoothedStreamingMarkdown({
       stopTimer();
     };
   }, [reveal, stopTimer]);
+
+  useLayoutEffect(() => {
+    if (!visibleMarkdownMountedRef.current) {
+      visibleMarkdownMountedRef.current = true;
+      return;
+    }
+    onVisibleMarkdownChange?.(visibleMarkdown);
+  }, [onVisibleMarkdownChange, visibleMarkdown]);
 
   // Raw chunks still re-render the parent. Reuse the parsed markdown element
   // until the presentation string advances so smoothing does not add duplicate
