@@ -3947,7 +3947,7 @@ fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
         return false;
     };
     let preamble = normalized[..preamble_end].trim_end_matches('.').trim_end();
-    if preamble == "here you go" {
+    if ["here you go", "here it is", "here you are"].contains(&preamble) {
         return true;
     }
     let Some(subject) = ["here is ", "here's ", "here are "]
@@ -6938,6 +6938,8 @@ mod tests {
         assert!(looks_like_instruction_response(
             "Here's the cleaned-up version—Hello."
         ));
+        assert!(looks_like_instruction_response("Here it is: Hello."));
+        assert!(looks_like_instruction_response("Here you are: Hello."));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
         ));
