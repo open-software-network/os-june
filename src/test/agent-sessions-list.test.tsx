@@ -117,6 +117,31 @@ describe("AgentSessionsList", () => {
     expect(lists[0]).not.toHaveTextContent("Idle session");
   });
 
+  it("does not expose selection for completed session rows", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        completedSessionIds={{ "idle-session": "2026-06-05T10:00:00Z" }}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    // Active rows are selectable...
+    expect(screen.getByLabelText("Select Running session")).toBeInTheDocument();
+    // ...but a completed row exposes no selection checkbox, so it can never
+    // enter the bulk selection.
+    await user.click(screen.getByRole("button", { name: /Completed/ }));
+    expect(screen.queryByLabelText("Select Idle session")).not.toBeInTheDocument();
+  });
+
   it("marks active and completed sessions from their row menus", async () => {
     const user = userEvent.setup();
     const onToggleCompleted = vi.fn();

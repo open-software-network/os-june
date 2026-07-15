@@ -588,22 +588,27 @@ function AgentSessionListRow({
     <li>
       <div
         className="folder-note-row all-notes-row agent-session-row"
-        data-selected={checked}
+        data-selected={!completed && checked}
         data-has-actions="true"
         data-menu-open={menu !== null}
         data-status={status}
       >
-        <label className="folder-note-checkbox">
-          <input
-            type="checkbox"
-            checked={checked}
-            aria-label={`Select ${title}`}
-            onChange={onToggleSelected}
-          />
-          <span className="folder-note-select-box" aria-hidden>
-            {checked ? <IconCheckmark2Medium size={10} /> : null}
-          </span>
-        </label>
+        {/* Completed sessions are excluded from bulk selection entirely, so they
+         * render no checkbox (a completed row can't be selected, moved, or
+         * bulk-deleted — JUN-203 review). */}
+        {completed ? null : (
+          <label className="folder-note-checkbox">
+            <input
+              type="checkbox"
+              checked={checked}
+              aria-label={`Select ${title}`}
+              onChange={onToggleSelected}
+            />
+            <span className="folder-note-select-box" aria-hidden>
+              {checked ? <IconCheckmark2Medium size={10} /> : null}
+            </span>
+          </label>
+        )}
         <button type="button" className="folder-note-main" onClick={onSelect}>
           {rowMain}
         </button>
