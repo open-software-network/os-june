@@ -1,8 +1,12 @@
 use crate::{
-    audio::turns::{
-        coalesce_turns_for_transcription_avoiding_echo, detect_turns_with_report,
-        normalize_wav_for_transcription, split_wav_for_transcription, write_turn_wav, AudioTurn,
-        DetectionSource, EchoRejectionReport,
+    audio::{
+        live_preview::PREVIEW_CHUNK_MS,
+        turns::{
+            coalesce_turns_for_transcription_avoiding_echo, detect_turns_with_report,
+            normalize_wav_for_transcription, split_wav_for_transcription,
+            split_wav_for_transcription_with_max_duration, write_turn_wav, AudioTurn,
+            DetectionSource, EchoRejectionReport,
+        },
     },
     db::repositories::Repositories,
     domain::types::{
@@ -38,6 +42,11 @@ const DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY: usize = 2;
 const TRANSCRIPT_COVERAGE_WARN_RATIO: f64 = 0.8;
 const TRANSCRIPT_COVERAGE_WARN_MIN_MISSING_MS: i64 = 60_000;
 const TRANSIENT_TRANSCRIPTION_ATTEMPTS: usize = 3;
+/// A short source that VAD could not divide into turns is closest to the live
+/// preview case: use the same bounded windows that already produced useful
+/// text during capture. Keep long recordings on 30-second batching so a retry
+/// cannot fan out into hundreds of requests.
+const SHORT_FULL_SOURCE_RECOVERY_MAX_MS: i64 = 2 * 60 * 1000;
 #[cfg(not(test))]
 const TRANSIENT_TRANSCRIPTION_RETRY_BASE_BACKOFF_MS: u64 = 300;
 #[cfg(test)]
@@ -308,6 +317,7 @@ pub async fn process_saved_audio(
             start_ms: None,
             end_ms: None,
             turn_index: None,
+            max_chunk_ms: None,
         },
     )
     .await
@@ -1200,6 +1210,7 @@ struct TranscribePreparedAudioRequest {
     start_ms: Option<i64>,
     end_ms: Option<i64>,
     turn_index: Option<i64>,
+    max_chunk_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1250,7 +1261,16 @@ async fn transcribe_prepared_audio(
     let request_language = crate::dictation::configured_transcription_language();
     let chunk_dir = request.temp_dir.join("chunks");
     let audio_paths = if request.audio_path.exists() {
-        split_wav_for_transcription(&request.audio_path, &chunk_dir, &request.chunk_stem)?
+        if let Some(max_chunk_ms) = request.max_chunk_ms {
+            split_wav_for_transcription_with_max_duration(
+                &request.audio_path,
+                &chunk_dir,
+                &request.chunk_stem,
+                max_chunk_ms,
+            )?
+        } else {
+            split_wav_for_transcription(&request.audio_path, &chunk_dir, &request.chunk_stem)?
+        }
     } else {
         vec![request.audio_path.clone()]
     };
@@ -1659,13 +1679,14 @@ async fn transcribe_one_turn_job(
     } else {
         turn_operation_id(&job)
     };
+    let max_chunk_ms = short_full_source_chunk_ms(&job);
     let transcription = match transcribe_prepared_audio(
         Arc::clone(&transcriber),
         TranscribePreparedAudioRequest {
             provider: provider.clone(),
             audio_path: job.audio_path,
             temp_dir: job.temp_dir.clone(),
-            chunk_stem: format!("turn-{}", job.turn_index),
+            chunk_stem: format!("{}-turn-{}", job.source, job.turn_index),
             title,
             base_context: context.clone(),
             operation_id,
@@ -1673,6 +1694,7 @@ async fn transcribe_one_turn_job(
             start_ms: Some(job.start_ms),
             end_ms: Some(job.end_ms),
             turn_index: Some(job.turn_index),
+            max_chunk_ms,
         },
     )
     .await
@@ -1728,6 +1750,14 @@ async fn transcribe_one_turn_job(
         duration_ms: elapsed_ms(started),
         replaces_source,
     })
+}
+
+fn short_full_source_chunk_ms(job: &TurnTranscriptionJob) -> Option<i64> {
+    if !job.covers_full_source || job.source_fallback {
+        return None;
+    }
+    let duration_ms = source_wav_duration_ms(&job.audio_path)?;
+    (duration_ms <= SHORT_FULL_SOURCE_RECOVERY_MAX_MS).then_some(PREVIEW_CHUNK_MS)
 }
 
 async fn persist_turn_transcription_event(
@@ -2996,6 +3026,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn short_vad_miss_uses_live_preview_sized_chunks() {
+        // A full-source sentinel means VAD found no reliable turns. The live
+        // preview already transcribed this shape in 8-second windows, so final
+        // processing must not collapse the same short source into one 30-second
+        // provider request (which can return only a stray word).
+        let dir = std::env::temp_dir().join(format!(
+            "os-june-short-full-source-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio_path = dir.join("system.wav");
+        write_loud_wav(&audio_path, 16_000, 16_000 * 31);
+
+        let seen_paths = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = {
+            let seen_paths = Arc::clone(&seen_paths);
+            Arc::new(move |request: TranscriptionRequest| {
+                let seen_paths = Arc::clone(&seen_paths);
+                Box::pin(async move {
+                    let path = request.audio_path.to_string_lossy().to_string();
+                    let index = seen_paths.lock().unwrap().len();
+                    seen_paths.lock().unwrap().push(path);
+                    Ok(TranscriptionProviderResult {
+                        text: format!("system chunk {index}"),
+                        language: Some("en".to_string()),
+                        provider: "test".to_string(),
+                    })
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let job = TurnTranscriptionJob {
+            artifact_id: "system-artifact".to_string(),
+            source: "system".to_string(),
+            audio_path: audio_path.clone(),
+            temp_dir: dir.clone(),
+            source_path: audio_path,
+            recorded_silence: false,
+            covers_full_source: true,
+            source_fallback: false,
+            echo_trimmed: false,
+            start_ms: 0,
+            end_ms: 0,
+            turn_index: 0,
+        };
+
+        assert_eq!(short_full_source_chunk_ms(&job), Some(PREVIEW_CHUNK_MS));
+        let event = transcribe_one_turn_job(
+            job,
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Testing".to_string(),
+            None,
+            transcriber,
+        )
+        .await
+        .expect("short full source should transcribe in preview-sized chunks");
+
+        let TurnTranscriptionResult::Candidate(candidate) = event.result else {
+            panic!("short full source should produce a transcript candidate");
+        };
+        assert_eq!(
+            candidate.input.text,
+            "system chunk 0\nsystem chunk 1\nsystem chunk 2\nsystem chunk 3"
+        );
+        let seen_paths = seen_paths.lock().unwrap();
+        assert_eq!(seen_paths.len(), 4);
+        assert!(seen_paths
+            .iter()
+            .all(|path| path.contains("system-turn-0-chunk-")));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn severely_incomplete_lane_retries_and_replaces_partial_turns() {
         let seen_paths = Arc::new(Mutex::new(Vec::new()));
         let transcriber = {
@@ -3710,6 +3813,7 @@ mod tests {
                 start_ms: Some(0),
                 end_ms: Some(31_000),
                 turn_index: Some(0),
+                max_chunk_ms: None,
             },
         )
         .await
@@ -3767,6 +3871,7 @@ mod tests {
                 start_ms: Some(0),
                 end_ms: Some(31_000),
                 turn_index: Some(0),
+                max_chunk_ms: None,
             },
         )
         .await
@@ -3821,6 +3926,7 @@ mod tests {
                 start_ms: Some(0),
                 end_ms: Some(1_000),
                 turn_index: Some(0),
+                max_chunk_ms: None,
             },
         )
         .await
@@ -3880,6 +3986,7 @@ mod tests {
                 start_ms: Some(0),
                 end_ms: Some(62_000),
                 turn_index: Some(0),
+                max_chunk_ms: None,
             },
         )
         .await
