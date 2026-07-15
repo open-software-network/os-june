@@ -19,12 +19,16 @@ export type AgentChatTextPart = {
   type: "text";
   text: string;
   status?: "running" | "complete";
+  /** Stable semantic segment identity for live Hermes transcript prose. */
+  renderKey?: string;
 };
 
 export type AgentChatReasoningPart = {
   type: "reasoning";
   text: string;
   status: "running" | "complete";
+  /** Stable semantic segment identity for live Hermes reasoning. */
+  renderKey?: string;
 };
 
 export type AgentChatContextPart = {
@@ -379,8 +383,8 @@ export function buildHermesSessionChatTurns(
 // it strips the leading space off the chunk that follows one, so the next
 // word glues on: "it's not" persists as "it'snot", "Mac's camera" as
 // "Mac'scamera". The damage is in the persisted text and survives reloads, so
-// the live-stream reconciliation (whitespaceLossyCopyOf) can't undo it — this
-// repairs it at display time.
+// monotonic live-stream reconciliation deliberately never rewrites it, so this
+// repairs persisted/history prose at display time.
 const CONTRACTION_GLUE = /([A-Za-z])('(?:s|re|ve|ll|m|d|t))(?=[A-Za-z])/gi;
 
 /**
@@ -520,12 +524,47 @@ function appendLiveHermesEvents(
   let currentAssistant: AgentChatTurn | null = null;
   let idlessToolSequence = 0;
   const toolCreatedTurns = new Set<AgentChatTurn>();
+  const completedMessageIds = new Set<string>();
+  const liveAssistantTurnsByMessageId = new Map<string, AgentChatTurn>();
+  const messageIdByTurn = new Map<AgentChatTurn, string>();
+  const persistedTurnForLiveTurn = new Map<AgentChatTurn, AgentChatTurn>();
+  const persistedAssistantTurnsByMessageId = new Map(
+    turns
+      .filter(
+        (turn): turn is AgentChatTurn & { branchMessageId: string } =>
+          turn.role === "assistant" && turn.branchMessageId !== undefined,
+      )
+      .map((turn) => [turn.branchMessageId, turn] as const),
+  );
   const pendingSyntheticTurns = sortAgentChatTurns(
     syntheticTurns.map((turn) => ({
       ...turn,
       parts: [...turn.parts],
     })),
   );
+
+  const identifiedAssistantTurn = (messageId: string, receivedAt: string) => {
+    const existing = liveAssistantTurnsByMessageId.get(messageId);
+    if (existing) return existing;
+
+    const persisted = persistedAssistantTurnsByMessageId.get(messageId);
+    if (persisted) {
+      const persistedIndex = turns.indexOf(persisted);
+      if (persistedIndex >= 0) turns.splice(persistedIndex, 1);
+    }
+
+    const turn = createAssistantTurn(turns, receivedAt, messageId);
+    if (persisted) {
+      // Keep the authoritative source ordering while retaining the live row and
+      // its semantic segmentation as the render identity.
+      turn.createdAt = persisted.createdAt;
+      turn.isScheduledRun = persisted.isScheduledRun;
+      persistedTurnForLiveTurn.set(turn, persisted);
+    }
+    liveAssistantTurnsByMessageId.set(messageId, turn);
+    messageIdByTurn.set(turn, messageId);
+    return turn;
+  };
 
   for (const event of events) {
     while (pendingSyntheticTurns[0] && pendingSyntheticTurns[0].createdAt <= event.receivedAt) {
@@ -571,15 +610,26 @@ function appendLiveHermesEvents(
       }
 
       case "transcript": {
-        if (!event.complete && event.delta === undefined) {
-          currentAssistant = createAssistantTurn(turns, event.receivedAt);
+        const explicitMessageId = event.messageId?.trim() || undefined;
+        const isStart = !event.complete && event.delta === undefined;
+        const messageId: string | undefined =
+          explicitMessageId ??
+          (!isStart && currentAssistant ? messageIdByTurn.get(currentAssistant) : undefined);
+        if (messageId && completedMessageIds.has(messageId)) break;
+
+        if (isStart) {
+          currentAssistant = messageId
+            ? identifiedAssistantTurn(messageId, event.receivedAt)
+            : createAssistantTurn(turns, event.receivedAt);
           currentAssistant.status = "running";
           break;
         }
-        currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+        currentAssistant = messageId
+          ? identifiedAssistantTurn(messageId, event.receivedAt)
+          : (currentAssistant ?? createAssistantTurn(turns, event.receivedAt));
         if (!event.complete) {
           currentAssistant.status = "running";
-          appendAssistantTextPart(currentAssistant.parts, event.delta ?? "", "running");
+          appendAssistantTextPart(currentAssistant.parts, event.delta ?? "", "running", messageId);
           break;
         }
         const text = event.delta ?? "";
@@ -594,29 +644,24 @@ function appendLiveHermesEvents(
             (event.failed ? contextOverflowNotice(displayText) : undefined))
           : undefined;
         if (notice) {
-          // The complete text is authoritative for the turn (see
-          // completeAssistantTextPart); when it's a billing failure, any
-          // partially streamed text is superseded along with it.
-          currentAssistant.parts = currentAssistant.parts.filter((part) => part.type !== "text");
-          currentAssistant.parts.push(notice);
+          if (
+            !currentAssistant.parts.some(
+              (part) => part.type === "notice" && part.kind === notice.kind,
+            )
+          ) {
+            currentAssistant.parts.push(notice);
+          }
         } else if (text) {
-          if (imageParts.length || videoParts.length) {
-            // The streamed deltas still hold the raw `MEDIA:` line, and
-            // completeAssistantTextPart would keep them as a prefix of the
-            // stripped complete text. Replace the text wholesale with the
-            // stripped prose (or drop it) so the reference never stays visible.
-            removeAssistantTextParts(currentAssistant.parts);
-            if (displayText) {
-              currentAssistant.parts.push({ type: "text", text: displayText, status: "complete" });
-            }
-          } else if (displayText) {
-            completeAssistantTextPart(currentAssistant.parts, displayText);
+          if (displayText) {
+            completeAssistantTextPart(currentAssistant.parts, displayText, messageId);
           }
           appendImageParts(currentAssistant.parts, imageParts);
           appendVideoParts(currentAssistant.parts, videoParts);
         }
         currentAssistant.status = "complete";
         completeRunningParts(currentAssistant.parts);
+        removeEmptyMediaTransportTextParts(currentAssistant.parts);
+        if (messageId) completedMessageIds.add(messageId);
         currentAssistant = null;
         break;
       }
@@ -624,14 +669,15 @@ function appendLiveHermesEvents(
       case "reasoning": {
         currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
         currentAssistant.status = "running";
+        const messageId = messageIdByTurn.get(currentAssistant);
         if (event.full) {
           // A `*.available` frame carries the FULL reasoning text: replace the
           // thought instead of appending, so a replay after streamed deltas
           // (or a whole-block reasoning model with no deltas at all) renders
           // exactly one copy.
-          replaceReasoningPart(currentAssistant.parts, event.delta);
+          replaceReasoningPart(currentAssistant.parts, event.delta, messageId);
         } else {
-          appendReasoningPart(currentAssistant.parts, event.delta);
+          appendReasoningPart(currentAssistant.parts, event.delta, messageId);
         }
         break;
       }
@@ -879,10 +925,15 @@ function appendLiveHermesEvents(
     }
   }
 
+  for (const [liveTurn, persistedTurn] of persistedTurnForLiveTurn) {
+    const messageId = messageIdByTurn.get(liveTurn);
+    if (messageId) reconcilePersistedAssistantTurn(liveTurn, persistedTurn, messageId);
+  }
+
   turns.push(...pendingSyntheticTurns);
 }
 
-function createAssistantTurn(turns: AgentChatTurn[], createdAt: string) {
+function createAssistantTurn(turns: AgentChatTurn[], createdAt: string, stableRenderId?: string) {
   // A live assistant turn's `createdAt` is the client's event receive time,
   // while the user/persisted turns it follows carry server timestamps. Those
   // clocks differ, so a raw sort by `createdAt` can float the assistant above
@@ -901,7 +952,7 @@ function createAssistantTurn(turns: AgentChatTurn[], createdAt: string) {
   // within the same millisecond, while staying deterministic across rebuilds
   // of the same event list (these ids are used as React keys).
   const turn: AgentChatTurn = {
-    id: `assistant:${orderedCreatedAt}:${turns.length}`,
+    id: stableRenderId ?? `assistant:${orderedCreatedAt}:${turns.length}`,
     role: "assistant",
     createdAt: orderedCreatedAt,
     status: "running",
@@ -926,6 +977,7 @@ function appendAssistantTextPart(
   parts: AgentChatPart[],
   delta: string,
   status: "running" | "complete",
+  renderIdentity?: string,
 ) {
   if (!delta) return;
   const last = parts.at(-1);
@@ -934,59 +986,101 @@ function appendAssistantTextPart(
     last.status = status;
     return;
   }
-  parts.push({ type: "text", text: delta, status });
+  parts.push({
+    type: "text",
+    text: delta,
+    status,
+    ...(renderIdentity ? { renderKey: semanticPartRenderKey(parts, renderIdentity, "text") } : {}),
+  });
 }
 
-// `message.complete` carries the authoritative full text for the turn, so we
-// reconcile it against the concatenation of every streamed text part rather
-// than only the last one (a turn can interleave text -> tool -> text).
-function completeAssistantTextPart(parts: AgentChatPart[], text: string) {
-  if (!text.trim()) return;
+// Reconcile the final snapshot against every streamed text segment. A verified
+// extension may append to the last segment; every other snapshot is retained
+// only as transport evidence and cannot rewrite prose already painted.
+function completeAssistantTextPart(parts: AgentChatPart[], text: string, renderIdentity?: string) {
   const textParts = parts.filter((part): part is AgentChatTextPart => part.type === "text");
   if (textParts.length === 0) {
-    parts.push({ type: "text", text, status: "complete" });
+    if (!text.trim()) return;
+    appendAssistantTextPart(parts, text, "complete", renderIdentity);
     return;
   }
   const last = textParts[textParts.length - 1] as AgentChatTextPart;
-  const earlier = textParts.slice(0, -1);
-  const earlierText = earlier.map((part) => part.text).join("");
-  const streamed = earlierText + last.text;
-  // The gateway builds the authoritative complete text by concatenating its
-  // internal chunks, which can trim each chunk (dropping a boundary space the
-  // live stream delivered correctly — "explore it." -> "exploreit.") or lag
-  // behind the stream. The streamed deltas are appended verbatim, so when
-  // `text` equals the stream with whitespace *removed* — the signature of
-  // joining trimmed chunks — or is just a shorter prefix of it, keep the
-  // verbatim stream instead of overwriting it with the lossy/truncated
-  // payload. Whitespace that was *changed* (a streamed newline arriving as a
-  // space, say) is a genuine correction and falls through to reconciliation.
-  if (whitespaceLossyCopyOf(streamed, text) || streamed.startsWith(text)) {
-    for (const part of textParts) part.status = "complete";
-    return;
-  }
-  if (!earlier.length) {
-    last.text = text;
-  } else if (text.startsWith(earlierText)) {
-    last.text = text.slice(earlierText.length);
-  } else {
-    // The streamed parts cannot be reconciled with the complete text; replace
-    // the text parts wholesale, keeping tool parts in position.
-    for (const part of earlier) {
-      const index = parts.indexOf(part);
-      if (index >= 0) parts.splice(index, 1);
-    }
-    last.text = text;
-  }
-  last.status = "complete";
-  for (const part of earlier) {
-    part.status = "complete";
+  const streamed = textParts.map((part) => part.text).join("");
+  if (text.startsWith(streamed)) last.text += text.slice(streamed.length);
+  for (const part of textParts) part.status = "complete";
+}
+
+function removeEmptyMediaTransportTextParts(parts: AgentChatPart[]) {
+  if (!parts.some((part) => part.type === "image" || part.type === "video")) return;
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part?.type === "text" && !part.text.trim()) parts.splice(index, 1);
   }
 }
 
-function removeAssistantTextParts(parts: AgentChatPart[]) {
-  for (let index = parts.length - 1; index >= 0; index -= 1) {
-    if (parts[index]?.type === "text") parts.splice(index, 1);
+function semanticPartRenderKey(
+  parts: AgentChatPart[],
+  renderIdentity: string,
+  type: "text" | "reasoning",
+) {
+  const ordinal = parts.filter((part) => part.type === type).length;
+  return `${renderIdentity}:${type}:${ordinal}`;
+}
+
+function reconcilePersistedAssistantTurn(
+  liveTurn: AgentChatTurn,
+  persistedTurn: AgentChatTurn,
+  messageId: string,
+) {
+  const persistedText = persistedTurn.parts
+    .filter((part): part is AgentChatTextPart => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+  if (persistedText) completeAssistantTextPart(liveTurn.parts, persistedText, messageId);
+
+  const persistedReasoning = persistedTurn.parts
+    .filter((part): part is AgentChatReasoningPart => part.type === "reasoning")
+    .map((part) => part.text)
+    .join("\n\n");
+  const liveReasoningParts = liveTurn.parts.filter(
+    (part): part is AgentChatReasoningPart => part.type === "reasoning",
+  );
+  if (persistedReasoning && liveReasoningParts.length === 0) {
+    liveTurn.parts.unshift({
+      type: "reasoning",
+      text: persistedReasoning,
+      status: "complete",
+      renderKey: `${messageId}:reasoning:0`,
+    });
+  } else if (persistedReasoning && liveReasoningParts.length > 0) {
+    const liveReasoning = liveReasoningParts.map((part) => part.text).join("\n\n");
+    if (persistedReasoning.startsWith(liveReasoning)) {
+      const last = liveReasoningParts[liveReasoningParts.length - 1] as AgentChatReasoningPart;
+      last.text += persistedReasoning.slice(liveReasoning.length);
+    }
   }
+
+  for (const part of persistedTurn.parts) {
+    if (part.type === "tool") {
+      upsertToolPart(liveTurn.parts, part);
+    } else if (part.type === "image") {
+      appendImageParts(liveTurn.parts, [{ ...part }]);
+    } else if (part.type === "video") {
+      appendVideoParts(liveTurn.parts, [{ ...part }]);
+    } else if (
+      part.type === "notice" &&
+      !liveTurn.parts.some(
+        (candidate) => candidate.type === "notice" && candidate.kind === part.kind,
+      )
+    ) {
+      liveTurn.parts.push({ ...part });
+    }
+  }
+
+  liveTurn.branchMessageId = messageId;
+  liveTurn.status = "complete";
+  completeRunningParts(liveTurn.parts);
+  removeEmptyMediaTransportTextParts(liveTurn.parts);
 }
 
 function appendImageParts(parts: AgentChatPart[], images: AgentChatImagePart[]) {
@@ -1056,24 +1150,7 @@ function deduplicateGeneratedMediaWithinAgentRuns(turns: AgentChatTurn[]) {
   }
 }
 
-// True when `complete` can be derived from `streamed` purely by deleting
-// whitespace characters. Deliberately rejects whitespace substitutions:
-// deletions are the only damage joining trimmed chunks can do, so anything
-// else is a real edit the caller should honor.
-function whitespaceLossyCopyOf(streamed: string, complete: string) {
-  let from = 0;
-  for (let to = 0; to < complete.length; to += 1) {
-    while (from < streamed.length && streamed[from] !== complete[to]) {
-      if (!/\s/.test(streamed[from] as string)) return false;
-      from += 1;
-    }
-    if (from >= streamed.length) return false;
-    from += 1;
-  }
-  return !streamed.slice(from).trim();
-}
-
-function appendReasoningPart(parts: AgentChatPart[], delta: string) {
+function appendReasoningPart(parts: AgentChatPart[], delta: string, renderIdentity?: string) {
   if (!delta || delta === "thinking.delta" || delta === "reasoning.delta") return;
   const last = parts.at(-1);
   if (last?.type === "reasoning") {
@@ -1081,12 +1158,19 @@ function appendReasoningPart(parts: AgentChatPart[], delta: string) {
     last.status = "running";
     return;
   }
-  parts.push({ type: "reasoning", text: delta, status: "running" });
+  parts.push({
+    type: "reasoning",
+    text: delta,
+    status: "running",
+    ...(renderIdentity
+      ? { renderKey: semanticPartRenderKey(parts, renderIdentity, "reasoning") }
+      : {}),
+  });
 }
 
 /** Replaces the last reasoning part's text with the authoritative full text
  * (a `reasoning.available` frame), creating the part when none streamed. */
-function replaceReasoningPart(parts: AgentChatPart[], text: string) {
+function replaceReasoningPart(parts: AgentChatPart[], text: string, renderIdentity?: string) {
   if (!text) return;
   const last = parts.at(-1);
   if (last?.type === "reasoning") {
@@ -1094,7 +1178,14 @@ function replaceReasoningPart(parts: AgentChatPart[], text: string) {
     last.status = "running";
     return;
   }
-  parts.push({ type: "reasoning", text, status: "running" });
+  parts.push({
+    type: "reasoning",
+    text,
+    status: "running",
+    ...(renderIdentity
+      ? { renderKey: semanticPartRenderKey(parts, renderIdentity, "reasoning") }
+      : {}),
+  });
 }
 
 function completeRunningParts(parts: AgentChatPart[]) {

@@ -12908,7 +12908,11 @@ function AgentChatTurnRow({
   // to the nearest saved fork point, while other synthetic rows still explain
   // that they need to be saved first.
   const branchSessionId = branchSourceSessionIdForTurn(turn);
-  const branchMessageId = turn.branchMessageId ?? turn.id;
+  const branchMessageId =
+    turn.branchMessageId ??
+    (turn.role === "assistant" && !isLiveAssistantTurnId(turn.id)
+      ? `assistant:${turn.id}`
+      : turn.id);
   const branchSubmitting = branchingMessageId === branchMessageId;
   const branchAction = onBranch ? (
     <BranchFromHereAction
@@ -13042,14 +13046,14 @@ function AgentChatTurnRow({
               // June's soul emits a literal token to request the Agent CLI
               // access setting; the token renders as an approval card, never
               // as text.
-              <div key={`${turn.id}:text:${index}`}>
+              <div key={part.renderKey ?? `${turn.id}:text:${index}`}>
                 {stripAgentCliAccessRequest(part.text) ? (
                   <MarkdownContent markdown={stripAgentCliAccessRequest(part.text)} repairProse />
                 ) : null}
                 <AgentCliAccessCard cliAccess={cliAccess} />
               </div>
             ) : (
-              <div key={`${turn.id}:text:${index}`}>
+              <div key={part.renderKey ?? `${turn.id}:text:${index}`}>
                 {/* A part can retain raw MEDIA deltas while streaming or when
                     a terminal/error event arrives without message.complete.
                     Those transport references never belong in assistant prose. */}

@@ -144,7 +144,7 @@ function userTurnText(turn: AgentChatTurn) {
 function assistantPartNode(part: AgentChatPart, index: number) {
   switch (part.type) {
     case "text":
-      return <MarkdownContent key={index} markdown={part.text} repairProse />;
+      return <MarkdownContent key={part.renderKey ?? index} markdown={part.text} repairProse />;
     case "notice":
       return <MarkdownContent key={index} markdown={part.text} />;
     case "tool":

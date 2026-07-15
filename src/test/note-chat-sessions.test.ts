@@ -413,6 +413,61 @@ describe("note chat session map", () => {
     window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, settingsChanged);
   });
 
+  it("keeps a keyed assistant markdown node mounted when earlier activity appears", () => {
+    const textPart = {
+      type: "text" as const,
+      text: "Stable answer",
+      status: "running" as const,
+      renderKey: "m1:text:0",
+    };
+    const turn = {
+      id: "m1",
+      role: "assistant" as const,
+      createdAt: "2026-06-04T10:00:00.000Z",
+      status: "running" as const,
+      parts: [textPart],
+    };
+    const panelProps = {
+      note: { id: "note-1", title: "Launch planning" },
+      onClose: vi.fn(),
+      onOpenInAgent: vi.fn(),
+    };
+    const view = render(
+      createElement(NoteChatPanel, {
+        ...panelProps,
+        chat: noteChat({ turns: [turn] }),
+      }),
+    );
+    const firstNode = view.container.querySelector(".agent-markdown");
+    expect(firstNode).not.toBeNull();
+
+    view.rerender(
+      createElement(NoteChatPanel, {
+        ...panelProps,
+        chat: noteChat({
+          turns: [
+            {
+              ...turn,
+              status: "complete",
+              parts: [
+                {
+                  type: "tool",
+                  id: "tool-1",
+                  name: "Search",
+                  text: "",
+                  status: "complete",
+                },
+                { ...textPart, status: "complete" },
+              ],
+            },
+          ],
+        }),
+      }),
+    );
+
+    expect(view.container.querySelector(".agent-markdown")).toBe(firstNode);
+  });
+
   it("shows the Auto billing note in the picker while a Venice key is saved", async () => {
     const user = userEvent.setup();
     mocks.providerModelSettings.mockResolvedValue({

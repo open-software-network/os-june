@@ -6772,12 +6772,12 @@ describe("AgentWorkspace", () => {
         handler({
           type: "message.start",
           session_id: "runtime-session-1",
-          payload: {},
+          payload: { message_id: "m1" },
         });
         handler({
           type: "message.delta",
           session_id: "runtime-session-1",
-          payload: { delta: "Same live answer" },
+          payload: { message_id: "m1", delta: "Same live answer" },
         });
       }
     });
@@ -6856,12 +6856,12 @@ describe("AgentWorkspace", () => {
         handler({
           type: "message.start",
           session_id: "runtime-session-1",
-          payload: {},
+          payload: { message_id: "m1" },
         });
         handler({
           type: "message.delta",
           session_id: "runtime-session-1",
-          payload: { delta: "Same live answer" },
+          payload: { message_id: "m1", delta: "Same live answer" },
         });
       }
     });
@@ -7472,6 +7472,72 @@ describe("AgentWorkspace", () => {
 
     expect(screen.getByText("Here is the summary.")).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText("Thinking…")).toBeNull());
+  });
+
+  it("keeps the same markdown node when persisted reasoning hydrates an identified live answer", async () => {
+    let persistedMessages: Array<{
+      id: string;
+      role: "assistant";
+      content: string;
+      reasoning: string;
+      timestamp: string;
+    }> = [];
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "inspect the renderer" }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-2",
+          text: "inspect the renderer",
+        }),
+      );
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "message.start",
+            session_id: "runtime-session-2",
+            payload: { message_id: "m1" },
+          });
+          handler({
+            type: "message.delta",
+            session_id: "runtime-session-2",
+            payload: { message_id: "m1", delta: "Stable answer" },
+          });
+        }
+      });
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByText("Stable answer")).toBeInTheDocument(),
+      );
+      const firstMarkdown = screen.getByText("Stable answer").closest(".agent-markdown");
+      expect(firstMarkdown).not.toBeNull();
+
+      persistedMessages = [
+        {
+          id: "m1",
+          role: "assistant",
+          content: "Stable answer plus",
+          reasoning: "Checked the persisted result.",
+          timestamp: "2026-06-04T10:00:01.000Z",
+        },
+      ];
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByText("Stable answer plus")).toBeInTheDocument(),
+      );
+
+      expect(screen.getByText("Stable answer plus").closest(".agent-markdown")).toBe(firstMarkdown);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps an opened thinking disclosure open while reasoning streams", async () => {

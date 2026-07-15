@@ -1199,6 +1199,220 @@ describe("Agent chat runtime", () => {
     expect(text).toBe("Yes.\n\nYes.");
   });
 
+  it("uses the Hermes message id as live render identity without making it branchable", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [transcriptEvent({ messageId: "m1" }), transcriptEvent({ messageId: "m1", delta: "Hello" })],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ id: "m1", status: "running" });
+    expect(turns[0]?.branchMessageId).toBeUndefined();
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Hello",
+        status: "running",
+        renderKey: "m1:text:0",
+      },
+    ]);
+  });
+
+  it("keeps replayed starts, repeated completes, and late deltas in one completed message", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({ messageId: "m1" }),
+        transcriptEvent({ messageId: "m1", delta: "Hello" }),
+        transcriptEvent({ messageId: "m1" }),
+        transcriptEvent({ messageId: "m1", complete: true, delta: "Hello" }),
+        transcriptEvent({ messageId: "m1", complete: true, delta: "Hello" }),
+        transcriptEvent({ messageId: "m1", delta: " late" }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ id: "m1", status: "complete" });
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Hello",
+        status: "complete",
+        renderKey: "m1:text:0",
+      },
+    ]);
+  });
+
+  it("keeps the active message identity when continuation frames omit it", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({ messageId: "m1" }),
+        transcriptEvent({ delta: "Hello" }),
+        transcriptEvent({ complete: true, delta: "Hello" }),
+        transcriptEvent({ messageId: "m1", delta: " late" }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ id: "m1", status: "complete" });
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Hello",
+        status: "complete",
+        renderKey: "m1:text:0",
+      },
+    ]);
+  });
+
+  it("appends only a verified final snapshot suffix", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({ messageId: "m1", delta: "Hello" }),
+        transcriptEvent({ messageId: "m1", complete: true, delta: "Hello world" }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Hello world",
+        status: "complete",
+        renderKey: "m1:text:0",
+      },
+    ]);
+  });
+
+  it("keeps streamed prose when completion contains no answer-bearing text", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({ messageId: "m1", delta: "Visible answer" }),
+        transcriptEvent({ messageId: "m1", complete: true, delta: "" }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Visible answer",
+        status: "complete",
+        renderKey: "m1:text:0",
+      },
+    ]);
+  });
+
+  it("assigns deterministic render identity to reasoning segments in an identified message", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({ messageId: "m1" }),
+        reasoningEvent({ delta: "Checking", receivedAt: "2026-06-04T10:00:00.100Z" }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "reasoning",
+        text: "Checking",
+        status: "running",
+        renderKey: "m1:reasoning:0",
+      },
+    ]);
+  });
+
+  it("reconciles persisted text into the canonical live segmentation", () => {
+    const turns = buildHermesSessionChatTurns(
+      [
+        {
+          id: "m1",
+          role: "assistant",
+          content: "First second plus",
+          timestamp: "2026-06-04T10:00:02.000Z",
+        },
+      ],
+      [
+        transcriptEvent({ messageId: "m1", receivedAt: "2026-06-04T10:00:00.000Z" }),
+        transcriptEvent({
+          messageId: "m1",
+          delta: "First",
+          receivedAt: "2026-06-04T10:00:00.100Z",
+        }),
+        toolEvent({
+          key: "tool-1",
+          phase: "complete",
+          name: "search",
+          sanitizedPayload: { tool_id: "tool-1", name: "search" },
+          receivedAt: "2026-06-04T10:00:00.200Z",
+        }),
+        transcriptEvent({
+          messageId: "m1",
+          delta: " second",
+          receivedAt: "2026-06-04T10:00:00.300Z",
+        }),
+        transcriptEvent({
+          messageId: "m1",
+          complete: true,
+          delta: "First second",
+          receivedAt: "2026-06-04T10:00:01.000Z",
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ id: "m1", branchMessageId: "m1", status: "complete" });
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "First",
+        status: "complete",
+        renderKey: "m1:text:0",
+      },
+      expect.objectContaining({ type: "tool", id: "tool-1", status: "complete" }),
+      {
+        type: "text",
+        text: " second plus",
+        status: "complete",
+        renderKey: "m1:text:1",
+      },
+    ]);
+  });
+
+  it("does not attach identified transcript prose to a tool-created turn", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        toolEvent({
+          key: "tool-1",
+          phase: "start",
+          name: "search",
+          sanitizedPayload: { tool_id: "tool-1", name: "search" },
+          receivedAt: "2026-06-04T10:00:00.000Z",
+        }),
+        transcriptEvent({
+          messageId: "m1",
+          delta: "Answer",
+          receivedAt: "2026-06-04T10:00:00.100Z",
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(2);
+    expect(turns[0]?.parts.every((part) => part.type !== "text")).toBe(true);
+    expect(turns[1]).toMatchObject({ id: "m1" });
+    expect(turns[1]?.branchMessageId).toBeUndefined();
+    expect(turns[1]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Answer",
+        status: "running",
+        renderKey: "m1:text:0",
+      },
+    ]);
+  });
+
   it("does not duplicate the opening text on interleaved text/tool turns", () => {
     const turns = buildAgentChatTurns(
       [],
@@ -1245,7 +1459,7 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
-  it("replaces streamed text wholesale when the complete text disagrees", () => {
+  it("keeps streamed text in place when the complete text disagrees", () => {
     const turns = buildAgentChatTurns(
       [],
       [],
@@ -1274,8 +1488,13 @@ describe("Agent chat runtime", () => {
     );
 
     expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
+      "Partial garble",
       "tool",
-      "The authoritative answer.",
+      "more",
+    ]);
+    expect(turns[0]?.parts.filter((part) => part.type === "text")).toEqual([
+      { type: "text", text: "Partial garble", status: "complete" },
+      { type: "text", text: "more", status: "complete" },
     ]);
   });
 
@@ -1301,7 +1520,7 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
-  it("honors a complete payload that corrects streamed whitespace", () => {
+  it("keeps streamed whitespace when the complete payload changes it", () => {
     const turns = buildAgentChatTurns(
       [],
       [],
@@ -1319,7 +1538,7 @@ describe("Agent chat runtime", () => {
     );
 
     expect(turns[0]?.parts.map((part) => (part.type === "text" ? part.text : part.type))).toEqual([
-      "return value",
+      "return\nvalue",
     ]);
   });
 
@@ -2554,7 +2773,7 @@ describe("Agent chat runtime", () => {
     );
 
     expect(turns[0]?.parts).toEqual([
-      { type: "text", text: "Here you go:", status: "complete" },
+      { type: "text", text: "Here you go:\n\n", status: "complete" },
       {
         type: "image",
         status: "complete",
@@ -2665,7 +2884,7 @@ describe("Agent chat runtime", () => {
     expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
   });
 
-  it("drops partially streamed text when the turn completes as a credits failure", () => {
+  it("keeps partially streamed prose when the turn completes as a credits failure", () => {
     const turns = buildHermesSessionChatTurns(
       [],
       [
@@ -2682,7 +2901,10 @@ describe("Agent chat runtime", () => {
       ],
     );
 
-    expect(turns[0]?.parts).toEqual([{ type: "notice", kind: "credits", text: CREDITS_ERROR }]);
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: "Let me check", status: "complete" },
+      { type: "notice", kind: "credits", text: CREDITS_ERROR },
+    ]);
   });
 
   it("folds an insufficient-credits message.complete into a credits notice", () => {
