@@ -245,13 +245,14 @@ export function ConnectorsSection() {
     });
     // A fresh grant only takes effect once the rendered MCP config picks it
     // up: registering (or dropping) a server name is a config-render change,
-    // so it needs a runtime apply for both providers. This is different from
-    // a Linear teams save (see saveTeams below), which changes what an
-    // already-registered server may read rather than which servers are
-    // registered, and is enforced per-request in Rust — no restart needed.
-    // Whether the june_linear server actually renders (it needs at least one
-    // selected team) is the Rust side's call; the frontend applies runtime on
-    // every connect regardless.
+    // so it needs a runtime apply for both providers. Linear teams saves
+    // follow the same rule, split by whether registration changes (see
+    // saveTeams below): the FIRST save registers june_linear and applies the
+    // runtime; later edits only change what the already-registered server
+    // may read, which Rust enforces per request - no restart. Whether
+    // june_linear actually renders here (it needs at least one selected
+    // team) is the Rust side's call; the frontend applies runtime on every
+    // connect regardless.
     await connectorsApplyRuntime();
     await refresh();
     return account;
