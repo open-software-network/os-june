@@ -670,28 +670,9 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
-  it("does not claim the HUD for an agent handoff (the agent HUD announces it)", async () => {
+  it("does not listen for agent status sounds", async () => {
     await loadHud();
-
-    await emit(AGENT_SESSION_STATUS_EVENT, {
-      status: "received",
-      summary: "June is starting.",
-    });
-
-    expect(hudElement().dataset.state).toBe("idle");
-    expect(hudShowCalls()).toBe(0);
-  });
-
-  it("does not claim the HUD for ongoing agent progress", async () => {
-    await loadHud();
-
-    await emit(AGENT_SESSION_STATUS_EVENT, {
-      status: "running",
-      summary: "Using Filesystem.",
-    });
-
-    expect(hudElement().dataset.state).toBe("idle");
-    expect(hudShowCalls()).toBe(0);
+    expect(mocks.listeners.has(AGENT_SESSION_STATUS_EVENT)).toBe(false);
   });
 });
 

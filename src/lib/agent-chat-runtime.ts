@@ -262,13 +262,16 @@ export function buildAgentChatTurns(
 export function buildHermesSessionChatTurns(
   messages: HermesSessionMessage[],
   liveEvents: JuneHermesEvent[] = [],
+  syntheticTurns: AgentChatTurn[] = [],
 ): AgentChatTurn[] {
   const turns: AgentChatTurn[] = [];
   const toolResults = new Map<string, HermesSessionMessage>();
+  const persistedToolResultIds = new Set<string>();
 
   for (const message of messages) {
     if (message.role === "tool") {
       const id = message.tool_call_id ?? message.id;
+      persistedToolResultIds.add(id);
       toolResults.set(id, message);
       const turn =
         lastAssistantTurn(turns) ?? createAssistantTurn(turns, messageTimestamp(message));
@@ -282,12 +285,8 @@ export function buildHermesSessionChatTurns(
       // Media tool results render inline so they show in-thread instead of
       // being lost to the collapsed tool row. Image base64 and MEDIA refs are
       // stripped from the tool text above.
-      for (const imagePart of imagePartsFromHermesContent(message.content)) {
-        turn.parts.push(imagePart);
-      }
-      for (const videoPart of videoPartsFromHermesContent(message.content)) {
-        turn.parts.push(videoPart);
-      }
+      appendImageParts(turn.parts, imagePartsFromHermesContent(message.content));
+      appendVideoParts(turn.parts, videoPartsFromHermesContent(message.content));
       turn.status = "complete";
       continue;
     }
@@ -367,11 +366,11 @@ export function buildHermesSessionChatTurns(
     }
   }
 
-  appendLiveHermesEvents(turns, liveEvents);
-  return sortAgentChatTurns(
-    turns.filter((turn) =>
-      turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
-    ),
+  appendLiveHermesEvents(turns, liveEvents, syntheticTurns, persistedToolResultIds);
+  const sortedTurns = sortAgentChatTurns(turns);
+  deduplicateGeneratedMediaWithinAgentRuns(sortedTurns);
+  return sortedTurns.filter((turn) =>
+    turn.parts.some((part) => part.type === "tool" || partText(part).trim()),
   );
 }
 
@@ -512,11 +511,45 @@ function assistantTurnForTimestamp(turns: AgentChatTurn[], createdAt: string | u
   return undefined;
 }
 
-function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[]) {
+function appendLiveHermesEvents(
+  turns: AgentChatTurn[],
+  events: JuneHermesEvent[],
+  syntheticTurns: AgentChatTurn[] = [],
+  persistedToolResultIds: ReadonlySet<string> = new Set(),
+) {
   let currentAssistant: AgentChatTurn | null = null;
+  let idlessToolSequence = 0;
   const toolCreatedTurns = new Set<AgentChatTurn>();
+  const pendingSyntheticTurns = sortAgentChatTurns(
+    syntheticTurns.map((turn) => ({
+      ...turn,
+      parts: [...turn.parts],
+    })),
+  );
 
   for (const event of events) {
+    while (pendingSyntheticTurns[0] && pendingSyntheticTurns[0].createdAt <= event.receivedAt) {
+      const syntheticTurn = pendingSyntheticTurns.shift();
+      if (!syntheticTurn) break;
+      turns.push(syntheticTurn);
+      if (syntheticTurn.role !== "assistant") currentAssistant = null;
+    }
+
+    // A gateway suspension can drop tool.complete while leaving tool.start in
+    // the buffered live tail. Once history contains that same stable call id,
+    // the persisted row is authoritative; replaying the stale start would add
+    // a second running generation canvas beside a newer run.
+    const hasExplicitToolIdentity =
+      event.kind === "tool" && Boolean(event.toolCallId || event.key !== event.name);
+    if (event.kind === "tool") {
+      if (
+        (event.toolCallId && persistedToolResultIds.has(event.toolCallId)) ||
+        persistedToolResultIds.has(event.key)
+      ) {
+        continue;
+      }
+    }
+
     switch (event.kind) {
       case "steering": {
         // A user instruction steered into the running turn (feature 06). It is
@@ -661,12 +694,28 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
           }
           break;
         }
+        const status: AgentChatToolPart["status"] =
+          event.phase === "complete" ? "complete" : event.phase === "failed" ? "failed" : "running";
+        const name = toolActivityLabel(event.name ?? "tool", event.sanitizedPayload);
+        const media = generatedMediaToolKind(event.name, event.sanitizedPayload);
+        // The pinned gateway's terminal media callback always carries
+        // tool_id; only tool.generating is id-less. A terminal frame without
+        // identity is ambiguous after reconnect and must not complete another
+        // same-name invocation or attach the wrong image/video to it. Hydrated
+        // history remains the fallback source of truth for older gateways.
+        if (!hasExplicitToolIdentity && media && status !== "running") break;
+        if (!hasExplicitToolIdentity && event.phase !== "start") {
+          currentAssistant ??= latestAssistantTurnWithRunningTool(turns, name, media);
+          // The pinned runtime gives starts a stable tool_id but may omit it
+          // from callbacks. An id-less media callback without a live row is an
+          // orphan from before a reconnect, not enough identity to create a
+          // second placeholder beside persisted history.
+          if (!currentAssistant && media) break;
+        }
         if (!currentAssistant) {
           currentAssistant = createAssistantTurn(turns, event.receivedAt);
           toolCreatedTurns.add(currentAssistant);
         }
-        const status: AgentChatToolPart["status"] =
-          event.phase === "complete" ? "complete" : event.phase === "failed" ? "failed" : "running";
         if (status === "running") {
           currentAssistant.status = "running";
         } else if (toolCreatedTurns.has(currentAssistant)) {
@@ -674,13 +723,25 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
           // stream once its tool reaches a terminal state.
           currentAssistant.status = "complete";
         }
-        upsertToolPart(currentAssistant.parts, {
-          id: event.key,
-          name: toolActivityLabel(event.name ?? "tool", event.sanitizedPayload),
-          text: event.text,
-          status,
-          media: generatedMediaToolKind(event.name, event.sanitizedPayload),
-        });
+        if (hasExplicitToolIdentity && event.phase === "start" && media) {
+          promoteIdlessMediaToolPart(currentAssistant.parts, event.key, name, media);
+        }
+        upsertToolPart(
+          currentAssistant.parts,
+          {
+            id: hasExplicitToolIdentity
+              ? event.key
+              : `idless:${event.receivedAt}:${event.key}:${idlessToolSequence++}`,
+            name,
+            text: event.text,
+            status,
+            media,
+          },
+          // Runtime progress callbacks can omit the stable id and carry only
+          // the tool name. Fold those into the most recent matching row;
+          // explicit ids remain distinct for genuinely concurrent calls.
+          !hasExplicitToolIdentity && status === "running" && event.phase !== "start",
+        );
         if (status === "complete") {
           appendImageParts(currentAssistant.parts, imagePartsFromHermesContent(event.content));
           appendVideoParts(currentAssistant.parts, videoPartsFromHermesContent(event.content));
@@ -817,6 +878,8 @@ function appendLiveHermesEvents(turns: AgentChatTurn[], events: JuneHermesEvent[
         break;
     }
   }
+
+  turns.push(...pendingSyntheticTurns);
 }
 
 function createAssistantTurn(turns: AgentChatTurn[], createdAt: string) {
@@ -928,23 +991,68 @@ function removeAssistantTextParts(parts: AgentChatPart[]) {
 
 function appendImageParts(parts: AgentChatPart[], images: AgentChatImagePart[]) {
   for (const image of images) {
-    const exists = parts.some(
-      (part) =>
-        part.type === "image" &&
-        ((image.path && part.path === image.path) ||
-          (image.dataUrl && part.dataUrl === image.dataUrl) ||
-          (image.name && part.name === image.name)),
-    );
+    const exists = parts.some((part) => part.type === "image" && sameImagePart(part, image));
     if (!exists) parts.push(image);
   }
 }
 
 function appendVideoParts(parts: AgentChatPart[], videos: AgentChatVideoPart[]) {
   for (const video of videos) {
-    const exists = parts.some(
-      (part) => part.type === "video" && video.path && part.path === video.path,
-    );
+    const exists = parts.some((part) => part.type === "video" && sameVideoPart(part, video));
     if (!exists) parts.push(video);
+  }
+}
+
+function sameImagePart(left: AgentChatImagePart, right: AgentChatImagePart) {
+  if (left.dataUrl && right.dataUrl) return left.dataUrl === right.dataUrl;
+  if (left.path && right.path && left.path === right.path) return true;
+  const leftName = left.name ?? (left.path ? filenameFromPath(left.path) : undefined);
+  const rightName = right.name ?? (right.path ? filenameFromPath(right.path) : undefined);
+  const hasBarePath =
+    (left.path && left.path === leftName) || (right.path && right.path === rightName);
+  return Boolean(
+    leftName &&
+      rightName &&
+      leftName === rightName &&
+      // Equal display names bridge an inline MCP image to its trailing MEDIA
+      // reference, but never collapse distinct inline payloads or absolute paths.
+      ((!left.dataUrl && !right.dataUrl && hasBarePath) ||
+        Boolean(left.dataUrl) !== Boolean(right.dataUrl)),
+  );
+}
+
+function sameVideoPart(left: AgentChatVideoPart, right: AgentChatVideoPart) {
+  if (!left.path || !right.path) return false;
+  if (left.path === right.path) return true;
+  const leftName = filenameFromPath(left.path);
+  const rightName = filenameFromPath(right.path);
+  return leftName === rightName && (left.path === leftName || right.path === rightName);
+}
+
+/** Live tool output and the assistant's trailing MEDIA reference share one
+ * turn, but Hermes persists them as consecutive assistant messages. Keep one
+ * inline block per generated file until the next user/system turn so reloading
+ * history matches the live transcript. */
+function deduplicateGeneratedMediaWithinAgentRuns(turns: AgentChatTurn[]) {
+  let images: AgentChatImagePart[] = [];
+  let videos: AgentChatVideoPart[] = [];
+
+  for (const turn of turns) {
+    if (turn.role !== "assistant") {
+      images = [];
+      videos = [];
+      continue;
+    }
+    turn.parts = turn.parts.filter((part) => {
+      if (part.type === "image") {
+        if (images.some((image) => sameImagePart(image, part))) return false;
+        images.push(part);
+      } else if (part.type === "video") {
+        if (videos.some((video) => sameVideoPart(video, part))) return false;
+        videos.push(part);
+      }
+      return true;
+    });
   }
 }
 
@@ -1015,12 +1123,27 @@ function upsertToolPart(
   parts: AgentChatPart[],
   next: Pick<AgentChatToolPart, "id" | "name" | "text" | "status"> &
     Partial<Pick<AgentChatToolPart, "media">>,
+  correlateByName = false,
 ) {
-  const existing = parts.find(
+  let existing = parts.find(
     (part): part is AgentChatToolPart =>
       part.type === "tool" &&
       (part.id === next.id || (!next.id && part.name === next.name && part.status === "running")),
   );
+  if (!existing && correlateByName) {
+    for (let index = parts.length - 1; index >= 0; index -= 1) {
+      const part = parts[index];
+      if (
+        part?.type === "tool" &&
+        part.status === "running" &&
+        part.name === next.name &&
+        part.media === next.media
+      ) {
+        existing = part;
+        break;
+      }
+    }
+  }
   if (existing) {
     existing.name = next.name && next.name !== "Tool" ? next.name : existing.name;
     existing.status = next.status;
@@ -1038,6 +1161,52 @@ function upsertToolPart(
     status: next.status,
     ...(next.media ? { media: next.media } : {}),
   });
+}
+
+function promoteIdlessMediaToolPart(
+  parts: AgentChatPart[],
+  id: string,
+  name: string,
+  media: NonNullable<AgentChatToolPart["media"]>,
+) {
+  // tool.generating precedes tool.start: keep the early canvas mounted while
+  // replacing its provisional identity with the execution's stable tool id.
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (
+      part?.type === "tool" &&
+      part.id.startsWith("idless:") &&
+      part.status === "running" &&
+      part.name === name &&
+      part.media === media
+    ) {
+      part.id = id;
+      return;
+    }
+  }
+}
+
+function latestAssistantTurnWithRunningTool(
+  turns: AgentChatTurn[],
+  name: string,
+  media: AgentChatToolPart["media"] | undefined,
+) {
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (
+      turn?.role === "assistant" &&
+      turn.parts.some(
+        (part) =>
+          part.type === "tool" &&
+          part.status === "running" &&
+          part.name === name &&
+          part.media === media,
+      )
+    ) {
+      return turn;
+    }
+  }
+  return null;
 }
 
 function upsertApprovalPart(
@@ -1203,11 +1372,48 @@ function resolveHermesMessageText(message: HermesSessionMessage) {
 
 function displayContentForHermesMessage(message: HermesSessionMessage) {
   const content = resolveHermesMessageText(message);
+  if (message.role === "system") return displayedHermesSystemMessageText(content);
   if (message.role !== "user") return content.trim();
+  // Hermes appends this as a synthetic user message when an assistant response
+  // reaches the provider's output cap. It belongs in the model's continuation
+  // context, but never in June's transcript as something the user said.
+  if (isHermesOutputLengthContinuationPrompt(content)) return "";
   // Scheduled runs lead with the cron delivery preamble; show the routine's
   // own instructions, not the machine scaffolding.
   return displayedUserPromptText(
     stripImageAnalysisFailureNotice(stripScheduledRunPreamble(stripHermesContextMarkers(content))),
+  );
+}
+
+// Hermes persists model switches as a system instruction containing internal
+// provider metadata. That instruction is useful to the model, but the raw
+// routing id and the directive that follows it are implementation details and
+// must not leak into the transcript.
+function displayedHermesSystemMessageText(content: string) {
+  const text = content.trim();
+  const match = text.match(
+    /^(?:\[System:\s*)?The active model for this chat has changed to\s+(.+?)\s+via provider\s+\S+\./i,
+  );
+  if (!match?.[1]) return text;
+  return `Model changed to ${displayNameForHermesModel(match[1])}.`;
+}
+
+function displayNameForHermesModel(modelId: string) {
+  const auto = /^__june_auto_generation__:(\d+(?:\.\d+)?)$/i.exec(modelId.trim());
+  if (!auto?.[1]) return modelId.trim();
+
+  const qualityPreference = Number(auto[1]);
+  if (qualityPreference >= 67) return "Auto Higher";
+  if (qualityPreference <= 33) return "Auto Lower";
+  return "Auto Balanced";
+}
+
+function isHermesOutputLengthContinuationPrompt(content: string) {
+  return (
+    content.trim() ===
+    "[System: Your previous response was truncated by the output length limit. " +
+      "Continue exactly where you left off. Do not restart or repeat prior text. " +
+      "Finish the answer directly.]"
   );
 }
 
@@ -1330,6 +1536,17 @@ function parseLikelyJsonContent(value: string) {
   return safeJsonParse(trimmed);
 }
 
+function parseUntrustedToolResultEnvelope(value: string) {
+  const closingTag = "</untrusted_tool_result>";
+  if (!value.trimStart().startsWith("<untrusted_tool_result")) return undefined;
+  const closingIndex = value.lastIndexOf(closingTag);
+  if (closingIndex < 0) return undefined;
+  const body = value.slice(0, closingIndex).trimEnd();
+  const payloadStart = body.indexOf("\n\n");
+  if (payloadStart < 0) return undefined;
+  return safeJsonParse(body.slice(payloadStart + 2).trim());
+}
+
 function stripMediaImageReferences(value: string) {
   return stripMediaReferences(value);
 }
@@ -1371,7 +1588,7 @@ function stripTerminalMediaReferences(value: string): string {
 function mediaImageReferences(value: unknown, depth = 0): string[] {
   if (value === null || value === undefined || depth > 4) return [];
   if (typeof value === "string") {
-    const parsed = parseLikelyJsonContent(value);
+    const parsed = parseLikelyJsonContent(value) ?? parseUntrustedToolResultEnvelope(value);
     const nested = parsed !== undefined ? mediaImageReferences(parsed, depth + 1) : [];
     const direct = [...value.matchAll(mediaImageReferencePattern())]
       .map((match) => match[1]?.trim())
@@ -1384,9 +1601,18 @@ function mediaImageReferences(value: unknown, depth = 0): string[] {
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
     return uniqueStrings(
-      ["text", "output_text", "content", "message", "delta", "summary", "url", "image_url"].flatMap(
-        (key) => mediaImageReferences(record[key], depth + 1),
-      ),
+      [
+        "text",
+        "output_text",
+        "content",
+        "result",
+        "structuredContent",
+        "message",
+        "delta",
+        "summary",
+        "url",
+        "image_url",
+      ].flatMap((key) => mediaImageReferences(record[key], depth + 1)),
     );
   }
   return [];
@@ -1395,7 +1621,7 @@ function mediaImageReferences(value: unknown, depth = 0): string[] {
 export function mediaVideoReferences(value: unknown, depth = 0): string[] {
   if (value === null || value === undefined || depth > 4) return [];
   if (typeof value === "string") {
-    const parsed = parseLikelyJsonContent(value);
+    const parsed = parseLikelyJsonContent(value) ?? parseUntrustedToolResultEnvelope(value);
     const nested = parsed !== undefined ? mediaVideoReferences(parsed, depth + 1) : [];
     const direct = [...value.matchAll(mediaVideoReferencePattern())]
       .map((match) => match[1]?.trim())
@@ -1408,9 +1634,18 @@ export function mediaVideoReferences(value: unknown, depth = 0): string[] {
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
     return uniqueStrings(
-      ["text", "output_text", "content", "message", "delta", "summary", "url", "video_url"].flatMap(
-        (key) => mediaVideoReferences(record[key], depth + 1),
-      ),
+      [
+        "text",
+        "output_text",
+        "content",
+        "result",
+        "structuredContent",
+        "message",
+        "delta",
+        "summary",
+        "url",
+        "video_url",
+      ].flatMap((key) => mediaVideoReferences(record[key], depth + 1)),
     );
   }
   return [];
@@ -1481,12 +1716,16 @@ function mcpImageContentBlocks(value: unknown, depth = 0): McpImageBlock[] {
 function mcpImageMetadata(value: unknown, depth = 0): { label?: string; filename?: string } {
   if (value === null || value === undefined || depth > 4) return {};
   if (typeof value === "string") {
-    const parsed = parseLikelyJsonContent(value);
+    const parsed = parseLikelyJsonContent(value) ?? parseUntrustedToolResultEnvelope(value);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       const record = parsed as Record<string, unknown>;
       const label = typeof record.label === "string" ? record.label : undefined;
       const filename = typeof record.filename === "string" ? record.filename : undefined;
       if (label || filename) return { label, filename };
+      for (const key of ["structuredContent", "result", "text", "content"]) {
+        const meta = mcpImageMetadata(record[key], depth + 1);
+        if (meta.label || meta.filename) return meta;
+      }
     }
     return {};
   }
@@ -1499,12 +1738,12 @@ function mcpImageMetadata(value: unknown, depth = 0): { label?: string; filename
   }
   if (typeof value === "object") {
     const record = value as Record<string, unknown>;
-    if (typeof record.text === "string") {
-      const meta = mcpImageMetadata(record.text, depth + 1);
+    const label = typeof record.label === "string" ? record.label : undefined;
+    const filename = typeof record.filename === "string" ? record.filename : undefined;
+    if (label || filename) return { label, filename };
+    for (const key of ["structuredContent", "result", "text", "content"]) {
+      const meta = mcpImageMetadata(record[key], depth + 1);
       if (meta.label || meta.filename) return meta;
-    }
-    if (Array.isArray(record.content)) {
-      return mcpImageMetadata(record.content, depth + 1);
     }
   }
   return {};
@@ -1524,7 +1763,20 @@ export function imagePartsFromHermesContent(content: unknown): AgentChatImagePar
     dataUrl: `data:${block.mimeType};base64,${block.data}`,
     ...(meta.filename ? { name: meta.filename } : {}),
   }));
-  const mediaParts = mediaImageReferences(content).map(mediaImagePart);
+  const mediaReferences = mediaImageReferences(content);
+  const mediaParts = mediaReferences.map((path) => {
+    const part = mediaImagePart(path);
+    // Hermes persists an MCP image block as a random image_cache path while
+    // retaining the tool's signed filename in structuredContent. With one
+    // output, that filename is the stable identity used by the assistant's
+    // trailing MEDIA ref; keep the cache path for loading and carry the signed
+    // name solely for display/deduplication.
+    if (mediaReferences.length === 1) {
+      if (meta.filename?.trim()) part.name = meta.filename.trim();
+      if (meta.label?.trim()) part.prompt = meta.label.trim();
+    }
+    return part;
+  });
   return [...blockParts, ...mediaParts];
 }
 

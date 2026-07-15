@@ -534,7 +534,10 @@ input:focus-visible,
   overflow-y: auto;
   overscroll-behavior: contain;
   margin: calc(-1 * var(--detail-bar-h)) calc(-1 * var(--sp-8)) 0;
-  padding: var(--detail-bar-h) var(--sp-8) var(--sp-5);
+  /* The fixed composer is outside layout. Its measured overlap grows with the
+   * Up next queue and shrinks as rows drain; the final gap keeps the last chat
+   * item visibly separated from the top of that floating surface. */
+  padding: var(--detail-bar-h) var(--sp-8) calc(var(--agent-composer-clearance, 0px) + var(--sp-5));
   /* Center the thread column from the LEFT GUTTER, not margin:auto inside the
    * scroller: the classic scrollbar steals an engine-specific slice of the
    * content box (8px custom in Chrome, wider native in WKWebView), and auto
@@ -741,9 +744,11 @@ input:focus-visible,
   /* Align the thread rail with the composer's text line, not its outer
    * border: 1px box border + sp-1 box padding + sp-5 textarea padding.
    * User turns stay right-aligned inside this rail. */
-  /* Bottom padding clears the fixed composer so the last turn can scroll fully
-   * clear of it instead of hiding underneath. */
-  padding: var(--sp-2) calc(1px + var(--sp-1) + var(--sp-5)) 148px;
+  /* The outer scroller owns the live clearance for the fixed composer. Keep
+   * only the final turn's out-of-flow action row in this rail's tail so its
+   * copy/branch/timestamp controls also remain above that surface. */
+  padding: var(--sp-2) calc(1px + var(--sp-1) + var(--sp-5))
+    calc(var(--agent-turn-actions-h) + var(--sp-2));
 }
 
 /* Dev-tools response gallery (window.__agentGallery): a labeled catalog of every
@@ -2922,6 +2927,18 @@ input:focus-visible,
   background: transparent;
 }
 
+/* Condensed tool run (JUN-326): settled rows tuck behind one count line so a
+ * long command run reads as a single quiet row instead of a column of them.
+ * The fold reuses the disclosure row treatment; only the body is new — the
+ * folded rows indent under the summary label so the hierarchy is legible. */
+.agent-tool-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+  padding-left: calc(15px + var(--sp-2));
+}
+
 .agent-tool-output {
   overflow: auto;
   max-height: 220px;
@@ -3095,7 +3112,11 @@ input:focus-visible,
   /* The gray canvas itself gradates into the card surface at the bottom (and
    * the dot field thins out over the same run), so the footer transition is
    * owned by the background rather than an overlay fading in on top. */
-  background: linear-gradient(to bottom, var(--secondary) 62%, var(--card));
+  background: linear-gradient(
+    to bottom,
+    color-mix(in oklch, var(--secondary) 97%, var(--foreground)) 62%,
+    var(--card)
+  );
   color: var(--muted-foreground);
 }
 
@@ -3154,9 +3175,11 @@ input:focus-visible,
   display: block;
   width: 100%;
   height: 100%;
-  /* The theme accent for the mark's glints and the press ripple's wash; the
-   * canvas reads the computed value (accent-color paints nothing here). */
-  accent-color: var(--brand);
+  /* The luminous clay accent for the mark's glints and the press ripple's
+   * wash; a plain lightness lift would read as mud over the light field, so
+   * --brand-bright pins chroma too. The canvas reads the computed value
+   * (accent-color paints nothing here). */
+  accent-color: var(--brand-bright);
 }
 
 /* The label sits on the card surface the canvas gradient lands on - no
@@ -5470,10 +5493,16 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-1);
   min-width: 0;
-  max-width: 100%;
+  width: 100%;
+}
+
+.june-download-toast-action {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .june-download-toast-file {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5908,6 +5937,9 @@ input:focus-visible,
   gap: var(--sp-2);
   min-height: var(--control-md);
   padding: var(--sp-1) var(--sp-2);
+  /* Match the composer text line: queue frame (sp-2) + this sp-4 inset equals
+   * composer frame (sp-1) + editor inset (sp-5). */
+  padding-inline-start: var(--sp-4);
   border: 0;
   border-radius: var(--r-md);
   background: transparent;
@@ -6690,6 +6722,17 @@ input:focus-visible,
   margin: 0;
   padding: 0 var(--sp-2) 0 var(--sp-3);
   border-bottom: 0;
+}
+
+/* Billing note under the Auto toggle while a Venice API key is saved: Auto
+ * never uses the key, so the credits impact stays visible right where Auto
+ * gets switched on. Quiet caption on the same gutter as the toggle label. */
+.agent-composer-model-auto-note {
+  margin: 0;
+  padding: 0 var(--sp-2) var(--sp-1) var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
 }
 
 /* The Preference drill-in row while Auto is on: label left, the active preset
@@ -11924,6 +11967,15 @@ input:focus-visible,
   background: var(--destructive-soft);
   color: color-mix(in oklch, var(--destructive) 60%, var(--foreground));
   font-size: var(--fs-md);
+}
+
+/* The app-shell banners render as the first children of .main-panel-body,
+ * which has no top padding (each workspace row brings its own). Without a
+ * top margin the banner sits flush against the card's top edge. Scoped to
+ * direct children so mid-content usages (routines) keep their geometry. */
+.main-panel-body > .error-banner,
+.main-panel-body > .notice-banner {
+  margin-top: var(--sp-4);
 }
 
 .routines-error-banner {
@@ -21310,8 +21362,9 @@ input:focus-visible,
    grain, June mark) — so the click-through feels continuous. */
 .referral-nudge {
   position: fixed;
-  /* Window bottom-left, on the main-panel card's --sp-3 inset so the two
-     share a bottom line (a near-miss offset here reads as misalignment).
+  /* Window bottom-left, on the main-panel card's equal --sp-3 inset so the
+     two share a bottom line. The compact overlay shadow preserves that
+     breathing room instead of visually filling it with a long downward blur.
      Keep this a static inset: anchoring to the animated --sidebar-w-current
      made the compositor move a blend-mode + WebGL stack continuously, which
      read as noise flashing on the hero. It overlaps the sidebar footer while
@@ -21325,12 +21378,20 @@ input:focus-visible,
   background: var(--card);
   color: var(--foreground);
   box-shadow:
-    var(--shadow-md),
+    var(--shadow-hud),
     0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
   animation: referral-nudge-enter var(--t-med) var(--ease-out) both;
   transition:
     opacity var(--t-med) var(--ease-out),
     transform var(--t-med) var(--ease-out);
+}
+
+/* With the sidebar collapsed, keep a small reveal between the nudge and the
+   main panel without changing the card's uniform r-xl corner treatment. */
+.app-shell[data-sidebar="collapsed"] .referral-nudge {
+  left: var(--sp-5);
+  bottom: var(--sp-5);
+  width: min(300px, calc(100vw - 2 * var(--sp-5)));
 }
 
 /* Dismissing: drop the (filled) enter animation so the exit transition can

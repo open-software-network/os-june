@@ -42,8 +42,9 @@ if (!userArgs.includes("--")) {
 }
 args.push("--locked");
 
-const child = spawn(tauriCommand(), args, {
-  shell: process.platform === "win32",
+const tauri = tauriInvocation();
+const child = spawn(tauri.command, [...tauri.args, ...args], {
+  shell: false,
   stdio: "inherit",
 });
 
@@ -82,9 +83,18 @@ function platformForTarget(targetTriple) {
   return undefined;
 }
 
-function tauriCommand() {
+function tauriInvocation() {
   const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const binary = process.platform === "win32" ? "tauri.cmd" : "tauri";
-  const localBinary = resolve(scriptDir, "..", "node_modules", ".bin", binary);
-  return existsSync(localBinary) ? localBinary : "tauri";
+  if (process.platform === "win32") {
+    const localScript = resolve(scriptDir, "..", "node_modules", "@tauri-apps", "cli", "tauri.js");
+    if (!existsSync(localScript)) {
+      throw new Error(
+        `Tauri CLI entry point not found at "${localScript}". Run pnpm install first.`,
+      );
+    }
+    return { command: process.execPath, args: [localScript] };
+  }
+
+  const localBinary = resolve(scriptDir, "..", "node_modules", ".bin", "tauri");
+  return { command: existsSync(localBinary) ? localBinary : "tauri", args: [] };
 }

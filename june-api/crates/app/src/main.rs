@@ -92,6 +92,7 @@ async fn load_pricing(
         Ok(models) => {
             let count = models.len();
             pricing.extend(models);
+            apply_private_route_price_floors(&mut pricing);
             tracing::info!(count, "loaded Venice model catalog");
         }
         Err(error) => {
@@ -99,6 +100,36 @@ async fn load_pricing(
         }
     }
     pricing
+}
+
+/// The routed catalog currently reports the cheapest eligible endpoint, while
+/// June settles by requested model ID. Floor routed text models at the most
+/// expensive endpoint eligible for `preferred` so a Phala fallback cannot be
+/// sold below cost. Remove this once settlement is authenticated per route.
+fn apply_private_route_price_floors(pricing: &mut BTreeMap<String, ModelPriceConfig>) {
+    for (model_id, input_floor, output_floor) in [
+        ("openai/gpt-oss-120b", 180, 720),
+        ("google/gemma-3-27b-it", 180, 552),
+        ("z-ai/glm-5.2", 1_680, 5_280),
+        ("qwen/qwen3.6-27b", 390, 3_900),
+        ("moonshotai/kimi-k2.6", 1_308, 5_520),
+    ] {
+        let Some(model) = pricing.get_mut(model_id) else {
+            continue;
+        };
+        model.input_credits_per_million_tokens = Some(
+            model
+                .input_credits_per_million_tokens
+                .unwrap_or_default()
+                .max(input_floor),
+        );
+        model.output_credits_per_million_tokens = Some(
+            model
+                .output_credits_per_million_tokens
+                .unwrap_or_default()
+                .max(output_floor),
+        );
+    }
 }
 
 // The dependency-injection composition root: it wires every provider and
@@ -274,6 +305,7 @@ fn build_router(
 
     let state = ApiState::new(ApiStateParams {
         pricing,
+        local_dev_enabled: config.local_dev.enabled,
         token_verifier,
         note_transcribe,
         note_generate,
@@ -289,6 +321,11 @@ fn build_router(
             max_json_bytes: config.server.max_json_bytes,
             max_issue_report_bytes: config.server.max_issue_report_bytes,
             max_image_edit_bytes: config.server.max_image_edit_bytes,
+            max_agent_chat_bytes: config.server.max_agent_chat_bytes,
+            max_agent_inflight_body_bytes: config.server.max_agent_inflight_body_bytes,
+            max_agent_concurrent_requests_per_user: config
+                .server
+                .max_agent_concurrent_requests_per_user,
             request_timeout_secs: config.server.request_timeout_secs,
         },
         attestation: AttestationInfo {
@@ -452,4 +489,49 @@ fn init_tracing() {
         )
         .with(tracing_subscriber::fmt::layer().json())
         .try_init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_catalog_prices_cover_every_preferred_fallback() {
+        let mut pricing = AppConfig::default().pricing;
+        let template = pricing["kimi-k2-6"].clone();
+        for model_id in [
+            "openai/gpt-oss-120b",
+            "google/gemma-3-27b-it",
+            "z-ai/glm-5.2",
+            "qwen/qwen3.6-27b",
+            "moonshotai/kimi-k2.6",
+        ] {
+            let mut canonical = template.clone();
+            canonical.input_credits_per_million_tokens = Some(1);
+            canonical.output_credits_per_million_tokens = Some(1);
+            pricing.insert(model_id.to_string(), canonical);
+        }
+
+        apply_private_route_price_floors(&mut pricing);
+
+        for (model_id, input, output) in [
+            ("openai/gpt-oss-120b", 180, 720),
+            ("google/gemma-3-27b-it", 180, 552),
+            ("z-ai/glm-5.2", 1_680, 5_280),
+            ("qwen/qwen3.6-27b", 390, 3_900),
+            ("moonshotai/kimi-k2.6", 1_308, 5_520),
+        ] {
+            let canonical = &pricing[model_id];
+            assert_eq!(
+                canonical.input_credits_per_million_tokens,
+                Some(input),
+                "{model_id} input price"
+            );
+            assert_eq!(
+                canonical.output_credits_per_million_tokens,
+                Some(output),
+                "{model_id} output price"
+            );
+        }
+    }
 }

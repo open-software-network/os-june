@@ -1,7 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentScrollToLatestButton } from "../components/agent/AgentWorkspace";
+import {
+  AgentScrollToLatestButton,
+  agentComposerClearance,
+} from "../components/agent/AgentWorkspace";
 
 // jsdom reports zero scroll metrics, so a scroller looks pinned to the bottom
 // by default. Force the geometry to model a user parked up-thread.
@@ -73,5 +76,16 @@ describe("AgentScrollToLatestButton", () => {
     stubScrollGeometry(scroller, { scrollHeight: 1000, clientHeight: 400, scrollTop: 600 });
     fireEvent.scroll(scroller);
     expect(button.getAttribute("data-visible")).toBeNull();
+  });
+});
+
+describe("agentComposerClearance", () => {
+  it("tracks the fixed composer's overlap as the Up next queue grows and drains", () => {
+    expect(agentComposerClearance(900, 520)).toBe(380);
+    expect(agentComposerClearance(900, 690)).toBe(210);
+  });
+
+  it("never reserves negative clearance when the composer does not overlap", () => {
+    expect(agentComposerClearance(900, 920)).toBe(0);
   });
 });

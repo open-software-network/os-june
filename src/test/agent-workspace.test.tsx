@@ -12,6 +12,7 @@ import {
   HERO_GREETINGS,
   SkillsToolsPanel,
   composerInSteerStateFor,
+  generatedImagePathAliases,
   projectAgentActivityLevels,
   resetAgentSessionContinuity,
   seedAgentComposerDraftForTest,
@@ -45,6 +46,7 @@ const HERO_GREETING = new RegExp(
 );
 
 const mocks = vi.hoisted(() => ({
+  cancelAgentRunMonitoring: vi.fn(),
   cancelAgentTask: vi.fn(),
   createAgentTask: vi.fn(),
   editImage: vi.fn(),
@@ -99,6 +101,9 @@ const mocks = vi.hoisted(() => ({
   setHermesBrowserAccess: vi.fn(),
   listHermesSessions: vi.fn(),
   gatewayRequest: vi.fn(),
+  markAgentRunSucceeded: vi.fn(),
+  releaseAgentRunSettlement: vi.fn(),
+  startAgentRunMonitoring: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
   gatewayInstances: [] as Array<{
     connect: ReturnType<typeof vi.fn>;
@@ -111,7 +116,25 @@ const mocks = vi.hoisted(() => ({
   }),
 }));
 
+vi.mock("../lib/agent-run-monitor", () => ({
+  cancelAgentRunMonitoring: mocks.cancelAgentRunMonitoring,
+  markAgentRunSucceeded: mocks.markAgentRunSucceeded,
+  releaseAgentRunSettlement: mocks.releaseAgentRunSettlement,
+  startAgentRunMonitoring: mocks.startAgentRunMonitoring,
+}));
+
 vi.mock("../lib/tauri", () => ({
+  dictationCapabilities: vi.fn().mockResolvedValue({
+    capabilities: {
+      available: true,
+      platform: "macos",
+      shortcuts: true,
+      paste: true,
+      microphoneSelection: true,
+      accessibilityPermission: true,
+      systemAudio: true,
+    },
+  }),
   // The pending skill-writes tray loads through the Rust bridge via this named
   // `invoke`. A quiet stub keeps these workspace tests off that path.
   invoke: vi.fn(async () => []),
@@ -2111,6 +2134,7 @@ describe("AgentWorkspace", () => {
     const retry = await screen.findByRole("button", { name: "Retry queued message" });
     expect(screen.getByText("Couldn't send")).toBeInTheDocument();
     expect(screen.getByText("review the brief next")).toBeInTheDocument();
+    expect(mocks.releaseAgentRunSettlement).not.toHaveBeenCalled();
     await user.click(retry);
     await waitFor(() => expect(queuedAttempts).toBe(2));
     expect(screen.queryByText("Up next")).toBeNull();
@@ -7723,6 +7747,86 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Done.")).toBeInTheDocument();
   });
 
+  it("condenses long tool runs behind a count line while running rows stay visible (JUN-326)", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "audit the project",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "audit the project",
+      }),
+    );
+
+    const emit = (type: string, payload: Record<string, unknown>) => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ type, session_id: "runtime-session-2", payload });
+      }
+    };
+
+    act(() => {
+      emit("tool.start", { tool_id: "tool-1", tool_name: "read_file", path: "notes.md" });
+      emit("tool.complete", { tool_id: "tool-1", tool_name: "read_file", path: "notes.md" });
+      emit("tool.start", { tool_id: "tool-2", tool_name: "bash", command: "./scripts/build.sh" });
+      emit("tool.complete", {
+        tool_id: "tool-2",
+        tool_name: "bash",
+        command: "./scripts/build.sh",
+      });
+      emit("tool.start", { tool_id: "tool-3", tool_name: "web_search", search_query: "june" });
+      emit("tool.complete", {
+        tool_id: "tool-3",
+        tool_name: "web_search",
+        search_query: "june",
+      });
+    });
+
+    // At the threshold the stack still renders flat: three rows, no fold.
+    expect(await screen.findByText("Reading files")).toBeInTheDocument();
+    expect(screen.getByText("Running command")).toBeInTheDocument();
+    expect(screen.getByText("Searching web")).toBeInTheDocument();
+    expect(document.querySelector(".agent-tool-fold")).toBeNull();
+
+    act(() => {
+      emit("tool.start", { tool_id: "tool-4", tool_name: "fetch_url", url: "https://june.dev" });
+      emit("tool.failed", {
+        tool_id: "tool-4",
+        tool_name: "fetch_url",
+        url: "https://june.dev",
+        text: "Request timed out.",
+      });
+      emit("tool.start", { tool_id: "tool-5", tool_name: "edit_file", path: "notes.md" });
+    });
+
+    // Past the threshold, the four settled calls fold behind one count line
+    // that also carries the failed count; the fold starts collapsed.
+    const foldName = await screen.findByText("4 actions");
+    const fold = foldName.closest("details");
+    expect(fold).toHaveClass("agent-tool-fold");
+    expect(fold).not.toHaveAttribute("open");
+    expect(within(fold as HTMLElement).getByText("1 failed")).toBeInTheDocument();
+
+    // Settled rows (including the failure) live inside the fold and keep their
+    // per-row status when expanded.
+    expect(fold).toContainElement(screen.getByText("Reading files"));
+    expect(fold).toContainElement(screen.getByText("Running command"));
+    expect(fold).toContainElement(screen.getByText("Browsing"));
+    expect(fold).toContainElement(screen.getByText("Failed"));
+
+    // The running row stays outside the fold, spinner and all.
+    const runningLabel = screen.getByText("Editing files");
+    expect(fold).not.toContainElement(runningLabel);
+    expect(runningLabel.closest(".agent-tool-stack")).toBeTruthy();
+    expect(fold).not.toContainElement(screen.getByRole("status", { name: "Running" }));
+  });
+
   it("holds space with a generation placeholder while an image tool runs and never paints streamed MEDIA text", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
@@ -7744,12 +7848,27 @@ describe("AgentWorkspace", () => {
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
         handler({
+          type: "message.start",
+          session_id: "runtime-session-2",
+        });
+        // The pinned gateway announces the tool name while the model is still
+        // streaming arguments, before execution has a stable tool id.
+        handler({
+          type: "tool.generating",
+          session_id: "runtime-session-2",
+          payload: {
+            name: "generate_image",
+          },
+        });
+        // Execution starts later with the stable id. This must promote the
+        // early placeholder instead of opening a second canvas.
+        handler({
           type: "tool.start",
           session_id: "runtime-session-2",
           payload: {
             tool_id: "tool-1",
-            tool_name: "generate_image",
-            prompt: "a calm mountain lake at dawn",
+            name: "generate_image",
+            context: "a calm mountain lake at dawn",
           },
         });
         handler({
@@ -7765,6 +7884,7 @@ describe("AgentWorkspace", () => {
 
     // The generation placeholder holds the image's slot while the tool runs.
     expect(await screen.findByRole("status", { name: "Generating image" })).toBeInTheDocument();
+    expect(screen.getAllByRole("status", { name: "Generating image" })).toHaveLength(1);
     expect(screen.getByText("Generating image…")).toBeInTheDocument();
     expect(document.querySelector(".agent-generated-image-placeholder")).not.toBeNull();
     expect(document.querySelector("canvas.agent-generated-media-field")).not.toBeNull();
@@ -8299,6 +8419,121 @@ describe("AgentWorkspace", () => {
     );
     expect(mocks.gatewayEventHandlers.size).toBe(0);
     window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it("does not arm readiness for a failure-flavored terminal frame", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "run the build" }),
+    );
+
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith(
+        expect.objectContaining({ storedSessionId: "session-2" }),
+      ),
+    );
+    mocks.markAgentRunSucceeded.mockClear();
+    mocks.releaseAgentRunSettlement.mockClear();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-2",
+          payload: { status: "timeout" },
+        });
+      }
+    });
+
+    expect(statusDetails).toContainEqual(
+      expect.objectContaining({ sessionId: "session-2", status: "failed" }),
+    );
+    expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledWith("session-2");
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+    expect(mocks.releaseAgentRunSettlement).not.toHaveBeenCalled();
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it("hands an accepted run to app-lifetime settlement monitoring", async () => {
+    vi.useFakeTimers();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "run the build" }),
+    );
+
+    try {
+      render(<AgentWorkspace />);
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-2",
+          text: "run the build",
+        }),
+      );
+      expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith({
+        storedSessionId: "session-2",
+        runtimeSessionId: "runtime-session-2",
+        title: "Summarize Current Page",
+        fullMode: false,
+        settlementHeld: true,
+      });
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-2",
+            payload: { status: "success" },
+          });
+        }
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-2");
+      expect(mocks.releaseAgentRunSettlement).toHaveBeenCalledWith("session-2");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases an unqueued run for monitoring when the Agent view unmounts", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "run the build" }),
+    );
+    const { unmount } = render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith(
+        expect.objectContaining({
+          storedSessionId: "session-2",
+          runtimeSessionId: "runtime-session-2",
+          settlementHeld: true,
+        }),
+      ),
+    );
+    unmount();
+
+    expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalledWith("session-2");
+    expect(mocks.releaseAgentRunSettlement).toHaveBeenCalledWith("session-2");
   });
 
   it("keeps sudo and secret pending status copy generic", async () => {
@@ -9125,8 +9360,8 @@ describe("AgentWorkspace", () => {
 
   it("renders generated workspace files mentioned by Hermes as downloadable artifacts", async () => {
     const user = userEvent.setup();
-    const samplePath =
-      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/sample.pdf";
+    const fileName = "sample-with-an-extraordinarily-long-generated-file-name.pdf";
+    const samplePath = `/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/${fileName}`;
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
         {
@@ -9136,7 +9371,7 @@ describe("AgentWorkspace", () => {
           description: "Hermes scratch files and generated outputs.",
           entries: [
             {
-              name: "sample.pdf",
+              name: fileName,
               path: samplePath,
               kind: "file",
               size: 1768,
@@ -9150,7 +9385,7 @@ describe("AgentWorkspace", () => {
       {
         id: "message-1",
         role: "assistant",
-        content: "Done. The PDF is available as `sample.pdf`.",
+        content: `Done. The PDF is available as \`${fileName}\`.`,
         timestamp: "2026-06-04T18:39:00Z",
       },
     ]);
@@ -9158,11 +9393,19 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace />);
 
     expect(await screen.findByLabelText("Generated files")).toBeInTheDocument();
-    expect(screen.getAllByText("sample.pdf").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(fileName).length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole("button", { name: "Download sample.pdf" }));
+    await user.click(screen.getByRole("button", { name: `Download ${fileName}` }));
 
     expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(samplePath);
+    const toastMessage = await screen.findByLabelText(`Downloaded ${fileName}`);
+    expect(toastMessage.querySelector(".june-download-toast-action")).toHaveTextContent(
+      "Downloaded",
+    );
+    expect(toastMessage.querySelector(".june-download-toast-file")).toHaveAttribute(
+      "title",
+      fileName,
+    );
   });
 
   it("renders a workspace file's download card only on the first response that mentions it", async () => {
@@ -9282,6 +9525,8 @@ describe("AgentWorkspace", () => {
     expect(
       screen.queryByRole("button", { name: "Download generated-image-abc.png" }),
     ).not.toBeInTheDocument();
+
+    expect(screen.queryByRole("button", { name: /View files/ })).not.toBeInTheDocument();
   });
 
   it("opens a markdown artifact in the viewer panel with rendered content", async () => {
@@ -9710,6 +9955,7 @@ describe("AgentWorkspace", () => {
   });
 
   it("renders Hermes MEDIA image references as inline generated images", async () => {
+    const user = userEvent.setup();
     const mediaPath =
       "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/image_cache/img_ce347dc6e27a.png";
     mocks.listHermesSessionMessages.mockResolvedValue([
@@ -9734,9 +9980,17 @@ describe("AgentWorkspace", () => {
     expect(image).toHaveAttribute("src", "data:image/png;base64,cHJldmlldw==");
     expect(screen.queryByText(/MEDIA:/)).not.toBeInTheDocument();
     expect(mocks.hermesBridgeFilePreview).toHaveBeenCalledWith(mediaPath);
+
+    const openImage = image.closest("button");
+    expect(openImage).not.toBeNull();
+    await user.click(openImage as HTMLButtonElement);
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    await user.click(within(panel).getByRole("button", { name: "All files" }));
+    expect(within(panel).getByText("img_ce347dc6e27a.png")).toBeInTheDocument();
   });
 
   it("renders bare-filename MEDIA references as inline generated images", async () => {
+    const user = userEvent.setup();
     // The june_image tool returns a plain `filename`, and the model echoes it as
     // `MEDIA:<filename>` rather than an absolute path. The bare reference must
     // still render inline (the backend resolves it against the image roots)
@@ -9759,6 +10013,184 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText(/MEDIA:/)).not.toBeInTheDocument();
     // The bare filename is passed through to the bridge, which resolves it.
     expect(mocks.hermesBridgeFilePreview).toHaveBeenCalledWith(mediaName);
+
+    const openImage = image.closest("button");
+    expect(openImage).not.toBeNull();
+    await user.click(openImage as HTMLButtonElement);
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    await user.click(within(panel).getByRole("button", { name: "All files" }));
+    expect(within(panel).getByText(mediaName)).toBeInTheDocument();
+  });
+
+  it("does not remap a bare-filename MEDIA image to a same-named Workspace file", async () => {
+    const user = userEvent.setup();
+    const mediaName = "img_ae9ed1ffc669.png";
+    const workspacePath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/img_ae9ed1ffc669.png";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: mediaName,
+              path: workspacePath,
+              kind: "file",
+              size: 2048,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+        {
+          id: "memory",
+          label: "Memory",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/memory",
+          description: "Hermes memory files.",
+          entries: [
+            {
+              name: mediaName,
+              path: `/Users/alex/Library/Application Support/co.opensoftware.june/hermes/memory/${mediaName}`,
+              kind: "file",
+              size: 2048,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: `MEDIA:${mediaName}`,
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    await screen.findByRole("img", { name: "Generated image" });
+    await user.click(screen.getByRole("button", { name: "View files (1)" }));
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    await user.click(within(panel).getByText(mediaName));
+    expect(mocks.hermesBridgeFilePreview).not.toHaveBeenCalledWith(workspacePath);
+  });
+
+  it("deduplicates absolute and signed bare references to the same generated image", async () => {
+    const absolutePath = "/Users/alex/.hermes/image_cache/img_cff5d542a4d2.png";
+    const signedName = "generated-image-abc.june-source-deadbeef.png";
+    expect(generatedImagePathAliases(absolutePath, signedName)).toEqual([
+      "img_cff5d542a4d2.png",
+      "generated-image-abc.png",
+    ]);
+    expect(generatedImagePathAliases(signedName, signedName)).toEqual(["generated-image-abc.png"]);
+    const envelope = {
+      result: `MEDIA:${absolutePath}\n${JSON.stringify({ filename: signedName })}`,
+      structuredContent: { filename: signedName, mimeType: "image/png" },
+    };
+    const wrappedResult = [
+      '<untrusted_tool_result source="mcp_june_image_generate_image">',
+      JSON.stringify(envelope),
+      "</untrusted_tool_result>",
+    ].join("\n");
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-06-04T18:39:00Z",
+        tool_calls: JSON.stringify([
+          {
+            id: "call-1",
+            function: { name: "mcp_june_image_generate_image", arguments: {} },
+          },
+        ]),
+      },
+      {
+        id: "message-2",
+        role: "tool",
+        tool_call_id: "call-1",
+        tool_name: "mcp_june_image_generate_image",
+        content: wrappedResult,
+        timestamp: "2026-06-04T18:39:01Z",
+      },
+      {
+        id: "message-3",
+        role: "user",
+        content: "Show that image again.",
+        timestamp: "2026-06-04T18:40:00Z",
+      },
+      {
+        id: "message-4",
+        role: "assistant",
+        content: `MEDIA:${signedName}`,
+        timestamp: "2026-06-04T18:41:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByRole("button", { name: "View files (1)" })).toBeInTheDocument();
+  });
+
+  it("keeps distinct cache images that share a generic display name", () => {
+    const firstPath = "/Users/alex/.hermes/image_cache/img_first.png";
+    const secondPath = "/Users/alex/.hermes/image_cache/img_second.png";
+    expect(generatedImagePathAliases(firstPath, "output.png")).toEqual(["img_first.png"]);
+    expect(generatedImagePathAliases(secondPath, "output.png")).toEqual(["img_second.png"]);
+    expect(generatedImagePathAliases(firstPath, "output.png")).not.toEqual(
+      generatedImagePathAliases(secondPath, "output.png"),
+    );
+  });
+
+  it("does not register a pathless MCP image block by filename", async () => {
+    const mediaName = "output.png";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: mediaName,
+              path: `/workspace/first/${mediaName}`,
+              kind: "file",
+              size: 2048,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+            {
+              name: mediaName,
+              path: `/workspace/second/${mediaName}`,
+              kind: "file",
+              size: 2048,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "tool",
+        tool_name: "generate_image",
+        content: [
+          { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+          { type: "text", text: JSON.stringify({ filename: mediaName }) },
+        ],
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    await screen.findByRole("img", { name: "Generated image" });
+    expect(screen.queryByRole("button", { name: /View files/ })).not.toBeInTheDocument();
   });
 
   it("imports dropped files into the Hermes workspace before submitting", async () => {

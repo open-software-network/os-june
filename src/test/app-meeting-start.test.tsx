@@ -42,9 +42,11 @@ const mocks = vi.hoisted(() => ({
   osAccountsLogout: vi.fn(),
   osAccountsUpgrade: vi.fn(),
   agentHudShow: vi.fn(),
+  agentOpenReady: vi.fn().mockResolvedValue(null),
   agentHudHide: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
+  preloadAgentSounds: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -60,7 +62,22 @@ vi.mock("../lib/recording-sounds", () => ({
   preloadRecordingSounds: mocks.preloadRecordingSounds,
 }));
 
+vi.mock("../lib/agent-sounds", () => ({
+  preloadAgentSounds: mocks.preloadAgentSounds,
+}));
+
 vi.mock("../lib/tauri", () => ({
+  dictationCapabilities: vi.fn().mockResolvedValue({
+    capabilities: {
+      available: true,
+      platform: "macos",
+      shortcuts: true,
+      paste: true,
+      microphoneSelection: true,
+      accessibilityPermission: true,
+      systemAudio: true,
+    },
+  }),
   primeGeneratedVideoDir: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   bootstrapApp: mocks.bootstrapApp,
@@ -96,6 +113,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
   agentHudShow: mocks.agentHudShow,
+  agentOpenReady: mocks.agentOpenReady,
   agentHudHide: mocks.agentHudHide,
   // The agent workspace mounts at launch; a quiet, not-running bridge keeps
   // these tests focused on the meetings surfaces.

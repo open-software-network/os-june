@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
-        zero_receipt,
+        AuthorizeParams, ChargeParams, ReleaseHoldParams, authorize_or_deny, charge, clamp_to_cap,
+        log_settled, release_hold, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key},
@@ -75,7 +75,7 @@ impl WebAugmentService {
             hold_ttl_seconds: self.hold_ttl_seconds,
         })
         .await?;
-        let results = self
+        let results = match self
             .searcher
             .search(WebSearchRequest {
                 query: params.query.clone(),
@@ -83,7 +83,19 @@ impl WebAugmentService {
                 provider: params.provider,
                 provider_credentials: params.provider_credentials.clone(),
             })
-            .await?;
+            .await
+        {
+            Ok(results) => results,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::WebSearch,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         let charge_credits = clamp_to_cap(estimate, authorization.cap_credits);
         let receipt = charge(ChargeParams {
             os_accounts: self.os_accounts.as_ref(),
@@ -131,13 +143,25 @@ impl WebAugmentService {
             hold_ttl_seconds: self.hold_ttl_seconds,
         })
         .await?;
-        let result = self
+        let result = match self
             .fetcher
             .fetch(WebFetchRequest {
                 url: params.url.clone(),
                 provider_credentials: params.provider_credentials.clone(),
             })
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::WebFetch,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         let charge_credits = clamp_to_cap(estimate, authorization.cap_credits);
         let receipt = charge(ChargeParams {
             os_accounts: self.os_accounts.as_ref(),
@@ -482,13 +506,23 @@ mod tests {
             result,
             Err(crate::ServiceError::InvalidInput { .. })
         ));
-        // Authorized (hold taken, expires via TTL) but never charged.
+        // Authorized, never billed: the hold is released at zero credits
+        // instead of stranding until TTL.
         assert_eq!(
             os_accounts.events(),
-            vec![Call::Authorize {
-                action: "web_fetch".to_string(),
-                estimate: 25,
-            }]
+            vec![
+                Call::Authorize {
+                    action: "web_fetch".to_string(),
+                    estimate: 25,
+                },
+                Call::Charge {
+                    credits: 0,
+                    idempotency_key: format!(
+                        "release:web_fetch:{}",
+                        &crate::util::sha256_hex("agt_test".as_bytes())[..32],
+                    ),
+                },
+            ]
         );
     }
 

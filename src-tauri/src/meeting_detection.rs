@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::{collections::BTreeSet, thread, time::Duration};
+use std::{collections::BTreeSet, time::Duration};
 use tauri::{AppHandle, Emitter};
 
 const CLEAR_AFTER_INACTIVE_POLLS: u8 = 2;
@@ -191,12 +191,12 @@ fn allowed_mic_app(bundle_id: &str) -> Option<&'static AllowedMicApp> {
 
 #[cfg(target_os = "macos")]
 fn spawn_monitor(app: AppHandle) {
-    thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut state = MeetingDetectionState::default();
         let mut warned_after_probe_error = false;
 
         loop {
-            thread::sleep(POLL_INTERVAL);
+            std::thread::sleep(POLL_INTERVAL);
 
             if !crate::os_accounts::cached_signed_in() {
                 if let Some(event) = state.update(false, false, false) {

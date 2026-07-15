@@ -167,8 +167,8 @@ const PAGE_TEMPLATE: &str = r#"<!doctype html>
   <span class="badge">Intel TDX · Phala Cloud</span>
   <h1>Verify this server</h1>
   <p class="lede">This server runs inside an Intel TDX confidential VM. This page is
-  served from inside that VM and explains how to check, without trusting us,
-  that the code running here is exactly the public source code.</p>
+  served from inside that VM and explains how to inspect the public source,
+  image identity, and runtime evidence for yourself.</p>
 </header>
 
 <h2>This deployment</h2>
@@ -181,15 +181,13 @@ const PAGE_TEMPLATE: &str = r#"<!doctype html>
 </dl>
 
 <h2>Why this matters</h2>
-<p>Audio, transcripts, and notes pass through this server. Because the running
-image is remotely attested, neither Phala (the platform) nor Open Software (us)
-can quietly swap it for one that reads your data. Any change to the running
-code is visible in the chain below.</p>
-<p>The chain has three links: <strong>source</strong> (a public git commit),
+<p>Audio, transcripts, and notes pass through this server. Remote attestation
+makes the reported runtime identity independently inspectable. A changed image
+or source commit becomes visible in the evidence below.</p>
+<p>The evidence has three links: <strong>source</strong> (a public git commit),
 <strong>image</strong> (a container image our CI builds from that commit, published
 with a content digest), and <strong>attestation</strong> (third-party-verifiable
-proof that the image with that digest is what is actually executing inside a
-genuine Intel TDX VM).</p>
+runtime evidence that reports the image executing inside an Intel TDX VM).</p>
 
 <h2>Check it yourself</h2>
 <ol class="steps">
@@ -217,14 +215,15 @@ git tag -l 'deploy/*/@SHORT_SHA@' -n3</code></pre>
     the image was built from. The build stamps it into the image itself.</p>
   </li>
 </ol>
-<p class="muted">This proves the running digest is the one our public CI built
-and recorded for that commit. Bit-for-bit reproducible rebuilds (regenerating
+<p class="muted">A matching chain supports that the reported running digest is
+the one our public CI built and recorded for that commit. Bit-for-bit
+reproducible rebuilds (regenerating
 the digest yourself instead of trusting our CI) are in progress; see
 <a href="@REPO_URL@/blob/main/docs/reproducible-builds.md">docs/reproducible-builds.md</a>.</p>
 
 <h2>What this does not cover</h2>
-<p>The chain verifies the <strong>code</strong> running in the confidential VM,
-not what upstream providers do. Everything leaving the TEE for model inference
+<p>This evidence supports the reported <strong>code identity</strong> inside the
+confidential VM, not what upstream providers do. Everything leaving the TEE for model inference
 (audio for transcription, prompts and context for note generation and the
 agent) goes through Venice. By default it runs on Venice private models: zero
 data retention, no training. If you select an anonymized model not run by

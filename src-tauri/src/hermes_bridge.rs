@@ -19,7 +19,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -67,15 +67,26 @@ const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const HERMES_SKILL_MAX_BYTES: usize = 512 * 1024;
 const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 // Must sit ABOVE june-api's aggregate request-string cap
-// (`MAX_AGENT_TOTAL_STRING_CHARS`, 1.5M chars) counted in BYTES, or this proxy
+// (`MAX_AGENT_TOTAL_STRING_CHARS`, 6M chars) counted in BYTES, or this proxy
 // rejects an in-window upload before june-api's larger cap can allow it (JUN-169
-// review). Chars vs bytes: 1.5M chars is up to ~3M bytes for 2-byte UTF-8, so
-// 3 MiB keeps the proxy from becoming the stricter gate. This is a 127.0.0.1
-// loopback proxy for a single-user desktop, so the memory/DoS surface of the
-// larger buffer is minimal. A body over this cap is genuinely beyond any model
-// window and degrades to the context-overflow notice (recognizable wording in
-// `read_http_request`).
-const JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES: usize = 3 * 1024 * 1024;
+// review). Chars vs bytes: 6M chars is up to ~12M bytes for 2-byte UTF-8, so
+// 12 MiB keeps the proxy from becoming the stricter gate. The cap is sized for a
+// 1M-token context window. This is a 127.0.0.1 loopback proxy for a single-user
+// desktop, so the memory/DoS surface of the larger buffer is minimal. A body
+// over this cap is genuinely beyond any model window and degrades to the
+// context-overflow notice (recognizable wording in
+// `provider_proxy_body_too_large_message`, enforced after auth in
+// `handle_june_provider_connection`).
+// Cross-workspace invariant (JUN-336): this MUST equal june-api's dedicated
+// `/v1/chat/completions` extractor cap (`DEFAULT_MAX_AGENT_CHAT_BYTES` in
+// june-api/crates/config/src/lib.rs). june-api is a separate cargo workspace
+// and cannot be imported here, so the two 12 MiB values are kept in sync by a
+// pinned-value assert on each side; change BOTH or an in-window agent chat
+// request is rejected by the stricter gate again.
+const JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES: usize = 12 * 1024 * 1024;
+// Compile-time half of that cross-workspace invariant: the june-api side mirrors
+// it against `DEFAULT_MAX_AGENT_CHAT_BYTES`.
+const _: () = assert!(JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES == 12 * 1024 * 1024);
 // Image edit forwarding expands a source ref into base64 JSON before June API
 // sees it. Keep the loopback image cap derived from the same 50 MiB source
 // maximum enforced by imports and the proxy validator.
@@ -510,6 +521,34 @@ pub struct HermesBridge {
     /// actions are JUN-287's; nothing here drives a browser.
     browser_broker: Arc<BrowserBroker>,
     browser_transport_policy_refresh_started: AtomicBool,
+    /// Latched once at app teardown (`shutdown`). A start that observes it set
+    /// must not leave a registered runtime behind, so the teardown that is about
+    /// to reap the process tree does not race an in-flight start that re-orphans
+    /// it (JUN-338). Set *before* the drain; checked under the `processes` lock
+    /// at registration, so the flag and the drain observe a single ordering.
+    shutting_down: AtomicBool,
+    /// Number of starts currently between spawning a runtime child and either
+    /// registering it into `processes` or reaping it. `shutdown` waits for this
+    /// to reach zero before draining, so a child spawned but not-yet-registered
+    /// can never be orphaned by the drain-then-restart (JUN-338).
+    starts_in_progress: AtomicUsize,
+}
+
+/// RAII counter for [`HermesBridge::starts_in_progress`], so every exit path of
+/// a start (including `?` early returns) decrements exactly once.
+struct StartInProgressGuard<'a>(&'a AtomicUsize);
+
+impl<'a> StartInProgressGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for StartInProgressGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 struct HermesProcess {
@@ -1152,6 +1191,24 @@ async fn start_hermes_bridge_inner(
     // sees the winner's running process.
     let _start_guard = bridge.start_lock.lock().await;
 
+    // Count this start as in-progress for the whole spawn->register window so a
+    // concurrent `shutdown` waits for it (below) before draining, and a child we
+    // spawn can never be orphaned by a drain-then-restart (JUN-338). Dropped
+    // explicitly once the child is registered or reaped, before the readiness
+    // wait, so teardown never blocks on the (up to 45s) readiness timeout.
+    let start_progress = StartInProgressGuard::new(&bridge.starts_in_progress);
+
+    // Bail fast if the app is tearing down: no point building a runtime the
+    // teardown is about to reap, and a late spawn could re-orphan the tree. The
+    // authoritative, race-free check is the one at registration below; this is
+    // only an early out.
+    if bridge.shutting_down.load(Ordering::SeqCst) {
+        return Err(AppError::new(
+            "hermes_bridge_shutting_down",
+            "June is shutting down; Hermes runtime start skipped.",
+        ));
+    }
+
     // Ensure the requested mode (None = the sandboxed default). The other
     // mode's process — if one is up — is deliberately untouched: the pair
     // runs side by side so a session in one mode never kills the other's
@@ -1329,6 +1386,17 @@ async fn start_hermes_bridge_inner(
     );
     cmd.current_dir(&cwd);
 
+    // Put the runtime in its own process group so teardown can reap the whole
+    // tree, not just the tracked child. The dashboard (and, unsandboxed, the
+    // Python runtime it becomes) can fork worker subprocesses; a bare
+    // `child.kill()` would leave those orphaned when the app quits or relaunches
+    // for an update (JUN-338). See `shutdown_hermes_process`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+    }
+
     let mut child = cmd.spawn().map_err(|error| {
         AppError::new(
             "hermes_bridge_start_failed",
@@ -1352,9 +1420,18 @@ async fn start_hermes_bridge_inner(
 
     let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
     {
-        let mut guard = bridge.processes.lock().map_err(|_| {
-            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
-        })?;
+        // A poisoned lock must not drop `child` and detach it: reap the process
+        // group first (JUN-338).
+        let mut guard = match bridge.processes.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                reap_unregistered_child(&mut child);
+                return Err(AppError::new(
+                    "hermes_bridge_unavailable",
+                    "Hermes bridge lock failed.",
+                ));
+            }
+        };
         // The start guard serializes starts, so no concurrent start can have
         // populated this mode's slot since the live-connections check above.
         // Keep a defensive check anyway: if a live process is somehow present
@@ -1362,11 +1439,23 @@ async fn start_hermes_bridge_inner(
         // of leaking it.
         if let Some(existing) = guard.get_mut(&full_mode) {
             if matches!(existing.child.try_wait(), Ok(None)) {
-                let _ = child.kill();
-                let _ = child.wait();
+                reap_unregistered_child(&mut child);
                 drop(guard);
                 return Ok(status_for(live_connections(bridge)?, Some(full_mode)));
             }
+        }
+        // Race-free teardown handshake (JUN-338): `shutdown` latches the flag
+        // *before* it drains under this same lock. If it is set here, the drain
+        // has already run (or is about to) and would miss a process we register
+        // now, re-orphaning the tree the teardown is reaping. Reap what we
+        // spawned instead of registering it.
+        if bridge.shutting_down.load(Ordering::SeqCst) {
+            drop(guard);
+            reap_unregistered_child(&mut child);
+            return Err(AppError::new(
+                "hermes_bridge_shutting_down",
+                "June is shutting down; Hermes runtime start skipped.",
+            ));
         }
         guard.insert(
             full_mode,
@@ -1377,6 +1466,11 @@ async fn start_hermes_bridge_inner(
             },
         );
     }
+
+    // Registered: the drain can now see and reap this process, so teardown no
+    // longer needs to wait on this start. Release before the readiness wait so
+    // shutdown is not blocked for the readiness timeout.
+    drop(start_progress);
 
     if let Err(error) = wait_for_hermes(&base_url, &token).await {
         // Only tear down the exact process this start spawned. If a stop (or
@@ -3944,6 +4038,16 @@ fn hermes_file_mime_type(path: &Path) -> Option<&'static str> {
 
 pub fn shutdown(app: &tauri::AppHandle) {
     let bridge = app.state::<HermesBridge>();
+    // Latch teardown *before* draining so an in-flight `start_hermes_bridge_inner`
+    // cannot register a runtime after the drain and re-orphan the tree we are
+    // about to reap (JUN-338). The flag is permanent: nothing restarts the
+    // bridge after shutdown. See the registration handshake in that function.
+    bridge.shutting_down.store(true, Ordering::SeqCst);
+    // Then wait for any start that already spawned a child to finish registering
+    // it (so the drain reaps it) or reaping it itself. Without this, a child
+    // spawned but not-yet-registered would be missed by the drain and orphaned
+    // when `relaunch_for_update` restarts the app moments later.
+    await_starts_quiesced(&bridge, SHUTDOWN_START_QUIESCE_TIMEOUT);
     bridge.browser_broker.terminate_sessions();
     let _ = stop_hermes_bridge_inner(&bridge);
     let proxy = bridge
@@ -3955,6 +4059,25 @@ pub fn shutdown(app: &tauri::AppHandle) {
         if let Some(shutdown) = proxy.shutdown.take() {
             let _ = shutdown.send(());
         }
+    }
+}
+
+/// How long `shutdown` waits for in-flight starts to register/reap their spawned
+/// child before draining. The window it guards (spawn -> register) is short, so
+/// this is only a safety bound; teardown proceeds regardless once it elapses.
+const SHUTDOWN_START_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Blocks until no start is between spawning a child and registering/reaping it,
+/// or the timeout elapses. Sync (called from the sync teardown path) and cheap:
+/// the guarded window is milliseconds and at most one start runs at a time (the
+/// `start_lock` serializes them).
+fn await_starts_quiesced(bridge: &HermesBridge, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while bridge.starts_in_progress.load(Ordering::SeqCst) > 0 {
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -6375,9 +6498,43 @@ fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Resu
 
 fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
     if let Some(process) = process.as_mut() {
+        // Sweep the runtime's process group first so any worker subprocess it
+        // forked dies with it rather than detaching and outliving the app (the
+        // child spawns into its own group; see the spawn site). Then kill and
+        // reap the tracked child itself.
+        #[cfg(unix)]
+        kill_process_group(process.child.id());
         let _ = process.child.kill();
         let _ = process.child.wait();
     }
+}
+
+/// Reaps a runtime child that was spawned but never registered into
+/// `processes`, so no post-spawn error path (poisoned lock, a redundant-launch
+/// short-circuit, a teardown handshake) can drop the `Child` and detach it. The
+/// child spawns into its own process group, so this also reaps any worker it
+/// forked (JUN-338).
+fn reap_unregistered_child(child: &mut Child) {
+    #[cfg(unix)]
+    kill_process_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Best-effort SIGKILL to a whole process group, addressed by the leader's pid
+/// (a negative target is a process group). Shells out to `/bin/kill` to stay
+/// dependency-free, matching the module's other system-utility spawns. Only
+/// meaningful for a child spawned with `process_group(0)`, whose pid is its
+/// group id.
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    let _ = Command::new("/bin/kill")
+        .arg("-KILL")
+        .arg(format!("-{pid}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 async fn resolve_hermes_command(
@@ -9112,8 +9269,8 @@ async fn handle_june_provider_connection(
     mut stream: tokio::net::TcpStream,
     state: Arc<ProviderProxyState>,
 ) -> io::Result<()> {
-    let request = match read_http_request(&mut stream).await {
-        Ok(request) => request,
+    let (mut request, content_length, leftover) = match read_http_head(&mut stream).await {
+        Ok(head) => head,
         Err(error) => {
             let _ = write_json_response(
                 &mut stream,
@@ -9133,20 +9290,23 @@ async fn handle_june_provider_connection(
         &routine_browser_token,
         &state.connector_token,
     );
-    let browser_context = if request.path.starts_with("/v1/browser/") {
+    let is_browser_request = request.path.starts_with("/v1/browser/");
+    let browser_context = if is_browser_request {
         provider_proxy_browser_context(&request, &state.browser_broker, &attended_browser_token)
-    } else if provider_proxy_authorized(&request, required_token) {
-        None
     } else {
-        write_json_response(
-            &mut stream,
-            401,
-            serde_json::json!({ "error": { "message": "Unauthorized" } }),
-        )
-        .await?;
-        return Ok(());
+        None
     };
-    if request.path.starts_with("/v1/browser/") && browser_context.is_none() {
+    // Authenticate on the parsed headers BEFORE reading the body, so an
+    // unauthenticated local process cannot force the loopback proxy to buffer a
+    // declared (up to 12 MiB) body before the 401 (JUN-336 review). Browser
+    // routes authenticate through their credential-bound caller context so the
+    // broker, not a request-body declaration, selects Attended vs Routine.
+    let authorized = if is_browser_request {
+        browser_context.is_some()
+    } else {
+        provider_proxy_authorized(&request, required_token)
+    };
+    if !authorized {
         write_json_response(
             &mut stream,
             401,
@@ -9155,6 +9315,24 @@ async fn handle_june_provider_connection(
         .await?;
         return Ok(());
     }
+    if content_length > provider_proxy_max_body_bytes(&request.path) {
+        // Enforced here (was inside the old read_http_request) so it runs after
+        // auth. Chat bodies keep the context-overflow wording the frontend
+        // classifier keys on ("maximum context length" / `prompt_too_long`), so
+        // an over-cap chat body degrades into the recoverable overflow notice;
+        // image bodies use an image-specific message. Only authenticated callers
+        // reach this — an unauthenticated over-cap request is already a 401.
+        write_json_response(
+            &mut stream,
+            400,
+            serde_json::json!({
+                "error": { "message": provider_proxy_body_too_large_message(&request.path) }
+            }),
+        )
+        .await?;
+        return Ok(());
+    }
+    request.body = read_http_body(&mut stream, leftover, content_length).await?;
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/v1/models") => {
             let selected_model = crate::providers::generation_model();
@@ -10404,7 +10582,16 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
-async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<HttpRequest> {
+/// Read and parse the request line + headers only, WITHOUT consuming the body.
+/// Returns the request (with an empty `body`), its declared `Content-Length`,
+/// and any bytes already read past the header terminator. The caller must
+/// authorize on the returned headers before calling `read_http_body`, so an
+/// unauthenticated caller never makes the loopback proxy buffer a large body
+/// (JUN-336 review). The body-size cap is likewise enforced by the caller,
+/// after authentication.
+async fn read_http_head(
+    stream: &mut tokio::net::TcpStream,
+) -> io::Result<(HttpRequest, usize, Vec<u8>)> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -10456,21 +10643,28 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
             }
         })
         .unwrap_or(0);
-    if content_length > provider_proxy_max_body_bytes(&path) {
-        // The handler turns this into a 400 for the client. Chat bodies are
-        // phrased as a context overflow (JUN-169): the wording carries the
-        // tokens Hermes' overflow patterns match ("maximum context length") and
-        // the frontend classifier keys on (`prompt_too_long`), so an over-cap
-        // chat body degrades into the recoverable context-overflow notice
-        // instead of a raw transport error that re-wedges or dead-ends the
-        // session. Image bodies use an image-specific message because they are
-        // bounded by upload size, not model context.
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            provider_proxy_body_too_large_message(&path),
-        ));
-    }
-    let mut body = buffer[header_end..].to_vec();
+    let leftover = buffer[header_end..].to_vec();
+    Ok((
+        HttpRequest {
+            method,
+            path,
+            headers,
+            body: Vec::new(),
+        },
+        content_length,
+        leftover,
+    ))
+}
+
+/// Read the request body. Call ONLY after `read_http_head` and a successful
+/// authorization + body-size check on the head — never for an unauthenticated
+/// or over-cap request (JUN-336).
+async fn read_http_body(
+    stream: &mut tokio::net::TcpStream,
+    mut body: Vec<u8>,
+    content_length: usize,
+) -> io::Result<Vec<u8>> {
+    let mut chunk = [0u8; 4096];
     while body.len() < content_length {
         let read = stream.read(&mut chunk).await?;
         if read == 0 {
@@ -10479,12 +10673,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
         body.extend_from_slice(&chunk[..read]);
     }
     body.truncate(content_length);
-    Ok(HttpRequest {
-        method,
-        path,
-        headers,
-        body,
-    })
+    Ok(body)
 }
 
 fn provider_proxy_max_body_bytes(path: &str) -> usize {
@@ -11956,6 +12145,124 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shutdown_waits_for_in_flight_start_to_register() {
+        // Simulate a start that has spawned a child but not yet registered it:
+        // the in-progress counter is held, then released 100ms later (as the
+        // real start would after inserting into `processes`). `shutdown`'s
+        // quiesce wait must not return before that release, or the drain would
+        // run while a child is unregistered and orphan it (JUN-338).
+        let bridge = Arc::new(HermesBridge::default());
+        bridge.starts_in_progress.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 1);
+
+        let released = Arc::new(AtomicBool::new(false));
+        let releaser = {
+            let bridge = bridge.clone();
+            let released = released.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                released.store(true, Ordering::SeqCst);
+                bridge.starts_in_progress.fetch_sub(1, Ordering::SeqCst);
+            })
+        };
+
+        let start = Instant::now();
+        await_starts_quiesced(&bridge, Duration::from_secs(2));
+
+        // Returned only after the in-flight start released — proving teardown
+        // blocked on it rather than racing ahead to the drain.
+        assert!(released.load(Ordering::SeqCst));
+        assert!(start.elapsed() >= Duration::from_millis(90));
+        assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 0);
+        releaser.join().unwrap();
+    }
+
+    #[test]
+    fn start_in_progress_guard_counts_up_then_down_on_drop() {
+        let bridge = HermesBridge::default();
+        {
+            let _guard = StartInProgressGuard::new(&bridge.starts_in_progress);
+            assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn await_starts_quiesced_bounds_the_wait_when_a_start_never_finishes() {
+        // A start that never completes must not hang teardown forever: the wait
+        // returns at the timeout even with the counter still held.
+        let bridge = HermesBridge::default();
+        let _guard = StartInProgressGuard::new(&bridge.starts_in_progress);
+        let start = Instant::now();
+        await_starts_quiesced(&bridge, Duration::from_millis(50));
+        assert!(start.elapsed() >= Duration::from_millis(45));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_group_reaps_a_forked_child() {
+        use std::os::unix::process::CommandExt as _;
+
+        // A parent in its own process group that forks a long-lived grandchild.
+        // A bare kill of the parent would leave the `sleep` orphaned; the
+        // group-addressed kill must take both down.
+        let mut parent = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("/bin/sleep 300 & sleep 300")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn test process group");
+        let pid = parent.id();
+
+        kill_process_group(pid);
+
+        // The parent must be gone promptly; if the group kill missed it, this
+        // wait would hang for the full 300s sleep.
+        let start = Instant::now();
+        loop {
+            match parent.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if start.elapsed() < Duration::from_secs(5) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => {
+                    let _ = parent.kill();
+                    panic!("process group was not killed");
+                }
+                Err(error) => panic!("wait failed: {error}"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reap_unregistered_child_group_kills_on_post_spawn_error() {
+        use std::os::unix::process::CommandExt as _;
+
+        // Mirrors a runtime spawned but not yet registered when an error path
+        // (poisoned lock, teardown handshake) fires: the child and any worker it
+        // forked must both die rather than orphan.
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("/bin/sleep 300 & sleep 300")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn unregistered child");
+
+        reap_unregistered_child(&mut child);
+
+        // Already reaped by the helper; a second wait resolves immediately.
+        assert!(matches!(child.try_wait(), Ok(Some(_)) | Err(_)));
+    }
+
+    #[test]
     fn ensure_video_defaults_injects_missing_knobs_under_the_keys_june_api_reads() {
         let mut body = serde_json::json!({ "prompt": "a calm lake" });
         ensure_video_defaults(&mut body);
@@ -12060,6 +12367,72 @@ mod tests {
             .expect("read response");
         server.await.expect("server task");
         response
+    }
+
+    #[tokio::test]
+    async fn provider_proxy_rejects_unauthenticated_request_before_reading_body() {
+        // The proxy authenticates on the parsed headers BEFORE reading the body,
+        // so an unauthenticated local process cannot make it buffer a declared
+        // (up to 12 MiB) body (JUN-336 review). We declare a large Content-Length
+        // but send NO body: with auth-before-read the proxy answers 401 at once;
+        // a regression that read the body first would block waiting for bytes
+        // that never arrive, tripping the timeout below.
+        let home = tempfile::tempdir().expect("tempdir");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind proxy listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let state = Arc::new(ProviderProxyState {
+            token: "proxy-token".to_string(),
+            recorder_token: "recorder-token".to_string(),
+            routine_browser_token: BrowserProxyToken::new("browser-token".to_string()),
+            attended_browser_token: BrowserProxyToken::new("attended-browser-token".to_string()),
+            browser_broker: Arc::new(BrowserBroker::default()),
+            connector_token: "connector-token".to_string(),
+            image_sources: ImageSourceCapabilities {
+                images_dir: home.path().join("images"),
+                secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
+            },
+            videos_dir: home.path().join("videos"),
+            video_generation_enabled: false,
+            app: None,
+            image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
+            model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
+            recorder_requests: Arc::new(Mutex::new(HashMap::new())),
+        });
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            handle_june_provider_connection(stream, state)
+                .await
+                .expect("handle connection");
+        });
+
+        let exchange = async {
+            let mut stream = tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("connect proxy");
+            // Wrong bearer + a large declared body we never send.
+            let request = "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer wrong-token\r\nContent-Length: 5000000\r\n\r\n";
+            stream
+                .write_all(request.as_bytes())
+                .await
+                .expect("write request");
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .await
+                .expect("read response");
+            response
+        };
+
+        let response = tokio::time::timeout(Duration::from_secs(5), exchange)
+            .await
+            .expect("proxy must answer 401 without waiting for the declared body");
+        assert!(
+            response.starts_with("HTTP/1.1 401"),
+            "expected 401 Unauthorized, got: {response}"
+        );
+        server.await.expect("server task");
     }
 
     fn oauth_test_connection() -> HermesBridgeConnection {

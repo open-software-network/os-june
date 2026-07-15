@@ -6,6 +6,7 @@ import { beginMaxGrantWait, clearMaxGrantWait, markMaxGrantWaitSlow } from "../l
 import type { AccountStatus, DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
 import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
+import { AGENT_SOUNDS_ENABLED_KEY } from "../lib/agent-sound-settings";
 import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { TELEMETRY_INFO_URL } from "../lib/p3a";
@@ -13,6 +14,7 @@ import { DATE_FORMAT_STORAGE_KEY } from "../lib/date-format";
 import { setStoredFontScale } from "../lib/font-scale";
 
 const mocks = vi.hoisted(() => ({
+  dictationCapabilities: vi.fn(),
   dictationSettings: vi.fn(),
   dictationHotkeyStatus: vi.fn(),
   dictationHelperCommand: vi.fn(),
@@ -82,6 +84,7 @@ vi.mock("../app/build-info", () => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  dictationCapabilities: mocks.dictationCapabilities,
   JUNE_COMMUNITY_URL: "https://t.me/osjune",
   dictationHotkeyStatus: mocks.dictationHotkeyStatus,
   dictationSettings: mocks.dictationSettings,
@@ -247,6 +250,17 @@ describe("AppSettings", () => {
     localState = { baseUrl: "", modelId: "", apiKey: "", enabled: false };
     mocks.eventHandler = undefined;
     mocks.listen.mockResolvedValue(vi.fn());
+    mocks.dictationCapabilities.mockResolvedValue({
+      capabilities: {
+        available: true,
+        platform: "macos",
+        shortcuts: true,
+        paste: true,
+        microphoneSelection: true,
+        accessibilityPermission: true,
+        systemAudio: true,
+      },
+    });
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
     mocks.dictationHotkeyStatus.mockResolvedValue({
       type: "hotkey_trigger_ready",
@@ -1975,6 +1989,17 @@ describe("AppSettings", () => {
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     );
+    mocks.dictationCapabilities.mockResolvedValue({
+      capabilities: {
+        available: true,
+        platform: "windows",
+        shortcuts: true,
+        paste: true,
+        microphoneSelection: true,
+        accessibilityPermission: false,
+        systemAudio: false,
+      },
+    });
     const onEnableMicrophone = vi.fn();
     const onEnableAccessibility = vi.fn();
     const onEnableSystemAudio = vi.fn();
@@ -2060,14 +2085,16 @@ describe("AppSettings", () => {
       );
       expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
       expect(
-        screen.queryByRole("button", {
+        screen.getByRole("button", {
           name: "Start test",
         }),
-      ).not.toBeInTheDocument();
+      ).toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
-      expect(screen.getByText("Dictation shortcuts unavailable")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+      expect(screen.getByText("Push to talk")).toBeInTheDocument();
+      expect(screen.getByText("Toggle dictation")).toBeInTheDocument();
+      expect(screen.queryByText("Dictation shortcuts unavailable")).not.toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Change" })).toHaveLength(2);
     } finally {
       restoreNavigator();
     }
@@ -2100,6 +2127,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "push_to_talk",
         pressCount: 1,
       }),
     );
@@ -2142,6 +2170,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "push_to_talk",
         pressCount: 1,
       }),
     );
@@ -2184,6 +2213,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "toggle",
         pressCount: 1,
       }),
     );
@@ -2249,6 +2279,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "push_to_talk",
         pressCount: 1,
       }),
     );
@@ -3273,6 +3304,199 @@ describe("AppSettings", () => {
     ).toBeInTheDocument();
   });
 
+  it("asks for a billing choice when a Venice key is saved while Auto is selected", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+      },
+    });
+    mocks.setVeniceApiKey.mockResolvedValue({
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      veniceApiKeyConfigured: true,
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    // The save lands, but Auto would keep billing June credits, so the
+    // explicit choice dialog appears with the leading suggested Venice model.
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use GLM 5.2" }));
+    await waitFor(() =>
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "zai-org-glm-5-2"),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the billing choice dialog open when the model switch fails", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+      },
+    });
+    mocks.setVeniceApiKey.mockResolvedValue({
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      veniceApiKeyConfigured: true,
+    });
+    mocks.setVeniceModel.mockRejectedValueOnce(new Error("switch failed"));
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use GLM 5.2" }));
+
+    // The failed save must not read as a completed switch: the dialog stays
+    // open for a retry or an explicit Keep Auto.
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use GLM 5.2" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument(),
+    );
+    expect(mocks.setVeniceModel).toHaveBeenLastCalledWith("generation", "zai-org-glm-5-2");
+  });
+
+  it("keeps Auto when the billing choice dialog is declined", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+      },
+    });
+    mocks.setVeniceApiKey.mockResolvedValue({
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      veniceApiKeyConfigured: true,
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Keep Auto" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument(),
+    );
+    expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+  });
+
+  it("does not ask for a billing choice when a concrete model is selected", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Key saved.")).toBeInTheDocument();
+    expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument();
+  });
+
+  it("shows the Auto billing note in the model picker while a Venice key is saved", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        veniceApiKeyConfigured: true,
+      },
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(await screen.findByRole("button", { name: "Change text model" }));
+
+    expect(
+      await screen.findByText(
+        "Auto is billed to June credits and does not use your Venice API key.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("defaults the model picker to curated suggestions", async () => {
     const user = userEvent.setup();
     render(
@@ -3749,6 +3973,35 @@ describe("AppSettings", () => {
     await user.click(hudSwitch);
     expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
     expect(mocks.agentHudShow).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles agent sounds from Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    const soundsSwitch = await screen.findByRole("switch", {
+      name: "Play agent sounds",
+    });
+
+    expect(soundsSwitch).toHaveAttribute("aria-checked", "true");
+
+    await user.click(soundsSwitch);
+    expect(localStorage.getItem(AGENT_SOUNDS_ENABLED_KEY)).toBe("false");
+
+    await user.click(soundsSwitch);
+    expect(localStorage.getItem(AGENT_SOUNDS_ENABLED_KEY)).toBe("true");
   });
 
   it("edits June's character from Agent settings", async () => {

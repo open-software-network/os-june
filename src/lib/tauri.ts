@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { parseDictationHelperEvent } from "./dictation-events";
 
 // Re-exported so modules that build their own command calls (e.g. the Hermes
 // admin Rust transport) route through the same `invoke` the rest of the app's
@@ -135,6 +136,20 @@ export type DictationSettingsDto = {
   microphone: DictationMicrophoneSetting;
   style: DictationStyle;
   language?: string;
+};
+
+export type DictationCapabilitiesDto = {
+  available: boolean;
+  platform: "macos" | "windows" | "unsupported";
+  shortcuts: boolean;
+  paste: boolean;
+  microphoneSelection: boolean;
+  accessibilityPermission: boolean;
+  systemAudio: boolean;
+};
+
+export type DictationCapabilitiesResponse = {
+  capabilities: DictationCapabilitiesDto;
 };
 
 export type DictationSettingsResponse = {
@@ -844,6 +859,25 @@ export async function agentHudSetLayout(input: {
 
 export async function agentHudOpenAgent(session?: HermesSessionInfo) {
   return invoke<void>("agent_hud_open_agent", { session });
+}
+
+export async function sendAppNotification(input: {
+  title: string;
+  body: string;
+  sound?: string;
+  group?: string;
+  sessionId?: string;
+}) {
+  return invoke<void>("send_app_notification", { request: input });
+}
+
+/**
+ * Tells the backend the webview can receive "june:agent:open" events and
+ * returns the session id of a notification clicked before that (the click
+ * launched the app), so bootstrap can navigate straight to it.
+ */
+export async function agentOpenReady() {
+  return invoke<string | null>("agent_open_ready");
 }
 
 export async function createAgentTask(input: {
@@ -1729,6 +1763,10 @@ export async function osAccountsReferralSummary() {
   return invoke<ReferralSummary>("os_accounts_referral_summary");
 }
 
+export async function dictationCapabilities() {
+  return invoke<DictationCapabilitiesResponse>("dictation_capabilities");
+}
+
 export async function dictationSettings() {
   return invoke<DictationSettingsResponse>("dictation_settings");
 }
@@ -1967,7 +2005,7 @@ export async function dictationHotkeyStatus() {
 
 export async function latestDictationEvent() {
   const payload = await invoke<string | undefined>("latest_dictation_event");
-  return payload ? (JSON.parse(payload) as DictationHelperEvent) : undefined;
+  return parseDictationHelperEvent(payload);
 }
 
 // --- Browser extension pairing (JUN-287) ---

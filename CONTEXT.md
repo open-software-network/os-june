@@ -38,14 +38,25 @@ _Avoid_: accounts, the identity service, the auth service.
 
 **Upstream provider**:
 A third-party AI service June API calls on the user's behalf — currently
-**OpenAI** (transcription only) and **Venice** (transcription, generation,
-agent chat, web). Service-managed upstream provider API keys live only in June
-API's environment, never in June. A user's explicit Venice BYOK credential is
-stored locally by June and forwarded only on eligible Venice requests. In code,
-each upstream sits behind a domain trait
+**OpenAI** (transcription only), **Venice** (transcription, generation, agent
+chat, web), and **Phala** (TEE fallback for routed text inference).
+Service-managed upstream provider API keys live only in June API's environment,
+never in June. A user's explicit Venice BYOK credential is stored locally by
+June and forwarded only on eligible Venice requests. In code, each direct
+integration sits behind a domain trait
 (`Transcriber`, `Generator`, `AgentChatCompleter`, ...) defined in
-`june-domain` and implemented in `june-providers`.
+`june-domain` and implemented in `june-providers`; routed text calls reuse the
+OpenAI-compatible Venice adapter and report the selected upstream as additive
+route metadata.
 _Avoid_: AI provider, model provider, vendor, "the LLM".
+
+**Model routing service**:
+The Open Software API (`os-api`) used for service-managed text inference. June
+API requests `preferred` private routing; the service selects Venice private
+zero-retention first and Phala TEE as fallback, without falling below
+zero-retention. Venice BYOK requests remain direct and do not use this routing
+policy.
+_Avoid_: gateway (reserved for Hermes), router (unqualified).
 
 ### Notes
 
@@ -124,9 +135,11 @@ system audio via CoreAudio process taps and reports over a `status.json` file
 _Avoid_: system driver, in-process capture.
 
 **Dictation helper**:
-The native macOS helper (`mac-dictation-helper`) that owns push-to-talk
-**dictation** capture and text insertion into the **paste target**, and is the
-authoritative source for microphone + accessibility permission state.
+The platform-native helper (`mac-dictation-helper` on macOS,
+`june-dictation-helper.exe` on Windows) that owns push-to-talk **dictation**
+capture and text insertion into the **paste target**. It is the authoritative
+source for helper-owned microphone state and platform paste readiness. On
+macOS it is also authoritative for Accessibility permission state.
 _Avoid_: dictation app, keyboard helper.
 
 **Paste target**:
@@ -515,12 +528,15 @@ _Avoid_: pet (legacy name — survives only in an old storage key), overlay
 (unqualified), floating window.
 
 **Permission**:
-A macOS TCC grant June needs — microphone, accessibility, or screen/system
-audio recording. TCC grants are bundle-scoped, so the authoritative source is
-the bundle that captures: the dictation helper for dictation mic +
-accessibility state, the main app's own `AVCaptureDevice` authorization for
-note-recording mic state (the helper's grant never covers the main app).
-System-audio permission is probe-driven (there is no query-only macOS API).
+A platform grant June needs for native capture or insertion. On macOS these
+are TCC grants: microphone, accessibility, or screen/system audio recording.
+TCC grants are bundle-scoped, so the authoritative source is the bundle that
+captures: the dictation helper for dictation mic + accessibility state, the
+main app's own `AVCaptureDevice` authorization for note-recording mic state
+(the helper's grant never covers the main app). System-audio permission is
+probe-driven (there is no query-only macOS API). On Windows, microphone access
+is controlled by Windows privacy settings and dictation paste does not require
+macOS Accessibility.
 _Avoid_: entitlement (that is the code-signing sense), treating one bundle's
 mic grant as covering the other.
 

@@ -27,6 +27,7 @@ pub struct VeniceImageEditor {
     http: reqwest::Client,
     api_key: String,
     base_url: String,
+    byok_base_url: String,
     /// End-to-end budget for the whole edit leg INCLUDING retries (see
     /// `VeniceImageGenerator::leg_budget`).
     leg_budget: std::time::Duration,
@@ -42,6 +43,7 @@ impl VeniceImageEditor {
             http,
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
+            byok_base_url: crate::venice::byok_base_url(config),
             leg_budget,
         }
     }
@@ -130,7 +132,12 @@ impl ImageEditor for VeniceImageEditor {
             output_format: OUTPUT_FORMAT,
             safe_mode: request.safe_mode,
         };
-        let url = format!("{}/image/edit", self.base_url);
+        let base_url = crate::venice::request_base_url(
+            &self.base_url,
+            &self.byok_base_url,
+            &request.provider_credentials,
+        );
+        let url = format!("{base_url}/image/edit");
         // Bounded retry on transient failures, same as the generator. The
         // service charges once AFTER a successful edit, so a retry never
         // double-charges; at most one extra upstream edit if a completed
@@ -200,6 +207,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "test-key".to_string(),
                 base_url: base_url.to_string(),
+                byok_base_url: None,
             },
             std::time::Duration::from_secs(5),
         )

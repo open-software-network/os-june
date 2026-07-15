@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
-        AsyncChargeParams, AuthorizeParams, authorize_or_deny, clamp_to_cap, spawn_charge,
-        zero_receipt,
+        AsyncChargeParams, AuthorizeParams, ReleaseHoldParams, authorize_or_deny, clamp_to_cap,
+        release_hold, spawn_charge, zero_receipt,
     },
     error::ServiceError,
     language::fill_missing_language,
@@ -106,7 +106,7 @@ impl DictateService {
             hold_ttl_seconds: self.transcribe_hold_ttl_seconds,
         })
         .await?;
-        let transcript = self
+        let transcript = match self
             .transcriber
             .transcribe(TranscriptionRequest {
                 audio: params.audio,
@@ -117,7 +117,18 @@ impl DictateService {
                 provider_credentials: params.provider_credentials.clone(),
             })
             .await
-            .map_err(ServiceError::from)?;
+        {
+            Ok(transcript) => transcript,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::DictateTranscribe,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(ServiceError::from(error));
+            }
+        };
         let transcript = fill_missing_language(transcript, requested_language.as_deref());
         let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
         let idempotency_key = format!(
@@ -181,7 +192,7 @@ impl DictateService {
             hold_ttl_seconds: self.cleanup_hold_ttl_seconds,
         })
         .await?;
-        let cleaned = self
+        let cleaned = match self
             .cleaner
             .cleanup(CleanupRequest {
                 text: params.text,
@@ -192,7 +203,19 @@ impl DictateService {
                 system_prompt: prompts::DICTATE_CLEANUP.to_string(),
                 provider_credentials: params.provider_credentials.clone(),
             })
-            .await?;
+            .await
+        {
+            Ok(cleaned) => cleaned,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::DictateCleanup,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         let actual = self
             .pricing
             .price_token_usage(&params.model_id.0, cleaned.usage)?;

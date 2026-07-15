@@ -82,12 +82,14 @@ writeFileSync(
 // native window at the Vite server that before-dev will start on this port.
 tauriArgs.push("--config", devConfigPath);
 
-const child = spawn(tauriCommand(), tauriCommandArgs(["dev", ...tauriArgs]), {
+const tauri = tauriInvocation();
+const child = spawn(tauri.command, [...tauri.args, "dev", ...tauriArgs], {
   env: {
     ...process.env,
     VITE_PORT: String(frontendPort),
     ...(replayOnboarding ? { VITE_JUNE_REPLAY_ONBOARDING: "1" } : {}),
   },
+  shell: false,
   stdio: "inherit",
 });
 
@@ -100,29 +102,19 @@ child.on("error", (error) => {
   process.exit(1);
 });
 
-function tauriCommand() {
+function tauriInvocation() {
   if (process.platform === "win32") {
-    return process.execPath;
+    const localScript = findNodeModulesPath("@tauri-apps", "cli", "tauri.js");
+    if (!localScript) {
+      throw new Error(
+        `Tauri CLI entry point not found from "${SCRIPT_DIR}". Run pnpm install first.`,
+      );
+    }
+    return { command: process.execPath, args: [localScript] };
   }
+
   const localBinary = findNodeModulesPath(".bin", "tauri");
-  return localBinary ?? "tauri";
-}
-
-function tauriCommandArgs(args) {
-  if (process.platform !== "win32") {
-    return args;
-  }
-  return [tauriJsEntryPoint(), ...args];
-}
-
-function tauriJsEntryPoint() {
-  const tauriJs = findNodeModulesPath("@tauri-apps", "cli", "tauri.js");
-  if (!tauriJs) {
-    throw new Error(
-      `Tauri CLI entry point not found from "${SCRIPT_DIR}". Run pnpm install first.`,
-    );
-  }
-  return tauriJs;
+  return { command: localBinary ?? "tauri", args: [] };
 }
 
 function findNodeModulesPath(...segments) {

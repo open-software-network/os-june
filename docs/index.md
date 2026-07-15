@@ -28,6 +28,12 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0016](adr/0016-private-connectors-local-mode.md) — private connectors (local mode): Keychain-only token custody, app-proxied MCP calls straight to Google, trust modes enforced in the Rust proxy, earned autonomy, event-trigger daemon
 - [adr/0017](adr/0017-browser-use-via-june-extension.md) — browser use in the user's own browser via the June extension, two tracks behind one broker; computer use productizes the pinned toolset
 - [adr/0018](adr/0018-session-model-changes-apply-at-agent-run-boundaries.md) — session model changes are staged at Send and applied only at the next idle agent-run boundary
+- [adr/0019](adr/0019-windows-dictation-helper.md) — Windows dictation uses a platform-native helper process
+- [adr/0020](adr/0020-windows-dictation-keyboard-hook.md) — Windows shortcuts combine `RegisterHotKey` with a narrow keyboard hook
+- [adr/0021](adr/0021-june-api-v1-compatibility-policy.md) — `/v1` is additive-only for shipped app versions: per-version contract fixtures gate CI and production promotes, clients send `x-june-app-version`, error codes never renumber
+- [adr/0022](adr/0022-venice-private-first-model-routing.md) — service-managed text uses Venice private zero-retention first with Phala TEE fallback; existing `/v1` provider semantics stay compatible and pricing is fallback-safe
+- [adr/0023](adr/0023-attested-os-api-service-chain.md) - superseded by ADR-0024
+- [adr/0024](adr/0024-independent-product-verification.md) - June, Open Software API, and Chat publish independent verification evidence without cross-product release pinning
 
 ## Enforceable rules (spec/)
 
@@ -77,6 +83,17 @@ Per-repo config the engineering skills read before acting (see the
   - [Linear](plugins/linear-prd.md) — [implementation plan](plugins/linear-implementation-plan.md)
   - [Documents](plugins/documents-prd.md) — [implementation plan](plugins/documents-implementation-plan.md)
   - [Spreadsheets](plugins/spreadsheets-prd.md) — [implementation plan](plugins/spreadsheets-implementation-plan.md)
+- [plugins/integrations-next-ten.md](plugins/integrations-next-ten.md) - follow-on provider portfolio: ranks 11-20, auth feasibility, sequencing, and decision gates
+  - [HubSpot](plugins/hubspot-prd.md) - [implementation plan](plugins/hubspot-implementation-plan.md)
+  - [Salesforce](plugins/salesforce-prd.md) - [implementation plan](plugins/salesforce-implementation-plan.md)
+  - [Asana](plugins/asana-prd.md) - [implementation plan](plugins/asana-implementation-plan.md)
+  - [Box](plugins/box-prd.md) - [implementation plan](plugins/box-implementation-plan.md)
+  - [GitLab](plugins/gitlab-prd.md) - [implementation plan](plugins/gitlab-implementation-plan.md)
+  - [ClickUp](plugins/clickup-prd.md) - [implementation plan](plugins/clickup-implementation-plan.md)
+  - [Dropbox](plugins/dropbox-prd.md) - [implementation plan](plugins/dropbox-implementation-plan.md)
+  - [Pipedrive](plugins/pipedrive-prd.md) - [implementation plan](plugins/pipedrive-implementation-plan.md)
+  - [Azure Boards](plugins/azure-boards-prd.md) - [implementation plan](plugins/azure-boards-implementation-plan.md)
+  - [Canva](plugins/canva-prd.md) - [implementation plan](plugins/canva-implementation-plan.md)
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
 - [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
 - [telemetry.md](telemetry.md) — public overview of June telemetry, current behavior, and policies

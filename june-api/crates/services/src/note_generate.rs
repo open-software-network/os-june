@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
-        zero_receipt,
+        AuthorizeParams, ChargeParams, ReleaseHoldParams, authorize_or_deny, charge, clamp_to_cap,
+        log_settled, release_hold, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
@@ -92,7 +92,7 @@ impl NoteGenerateService {
             hold_ttl_seconds: self.hold_ttl_seconds,
         })
         .await?;
-        let generated = self
+        let generated = match self
             .generator
             .generate(GenerationRequest {
                 title: params.title,
@@ -107,7 +107,19 @@ impl NoteGenerateService {
                 provider_credentials: params.provider_credentials.clone(),
                 unmetered: false,
             })
-            .await?;
+            .await
+        {
+            Ok(generated) => generated,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::NoteGenerate,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         let actual = self
             .pricing
             .price_token_usage(&params.model_id.0, generated.usage)?;

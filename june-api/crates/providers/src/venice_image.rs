@@ -27,6 +27,7 @@ pub struct VeniceImageGenerator {
     http: reqwest::Client,
     api_key: String,
     base_url: String,
+    byok_base_url: String,
     /// End-to-end budget for the whole generate leg INCLUDING retries; the
     /// hold TTL and route timeout arithmetic assume this bound (config lib.rs).
     leg_budget: std::time::Duration,
@@ -42,6 +43,7 @@ impl VeniceImageGenerator {
             http,
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
+            byok_base_url: crate::venice::byok_base_url(config),
             leg_budget,
         }
     }
@@ -120,7 +122,12 @@ impl ImageGenerator for VeniceImageGenerator {
             height: request.height,
             safe_mode: request.safe_mode,
         };
-        let url = format!("{}/image/generate", self.base_url);
+        let base_url = crate::venice::request_base_url(
+            &self.base_url,
+            &self.byok_base_url,
+            &request.provider_credentials,
+        );
+        let url = format!("{base_url}/image/generate");
         // Bounded retry on transient failures (connection reset, 429, 5xx),
         // same as the chat and augment paths. The service settles at most one
         // June charge after this call returns; a retry can cost at most one
@@ -227,6 +234,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: Some(server.uri()),
             },
             std::time::Duration::from_secs(5),
         )

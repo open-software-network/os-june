@@ -73,6 +73,7 @@ pub struct GeneratedNote {
     pub content: String,
     pub title_suggestion: Option<String>,
     pub provider: String,
+    pub route: UpstreamRouteMetadata,
     pub usage: TokenUsage,
 }
 
@@ -81,6 +82,7 @@ pub struct GeneratedNote {
 pub struct CleanedText {
     pub text: String,
     pub provider: String,
+    pub route: UpstreamRouteMetadata,
     pub usage: TokenUsage,
 }
 
@@ -90,7 +92,16 @@ pub struct AgentChatCompletion {
     pub body: Vec<u8>,
     pub content_type: String,
     pub provider: String,
+    pub route: UpstreamRouteMetadata,
     pub usage: TokenUsage,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamRouteMetadata {
+    pub provider: Option<String>,
+    pub privacy_level: Option<String>,
+    pub endpoint: Option<String>,
 }
 
 /// A streaming agent chat completion: response headers have been received
@@ -104,6 +115,7 @@ pub struct AgentChatCompletion {
 pub struct AgentChatStream {
     pub content_type: String,
     pub provider: String,
+    pub route: UpstreamRouteMetadata,
     pub chunks: tokio::sync::mpsc::UnboundedReceiver<Result<bytes::Bytes, DomainError>>,
     pub outcome: tokio::sync::oneshot::Receiver<AgentChatStreamOutcome>,
 }
