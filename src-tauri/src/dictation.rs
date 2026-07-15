@@ -4025,7 +4025,7 @@ fn is_here_instruction_subject_marker(word: &str) -> bool {
 }
 
 fn is_generic_here_instruction_preamble(preamble: &str) -> bool {
-    matches!(
+    if matches!(
         preamble,
         "here you go"
             | "here it is"
@@ -4034,7 +4034,18 @@ fn is_generic_here_instruction_preamble(preamble: &str) -> bool {
             | "here's what i heard"
             | "here is what i got"
             | "here's what i got"
-    )
+    ) {
+        return true;
+    }
+    preamble.starts_with("here, i")
+        && preamble
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|word| {
+                matches!(
+                    word,
+                    "cleaned" | "corrected" | "normalized" | "punctuated" | "rewritten"
+                )
+            })
 }
 
 fn looks_like_report_summary_response(normalized: &str) -> bool {
@@ -7054,6 +7065,12 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here's what I got: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here, I've cleaned it up: Send it today."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here, I think we should send it today."
         ));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
