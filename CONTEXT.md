@@ -294,13 +294,24 @@ integration (too broad), plugin for a Tauri framework package.
 
 **Connector**:
 A private-by-architecture integration between June and a third-party account
-(launch: Google Gmail + Calendar). The user authorizes the provider on their
-Mac; the grant lives in the Keychain and every provider API call originates
-on-device. June ships each connector as a read MCP server (`june_gmail`,
-`june_gcal`) plus a mutating actions server (`june_gmail_actions`,
-`june_gcal_actions`); neither holds the token, which stays in Rust behind the
-on-device provider proxy (see [ADR-0016](docs/adr/0016-private-connectors-local-mode.md)).
+(shipped: Google Gmail + Calendar; in progress: Linear). The user authorizes
+the provider on their Mac; the grant lives in the Keychain and every provider
+API call originates on-device. June ships each connector as a read MCP server
+(`june_gmail`, `june_gcal`) plus a mutating actions server
+(`june_gmail_actions`, `june_gcal_actions`); neither holds the token, which
+stays in Rust behind the on-device provider proxy (see
+[ADR-0016](docs/adr/0016-private-connectors-local-mode.md)).
 _Avoid_: integration (unqualified), plugin, the Google API.
+
+**Selected teams** (Linear):
+The June-side authorization grant limiting every Linear read and write to the
+teams the user checked at connect time (stored in SQLite, editable in
+settings, enforced in Rust). Not a provider OAuth scope: Linear's `read` and
+`write` scopes are workspace-wide, so team boundaries exist only because
+June's own proxy refuses anything outside the grant. An account with no
+selected teams is connected but inert.
+_Avoid_: team scopes (they are not OAuth scopes), team filter (it is an
+enforcement boundary, not a view preference), workspace access.
 
 **Local mode**:
 The default (and, in v1, only) connector trust model: the OAuth grant is
