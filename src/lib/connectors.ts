@@ -316,8 +316,12 @@ export const SANDBOXED_ROUTINE_BASE_TOOLSETS = [
   "context_engine",
 ];
 
-/** Read-only connector MCP servers: ambient for every routine. */
-export const CONNECTOR_READ_TOOLSETS = ["june_gmail", "june_gcal"];
+/** Read-only connector MCP servers: ambient for every routine. Linear reads
+ * are team-enforced in Rust (the proxy checks the caller's selected-team
+ * grant on every team-scoped route), so `june_linear` is safe to grant
+ * ambiently just like the Google read servers rather than gating it behind
+ * trust mode. */
+export const CONNECTOR_READ_TOOLSETS = ["june_gmail", "june_gcal", "june_linear"];
 
 /** Action connector MCP servers: every mutating call parks for approval in
  * the Rust proxy. */
@@ -368,10 +372,11 @@ export function actionToolLabel(tool: string): string {
   return ACTION_TOOL_LABELS[tool] ?? tool.replace(/_/g, " ");
 }
 
-/** The provider behind a Google connector MCP server name, for provider marks
- * on the approvals surface. Null for non-connector servers. */
-export function providerFromServer(server: string): "google" | null {
+/** The provider behind a connector MCP server name, for provider marks on the
+ * approvals surface. Null for non-connector servers. */
+export function providerFromServer(server: string): "google" | "linear" | null {
   if (server.startsWith("june_gmail") || server.startsWith("june_gcal")) return "google";
+  if (server.startsWith("june_linear")) return "linear";
   return null;
 }
 

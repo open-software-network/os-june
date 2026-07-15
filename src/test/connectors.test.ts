@@ -241,6 +241,7 @@ describe("routineToolsetsFor", () => {
     }
     expect(toolsets).toContain("june_gmail");
     expect(toolsets).toContain("june_gcal");
+    expect(toolsets).toContain("june_linear");
     expect(toolsets).not.toContain("june_gmail_actions");
   });
 
@@ -274,6 +275,7 @@ describe("routineTrustModeFromToolsets", () => {
     expect(routineTrustModeFromToolsets(undefined)).toBeNull();
     expect(routineTrustModeFromToolsets(["web", "memory"])).toBeNull();
     expect(routineTrustModeFromToolsets(["web", "june_gmail"])).toBe("read_only");
+    expect(routineTrustModeFromToolsets(["web", "june_linear"])).toBe("read_only");
     expect(routineTrustModeFromToolsets(["june_gmail", "june_gmail_actions"])).toBe("approval");
     expect(routineTrustModeFromToolsets(["june_gmail", "june_gcal_auto_ab12cd34"])).toBe(
       "autonomous",
@@ -351,7 +353,8 @@ describe("providerFromServer", () => {
     expect(providerFromServer("june_gcal")).toBe("google");
     expect(providerFromServer("june_gcal_auto_abc123")).toBe("google");
     expect(providerFromServer("june_notion_actions")).toBeNull();
-    expect(providerFromServer("june_linear_auto_xyz")).toBeNull();
+    expect(providerFromServer("june_linear")).toBe("linear");
+    expect(providerFromServer("june_linear_auto_xyz")).toBe("linear");
     expect(providerFromServer("web")).toBeNull();
   });
 });
