@@ -63,7 +63,9 @@ async fn serve() -> anyhow::Result<()> {
     // file and Issue creation POSTs are not idempotent.
     let issue_report_http =
         issue_report_client(Duration::from_secs(config.server.request_timeout_secs))?;
-    GatewayAttestationVerifier::new(upstream_http.clone(), &config.gateway_attestation)
+    let gateway_attestation =
+        GatewayAttestationVerifier::new(upstream_http.clone(), &config.gateway_attestation);
+    gateway_attestation
         .verify(&config.upstreams.venice.api_key)
         .await
         .map_err(|_| anyhow::anyhow!("os-api gateway attestation failed closed"))?;
@@ -74,7 +76,7 @@ async fn serve() -> anyhow::Result<()> {
         metered_inference: &metered_inference_http,
         issue_reports: &issue_report_http,
     };
-    let app = build_router(&config, clients, pricing);
+    let app = build_router(&config, clients, pricing, gateway_attestation);
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "june-api listening");
     axum::serve(listener, app).await?;
@@ -146,6 +148,7 @@ fn build_router(
     config: &AppConfig,
     clients: HttpClients<'_>,
     mut pricing_config: BTreeMap<String, ModelPriceConfig>,
+    gateway_attestation: GatewayAttestationVerifier,
 ) -> axum::Router {
     if config.local_dev.enabled {
         pricing_config = filter_unconfigured_provider_models(config, pricing_config);
@@ -177,20 +180,20 @@ fn build_router(
             clients.metered_inference.clone(),
             clients.upstream.clone(),
             &config.upstreams.venice,
-            &config.gateway_attestation,
+            gateway_attestation.clone(),
         ));
     let cleaner: Arc<dyn june_domain::Cleaner> =
         Arc::new(VeniceCleaner::from_config_with_gateway_attestation(
             clients.upstream.clone(),
             &config.upstreams.venice,
-            &config.gateway_attestation,
+            gateway_attestation.clone(),
         ));
     let agent_chat_completer: Arc<dyn june_domain::AgentChatCompleter> =
         Arc::new(VeniceAgentChat::from_config_with_gateway_attestation(
             clients.metered_inference.clone(),
             clients.upstream.clone(),
             &config.upstreams.venice,
-            &config.gateway_attestation,
+            gateway_attestation,
         ));
     // One client backs both web traits (search + fetch) over the same Venice
     // credential and base URL.

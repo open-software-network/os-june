@@ -2,9 +2,7 @@ use crate::gateway_attestation::GatewayAttestationVerifier;
 use crate::retry::{self, UpstreamAttemptError};
 use crate::transcription::TranscriptionWireResponse;
 use async_trait::async_trait;
-use june_config::{
-    GatewayAttestationConfig, ModelPriceConfig, ModelProvider, ModelType, PriceUnit, UpstreamConfig,
-};
+use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit, UpstreamConfig};
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
     AgentChatStreamOutcome, CleanedText, Cleaner, CleanupRequest, DomainError, GeneratedNote,
@@ -303,7 +301,7 @@ impl VeniceGenerator {
         http: reqwest::Client,
         unmetered_http: reqwest::Client,
         config: &UpstreamConfig,
-        gateway_attestation: &GatewayAttestationConfig,
+        gateway_attestation: GatewayAttestationVerifier,
     ) -> Self {
         Self {
             chat: VeniceChat::with_unmetered_and_gateway_attestation(
@@ -410,7 +408,7 @@ impl VeniceAgentChat {
         http: reqwest::Client,
         unmetered_http: reqwest::Client,
         config: &UpstreamConfig,
-        gateway_attestation: &GatewayAttestationConfig,
+        gateway_attestation: GatewayAttestationVerifier,
     ) -> Self {
         Self {
             chat: VeniceChat::with_unmetered_and_gateway_attestation(
@@ -468,7 +466,7 @@ impl VeniceCleaner {
     pub fn from_config_with_gateway_attestation(
         http: reqwest::Client,
         config: &UpstreamConfig,
-        gateway_attestation: &GatewayAttestationConfig,
+        gateway_attestation: GatewayAttestationVerifier,
     ) -> Self {
         Self {
             chat: VeniceChat::new_with_gateway_attestation(http, config, gateway_attestation),
@@ -577,13 +575,10 @@ impl VeniceChat {
     fn new_with_gateway_attestation(
         http: reqwest::Client,
         config: &UpstreamConfig,
-        gateway_attestation: &GatewayAttestationConfig,
+        gateway_attestation: GatewayAttestationVerifier,
     ) -> Self {
         Self {
-            gateway_attestation: Some(GatewayAttestationVerifier::new(
-                http.clone(),
-                gateway_attestation,
-            )),
+            gateway_attestation: Some(gateway_attestation),
             ..Self::new(http, config)
         }
     }
@@ -592,7 +587,7 @@ impl VeniceChat {
         http: reqwest::Client,
         unmetered_http: reqwest::Client,
         config: &UpstreamConfig,
-        gateway_attestation: &GatewayAttestationConfig,
+        gateway_attestation: GatewayAttestationVerifier,
     ) -> Self {
         Self {
             unmetered_http: Some(unmetered_http),

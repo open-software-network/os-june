@@ -292,7 +292,11 @@ async function verifyGateway() {
     if (!gatewayUrl || !expectedDigest) throw new Error("model routing policy is not enabled here");
     const nonceBytes = crypto.getRandomValues(new Uint8Array(24));
     const nonce = Array.from(nonceBytes, byte => byte.toString(16).padStart(2, "0")).join("");
-    const response = await fetch(gatewayUrl, {method: "POST", body: JSON.stringify({nonce})});
+    const response = await fetch(gatewayUrl, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({nonce})
+    });
     if (!response.ok) throw new Error(`model routing service returned HTTP ${response.status}`);
     const envelope = await response.json();
     if (envelope.nonce !== nonce || envelope.audience !== expectedAudience) {
@@ -396,6 +400,7 @@ mod tests {
         assert!(html.contains("required and verified before startup"));
         assert!(html.contains(&format!("sha256:{}", "a".repeat(64))));
         assert!(html.contains("Verify the Open Software API now"));
+        assert!(html.contains("headers: {\"Content-Type\": \"application/json\"}"));
         assert!(!html.contains("@SHORT_SHA@"));
     }
 

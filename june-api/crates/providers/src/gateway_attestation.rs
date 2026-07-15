@@ -203,9 +203,11 @@ impl OneOrMany {
 #[cfg(test)]
 mod tests {
     use super::{
-        Claims, ConfidentialSpaceClaims, ContainerClaims, OneOrMany, Submods, workload_claims_match,
+        Claims, ConfidentialSpaceClaims, ContainerClaims, GatewayAttestationVerifier, OneOrMany,
+        Submods, workload_claims_match,
     };
     use june_config::GatewayAttestationConfig;
+    use std::sync::Arc;
 
     fn config() -> GatewayAttestationConfig {
         GatewayAttestationConfig {
@@ -230,6 +232,14 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn clones_share_the_verification_cache_and_refresh_lock() {
+        let verifier = GatewayAttestationVerifier::new(reqwest::Client::new(), &config());
+        let clone = verifier.clone();
+
+        assert!(Arc::ptr_eq(&verifier.inner, &clone.inner));
     }
 
     #[test]
