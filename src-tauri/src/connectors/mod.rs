@@ -986,20 +986,30 @@ pub async fn disconnect(
     for &provider in providers {
         if revoke_grant {
             if let Ok(Some(stored)) = store::load_tokens(provider, account_id).await {
-                // Revoking either token of the pair invalidates the whole
-                // grant; prefer the refresh token.
-                let token = if stored.refresh_token.is_empty() {
-                    stored.access_token.clone()
-                } else {
-                    stored.refresh_token.clone()
-                };
-                if !token.is_empty() {
-                    match provider {
-                        ConnectorProvider::Google => {
+                match provider {
+                    ConnectorProvider::Google => {
+                        // Google: revoking either token of the pair
+                        // invalidates the whole grant; prefer the refresh
+                        // token.
+                        let token = if stored.refresh_token.is_empty() {
+                            stored.access_token.clone()
+                        } else {
+                            stored.refresh_token.clone()
+                        };
+                        if !token.is_empty() {
                             let _ = oauth::revoke(&token).await;
                         }
-                        ConnectorProvider::Linear => {
-                            let _ = linear::revoke(&token).await;
+                    }
+                    ConnectorProvider::Linear => {
+                        // Linear documents no cross-token cascade, so revoke
+                        // BOTH tokens: a lone refresh-token revoke can leave
+                        // the 24-hour access token alive and the app still
+                        // listed under the user's authorized applications.
+                        if !stored.refresh_token.is_empty() {
+                            let _ = linear::revoke(&stored.refresh_token, "refresh_token").await;
+                        }
+                        if !stored.access_token.is_empty() {
+                            let _ = linear::revoke(&stored.access_token, "access_token").await;
                         }
                     }
                 }
