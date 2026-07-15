@@ -3946,9 +3946,13 @@ fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
     if strong_preamble_end.is_some_and(|end| is_here_instruction_preamble(&normalized[..end])) {
         return true;
     }
-    normalized
+    if normalized
         .find(", ")
         .is_some_and(|end| is_here_instruction_preamble(&normalized[..end]))
+    {
+        return true;
+    }
+    is_here_instruction_preamble(normalized)
 }
 
 fn is_here_instruction_preamble(preamble: &str) -> bool {
@@ -6973,6 +6977,8 @@ mod tests {
         assert!(looks_like_instruction_response(
             "Here is the cleaned output: Hello."
         ));
+        assert!(looks_like_instruction_response("Here is the transcript."));
+        assert!(looks_like_instruction_response("Here you go."));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
         ));
