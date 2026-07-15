@@ -73,6 +73,8 @@ Per-repo config the engineering skills read before acting (see the
   - [Notion](plugins/notion-prd.md) — [implementation plan](plugins/notion-implementation-plan.md)
   - [GitHub](plugins/github-prd.md) — [implementation plan](plugins/github-implementation-plan.md)
     - [Phase 0 authentication design](superpowers/specs/2026-07-14-github-connector-phase-0-design.md) — approved device flow, Keychain custody, installation discovery, and selected-repository binding
+    - [Installation return refresh design](superpowers/specs/2026-07-15-github-install-return-refresh-design.md) — one-shot reconciliation after GitHub installation and repository-management browser handoffs
+    - [Revocation reconnect design](superpowers/specs/2026-07-16-github-revocation-reconnect-design.md) — fail-closed token revocation classification and immediate reconnect-state synchronization
   - [Linear](plugins/linear-prd.md) — [implementation plan](plugins/linear-implementation-plan.md)
   - [Documents](plugins/documents-prd.md) — [implementation plan](plugins/documents-implementation-plan.md)
   - [Spreadsheets](plugins/spreadsheets-prd.md) — [implementation plan](plugins/spreadsheets-implementation-plan.md)
