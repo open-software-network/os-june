@@ -105,6 +105,11 @@ export function ShareDialog({
     setContentKeyB64(null);
     setInvites([]);
     setLoadFailed(false);
+    // Clear any pending confirmation from a previous item or open. Otherwise an
+    // Unshare/Revoke confirm opened for the old item stays live and, once this
+    // item's shareId loads, would act on the wrong share.
+    setConfirmUnshare(false);
+    setRevokeTarget(null);
     void (async () => {
       const base = await getShareBaseUrl().catch(() => null);
       if (!cancelled && base) setBaseUrl(base);

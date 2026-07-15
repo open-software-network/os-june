@@ -472,6 +472,35 @@ describe("ShareDialog", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Unshare" })).toBeEnabled());
   });
 
+  it("clears a pending unshare confirmation when the dialog switches items", async () => {
+    mocks.shareKeyGet.mockResolvedValue({
+      shareId: "shr_A",
+      contentKeyB64: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    });
+    mocks.shareGet.mockResolvedValue({
+      shareId: "shr_A",
+      kind: "note",
+      invites: [{ inviteId: "shi_1", email: "friend@example.com", state: "accepted" }],
+    });
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <ShareDialog open onClose={vi.fn()} item={noteItem({ itemId: "note_A" })} />,
+    );
+
+    // Open the unshare confirmation for item A.
+    await user.click(await screen.findByRole("button", { name: "Unshare" }));
+    expect(await screen.findByRole("dialog", { name: "Unshare" })).toBeInTheDocument();
+
+    // Switch the dialog to a different item before confirming.
+    rerender(<ShareDialog open onClose={vi.fn()} item={noteItem({ itemId: "note_B" })} />);
+
+    // The stale confirmation is cleared, so it can't delete the new item's share.
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Unshare" })).not.toBeInTheDocument(),
+    );
+    expect(mocks.shareDelete).not.toHaveBeenCalled();
+  });
+
   it("keeps the invite button disabled while an existing share is still loading", async () => {
     // Hold shareKeyGet pending so the open effect never settles during the
     // assertion window; a submit now would wrongly take the first-invite path.
