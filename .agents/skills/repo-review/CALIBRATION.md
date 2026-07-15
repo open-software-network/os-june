@@ -90,3 +90,7 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | os-api private routing (pre-PR) | Standards (codex, r1+final) | 3 | 3 | caught `/v1` provider-semantic drift, missing canonical glossary coverage, and stale response-shape wording; final clean |
 | os-api private routing (pre-PR) | Spec (codex, r1+final) | 0 | — | clean twice; verified deliberate Venice-private-first policy, BYOK isolation, additive metadata, compatibility, and pricing |
 | os-api private routing (pre-PR) | Adversarial (codex, r1-r3) | 2 | 2 | caught underpriced canonical Kimi first, then expanded the same billing invariant to all five multi-route preferred models; final approve |
+| JUN-334 (pre-PR) | Standards (codex, r1+fix audit) | 5 | 5 | canonical note-transcription/checkpoint names, recording-session ids, Turn WAV vocabulary, generated Note wording, and docs-index coverage were all real and fixed |
+| JUN-334 (pre-PR) | Spec (codex, r1+fix audit) | 2 | 2 | caught missing terminal telemetry on microphone setup failure and non-canonical Source fallback order; both received focused regressions |
+| JUN-334 (pre-PR) | Adversarial (codex, initial+convergence r1) | 1 | 1 | independently confirmed the microphone setup-telemetry gap, then approved the fixed scheduler, cleanup, evidence, polling, and privacy paths |
+| JUN-334 (pre-PR) | Adversarial (codex, convergence r2) | 0 | — | second consecutive clean review by a different reviewer; explicitly checked dual-Source setup, buffered preparation errors, fallback guards, benchmark reproduction, and billing/privacy |
