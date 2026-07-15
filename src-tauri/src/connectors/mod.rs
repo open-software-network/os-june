@@ -705,10 +705,16 @@ pub async fn begin_connect(
     // Persist the account's scopes. When Google omits the response scope field
     // on an incremental grant, this unions the requested scopes with the ones
     // the account already held, so add-access never makes the DB forget earlier
-    // grants the token still carries.
+    // grants the token still carries. Matched by provider AND email: a Linear
+    // row can carry the same email (the Linear viewer email is often the
+    // Google address), and its "read"/"write" scopes must never leak into the
+    // Google account's persisted grant.
     let existing_scopes = existing_accounts
         .iter()
-        .find(|record| record.email.eq_ignore_ascii_case(&email))
+        .find(|record| {
+            record.provider == ConnectorProvider::Google.as_str()
+                && record.email.eq_ignore_ascii_case(&email)
+        })
         .map(|record| record.scopes.as_slice());
     let granted_scopes =
         scopes::resolve_granted_scopes(grant.tokens.scope.as_deref(), &requested, existing_scopes);
