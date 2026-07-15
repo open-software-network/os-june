@@ -23,10 +23,12 @@ preview).
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
    the batch pipeline: `drop_silent_system_sources` → `turns::detect_turns` →
    `coalesce_turns_for_transcription` → `write_turn_wav` (seek-extract each turn)
-   → `normalize_wav_for_transcription` → `split_wav_for_transcription` (≤8-min
+   → `normalize_wav_for_transcription` → `split_wav_for_transcription` (≤30-second
    chunks) → `transcribe_saved_audio` (POST `/v1/notes/transcribe`, provider
    routing is server-side) → persist per-source transcript rows → **note
-   generation**.
+   generation**. If a source lane has materially incomplete transcript coverage,
+   June retries the saved full source in bounded chunks and replaces the partial
+   turn rows when that fallback succeeds.
 
 ## Key files
 
@@ -78,8 +80,8 @@ Energy-based, per-source, **no diarization**:
 
 Before transcription each turn WAV is downmixed to **mono**, resampled to
 **16 kHz**, and gain-adjusted toward a target peak (bounded, with a
-reuse-original shortcut when already loud enough), then split into **≤8-minute**
-chunks with rolling context.
+reuse-original shortcut when already loud enough), then split into
+**≤30-second** chunks with rolling context.
 
 ## Recovery
 

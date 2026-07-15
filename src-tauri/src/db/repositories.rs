@@ -2831,6 +2831,22 @@ impl Repositories {
         })
     }
 
+    pub async fn delete_source_turn_transcripts_for_session(
+        &self,
+        session_id: &str,
+        source: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "DELETE FROM transcripts
+             WHERE recording_session_id = ? AND source = ?",
+        )
+        .bind(session_id)
+        .bind(source)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn create_failed_source_transcript(
         &self,
