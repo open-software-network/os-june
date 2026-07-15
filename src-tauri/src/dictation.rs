@@ -7149,6 +7149,9 @@ mod tests {
             "Here it is with punctuation: Send it today."
         ));
         assert!(looks_like_instruction_response(
+            "Here it is, punctuated: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
             "Here's your corrected transcript. Send it today."
         ));
         assert!(looks_like_instruction_response(
