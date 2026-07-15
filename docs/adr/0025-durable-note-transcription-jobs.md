@@ -51,6 +51,10 @@ Unchanged fingerprints may reuse succeeded output. Changed fingerprints reset
 the job to pending and produce a different provider operation ID. Transient
 retries of one unchanged job keep the same operation ID.
 
+Transcript rows created before this ledger are not certified as cache entries:
+they lack the configuration and pipeline fingerprint needed to prove identity.
+The first explicit retry prunes and rebuilds those rows from the saved WAV.
+
 At the start of every processing pass, June transactionally reconciles the
 complete planned Turn set with the ledger. Obsolete jobs are superseded and
 obsolete transcript rows are removed from the current projection. A retry that
@@ -74,7 +78,9 @@ producer, but it cannot create same-Source provider overlap.
 On process restart, jobs left `running` return to `pending`. June continues to
 use its explicit recording-recovery surface rather than silently spending
 credits at application launch; retry resumes the reconciled jobs from saved
-audio.
+audio. Retry requests carry the selected recording session explicitly; the
+legacy note-only request remains supported and selects the strongest
+unprocessed saved recording rather than merely the newest artifact.
 
 Live preview may share Source/time coordinates with authoritative Turns, but
 its text is never written to `transcripts` or used for note generation. The UI

@@ -17,8 +17,8 @@ use crate::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::{
         processing::{
-            add_latency_checkpoint, manual_notes_for_generation, process_saved_audio,
-            process_saved_source_audio, ProcessingTiming,
+            add_latency_checkpoint, manual_notes_for_generation, process_saved_source_audio,
+            ProcessingTiming,
         },
         processing_queue,
         types::{
@@ -61,6 +61,7 @@ use tokio::{sync::OnceCell, time::sleep};
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
     let repos = repositories(&app).await?;
+    repos.release_interrupted_note_transcription_jobs().await?;
     // Complete stale tasks that already received their assistant reply
     // before pausing the rest: the repair only considers queued/running
     // tasks, so it must run before they are flipped to paused.
@@ -1609,40 +1610,18 @@ async fn finish_recording_session_with_timing(
         let title = note.title.clone();
         let existing_generated_note = note.generated_content.clone();
         let manual_notes = manual_notes_for_generation(&note);
-        let result = if valid_sources.len() == 1
-            && task_source_mode == RecordingSourceMode::MicrophoneOnly
-        {
-            let (artifact_id, _source, path, recorded_silence) = valid_sources
-                .into_iter()
-                .next()
-                .expect("valid source was checked before starting processing");
-            process_saved_audio(
-                &task_repos,
-                &task_note_id,
-                &task_session_id,
-                &artifact_id,
-                path,
-                title,
-                existing_generated_note,
-                manual_notes,
-                recorded_silence,
-                timing,
-            )
-            .await
-        } else {
-            process_saved_source_audio(
-                &task_repos,
-                &task_note_id,
-                &task_session_id,
-                task_source_mode,
-                valid_sources,
-                title,
-                existing_generated_note,
-                manual_notes,
-                timing,
-            )
-            .await
-        };
+        let result = process_saved_source_audio(
+            &task_repos,
+            &task_note_id,
+            &task_session_id,
+            task_source_mode,
+            valid_sources,
+            title,
+            existing_generated_note,
+            manual_notes,
+            timing,
+        )
+        .await;
         if let Err(error) = result {
             let _ = task_repos
                 .set_note_status(
@@ -1812,7 +1791,13 @@ pub async fn retry_processing(
 ) -> Result<NoteDto, AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
-    let sources = retry_audio_sources(&repos, &paths, &request.note_id).await?;
+    let sources = retry_audio_sources(
+        &repos,
+        &paths,
+        &request.note_id,
+        request.recording_session_id.as_deref(),
+    )
+    .await?;
     let (ticket, depth) = processing_queue::enqueue(&request.note_id);
     if depth <= 1 {
         repos
@@ -1833,6 +1818,10 @@ pub async fn retry_processing(
             },
         )
         .unwrap_or_default();
+    let task_source_mode = repos
+        .recording_session_source_mode(&task_recording_session_id)
+        .await?
+        .unwrap_or(RecordingSourceMode::MicrophoneOnly);
     tokio::spawn(async move {
         let queue_lock = ticket.lock();
         let _guard = queue_lock.lock().await;
@@ -1854,47 +1843,23 @@ pub async fn retry_processing(
         let title = note.title.clone();
         let existing_generated_note = note.generated_content.clone();
         let manual_notes = manual_notes_for_generation(&note);
-        let result = if sources.len() == 1 {
-            let (audio_artifact_id, _source, audio_path, session_id, recorded_silence) = sources
+        let result = process_saved_source_audio(
+            &task_repos,
+            &task_note_id,
+            &task_recording_session_id,
+            task_source_mode,
+            sources
                 .into_iter()
-                .next()
-                .expect("retry sources were checked before starting processing");
-            process_saved_audio(
-                &task_repos,
-                &task_note_id,
-                &session_id,
-                &audio_artifact_id,
-                audio_path,
-                title,
-                existing_generated_note,
-                manual_notes,
-                recorded_silence,
-                timing,
-            )
-            .await
-        } else {
-            let session_id = sources
-                .first()
-                .map(|(_id, _source, _path, session_id, _recorded_silence)| session_id.clone())
-                .unwrap_or_default();
-            process_saved_source_audio(
-                &task_repos,
-                &task_note_id,
-                &session_id,
-                RecordingSourceMode::MicrophonePlusSystem,
-                sources
-                    .into_iter()
-                    .map(|(id, source, path, _session_id, recorded_silence)| {
-                        (id, source, path, recorded_silence)
-                    })
-                    .collect(),
-                title,
-                existing_generated_note,
-                manual_notes,
-                timing,
-            )
-            .await
-        };
+                .map(|(id, source, path, _session_id, recorded_silence)| {
+                    (id, source, path, recorded_silence)
+                })
+                .collect(),
+            title,
+            existing_generated_note,
+            manual_notes,
+            timing,
+        )
+        .await;
         if let Err(error) = result {
             let _ = task_repos
                 .set_note_status(&task_note_id, ProcessingStatus::Failed, Some(error.message))
@@ -1909,10 +1874,17 @@ async fn retry_audio_sources(
     repos: &Repositories,
     paths: &AppPaths,
     note_id: &str,
+    recording_session_id: Option<&str>,
 ) -> Result<Vec<(String, String, PathBuf, String, bool)>, AppError> {
-    let sources = repos
-        .latest_valid_audio_artifact_paths(note_id)
-        .await?
+    let source_rows = match recording_session_id {
+        Some(session_id) => {
+            repos
+                .valid_audio_artifact_paths_for_session(note_id, session_id)
+                .await?
+        }
+        None => repos.latest_valid_audio_artifact_paths(note_id).await?,
+    };
+    let sources = source_rows
         .into_iter()
         .filter_map(|(id, source, path, session_id, recorded_silence)| {
             paths
@@ -2029,22 +2001,15 @@ pub async fn recover_recording(
                 .await?;
             return Ok(repos.get_note(&info.note_id).await?);
         }
-        let note = repos.get_note(&info.note_id).await?;
-        let existing_generated_note = note.generated_content.clone();
-        let manual_notes = manual_notes_for_generation(&note);
         repos
             .mark_recording_recovery_valid(&info.session_id)
             .await?;
-        return process_saved_source_audio(
+        return process_recovered_source_audio(
             &repos,
             &info.note_id,
             &info.session_id,
             info.source_mode,
             valid_sources,
-            note.title,
-            existing_generated_note,
-            manual_notes,
-            ProcessingTiming::untracked(),
         )
         .await;
     }
@@ -2105,22 +2070,52 @@ pub async fn recover_recording(
             &checksum,
         )
         .await?;
-    let note = repos.get_note(&info.note_id).await?;
-    let existing_generated_note = note.generated_content.clone();
-    let manual_notes = manual_notes_for_generation(&note);
-    process_saved_audio(
+    process_recovered_source_audio(
         &repos,
         &info.note_id,
         &info.session_id,
-        &artifact.id,
-        path,
-        note.title,
-        existing_generated_note,
-        manual_notes,
-        validation.recorded_silence,
-        ProcessingTiming::untracked(),
+        RecordingSourceMode::MicrophoneOnly,
+        vec![(
+            artifact.id,
+            RecordingSource::Microphone.as_db().to_string(),
+            path,
+            validation.recorded_silence,
+        )],
     )
     .await
+}
+
+async fn process_recovered_source_audio(
+    repos: &Repositories,
+    note_id: &str,
+    session_id: &str,
+    source_mode: RecordingSourceMode,
+    sources: Vec<crate::domain::processing::SourceAudioForProcessing>,
+) -> Result<NoteDto, AppError> {
+    let (ticket, _depth) = processing_queue::enqueue(note_id);
+    let queue_lock = ticket.lock();
+    let _guard = queue_lock.lock().await;
+    let note = match repos.get_note(note_id).await {
+        Ok(note) => note,
+        Err(error) => {
+            ticket.finish();
+            return Err(error.into());
+        }
+    };
+    let result = process_saved_source_audio(
+        repos,
+        note_id,
+        session_id,
+        source_mode,
+        sources,
+        note.title.clone(),
+        note.generated_content.clone(),
+        manual_notes_for_generation(&note),
+        ProcessingTiming::untracked(),
+    )
+    .await;
+    ticket.finish();
+    result
 }
 
 fn recovery_audio_path(

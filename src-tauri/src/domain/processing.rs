@@ -2,29 +2,32 @@ use crate::{
     audio::{
         live_preview::PREVIEW_CHUNK_MS,
         turns::{
-            AudioTurn, DetectionSource, EchoRejectionReport,
             coalesce_turns_for_transcription_avoiding_echo, detect_turns_with_report,
             normalize_wav_for_transcription, split_wav_for_transcription,
-            split_wav_for_transcription_with_max_duration, write_turn_wav,
+            split_wav_for_transcription_with_max_duration, write_turn_wav, AudioTurn,
+            DetectionSource, EchoRejectionReport,
         },
     },
     db::repositories::Repositories,
     domain::types::{
-        AppError, DictionaryEntryDto, NoteDto, ProcessingStatus, RecordingSourceMode, TranscriptDto,
+        AppError, DictionaryEntryDto, NoteDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
+        NoteTranscriptionJobRecord, NoteTranscriptionJobStatus, ProcessingStatus,
+        RecordingSourceMode, TranscriptDto,
     },
     june_api::{
-        GenerationRequest, TranscriptionProviderResult, TranscriptionRequest,
-        generate_note_from_transcript, transcribe_saved_audio,
+        generate_note_from_transcript, transcribe_saved_audio, GenerationRequest,
+        TranscriptionProviderResult, TranscriptionRequest,
     },
 };
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicI64, Ordering},
+        Arc,
     },
     time::{Duration, Instant},
 };
@@ -37,6 +40,7 @@ const TRANSCRIPT_COHERENCE_GAP_MS: i64 = 2_500;
 /// turn before positional reuse is refused and the turn is re-transcribed.
 /// Detection is deterministic for unchanged audio and code, so matching turns
 /// agree exactly; any real drift means the turn set was reshaped.
+#[cfg(test)]
 const CACHED_TURN_BOUNDS_TOLERANCE_MS: i64 = 50;
 const TRANSCRIPTION_CONTEXT_MAX_CHARS: usize = 1_200;
 const TRANSCRIPTION_CONTEXT_MAX_TURNS: usize = 6;
@@ -96,10 +100,40 @@ fn source_transcript_input_from_row(row: &TranscriptDto) -> SourceTranscriptInpu
     }
 }
 
-fn turn_cache_key(source: &str, turn_index: i64) -> String {
-    format!("{source}:{turn_index}")
+fn note_transcription_span_id(
+    session_id: &str,
+    source: &str,
+    kind: NoteTranscriptionJobKind,
+    start_ms: i64,
+    end_ms: i64,
+) -> String {
+    format!("{session_id}:{source}:{}:{start_ms}:{end_ms}", kind.as_db())
 }
 
+fn note_transcription_configuration_fingerprint(
+    title: &str,
+    dictionary_context: Option<&str>,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"june-note-transcription-configuration-v1\0");
+    for value in [
+        crate::dictation::configured_transcription_language().as_deref(),
+        Some(title),
+        dictionary_context,
+    ] {
+        match value {
+            Some(value) => {
+                digest.update(b"some");
+                digest.update((value.len() as u64).to_be_bytes());
+                digest.update(value.as_bytes());
+            }
+            None => digest.update(b"none"),
+        }
+    }
+    format!("{:x}", digest.finalize())
+}
+
+#[cfg(test)]
 fn cached_turn_is_reusable(existing: &TranscriptDto, turn: &AudioTurn) -> bool {
     let bounds_match = existing
         .start_ms
@@ -441,6 +475,28 @@ pub fn labeled_transcript_from_sources(sources: &[SourceTranscriptInput]) -> Str
         .join("\n")
 }
 
+fn plain_transcript_from_sources(sources: &[SourceTranscriptInput]) -> String {
+    let mut sources = sources
+        .iter()
+        .filter(|source| source.valid && !source.text.trim().is_empty())
+        .collect::<Vec<_>>();
+    sources.sort_by(|left, right| {
+        left.turn_index
+            .unwrap_or(i64::MAX)
+            .cmp(&right.turn_index.unwrap_or(i64::MAX))
+            .then_with(|| {
+                left.start_ms
+                    .unwrap_or(i64::MAX)
+                    .cmp(&right.start_ms.unwrap_or(i64::MAX))
+            })
+    });
+    sources
+        .into_iter()
+        .map(|source| source.text.trim())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn coalesce_source_transcripts(
     sources: Vec<SourceTranscriptInput>,
 ) -> Vec<SourceTranscriptInput> {
@@ -565,6 +621,7 @@ pub fn manual_notes_for_generation(note: &NoteDto) -> Option<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) async fn process_saved_audio(
     repos: &Repositories,
     note_id: &str,
@@ -922,7 +979,7 @@ pub(crate) async fn process_saved_source_audio(
             dropped,
         } = partition_silent_system_sources(sources);
         for drop in &dropped {
-            repos
+            if let Err(error) = repos
                 .add_source_checkpoint(
                     session_id,
                     Some(drop.artifact_id.as_str()),
@@ -936,30 +993,52 @@ pub(crate) async fn process_saved_source_audio(
                         .to_string(),
                     ),
                 )
-                .await?;
+                .await
+            {
+                tracing::warn!(
+                    %session_id,
+                    source = %drop.source,
+                    %error,
+                    "failed to persist silent_source_dropped checkpoint"
+                );
+            }
         }
-        let detection_sources = sources
-            .iter()
-            .map(
-                |(artifact_id, source, audio_path, _recorded_silence)| DetectionSource {
-                    artifact_id: artifact_id.clone(),
-                    source: source.clone(),
-                    path: audio_path.clone(),
-                },
+        let (turns, echo_rejection) = if source_mode == RecordingSourceMode::MicrophoneOnly {
+            // Microphone-only capture has no attribution problem to solve.
+            // Keep it on the same durable pipeline, but represent the saved
+            // WAV as one full-Source job instead of paying the dual-Source
+            // VAD and echo-rejection cost.
+            (
+                add_full_source_turns_for_missing_sources(
+                    &sources,
+                    Vec::new(),
+                    &EchoRejectionReport::default(),
+                ),
+                EchoRejectionReport::default(),
             )
-            .collect::<Vec<_>>();
-        // Detection now carries real DSP (GCC-PHAT probes, adaptive
-        // cancellation passes over full recordings) — CPU-bound for minutes on
-        // long meetings, so it must not pin an async runtime worker.
-        let (turns, echo_rejection) =
+        } else {
+            let detection_sources = sources
+                .iter()
+                .map(
+                    |(artifact_id, source, audio_path, _recorded_silence)| DetectionSource {
+                        artifact_id: artifact_id.clone(),
+                        source: source.clone(),
+                        path: audio_path.clone(),
+                    },
+                )
+                .collect::<Vec<_>>();
+            // Detection carries real DSP (GCC-PHAT probes and adaptive
+            // cancellation over full recordings), so it must not pin an
+            // async runtime worker.
             tokio::task::spawn_blocking(move || detect_turns_with_report(&detection_sources))
                 .await
-                .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))??;
+                .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))??
+        };
         // Echo rejection silently rewrites the microphone timeline; leave a
         // trace (which lag, how much trimmed) so missing-speech reports can be
         // diagnosed, mirroring the silent_source_dropped checkpoint.
         if echo_rejection.attempted() {
-            repos
+            if let Err(error) = repos
                 .add_checkpoint(
                     session_id,
                     "echo_rejection",
@@ -974,7 +1053,10 @@ pub(crate) async fn process_saved_source_audio(
                         .to_string(),
                     ),
                 )
-                .await?;
+                .await
+            {
+                tracing::warn!(%session_id, %error, "failed to persist echo_rejection checkpoint");
+            }
         }
         let turns = add_full_source_turns_for_missing_sources(&sources, turns, &echo_rejection);
         let turns = coalesce_turns_for_transcription_avoiding_echo(
@@ -984,7 +1066,7 @@ pub(crate) async fn process_saved_source_audio(
         // Coverage is measured against the post-trim turn list on purpose:
         // speaker bleed removed by echo rejection is not lost speech.
         let coverage_turns = turns.clone();
-        repos
+        if let Err(error) = repos
             .add_checkpoint(
                 session_id,
                 "turn_detection",
@@ -997,7 +1079,10 @@ pub(crate) async fn process_saved_source_audio(
                     .to_string(),
                 ),
             )
-            .await?;
+            .await
+        {
+            tracing::warn!(%session_id, %error, "failed to persist turn_detection checkpoint");
+        }
 
         let turn_wav_dir = session_temp_dir("os-june-turns", session_id);
         let _ = std::fs::remove_dir_all(&turn_wav_dir);
@@ -1005,21 +1090,7 @@ pub(crate) async fn process_saved_source_audio(
             .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
         let turn_wav_dir_cleanup = Arc::new(TempDirCleanup(turn_wav_dir.clone()));
 
-        let existing_transcripts = repos
-            .successful_source_turn_transcripts_for_session(session_id)
-            .await?;
-        let existing_by_turn = existing_transcripts
-            .into_iter()
-            .filter_map(|transcript| {
-                Some((
-                    turn_cache_key(transcript.source.as_deref()?, transcript.turn_index?),
-                    transcript,
-                ))
-            })
-            .collect::<HashMap<_, _>>();
         let mut all_preparation_jobs = Vec::new();
-        let mut preparation_jobs = Vec::new();
-        let mut cached_candidates = Vec::new();
         for turn in turns {
             let turn_wav_path = turn_wav_dir.join(format!(
                 "{:04}-{}-{}-{}.wav",
@@ -1041,45 +1112,185 @@ pub(crate) async fn process_saved_source_audio(
                 normalized_path,
                 recorded_silence,
                 echo_trimmed,
+                durable_job: None,
             };
             all_preparation_jobs.push(descriptor.clone());
+        }
+        let configuration_fingerprint =
+            note_transcription_configuration_fingerprint(&title, dictionary_context.as_deref());
+        let mut fallback_plans = build_source_fallback_plans(&all_preparation_jobs)
+            .into_iter()
+            .filter(SourceFallbackPlan::eligible)
+            .collect::<Vec<_>>();
+        for fallback in &mut fallback_plans {
+            fallback.end_ms = source_wav_duration_ms(&fallback.source_path)
+                .unwrap_or(fallback.end_ms)
+                .max(fallback.end_ms);
+        }
 
-            if let Some(existing) =
-                existing_by_turn.get(&turn_cache_key(&turn.source, turn.turn_index))
-            {
-                // The cache key is positional; turn detection changes across app
-                // versions (echo rejection trims and splits microphone turns), so
-                // an index alone can point at a different stretch of audio than
-                // the transcript was made from. Reuse only when the cached bounds
-                // confirm it is the same turn — otherwise fall through and
-                // re-transcribe rather than replay text from the wrong span.
-                if cached_turn_is_reusable(existing, &turn) {
-                    cached_candidates.push(TranscriptCandidate {
-                        artifact_id: turn.artifact_id.clone(),
-                        language: existing.language.clone(),
-                        provider: transcription_provider.clone(),
-                        input: SourceTranscriptInput {
-                            source: existing
-                                .source
-                                .clone()
-                                .unwrap_or_else(|| turn.source.clone()),
-                            text: existing.text.clone(),
-                            valid: existing.status == "succeeded"
-                                && !existing.text.trim().is_empty(),
-                            warning: None,
-                            recorded_silence: existing.recorded_silence,
-                            start_ms: existing.start_ms.or(Some(turn.start_ms)),
-                            end_ms: existing.end_ms.or(Some(turn.end_ms)),
-                            turn_index: existing.turn_index.or(Some(turn.turn_index)),
-                        },
-                    });
-                    continue;
+        let mut job_plans = all_preparation_jobs
+            .iter()
+            .map(|descriptor| {
+                let end_ms = if descriptor.covers_full_source() {
+                    source_wav_duration_ms(&descriptor.turn.source_path)
+                        .unwrap_or(descriptor.turn.end_ms)
+                } else {
+                    descriptor.turn.end_ms
+                };
+                NoteTranscriptionJobPlan {
+                    span_id: note_transcription_span_id(
+                        session_id,
+                        &descriptor.turn.source,
+                        NoteTranscriptionJobKind::Turn,
+                        descriptor.turn.start_ms,
+                        end_ms,
+                    ),
+                    audio_artifact_id: descriptor.turn.artifact_id.clone(),
+                    source: descriptor.turn.source.clone(),
+                    job_kind: NoteTranscriptionJobKind::Turn,
+                    start_ms: descriptor.turn.start_ms,
+                    end_ms,
+                    turn_index: descriptor.turn.turn_index,
+                    provider: transcription_provider.clone(),
+                    max_chunk_ms: (descriptor.covers_full_source()
+                        && is_short_full_source(
+                            &descriptor.turn.source_path,
+                            descriptor.turn.start_ms,
+                            descriptor.turn.end_ms,
+                        ))
+                    .then_some(PREVIEW_CHUNK_MS),
+                    pipeline_version: NOTE_TRANSCRIPTION_PIPELINE_VERSION.to_string(),
+                    configuration_fingerprint: configuration_fingerprint.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        job_plans.extend(
+            fallback_plans
+                .iter()
+                .map(|fallback| NoteTranscriptionJobPlan {
+                    span_id: note_transcription_span_id(
+                        session_id,
+                        &fallback.source,
+                        NoteTranscriptionJobKind::SourceFallback,
+                        0,
+                        fallback.end_ms,
+                    ),
+                    audio_artifact_id: fallback.artifact_id.clone(),
+                    source: fallback.source.clone(),
+                    job_kind: NoteTranscriptionJobKind::SourceFallback,
+                    start_ms: 0,
+                    end_ms: fallback.end_ms,
+                    turn_index: fallback.turn_index,
+                    provider: transcription_provider.clone(),
+                    max_chunk_ms: None,
+                    pipeline_version: NOTE_TRANSCRIPTION_PIPELINE_VERSION.to_string(),
+                    configuration_fingerprint: configuration_fingerprint.clone(),
+                }),
+        );
+
+        let durable_jobs = repos
+            .reconcile_note_transcription_jobs(note_id, session_id, source_mode, &job_plans)
+            .await?;
+        let jobs_by_id = durable_jobs
+            .iter()
+            .cloned()
+            .map(|job| (job.id.clone(), job))
+            .collect::<HashMap<_, _>>();
+        let existing_by_span = repos
+            .successful_source_turn_transcripts_for_session(session_id)
+            .await?
+            .into_iter()
+            .filter_map(|transcript| Some((transcript.span_id.clone()?, transcript)))
+            .collect::<HashMap<_, _>>();
+        let succeeded_fallback_sources = durable_jobs
+            .iter()
+            .filter(|job| {
+                job.job_kind == NoteTranscriptionJobKind::SourceFallback
+                    && job.status == NoteTranscriptionJobStatus::Succeeded
+            })
+            .map(|job| job.source.clone())
+            .collect::<HashSet<_>>();
+        let cached_candidates = durable_jobs
+            .iter()
+            .filter(|job| job.status == NoteTranscriptionJobStatus::Succeeded)
+            .filter_map(|job| {
+                let transcript = existing_by_span.get(&job.id)?;
+                Some(TranscriptCandidate {
+                    artifact_id: job.audio_artifact_id.clone(),
+                    language: transcript.language.clone(),
+                    input: SourceTranscriptInput {
+                        source: job.source.clone(),
+                        text: transcript.text.clone(),
+                        valid: !transcript.text.trim().is_empty(),
+                        warning: None,
+                        recorded_silence: transcript.recorded_silence,
+                        start_ms: Some(job.start_ms),
+                        end_ms: Some(job.end_ms),
+                        turn_index: Some(job.turn_index),
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut preparation_jobs = Vec::new();
+        for mut descriptor in all_preparation_jobs {
+            if succeeded_fallback_sources.contains(&descriptor.turn.source) {
+                continue;
+            }
+            let end_ms = if descriptor.covers_full_source() {
+                source_wav_duration_ms(&descriptor.turn.source_path)
+                    .unwrap_or(descriptor.turn.end_ms)
+            } else {
+                descriptor.turn.end_ms
+            };
+            let id = note_transcription_span_id(
+                session_id,
+                &descriptor.turn.source,
+                NoteTranscriptionJobKind::Turn,
+                descriptor.turn.start_ms,
+                end_ms,
+            );
+            let Some(job) = jobs_by_id.get(&id) else {
+                return Err(AppError::new(
+                    "transcription_job_missing",
+                    format!("Durable transcription job {id} was not reconciled."),
+                ));
+            };
+            match job.status {
+                NoteTranscriptionJobStatus::Pending => {
+                    descriptor.durable_job = Some(job.clone());
+                    preparation_jobs.push(descriptor);
+                }
+                NoteTranscriptionJobStatus::Succeeded | NoteTranscriptionJobStatus::Superseded => {}
+                NoteTranscriptionJobStatus::Running => {
+                    return Err(AppError::new(
+                        "transcription_already_running",
+                        "This saved recording is already being transcribed.",
+                    ));
+                }
+                NoteTranscriptionJobStatus::Failed => {
+                    return Err(AppError::new(
+                        "transcription_job_invalid_state",
+                        "A failed transcription job was not reset for retry.",
+                    ));
                 }
             }
-
-            preparation_jobs.push(descriptor);
         }
-        let fallback_plans = build_source_fallback_plans(&all_preparation_jobs);
+        for fallback in &mut fallback_plans {
+            let id = note_transcription_span_id(
+                session_id,
+                &fallback.source,
+                NoteTranscriptionJobKind::SourceFallback,
+                0,
+                fallback.end_ms,
+            );
+            if let Some(job) = jobs_by_id.get(&id) {
+                if job.status == NoteTranscriptionJobStatus::Pending {
+                    fallback.durable_job = Some(job.clone());
+                }
+            }
+        }
+        fallback_plans.retain(|fallback| fallback.durable_job.is_some());
         let preparation_jobs = interleave_turn_preparation_jobs_by_source(preparation_jobs);
 
         Ok::<_, AppError>((
@@ -1124,24 +1335,28 @@ pub(crate) async fn process_saved_source_audio(
     };
 
     let persist_repos = repos.clone();
-    let persist_note_id = note_id.to_string();
     let persist_session_id = session_id.to_string();
     let persist_timeline = timeline.clone();
     let result_sink: TurnResultSink = Arc::new(move |event| {
         let repos = persist_repos.clone();
-        let note_id = persist_note_id.clone();
         let session_id = persist_session_id.clone();
         let timeline = persist_timeline.clone();
         Box::pin(async move {
-            persist_turn_transcription_event(
-                &repos,
-                &note_id,
-                &session_id,
-                source_mode,
-                event,
-                timeline,
-            )
-            .await
+            persist_turn_transcription_event(&repos, &session_id, event, timeline).await
+        })
+    });
+    let claim_repos = repos.clone();
+    let job_claimer: TurnJobClaimer = Arc::new(move |job_id| {
+        let repos = claim_repos.clone();
+        Box::pin(async move {
+            match repos.claim_note_transcription_job(&job_id).await {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(AppError::new(
+                    "transcription_already_running",
+                    "This saved-audio span is already being transcribed.",
+                )),
+                Err(error) => Err(AppError::from(error)),
+            }
         })
     });
 
@@ -1165,6 +1380,7 @@ pub(crate) async fn process_saved_source_audio(
         guarded_turn_preparer(Arc::clone(&turn_wav_dir_cleanup)),
         guarded_fallback_preparer(Arc::clone(&turn_wav_dir_cleanup)),
         transcriber,
+        Some(job_claimer),
         Some(result_sink),
         DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
         timing,
@@ -1208,6 +1424,13 @@ pub(crate) async fn process_saved_source_audio(
     // `visible_failures` is already filtered by `should_record_source_failure`,
     // so every entry here is one we persist.
     for failure in &visible_failures {
+        // A fallback uses the Source's first presentation index. Projecting its
+        // failure as a transcript row would overwrite a usable ordinary turn at
+        // that index. The durable failed job and note-level error retain the
+        // failure without destroying previously committed text.
+        if failure.source_fallback {
+            continue;
+        }
         let warning = failure
             .input
             .warning
@@ -1266,25 +1489,11 @@ pub(crate) async fn process_saved_source_audio(
             )
             .await
         {
-            let error = AppError::from(error);
-            timeline.flush(repos, session_id).await;
-            add_infrastructure_note_transcription_failure_checkpoint(
-                repos,
-                session_id,
-                timing,
-                note_transcription_started,
-                &error.code,
-            )
-            .await;
-            add_processing_complete_checkpoint(
-                repos,
-                session_id,
-                timing,
-                processing_started,
-                "failed",
-            )
-            .await;
-            return Err(error);
+            tracing::warn!(
+                %session_id,
+                %error,
+                "failed to persist failed-transcript checkpoint"
+            );
         }
     }
 
@@ -1385,7 +1594,12 @@ pub(crate) async fn process_saved_source_audio(
             .await?;
         return Err(error);
     }
-    let labeled_transcript = labeled_transcript_from_sources(&valid_sources);
+    let transcript_source_labels = source_mode == RecordingSourceMode::MicrophonePlusSystem;
+    let generation_transcript = if transcript_source_labels {
+        labeled_transcript_from_sources(&valid_sources)
+    } else {
+        plain_transcript_from_sources(&valid_sources)
+    };
     if let Err(error) = repos
         .set_note_status(note_id, ProcessingStatus::Generating, None)
         .await
@@ -1401,8 +1615,8 @@ pub(crate) async fn process_saved_source_audio(
         operation_id: Some(note_id.to_string()),
         title,
         existing_generated_note,
-        transcript: labeled_transcript,
-        transcript_source_labels: true,
+        transcript: generation_transcript,
+        transcript_source_labels,
         manual_notes,
         language: None,
     })
@@ -1528,6 +1742,7 @@ struct TranscriptCoverageSource {
     failed_turns: i64,
 }
 
+#[cfg(test)]
 fn compute_chunk_transcript_coverage(
     source: &str,
     chunk_outcomes: &[TranscriptionChunkOutcome],
@@ -1575,6 +1790,7 @@ fn compute_chunk_transcript_coverage(
 
 // Coverage is diagnostic only and must never fail note processing: a
 // checkpoint that cannot be serialized or persisted is logged and skipped.
+#[cfg(test)]
 async fn persist_microphone_only_transcript_coverage(
     repos: &Repositories,
     session_id: &str,
@@ -1771,7 +1987,6 @@ fn short_full_source_chunk_ms(job: &TurnTranscriptionJob) -> Option<i64> {
 struct TranscriptCandidate {
     artifact_id: String,
     language: Option<String>,
-    provider: String,
     input: SourceTranscriptInput,
 }
 
@@ -1779,6 +1994,7 @@ struct TranscriptCandidate {
 struct FailedTranscriptCandidate {
     artifact_id: String,
     input: SourceTranscriptInput,
+    source_fallback: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1790,6 +2006,7 @@ struct TranscriptionOutcome {
 
 #[derive(Debug, Clone)]
 struct CompletedTurnTranscription {
+    job_id: Option<String>,
     result: TurnTranscriptionResult,
     duration_ms: i64,
     replaces_source: bool,
@@ -1810,6 +2027,7 @@ struct TurnPreparationJob {
     normalized_path: PathBuf,
     recorded_silence: bool,
     echo_trimmed: bool,
+    durable_job: Option<NoteTranscriptionJobRecord>,
 }
 
 impl TurnPreparationJob {
@@ -1858,6 +2076,7 @@ struct SourceFallbackPlan {
     end_ms: i64,
     turn_index: i64,
     detected_ms: i64,
+    durable_job: Option<NoteTranscriptionJobRecord>,
 }
 
 impl SourceFallbackPlan {
@@ -1878,6 +2097,7 @@ struct TurnTranscriptionJob {
     start_ms: i64,
     end_ms: i64,
     turn_index: i64,
+    durable_job: Option<NoteTranscriptionJobRecord>,
 }
 
 type TranscriptionFuture =
@@ -1886,6 +2106,8 @@ type TurnPreparer = Arc<dyn Fn(TurnPreparationJob) -> Result<PreparedTurn, AppEr
 type SourceFallbackPreparer =
     Arc<dyn Fn(SourceFallbackPlan) -> Result<TurnTranscriptionJob, AppError> + Send + Sync>;
 type TurnTranscriber = Arc<dyn Fn(TranscriptionRequest) -> TranscriptionFuture + Send + Sync>;
+type TurnClaimFuture = Pin<Box<dyn Future<Output = Result<(), AppError>> + Send>>;
+type TurnJobClaimer = Arc<dyn Fn(String) -> TurnClaimFuture + Send + Sync>;
 type TurnResultFuture = Pin<Box<dyn Future<Output = Result<(), AppError>> + Send>>;
 type TurnResultSink = Arc<dyn Fn(CompletedTurnTranscription) -> TurnResultFuture + Send + Sync>;
 
@@ -1996,6 +2218,7 @@ fn prepare_turn_job(descriptor: TurnPreparationJob) -> Result<PreparedTurn, AppE
             start_ms: descriptor.turn.start_ms,
             end_ms: descriptor.turn.end_ms,
             turn_index: descriptor.turn.turn_index,
+            durable_job: descriptor.durable_job,
         },
     })
 }
@@ -2013,6 +2236,7 @@ fn prepare_source_fallback(plan: SourceFallbackPlan) -> Result<TurnTranscription
         start_ms: 0,
         end_ms: plan.end_ms,
         turn_index: plan.turn_index,
+        durable_job: plan.durable_job,
     })
 }
 
@@ -2046,6 +2270,7 @@ fn build_source_fallback_plans(descriptors: &[TurnPreparationJob]) -> Vec<Source
             end_ms: descriptor.turn.end_ms,
             turn_index: descriptor.turn.turn_index,
             detected_ms: span_ms(descriptor.turn.start_ms, descriptor.turn.end_ms),
+            durable_job: None,
         });
     }
     // `sort_by_key` is stable, so unrecognized sources retain descriptor order.
@@ -2454,6 +2679,7 @@ fn launch_ready_source_turns(
     title: &str,
     dictionary_context: Option<&str>,
     transcriber: &TurnTranscriber,
+    job_claimer: Option<&TurnJobClaimer>,
     max_concurrency: usize,
 ) {
     while join_set.len() < max_concurrency {
@@ -2484,9 +2710,17 @@ fn launch_ready_source_turns(
         let provider = provider.to_string();
         let title = title.to_string();
         let transcriber = Arc::clone(transcriber);
+        let job_claimer = job_claimer.cloned();
         join_set.spawn(async move {
-            let result =
-                transcribe_one_turn_job(prepared.job, provider, title, context, transcriber).await;
+            let result = transcribe_one_turn_job(
+                prepared.job,
+                provider,
+                title,
+                context,
+                transcriber,
+                job_claimer,
+            )
+            .await;
             (source, result)
         });
     }
@@ -2501,6 +2735,7 @@ async fn transcribe_prepared_turn_stream(
     dictionary_context: Option<String>,
     cached_candidates: &[TranscriptCandidate],
     transcriber: TurnTranscriber,
+    job_claimer: Option<TurnJobClaimer>,
     result_sink: Option<TurnResultSink>,
     max_concurrency: usize,
 ) -> Result<TranscriptionOutcome, AppError> {
@@ -2531,6 +2766,7 @@ async fn transcribe_prepared_turn_stream(
                 &title,
                 dictionary_context.as_deref(),
                 &transcriber,
+                job_claimer.as_ref(),
                 max_concurrency,
             );
         }
@@ -2706,6 +2942,7 @@ async fn transcribe_source_fallbacks(
     dictionary_context: Option<&str>,
     fallback_preparer: &SourceFallbackPreparer,
     transcriber: &TurnTranscriber,
+    job_claimer: Option<&TurnJobClaimer>,
     result_sink: Option<&TurnResultSink>,
 ) -> Result<(), AppError> {
     for plan in fallback_plans {
@@ -2728,6 +2965,7 @@ async fn transcribe_source_fallbacks(
             title.to_string(),
             dictionary_context.map(str::to_string),
             Arc::clone(transcriber),
+            job_claimer.cloned(),
         )
         .await?;
         if let Some(sink) = result_sink {
@@ -2763,6 +3001,7 @@ async fn prepare_and_transcribe_turn_jobs_bounded(
     turn_preparer: TurnPreparer,
     fallback_preparer: SourceFallbackPreparer,
     transcriber: TurnTranscriber,
+    job_claimer: Option<TurnJobClaimer>,
     result_sink: Option<TurnResultSink>,
     max_concurrency: usize,
     timing: ProcessingTiming,
@@ -2777,6 +3016,7 @@ async fn prepare_and_transcribe_turn_jobs_bounded(
         dictionary_context.clone(),
         cached_candidates,
         Arc::clone(&transcriber),
+        job_claimer.clone(),
         result_sink.clone(),
         max_concurrency,
     )
@@ -2818,6 +3058,7 @@ async fn prepare_and_transcribe_turn_jobs_bounded(
         dictionary_context.as_deref(),
         &fallback_preparer,
         &transcriber,
+        job_claimer.as_ref(),
         result_sink.as_ref(),
     )
     .await
@@ -2890,6 +3131,7 @@ async fn transcribe_turn_jobs_bounded(
         dictionary_context.clone(),
         cached_candidates,
         Arc::clone(&transcriber),
+        None,
         result_sink.clone(),
         max_concurrency,
     )
@@ -2904,6 +3146,7 @@ async fn transcribe_turn_jobs_bounded(
         dictionary_context.as_deref(),
         &fallback_preparer,
         &transcriber,
+        None,
         result_sink.as_ref(),
     )
     .await?;
@@ -2943,15 +3186,36 @@ async fn transcribe_one_turn_job(
     title: String,
     context: Option<String>,
     transcriber: TurnTranscriber,
+    job_claimer: Option<TurnJobClaimer>,
 ) -> Result<CompletedTurnTranscription, AppError> {
     let started = Instant::now();
     let replaces_source = job.source_fallback;
-    let operation_id = if job.source_fallback {
-        source_fallback_operation_id(&job)
-    } else {
-        turn_operation_id(&job)
-    };
-    let max_chunk_ms = short_full_source_chunk_ms(&job);
+    let job_id = job.durable_job.as_ref().map(|durable| durable.id.clone());
+    if let Some(job_id) = job_id.as_ref() {
+        let claimer = job_claimer.as_ref().ok_or_else(|| {
+            AppError::new(
+                "transcription_job_claim_missing",
+                "Durable transcription was started without a claim handler.",
+            )
+        })?;
+        claimer(job_id.clone()).await?;
+    }
+    let operation_id = job
+        .durable_job
+        .as_ref()
+        .map(|durable| durable.operation_id.clone())
+        .unwrap_or_else(|| {
+            if job.source_fallback {
+                source_fallback_operation_id(&job)
+            } else {
+                turn_operation_id(&job)
+            }
+        });
+    let max_chunk_ms = job
+        .durable_job
+        .as_ref()
+        .and_then(|durable| durable.max_chunk_ms)
+        .or_else(|| short_full_source_chunk_ms(&job));
     let transcription = match transcribe_prepared_audio(
         Arc::clone(&transcriber),
         TranscribePreparedAudioRequest {
@@ -2990,15 +3254,23 @@ async fn transcribe_one_turn_job(
                 turn_index: Some(job.turn_index),
             };
             return Ok(CompletedTurnTranscription {
+                job_id,
                 result: TurnTranscriptionResult::Failure(FailedTranscriptCandidate {
                     artifact_id: job.artifact_id,
                     input,
+                    source_fallback: job.source_fallback,
                 }),
                 duration_ms: elapsed_ms(started),
                 replaces_source,
             });
         }
     };
+    tracing::debug!(
+        source = %job.source,
+        turn_index = job.turn_index,
+        chunk_count = transcription.chunk_outcomes.len(),
+        "saved-audio span transcription completed"
+    );
     let transcript =
         maybe_post_process_note_transcript(&provider, transcription.transcript, context.as_deref())
             .await;
@@ -3013,10 +3285,10 @@ async fn transcribe_one_turn_job(
         turn_index: Some(job.turn_index),
     };
     Ok(CompletedTurnTranscription {
+        job_id,
         result: TurnTranscriptionResult::Candidate(TranscriptCandidate {
             artifact_id: job.artifact_id,
             language: transcript.language,
-            provider: transcript.provider,
             input,
         }),
         duration_ms: elapsed_ms(started),
@@ -3026,36 +3298,91 @@ async fn transcribe_one_turn_job(
 
 async fn persist_turn_transcription_event(
     repos: &Repositories,
-    note_id: &str,
     session_id: &str,
-    source_mode: RecordingSourceMode,
     event: CompletedTurnTranscription,
     timeline: FirstEventTimeline,
 ) -> Result<(), AppError> {
-    let replaces_source = event.replaces_source;
+    let job_id = event.job_id.clone().ok_or_else(|| {
+        AppError::new(
+            "transcription_job_missing",
+            "A saved-audio result did not have a durable job identity.",
+        )
+    })?;
     let (artifact_id, source, start_ms, end_ms, turn_index, status) = match &event.result {
         TurnTranscriptionResult::Candidate(candidate) => (
-            candidate.artifact_id.as_str(),
-            candidate.input.source.as_str(),
+            candidate.artifact_id.clone(),
+            candidate.input.source.clone(),
             candidate.input.start_ms.unwrap_or_default(),
             candidate.input.end_ms.unwrap_or_default(),
             candidate.input.turn_index.unwrap_or_default(),
             "succeeded",
         ),
         TurnTranscriptionResult::Failure(failure) => (
-            failure.artifact_id.as_str(),
-            failure.input.source.as_str(),
+            failure.artifact_id.clone(),
+            failure.input.source.clone(),
             failure.input.start_ms.unwrap_or_default(),
             failure.input.end_ms.unwrap_or_default(),
             failure.input.turn_index.unwrap_or_default(),
             "failed",
         ),
     };
-    repos
+    let persistence_started = Instant::now();
+    let transcript_id = match event.result {
+        TurnTranscriptionResult::Candidate(candidate) => {
+            let result = repos
+                .complete_note_transcription_job_success(
+                    &job_id,
+                    &candidate.input.text,
+                    candidate.language,
+                )
+                .await;
+            let row = match result {
+                Ok(row) => row,
+                Err(error) => {
+                    let _ = repos
+                        .complete_note_transcription_job_failure(&job_id, &error.to_string())
+                        .await;
+                    return Err(AppError::from(error));
+                }
+            };
+            timeline.mark_first_persisted();
+            tracing::info!(
+                %session_id,
+                source = %candidate.input.source,
+                turn_index = candidate.input.turn_index.unwrap_or_default(),
+                transcript_id = %row.id,
+                replaces_source = event.replaces_source,
+                "persisted durable saved-audio transcript"
+            );
+            Some(row.id)
+        }
+        TurnTranscriptionResult::Failure(failure) => {
+            let warning = failure
+                .input
+                .warning
+                .as_deref()
+                .unwrap_or("Source did not produce a usable transcript.");
+            let updated = repos
+                .complete_note_transcription_job_failure(&job_id, warning)
+                .await?;
+            if !updated {
+                return Err(AppError::new(
+                    "transcription_job_invalid_state",
+                    "The durable transcription job was no longer running.",
+                ));
+            }
+            None
+        }
+    };
+
+    // Checkpoints are diagnostic. The durable job transition and transcript
+    // projection above are the load-bearing transaction, so telemetry failure
+    // must never turn a committed transcript into a user-visible failure.
+    if let Err(error) = repos
         .add_source_checkpoint(
             session_id,
-            Some(artifact_id),
-            Some(source),
+            Some(artifact_id.as_str()),
+            Some(source.as_str()),
             "transcription_request",
             Some(
                 serde_json::json!({
@@ -3064,63 +3391,36 @@ async fn persist_turn_transcription_event(
                     "turnIndex": turn_index,
                     "startMs": start_ms,
                     "endMs": end_ms,
+                    "jobId": job_id,
                 })
                 .to_string(),
             ),
         )
-        .await?;
-
-    let TurnTranscriptionResult::Candidate(candidate) = event.result else {
-        return Ok(());
-    };
-
-    if replaces_source {
-        repos
-            .delete_source_turn_transcripts_for_session(session_id, &candidate.input.source)
-            .await?;
+        .await
+    {
+        tracing::warn!(%session_id, %error, "failed to persist transcription_request checkpoint");
     }
-
-    let persistence_started = Instant::now();
-    let row = repos
-        .upsert_successful_source_turn_transcript(
-            note_id,
-            session_id,
-            &candidate.artifact_id,
-            source_mode,
-            &candidate.input.source,
-            &candidate.input.text,
-            candidate.language,
-            &candidate.provider,
-            candidate.input.start_ms.unwrap_or_default(),
-            candidate.input.end_ms.unwrap_or_default(),
-            candidate.input.turn_index.unwrap_or_default(),
-        )
-        .await?;
-    timeline.mark_first_persisted();
-    tracing::info!(
-        %session_id,
-        source = %candidate.input.source,
-        turn_index = candidate.input.turn_index.unwrap_or_default(),
-        transcript_id = %row.id,
-        "persisted partial turn transcript"
-    );
-    repos
+    if let Err(error) = repos
         .add_source_checkpoint(
             session_id,
-            Some(candidate.artifact_id.as_str()),
-            Some(candidate.input.source.as_str()),
+            Some(artifact_id.as_str()),
+            Some(source.as_str()),
             "transcript_persistence",
             Some(
                 serde_json::json!({
                     "durationMs": elapsed_ms(persistence_started),
-                    "status": "succeeded",
-                    "turnIndex": candidate.input.turn_index,
-                    "transcriptId": row.id,
+                    "status": status,
+                    "turnIndex": turn_index,
+                    "transcriptId": transcript_id,
+                    "jobId": job_id,
                 })
                 .to_string(),
             ),
         )
-        .await?;
+        .await
+    {
+        tracing::warn!(%session_id, %error, "failed to persist transcript_persistence checkpoint");
+    }
     Ok(())
 }
 
@@ -3539,8 +3839,8 @@ mod tests {
         collections::HashMap,
         path::PathBuf,
         sync::{
-            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
         },
         time::Duration,
     };
@@ -3765,11 +4065,9 @@ mod tests {
             "audio_normalize_failed"
         );
         assert!(note_transcription_details["durationMs"].as_i64().is_some());
-        assert!(
-            note_transcription_details["doneToDurationMs"]
-                .as_i64()
-                .is_some()
-        );
+        assert!(note_transcription_details["doneToDurationMs"]
+            .as_i64()
+            .is_some());
 
         let processing_rows = rows
             .iter()
@@ -3943,11 +4241,9 @@ mod tests {
         assert_eq!(note_transcription_details["status"], "failed");
         assert_eq!(note_transcription_details["error"], "audio_turn_failed");
         assert!(note_transcription_details["durationMs"].as_i64().is_some());
-        assert!(
-            note_transcription_details["doneToDurationMs"]
-                .as_i64()
-                .is_some()
-        );
+        assert!(note_transcription_details["doneToDurationMs"]
+            .as_i64()
+            .is_some());
         assert!(!note_transcription_details.contains_key("successfulTurnCount"));
         assert!(!note_transcription_details.contains_key("failedTurnCount"));
 
@@ -4123,6 +4419,7 @@ mod tests {
             fallback_preparer,
             transcriber,
             None,
+            None,
             DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
             timing,
         )
@@ -4196,11 +4493,9 @@ mod tests {
             .expect("temp dir file name");
 
         assert_eq!(file_name, "os-june-turns-______outside_session");
-        assert!(
-            !temp_dir
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
-        );
+        assert!(!temp_dir
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir)));
     }
 
     #[test]
@@ -4500,12 +4795,10 @@ mod tests {
             .cloned()
             .collect::<HashMap<_, _>>();
         assert!(context_by_path["s1"].is_none());
-        assert!(
-            context_by_path["m2"]
-                .as_ref()
-                .expect("second microphone turn should receive prior microphone context")
-                .contains("Microphone: m0")
-        );
+        assert!(context_by_path["m2"]
+            .as_ref()
+            .expect("second microphone turn should receive prior microphone context")
+            .contains("Microphone: m0"));
     }
 
     #[tokio::test]
@@ -4552,12 +4845,10 @@ mod tests {
         let context_by_path = contexts.iter().cloned().collect::<HashMap<_, _>>();
         assert!(context_by_path["m0"].is_none());
         assert!(context_by_path["s1"].is_none());
-        assert!(
-            context_by_path["m2"]
-                .as_ref()
-                .expect("later microphone turn should receive same-source context")
-                .contains("Microphone: m0")
-        );
+        assert!(context_by_path["m2"]
+            .as_ref()
+            .expect("later microphone turn should receive same-source context")
+            .contains("Microphone: m0"));
     }
 
     #[tokio::test]
@@ -4577,7 +4868,6 @@ mod tests {
             TranscriptCandidate {
                 artifact_id: "cached-microphone".to_string(),
                 language: None,
-                provider: "test".to_string(),
                 input: SourceTranscriptInput {
                     source: "microphone".to_string(),
                     text: "cached microphone context".to_string(),
@@ -4592,7 +4882,6 @@ mod tests {
             TranscriptCandidate {
                 artifact_id: "cached-system".to_string(),
                 language: None,
-                provider: "test".to_string(),
                 input: SourceTranscriptInput {
                     source: "system".to_string(),
                     text: "must not leak across lanes".to_string(),
@@ -5307,6 +5596,7 @@ mod tests {
         let summary = source_failure_summary(&[
             FailedTranscriptCandidate {
                 artifact_id: "mic".to_string(),
+                source_fallback: false,
                 input: SourceTranscriptInput {
                     source: "microphone".to_string(),
                     text: String::new(),
@@ -5322,6 +5612,7 @@ mod tests {
             },
             FailedTranscriptCandidate {
                 artifact_id: "system".to_string(),
+                source_fallback: false,
                 input: SourceTranscriptInput {
                     source: "system".to_string(),
                     text: String::new(),
@@ -5410,6 +5701,7 @@ mod tests {
     fn validated_silent_microphone_does_not_block_successful_system_transcript() {
         let visible = vec![FailedTranscriptCandidate {
             artifact_id: "mic".to_string(),
+            source_fallback: false,
             input: SourceTranscriptInput {
                 source: "microphone".to_string(),
                 text: String::new(),
@@ -5561,11 +5853,13 @@ mod tests {
                 start_ms: 0,
                 end_ms: 0,
                 turn_index: 0,
+                durable_job: None,
             },
             "test".to_string(),
             "Meeting".to_string(),
             None,
             transcriber,
+            None,
         )
         .await
         .expect("short full-source recovery should transcribe");
@@ -5579,6 +5873,80 @@ mod tests {
         assert!(operation_ids[0].ends_with("-chunk-0"));
         assert!(operation_ids[1].ends_with("-chunk-1"));
         assert!(operation_ids[2].ends_with("-chunk-2"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn durable_configuration_fingerprint_tracks_output_affecting_context() {
+        let base = note_transcription_configuration_fingerprint("Meeting", Some("- June"));
+        assert_eq!(
+            base,
+            note_transcription_configuration_fingerprint("Meeting", Some("- June"))
+        );
+        assert_ne!(
+            base,
+            note_transcription_configuration_fingerprint("Renamed meeting", Some("- June"))
+        );
+        assert_ne!(
+            base,
+            note_transcription_configuration_fingerprint("Meeting", Some("- Junho"))
+        );
+    }
+
+    #[tokio::test]
+    async fn durable_job_is_claimed_before_provider_and_uses_ledger_operation_id() {
+        let dir = std::env::temp_dir().join(format!(
+            "os-june-durable-job-claim-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio_path = dir.join("turn.wav");
+        write_loud_wav(&audio_path, 16_000, 16_000);
+        let claimed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let claimer = {
+            let claimed = Arc::clone(&claimed);
+            Arc::new(move |job_id: String| {
+                let claimed = Arc::clone(&claimed);
+                Box::pin(async move {
+                    assert_eq!(job_id, "durable-span");
+                    claimed.store(true, Ordering::SeqCst);
+                    Ok(())
+                }) as TurnClaimFuture
+            }) as TurnJobClaimer
+        };
+        let operation_ids = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = {
+            let claimed = Arc::clone(&claimed);
+            let operation_ids = Arc::clone(&operation_ids);
+            Arc::new(move |request: TranscriptionRequest| {
+                assert!(claimed.load(Ordering::SeqCst));
+                operation_ids.lock().unwrap().push(request.operation_id());
+                Box::pin(async { Ok(test_provider_result("durable text")) }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let mut job = test_job(audio_path.to_str().unwrap(), "microphone", 0);
+        job.temp_dir = dir.clone();
+        job.durable_job = Some(test_durable_job(
+            "durable-span",
+            "durable-span:full-input-fingerprint",
+        ));
+
+        let event = transcribe_one_turn_job(
+            job,
+            "test".to_string(),
+            "Meeting".to_string(),
+            None,
+            transcriber,
+            Some(claimer),
+        )
+        .await
+        .expect("durable job should transcribe");
+
+        assert_eq!(event.job_id.as_deref(), Some("durable-span"));
+        assert_eq!(
+            operation_ids.lock().unwrap().as_slice(),
+            ["durable-span:full-input-fingerprint"]
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -5982,6 +6350,7 @@ mod tests {
                 Arc::new(|plan| Ok(fake_fallback_job(plan))),
                 transcriber,
                 None,
+                None,
                 DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
                 ProcessingTiming::untracked(),
             )
@@ -6078,6 +6447,7 @@ mod tests {
             None,
             &[],
             transcriber,
+            None,
             None,
             DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
         ));
@@ -6220,6 +6590,7 @@ mod tests {
                 Arc::new(|plan| Ok(fake_fallback_job(plan))),
                 transcriber,
                 None,
+                None,
                 DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
                 ProcessingTiming::from_done(done_started),
             )
@@ -6361,6 +6732,7 @@ mod tests {
                 turn_preparer,
                 Arc::new(|plan| Ok(fake_fallback_job(plan))),
                 transcriber,
+                None,
                 Some(sink),
                 DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
                 ProcessingTiming::untracked(),
@@ -6450,6 +6822,7 @@ mod tests {
                 turn_preparer,
                 Arc::new(|plan| Ok(fake_fallback_job(plan))),
                 transcriber,
+                None,
                 Some(sink),
                 DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
                 ProcessingTiming::untracked(),
@@ -6591,6 +6964,7 @@ mod tests {
                 turn_preparer,
                 fallback_preparer,
                 transcriber,
+                None,
                 Some(sink),
                 DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
                 ProcessingTiming::from_done(done_started),
@@ -6732,6 +7106,7 @@ mod tests {
                 fallback_preparer,
                 transcriber,
                 None,
+                None,
                 DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
                 ProcessingTiming::untracked(),
             )
@@ -6820,6 +7195,7 @@ mod tests {
                 turn_preparer,
                 Arc::new(|plan| Ok(fake_fallback_job(plan))),
                 transcriber,
+                None,
                 None,
                 DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
                 ProcessingTiming::untracked(),
@@ -6954,6 +7330,7 @@ mod tests {
                 Arc::new(|descriptor| Ok(prepared_test_turn(&descriptor))),
                 fallback_preparer,
                 transcriber,
+                None,
                 Some(sink),
                 0,
                 ProcessingTiming::untracked(),
@@ -6998,6 +7375,7 @@ mod tests {
                 None,
                 &[],
                 transcriber,
+                None,
                 None,
                 0,
             ),
@@ -7063,6 +7441,7 @@ mod tests {
             None,
             &[],
             transcriber,
+            None,
             Some(sink),
             DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
         ));
@@ -7215,6 +7594,7 @@ mod tests {
                 turn_preparer,
                 fallback_preparer,
                 transcriber,
+                None,
                 Some(sink),
                 DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
                 ProcessingTiming::untracked(),
@@ -7365,6 +7745,7 @@ mod tests {
             start_ms: turn.start_ms,
             end_ms: turn.end_ms,
             turn_index: turn.turn_index,
+            durable_job: None,
         };
 
         let prepared = prepare_turn_job(TurnPreparationJob {
@@ -7375,6 +7756,7 @@ mod tests {
             normalized_path: dir.join("actual-normalized.wav"),
             recorded_silence: true,
             echo_trimmed: false,
+            durable_job: None,
         })
         .unwrap();
 
@@ -7577,7 +7959,7 @@ mod tests {
                         .lock()
                         .unwrap()
                         .push((operation_id.clone(), request.audio_path.clone()));
-                    if request.audio_path == PathBuf::from("ordinary-system-1.wav")
+                    if request.audio_path == std::path::Path::new("ordinary-system-1.wav")
                         || operation_id.contains("-fallback-true-")
                     {
                         Ok(test_provider_result(&operation_id))
@@ -7640,11 +8022,9 @@ mod tests {
             .unwrap();
         assert_eq!(fallback_path, &PathBuf::from("prepared-microphone.wav"));
         assert_ne!(fallback_path, &raw_microphone_path);
-        assert!(
-            requests
-                .iter()
-                .all(|(_, audio_path)| audio_path != &raw_microphone_path)
-        );
+        assert!(requests
+            .iter()
+            .all(|(_, audio_path)| audio_path != &raw_microphone_path));
     }
 
     #[tokio::test]
@@ -7849,11 +8229,9 @@ mod tests {
                 "artifact-microphone-1100-1600-turn-1-fallback-false-saved-audio-v2",
             ]
         );
-        assert!(
-            operation_ids
-                .iter()
-                .all(|operation_id| !operation_id.contains("-fallback-true-"))
-        );
+        assert!(operation_ids
+            .iter()
+            .all(|operation_id| !operation_id.contains("-fallback-true-")));
     }
 
     #[tokio::test]
@@ -7868,7 +8246,6 @@ mod tests {
         let cached_candidates = vec![TranscriptCandidate {
             artifact_id: "artifact".to_string(),
             language: None,
-            provider: crate::providers::OPENAI_PROVIDER.to_string(),
             input: SourceTranscriptInput {
                 source: "microphone".to_string(),
                 text: "cached turn".to_string(),
@@ -7948,6 +8325,7 @@ mod tests {
             normalized_path: PathBuf::from(format!("ordinary-{source}-{turn_index}.wav")),
             recorded_silence: false,
             echo_trimmed,
+            durable_job: None,
         }
     }
 
@@ -7963,6 +8341,7 @@ mod tests {
             start_ms: descriptor.turn.start_ms,
             end_ms: descriptor.turn.end_ms,
             turn_index: descriptor.turn.turn_index,
+            durable_job: None,
         }
     }
 
@@ -7997,6 +8376,7 @@ mod tests {
             start_ms: 0,
             end_ms: plan.end_ms,
             turn_index: plan.turn_index,
+            durable_job: None,
         }
     }
 
@@ -8005,6 +8385,34 @@ mod tests {
             text: text.to_string(),
             language: None,
             provider: "test".to_string(),
+        }
+    }
+
+    fn test_durable_job(id: &str, operation_id: &str) -> NoteTranscriptionJobRecord {
+        NoteTranscriptionJobRecord {
+            id: id.to_string(),
+            note_id: "note".to_string(),
+            recording_session_id: "session".to_string(),
+            audio_artifact_id: "artifact".to_string(),
+            source: "microphone".to_string(),
+            source_mode: RecordingSourceMode::MicrophoneOnly,
+            job_kind: NoteTranscriptionJobKind::Turn,
+            start_ms: 0,
+            end_ms: 1_000,
+            turn_index: 0,
+            input_fingerprint: "fingerprint".to_string(),
+            configuration_fingerprint: "configuration".to_string(),
+            operation_id: operation_id.to_string(),
+            provider: "test".to_string(),
+            max_chunk_ms: None,
+            pipeline_version: NOTE_TRANSCRIPTION_PIPELINE_VERSION.to_string(),
+            status: NoteTranscriptionJobStatus::Pending,
+            attempt_count: 0,
+            transcript_id: None,
+            last_error: None,
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+            completed_at: None,
         }
     }
 
@@ -8031,6 +8439,7 @@ mod tests {
             start_ms: turn_index * 1_000,
             end_ms: turn_index * 1_000 + 500,
             turn_index,
+            durable_job: None,
         }
     }
 
@@ -8074,6 +8483,7 @@ mod tests {
     fn failed_candidate(source: &str, warning: &str, turn_index: i64) -> FailedTranscriptCandidate {
         FailedTranscriptCandidate {
             artifact_id: format!("{source}-artifact"),
+            source_fallback: false,
             input: SourceTranscriptInput {
                 source: source.to_string(),
                 text: String::new(),

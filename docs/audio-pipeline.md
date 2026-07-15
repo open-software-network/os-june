@@ -22,11 +22,12 @@ preview).
    preview.
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
    the batch pipeline for microphone-only and dual-Source recordings:
-   `drop_silent_system_sources` → `turns::detect_turns` → reconcile durable
-   fingerprinted note-transcription jobs → bounded Turn preparation → one
+   `drop_silent_system_sources` → dual-Source `turns::detect_turns` (or one
+   authoritative full-Source microphone job) → reconcile durable fingerprinted
+   note-transcription jobs → bounded Turn preparation → one
    in-flight provider request per Source → atomically persist each successful
    job and transcript row → **note generation**. Full-Source fallbacks are
-   prepared lazily when a Source lane is materially incomplete and atomically
+   prepared lazily when a Source is materially incomplete and atomically
    replace that Source's partial rows only after the replacement succeeds.
 
 ## Key files

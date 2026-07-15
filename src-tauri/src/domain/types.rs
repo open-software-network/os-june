@@ -287,6 +287,8 @@ pub struct FinishRecordingResponse {
 pub struct RetryProcessingRequest {
     pub note_id: String,
     pub step: Option<String>,
+    #[serde(default)]
+    pub recording_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2821,32 +2821,6 @@ impl Repositories {
                         }
                     }
                 }
-            } else if plan.job_kind == NoteTranscriptionJobKind::Turn {
-                certified_transcript_id = query(
-                    "SELECT id FROM transcripts
-                     WHERE recording_session_id = ?
-                       AND audio_artifact_id = ?
-                       AND source = ?
-                       AND source_mode = ?
-                       AND start_ms = ? AND end_ms = ? AND turn_index = ?
-                       AND provider = ?
-                       AND status = 'succeeded' AND TRIM(text) != ''
-                       AND (span_id IS NULL OR span_id = ?)
-                     ORDER BY created_at DESC, rowid DESC
-                     LIMIT 1",
-                )
-                .bind(session_id)
-                .bind(&plan.audio_artifact_id)
-                .bind(&plan.source)
-                .bind(source_mode.as_db())
-                .bind(plan.start_ms)
-                .bind(plan.end_ms)
-                .bind(plan.turn_index)
-                .bind(&plan.provider)
-                .bind(&plan.span_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .map(|row| row.get("id"));
             }
 
             let target_status = if certified_transcript_id.is_some() {
@@ -2919,6 +2893,35 @@ impl Repositories {
             }
             current.push(plan.span_id.clone());
         }
+
+        // An exact successful full-Source fallback is the authoritative
+        // projection for that Source. Keep its ordinary span jobs superseded on
+        // every reconciliation; otherwise Retry would revive and re-spend on
+        // the turns that the fallback atomically replaced.
+        let succeeded_fallback_sources = preserved_transcripts
+            .iter()
+            .filter(|(_, plan)| plan.job_kind == NoteTranscriptionJobKind::SourceFallback)
+            .map(|(_, plan)| plan.source.clone())
+            .collect::<Vec<_>>();
+        for source in &succeeded_fallback_sources {
+            query(
+                "UPDATE note_transcription_jobs
+                 SET status = 'superseded', transcript_id = NULL, last_error = NULL,
+                     updated_at = ?, completed_at = ?
+                 WHERE recording_session_id = ? AND source = ?
+                   AND job_kind = 'turn'",
+            )
+            .bind(&now)
+            .bind(&now)
+            .bind(session_id)
+            .bind(source)
+            .execute(&mut *tx)
+            .await?;
+        }
+        preserved_transcripts.retain(|(_, plan)| {
+            plan.job_kind == NoteTranscriptionJobKind::SourceFallback
+                || !succeeded_fallback_sources.contains(&plan.source)
+        });
 
         let jobs =
             query("SELECT id, status FROM note_transcription_jobs WHERE recording_session_id = ?")
@@ -4328,6 +4331,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transcription_job_does_not_certify_pre_ledger_text() {
+        let repos = test_repositories().await;
+        let (note_id, artifact_id) =
+            recording_fixture(&repos, "session-legacy", "system", "checksum-a").await;
+        repos
+            .upsert_successful_source_turn_transcript(
+                &note_id,
+                "session-legacy",
+                &artifact_id,
+                RecordingSourceMode::MicrophonePlusSystem,
+                "system",
+                "Possibly incorrect legacy text",
+                None,
+                "provider-a",
+                100,
+                900,
+                0,
+            )
+            .await
+            .expect("insert legacy transcript");
+        let plan = transcription_plan("span-legacy", &artifact_id, "system", 100, 900, 0);
+
+        let reconciled = repos
+            .reconcile_note_transcription_jobs(
+                &note_id,
+                "session-legacy",
+                RecordingSourceMode::MicrophonePlusSystem,
+                &[plan],
+            )
+            .await
+            .expect("reconcile legacy transcript");
+
+        assert_eq!(reconciled[0].status, NoteTranscriptionJobStatus::Pending);
+        assert_eq!(transcript_count(&repos, "session-legacy").await, 0);
+    }
+
+    #[tokio::test]
     async fn transcription_job_fingerprint_changes_invalidate_output() {
         let repos = test_repositories().await;
         let (note_id, artifact_id) =
@@ -4629,6 +4669,43 @@ mod tests {
         .expect("fallback projection");
         assert_eq!(rows[0].get::<String, _>("span_id"), fallback.span_id);
         assert_eq!(rows[0].get::<String, _>("text"), "Fallback text");
+
+        let reconciled = repos
+            .reconcile_note_transcription_jobs(
+                &note_id,
+                "session-fallback",
+                RecordingSourceMode::MicrophonePlusSystem,
+                &plans,
+            )
+            .await
+            .expect("reconcile completed fallback");
+        assert_eq!(
+            reconciled
+                .iter()
+                .find(|job| job.id == fallback.span_id)
+                .expect("fallback job")
+                .status,
+            NoteTranscriptionJobStatus::Succeeded
+        );
+        assert!(reconciled
+            .iter()
+            .filter(|job| job.job_kind == NoteTranscriptionJobKind::Turn)
+            .all(|job| job.status == NoteTranscriptionJobStatus::Superseded));
+        assert_eq!(transcript_count(&repos, "session-fallback").await, 1);
+
+        let turn_only = repos
+            .reconcile_note_transcription_jobs(
+                &note_id,
+                "session-fallback",
+                RecordingSourceMode::MicrophonePlusSystem,
+                &[first, second],
+            )
+            .await
+            .expect("remove obsolete fallback from plan");
+        assert!(turn_only
+            .iter()
+            .all(|job| job.status == NoteTranscriptionJobStatus::Pending));
+        assert_eq!(transcript_count(&repos, "session-fallback").await, 0);
     }
 
     #[tokio::test]
