@@ -3911,7 +3911,7 @@ fn emit_dictation_cleanup_skipped(
 }
 
 fn looks_like_instruction_response(value: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase();
+    let normalized = value.trim().to_ascii_lowercase().replace('’', "'");
     looks_like_report_summary_response(&normalized)
         || normalized.starts_with("sure")
         || [
@@ -6897,6 +6897,9 @@ mod tests {
         assert!(looks_like_instruction_response(
             "Here is the corrected transcript: Hello."
         ));
+        assert!(looks_like_instruction_response(
+            "Here’s the corrected transcript: Hello."
+        ));
         assert!(looks_like_instruction_response("Here you go: Hello."));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
@@ -6916,6 +6919,9 @@ mod tests {
         ));
         assert!(!looks_like_instruction_response(
             "Here's the API key to Poncho."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here’s the API key to Poncho."
         ));
     }
 
