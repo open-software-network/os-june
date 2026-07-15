@@ -2443,7 +2443,16 @@ fn reap_orphaned_helpers(app: &AppHandle) -> Result<(), AppError> {
             ));
         }
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        // A directory entry we cannot even enumerate might be a record naming a
+        // live orphan: fail closed rather than skip it as absent.
+        let entry = entry.map_err(|error| {
+            tracing::warn!(%error, "dictation reap: ownership entry unreadable; aborting spawn");
+            AppError::new(
+                "dictation_helper_reap_failed",
+                "Could not enumerate the dictation helper ownership records.",
+            )
+        })?;
         let path = entry.path();
         let is_record = path
             .file_name()
@@ -2454,13 +2463,21 @@ fn reap_orphaned_helpers(app: &AppHandle) -> Result<(), AppError> {
         if !is_record {
             continue;
         }
-        let Some(record) = fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<HelperOwnershipRecord>(&raw).ok())
-        else {
-            // Unparseable record: it names no identifiable process, so there is
-            // nothing to reap from it. Atomic writes make this near-impossible;
-            // drop the unactionable file rather than wedge every future spawn.
+        // Distinguish a read I/O error from malformed content. An unreadable
+        // record may name a live orphan still holding the event tap, so retain
+        // it and fail closed; only a successfully-read-but-unparseable record is
+        // the (atomic-write-guarded, near-impossible) delete-stale case.
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "dictation reap: ownership record unreadable; aborting spawn");
+                return Err(AppError::new(
+                    "dictation_helper_reap_failed",
+                    "Could not read a dictation helper ownership record.",
+                ));
+            }
+        };
+        let Ok(record) = serde_json::from_str::<HelperOwnershipRecord>(&raw) else {
             tracing::warn!(path = %path.display(), "dictation reap: dropping unparseable ownership record");
             let _ = fs::remove_file(&path);
             continue;
