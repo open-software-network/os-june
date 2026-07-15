@@ -3967,7 +3967,7 @@ fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
 }
 
 fn is_here_instruction_preamble(preamble: &str) -> bool {
-    let preamble = preamble.trim_end_matches('.').trim_end();
+    let preamble = preamble.trim_end_matches(['.', '!', '?']).trim_end();
     if is_generic_here_instruction_preamble(preamble) {
         return true;
     }
@@ -3985,7 +3985,7 @@ fn is_here_instruction_preamble(preamble: &str) -> bool {
 }
 
 fn is_terminal_here_instruction_preamble(normalized: &str) -> bool {
-    let preamble = normalized.trim_end_matches('.').trim_end();
+    let preamble = normalized.trim_end_matches(['.', '!', '?']).trim_end();
     if is_generic_here_instruction_preamble(preamble) {
         return true;
     }
@@ -7062,6 +7062,8 @@ mod tests {
         ));
         assert!(looks_like_instruction_response("Here is the transcript."));
         assert!(looks_like_instruction_response("Here you go."));
+        assert!(looks_like_instruction_response("Here you go!"));
+        assert!(looks_like_instruction_response("Here is the transcript?"));
         assert!(looks_like_instruction_response(
             "Here's the cleaned-up message: Hello."
         ));
