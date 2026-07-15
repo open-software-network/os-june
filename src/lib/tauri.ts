@@ -1980,7 +1980,7 @@ export async function latestDictationEvent() {
 }
 
 // ---------------------------------------------------------------------------
-// Private Google connectors (local mode)
+// Private connectors (local mode): Google and Linear
 // ---------------------------------------------------------------------------
 
 /** Feature bundle wire names the connect flow requests. Mirrors the Rust
@@ -1991,19 +1991,46 @@ export type ConnectorScopeBundle =
   | "gmail_modify"
   | "gmail_send"
   | "calendar_read"
-  | "calendar_events";
+  | "calendar_events"
+  | "linear_read"
+  | "linear_write";
 
 export type ConnectorAccountStatus = "connected" | "reconnect_required";
 
-/** One connected Google account, as the connectors module reports it. Carries
- * only metadata (email, granted scope URLs, health) — never a token. */
+export type ConnectorProvider = "google" | "linear";
+
+/** One Linear team: the granularity June's Linear read/write access is
+ * scoped to. Returned both by the live team list and on the account once
+ * selected. */
+export type LinearTeam = {
+  id: string;
+  key: string;
+  name: string;
+};
+
+/** One connected connector account, as the connectors module reports it.
+ * Carries only metadata (identity, granted scopes, health) — never a token.
+ * Google rows leave `workspaceName`/`workspaceUrlKey` null and
+ * `selectedTeams` empty. A Linear row's `accountId` is the Linear workspace
+ * id (an opaque UUID, not an email); `email` is the signed-in Linear user's
+ * email and may be empty. */
 export type ConnectorAccount = {
   accountId: string;
-  provider: "google";
+  provider: ConnectorProvider;
   email: string;
-  /** Granted Google scope URLs (not bundle names). */
+  /** Granted scope identifiers: Google's full auth URLs, Linear's short
+   * scope names ("read", "write") — not bundle names. */
   scopes: string[];
   status: ConnectorAccountStatus;
+  /** Linear workspace display name; null for Google rows. */
+  workspaceName: string | null;
+  /** Linear workspace URL key (the org's linear.app subdomain segment);
+   * null for Google rows. */
+  workspaceUrlKey: string | null;
+  /** Linear teams June may read/write on this workspace. Empty for Google
+   * rows, and for a fresh Linear connect before the user finishes team
+   * selection. */
+  selectedTeams: LinearTeam[];
 };
 
 /** Per-routine trust mode for connector action tools. Distinct from the
@@ -2060,15 +2087,19 @@ export async function connectorsList() {
   return invoke<ConnectorAccount[]>("connectors_list");
 }
 
-/** Runs the Google OAuth connect flow for the given feature bundles. Blocks
- * until the browser flow completes (the Rust side enforces a 300s timeout).
- * `loginHint` pre-selects the Google account, for reconnects. */
+/** Runs the OAuth connect flow for the given provider and feature bundles.
+ * Blocks until the browser flow completes (the Rust side enforces a 300s
+ * timeout). `provider` defaults to Google on the Rust side when omitted.
+ * `loginHint` pre-selects the account to reconnect or add scope to: a Google
+ * email for Google, the workspace's `accountId` for Linear (Linear
+ * escalates by workspace, not by user email). */
 export async function connectorsConnect(input: {
   scopes: ConnectorScopeBundle[];
   loginHint?: string;
+  provider?: ConnectorProvider;
 }) {
   return invoke<ConnectorAccount>("connectors_connect", {
-    request: { scopes: input.scopes, loginHint: input.loginHint },
+    request: { scopes: input.scopes, loginHint: input.loginHint, provider: input.provider },
   });
 }
 
@@ -2077,15 +2108,39 @@ export async function connectorsCancelConnect() {
 }
 
 /** Removes a connected account. With `revoke`, also revokes June's grant with
- * Google before clearing the Keychain item. */
+ * the provider before clearing the Keychain item. */
 export async function connectorsDisconnect(input: { accountId: string; revoke: boolean }) {
   return invoke<void>("connectors_disconnect", {
     request: { accountId: input.accountId, revoke: input.revoke },
   });
 }
 
+/** Lists the Linear teams the connected workspace's user can see, for the
+ * team-selection dialog. A live call, not cached client-side: a workspace's
+ * teams can change between visits. */
+export async function connectorsLinearTeams(input: { accountId: string }) {
+  return invoke<LinearTeam[]>("connectors_linear_teams", {
+    request: { accountId: input.accountId },
+  });
+}
+
+/** Persists which Linear teams June may read/write on this workspace.
+ * Returns the updated account with `selectedTeams` set. The Rust side
+ * rejects an empty team list, so a workspace mid-setup stays in the
+ * "unfinished" state rather than recording zero teams on purpose. */
+export async function connectorsSetSelectedTeams(input: {
+  accountId: string;
+  teams: LinearTeam[];
+}) {
+  return invoke<ConnectorAccount>("connectors_selected_teams_set", {
+    request: { accountId: input.accountId, teams: input.teams },
+  });
+}
+
 /** Restarts the Hermes runtimes so a connect/disconnect/grant change lands in
- * the rendered MCP config. Call after connectorsConnect resolves. */
+ * the rendered MCP config. Call after connectorsConnect resolves. Google
+ * only today — Linear ships no MCP server in this slice, so there is no
+ * runtime surface for a Linear grant to apply. */
 export async function connectorsApplyRuntime() {
   return invoke<void>("connectors_apply_runtime");
 }

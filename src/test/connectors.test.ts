@@ -1,17 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
-  ALL_SCOPE_BUNDLES,
   AUTONOMY_RUN_THRESHOLD,
   BUNDLE_META,
   autonomyRuntimeNeedsRestart,
   CONNECTOR_ACTION_TOOLSETS,
   CONNECTOR_READ_TOOLSETS,
+  GOOGLE_SCOPE_BUNDLES,
+  LINEAR_SCOPE_BUNDLES,
   SANDBOXED_ROUTINE_BASE_TOOLSETS,
   TRIGGER_META,
   TRUST_MODE_META,
   accountStatusMeta,
   autonomyProgressLabel,
   autonomyUnlockHint,
+  bundlesForProvider,
   bundlesFromScopes,
   canSelectAutonomous,
   eventTriggerScheduleDraft,
@@ -41,18 +43,54 @@ describe("scope bundles", () => {
     expect(BUNDLE_META.calendar_events.scopeUrls).toEqual([CALENDAR_EVENTS]);
   });
 
+  it("maps every Linear bundle to its short scope name", () => {
+    expect(BUNDLE_META.linear_read.scopeUrls).toEqual(["read"]);
+    expect(BUNDLE_META.linear_write.scopeUrls).toEqual(["write"]);
+    expect(BUNDLE_META.linear_read.label).toBe("Read workspace");
+    expect(BUNDLE_META.linear_write.label).toBe("Create and update issues");
+  });
+
+  it("lists bundles per provider with no cross-provider bundles", () => {
+    expect(bundlesForProvider("google")).toEqual(GOOGLE_SCOPE_BUNDLES);
+    expect(bundlesForProvider("linear")).toEqual(LINEAR_SCOPE_BUNDLES);
+    expect(GOOGLE_SCOPE_BUNDLES).not.toEqual(
+      expect.arrayContaining(["linear_read", "linear_write"]),
+    );
+    expect(LINEAR_SCOPE_BUNDLES).not.toEqual(
+      expect.arrayContaining([
+        "gmail_read",
+        "gmail_draft",
+        "gmail_modify",
+        "gmail_send",
+        "calendar_read",
+        "calendar_events",
+      ]),
+    );
+  });
+
   it("recovers bundles from granted scope URLs, ignoring identity scopes", () => {
-    expect(bundlesFromScopes(["openid", "email", GMAIL_READONLY, CALENDAR_EVENTS])).toEqual([
-      "gmail_read",
-      "calendar_events",
-    ]);
-    expect(bundlesFromScopes([])).toEqual([]);
+    expect(
+      bundlesFromScopes(["openid", "email", GMAIL_READONLY, CALENDAR_EVENTS], "google"),
+    ).toEqual(["gmail_read", "calendar_events"]);
+    expect(bundlesFromScopes([], "google")).toEqual([]);
+  });
+
+  it("scopes bundlesFromScopes to the given provider, never cross-matching", () => {
+    // Linear's "read" scope name never collides with a Google bundle, even
+    // though both providers are checked against the same account.scopes
+    // shape.
+    expect(bundlesFromScopes(["read"], "linear")).toEqual(["linear_read"]);
+    expect(bundlesFromScopes(["read"], "google")).toEqual([]);
   });
 
   it("renders granted scopes as human feature labels", () => {
-    expect(grantedFeatureLabels([GMAIL_READONLY, GMAIL_COMPOSE])).toEqual([
+    expect(grantedFeatureLabels([GMAIL_READONLY, GMAIL_COMPOSE], "google")).toEqual([
       "Read mail",
       "Draft replies",
+    ]);
+    expect(grantedFeatureLabels(["read", "write"], "linear")).toEqual([
+      "Read workspace",
+      "Create and update issues",
     ]);
   });
 
@@ -84,7 +122,7 @@ describe("scope bundles", () => {
   });
 
   it("keeps bundle copy sentence case with no typographic dashes", () => {
-    for (const bundle of ALL_SCOPE_BUNDLES) {
+    for (const bundle of [...GOOGLE_SCOPE_BUNDLES, ...LINEAR_SCOPE_BUNDLES]) {
       const meta = BUNDLE_META[bundle];
       for (const text of [meta.label, meta.description, meta.feature]) {
         expect(text).not.toMatch(/[–—]/);
@@ -136,11 +174,26 @@ describe("autonomyRuntimeNeedsRestart", () => {
 
 describe("account status", () => {
   it("labels connected and reconnect_required accounts", () => {
-    expect(accountStatusMeta("connected")).toMatchObject({ label: "Connected", tone: "ok" });
-    expect(accountStatusMeta("reconnect_required")).toMatchObject({
+    expect(accountStatusMeta("connected", "google")).toMatchObject({
+      label: "Connected",
+      tone: "ok",
+    });
+    expect(accountStatusMeta("reconnect_required", "google")).toMatchObject({
       label: "Reconnect needed",
       tone: "attention",
     });
+  });
+
+  it("names the provider in the reconnect blurb, sharing the connected blurb", () => {
+    expect(accountStatusMeta("reconnect_required", "google").blurb).toBe(
+      "Google needs you to sign in again before June can use this account.",
+    );
+    expect(accountStatusMeta("reconnect_required", "linear").blurb).toBe(
+      "Linear needs you to sign in again before June can use this workspace.",
+    );
+    expect(accountStatusMeta("connected", "google").blurb).toBe(
+      accountStatusMeta("connected", "linear").blurb,
+    );
   });
 
   it("recognizes the connector_not_configured error code", () => {

@@ -100,7 +100,9 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
   // the scope gate must check that exact account. Checking "any account" would
   // enable Create while the routine still polls/calls Google with an account
   // that lacks the scope, silently missing triggers or failing on scope errors.
-  const connectedAccount = (accounts ?? []).find((account) => account.status === "connected");
+  const connectedAccount = (accounts ?? []).find(
+    (account) => account.provider === "google" && account.status === "connected",
+  );
   const scopeGateSatisfied =
     !requiredScopes ||
     (connectedAccount != null && scopesCoverBundles(connectedAccount.scopes, requiredScopes));

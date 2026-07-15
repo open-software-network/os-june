@@ -1,8 +1,8 @@
 /**
- * Pure, render-free view logic for the private Google connectors (local
- * mode): scope-bundle metadata, account status labels, trust-mode metadata
- * and earned-autonomy gating, the trust-mode to Hermes toolset composition,
- * and event-trigger metadata.
+ * Pure, render-free view logic for the private connectors (Google, Linear)
+ * in local mode: scope-bundle metadata, account status labels, trust-mode
+ * metadata and earned-autonomy gating, the trust-mode to Hermes toolset
+ * composition, and event-trigger metadata.
  *
  * Kept separate from the React components and the Tauri bindings (mirroring
  * the hermes-admin/*-view.ts split) so all of it is unit-testable without a
@@ -16,6 +16,7 @@ import { errorCode } from "./errors";
 import { UNRESTRICTED_ROUTINE_TOOLSETS } from "./hermes-routines";
 import type {
   ConnectorAccountStatus,
+  ConnectorProvider,
   ConnectorScopeBundle,
   ConnectorTriggerKind,
   RoutineTrustMode,
@@ -30,8 +31,9 @@ export type ConnectorBundleMeta = {
   label: string;
   /** One-line supporting copy under the label. */
   description: string;
-  /** The Google scope URLs the bundle grants. Mirrors ScopeBundle::scopes()
-   * in src-tauri/src/connectors/scopes.rs; keep in sync. */
+  /** The provider scope identifiers the bundle grants: Google's full auth
+   * URLs, Linear's short scope names. Mirrors ScopeBundle::scopes() in
+   * src-tauri/src/connectors/scopes.rs; keep in sync. */
   scopeUrls: string[];
   /** Short feature phrase for "This routine can: ..." summaries. */
   feature: string;
@@ -75,9 +77,24 @@ export const BUNDLE_META: Readonly<Record<ConnectorScopeBundle, ConnectorBundleM
       scopeUrls: ["https://www.googleapis.com/auth/calendar.events"],
       feature: "manage your calendar",
     },
+    linear_read: {
+      label: "Read workspace",
+      description: "Read teams, projects, cycles, and issues for planning and status briefs.",
+      scopeUrls: ["read"],
+      feature: "read your Linear workspace",
+    },
+    linear_write: {
+      label: "Create and update issues",
+      description:
+        "Draft issues, comments, and project updates. Nothing is written without your approval.",
+      scopeUrls: ["write"],
+      feature: "create and update issues",
+    },
   });
 
-export const ALL_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze([
+/** The six Google feature bundles, in the order the connect dialog lists
+ * them. */
+export const GOOGLE_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze([
   "gmail_read",
   "gmail_draft",
   "gmail_modify",
@@ -85,6 +102,19 @@ export const ALL_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze(
   "calendar_read",
   "calendar_events",
 ]);
+
+/** The two Linear feature bundles, in the order the connect dialog lists
+ * them. */
+export const LINEAR_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze([
+  "linear_read",
+  "linear_write",
+]);
+
+/** The feature bundles a provider's connect dialog offers, in display
+ * order. */
+export function bundlesForProvider(provider: ConnectorProvider): readonly ConnectorScopeBundle[] {
+  return provider === "linear" ? LINEAR_SCOPE_BUNDLES : GOOGLE_SCOPE_BUNDLES;
+}
 
 /** A granted Google scope implies these narrower scope needs: a write scope
  * already grants the matching read, so an account with `calendar.events` need
@@ -110,22 +140,27 @@ function grantsScope(granted: Set<string>, needed: string): boolean {
   return false;
 }
 
-/** Maps an account's granted Google scope URLs back to the feature bundles it
- * explicitly holds, in registry order. Exact match (not superset): this drives
- * display and reconnect, which should reflect what was actually granted, not
- * what a broader scope could stand in for. Unknown URLs (identity scopes,
- * future grants) are ignored: the UI shows features, not raw scopes. */
-export function bundlesFromScopes(scopeUrls: string[]): ConnectorScopeBundle[] {
+/** Maps an account's granted scope identifiers back to the feature bundles it
+ * explicitly holds, in registry order, scoped to that account's provider so a
+ * hypothetical scope-string collision across providers can never cross-match.
+ * Exact match (not superset): this drives display and reconnect, which should
+ * reflect what was actually granted, not what a broader scope could stand in
+ * for. Unknown identifiers (identity scopes, future grants) are ignored: the
+ * UI shows features, not raw scopes. */
+export function bundlesFromScopes(
+  scopeUrls: string[],
+  provider: ConnectorProvider,
+): ConnectorScopeBundle[] {
   const granted = new Set(scopeUrls);
-  return ALL_SCOPE_BUNDLES.filter((bundle) =>
+  return bundlesForProvider(provider).filter((bundle) =>
     BUNDLE_META[bundle].scopeUrls.every((url) => granted.has(url)),
   );
 }
 
 /** "Read mail, draft replies and calendar" — the human feature list an
  * account's grants render as. */
-export function grantedFeatureLabels(scopeUrls: string[]): string[] {
-  return bundlesFromScopes(scopeUrls).map((bundle) => BUNDLE_META[bundle].label);
+export function grantedFeatureLabels(scopeUrls: string[], provider: ConnectorProvider): string[] {
+  return bundlesFromScopes(scopeUrls, provider).map((bundle) => BUNDLE_META[bundle].label);
 }
 
 /** True when the account's granted scopes already cover every bundle a routine
@@ -151,21 +186,30 @@ export type ConnectorStatusMeta = {
   blurb: string;
 };
 
-const STATUS_META: Readonly<Record<ConnectorAccountStatus, ConnectorStatusMeta>> = Object.freeze({
-  connected: {
-    label: "Connected",
-    tone: "ok",
-    blurb: "This account is ready. Tokens stay in your Mac's Keychain.",
-  },
-  reconnect_required: {
-    label: "Reconnect needed",
-    tone: "attention",
-    blurb: "Google needs you to sign in again before June can use this account.",
-  },
+const STATUS_LABELS: Readonly<
+  Record<ConnectorAccountStatus, { label: string; tone: "ok" | "attention" }>
+> = Object.freeze({
+  connected: { label: "Connected", tone: "ok" },
+  reconnect_required: { label: "Reconnect needed", tone: "attention" },
 });
 
-export function accountStatusMeta(status: ConnectorAccountStatus): ConnectorStatusMeta {
-  return STATUS_META[status];
+/** Connected blurb is shared across providers; reconnect names the provider
+ * and what it gates ("this account" for Google, "this workspace" for
+ * Linear) so the prompt reads correctly for either. */
+const CONNECTED_BLURB = "This account is ready. Tokens stay in your Mac's Keychain.";
+
+const RECONNECT_BLURB: Readonly<Record<ConnectorProvider, string>> = Object.freeze({
+  google: "Google needs you to sign in again before June can use this account.",
+  linear: "Linear needs you to sign in again before June can use this workspace.",
+});
+
+export function accountStatusMeta(
+  status: ConnectorAccountStatus,
+  provider: ConnectorProvider,
+): ConnectorStatusMeta {
+  const { label, tone } = STATUS_LABELS[status];
+  const blurb = status === "reconnect_required" ? RECONNECT_BLURB[provider] : CONNECTED_BLURB;
+  return { label, tone, blurb };
 }
 
 /** True for the Rust "connector_not_configured" error: this build ships no
