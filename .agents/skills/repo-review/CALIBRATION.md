@@ -94,3 +94,5 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | JUN-334 (pre-PR) | Spec (codex, r1+fix audit) | 2 | 2 | caught missing terminal telemetry on microphone setup failure and non-canonical Source fallback order; both received focused regressions |
 | JUN-334 (pre-PR) | Adversarial (codex, initial+convergence r1) | 1 | 1 | independently confirmed the microphone setup-telemetry gap, then approved the fixed scheduler, cleanup, evidence, polling, and privacy paths |
 | JUN-334 (pre-PR) | Adversarial (codex, convergence r2) | 0 | — | second consecutive clean review by a different reviewer; explicitly checked dual-Source setup, buffered preparation errors, fallback guards, benchmark reproduction, and billing/privacy |
+| #777 | Greptile (bot) | 2 | 2 | caught process-global environment mutation in the default test suite and an implicit odd-sample median contract; fixed with child-process isolation and executable five-run/all-or-none invariants |
+| #777 | Adversarial (codex, post-bot fix) | 1 | 1 | caught libtest's exit-0 behavior when a stale exact filter runs zero tests; added a child-only completion sentinel and a focused false-pass regression |

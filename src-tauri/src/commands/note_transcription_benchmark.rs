@@ -26,6 +26,7 @@ use tokio::{
 
 const WARMUP_RUNS: usize = 1;
 const MEASURED_RUNS: usize = 5;
+const _: () = assert!(MEASURED_RUNS > 0 && MEASURED_RUNS % 2 == 1);
 
 #[derive(Clone, Copy)]
 struct BenchmarkCase {
@@ -585,13 +586,44 @@ async fn run_benchmark_iteration(
 
 fn median(mut values: Vec<i64>) -> i64 {
     assert!(!values.is_empty(), "median needs values");
+    assert!(
+        values.len() % 2 == 1,
+        "median needs an odd number of values"
+    );
     values.sort_unstable();
     values[values.len() / 2]
 }
 
 fn optional_median(values: Vec<Option<i64>>) -> Option<i64> {
+    let sample_count = values.len();
     let present = values.into_iter().flatten().collect::<Vec<_>>();
+    assert!(
+        present.is_empty() || present.len() == sample_count,
+        "optional median needs all or none of the sample values"
+    );
     (!present.is_empty()).then(|| median(present))
+}
+
+#[test]
+fn median_selects_the_middle_of_five_unsorted_values() {
+    assert_eq!(median(vec![13, 2, 8, 5, 21]), 8);
+}
+
+#[test]
+#[should_panic(expected = "median needs an odd number of values")]
+fn median_rejects_even_sample_counts() {
+    median(vec![1, 2]);
+}
+
+#[test]
+fn optional_median_accepts_all_missing_values() {
+    assert_eq!(optional_median(vec![None; MEASURED_RUNS]), None);
+}
+
+#[test]
+#[should_panic(expected = "optional median needs all or none of the sample values")]
+fn optional_median_rejects_partial_samples() {
+    optional_median(vec![Some(1), None, Some(3), Some(4), Some(5)]);
 }
 
 #[derive(Serialize)]
@@ -701,6 +733,9 @@ async fn benchmark_post_finalization_note_transcription_latency() {
         .into_iter()
         .map(|case| (case, prepare_case_fixtures(root.path(), case)))
         .collect::<Vec<_>>();
+    // This release-only harness uses a dynamic loopback API address. Its Make target is the
+    // supported entry point and isolates the exact ignored test with one test-harness thread,
+    // so these process-global values cannot race unrelated tests.
     let previous = [
         "JUNE_API_URL",
         "OS_JUNE_LOCAL_DEV",
