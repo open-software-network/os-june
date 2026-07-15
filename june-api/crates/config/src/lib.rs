@@ -135,8 +135,6 @@ pub struct AppConfig {
     pub upstreams: UpstreamsConfig,
     pub attestation: AttestationConfig,
     #[serde(default)]
-    pub gateway_attestation: GatewayAttestationConfig,
-    #[serde(default)]
     pub issue_reports: IssueReportsConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
     /// Flat credits charged per generated image, keyed by image model id. Kept
@@ -199,7 +197,6 @@ impl Debug for AppConfig {
             .field("os_accounts", &self.os_accounts)
             .field("upstreams", &self.upstreams)
             .field("attestation", &self.attestation)
-            .field("gateway_attestation", &self.gateway_attestation)
             .field("issue_reports", &self.issue_reports)
             .field("pricing", &self.pricing)
             .field("image_pricing", &self.image_pricing)
@@ -343,47 +340,6 @@ pub struct AttestationConfig {
     pub source_repo_url: String,
     pub image_repo: String,
     pub trust_center_url: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct GatewayAttestationConfig {
-    #[serde(default)]
-    pub required: bool,
-    #[serde(default)]
-    pub url: String,
-    #[serde(default)]
-    pub expected_image_digest: String,
-    #[serde(default = "default_gateway_attestation_audience")]
-    pub audience: String,
-    #[serde(default = "default_gateway_attestation_jwks_url")]
-    pub jwks_url: String,
-    #[serde(default = "default_gateway_attestation_cache_secs")]
-    pub cache_secs: u64,
-}
-
-impl Default for GatewayAttestationConfig {
-    fn default() -> Self {
-        Self {
-            required: false,
-            url: String::new(),
-            expected_image_digest: String::new(),
-            audience: default_gateway_attestation_audience(),
-            jwks_url: default_gateway_attestation_jwks_url(),
-            cache_secs: default_gateway_attestation_cache_secs(),
-        }
-    }
-}
-
-fn default_gateway_attestation_audience() -> String {
-    "https://june-api.opensoftware.co/os-api-gateway".to_string()
-}
-
-fn default_gateway_attestation_jwks_url() -> String {
-    "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com".to_string()
-}
-
-const fn default_gateway_attestation_cache_secs() -> u64 {
-    300
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -981,7 +937,6 @@ impl Default for AppConfig {
                     "https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54"
                         .to_string(),
             },
-            gateway_attestation: GatewayAttestationConfig::default(),
             issue_reports: IssueReportsConfig::default(),
             pricing: default_pricing(),
             image_pricing: default_image_pricing(),
@@ -1059,7 +1014,6 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     }
     validate_request_limits(config)?;
     validate_issue_report_diagnosis(config)?;
-    validate_gateway_attestation(config)?;
 
     let uses_openai = config
         .pricing
@@ -1136,30 +1090,6 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     }
     validate_image_pricing(config)?;
     validate_video_pricing(config)?;
-    Ok(())
-}
-
-fn validate_gateway_attestation(config: &AppConfig) -> Result<(), ConfigError> {
-    let gateway = &config.gateway_attestation;
-    if !gateway.required {
-        return Ok(());
-    }
-    validate_absolute_http_url("gateway_attestation.url", &gateway.url)?;
-    validate_absolute_http_url("gateway_attestation.jwks_url", &gateway.jwks_url)?;
-    validate_required_text("gateway_attestation.audience", &gateway.audience)?;
-    validate_positive_config("gateway_attestation.cache_secs", gateway.cache_secs)?;
-    let digest = gateway.expected_image_digest.trim();
-    if digest.len() != 71
-        || !digest.starts_with("sha256:")
-        || !digest[7..]
-            .chars()
-            .all(|character| character.is_ascii_hexdigit())
-    {
-        return Err(ConfigError::InvalidRequired {
-            field: "gateway_attestation.expected_image_digest",
-            reason: "must be an exact sha256:<64 hex characters> image digest",
-        });
-    }
     Ok(())
 }
 
@@ -1506,26 +1436,6 @@ mod tests {
         config.upstreams.openai.api_key = "sk-test".to_string();
         config.upstreams.venice.api_key = "venice-test".to_string();
         config
-    }
-
-    #[test]
-    fn validate_requires_exact_gateway_policy_when_enabled() {
-        let mut config = valid_config();
-        config.gateway_attestation.required = true;
-        config.gateway_attestation.url =
-            "https://api.opensoftware.co/v1/gateway/attestation".to_string();
-        config.gateway_attestation.expected_image_digest = format!("sha256:{}", "a".repeat(64));
-
-        assert!(validate(&config).is_ok());
-
-        config.gateway_attestation.expected_image_digest = "sha256:latest".to_string();
-        assert!(matches!(
-            validate(&config),
-            Err(ConfigError::InvalidRequired {
-                field: "gateway_attestation.expected_image_digest",
-                ..
-            })
-        ));
     }
 
     fn packaged_config_toml() -> AppConfig {

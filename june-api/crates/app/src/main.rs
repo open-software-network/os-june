@@ -5,12 +5,11 @@ use june_config::{
     VENICE_API_KEY_PLACEHOLDER, image_client_timeout_secs,
 };
 use june_providers::{
-    GatewayAttestationVerifier, JwksTokenVerifier, LocalDevOsAccountsClient, LocalDevTokenVerifier,
-    LogIssueReportSink, LogP3aSink, MultiFormatDurationProbe, OsAccountsHttpClient,
-    OsAccountsP3aSink, OsPlatformIssueReportSink, RoutingTranscriber, VeniceAgentChat,
-    VeniceAugment, VeniceCleaner, VeniceGenerator, VeniceImageEditor, VeniceImageGenerator,
-    VeniceModelCatalog, VeniceVideoProvider, client_with_timeout, default_client,
-    issue_report_client, jwks_client,
+    JwksTokenVerifier, LocalDevOsAccountsClient, LocalDevTokenVerifier, LogIssueReportSink,
+    LogP3aSink, MultiFormatDurationProbe, OsAccountsHttpClient, OsAccountsP3aSink,
+    OsPlatformIssueReportSink, RoutingTranscriber, VeniceAgentChat, VeniceAugment, VeniceCleaner,
+    VeniceGenerator, VeniceImageEditor, VeniceImageGenerator, VeniceModelCatalog,
+    VeniceVideoProvider, client_with_timeout, default_client, issue_report_client, jwks_client,
 };
 use june_services::{
     AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
@@ -63,12 +62,6 @@ async fn serve() -> anyhow::Result<()> {
     // file and Issue creation POSTs are not idempotent.
     let issue_report_http =
         issue_report_client(Duration::from_secs(config.server.request_timeout_secs))?;
-    let gateway_attestation =
-        GatewayAttestationVerifier::new(upstream_http.clone(), &config.gateway_attestation);
-    gateway_attestation
-        .verify(&config.upstreams.venice.api_key)
-        .await
-        .map_err(|_| anyhow::anyhow!("os-api gateway attestation failed closed"))?;
     let pricing = load_pricing(&config, upstream_http.clone()).await;
     let clients = HttpClients {
         default: &http,
@@ -76,7 +69,7 @@ async fn serve() -> anyhow::Result<()> {
         metered_inference: &metered_inference_http,
         issue_reports: &issue_report_http,
     };
-    let app = build_router(&config, clients, pricing, gateway_attestation);
+    let app = build_router(&config, clients, pricing);
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "june-api listening");
     axum::serve(listener, app).await?;
@@ -148,7 +141,6 @@ fn build_router(
     config: &AppConfig,
     clients: HttpClients<'_>,
     mut pricing_config: BTreeMap<String, ModelPriceConfig>,
-    gateway_attestation: GatewayAttestationVerifier,
 ) -> axum::Router {
     if config.local_dev.enabled {
         pricing_config = filter_unconfigured_provider_models(config, pricing_config);
@@ -175,25 +167,20 @@ fn build_router(
     // would let a 300-600s call reach `charge` after its hold expired.
     // Unmetered (user-Venice-key) requests have no hold to protect and keep
     // the full-route client — see AgentChatRequest::unmetered.
-    let generator: Arc<dyn june_domain::Generator> =
-        Arc::new(VeniceGenerator::from_config_with_gateway_attestation(
-            clients.metered_inference.clone(),
-            clients.upstream.clone(),
-            &config.upstreams.venice,
-            gateway_attestation.clone(),
-        ));
-    let cleaner: Arc<dyn june_domain::Cleaner> =
-        Arc::new(VeniceCleaner::from_config_with_gateway_attestation(
-            clients.upstream.clone(),
-            &config.upstreams.venice,
-            gateway_attestation.clone(),
-        ));
+    let generator: Arc<dyn june_domain::Generator> = Arc::new(VeniceGenerator::from_config(
+        clients.metered_inference.clone(),
+        clients.upstream.clone(),
+        &config.upstreams.venice,
+    ));
+    let cleaner: Arc<dyn june_domain::Cleaner> = Arc::new(VeniceCleaner::from_config(
+        clients.upstream.clone(),
+        &config.upstreams.venice,
+    ));
     let agent_chat_completer: Arc<dyn june_domain::AgentChatCompleter> =
-        Arc::new(VeniceAgentChat::from_config_with_gateway_attestation(
+        Arc::new(VeniceAgentChat::from_config(
             clients.metered_inference.clone(),
             clients.upstream.clone(),
             &config.upstreams.venice,
-            gateway_attestation,
         ));
     // One client backs both web traits (search + fetch) over the same Venice
     // credential and base URL.
@@ -341,9 +328,6 @@ fn build_router(
             source_repo_url: config.attestation.source_repo_url.clone(),
             image_repo: config.attestation.image_repo.clone(),
             trust_center_url: config.attestation.trust_center_url.clone(),
-            gateway_attestation_required: config.gateway_attestation.required,
-            gateway_attestation_url: config.gateway_attestation.url.clone(),
-            gateway_image_digest: config.gateway_attestation.expected_image_digest.clone(),
         },
     });
     june_api::router(state)

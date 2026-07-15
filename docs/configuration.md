@@ -58,8 +58,7 @@ raw Tauri app config directory are unaffected.
 
 Non-secret (usually left to `config.toml`): `JUNE__SERVER__HOST` / `PORT`,
 `JUNE__OS_ACCOUNTS__API_URL`, `JUNE__LOCAL_DEV__ENABLED` / `BEARER_TOKEN` /
-`USER_ID`, `JUNE__UPSTREAMS__*__BASE_URL`, and the
-`JUNE__GATEWAY_ATTESTATION__*` policy fields.
+`USER_ID`, `JUNE__UPSTREAMS__*__BASE_URL`.
 
 ## Backend knobs (`june-api/config.toml`)
 
@@ -70,8 +69,4 @@ Non-secret (usually left to `config.toml`): `JUNE__SERVER__HOST` / `PORT`,
 - **Preview cap:** `note_transcribe_preview_max_audio_secs` 30.
 - **OS Accounts token contract:** `iss` `https://accounts.opensoftware.co`, `aud` `open-software-apps`, `jwks_refresh_secs` 300, `jwks_miss_min_backoff_secs` 5.
 - **Pricing:** one `[pricing."<model_id>"]` table per priced model (unit, credits, provider, model_type, capabilities, ...). A model with no pricing entry is rejected at the boundary; the live Venice catalog extends this at boot (see [ADR-0007](adr/0007-model-capability-source-of-truth.md)).
-- **Attestation / issue reports:** the June TEE trust-center URL, the os-api
-  Confidential Space proof URL/audience/exact image digest/cache policy, and
-  the fixed os-platform destination (`open-software` / `june`). Production sets
-  `gateway_attestation.required = true`; invalid or unavailable proof stops
-  startup and service-managed text inference.
+- **Attestation / issue reports:** the TEE trust-center URL + the fixed os-platform destination (`open-software` / `june`).

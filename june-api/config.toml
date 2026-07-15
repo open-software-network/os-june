@@ -16,17 +16,6 @@ source_repo_url = "https://github.com/open-software-network/os-june"
 image_repo = "ghcr.io/open-software-network/june-api"
 trust_center_url = "https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54"
 
-# Production sets required=true and stamps the exact deployed os-api digest.
-# June refuses to start, and service-managed text inference fails closed, when
-# the nonce-bound Google Confidential Space proof does not match these values.
-[gateway_attestation]
-required = false
-url = "https://api.opensoftware.co/v1/gateway/attestation"
-expected_image_digest = ""
-audience = "https://june-api.opensoftware.co/os-api-gateway"
-jwks_url = "https://www.googleapis.com/service_accounts/v1/metadata/jwk/signer@confidentialspace-sign.iam.gserviceaccount.com"
-cache_secs = 300
-
 [issue_reports]
 # User-submitted issue reports are filed as os-platform Issues in the June
 # project. The only per-environment value is the bot user's fellow API key
