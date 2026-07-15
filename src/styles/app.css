@@ -20277,6 +20277,32 @@ input:focus-visible,
   gap: 2px;
 }
 
+.agent-sessions-completed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.agent-sessions-completed-toggle {
+  display: inline-flex;
+  align-items: baseline;
+  align-self: flex-start;
+  gap: var(--sp-2);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.agent-sessions-completed-toggle:hover,
+.agent-sessions-completed-toggle:focus-visible {
+  color: var(--foreground);
+}
+
 /* Flush edges, Granola-style: the row's hover/selected background box sits
  * within the page's exact text bounds (heading, subtitle, search), with the
  * icon and title inset by the row padding rather than bleeding past the

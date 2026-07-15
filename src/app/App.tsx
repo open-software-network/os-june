@@ -3904,6 +3904,8 @@ export function App() {
                   sessions={agentSessions}
                   folders={state.folders}
                   sessionFolderIds={sessionFolders}
+                  completedSessionIds={completedSessions}
+                  onToggleCompleted={handleToggleSessionCompleted}
                   workingSessionIds={agentWorkingSessionIds}
                   waitingSessionIds={agentWaitingSessionIds}
                   onSelectSession={(session) => {

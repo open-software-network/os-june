@@ -89,6 +89,63 @@ describe("AgentSessionsList", () => {
     ).toEqual(["Waiting session", "Running session", "Idle session"]);
   });
 
+  it("moves completed sessions out of the active list into the Completed group", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        completedSessionIds={{ "idle-session": "2026-06-05T10:00:00Z" }}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    const activeList = screen.getByRole("list");
+    expect(activeList).not.toHaveTextContent("Idle session");
+
+    await user.click(screen.getByRole("button", { name: /Completed/ }));
+
+    const lists = screen.getAllByRole("list");
+    expect(lists).toHaveLength(2);
+    expect(lists[1]).toHaveTextContent("Idle session");
+    expect(lists[0]).not.toHaveTextContent("Idle session");
+  });
+
+  it("marks active and completed sessions from their row menus", async () => {
+    const user = userEvent.setup();
+    const onToggleCompleted = vi.fn();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        completedSessionIds={{ "idle-session": "2026-06-05T10:00:00Z" }}
+        onToggleCompleted={onToggleCompleted}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Running session" }));
+    await user.click(screen.getByRole("menuitem", { name: "Mark as complete" }));
+    expect(onToggleCompleted).toHaveBeenCalledWith("running-session", true);
+
+    await user.click(screen.getByRole("button", { name: /Completed/ }));
+    await user.click(screen.getByRole("button", { name: "Actions for Idle session" }));
+    await user.click(screen.getByRole("menuitem", { name: "Mark as active" }));
+    expect(onToggleCompleted).toHaveBeenCalledWith("idle-session", false);
+  });
+
   it("selects agent sessions and moves them in list order", async () => {
     const user = userEvent.setup();
     const onOpenMoveSessions = vi.fn();
