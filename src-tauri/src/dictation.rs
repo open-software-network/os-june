@@ -3945,7 +3945,9 @@ fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
         .iter()
         .filter_map(|separator| normalized.find(separator))
         .min();
-    if structural_preamble_end.is_some_and(|end| is_here_instruction_preamble(&normalized[..end])) {
+    if structural_preamble_end
+        .is_some_and(|end| is_terminal_here_instruction_preamble(&normalized[..end]))
+    {
         return true;
     }
     let punctuation_preamble_end = [". ", "! ", "? "]
@@ -3964,24 +3966,6 @@ fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
         return true;
     }
     is_terminal_here_instruction_preamble(normalized)
-}
-
-fn is_here_instruction_preamble(preamble: &str) -> bool {
-    let preamble = preamble.trim_end_matches(['.', '!', '?']).trim_end();
-    if is_generic_here_instruction_preamble(preamble) {
-        return true;
-    }
-    let Some(subject) = ["here is ", "here's ", "here are "]
-        .iter()
-        .find_map(|prefix| preamble.strip_prefix(prefix))
-    else {
-        return false;
-    };
-    subject
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .any(|word| {
-            is_here_instruction_subject_marker(word) || is_here_instruction_cleanup_modifier(word)
-        })
 }
 
 fn is_terminal_here_instruction_preamble(normalized: &str) -> bool {
@@ -4007,6 +3991,7 @@ fn is_terminal_here_instruction_preamble(normalized: &str) -> bool {
             || matches!(
                 *word,
                 "a" | "an"
+                    | "and"
                     | "as"
                     | "for"
                     | "per"
@@ -7101,6 +7086,9 @@ mod tests {
             "Here is the corrected, punctuated transcript: Hello."
         ));
         assert!(looks_like_instruction_response(
+            "Here is the cleaned and punctuated transcript. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
             "Here you go, Hello. World."
         ));
         assert!(looks_like_instruction_response(
@@ -7136,6 +7124,12 @@ mod tests {
         ));
         assert!(!looks_like_instruction_response(
             "Here's your text message from John, call him back."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's my email: jane@example.com"
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's the text message from John: call him back"
         ));
         assert!(!looks_like_instruction_response(
             "Here's the result of the game."
