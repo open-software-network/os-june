@@ -541,7 +541,11 @@ pub struct LinearTeam {
     pub name: String,
 }
 
-const TEAMS_QUERY: &str = "query Teams($after: String) { teams(first: 100, after: $after) \
+// Page size rides in as a variable so [`TEAMS_PAGE_SIZE`] is the single
+// source of truth; a literal here would silently diverge from the constant
+// (and its truncation-warn log) if the cap were ever tuned.
+const TEAMS_QUERY: &str = "query Teams($after: String, $first: Int!) \
+     { teams(first: $first, after: $after) \
      { nodes { id key name } pageInfo { hasNextPage endCursor } } }";
 
 #[derive(Deserialize)]
@@ -629,7 +633,7 @@ pub async fn list_teams(access_token: &str) -> Result<LinearTeamsListing, Linear
         let data: TeamsDataWire = graphql(
             access_token,
             TEAMS_QUERY,
-            serde_json::json!({ "after": after }),
+            serde_json::json!({ "after": after, "first": TEAMS_PAGE_SIZE }),
         )
         .await?;
         after = pager.absorb(data.teams);
