@@ -43,6 +43,19 @@ pub struct ConnectorAccountRecord {
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Provider-specific, non-secret details as a JSON object (e.g. Linear's
+    /// workspace name/url key). `"{}"` for providers (Google) that carry
+    /// none. The connectors layer owns parsing this; the repository treats
+    /// it as an opaque string.
+    pub metadata: String,
+}
+
+/// One Linear team a connected workspace account is scoped to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedTeamRecord {
+    pub team_id: String,
+    pub team_key: String,
+    pub team_name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -213,7 +226,7 @@ impl Repositories {
             .collect())
     }
 
-    // --- Private connectors (Google) --------------------------------------
+    // --- Private connectors (Google, Linear) --------------------------------
     //
     // Non-secret account index only: tokens live in the OS keychain
     // (src/connectors/store.rs), never in SQLite.
@@ -225,17 +238,19 @@ impl Repositories {
         email: &str,
         scopes: &[String],
         status: &str,
+        metadata: &str,
     ) -> Result<(), sqlx::error::Error> {
         let now = timestamp();
         let scopes_json = string_vec_to_json(scopes);
         query(
-            "INSERT INTO connector_accounts (account_id, provider, email, scopes, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO connector_accounts (account_id, provider, email, scopes, status, metadata, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(account_id) DO UPDATE SET
                provider = excluded.provider,
                email = excluded.email,
                scopes = excluded.scopes,
                status = excluded.status,
+               metadata = excluded.metadata,
                updated_at = excluded.updated_at",
         )
         .bind(account_id)
@@ -243,6 +258,7 @@ impl Repositories {
         .bind(email)
         .bind(&scopes_json)
         .bind(status)
+        .bind(metadata)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -254,7 +270,7 @@ impl Repositories {
         &self,
     ) -> Result<Vec<ConnectorAccountRecord>, sqlx::error::Error> {
         let rows = query(
-            "SELECT account_id, provider, email, scopes, status, created_at, updated_at
+            "SELECT account_id, provider, email, scopes, status, metadata, created_at, updated_at
              FROM connector_accounts ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
@@ -267,13 +283,59 @@ impl Repositories {
         account_id: &str,
     ) -> Result<Option<ConnectorAccountRecord>, sqlx::error::Error> {
         let row = query(
-            "SELECT account_id, provider, email, scopes, status, created_at, updated_at
+            "SELECT account_id, provider, email, scopes, status, metadata, created_at, updated_at
              FROM connector_accounts WHERE account_id = ?",
         )
         .bind(account_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(connector_account_from_row))
+    }
+
+    /// Replace the set of Linear teams an account is scoped to. DELETE +
+    /// re-INSERT in one transaction (never diffed): "manage teams" always
+    /// submits the full desired set, and a partial failure must not leave a
+    /// mix of old and new rows. One `created_at` for the whole batch keeps
+    /// rows from the same save trivially group-able.
+    pub async fn set_selected_teams(
+        &self,
+        account_id: &str,
+        teams: &[SelectedTeamRecord],
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        let mut tx = self.pool.begin().await?;
+        query("DELETE FROM connector_selected_teams WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        for team in teams {
+            query(
+                "INSERT INTO connector_selected_teams (account_id, team_id, team_key, team_name, created_at)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(account_id)
+            .bind(&team.team_id)
+            .bind(&team.team_key)
+            .bind(&team.team_name)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    pub async fn list_selected_teams(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<SelectedTeamRecord>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT team_id, team_key, team_name
+             FROM connector_selected_teams WHERE account_id = ? ORDER BY team_name ASC",
+        )
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(selected_team_from_row).collect())
     }
 
     pub async fn set_connector_account_status(
@@ -292,10 +354,10 @@ impl Repositories {
     }
 
     /// Remove the account row plus everything keyed to it (triggers, polling
-    /// cursors, and autonomy grants) in one transaction. Clearing the grants
-    /// matters for security: without it, reconnecting the same email would
-    /// silently revive the per-job autonomous action servers the user granted
-    /// to the old connection.
+    /// cursors, autonomy grants, and selected teams) in one transaction.
+    /// Clearing the grants matters for security: without it, reconnecting the
+    /// same email would silently revive the per-job autonomous action servers
+    /// the user granted to the old connection.
     pub async fn delete_connector_account(
         &self,
         account_id: &str,
@@ -310,6 +372,10 @@ impl Repositories {
             .execute(&mut *tx)
             .await?;
         query("DELETE FROM connector_grants WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM connector_selected_teams WHERE account_id = ?")
             .bind(account_id)
             .execute(&mut *tx)
             .await?;
@@ -3387,8 +3453,17 @@ fn connector_account_from_row(row: sqlx_sqlite::SqliteRow) -> ConnectorAccountRe
         email: row.get("email"),
         scopes: string_vec_from_json(&row.get::<String, _>("scopes")),
         status: row.get("status"),
+        metadata: row.get("metadata"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+fn selected_team_from_row(row: sqlx_sqlite::SqliteRow) -> SelectedTeamRecord {
+    SelectedTeamRecord {
+        team_id: row.get("team_id"),
+        team_key: row.get("team_key"),
+        team_name: row.get("team_name"),
     }
 }
 
@@ -3568,6 +3643,7 @@ mod tests {
                 "user@example.com",
                 &scopes(&["openid", "email"]),
                 "connected",
+                "{}",
             )
             .await
             .expect("insert account");
@@ -3577,6 +3653,7 @@ mod tests {
         assert_eq!(accounts[0].account_id, "user@example.com");
         assert_eq!(accounts[0].scopes, scopes(&["openid", "email"]));
         assert_eq!(accounts[0].status, "connected");
+        assert_eq!(accounts[0].metadata, "{}");
 
         // Upsert widens scopes without duplicating the row.
         repos
@@ -3590,6 +3667,7 @@ mod tests {
                     "https://www.googleapis.com/auth/gmail.readonly",
                 ]),
                 "connected",
+                "{}",
             )
             .await
             .expect("upsert account");
@@ -3615,7 +3693,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_connector_account_cascades_triggers_and_cursors() {
+    async fn delete_connector_account_cascades_triggers_cursors_and_teams() {
         let repos = test_repositories().await;
         repos
             .upsert_connector_account(
@@ -3624,6 +3702,7 @@ mod tests {
                 "user@example.com",
                 &scopes(&["openid"]),
                 "connected",
+                "{}",
             )
             .await
             .expect("insert account");
@@ -3649,6 +3728,17 @@ mod tests {
             )
             .await
             .expect("set grant");
+        repos
+            .set_selected_teams(
+                "user@example.com",
+                &[super::SelectedTeamRecord {
+                    team_id: "team-1".to_string(),
+                    team_key: "ENG".to_string(),
+                    team_name: "Engineering".to_string(),
+                }],
+            )
+            .await
+            .expect("set selected teams");
 
         repos
             .delete_connector_account("user@example.com")
@@ -3677,6 +3767,100 @@ mod tests {
             .await
             .expect("grants")
             .is_empty());
+        // Selected teams must not survive either: reconnecting the same
+        // workspace should require re-picking teams, not silently inherit the
+        // old scope.
+        assert!(repos
+            .list_selected_teams("user@example.com")
+            .await
+            .expect("teams")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn selected_teams_set_replaces_wholesale_and_orders_by_name() {
+        let repos = test_repositories().await;
+        assert!(repos
+            .list_selected_teams("workspace-1")
+            .await
+            .expect("list")
+            .is_empty());
+
+        repos
+            .set_selected_teams(
+                "workspace-1",
+                &[
+                    super::SelectedTeamRecord {
+                        team_id: "team-eng".to_string(),
+                        team_key: "ENG".to_string(),
+                        team_name: "Engineering".to_string(),
+                    },
+                    super::SelectedTeamRecord {
+                        team_id: "team-design".to_string(),
+                        team_key: "DES".to_string(),
+                        team_name: "Design".to_string(),
+                    },
+                ],
+            )
+            .await
+            .expect("set teams");
+        let teams = repos
+            .list_selected_teams("workspace-1")
+            .await
+            .expect("list");
+        // Ordered by team_name, not insertion order.
+        assert_eq!(teams.len(), 2);
+        assert_eq!(teams[0].team_name, "Design");
+        assert_eq!(teams[1].team_name, "Engineering");
+
+        // A second save replaces the set wholesale rather than appending: a
+        // team dropped from the picker must actually disappear.
+        repos
+            .set_selected_teams(
+                "workspace-1",
+                &[super::SelectedTeamRecord {
+                    team_id: "team-design".to_string(),
+                    team_key: "DES".to_string(),
+                    team_name: "Design".to_string(),
+                }],
+            )
+            .await
+            .expect("replace teams");
+        let teams = repos
+            .list_selected_teams("workspace-1")
+            .await
+            .expect("list after replace");
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[0].team_id, "team-design");
+
+        // A different account's teams are untouched.
+        repos
+            .set_selected_teams(
+                "workspace-2",
+                &[super::SelectedTeamRecord {
+                    team_id: "team-other".to_string(),
+                    team_key: "OTH".to_string(),
+                    team_name: "Other".to_string(),
+                }],
+            )
+            .await
+            .expect("set other account teams");
+        assert_eq!(
+            repos
+                .list_selected_teams("workspace-1")
+                .await
+                .expect("list")
+                .len(),
+            1
+        );
+        assert_eq!(
+            repos
+                .list_selected_teams("workspace-2")
+                .await
+                .expect("list")
+                .len(),
+            1
+        );
     }
 
     // Far enough ahead that a recorded run always lands after the approval
@@ -3825,6 +4009,7 @@ mod tests {
                 "user@example.com",
                 &scopes(&["openid"]),
                 "connected",
+                "{}",
             )
             .await
             .expect("account");
