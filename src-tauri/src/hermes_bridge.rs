@@ -6491,13 +6491,19 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
     let config_temp_prefix = sandbox_config_temp_prefix(hermes_home);
     // Block the jailed agent from reading the connector token stores: the
     // Keychain is already denied above; add the dev plaintext connector token
-    // file (debug builds' fallback custody) explicitly.
+    // files (debug builds' fallback custody, one per provider) explicitly.
     let mut secret_read_paths = vec![image_source_key_path];
     #[cfg(debug_assertions)]
     secret_read_paths.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("dev-google-connector-tokens.json"),
+    );
+    #[cfg(debug_assertions)]
+    secret_read_paths.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("dev-linear-connector-tokens.json"),
     );
     let profile = build_sandbox_profile(
         &home,
@@ -8205,6 +8211,7 @@ fn is_sensitive_file_name(name: &str) -> bool {
                 | "credentials.json"
                 | "application_default_credentials.json"
                 | "dev-google-connector-tokens.json"
+                | "dev-linear-connector-tokens.json"
                 | "secrets"
                 | "secrets.json"
                 | "id_rsa"
@@ -12055,6 +12062,8 @@ mod tests {
             "/workspace/project/id_rsa",
             "/workspace/project/client.p12",
             "/workspace/project/application_default_credentials.json",
+            "/workspace/target/dev-google-connector-tokens.json",
+            "/workspace/target/dev-linear-connector-tokens.json",
         ] {
             assert!(is_hidden_secret_path(Path::new(path)), "{path}");
         }

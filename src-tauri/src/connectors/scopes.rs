@@ -1,9 +1,13 @@
-//! Scope registry for Google connectors: feature bundles map to the minimal
-//! Google OAuth scopes they need, plus the incremental-auth helper that
-//! decides whether a new consent round-trip is required.
+//! Scope registry for the private connectors: feature bundles map to the
+//! minimal provider OAuth scopes they need, plus the incremental-auth helper
+//! that decides whether a new consent round-trip is required. Google and
+//! Linear bundles share one registry so a connect request is a flat list of
+//! bundle names; each bundle knows which provider it belongs to.
 
-/// Baseline identity scopes requested on every connect so the granted account
-/// can be keyed by email (the id_token carries the email claim).
+use super::ConnectorProvider;
+
+/// Baseline identity scopes requested on every Google connect so the granted
+/// account can be keyed by email (the id_token carries the email claim).
 pub const OPENID: &str = "openid";
 pub const EMAIL: &str = "email";
 
@@ -17,6 +21,13 @@ pub const GMAIL_MODIFY: &str = "https://www.googleapis.com/auth/gmail.modify";
 /// write ("view and edit events"), so read-only routines must not request it.
 pub const CALENDAR_READONLY: &str = "https://www.googleapis.com/auth/calendar.readonly";
 pub const CALENDAR_EVENTS: &str = "https://www.googleapis.com/auth/calendar.events";
+
+/// Linear scopes are short names, not URLs. `read` is always granted (and
+/// always requested: identity resolution and the teams listing need it);
+/// `write` covers the v1 mutation set because Linear has no granular scope
+/// for issue updates or project updates (see the spike doc).
+pub const LINEAR_READ: &str = "read";
+pub const LINEAR_WRITE: &str = "write";
 
 pub const BASELINE_SCOPES: &[&str] = &[OPENID, EMAIL];
 
@@ -33,11 +44,13 @@ pub enum ScopeBundle {
     GmailSend,
     CalendarRead,
     CalendarEvents,
+    LinearRead,
+    LinearWrite,
 }
 
 impl ScopeBundle {
-    /// The Google scope URLs this bundle needs (baseline identity scopes are
-    /// added separately by `requested_scopes`).
+    /// The provider scope strings this bundle needs (Google's baseline
+    /// identity scopes are added separately by `requested_scopes`).
     pub fn scopes(&self) -> &'static [&'static str] {
         match self {
             ScopeBundle::GmailRead => &[GMAIL_READONLY],
@@ -46,6 +59,8 @@ impl ScopeBundle {
             ScopeBundle::GmailSend => &[GMAIL_SEND],
             ScopeBundle::CalendarRead => &[CALENDAR_READONLY],
             ScopeBundle::CalendarEvents => &[CALENDAR_EVENTS],
+            ScopeBundle::LinearRead => &[LINEAR_READ],
+            ScopeBundle::LinearWrite => &[LINEAR_WRITE],
         }
     }
 
@@ -58,6 +73,8 @@ impl ScopeBundle {
             ScopeBundle::GmailSend => "gmail_send",
             ScopeBundle::CalendarRead => "calendar_read",
             ScopeBundle::CalendarEvents => "calendar_events",
+            ScopeBundle::LinearRead => "linear_read",
+            ScopeBundle::LinearWrite => "linear_write",
         }
     }
 
@@ -69,14 +86,31 @@ impl ScopeBundle {
             "gmail_send" => Some(ScopeBundle::GmailSend),
             "calendar_read" => Some(ScopeBundle::CalendarRead),
             "calendar_events" => Some(ScopeBundle::CalendarEvents),
+            "linear_read" => Some(ScopeBundle::LinearRead),
+            "linear_write" => Some(ScopeBundle::LinearWrite),
             _ => None,
+        }
+    }
+
+    /// The provider whose consent flow grants this bundle. A connect request
+    /// must not mix providers: the command layer rejects a bundle whose
+    /// provider differs from the one being connected.
+    pub fn provider(&self) -> ConnectorProvider {
+        match self {
+            ScopeBundle::GmailRead
+            | ScopeBundle::GmailDraft
+            | ScopeBundle::GmailModify
+            | ScopeBundle::GmailSend
+            | ScopeBundle::CalendarRead
+            | ScopeBundle::CalendarEvents => ConnectorProvider::Google,
+            ScopeBundle::LinearRead | ScopeBundle::LinearWrite => ConnectorProvider::Linear,
         }
     }
 }
 
-/// Full scope set to request on the auth URL for a set of bundles: baseline
-/// identity scopes plus each bundle's feature scopes, deduplicated, in a
-/// stable order.
+/// Full scope set to request on the Google auth URL for a set of bundles:
+/// baseline identity scopes plus each bundle's feature scopes, deduplicated,
+/// in a stable order.
 pub fn requested_scopes(bundles: &[ScopeBundle]) -> Vec<&'static str> {
     let mut scopes: Vec<&'static str> = Vec::new();
     for scope in BASELINE_SCOPES {
@@ -84,6 +118,23 @@ pub fn requested_scopes(bundles: &[ScopeBundle]) -> Vec<&'static str> {
             scopes.push(scope);
         }
     }
+    for bundle in bundles {
+        for scope in bundle.scopes() {
+            if !scopes.contains(scope) {
+                scopes.push(scope);
+            }
+        }
+    }
+    scopes
+}
+
+/// Full scope set to request on the Linear auth URL for a set of bundles:
+/// `read` always leads (Linear grants it unconditionally, and identity
+/// resolution plus the teams listing need it), then each bundle's feature
+/// scopes, deduplicated, in a stable order. Linear has no openid/email
+/// baseline - identity comes from a GraphQL viewer query, not OIDC.
+pub fn requested_linear_scopes(bundles: &[ScopeBundle]) -> Vec<&'static str> {
+    let mut scopes: Vec<&'static str> = vec![LINEAR_READ];
     for bundle in bundles {
         for scope in bundle.scopes() {
             if !scopes.contains(scope) {
@@ -270,10 +321,55 @@ mod tests {
             ScopeBundle::GmailSend,
             ScopeBundle::CalendarRead,
             ScopeBundle::CalendarEvents,
+            ScopeBundle::LinearRead,
+            ScopeBundle::LinearWrite,
         ] {
             assert_eq!(ScopeBundle::from_name(bundle.name()), Some(bundle));
         }
         assert_eq!(ScopeBundle::from_name("gmail"), None);
+        assert_eq!(ScopeBundle::from_name("linear"), None);
+    }
+
+    #[test]
+    fn bundles_map_to_their_provider() {
+        for bundle in [
+            ScopeBundle::GmailRead,
+            ScopeBundle::GmailDraft,
+            ScopeBundle::GmailModify,
+            ScopeBundle::GmailSend,
+            ScopeBundle::CalendarRead,
+            ScopeBundle::CalendarEvents,
+        ] {
+            assert_eq!(bundle.provider(), ConnectorProvider::Google);
+        }
+        for bundle in [ScopeBundle::LinearRead, ScopeBundle::LinearWrite] {
+            assert_eq!(bundle.provider(), ConnectorProvider::Linear);
+        }
+    }
+
+    #[test]
+    fn requested_linear_scopes_always_lead_with_read() {
+        // Even a write-only request carries read: identity + teams need it,
+        // and Linear grants it unconditionally anyway.
+        assert_eq!(
+            requested_linear_scopes(&[ScopeBundle::LinearWrite]),
+            vec![LINEAR_READ, LINEAR_WRITE]
+        );
+        // Read-only request stays read-only, deduped.
+        assert_eq!(
+            requested_linear_scopes(&[ScopeBundle::LinearRead, ScopeBundle::LinearRead]),
+            vec![LINEAR_READ]
+        );
+        assert_eq!(requested_linear_scopes(&[]), vec![LINEAR_READ]);
+    }
+
+    #[test]
+    fn google_requested_scopes_keep_the_oidc_baseline() {
+        // The Linear registry addition must not disturb Google's baseline.
+        assert_eq!(
+            requested_scopes(&[ScopeBundle::GmailRead]),
+            vec![OPENID, EMAIL, GMAIL_READONLY]
+        );
     }
 
     #[test]

@@ -299,6 +299,8 @@ pub fn run() {
             connectors::commands::connectors_connect,
             connectors::commands::connectors_cancel_connect,
             connectors::commands::connectors_disconnect,
+            connectors::commands::connectors_linear_teams,
+            connectors::commands::connectors_selected_teams_set,
             connectors::commands::routine_trust_get,
             connectors::commands::routine_trust_set,
             connectors::commands::routine_trust_record_run,
