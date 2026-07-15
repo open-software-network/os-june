@@ -5,11 +5,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>June sound test</title>
+    <link rel="stylesheet" href="/src/styles/tokens.css" />
     <style>
       :root {
         color-scheme: dark;
-        font-family:
-          Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family: var(--font-sans);
         color: #f3f0ea;
         background: #141312;
       }
@@ -45,22 +45,22 @@
 
       h1 {
         margin-bottom: 12px;
-        font-family: Georgia, "Times New Roman", serif;
-        font-size: clamp(38px, 7vw, 58px);
+        font-family: var(--font-serif);
+        font-size: var(--fs-display);
         font-weight: 400;
         letter-spacing: -0.035em;
       }
 
       h2 {
         margin-bottom: 14px;
-        font-size: 14px;
-        font-weight: 500;
+        font-size: var(--fs-md);
+        font-weight: 400;
         color: #c9c3b9;
       }
 
       p {
         color: #aaa399;
-        font-size: 15px;
+        font-size: var(--fs-md);
         line-height: 1.6;
       }
 
@@ -73,14 +73,14 @@
       }
 
       button {
-        min-height: 38px;
+        min-height: var(--control-xl);
         border: 1px solid #3b3834;
         border-radius: 999px;
         padding: 0 16px;
         color: #eeeae4;
         background: #211f1d;
         font: inherit;
-        font-size: 13px;
+        font-size: var(--fs-md);
         cursor: pointer;
         transition:
           border-color 140ms ease,
@@ -118,10 +118,10 @@
         display: flex;
         gap: 10px;
         align-items: center;
-        min-height: 38px;
+        min-height: var(--control-xl);
         margin-left: auto;
         color: #aaa399;
-        font-size: 13px;
+        font-size: var(--fs-md);
       }
 
       input[type="range"] {
@@ -167,13 +167,13 @@
 
       .sound h3 {
         margin: 0 0 6px;
-        font-size: 15px;
-        font-weight: 500;
+        font-size: var(--fs-lg);
+        font-weight: 400;
       }
 
       .sound p {
         margin-bottom: 0;
-        font-size: 12px;
+        font-size: var(--fs-sm);
         line-height: 1.4;
       }
 
@@ -181,20 +181,20 @@
         width: 38px;
         min-width: 38px;
         padding: 0;
-        font-size: 16px;
+        font-size: var(--fs-xl);
       }
 
       code {
         color: #857e75;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-family: var(--font-mono);
+        font-size: var(--fs-xs);
       }
 
       #status {
         min-height: 24px;
         margin: 18px 0 0;
         color: #d9b98f;
-        font-size: 13px;
+        font-size: var(--fs-md);
       }
 
       @media (max-width: 620px) {
