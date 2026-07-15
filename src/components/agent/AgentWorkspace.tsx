@@ -4417,7 +4417,11 @@ export function AgentWorkspace({
     sessionContinuity = null;
     void (async () => {
       try {
-        const status = await hermesBridgeStatus();
+        let status = await hermesBridgeStatus();
+        if (cancelled) return;
+        if (!status.running) {
+          status = await startHermesBridge(undefined, false);
+        }
         if (cancelled) return;
         setBridge(status);
       } catch (err) {
