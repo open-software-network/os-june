@@ -17073,8 +17073,9 @@ input:focus-visible,
   animation: sign-in-prompt-spin 0.9s linear infinite;
 }
 
-/* App-wide loading indicator: the rolling dot spinner. Size comes
- * from font-size (set inline by <Spinner size>); color inherits. */
+/* App-wide loading indicator: the dot spinner that draws June's mark. Its size
+ * is fixed per variant (data-size sm/lg) in dot-spinner.css, not font-scaled;
+ * color inherits via currentColor. */
 .spinner {
   display: inline-flex;
   flex-shrink: 0;

@@ -1,61 +1,79 @@
-/* The dot spinner: a perfectly square 2×2 grid of tiny real
- * circles with a dim spot rolling clockwise. Drawn, not typeset, so the
- * dots are crisp (à la Conductor's timer dots). The mark is one fixed size
- * everywhere by design. Wrappers set only color (currentColor), there is
- * no size knob. Dot and gap MUST stay integer px: fractional sizes put the
- * second column on a different subpixel phase and its circles rasterize
- * ovular. Shared by every page entry that shows agent activity. */
+/* The dot spinner: a matrix of tiny real circles that draws June's sparkle
+ * mark stroke by stroke, holds it, and redraws — a flip-dot board writing the
+ * brand mark. Drawn, not typeset, so the dots stay crisp. Which dots light, and
+ * the order they are drawn in, live in lib/june-spinner-grid (shared with the
+ * agent HUD page entry, which has no React tree). Wrappers set only color
+ * (currentColor). Dot and gap MUST stay integer px: fractional sizes put later
+ * columns on a different subpixel phase and their circles rasterize ovular.
+ *
+ * Two variants: "sm" (5×5) for inline and small loaders — the default — and
+ * "lg" (7×7) for larger standalone loading moments. */
 .dot-spinner {
+  /* Resting dim of the matrix, and the brightness a dot falls back to between
+   * strokes. */
+  --june-off: 0.16;
+  /* One full draw-and-redraw loop, and the delay between consecutive strokes.
+   * 10 strokes at 120ms spread the draw across the first ~1.1s; the rest of the
+   * loop holds the finished mark before it unwinds. */
+  --june-dur: 2000ms;
+  --june-stagger: 120ms;
+  /* sm (5×5) is the default. Integer px so every column shares one subpixel
+   * phase. */
+  --june-dot: 1px;
+  --june-gap: 1px;
+
   display: inline-grid;
-  grid-template-columns: repeat(2, auto);
-  gap: 2px;
+  grid-template-columns: repeat(5, var(--june-dot));
+  gap: var(--june-gap);
   line-height: 1;
 }
 
+.dot-spinner[data-size="lg"] {
+  --june-dot: 3px;
+  --june-gap: 2px;
+  grid-template-columns: repeat(7, var(--june-dot));
+}
+
 .dot-spinner > span {
-  width: 2px;
-  height: 2px;
+  width: var(--june-dot);
+  height: var(--june-dot);
   border-radius: 50%;
   background: currentColor;
-  animation: dot-spinner-roll 800ms linear infinite;
+  opacity: var(--june-off);
 }
 
-/* Stagger the dim spot clockwise: TL → TR → BR → BL (grid DOM order is
- * TL TR / BL BR, hence 3 and 4 swapped). Negative delays so the loop is
- * already rolling on first paint. */
-.dot-spinner > span:nth-child(1) {
-  animation-delay: -800ms;
+/* A lit dot fades up at its scheduled stroke (--june-order set per dot in the
+ * markup), holds bright through most of the loop, then falls back to dim. The
+ * strokes are staggered by draw order, so the mark writes itself, rests, and
+ * redraws. The −var(--june-dur) offset starts every dot already inside its
+ * cycle, so the mark is mid-draw on first paint rather than blank. */
+.dot-spinner > span[data-lit] {
+  animation: june-dot-draw var(--june-dur) ease-in-out infinite;
+  animation-delay: calc(var(--june-order) * var(--june-stagger) - var(--june-dur));
 }
 
-.dot-spinner > span:nth-child(2) {
-  animation-delay: -600ms;
-}
-
-.dot-spinner > span:nth-child(4) {
-  animation-delay: -400ms;
-}
-
-.dot-spinner > span:nth-child(3) {
-  animation-delay: -200ms;
-}
-
-/* Each dot dips once per revolution; the 25% phase offsets above turn the
- * dips into one gap travelling around the square. */
-@keyframes dot-spinner-roll {
-  0%,
-  100% {
-    opacity: 0.25;
+@keyframes june-dot-draw {
+  0% {
+    opacity: var(--june-off);
   }
 
-  35%,
-  65% {
+  12%,
+  72% {
     opacity: 1;
+  }
+
+  100% {
+    opacity: var(--june-off);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* The spinner rests as a steady square of dots. */
+  /* The spinner rests as the finished mark: lit dots up, the matrix dim. */
   .dot-spinner > span {
     animation: none;
+  }
+
+  .dot-spinner > span[data-lit] {
+    opacity: 0.92;
   }
 }

@@ -37,12 +37,23 @@ export function FeedbackIndicators() {
       </p>
 
       <h2 className="sg-subheading">Spinner</h2>
+      <p className="sg-section-intro">
+        A dot matrix that draws June's mark stroke by stroke and redraws. The default sm (5×5)
+        variant is for inline and small loaders; size="lg" (7×7) is for larger standalone loading
+        moments.
+      </p>
       <div className="sg-row">
         <div className="sg-card">
           <div className="sg-token-meta" style={{ marginBottom: "var(--sp-4)" }}>
-            <span className="sg-token-name">Spinner</span>
+            <span className="sg-token-name">Spinner (sm)</span>
           </div>
           <Spinner aria-label="Loading" />
+        </div>
+        <div className="sg-card">
+          <div className="sg-token-meta" style={{ marginBottom: "var(--sp-4)" }}>
+            <span className="sg-token-name">Spinner (lg)</span>
+          </div>
+          <Spinner size="lg" aria-label="Loading" />
         </div>
         <div className="sg-card">
           <div className="sg-token-meta" style={{ marginBottom: "var(--sp-4)" }}>
