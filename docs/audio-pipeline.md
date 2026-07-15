@@ -21,14 +21,13 @@ preview).
    `*.partial.wav` → `*.wav` (the durability commit), stops the helper, cancels
    preview.
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
-   the batch pipeline: `drop_silent_system_sources` → `turns::detect_turns` →
-   `coalesce_turns_for_transcription` → `write_turn_wav` (seek-extract each turn)
-   → `normalize_wav_for_transcription` → `split_wav_for_transcription` (≤30-second
-   chunks) → `transcribe_saved_audio` (POST `/v1/notes/transcribe`, provider
-   routing is server-side) → persist per-source transcript rows → **note
-   generation**. If a source lane has materially incomplete transcript coverage,
-   June retries the saved full source in bounded chunks and replaces the partial
-   turn rows when that fallback succeeds.
+   the batch pipeline for microphone-only and dual-Source recordings:
+   `drop_silent_system_sources` → `turns::detect_turns` → reconcile durable
+   fingerprinted note-transcription jobs → bounded Turn preparation → one
+   in-flight provider request per Source → atomically persist each successful
+   job and transcript row → **note generation**. Full-Source fallbacks are
+   prepared lazily when a Source lane is materially incomplete and atomically
+   replace that Source's partial rows only after the replacement succeeds.
 
 ## Key files
 
@@ -89,4 +88,6 @@ reuse-original shortcut when already loud enough), then split into
 The governing rule: **bytes on disk win over DB status** — the mic WAV is
 flushed periodically and the finalized filename only appears after a clean
 finalize, so a crash leaves replayable audio that recovery can finish
-processing.
+processing. Durable note-transcription jobs record exact Source spans and
+attempt state; interrupted `running` jobs return to `pending`, and explicit
+Retry resumes only jobs whose fingerprint has not already succeeded.

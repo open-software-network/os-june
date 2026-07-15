@@ -128,6 +128,16 @@ silence is not lost audio. Persisted per processing pass as a
 materially incomplete.
 _Avoid_: transcript completeness, duration coverage (wall-clock framing).
 
+**Note transcription job**:
+A durable unit of saved-audio processing for one Source and exact time range.
+Its stable Source-span identity is separate from `turn_index`, which is only
+presentation order; its versioned input fingerprint decides whether succeeded
+text may be reused. Jobs are workflow state, while transcript rows are the
+current user-visible output projection.
+_Avoid_: preview segment (ephemeral live-preview input), provider request (one
+job may make transient retries or bounded chunk requests), transcript row (the
+committed result, not the work).
+
 **System audio helper**:
 The out-of-process macOS `.app` (`june-system-audio-recorder`) that captures
 system audio via CoreAudio process taps and reports over a `status.json` file
