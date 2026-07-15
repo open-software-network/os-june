@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "../lib/june-spinner-grid";
+import agentHudCss from "../styles/agent-hud.css?raw";
 import appCss from "../styles/app.css?raw";
 import spinnerCss from "../styles/dot-spinner.css?raw";
 
@@ -124,5 +125,6 @@ describe("June spinner grid", () => {
     expect(spinnerCss).toContain("--june-dot: 3px;");
     expect(spinnerCss).toContain("color: var(--muted-foreground);");
     expect(appCss).toContain(".agent-tool-spinner .dot-spinner");
+    expect(agentHudCss).toMatch(/\.agent-hud-status \.dot-spinner\s*{[^}]*color: currentColor;/s);
   });
 });
