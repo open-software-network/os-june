@@ -2554,6 +2554,187 @@ fn reap_orphaned_helpers(_app: &AppHandle) -> Result<(), AppError> {
     Ok(())
 }
 
+/// What to do with a *running* helper process found by name enumeration (the
+/// legacy/migration sweep) rather than by an ownership record.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UnrecordedAction {
+    /// Claimed by a live-owner record (a sibling instance's healthy helper) or
+    /// not confirmably a helper — leave it alone.
+    Skip,
+    /// An unclaimed, confirmed helper — a legacy/leftover orphan; kill it.
+    Reap,
+    /// Identity could not be established — fail closed: abort the spawn.
+    Abort,
+}
+
+/// The decision for one enumerated helper pid. Pure and total, so unit-testable.
+/// A pid claimed by a *live* owner is a running instance's helper (never
+/// touched); an unclaimed pid is reaped only when confirmed to still be a
+/// dictation helper, and an indeterminate identity fails closed.
+#[cfg(target_os = "macos")]
+fn decide_unrecorded_action(
+    claimed_by_live_owner: bool,
+    identity: &HelperIdentity,
+) -> UnrecordedAction {
+    if claimed_by_live_owner {
+        return UnrecordedAction::Skip;
+    }
+    match identity {
+        HelperIdentity::IsHelper => UnrecordedAction::Reap,
+        // Enumeration matched the name but `ps` disagrees on identity: do not
+        // kill an unconfirmed process.
+        HelperIdentity::NotHelper => UnrecordedAction::Skip,
+        HelperIdentity::Unknown => UnrecordedAction::Abort,
+    }
+}
+
+/// The helper pids that a *live-owner* ownership record currently claims. Used
+/// by the legacy sweep to avoid killing a concurrently-running sibling
+/// instance's healthy helper (debug multi-instance). Fails closed (error) on any
+/// inability to enumerate or read a record, mirroring [`reap_orphaned_helpers`].
+#[cfg(target_os = "macos")]
+fn live_owner_claimed_helper_pids(app: &AppHandle) -> Result<Vec<u32>, AppError> {
+    let Some(dir) = helper_ownership_dir(app) else {
+        return Ok(Vec::new());
+    };
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            tracing::warn!(%error, "dictation legacy reap: ownership dir unreadable; aborting spawn");
+            return Err(AppError::new(
+                "dictation_helper_reap_failed",
+                "Could not read the dictation helper ownership records.",
+            ));
+        }
+    };
+    let mut claimed = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            tracing::warn!(%error, "dictation legacy reap: ownership entry unreadable; aborting spawn");
+            AppError::new(
+                "dictation_helper_reap_failed",
+                "Could not enumerate the dictation helper ownership records.",
+            )
+        })?;
+        let path = entry.path();
+        let is_record = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.starts_with(HELPER_OWNER_RECORD_PREFIX) && name.ends_with(".json")
+            });
+        if !is_record {
+            continue;
+        }
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "dictation legacy reap: ownership record unreadable; aborting spawn");
+                return Err(AppError::new(
+                    "dictation_helper_reap_failed",
+                    "Could not read a dictation helper ownership record.",
+                ));
+            }
+        };
+        // Unparseable records name no live orphan; the record-driven reap that
+        // ran first already dropped them. Ignore here.
+        let Ok(record) = serde_json::from_str::<HelperOwnershipRecord>(&raw) else {
+            continue;
+        };
+        if owner_liveness(&probe_start_time(record.app_pid), &record.app_start)
+            == OwnerLiveness::Alive
+        {
+            claimed.push(record.helper_pid);
+        }
+    }
+    Ok(claimed)
+}
+
+/// Enumerates running dictation-helper pids by matching the FULL command line
+/// (`pgrep -f`), which carries the untruncated binary name/path and so is robust
+/// to the `comm` truncation the record-driven path handles. Best-effort: `pgrep`
+/// exits non-zero with no matches, and any failure yields an empty list.
+#[cfg(target_os = "macos")]
+fn enumerate_running_helper_pids() -> Vec<u32> {
+    let output = Command::new("/usr/bin/pgrep")
+        .arg("-f")
+        .arg(DICTATION_HELPER_NAME)
+        .stdin(Stdio::null())
+        .output();
+    match output {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .filter_map(|token| token.parse::<u32>().ok())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// One-time migration sweep for helpers left by a *pre-record* build. Those
+/// orphans have no `dictation-helper-owner-*.json`, so the record-driven
+/// [`reap_orphaned_helpers`] cannot see them: on the very upgrade that fixes
+/// JUN-338 the legacy helper would otherwise survive, keep the CGEventTap, and
+/// leave permissions wedged.
+///
+/// SAFETY / TRADEOFF (call out for review): this deliberately reintroduces the
+/// name-based enumeration that an earlier round replaced with ownership records.
+/// It is justified ONLY for the unrecorded/migration case, and made safe by
+/// skipping any pid a *live-owner* record claims — so a concurrently-running
+/// sibling instance's healthy helper is skipped once that sibling has recorded
+/// ownership. A debug-only TOCTOU remains: a sibling that has spawned its helper
+/// but not yet written its record (spawn precedes the record write) could be
+/// reaped by another instance's sweep. Production is single instance, so at
+/// startup-before-spawn there is no sibling and we have not spawned yet — any
+/// running helper is a legacy orphan and is reaped. Fails closed on record-read
+/// ambiguity but never livelocks: a genuine
+/// legacy orphan reads `IsHelper` and is killed so dictation recovers.
+#[cfg(target_os = "macos")]
+fn reap_unrecorded_helpers(app: &AppHandle) -> Result<(), AppError> {
+    let pids = enumerate_running_helper_pids();
+    if pids.is_empty() {
+        return Ok(());
+    }
+    let claimed = live_owner_claimed_helper_pids(app)?;
+    for pid in pids {
+        let claimed_by_live_owner = claimed.contains(&pid);
+        let identity = inspect_helper_identity(pid);
+        match decide_unrecorded_action(claimed_by_live_owner, &identity) {
+            UnrecordedAction::Skip => {}
+            UnrecordedAction::Reap => {
+                kill_pid(pid);
+                if !wait_for_pid_exit(pid, HELPER_ORPHAN_EXIT_TIMEOUT) {
+                    tracing::warn!(
+                        helper_pid = pid,
+                        "dictation legacy reap: unrecorded helper would not exit; aborting spawn"
+                    );
+                    return Err(AppError::new(
+                        "dictation_helper_orphan_stuck",
+                        "An orphaned dictation helper would not exit; retrying.",
+                    ));
+                }
+            }
+            UnrecordedAction::Abort => {
+                tracing::warn!(
+                    helper_pid = pid,
+                    "dictation legacy reap: could not establish helper identity; aborting spawn"
+                );
+                return Err(AppError::new(
+                    "dictation_helper_reap_failed",
+                    "Could not establish a running dictation helper's identity; retrying.",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn reap_unrecorded_helpers(_app: &AppHandle) -> Result<(), AppError> {
+    Ok(())
+}
+
 /// Submits SIGKILL to a single pid (best-effort; the caller confirms exit).
 #[cfg(target_os = "macos")]
 fn kill_pid(pid: u32) {
@@ -2601,7 +2782,10 @@ fn process_alive(pid: u32) -> bool {
 fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
     // Abort the spawn if a prior instance's orphaned helper is still holding the
     // global CGEventTap; racing it would reproduce the permission collision.
+    // Record-driven reap first, then the one-time legacy sweep for helpers left
+    // by pre-record builds (no ownership record exists for those) — JUN-338.
     reap_orphaned_helpers(app)?;
+    reap_unrecorded_helpers(app)?;
 
     let helper_path = helper_candidates(app)
         .into_iter()
@@ -5059,6 +5243,41 @@ mod tests {
         assert_eq!(
             decide_record_action(OwnerLiveness::Dead, HelperMatch::Unknown),
             RecordAction::Abort
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn decide_unrecorded_action_reaps_only_unclaimed_confirmed_helpers() {
+        // Enumerated helper with no matching record (claimed=false) -> reap.
+        // This is the legacy/migration orphan from a pre-record build.
+        assert_eq!(
+            decide_unrecorded_action(false, &HelperIdentity::IsHelper),
+            UnrecordedAction::Reap
+        );
+        // A dead-owner record does not add to the live-claimed set, so its
+        // helper reads claimed=false here -> reap (same as no record).
+        //
+        // A live-owner record DOES claim its helper (claimed=true) -> skip, so a
+        // running sibling instance's healthy helper is never killed.
+        assert_eq!(
+            decide_unrecorded_action(true, &HelperIdentity::IsHelper),
+            UnrecordedAction::Skip
+        );
+        // pgrep matched the name but `ps` says it is not a helper -> do not kill.
+        assert_eq!(
+            decide_unrecorded_action(false, &HelperIdentity::NotHelper),
+            UnrecordedAction::Skip
+        );
+        // Identity indeterminate on an unclaimed pid -> fail closed.
+        assert_eq!(
+            decide_unrecorded_action(false, &HelperIdentity::Unknown),
+            UnrecordedAction::Abort
+        );
+        // Claimed by a live owner always wins, regardless of identity probe.
+        assert_eq!(
+            decide_unrecorded_action(true, &HelperIdentity::Unknown),
+            UnrecordedAction::Skip
         );
     }
 
