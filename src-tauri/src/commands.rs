@@ -137,10 +137,29 @@ pub async fn update_note(app: AppHandle, request: UpdateNoteRequest) -> Result<N
         .await?)
 }
 
+/// Revoke the remote share for an item and drop its local keys, if the item is
+/// shared. Called before deleting a shared item so its server-side ciphertext
+/// and invite ACL don't outlive it: once the source note/session is gone the
+/// owner has no Share dialog left to revoke from, and existing recipient links
+/// would keep opening forever. Fail closed - if the revoke can't be confirmed
+/// the caller keeps the item rather than orphaning a live share.
+async fn revoke_item_share(
+    repos: &Repositories,
+    item_kind: &str,
+    item_id: &str,
+) -> Result<(), AppError> {
+    if let Some(record) = repos.share_key_for_item(item_kind, item_id).await? {
+        crate::june_api::share_delete(&record.share_id).await?;
+        repos.delete_share_keys(&record.share_id).await?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn delete_note(app: AppHandle, request: DeleteNoteRequest) -> Result<(), AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
+    revoke_item_share(&repos, "note", &request.note_id).await?;
     let audio_paths = repos
         .audio_artifact_paths_for_note(&request.note_id)
         .await?;
@@ -174,6 +193,9 @@ pub async fn delete_notes(app: AppHandle, request: DeleteNotesRequest) -> Result
 
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
+    for note_id in &note_ids {
+        revoke_item_share(&repos, "note", note_id).await?;
+    }
     let audio_paths = repos.audio_artifact_paths_for_notes(&note_ids).await?;
     repos.delete_notes(&note_ids).await?;
     for path in audio_paths {
