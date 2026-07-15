@@ -3952,7 +3952,7 @@ fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
     {
         return true;
     }
-    is_here_instruction_preamble(normalized)
+    is_terminal_here_instruction_preamble(normalized)
 }
 
 fn is_here_instruction_preamble(preamble: &str) -> bool {
@@ -3966,21 +3966,62 @@ fn is_here_instruction_preamble(preamble: &str) -> bool {
     else {
         return false;
     };
-    [
-        "transcript",
-        "dictation",
-        "text",
-        "notes",
-        "version",
-        "result",
-        "content",
-        "output",
-        "message",
-        "email",
-        "response",
-    ]
-    .iter()
-    .any(|marker| subject.contains(marker))
+    subject
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(is_here_instruction_subject_marker)
+}
+
+fn is_terminal_here_instruction_preamble(normalized: &str) -> bool {
+    let preamble = normalized.trim_end_matches('.').trim_end();
+    if ["here you go", "here it is", "here you are"].contains(&preamble) {
+        return true;
+    }
+    let Some(subject) = ["here is ", "here's ", "here are "]
+        .iter()
+        .find_map(|prefix| preamble.strip_prefix(prefix))
+    else {
+        return false;
+    };
+    let words: Vec<&str> = subject
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words
+        .iter()
+        .copied()
+        .any(is_here_instruction_subject_marker)
+        && words.iter().all(|word| {
+            is_here_instruction_subject_marker(word)
+                || matches!(
+                    *word,
+                    "a" | "an"
+                        | "the"
+                        | "clean"
+                        | "cleaned"
+                        | "corrected"
+                        | "normalized"
+                        | "punctuated"
+                        | "rewritten"
+                        | "up"
+                )
+        })
+}
+
+fn is_here_instruction_subject_marker(word: &str) -> bool {
+    matches!(
+        word,
+        "transcript"
+            | "dictation"
+            | "text"
+            | "notes"
+            | "version"
+            | "result"
+            | "content"
+            | "output"
+            | "message"
+            | "email"
+            | "response"
+    )
 }
 
 fn looks_like_report_summary_response(normalized: &str) -> bool {
@@ -6986,6 +7027,15 @@ mod tests {
             "Here's the cleaned-up message: Hello."
         ));
         assert!(looks_like_instruction_response("Here is the email: Hello."));
+        assert!(!looks_like_instruction_response(
+            "Here's your text message from John."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's the result of the game."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's my notes on the trip."
+        ));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
         ));
