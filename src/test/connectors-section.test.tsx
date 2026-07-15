@@ -226,7 +226,7 @@ describe("ConnectorsSection", () => {
 });
 
 describe("ConnectorsSection — Linear", () => {
-  it("connects a workspace, skips applying the runtime, and auto-opens team selection", async () => {
+  it("connects a workspace, applies the runtime, and auto-opens team selection", async () => {
     mocks.connectorsConnect.mockResolvedValue(linearAccount({ selectedTeams: [] }));
     render(<ConnectorsSection />);
 
@@ -247,10 +247,10 @@ describe("ConnectorsSection — Linear", () => {
         provider: "linear",
       }),
     );
-    // Slice 1 ships no Linear runtime surface (no MCP servers), so applying
-    // the runtime must never fire for a Linear connect — it would restart
-    // Hermes for nothing.
-    expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
+    // Slice 2 registers the june_linear MCP server, so a Linear connect now
+    // needs a runtime apply just like Google — registering a server name is
+    // a config-render change.
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
 
     const teamsDialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
     await waitFor(() =>
@@ -294,6 +294,10 @@ describe("ConnectorsSection — Linear", () => {
       }),
     );
     expect(await screen.findByText(/1 team selected/i)).toBeInTheDocument();
+    // A teams save only narrows/widens what an already-registered server may
+    // read (enforced per-request in Rust); it never registers or drops a
+    // server, so it must not trigger a runtime apply.
+    expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
   });
 
   it("preselects the account's current teams when managing teams", async () => {
@@ -387,6 +391,8 @@ describe("ConnectorsSection — Linear", () => {
         provider: "linear",
       }),
     );
-    expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
+    // A reconnect goes through the same runConnect path as a fresh connect,
+    // so it applies the runtime too.
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
   });
 });

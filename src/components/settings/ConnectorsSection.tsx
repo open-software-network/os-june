@@ -243,13 +243,16 @@ export function ConnectorsSection() {
       scopes: input.scopes,
       loginHint: input.loginHint,
     });
-    // A fresh Google grant only takes effect once the rendered MCP config
-    // picks it up, so apply immediately. Linear ships no MCP server in this
-    // slice — there is no runtime surface for a Linear grant to apply, and
-    // restarting Hermes anyway would drop live sessions for nothing.
-    if (input.provider === "google") {
-      await connectorsApplyRuntime();
-    }
+    // A fresh grant only takes effect once the rendered MCP config picks it
+    // up: registering (or dropping) a server name is a config-render change,
+    // so it needs a runtime apply for both providers. This is different from
+    // a Linear teams save (see saveTeams below), which changes what an
+    // already-registered server may read rather than which servers are
+    // registered, and is enforced per-request in Rust — no restart needed.
+    // Whether the june_linear server actually renders (it needs at least one
+    // selected team) is the Rust side's call; the frontend applies runtime on
+    // every connect regardless.
+    await connectorsApplyRuntime();
     await refresh();
     return account;
   }
@@ -331,11 +334,10 @@ export function ConnectorsSection() {
     setDisconnecting(true);
     try {
       await connectorsDisconnect({ accountId: account.accountId, revoke });
-      // Same runtime-surface reasoning as runConnect: only Google's MCP
-      // config needs a refresh after the change.
-      if (account.provider === "google") {
-        await connectorsApplyRuntime();
-      }
+      // Same runtime-surface reasoning as runConnect: disconnecting drops the
+      // provider's MCP server registration, so both providers need a runtime
+      // apply here too.
+      await connectorsApplyRuntime();
       await refresh();
       setDisconnectTarget(null);
       toast.success(`Disconnected ${accountDisplayName(account)}`);
@@ -384,6 +386,11 @@ export function ConnectorsSection() {
     if (!teamsAccountId || teamsPayload.length === 0 || savingTeams) return;
     setSavingTeams(true);
     try {
+      // No connectorsApplyRuntime() here, unlike connect/disconnect: a teams
+      // change never registers or drops the june_linear server, it only
+      // narrows or widens what an already-registered server may read, and
+      // that grant is enforced per-request in Rust. So a teams save never
+      // needs a restart.
       await connectorsSetSelectedTeams({ accountId: teamsAccountId, teams: teamsPayload });
       await refresh();
       setTeamsAccountId(null);
