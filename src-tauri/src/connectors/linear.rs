@@ -827,8 +827,14 @@ pub struct LinearUser {
 // workspace-wide `users` root query. `Query.teams(filter: { id: { in } })`
 // selects exactly the granted teams; each `Team.members(first:)` yields that
 // team's members; the results are unioned and deduped by id.
-const LIST_USERS_QUERY: &str = "query TeamMembers($teamIds: [ID!]!, $first: Int!) \
-     { teams(filter: { id: { in: $teamIds } }) \
+// The outer `teams` connection carries an explicit `$teamLimit` (the number
+// of granted teams) so it never relies on Linear's implicit page default: an
+// account that selected more teams than that default would otherwise silently
+// get members from only the first page of granted teams. `$first` caps each
+// team's member page.
+const LIST_USERS_QUERY: &str =
+    "query TeamMembers($teamIds: [ID!]!, $teamLimit: Int!, $first: Int!) \
+     { teams(filter: { id: { in: $teamIds } }, first: $teamLimit) \
      { nodes { members(first: $first) { nodes { id name displayName active } } } } }";
 
 #[derive(Deserialize)]
@@ -908,10 +914,17 @@ pub async fn list_users(
         return Ok(Vec::new());
     }
     let limit = clamp_first(first, USERS_PAGE_DEFAULT, 1, USERS_PAGE_MAX);
+    // The outer connection must return every granted team, so its page size is
+    // the grant size itself - never a fixed default that could drop teams.
+    let team_limit = granted_team_ids.len() as u32;
     let data: TeamMembersDataWire = graphql(
         access_token,
         LIST_USERS_QUERY,
-        serde_json::json!({ "teamIds": granted_team_ids, "first": limit }),
+        serde_json::json!({
+            "teamIds": granted_team_ids,
+            "teamLimit": team_limit,
+            "first": limit,
+        }),
     )
     .await?;
     Ok(union_team_members(data.teams.nodes))
