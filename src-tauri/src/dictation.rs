@@ -4004,7 +4004,10 @@ fn is_terminal_here_instruction_preamble(normalized: &str) -> bool {
     }) && words.iter().all(|word| {
         is_here_instruction_subject_marker(word)
             || is_here_instruction_cleanup_modifier(word)
-            || matches!(*word, "a" | "an" | "the" | "up")
+            || matches!(
+                *word,
+                "a" | "an" | "as" | "requested" | "the" | "up" | "your"
+            )
     })
 }
 
@@ -7103,6 +7106,12 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here is what you said: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's your corrected transcript. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript as requested."
         ));
         assert!(looks_like_instruction_response(
             "Here is the transcription: Send it today."
