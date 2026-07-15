@@ -215,8 +215,8 @@
       var role = messages[i].role === "user" ? "user" : "assistant";
       var label = role === "user" ? "You" : "June";
       html.push(
-        '<div class="turn ' + role + '"><p class="turn-role">' + label +
-        '</p><div class="turn-body">' + escapeHtml(String(messages[i].content || "")) +
+        '<div class="turn ' + role + '" aria-label="' + label + '"><div class="turn-body">' +
+        renderMarkdown(String(messages[i].content || "")) +
         "</div></div>"
       );
     }

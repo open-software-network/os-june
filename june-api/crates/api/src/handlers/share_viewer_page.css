@@ -307,24 +307,35 @@ a:focus-visible {
   background: none;
 }
 
-.turn { margin: 0 0 18px; }
-
-.turn-role {
-  margin: 0 0 5px;
-  color: var(--muted);
-  font-size: 11px;
+.turn {
+  display: flex;
+  width: 100%;
+  margin: 0 0 28px;
 }
+
+.turn.user { justify-content: flex-end; }
 
 .turn-body {
-  padding: 11px 13px;
+  max-width: 85%;
   overflow-wrap: anywhere;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--card);
-  white-space: pre-wrap;
 }
 
-.turn.user .turn-body { background: var(--surface); }
+.turn-body > :first-child { margin-top: 0; }
+.turn-body > :last-child { margin-bottom: 0; }
+
+.turn.user .turn-body {
+  max-width: 82%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--fg);
+  line-height: 1.55;
+}
+
+.turn.assistant .turn-body {
+  color: var(--body-copy);
+  line-height: 1.65;
+}
 
 @media (max-width: 640px) {
   #topbar { padding: 0 14px; }
