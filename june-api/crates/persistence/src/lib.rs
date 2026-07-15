@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use june_domain::{
-    MAX_INVITES_PER_SHARE, NewShare, NewShareInvite, ShareInviteRecord, ShareKind, ShareRecord,
-    ShareStore, ShareStoreError, ShareViewRecord, ViewRequest,
+    MAX_INVITES_PER_SHARE, NewShare, NewShareInvite, SHARE_LINK_EMAIL, ShareInviteRecord,
+    ShareKind, ShareRecord, ShareStore, ShareStoreError, ShareViewRecord, ViewRequest,
 };
 use sqlx::{
     PgPool, Row,
@@ -352,6 +352,63 @@ impl ShareStore for PgShareStore {
         Ok(ShareViewRecord {
             kind,
             owner_user_id: owner,
+            ciphertext,
+            iv,
+            envelope: Some((envelope, envelope_iv)),
+        })
+    }
+
+    async fn fetch_link_view(
+        &self,
+        share_id: &str,
+        invite_id: &str,
+    ) -> Result<ShareViewRecord, ShareStoreError> {
+        let mut tx = self.pool.begin().await.map_err(query_error)?;
+        let row = sqlx::query(
+            r"
+            SELECT s.kind, s.owner_user_id, s.ciphertext, s.iv,
+                   i.id AS invite_row_id, i.envelope, i.envelope_iv
+            FROM shares s
+            JOIN share_invites i ON i.share_id = s.id
+            WHERE s.share_id = $1
+              AND s.deleted_at IS NULL
+              AND i.invite_id = $2
+              AND i.email = $3
+              AND i.revoked_at IS NULL
+            FOR UPDATE OF i
+            ",
+        )
+        .bind(share_id)
+        .bind(invite_id)
+        .bind(SHARE_LINK_EMAIL)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(query_error)?
+        .ok_or(ShareStoreError::NotFound)?;
+
+        let invite_row_id: i64 = row.try_get("invite_row_id").map_err(query_error)?;
+        let updated = sqlx::query(
+            "UPDATE share_invites SET last_access_at = now() WHERE id = $1 AND revoked_at IS NULL",
+        )
+        .bind(invite_row_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(query_error)?;
+        if updated.rows_affected() == 0 {
+            return Err(ShareStoreError::NotFound);
+        }
+
+        let kind = parse_kind(&row)?;
+        let owner_user_id = row.try_get("owner_user_id").map_err(query_error)?;
+        let ciphertext = row.try_get("ciphertext").map_err(query_error)?;
+        let iv = row.try_get("iv").map_err(query_error)?;
+        let envelope = row.try_get("envelope").map_err(query_error)?;
+        let envelope_iv = row.try_get("envelope_iv").map_err(query_error)?;
+        tx.commit().await.map_err(query_error)?;
+
+        Ok(ShareViewRecord {
+            kind,
+            owner_user_id,
             ciphertext,
             iv,
             envelope: Some((envelope, envelope_iv)),

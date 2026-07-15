@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildLinkShareFragment,
   buildShareFragment,
   decryptPayload,
+  derivePasscodeKey,
   encryptPayload,
   fromBase64,
   fromBase64Url,
   generateKey,
+  generatePasscodeSalt,
   parseShareFragment,
   toBase64,
   toBase64Url,
@@ -103,6 +106,17 @@ describe("share-crypto", () => {
     expect(parseShareFragment("no-separator")).toBeNull();
     expect(parseShareFragment("shi_x.")).toBeNull();
     expect(parseShareFragment("shi_x.tooshort")).toBeNull();
+  });
+
+  it("builds bearer fragments without putting a passcode in the URL", async () => {
+    const salt = generatePasscodeSalt();
+    const first = await derivePasscodeKey("correct horse battery staple", salt);
+    const second = await derivePasscodeKey("correct horse battery staple", salt);
+    expect(first).toHaveLength(32);
+    expect(toBase64Url(first)).toBe(toBase64Url(second));
+    const fragment = buildLinkShareFragment("shi_link", salt, true);
+    expect(fragment).toBe(`link.shi_link.pass.${toBase64Url(salt)}`);
+    expect(fragment).not.toContain("correct");
   });
 });
 

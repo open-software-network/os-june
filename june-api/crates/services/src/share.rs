@@ -179,6 +179,20 @@ impl ShareService {
             })
             .await?)
     }
+
+    /// Anonymous fetch for the new bearer-link flow. Authorization is the
+    /// possession of both opaque ids; the store additionally restricts this
+    /// to the reserved link-only ACL row so email invites remain authenticated.
+    pub async fn view_link(
+        &self,
+        share_id: &str,
+        invite_id: &str,
+    ) -> Result<ShareViewRecord, ServiceError> {
+        if invite_id.trim().is_empty() {
+            return Err(ServiceError::ShareNotFound);
+        }
+        Ok(self.store.fetch_link_view(share_id, invite_id).await?)
+    }
 }
 
 fn normalized_invites(
@@ -325,6 +339,13 @@ mod tests {
         async fn fetch_view(
             &self,
             _request: ViewRequest<'_>,
+        ) -> Result<ShareViewRecord, ShareStoreError> {
+            Err(ShareStoreError::NotFound)
+        }
+        async fn fetch_link_view(
+            &self,
+            _share_id: &str,
+            _invite_id: &str,
         ) -> Result<ShareViewRecord, ShareStoreError> {
             Err(ShareStoreError::NotFound)
         }

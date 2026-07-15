@@ -81,6 +81,10 @@ pub fn router(state: ApiState) -> Router {
             axum::routing::delete(handlers::share::revoke_invite),
         )
         .route("/v1/shares/{share_id}/view", get(handlers::share::view))
+        .route(
+            "/v1/shares/{share_id}/link-view",
+            get(handlers::share::link_view),
+        )
         .route("/v1/models", get(handlers::models::list_models))
         .route(
             "/v1/notes/generate",

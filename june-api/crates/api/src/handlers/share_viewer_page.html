@@ -14,6 +14,15 @@
 </header>
 <main id="main">
   <section id="status" role="status">Loading&hellip;</section>
+  <section id="passcode" hidden>
+    <h1>Enter passcode</h1>
+    <p>This encrypted link requires the passcode shared with you.</p>
+    <form id="passcode-form">
+      <input id="passcode-input" type="password" autocomplete="current-password" required>
+      <button type="submit">View shared item</button>
+    </form>
+    <p id="passcode-error" role="alert" hidden></p>
+  </section>
   <section id="prompt" hidden>
     <h1 id="prompt-title">Someone shared this with you</h1>
     <p id="prompt-sub">View it here, or open it in June for the full experience.</p>

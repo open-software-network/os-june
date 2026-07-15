@@ -13,6 +13,8 @@
 
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
+const PASSCODE_SALT_BYTES = 16;
+const PASSCODE_ITERATIONS = 600_000;
 
 function subtle(): SubtleCrypto {
   const subtleCrypto = globalThis.crypto?.subtle;
@@ -27,6 +29,37 @@ export function generateKey(): Promise<Uint8Array> {
   const key = new Uint8Array(KEY_BYTES);
   globalThis.crypto.getRandomValues(key);
   return Promise.resolve(key);
+}
+
+export function generatePasscodeSalt(): Uint8Array {
+  const salt = new Uint8Array(PASSCODE_SALT_BYTES);
+  globalThis.crypto.getRandomValues(salt);
+  return salt;
+}
+
+/** Derives a wrapping key locally. The passcode and derived key never leave the browser. */
+export async function derivePasscodeKey(passcode: string, salt: Uint8Array): Promise<Uint8Array> {
+  if (salt.length !== PASSCODE_SALT_BYTES) {
+    throw new Error(`Passcode salt must be ${PASSCODE_SALT_BYTES} bytes`);
+  }
+  const material = await subtle().importKey(
+    "raw",
+    new TextEncoder().encode(passcode.normalize("NFKC")),
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  );
+  const bits = await subtle().deriveBits(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: salt as BufferSource,
+      iterations: PASSCODE_ITERATIONS,
+    },
+    material,
+    KEY_BYTES * 8,
+  );
+  return new Uint8Array(bits);
 }
 
 async function importAesKey(raw: Uint8Array, usages: KeyUsage[]): Promise<CryptoKey> {
@@ -171,4 +204,17 @@ export function parseShareFragment(
   } catch {
     return null;
   }
+}
+
+/** New anonymous bearer-link fragment. `material` is a raw key or passcode salt. */
+export function buildLinkShareFragment(
+  inviteId: string,
+  material: Uint8Array,
+  passwordProtected: boolean,
+): string {
+  const expected = passwordProtected ? PASSCODE_SALT_BYTES : KEY_BYTES;
+  if (material.length !== expected) {
+    throw new Error(`Link material must be ${expected} bytes`);
+  }
+  return `link.${inviteId}.${passwordProtected ? "pass" : "key"}.${toBase64Url(material)}`;
 }

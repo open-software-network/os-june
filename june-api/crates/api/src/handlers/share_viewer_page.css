@@ -48,6 +48,37 @@ body {
 #main { max-width: 44rem; margin: 0 auto; padding: 2rem 1.25rem 5rem; }
 #status { color: var(--muted); text-align: center; padding: 4rem 0; }
 #status.error { color: var(--fg); }
+#passcode {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 2rem;
+  margin: 3rem auto;
+  max-width: 28rem;
+}
+#passcode h1 { font-size: 1.4rem; margin: 0 0 0.5rem; }
+#passcode p { color: var(--muted); }
+#passcode-form { display: flex; gap: 0.6rem; }
+#passcode-input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 0.6rem 0.75rem;
+  font: inherit;
+}
+#passcode-form button {
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  padding: 0.6rem 0.9rem;
+  font: inherit;
+  cursor: pointer;
+}
+#passcode-error { color: var(--fg) !important; }
 #prompt {
   border: 1px solid var(--border);
   border-radius: 12px;

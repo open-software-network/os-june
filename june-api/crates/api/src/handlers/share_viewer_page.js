@@ -18,6 +18,7 @@
     statusEl.textContent = text;
     statusEl.className = isError ? "error" : "";
     document.getElementById("prompt").hidden = true;
+    document.getElementById("passcode").hidden = true;
     document.getElementById("content").hidden = true;
   }
 
@@ -58,6 +59,22 @@
       { name: "AES-GCM", iv: iv }, key, ciphertext
     );
     return new Uint8Array(plain);
+  }
+
+  async function derivePasscodeKey(passcode, salt) {
+    var material = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(passcode.normalize("NFKC")),
+      "PBKDF2",
+      false,
+      ["deriveBits"]
+    );
+    var bits = await crypto.subtle.deriveBits(
+      { name: "PBKDF2", hash: "SHA-256", salt: salt, iterations: 600000 },
+      material,
+      256
+    );
+    return new Uint8Array(bits);
   }
 
   // ── Session state (per-tab; nothing persists past the tab) ───────────────
@@ -246,6 +263,81 @@
   }
 
   // ── Main flow ─────────────────────────────────────────────────────────────
+  async function decryptLinkData(shareId, data, linkKey) {
+    var contentKey = await aesGcmDecrypt(
+      linkKey,
+      b64Decode(data.envelopeIvB64),
+      b64Decode(data.envelopeB64)
+    );
+    var plaintext = await aesGcmDecrypt(
+      contentKey,
+      b64Decode(data.ivB64),
+      b64Decode(data.ciphertextB64)
+    );
+    var payload = JSON.parse(new TextDecoder().decode(plaintext));
+    document.getElementById("passcode").hidden = true;
+    maybeShowPrompt(shareId, payload, function () { showContent(payload); });
+  }
+
+  async function viewLinkShare(shareId, fragment) {
+    var parts = fragment.split(".");
+    if (parts.length !== 4 || parts[0] !== "link" ||
+        (parts[2] !== "key" && parts[2] !== "pass")) {
+      showStatus("This link is incomplete. Ask for a fresh share link.", true);
+      return;
+    }
+    var inviteId = parts[1];
+    var material;
+    try { material = b64urlDecode(parts[3]); } catch (error) {
+      showStatus("This link is incomplete. Ask for a fresh share link.", true);
+      return;
+    }
+    showStatus("Loading encrypted share…", false);
+    var response = await fetch(
+      "/v1/shares/" + encodeURIComponent(shareId) +
+      "/link-view?link=" + encodeURIComponent(inviteId)
+    );
+    if (!response.ok) {
+      showStatus("This link isn't available. It may have been stopped.", true);
+      return;
+    }
+    var body = await response.json().catch(function () { return null; });
+    var data = body && body.success && body.data;
+    if (!data || !data.envelopeB64) {
+      showStatus("This link isn't available. It may have been stopped.", true);
+      return;
+    }
+    if (parts[2] === "key") {
+      if (material.length !== 32) throw new Error("invalid link key");
+      try {
+        await decryptLinkData(shareId, data, material);
+      } catch (error) {
+        showStatus("This link's key doesn't match its content.", true);
+      }
+      return;
+    }
+    if (material.length !== 16) throw new Error("invalid passcode salt");
+    statusEl.hidden = true;
+    var panel = document.getElementById("passcode");
+    var form = document.getElementById("passcode-form");
+    var input = document.getElementById("passcode-input");
+    var errorEl = document.getElementById("passcode-error");
+    panel.hidden = false;
+    input.focus();
+    form.onsubmit = async function (event) {
+      event.preventDefault();
+      errorEl.hidden = true;
+      try {
+        var linkKey = await derivePasscodeKey(input.value, material);
+        await decryptLinkData(shareId, data, linkKey);
+      } catch (error) {
+        errorEl.textContent = "That passcode didn't work.";
+        errorEl.hidden = false;
+        input.select();
+      }
+    };
+  }
+
   async function viewShare(shareId, fragment) {
     var dot = fragment.indexOf(".");
     if (dot <= 0) {
@@ -336,7 +428,8 @@
       showStatus("This link is incomplete. Ask for a fresh share link.", true);
       return;
     }
-    viewShare(match[1], fragment).catch(function () {
+    var flow = fragment.indexOf("link.") === 0 ? viewLinkShare : viewShare;
+    flow(match[1], fragment).catch(function () {
       showStatus(NOT_AVAILABLE, true);
     });
   }
