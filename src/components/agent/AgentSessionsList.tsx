@@ -129,15 +129,18 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
           ),
       [filteredSessions, completedSessionIds],
     );
-    // Bulk selection only ever acts on active sessions: a completed session must
-    // never be counted, moved, or deleted from the selection toolbar, even if it
-    // was selected while still active (JUN-203 review).
+    // Bulk selection acts on the UNFILTERED set of non-completed sessions: a
+    // completed session is never counted/moved/deleted (JUN-203 review), but a
+    // selection must survive a search that hides it — like NotesList, the search
+    // query only affects what's visible, not what's selected. Completed sessions
+    // are excluded here (not just from the visible list) so a session marked
+    // complete while selected leaves the selection.
     const selectedSessionIds = useMemo(
       () =>
-        activeSessions
-          .filter((session) => selectedIds.has(session.id))
+        sortedSessions
+          .filter((session) => selectedIds.has(session.id) && !completedSessionIds[session.id])
           .map((session) => session.id),
-      [activeSessions, selectedIds],
+      [sortedSessions, selectedIds, completedSessionIds],
     );
     const visibleSelectedCount = activeSessions.filter((session) =>
       selectedIds.has(session.id),
@@ -167,20 +170,23 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
     const barMounted = selectedCount > 0 || exit !== null;
     const isExiting = selectedCount === 0 && exit !== null;
 
-    // Keep the selection confined to active sessions: drop ids that were
-    // deleted or marked complete (completing a selected session must not leave
-    // it in the bulk selection, or delete/move would still act on it).
+    // Prune the selection against the UNFILTERED session set: drop ids that were
+    // deleted or marked complete (completing a selected session must not leave it
+    // in the bulk selection), but never drop a session merely because the current
+    // search hides it — the selection persists across searches.
     useEffect(() => {
-      const activeIds = new Set(activeSessions.map((session) => session.id));
+      const keepIds = new Set(
+        sessions.filter((session) => !completedSessionIds[session.id]).map((session) => session.id),
+      );
       setSelectedIds((previous) => {
-        const next = new Set([...previous].filter((id) => activeIds.has(id)));
+        const next = new Set([...previous].filter((id) => keepIds.has(id)));
         return next.size === previous.size ? previous : next;
       });
-      if (activeSessions.length === 0) {
+      if (sessions.length === 0) {
         setConfirmBulkDelete(false);
         setBulkDeleteError(null);
       }
-    }, [activeSessions]);
+    }, [sessions, completedSessionIds]);
 
     function toggleSelected(sessionId: string) {
       setSelectedIds((previous) => {

@@ -298,6 +298,33 @@ describe("AgentSessionsList", () => {
     expect(hermesMocks.deleteHermesSession).toHaveBeenCalledWith("running-session");
   });
 
+  it("keeps the bulk selection when a search hides a selected session", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByLabelText("Select Waiting session"));
+    await user.click(screen.getByLabelText("Select Running session"));
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveTextContent("2 selected");
+
+    // A search that hides "Waiting session" must not drop it from the selection;
+    // the query only affects what's visible, not what's selected.
+    await user.type(screen.getByPlaceholderText("Search"), "Running");
+    expect(screen.queryByText("Waiting session")).not.toBeInTheDocument();
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveTextContent("2 selected");
+  });
+
   it("renames a session row from the action menu", async () => {
     const user = userEvent.setup();
     const onRenameSession = vi.fn();
