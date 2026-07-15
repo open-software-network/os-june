@@ -1021,6 +1021,18 @@ export type BrowserAccessStatus = {
   enabled: boolean;
 };
 
+export type BrowserTransportPolicy = {
+  attendedEnabled: boolean;
+  managedEnabled: boolean;
+};
+
+export const BROWSER_TRANSPORT_POLICY_CHANGED_EVENT = "june://browser-transport-policy-changed";
+
+/** Last successfully fetched remote policy for the two Browser use transports. */
+export async function browserTransportPolicy() {
+  return invoke<BrowserTransportPolicy>("browser_transport_policy");
+}
+
 /** Whether the stored Browser access grant is enabled. */
 export async function hermesBrowserAccess() {
   return invoke<BrowserAccessStatus>("hermes_browser_access");

@@ -5,6 +5,7 @@ import { IconPlay } from "central-icons/IconPlay";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconPause } from "central-icons/IconPause";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
   TRIGGER_META,
@@ -29,6 +30,8 @@ import {
   type ScheduleDraft,
 } from "../../lib/routine-schedule";
 import {
+  BROWSER_TRANSPORT_POLICY_CHANGED_EVENT,
+  browserTransportPolicy,
   connectorTriggerDelete,
   connectorTriggerSet,
   connectorTriggersList,
@@ -44,6 +47,7 @@ import {
   type RoutineTrust,
   type RoutineTrustMode,
   type RoutineBrowserAccess,
+  type BrowserTransportPolicy,
 } from "../../lib/tauri";
 import {
   HERMES_SERVER_ERROR_MESSAGE,
@@ -120,6 +124,7 @@ export function RoutineDetail({
   const [unrestricted, setUnrestricted] = useState(() => routineUnrestricted(routine));
   const [storedBrowserAccess, setStoredBrowserAccess] = useState<RoutineBrowserAccess | null>(null);
   const [browserAccess, setBrowserAccess] = useState(false);
+  const [managedTransportEnabled, setManagedTransportEnabled] = useState(true);
   // Connector trust + trigger. All loads degrade quietly: a routine without
   // a trust record (or a build without the connectors module) reads as
   // read only with no trigger, which is exactly the stored default.
@@ -194,6 +199,26 @@ export function RoutineDetail({
       cancelled = true;
     };
   }, [routine.job_id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void browserTransportPolicy()
+      .then((policy) => {
+        if (!cancelled) setManagedTransportEnabled(policy.managedEnabled);
+      })
+      .catch(() => {});
+    void listen<BrowserTransportPolicy>(BROWSER_TRANSPORT_POLICY_CHANGED_EVENT, (event) => {
+      if (!cancelled) setManagedTransportEnabled(event.payload.managedEnabled);
+    }).then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     const previousName = previousRoutineNameRef.current;
@@ -724,14 +749,15 @@ export function RoutineDetail({
                   <div className="settings-row-info">
                     <div className="settings-row-title">Browser use</div>
                     <div className="settings-row-description">
-                      Allow this routine to browse public pages anonymously when Browser use is
-                      enabled. Consequential actions stay blocked.
+                      {managedTransportEnabled
+                        ? "Allow this routine to browse public pages anonymously when Browser use is enabled. Consequential actions stay blocked."
+                        : "Browser use for routines is temporarily unavailable."}
                     </div>
                   </div>
                   <div className="settings-row-control">
                     <Switch
                       checked={browserAccess}
-                      disabled={storedBrowserAccess === null}
+                      disabled={storedBrowserAccess === null || !managedTransportEnabled}
                       aria-label="Allow browser use for this routine"
                       onCheckedChange={setBrowserAccess}
                     />

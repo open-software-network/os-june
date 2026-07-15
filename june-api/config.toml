@@ -9,6 +9,13 @@ max_json_bytes = 524288
 max_issue_report_bytes = 315621376
 max_image_edit_bytes = 69921452
 
+# Independent Browser use transport kill switches. Ops may override these as
+# JUNE__BROWSER_TRANSPORTS__ATTENDED_ENABLED and
+# JUNE__BROWSER_TRANSPORTS__MANAGED_ENABLED, then restart June API.
+[browser_transports]
+attended_enabled = true
+managed_enabled = true
+
 # Public facts shown on the /verify attestation page. source_commit is not
 # set here — the Docker build stamps it via JUNE__ATTESTATION__SOURCE_COMMIT.
 [attestation]

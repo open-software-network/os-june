@@ -220,6 +220,7 @@ pub fn run() {
             hermes_bridge::hermes_agent_cli_access,
             hermes_bridge::set_hermes_agent_cli_access,
             hermes_bridge::hermes_browser_access,
+            hermes_bridge::browser_transport_policy,
             hermes_bridge::set_hermes_browser_access,
             hermes_bridge::routine_browser_access_get,
             hermes_bridge::routine_browser_access_set,

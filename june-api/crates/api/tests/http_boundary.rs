@@ -6,8 +6,8 @@ use axum::{
 };
 use june_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, router};
 use june_config::{
-    DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_MAX_ISSUE_REPORT_BYTES, ModelPriceConfig, ModelProvider,
-    ModelType, PriceUnit,
+    BrowserTransportsConfig, DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_MAX_ISSUE_REPORT_BYTES,
+    ModelPriceConfig, ModelProvider, ModelType, PriceUnit,
 };
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
@@ -41,6 +41,30 @@ use std::{
 use tower::ServiceExt;
 
 const AUTHORIZATION: &str = "Bearer valid-token";
+
+#[tokio::test]
+async fn browser_transport_policy_returns_configured_independent_switches()
+-> Result<(), Box<dyn Error>> {
+    let mut deps = default_test_state_deps();
+    deps.browser_transports = BrowserTransportsConfig {
+        attended_enabled: false,
+        managed_enabled: true,
+    };
+    let response = router(test_state_from_deps(deps))
+        .oneshot(get_request("/v1/browser-transport-policy")?)
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["attendedEnabled"], false);
+    assert_eq!(body["data"]["managedEnabled"], true);
+    Ok(())
+}
 
 #[tokio::test]
 async fn integration_missing_auth_returns_unauthorized_envelope() -> Result<(), Box<dyn Error>> {
@@ -1648,6 +1672,7 @@ fn test_state_with_issue_sink_and_timeout(
         generator: Arc::new(FakeGenerator),
         request_timeout_secs,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        browser_transports: BrowserTransportsConfig::default(),
     })
 }
 
@@ -1678,6 +1703,7 @@ fn test_state_with_sinks_and_transcriber(
         generator: Arc::new(FakeGenerator),
         request_timeout_secs: 5,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        browser_transports: BrowserTransportsConfig::default(),
     })
 }
 
@@ -1692,6 +1718,7 @@ fn test_state_with_generator_and_timeout(
         generator,
         request_timeout_secs,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        browser_transports: BrowserTransportsConfig::default(),
     })
 }
 
@@ -1703,6 +1730,7 @@ fn test_state_with_p3a_sink(p3a_sink: Arc<dyn P3aSink>) -> ApiState {
         generator: Arc::new(FakeGenerator),
         request_timeout_secs: 5,
         p3a_sink,
+        browser_transports: BrowserTransportsConfig::default(),
     })
 }
 
@@ -1713,6 +1741,19 @@ struct TestStateDeps {
     generator: Arc<dyn Generator>,
     request_timeout_secs: u64,
     p3a_sink: Arc<dyn P3aSink>,
+    browser_transports: BrowserTransportsConfig,
+}
+
+fn default_test_state_deps() -> TestStateDeps {
+    TestStateDeps {
+        issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
+        attestation: test_attestation(),
+        transcriber: Arc::new(FakeTranscriber),
+        generator: Arc::new(FakeGenerator),
+        request_timeout_secs: 5,
+        p3a_sink: Arc::new(RecordingP3aSink::default()),
+        browser_transports: BrowserTransportsConfig::default(),
+    }
 }
 
 fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
@@ -1807,6 +1848,7 @@ fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
             request_timeout_secs: deps.request_timeout_secs,
         },
         attestation: deps.attestation,
+        browser_transports: deps.browser_transports,
     })
 }
 

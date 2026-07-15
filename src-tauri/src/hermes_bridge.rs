@@ -2,8 +2,9 @@ use crate::domain::types::AppError;
 use crate::{
     browser::managed::ManagedBrowserTransport,
     browser_broker::{
-        BrowserBroker, BrowserBrokerContext, BrowserTransportKind, ExtensionBrowserTransport,
-        PendingBrowserApproval, RoutineBrowserGrant, BROWSER_APPROVALS_CHANGED_EVENT,
+        BrowserBroker, BrowserBrokerContext, BrowserTransportKind, BrowserTransportPolicy,
+        ExtensionBrowserTransport, PendingBrowserApproval, RoutineBrowserGrant,
+        BROWSER_APPROVALS_CHANGED_EVENT,
     },
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -18,7 +19,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -31,6 +32,10 @@ use tokio::{
 
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 const READY_POLL: Duration = Duration::from_millis(500);
+const BROWSER_TRANSPORT_POLICY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const BROWSER_TRANSPORT_POLICY_CACHE_FILE: &str = "browser-transport-policy.json";
+pub(crate) const BROWSER_TRANSPORT_POLICY_CHANGED_EVENT: &str =
+    "june://browser-transport-policy-changed";
 const JUNE_HERMES_COMMAND_ENV: &str = "JUNE_HERMES_COMMAND";
 // Set to 1/true/yes to spawn Hermes without the macOS Seatbelt jail. An escape
 // hatch for debugging a runtime that won't boot under the profile — leaving the
@@ -504,6 +509,7 @@ pub struct HermesBridge {
     /// session count. The extension, native-messaging shim, and real browser
     /// actions are JUN-287's; nothing here drives a browser.
     browser_broker: Arc<BrowserBroker>,
+    browser_transport_policy_refresh_started: AtomicBool,
 }
 
 struct HermesProcess {
@@ -1411,6 +1417,7 @@ async fn ensure_provider_proxy(
         hermes_home.join(JUNE_IMAGE_MCP_IMAGES_DIR_NAME),
         hermes_home.join("workspace").join("browser-artifacts"),
     );
+    ensure_browser_transport_policy_refresh(app, bridge).await;
     bridge.browser_broker.configure_transport(
         BrowserTransportKind::Managed,
         Arc::new(ManagedBrowserTransport::production(
@@ -1483,6 +1490,137 @@ async fn ensure_provider_proxy(
         attended_browser_token: attended_browser_token.current(),
         connector_token,
     })
+}
+
+async fn ensure_browser_transport_policy_refresh(app: &AppHandle, bridge: &HermesBridge) {
+    if bridge
+        .browser_transport_policy_refresh_started
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+
+    match load_browser_transport_policy_cache(app) {
+        Ok(Some(policy)) if policy != bridge.browser_broker.transport_policy() => {
+            bridge.browser_broker.set_transport_policy(policy).await;
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                code = %error.code,
+                "browser transport policy cache could not be read; using fail-open defaults"
+            );
+        }
+    }
+    refresh_browser_transport_policy(app, &bridge.browser_broker).await;
+    let app = app.clone();
+    let broker = Arc::clone(&bridge.browser_broker);
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(BROWSER_TRANSPORT_POLICY_REFRESH_INTERVAL);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            refresh_browser_transport_policy(&app, &broker).await;
+        }
+    });
+}
+
+async fn refresh_browser_transport_policy(app: &AppHandle, broker: &BrowserBroker) {
+    let fetched = crate::june_api::fetch_browser_transport_policy().await;
+    let successful_policy = fetched.as_ref().ok().map(|policy| match policy {
+        Some(policy) => BrowserTransportPolicy {
+            attended_enabled: policy.attended_enabled,
+            managed_enabled: policy.managed_enabled,
+        },
+        None => BrowserTransportPolicy::default(),
+    });
+    let changed = apply_browser_transport_policy_fetch_result(broker, fetched).await;
+    if let Some(policy) = successful_policy {
+        if let Err(error) = persist_browser_transport_policy_cache(app, policy) {
+            tracing::warn!(
+                code = %error.code,
+                "browser transport policy cache could not be persisted"
+            );
+        }
+    }
+    if changed {
+        let _ = app.emit(
+            BROWSER_TRANSPORT_POLICY_CHANGED_EVENT,
+            broker.transport_policy(),
+        );
+    }
+}
+
+fn browser_transport_policy_cache_path(app: &AppHandle) -> Result<PathBuf, AppError> {
+    crate::app_paths::app_data_dir(app)
+        .map(|path| path.join(BROWSER_TRANSPORT_POLICY_CACHE_FILE))
+        .map_err(|error| AppError::new("browser_transport_policy_cache_failed", error.to_string()))
+}
+
+fn load_browser_transport_policy_cache(
+    app: &AppHandle,
+) -> Result<Option<BrowserTransportPolicy>, AppError> {
+    let path = browser_transport_policy_cache_path(app)?;
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::new(
+                "browser_transport_policy_cache_failed",
+                error.to_string(),
+            ));
+        }
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| AppError::new("browser_transport_policy_cache_failed", error.to_string()))
+}
+
+fn persist_browser_transport_policy_cache(
+    app: &AppHandle,
+    policy: BrowserTransportPolicy,
+) -> Result<(), AppError> {
+    let path = browser_transport_policy_cache_path(app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            AppError::new("browser_transport_policy_cache_failed", error.to_string())
+        })?;
+    }
+    let bytes = serde_json::to_vec(&policy).map_err(|error| {
+        AppError::new("browser_transport_policy_cache_failed", error.to_string())
+    })?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, bytes).map_err(|error| {
+        AppError::new("browser_transport_policy_cache_failed", error.to_string())
+    })?;
+    std::fs::rename(temporary, path)
+        .map_err(|error| AppError::new("browser_transport_policy_cache_failed", error.to_string()))
+}
+
+async fn apply_browser_transport_policy_fetch_result(
+    broker: &BrowserBroker,
+    fetched: Result<Option<crate::june_api::BrowserTransportPolicyDto>, AppError>,
+) -> bool {
+    let next = match fetched {
+        Ok(Some(policy)) => BrowserTransportPolicy {
+            attended_enabled: policy.attended_enabled,
+            managed_enabled: policy.managed_enabled,
+        },
+        Ok(None) => BrowserTransportPolicy::default(),
+        Err(error) => {
+            tracing::warn!(
+                code = %error.code,
+                "browser transport policy refresh failed; keeping last known policy"
+            );
+            return false;
+        }
+    };
+    if broker.transport_policy() == next {
+        return false;
+    }
+    broker.set_transport_policy(next).await;
+    true
 }
 
 struct SharedProviderProxyInfo {
@@ -2623,6 +2761,11 @@ pub fn hermes_browser_access(app: AppHandle) -> BrowserAccessStatus {
     BrowserAccessStatus {
         enabled: browser_access_enabled(&app),
     }
+}
+
+#[tauri::command]
+pub fn browser_transport_policy(bridge: State<'_, HermesBridge>) -> BrowserTransportPolicy {
+    bridge.browser_broker.transport_policy()
 }
 
 #[derive(Deserialize)]
@@ -12510,6 +12653,48 @@ mod tests {
 
     fn broker_for_access_flag(path: &Path) -> Arc<BrowserBroker> {
         broker_for_access_flag_with_routine(path, true)
+    }
+
+    #[tokio::test]
+    async fn absent_browser_transport_policy_endpoint_fails_open() {
+        let broker = BrowserBroker::default();
+        broker
+            .set_transport_policy(BrowserTransportPolicy {
+                attended_enabled: false,
+                managed_enabled: false,
+            })
+            .await;
+
+        assert!(
+            apply_browser_transport_policy_fetch_result(&broker, Ok(None)).await,
+            "404 absence should replace the cache with fail-open defaults"
+        );
+        assert_eq!(broker.transport_policy(), BrowserTransportPolicy::default());
+    }
+
+    #[tokio::test]
+    async fn failed_browser_transport_policy_refresh_keeps_successful_kill() {
+        let broker = BrowserBroker::default();
+        let killed = crate::june_api::BrowserTransportPolicyDto {
+            attended_enabled: false,
+            managed_enabled: true,
+        };
+        assert!(apply_browser_transport_policy_fetch_result(&broker, Ok(Some(killed))).await);
+
+        assert!(
+            !apply_browser_transport_policy_fetch_result(
+                &broker,
+                Err(AppError::new("june_request_failed", "network unavailable")),
+            )
+            .await
+        );
+        assert_eq!(
+            broker.transport_policy(),
+            BrowserTransportPolicy {
+                attended_enabled: false,
+                managed_enabled: true,
+            }
+        );
     }
 
     fn broker_for_access_flag_with_routine(

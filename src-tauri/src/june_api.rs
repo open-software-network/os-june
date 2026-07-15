@@ -31,6 +31,7 @@ const DEFAULT_JUNE_API_URL: &str = "https://june-api.opensoftware.co";
 const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
 // Mirrors June API's authoritative 600-second request deadline.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(600);
+const BROWSER_TRANSPORT_POLICY_TIMEOUT: Duration = Duration::from_secs(10);
 // Adds 300 seconds of client-only grace around that server deadline for a
 // large request-body transfer and the terminal SSE event. This is not a
 // second server budget.
@@ -459,6 +460,32 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
         .await
         .map_err(network_error)?;
     parse_response("/v1/models", response).await
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserTransportPolicyDto {
+    pub attended_enabled: bool,
+    pub managed_enabled: bool,
+}
+
+/// Fetch the additive Browser use policy endpoint. A 404 is a successful
+/// absence signal from an older June API and therefore maps to the fail-open
+/// default at the cache owner; transport and malformed-response failures stay
+/// distinct so they cannot overwrite the last known policy.
+pub async fn fetch_browser_transport_policy() -> Result<Option<BrowserTransportPolicyDto>, AppError>
+{
+    let path = "/v1/browser-transport-policy";
+    let response = http_client()
+        .get(format!("{}{}", june_api_url(), path))
+        .timeout(BROWSER_TRANSPORT_POLICY_TIMEOUT)
+        .send()
+        .await
+        .map_err(network_error)?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    parse_response(path, response).await.map(Some)
 }
 
 /// One generated image from the June API `/v1/image/generate` endpoint. The

@@ -56,6 +56,15 @@ const tauriMocks = vi.hoisted(() => ({
   connectorTriggersList: vi.fn(),
   connectorTriggerSet: vi.fn(),
   connectorTriggerDelete: vi.fn(),
+  browserTransportPolicy: vi.fn(),
+}));
+
+const eventMocks = vi.hoisted(() => ({
+  listen: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: eventMocks.listen,
 }));
 
 vi.mock("../lib/tauri", async (importOriginal) => ({
@@ -168,6 +177,11 @@ beforeEach(() => {
     }),
   );
   tauriMocks.connectorTriggerDelete.mockResolvedValue(undefined);
+  tauriMocks.browserTransportPolicy.mockResolvedValue({
+    attendedEnabled: true,
+    managedEnabled: true,
+  });
+  eventMocks.listen.mockResolvedValue(() => {});
 });
 
 function googleAccount(overrides: Record<string, unknown> = {}) {
@@ -756,6 +770,23 @@ describe("RoutinesView detail", () => {
       }),
     );
     expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalled();
+  });
+
+  it("explains and disables routine Browser use when managed transport is remotely disabled", async () => {
+    tauriMocks.browserTransportPolicy.mockResolvedValue({
+      attendedEnabled: true,
+      managedEnabled: false,
+    });
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    expect(
+      await screen.findByText("Browser use for routines is temporarily unavailable."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Allow browser use for this routine" }),
+    ).toBeDisabled();
   });
 
   it("opens a routine with its full instructions", async () => {

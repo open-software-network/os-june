@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   setHermesBrowserAccess: vi.fn(),
   extensionPairingStatus: vi.fn(),
   registerBrowserExtensionHost: vi.fn(),
+  browserTransportPolicy: vi.fn(),
   listen: vi.fn(),
 }));
 
@@ -26,6 +27,7 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   setHermesBrowserAccess: mocks.setHermesBrowserAccess,
   extensionPairingStatus: mocks.extensionPairingStatus,
   registerBrowserExtensionHost: mocks.registerBrowserExtensionHost,
+  browserTransportPolicy: mocks.browserTransportPolicy,
   EXTENSION_PAIRING_CHANGED_EVENT: "june://extension-pairing-changed",
 }));
 
@@ -61,6 +63,10 @@ beforeEach(() => {
     manifestPath: "/tmp/co.opensoftware.june.extension.json",
     shimPath: "/tmp/june-nm-shim",
   });
+  mocks.browserTransportPolicy.mockResolvedValue({
+    attendedEnabled: true,
+    managedEnabled: true,
+  });
   mocks.listen.mockResolvedValue(() => {});
 });
 
@@ -79,6 +85,21 @@ describe("ConnectorsSection", () => {
     expect(row).not.toBeNull();
     expect(within(row as HTMLElement).getByRole("button", { name: "Connect" })).toBeEnabled();
     expect(within(row as HTMLElement).getByText(/page text and screenshots/i)).toBeInTheDocument();
+  });
+
+  it("explains and disables attended setup when its transport is remotely disabled", async () => {
+    mocks.browserTransportPolicy.mockResolvedValue({
+      attendedEnabled: false,
+      managedEnabled: true,
+    });
+    render(<ConnectorsSection />);
+
+    const row = (await screen.findByText("Browser use")).closest("li") as HTMLElement;
+    expect(
+      await within(row).findByText(/attended sessions is temporarily unavailable/i),
+    ).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Connect" })).toBeDisabled();
+    expect(within(row).getByText("Temporarily unavailable")).toBeInTheDocument();
   });
 
   it("connects Browser use by granting access before registering the native host", async () => {

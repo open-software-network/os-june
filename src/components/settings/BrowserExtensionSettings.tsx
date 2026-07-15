@@ -2,12 +2,15 @@ import { listen } from "@tauri-apps/api/event";
 import { IconBrowserTabs } from "central-icons/IconBrowserTabs";
 import { useEffect, useState } from "react";
 import {
+  BROWSER_TRANSPORT_POLICY_CHANGED_EVENT,
   EXTENSION_PAIRING_CHANGED_EVENT,
+  browserTransportPolicy,
   extensionPairingStatus,
   hermesBrowserAccess,
   registerBrowserExtensionHost,
   setHermesBrowserAccess,
   type ExtensionPairingStatus,
+  type BrowserTransportPolicy,
 } from "../../lib/tauri";
 import { messageFromError } from "../../lib/errors";
 
@@ -22,6 +25,7 @@ export function BrowserUseCapabilityRow() {
   const [status, setStatus] = useState<ExtensionPairingStatus | null>(null);
   const [saving, setSaving] = useState<"connect" | "disconnect" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [transportEnabled, setTransportEnabled] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,6 +48,18 @@ export function BrowserUseCapabilityRow() {
         // Status stays unknown; the row falls back to the not-connected
         // subtitle and the Connect action below.
       });
+    void browserTransportPolicy()
+      .then((policy) => {
+        if (!cancelled) setTransportEnabled(policy.attendedEnabled);
+      })
+      .catch(() => {});
+    let unlistenPolicy: (() => void) | undefined;
+    void listen<BrowserTransportPolicy>(BROWSER_TRANSPORT_POLICY_CHANGED_EVENT, (event) => {
+      if (!cancelled) setTransportEnabled(event.payload.attendedEnabled);
+    }).then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlistenPolicy = cleanup;
+    });
     void listen<ExtensionPairingStatus>(EXTENSION_PAIRING_CHANGED_EVENT, (event) => {
       if (!cancelled) setStatus(event.payload);
     }).then((cleanup) => {
@@ -53,6 +69,7 @@ export function BrowserUseCapabilityRow() {
     return () => {
       cancelled = true;
       unlisten?.();
+      unlistenPolicy?.();
     };
   }, []);
 
@@ -101,13 +118,15 @@ export function BrowserUseCapabilityRow() {
 
   const paired = grantEnabled === true && status?.paired === true;
   const partial = grantEnabled === true && !paired;
-  const subtitle = paired
-    ? `Paired with the June extension${
-        status?.extensionVersion ? ` version ${status.extensionVersion}` : ""
-      }. Browser access is on.`
-    : partial
-      ? "Browser access is on. Install or load the June extension in Chrome to finish setup."
-      : "Operate task tabs and tabs you share. Page text and screenshots go to your chosen model for inference and may leave your device unless you use a local model.";
+  const subtitle = !transportEnabled
+    ? "Browser use for attended sessions is temporarily unavailable."
+    : paired
+      ? `Paired with the June extension${
+          status?.extensionVersion ? ` version ${status.extensionVersion}` : ""
+        }. Browser access is on.`
+      : partial
+        ? "Browser access is on. Install or load the June extension in Chrome to finish setup."
+        : "Operate task tabs and tabs you share. Page text and screenshots go to your chosen model for inference and may leave your device unless you use a local model.";
 
   return (
     <li className="connector-row" data-capability="browser-use">
@@ -126,7 +145,11 @@ export function BrowserUseCapabilityRow() {
         ) : null}
       </div>
       <div className="connector-actions">
-        {paired ? (
+        {!transportEnabled ? (
+          <span className="status-pill" data-tone="warning">
+            Temporarily unavailable
+          </span>
+        ) : paired ? (
           <span className="status-pill" data-tone="ok">
             Connected
           </span>
@@ -141,7 +164,7 @@ export function BrowserUseCapabilityRow() {
               <button
                 type="button"
                 className="btn btn-secondary"
-                disabled={saving !== null}
+                disabled={saving !== null || !transportEnabled}
                 aria-busy={saving === "connect" || undefined}
                 onClick={() => void handleSetup()}
               >
@@ -162,7 +185,7 @@ export function BrowserUseCapabilityRow() {
           <button
             type="button"
             className="btn btn-secondary"
-            disabled={grantEnabled === null || saving !== null}
+            disabled={grantEnabled === null || saving !== null || !transportEnabled}
             aria-busy={saving === "connect" || undefined}
             onClick={() => void handleConnect()}
           >

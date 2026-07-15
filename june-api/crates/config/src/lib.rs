@@ -131,6 +131,8 @@ pub struct AppConfig {
     pub server: ServerConfig,
     #[serde(default)]
     pub local_dev: LocalDevConfig,
+    #[serde(default)]
+    pub browser_transports: BrowserTransportsConfig,
     pub os_accounts: OsAccountsConfig,
     pub upstreams: UpstreamsConfig,
     pub attestation: AttestationConfig,
@@ -194,6 +196,7 @@ impl Debug for AppConfig {
             .debug_struct("AppConfig")
             .field("server", &self.server)
             .field("local_dev", &self.local_dev)
+            .field("browser_transports", &self.browser_transports)
             .field("os_accounts", &self.os_accounts)
             .field("upstreams", &self.upstreams)
             .field("attestation", &self.attestation)
@@ -215,6 +218,30 @@ impl Debug for AppConfig {
             .field("video_max_response_bytes", &self.video_max_response_bytes)
             .finish()
     }
+}
+
+/// Remote operational switches for June's two Browser use transports.
+/// Both fail open by default so older deployments and fresh configuration
+/// preserve the shipped capability until ops explicitly disables one track.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct BrowserTransportsConfig {
+    #[serde(default = "default_true")]
+    pub attended_enabled: bool,
+    #[serde(default = "default_true")]
+    pub managed_enabled: bool,
+}
+
+impl Default for BrowserTransportsConfig {
+    fn default() -> Self {
+        Self {
+            attended_enabled: true,
+            managed_enabled: true,
+        }
+    }
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 /// Where user-submitted issue reports get forwarded. The destination defaults
@@ -890,6 +917,7 @@ impl Default for AppConfig {
                 max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
             },
             local_dev: LocalDevConfig::default(),
+            browser_transports: BrowserTransportsConfig::default(),
             os_accounts: OsAccountsConfig {
                 api_url: String::new(),
                 app_api_key: String::new(),
@@ -1467,6 +1495,17 @@ mod tests {
             !declares_vision("zai-org-glm-5-2"),
             "GLM 5.2 default must not claim vision"
         );
+    }
+
+    #[test]
+    fn browser_transport_switches_default_enabled_in_code_and_packaged_config() {
+        for policy in [
+            AppConfig::default().browser_transports,
+            packaged_config_toml().browser_transports,
+        ] {
+            assert!(policy.attended_enabled);
+            assert!(policy.managed_enabled);
+        }
     }
 
     #[test]

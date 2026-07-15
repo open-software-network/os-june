@@ -30,6 +30,7 @@ pub use envelope::{
     ERR_UNPROCESSABLE, ERR_UPSTREAM,
 };
 pub use error::ApiError;
+pub use handlers::browser_transport_policy::BrowserTransportPolicyDto;
 pub use handlers::dictate::{
     DictateCleanupRequest, DictateCleanupResponse, DictateTranscribeResponse,
 };
@@ -58,6 +59,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/healthz", get(handlers::health::healthz))
         .route("/verify", get(handlers::verify::verify))
         .route("/v1/models", get(handlers::models::list_models))
+        .route(
+            "/v1/browser-transport-policy",
+            get(handlers::browser_transport_policy::get),
+        )
         .route(
             "/v1/notes/transcribe",
             post(handlers::notes::transcribe).layer(DefaultBodyLimit::max(limits.max_audio_bytes)),

@@ -297,6 +297,7 @@ fn build_router(
             image_repo: config.attestation.image_repo.clone(),
             trust_center_url: config.attestation.trust_center_url.clone(),
         },
+        browser_transports: config.browser_transports,
     });
     june_api::router(state)
 }
