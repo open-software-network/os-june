@@ -126,6 +126,7 @@ Per-repo config the engineering skills read before acting (see the
 ## QA
 
 - [qa/agent-driven-integration.md](qa/agent-driven-integration.md) — QA strategy (3 layers, skill-first agent-driven)
+- [qa/jun-334-transcription-latency.md](qa/jun-334-transcription-latency.md) — measured baseline and proof for meeting transcription latency
 - `qa/feature-user-stories.tsv` — story → code → test traceability matrix
 - `qa/agent-e2e-qa-runs/` — dated end-to-end QA run logs
 
