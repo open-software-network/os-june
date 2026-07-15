@@ -1,4 +1,4 @@
-//! Linear native-app OAuth and the fixed GraphQL documents slice 1 needs.
+//! Linear native-app OAuth and the fixed GraphQL documents June needs.
 //!
 //! Linear is a PKCE-only PUBLIC client: unlike Google's Desktop credential,
 //! no client secret exists anywhere in this flow - the token endpoint marks
@@ -8,8 +8,19 @@
 //! auth-URL shape (COMMA-joined scopes, explicit `actor=user` - v1
 //! deliberately uses the user actor so grants inherit the authorizing user's
 //! team visibility, never the app actor's all-teams view), the secretless
-//! token exchange and refresh, revocation, and the two GraphQL documents the
-//! connect flow needs: viewer/organization identity and the Teams listing.
+//! token exchange and refresh, revocation, and the fixed GraphQL documents:
+//! slice 1's viewer/organization identity and Teams listing, plus slice 2's
+//! nine read operations (users, projects, cycles, initiatives, issue search,
+//! issue detail, issue comments, project updates) that back the `june_linear`
+//! agent surface. Every team-scoped read operation here takes the caller's
+//! granted team ids as a plain `&[String]` parameter (or, for single-entity
+//! fetches, returns the entity's team id(s) for the caller to check) - this
+//! module never touches `AppHandle` or the repository layer, so it stays
+//! unit-testable without a database. The actual grant load and the
+//! grant-check helpers live in `connectors::mod` (see
+//! [`crate::connectors::linear_granted_team_ids`],
+//! [`crate::connectors::linear_require_team_granted`],
+//! [`crate::connectors::linear_require_any_team_granted`]).
 //!
 //! Refresh responses rotate the refresh token on every success; callers
 //! persist the rotated token when present and keep the old one otherwise
@@ -20,7 +31,7 @@
 //! errors. Error messages carry stable codes and short human text only.
 
 use crate::domain::types::AppError;
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::oauth::{self, ConnectFlow};
@@ -666,6 +677,991 @@ pub async fn list_teams(access_token: &str) -> Result<LinearTeamsListing, Linear
     Ok(LinearTeamsListing { teams, truncated })
 }
 
+// --- Slice 2: read operations -----------------------------------------------------
+
+// Page sizes below that are NOT exposed as caller-configurable parameters
+// (nested collections such as "teams a project belongs to", or "labels on
+// one issue") are embedded directly as literals in their query constant
+// rather than routed through a named constant + GraphQL variable the way
+// [`TEAMS_PAGE_SIZE`] is above: each such literal appears in exactly one
+// query string, so there is nothing for it to drift from.
+const USERS_PAGE_DEFAULT: u32 = 50;
+const USERS_PAGE_MAX: u32 = 100;
+/// A single bounded page, server-filtered to the granted teams (see
+/// [`list_projects`]). Not caller-configurable - directory data stays a
+/// fixed shape, matching [`list_teams`].
+const PROJECTS_PAGE_SIZE: u32 = 100;
+/// One team's cycles: fixed page, not caller-configurable.
+const CYCLES_PAGE_SIZE: u32 = 25;
+/// All workspace initiatives: fixed page, not caller-configurable.
+const INITIATIVES_PAGE_SIZE: u32 = 50;
+const SEARCH_ISSUES_DEFAULT: u32 = 25;
+const SEARCH_ISSUES_MAX: u32 = 50;
+const COMMENTS_DEFAULT: u32 = 25;
+const COMMENTS_MAX: u32 = 50;
+const PROJECT_UPDATES_DEFAULT: u32 = 10;
+const PROJECT_UPDATES_MAX: u32 = 25;
+
+/// Character bounds for free-text fields entering agent context, so a single
+/// issue/comment/update can never dominate the context window.
+const ISSUE_DESCRIPTION_MAX_CHARS: usize = 4000;
+const COMMENT_BODY_MAX_CHARS: usize = 2000;
+const PROJECT_UPDATE_BODY_MAX_CHARS: usize = 2000;
+
+/// Clamp a caller-supplied page size to `[min, max]`, defaulting when absent.
+/// Every bounded read op below runs its `first` argument through this so a
+/// caller can never request an unbounded (or negative-size) page.
+fn clamp_first(value: Option<u32>, default: u32, min: u32, max: u32) -> u32 {
+    value.unwrap_or(default).clamp(min, max)
+}
+
+const TRUNCATION_SUFFIX: &str = " ... [truncated]";
+
+/// Bound `text` to at most `max` chars, appending [`TRUNCATION_SUFFIX`] only
+/// when truncation actually removes content. Operates on chars, not bytes,
+/// so the cut always lands on a char boundary - safe for the multi-byte text
+/// (emoji, non-Latin scripts, hostile Unicode) that Linear issue/comment
+/// content may carry.
+fn truncate_bounded(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max).collect();
+    format!("{truncated}{TRUNCATION_SUFFIX}")
+}
+
+/// Linear's numeric fields used here (`priority`, cycle `number`) are
+/// GraphQL Floats that are always whole-valued in practice; round rather
+/// than truncate so a hypothetical off-by-epsilon float never quietly
+/// reports the wrong value.
+fn round_to_i64(value: f64) -> i64 {
+    value.round() as i64
+}
+
+/// True when at least one id in `team_ids` is present in `granted_team_ids`.
+/// The pure predicate behind [`list_initiatives`]'s client-side project-list
+/// narrowing (and reusable for any other "does this multi-team entity touch
+/// the grant" check).
+fn any_team_granted(team_ids: &[String], granted_team_ids: &[String]) -> bool {
+    team_ids
+        .iter()
+        .any(|id| granted_team_ids.iter().any(|granted| granted == id))
+}
+
+// Shared minimal wire shapes reused across several read operations below.
+
+#[derive(Deserialize)]
+struct NameOnlyWire {
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct IdOnlyWire {
+    #[serde(default)]
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct KeyOnlyWire {
+    #[serde(default)]
+    key: String,
+}
+
+#[derive(Deserialize)]
+struct IdListPageWire {
+    #[serde(default)]
+    nodes: Vec<IdOnlyWire>,
+}
+
+fn ids_from_page(page: Option<IdListPageWire>) -> Vec<String> {
+    page.map(|page| page.nodes.into_iter().map(|node| node.id).collect())
+        .unwrap_or_default()
+}
+
+// --- Users -------------------------------------------------------------------------
+
+/// One workspace member as surfaced to the agent. Directory data (spec
+/// decision 3-4): no team scoping, and deliberately NO email field - the
+/// agent has no need for teammate emails and they are personal data.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearUser {
+    pub id: String,
+    pub name: String,
+    pub display_name: String,
+    pub active: bool,
+}
+
+const LIST_USERS_QUERY: &str = "query Users($first: Int!) \
+     { users(first: $first) { nodes { id name displayName active } } }";
+
+#[derive(Deserialize)]
+struct UsersDataWire {
+    users: UsersPageWire,
+}
+
+#[derive(Deserialize)]
+struct UsersPageWire {
+    #[serde(default)]
+    nodes: Vec<UserWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UserWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    active: bool,
+}
+
+/// All users in the workspace, one bounded page (no pagination loop - this
+/// is directory data, not a completeness-critical read; a workspace with
+/// more than [`USERS_PAGE_MAX`] members can raise the cap later).
+pub async fn list_users(
+    access_token: &str,
+    first: Option<u32>,
+) -> Result<Vec<LinearUser>, LinearApiError> {
+    let limit = clamp_first(first, USERS_PAGE_DEFAULT, 1, USERS_PAGE_MAX);
+    let data: UsersDataWire = graphql(
+        access_token,
+        LIST_USERS_QUERY,
+        serde_json::json!({ "first": limit }),
+    )
+    .await?;
+    Ok(data
+        .users
+        .nodes
+        .into_iter()
+        .map(|user| LinearUser {
+            id: user.id,
+            name: user.name,
+            display_name: user.display_name,
+            active: user.active,
+        })
+        .collect())
+}
+
+// --- Projects ------------------------------------------------------------------------
+
+/// One project as surfaced to the agent, already scoped to the grant: only
+/// projects linked to at least one selected team are ever constructed (spec
+/// decision 3). `state` is `Project.status.name` - the schema's own
+/// `Project.state` field is deprecated in favor of `status`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearProject {
+    pub id: String,
+    pub name: String,
+    pub state: String,
+    pub target_date: Option<String>,
+    pub team_ids: Vec<String>,
+    pub url: String,
+}
+
+const LIST_PROJECTS_QUERY: &str = "query Projects($filter: ProjectFilter, $first: Int!) \
+     { projects(filter: $filter, first: $first) \
+     { nodes { id name status { name } targetDate teams(first: 10) { nodes { id } } url } } }";
+
+#[derive(Deserialize)]
+struct ProjectsDataWire {
+    projects: ProjectsPageWire,
+}
+
+#[derive(Deserialize)]
+struct ProjectsPageWire {
+    #[serde(default)]
+    nodes: Vec<ProjectWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    status: Option<NameOnlyWire>,
+    #[serde(default)]
+    target_date: Option<String>,
+    #[serde(default)]
+    teams: Option<IdListPageWire>,
+    #[serde(default)]
+    url: String,
+}
+
+fn project_from_wire(wire: ProjectWire) -> LinearProject {
+    LinearProject {
+        id: wire.id,
+        name: wire.name,
+        state: wire.status.map(|status| status.name).unwrap_or_default(),
+        target_date: wire.target_date,
+        team_ids: ids_from_page(wire.teams),
+        url: wire.url,
+    }
+}
+
+/// Projects linked to at least one granted team, one bounded page. Schema
+/// note: `ProjectFilter.accessibleTeams` (a `TeamCollectionFilter`) supports
+/// exactly this via `some: { id: { in: $teamIds } } }`, so the grant is
+/// enforced SERVER SIDE here rather than via the client-side page-and-filter
+/// fallback the chunk spec allowed for - simpler, and it cannot leak an
+/// unfiltered page if a pagination loop were ever cut short.
+pub async fn list_projects(
+    access_token: &str,
+    granted_team_ids: &[String],
+) -> Result<Vec<LinearProject>, LinearApiError> {
+    // `granted_team_ids` backs a GraphQL `id: { in: [...] } }` comparator. An
+    // empty `in` list must never reach the server: some GraphQL backends
+    // treat an empty in-list as "no constraint" rather than "matches
+    // nothing", which here would silently return every team's projects -
+    // exactly the leak the selected-team grant exists to prevent. Callers
+    // are contracted to never call this with an empty grant (loading the
+    // grant fails closed first, in `connectors::linear_granted_team_ids`);
+    // this is the defense-in-depth backstop.
+    if granted_team_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let filter = serde_json::json!({
+        "accessibleTeams": { "some": { "id": { "in": granted_team_ids } } }
+    });
+    let data: ProjectsDataWire = graphql(
+        access_token,
+        LIST_PROJECTS_QUERY,
+        serde_json::json!({ "filter": filter, "first": PROJECTS_PAGE_SIZE }),
+    )
+    .await?;
+    Ok(data
+        .projects
+        .nodes
+        .into_iter()
+        .map(project_from_wire)
+        .collect())
+}
+
+// --- Cycles --------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearCycle {
+    pub id: String,
+    pub number: i64,
+    pub name: Option<String>,
+    pub starts_at: String,
+    pub ends_at: String,
+    pub completed_at: Option<String>,
+}
+
+const LIST_CYCLES_QUERY: &str = "query TeamCycles($teamId: String!, $first: Int!) \
+     { team(id: $teamId) { cycles(first: $first) \
+     { nodes { id number name startsAt endsAt completedAt } } } }";
+
+#[derive(Deserialize)]
+struct TeamCyclesDataWire {
+    #[serde(default)]
+    team: Option<TeamCyclesWire>,
+}
+
+#[derive(Deserialize)]
+struct TeamCyclesWire {
+    cycles: CyclesPageWire,
+}
+
+#[derive(Deserialize)]
+struct CyclesPageWire {
+    #[serde(default)]
+    nodes: Vec<CycleWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CycleWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    number: f64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    starts_at: String,
+    #[serde(default)]
+    ends_at: String,
+    #[serde(default)]
+    completed_at: Option<String>,
+}
+
+fn team_not_found() -> LinearApiError {
+    LinearApiError::Api {
+        status: 200,
+        message: "team not found".to_string(),
+    }
+}
+
+/// A team's cycles, one bounded page. Grant validation ("is `team_id` one of
+/// the account's selected teams") happens in the CALLER
+/// ([`crate::connectors::linear_require_team_granted`]) - this function only
+/// fetches, and accepts any team id the access token can see, so it stays
+/// pure and unit-testable without a grant to construct.
+pub async fn list_cycles(
+    access_token: &str,
+    team_id: &str,
+) -> Result<Vec<LinearCycle>, LinearApiError> {
+    let data: TeamCyclesDataWire = graphql(
+        access_token,
+        LIST_CYCLES_QUERY,
+        serde_json::json!({ "teamId": team_id, "first": CYCLES_PAGE_SIZE }),
+    )
+    .await?;
+    let team = data.team.ok_or_else(team_not_found)?;
+    Ok(team
+        .cycles
+        .nodes
+        .into_iter()
+        .map(|cycle| LinearCycle {
+            id: cycle.id,
+            number: round_to_i64(cycle.number),
+            name: cycle.name,
+            starts_at: cycle.starts_at,
+            ends_at: cycle.ends_at,
+            completed_at: cycle.completed_at,
+        })
+        .collect())
+}
+
+// --- Initiatives ---------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitiativeProjectRef {
+    pub id: String,
+    pub name: String,
+}
+
+/// Workspace-level directory data (spec decision 3): initiatives themselves
+/// carry no team, so every initiative is always returned; only each
+/// initiative's PROJECT list is narrowed to the grant, client side, and an
+/// initiative is kept even when that narrowed list comes back empty.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearInitiative {
+    pub id: String,
+    pub name: String,
+    pub target_date: Option<String>,
+    pub status: Option<String>,
+    pub projects: Vec<InitiativeProjectRef>,
+}
+
+const LIST_INITIATIVES_QUERY: &str = "query Initiatives($first: Int!) \
+     { initiatives(first: $first) { nodes { id name targetDate status \
+     projects(first: 25) { nodes { id name teams(first: 10) { nodes { id } } } } } } }";
+
+#[derive(Deserialize)]
+struct InitiativesDataWire {
+    initiatives: InitiativesPageWire,
+}
+
+#[derive(Deserialize)]
+struct InitiativesPageWire {
+    #[serde(default)]
+    nodes: Vec<InitiativeWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InitiativeWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    target_date: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    projects: Option<InitiativeProjectsPageWire>,
+}
+
+#[derive(Deserialize)]
+struct InitiativeProjectsPageWire {
+    #[serde(default)]
+    nodes: Vec<InitiativeProjectWire>,
+}
+
+#[derive(Deserialize)]
+struct InitiativeProjectWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    teams: Option<IdListPageWire>,
+}
+
+fn initiative_from_wire(wire: InitiativeWire, granted_team_ids: &[String]) -> LinearInitiative {
+    let projects = wire
+        .projects
+        .map(|page| page.nodes)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|project| {
+            let team_ids = ids_from_page(project.teams);
+            any_team_granted(&team_ids, granted_team_ids).then_some(InitiativeProjectRef {
+                id: project.id,
+                name: project.name,
+            })
+        })
+        .collect();
+    LinearInitiative {
+        id: wire.id,
+        name: wire.name,
+        target_date: wire.target_date,
+        status: wire.status,
+        projects,
+    }
+}
+
+/// All workspace initiatives, one bounded page, with each initiative's
+/// project list narrowed to `granted_team_ids` client side (spec decision 3:
+/// initiatives are workspace-level directory data and always returned, but
+/// the projects they link to obey the same grant as everywhere else).
+pub async fn list_initiatives(
+    access_token: &str,
+    granted_team_ids: &[String],
+) -> Result<Vec<LinearInitiative>, LinearApiError> {
+    let data: InitiativesDataWire = graphql(
+        access_token,
+        LIST_INITIATIVES_QUERY,
+        serde_json::json!({ "first": INITIATIVES_PAGE_SIZE }),
+    )
+    .await?;
+    Ok(data
+        .initiatives
+        .nodes
+        .into_iter()
+        .map(|initiative| initiative_from_wire(initiative, granted_team_ids))
+        .collect())
+}
+
+// --- Issue search --------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueSearchParams {
+    #[serde(default)]
+    pub query: Option<String>,
+    /// Team ids to constrain the search to. ALREADY narrowed to the
+    /// account's grant by the caller - never empty by contract (see
+    /// [`search_issues`]'s defensive guard, which refuses an empty list
+    /// rather than trusting the contract blindly).
+    pub team_ids: Vec<String>,
+    #[serde(default)]
+    pub state_type: Option<String>,
+    #[serde(default)]
+    pub assignee_id: Option<String>,
+    #[serde(default)]
+    pub first: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearIssueSummary {
+    pub id: String,
+    pub identifier: String,
+    pub title: String,
+    pub state_name: String,
+    pub state_type: String,
+    pub priority: i64,
+    pub assignee_name: Option<String>,
+    pub team_key: String,
+    pub updated_at: String,
+    pub url: String,
+}
+
+const SEARCH_ISSUES_QUERY: &str = "query SearchIssues($filter: IssueFilter, $first: Int!) \
+     { issues(filter: $filter, first: $first, orderBy: updatedAt) \
+     { nodes { id identifier title state { name type } priority assignee { name } \
+     team { key } updatedAt url } } }";
+
+#[derive(Deserialize)]
+struct IssuesDataWire {
+    issues: IssuesPageWire,
+}
+
+#[derive(Deserialize)]
+struct IssuesPageWire {
+    #[serde(default)]
+    nodes: Vec<IssueSummaryWire>,
+}
+
+#[derive(Deserialize)]
+struct StateWire {
+    #[serde(default)]
+    name: String,
+    #[serde(default, rename = "type")]
+    kind: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IssueSummaryWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    identifier: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    state: Option<StateWire>,
+    #[serde(default)]
+    priority: f64,
+    #[serde(default)]
+    assignee: Option<NameOnlyWire>,
+    #[serde(default)]
+    team: Option<KeyOnlyWire>,
+    #[serde(default)]
+    updated_at: String,
+    #[serde(default)]
+    url: String,
+}
+
+fn issue_summary_from_wire(wire: IssueSummaryWire) -> LinearIssueSummary {
+    LinearIssueSummary {
+        id: wire.id,
+        identifier: wire.identifier,
+        title: wire.title,
+        state_name: wire
+            .state
+            .as_ref()
+            .map(|state| state.name.clone())
+            .unwrap_or_default(),
+        state_type: wire.state.map(|state| state.kind).unwrap_or_default(),
+        priority: round_to_i64(wire.priority),
+        assignee_name: wire
+            .assignee
+            .map(|assignee| assignee.name)
+            .filter(|name| !name.is_empty()),
+        team_key: wire.team.map(|team| team.key).unwrap_or_default(),
+        updated_at: wire.updated_at,
+        url: wire.url,
+    }
+}
+
+/// Build the `IssueFilter` JSON for [`search_issues`]: the team scope is
+/// ALWAYS present (`team.id.in`); state/assignee/text narrow it further when
+/// supplied. Text search note: `IssueFilter` exposes no dedicated
+/// full-text-search field reachable from this bounded, non-`searchIssues`
+/// query path (`searchableContent` exists but is marked `[Internal]` in the
+/// schema - not something to build a stable public tool contract on), so the
+/// text query matches issue TITLE only, via `title.containsIgnoreCase`.
+/// Callers should not expect the query to match descriptions or comments.
+fn issue_search_filter(params: &IssueSearchParams) -> serde_json::Value {
+    let mut filter = serde_json::json!({ "team": { "id": { "in": params.team_ids } } });
+    if let Some(state_type) = params.state_type.as_deref().filter(|v| !v.is_empty()) {
+        filter["state"] = serde_json::json!({ "type": { "eq": state_type } });
+    }
+    if let Some(assignee_id) = params.assignee_id.as_deref().filter(|v| !v.is_empty()) {
+        filter["assignee"] = serde_json::json!({ "id": { "eq": assignee_id } });
+    }
+    if let Some(query) = params
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        filter["title"] = serde_json::json!({ "containsIgnoreCase": query });
+    }
+    filter
+}
+
+/// Search issues within the granted team scope. `params.team_ids` is a
+/// security boundary (see [`IssueSearchParams::team_ids`]); an empty list is
+/// refused rather than sent to Linear as `id: { in: [] }`, because some
+/// GraphQL backends treat an empty in-list as "no constraint" - the same
+/// defense-in-depth backstop as [`list_projects`].
+pub async fn search_issues(
+    access_token: &str,
+    params: &IssueSearchParams,
+) -> Result<Vec<LinearIssueSummary>, LinearApiError> {
+    if params.team_ids.is_empty() {
+        return Err(LinearApiError::Api {
+            status: 400,
+            message: "search_issues requires at least one granted team id".to_string(),
+        });
+    }
+    let limit = clamp_first(params.first, SEARCH_ISSUES_DEFAULT, 1, SEARCH_ISSUES_MAX);
+    let filter = issue_search_filter(params);
+    let data: IssuesDataWire = graphql(
+        access_token,
+        SEARCH_ISSUES_QUERY,
+        serde_json::json!({ "filter": filter, "first": limit }),
+    )
+    .await?;
+    Ok(data
+        .issues
+        .nodes
+        .into_iter()
+        .map(issue_summary_from_wire)
+        .collect())
+}
+
+// --- Issue detail --------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearIssueDetail {
+    pub id: String,
+    pub identifier: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub state_name: String,
+    pub state_type: String,
+    pub priority: i64,
+    pub assignee_name: Option<String>,
+    pub team_id: String,
+    pub team_key: String,
+    pub label_names: Vec<String>,
+    pub url: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// `issue(id:)` is documented in the schema only as "looked up by its unique
+// identifier" - the description does not spell out whether that accepts the
+// human-readable identifier (e.g. "ENG-123") alongside the UUID. Linear's
+// public API docs describe both forms as accepted; this passes whatever
+// string the caller supplies through unchanged rather than second-guessing
+// its shape. If that assumption is ever wrong, only UUID lookups succeed:
+// Linear returns a GraphQL "not found" error for an unresolvable id, which
+// surfaces as `LinearApiError::Api` (never a silent wrong-issue result).
+const GET_ISSUE_QUERY: &str = "query GetIssue($id: String!) \
+     { issue(id: $id) { id identifier title description state { name type } priority \
+     assignee { name } team { id key } labels(first: 20) { nodes { name } } \
+     url createdAt updatedAt } }";
+
+#[derive(Deserialize)]
+struct GetIssueDataWire {
+    #[serde(default)]
+    issue: Option<IssueDetailWire>,
+}
+
+#[derive(Deserialize)]
+struct TeamIdKeyWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    key: String,
+}
+
+#[derive(Deserialize)]
+struct LabelsPageWire {
+    #[serde(default)]
+    nodes: Vec<NameOnlyWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IssueDetailWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    identifier: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    state: Option<StateWire>,
+    #[serde(default)]
+    priority: f64,
+    #[serde(default)]
+    assignee: Option<NameOnlyWire>,
+    #[serde(default)]
+    team: Option<TeamIdKeyWire>,
+    #[serde(default)]
+    labels: Option<LabelsPageWire>,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    updated_at: String,
+}
+
+fn issue_not_found() -> LinearApiError {
+    LinearApiError::Api {
+        status: 200,
+        message: "issue not found".to_string(),
+    }
+}
+
+fn issue_detail_from_wire(wire: IssueDetailWire) -> LinearIssueDetail {
+    LinearIssueDetail {
+        id: wire.id,
+        identifier: wire.identifier,
+        title: wire.title,
+        description: wire
+            .description
+            .map(|text| truncate_bounded(&text, ISSUE_DESCRIPTION_MAX_CHARS)),
+        state_name: wire
+            .state
+            .as_ref()
+            .map(|state| state.name.clone())
+            .unwrap_or_default(),
+        state_type: wire.state.map(|state| state.kind).unwrap_or_default(),
+        priority: round_to_i64(wire.priority),
+        assignee_name: wire
+            .assignee
+            .map(|assignee| assignee.name)
+            .filter(|name| !name.is_empty()),
+        team_id: wire
+            .team
+            .as_ref()
+            .map(|team| team.id.clone())
+            .unwrap_or_default(),
+        team_key: wire.team.map(|team| team.key).unwrap_or_default(),
+        label_names: wire
+            .labels
+            .map(|page| page.nodes.into_iter().map(|node| node.name).collect())
+            .unwrap_or_default(),
+        url: wire.url,
+        created_at: wire.created_at,
+        updated_at: wire.updated_at,
+    }
+}
+
+/// Fetch one issue's full detail, including its team id. Grant enforcement
+/// ("is this issue's team one the account selected") happens AFTER this
+/// call, in the caller: it discards the returned value entirely rather than
+/// surfacing it when [`crate::connectors::linear_require_any_team_granted`]
+/// rejects `team_id` - never a partial return.
+pub async fn get_issue(
+    access_token: &str,
+    issue_id: &str,
+) -> Result<LinearIssueDetail, LinearApiError> {
+    let data: GetIssueDataWire = graphql(
+        access_token,
+        GET_ISSUE_QUERY,
+        serde_json::json!({ "id": issue_id }),
+    )
+    .await?;
+    let issue = data.issue.ok_or_else(issue_not_found)?;
+    Ok(issue_detail_from_wire(issue))
+}
+
+// --- Issue comments ------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearComment {
+    pub id: String,
+    pub author_name: Option<String>,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
+const LIST_ISSUE_COMMENTS_QUERY: &str = "query IssueComments($id: String!, $first: Int!) \
+     { issue(id: $id) { team { id } comments(first: $first) \
+     { nodes { id user { name } botActor { name } body createdAt url } } } }";
+
+#[derive(Deserialize)]
+struct IssueCommentsDataWire {
+    #[serde(default)]
+    issue: Option<IssueCommentsIssueWire>,
+}
+
+#[derive(Deserialize)]
+struct IssueCommentsIssueWire {
+    #[serde(default)]
+    team: Option<IdOnlyWire>,
+    #[serde(default)]
+    comments: Option<CommentsPageWire>,
+}
+
+#[derive(Deserialize)]
+struct CommentsPageWire {
+    #[serde(default)]
+    nodes: Vec<CommentWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommentWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    user: Option<NameOnlyWire>,
+    #[serde(default)]
+    bot_actor: Option<NameOnlyWire>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    url: String,
+}
+
+/// A comment's author: the human user when present, otherwise the
+/// integration/automation bot actor (Linear leaves `user` null for
+/// integration-authored comments - see `Comment.user`/`Comment.botActor` in
+/// the schema). `None` only when neither is populated.
+fn comment_author_name(wire: &CommentWire) -> Option<String> {
+    wire.user
+        .as_ref()
+        .map(|user| user.name.as_str())
+        .or_else(|| wire.bot_actor.as_ref().map(|bot| bot.name.as_str()))
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
+fn comment_from_wire(wire: CommentWire) -> LinearComment {
+    let author_name = comment_author_name(&wire);
+    LinearComment {
+        id: wire.id,
+        author_name,
+        body: truncate_bounded(&wire.body, COMMENT_BODY_MAX_CHARS),
+        created_at: wire.created_at,
+        url: wire.url,
+    }
+}
+
+/// Fetch one issue's comments plus the issue's team id, one bounded page.
+/// Grant enforcement happens AFTER this call, in the caller, exactly like
+/// [`get_issue`] - the returned team id is what the caller checks, and the
+/// whole result is discarded on a mismatch.
+pub async fn list_issue_comments(
+    access_token: &str,
+    issue_id: &str,
+    first: Option<u32>,
+) -> Result<(String, Vec<LinearComment>), LinearApiError> {
+    let limit = clamp_first(first, COMMENTS_DEFAULT, 1, COMMENTS_MAX);
+    let data: IssueCommentsDataWire = graphql(
+        access_token,
+        LIST_ISSUE_COMMENTS_QUERY,
+        serde_json::json!({ "id": issue_id, "first": limit }),
+    )
+    .await?;
+    let issue = data.issue.ok_or_else(issue_not_found)?;
+    let team_id = issue.team.map(|team| team.id).unwrap_or_default();
+    let comments = issue
+        .comments
+        .map(|page| page.nodes)
+        .unwrap_or_default()
+        .into_iter()
+        .map(comment_from_wire)
+        .collect();
+    Ok((team_id, comments))
+}
+
+// --- Project updates -----------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearProjectUpdate {
+    pub id: String,
+    pub author_name: Option<String>,
+    pub body: String,
+    pub health: Option<String>,
+    pub created_at: String,
+    pub url: String,
+}
+
+const LIST_PROJECT_UPDATES_QUERY: &str = "query ProjectUpdates($id: String!, $first: Int!) \
+     { project(id: $id) { teams(first: 10) { nodes { id } } \
+     projectUpdates(first: $first) { nodes { id user { name } body health createdAt url } } } }";
+
+#[derive(Deserialize)]
+struct ProjectUpdatesDataWire {
+    #[serde(default)]
+    project: Option<ProjectUpdatesProjectWire>,
+}
+
+#[derive(Deserialize)]
+struct ProjectUpdatesProjectWire {
+    #[serde(default)]
+    teams: Option<IdListPageWire>,
+    #[serde(default, rename = "projectUpdates")]
+    project_updates: Option<ProjectUpdatesPageWire>,
+}
+
+#[derive(Deserialize)]
+struct ProjectUpdatesPageWire {
+    #[serde(default)]
+    nodes: Vec<ProjectUpdateWire>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectUpdateWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    user: Option<NameOnlyWire>,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    health: Option<String>,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    url: String,
+}
+
+fn project_not_found() -> LinearApiError {
+    LinearApiError::Api {
+        status: 200,
+        message: "project not found".to_string(),
+    }
+}
+
+fn project_update_from_wire(wire: ProjectUpdateWire) -> LinearProjectUpdate {
+    LinearProjectUpdate {
+        id: wire.id,
+        author_name: wire
+            .user
+            .map(|user| user.name)
+            .filter(|name| !name.is_empty()),
+        body: truncate_bounded(&wire.body, PROJECT_UPDATE_BODY_MAX_CHARS),
+        health: wire.health,
+        created_at: wire.created_at,
+        url: wire.url,
+    }
+}
+
+/// Fetch one project's updates plus the project's linked team ids, one
+/// bounded page. Grant enforcement happens AFTER this call, in the caller
+/// ([`crate::connectors::linear_require_any_team_granted`] against the
+/// returned team ids) - exactly like [`get_issue`]/[`list_issue_comments`].
+pub async fn list_project_updates(
+    access_token: &str,
+    project_id: &str,
+    first: Option<u32>,
+) -> Result<(Vec<String>, Vec<LinearProjectUpdate>), LinearApiError> {
+    let limit = clamp_first(first, PROJECT_UPDATES_DEFAULT, 1, PROJECT_UPDATES_MAX);
+    let data: ProjectUpdatesDataWire = graphql(
+        access_token,
+        LIST_PROJECT_UPDATES_QUERY,
+        serde_json::json!({ "id": project_id, "first": limit }),
+    )
+    .await?;
+    let project = data.project.ok_or_else(project_not_found)?;
+    let team_ids = ids_from_page(project.teams);
+    let updates = project
+        .project_updates
+        .map(|page| page.nodes)
+        .unwrap_or_default()
+        .into_iter()
+        .map(project_update_from_wire)
+        .collect();
+    Ok((team_ids, updates))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -941,5 +1937,466 @@ mod tests {
             AppError::from(LinearApiError::Network("down".to_string())).code,
             "network_error"
         );
+    }
+
+    // --- Slice 2: shared helpers ---------------------------------------------------
+
+    #[test]
+    fn clamp_first_defaults_and_bounds() {
+        assert_eq!(clamp_first(None, 25, 1, 50), 25);
+        assert_eq!(clamp_first(Some(0), 25, 1, 50), 1);
+        assert_eq!(clamp_first(Some(1), 25, 1, 50), 1);
+        assert_eq!(clamp_first(Some(50), 25, 1, 50), 50);
+        assert_eq!(clamp_first(Some(999), 25, 1, 50), 50);
+    }
+
+    #[test]
+    fn truncate_bounded_leaves_short_and_exact_text_untouched() {
+        assert_eq!(truncate_bounded("hello", 10), "hello");
+        assert_eq!(truncate_bounded("hello", 5), "hello");
+        assert!(!truncate_bounded("hello", 5).contains("truncated"));
+    }
+
+    #[test]
+    fn truncate_bounded_cuts_and_suffixes_when_over_limit() {
+        let truncated = truncate_bounded("hello world", 5);
+        assert_eq!(truncated, "hello ... [truncated]");
+    }
+
+    #[test]
+    fn truncate_bounded_is_char_boundary_safe_on_multi_byte_text() {
+        // Multi-byte emoji and CJK characters must never be split mid-codepoint.
+        let text = "héllo 世界 🎉🎉🎉 more text past the cut";
+        let truncated = truncate_bounded(text, 9);
+        assert!(truncated.starts_with("héllo 世界"));
+        assert!(truncated.ends_with(TRUNCATION_SUFFIX));
+        // Also exercise a cut that lands exactly between two 4-byte emoji.
+        let emoji_only = "🎉🎉🎉🎉🎉";
+        let truncated_emoji = truncate_bounded(emoji_only, 2);
+        assert_eq!(truncated_emoji, format!("🎉🎉{TRUNCATION_SUFFIX}"));
+    }
+
+    #[test]
+    fn round_to_i64_rounds_rather_than_truncates() {
+        assert_eq!(round_to_i64(2.0), 2);
+        assert_eq!(round_to_i64(1.9999), 2);
+        assert_eq!(round_to_i64(0.0), 0);
+    }
+
+    #[test]
+    fn any_team_granted_checks_intersection() {
+        let granted = vec!["a".to_string(), "b".to_string()];
+        assert!(any_team_granted(&["b".to_string()], &granted));
+        assert!(!any_team_granted(&["c".to_string()], &granted));
+        assert!(!any_team_granted(&["a".to_string()], &[]));
+        assert!(!any_team_granted(&[], &granted));
+    }
+
+    #[test]
+    fn ids_from_page_defaults_a_missing_page_to_empty() {
+        assert_eq!(ids_from_page(None), Vec::<String>::new());
+        let page = IdListPageWire {
+            nodes: vec![
+                IdOnlyWire {
+                    id: "a".to_string(),
+                },
+                IdOnlyWire {
+                    id: "b".to_string(),
+                },
+            ],
+        };
+        assert_eq!(ids_from_page(Some(page)), vec!["a", "b"]);
+    }
+
+    // --- Slice 2: users --------------------------------------------------------------
+
+    #[test]
+    fn list_users_fixture_parses_active_and_inactive_members() {
+        let data: UsersDataWire = serde_json::from_str(
+            r#"{
+                "users": { "nodes": [
+                    { "id": "u1", "name": "Ada Lovelace", "displayName": "ada", "active": true },
+                    { "id": "u2", "name": "Bea", "displayName": "bea", "active": false }
+                ] }
+            }"#,
+        )
+        .expect("fixture");
+        assert_eq!(data.users.nodes.len(), 2);
+        assert_eq!(data.users.nodes[0].id, "u1");
+        assert_eq!(data.users.nodes[0].display_name, "ada");
+        assert!(data.users.nodes[0].active);
+        assert!(!data.users.nodes[1].active);
+    }
+
+    // --- Slice 2: projects -------------------------------------------------------------
+
+    #[test]
+    fn project_from_wire_handles_missing_status_and_teams() {
+        let wire: ProjectWire = serde_json::from_str(
+            r#"{ "id": "p1", "name": "Roadmap", "url": "https://linear.app/x/project/p1" }"#,
+        )
+        .expect("fixture");
+        let project = project_from_wire(wire);
+        assert_eq!(project.id, "p1");
+        assert_eq!(project.state, "");
+        assert_eq!(project.target_date, None);
+        assert!(project.team_ids.is_empty());
+    }
+
+    #[test]
+    fn project_from_wire_maps_status_name_and_team_ids() {
+        let wire: ProjectWire = serde_json::from_str(
+            r#"{
+                "id": "p1",
+                "name": "Roadmap",
+                "status": { "name": "In Progress" },
+                "targetDate": "2026-09-01",
+                "teams": { "nodes": [ { "id": "team-1" }, { "id": "team-2" } ] },
+                "url": "https://linear.app/x/project/p1"
+            }"#,
+        )
+        .expect("fixture");
+        let project = project_from_wire(wire);
+        assert_eq!(project.state, "In Progress");
+        assert_eq!(project.target_date.as_deref(), Some("2026-09-01"));
+        assert_eq!(project.team_ids, vec!["team-1", "team-2"]);
+    }
+
+    // --- Slice 2: cycles -----------------------------------------------------------
+
+    #[test]
+    fn team_cycles_fixture_parses_and_handles_null_name_and_completed_at() {
+        let data: TeamCyclesDataWire = serde_json::from_str(
+            r#"{
+                "team": { "cycles": { "nodes": [
+                    { "id": "c1", "number": 4, "name": null, "startsAt": "2026-07-01T00:00:00Z",
+                      "endsAt": "2026-07-15T00:00:00Z", "completedAt": null }
+                ] } }
+            }"#,
+        )
+        .expect("fixture");
+        let team = data.team.expect("team present");
+        let cycle = &team.cycles.nodes[0];
+        assert_eq!(round_to_i64(cycle.number), 4);
+        assert_eq!(cycle.name, None);
+        assert_eq!(cycle.completed_at, None);
+        assert_eq!(cycle.starts_at, "2026-07-01T00:00:00Z");
+    }
+
+    #[test]
+    fn team_cycles_fixture_missing_team_parses_as_none() {
+        let data: TeamCyclesDataWire = serde_json::from_str(r#"{}"#).expect("fixture");
+        assert!(data.team.is_none());
+    }
+
+    // --- Slice 2: initiatives ------------------------------------------------------
+
+    #[test]
+    fn initiative_from_wire_filters_projects_to_the_grant_but_keeps_the_initiative() {
+        let wire: InitiativeWire = serde_json::from_str(
+            r#"{
+                "id": "i1",
+                "name": "Q3 push",
+                "targetDate": "2026-09-30",
+                "status": "planned",
+                "projects": { "nodes": [
+                    { "id": "p1", "name": "Granted", "teams": { "nodes": [ { "id": "team-1" } ] } },
+                    { "id": "p2", "name": "Not granted", "teams": { "nodes": [ { "id": "team-9" } ] } }
+                ] }
+            }"#,
+        )
+        .expect("fixture");
+        let granted = vec!["team-1".to_string()];
+        let initiative = initiative_from_wire(wire, &granted);
+        assert_eq!(initiative.id, "i1");
+        assert_eq!(initiative.projects.len(), 1);
+        assert_eq!(initiative.projects[0].id, "p1");
+
+        // An empty grant zeroes out the project list but the initiative itself
+        // (workspace-level directory data) is still returned.
+        let wire: InitiativeWire = serde_json::from_str(
+            r#"{
+                "id": "i2",
+                "name": "No access",
+                "projects": { "nodes": [
+                    { "id": "p3", "name": "Blocked", "teams": { "nodes": [ { "id": "team-9" } ] } }
+                ] }
+            }"#,
+        )
+        .expect("fixture");
+        let initiative = initiative_from_wire(wire, &[]);
+        assert_eq!(initiative.id, "i2");
+        assert!(initiative.projects.is_empty());
+    }
+
+    // --- Slice 2: issue search -------------------------------------------------------
+
+    #[test]
+    fn issue_search_filter_always_carries_team_scope() {
+        let params = IssueSearchParams {
+            query: None,
+            team_ids: vec!["team-1".to_string(), "team-2".to_string()],
+            state_type: None,
+            assignee_id: None,
+            first: None,
+        };
+        let filter = issue_search_filter(&params);
+        assert_eq!(
+            filter,
+            serde_json::json!({ "team": { "id": { "in": ["team-1", "team-2"] } } })
+        );
+    }
+
+    #[test]
+    fn issue_search_filter_composes_optional_narrows() {
+        let params = IssueSearchParams {
+            query: Some("  onboarding  ".to_string()),
+            team_ids: vec!["team-1".to_string()],
+            state_type: Some("started".to_string()),
+            assignee_id: Some("user-1".to_string()),
+            first: Some(10),
+        };
+        let filter = issue_search_filter(&params);
+        assert_eq!(
+            filter,
+            serde_json::json!({
+                "team": { "id": { "in": ["team-1"] } },
+                "state": { "type": { "eq": "started" } },
+                "assignee": { "id": { "eq": "user-1" } },
+                "title": { "containsIgnoreCase": "onboarding" },
+            })
+        );
+    }
+
+    #[test]
+    fn issue_search_filter_omits_blank_optional_narrows() {
+        let params = IssueSearchParams {
+            query: Some("   ".to_string()),
+            team_ids: vec!["team-1".to_string()],
+            state_type: Some("".to_string()),
+            assignee_id: None,
+            first: None,
+        };
+        let filter = issue_search_filter(&params);
+        assert_eq!(
+            filter,
+            serde_json::json!({ "team": { "id": { "in": ["team-1"] } } })
+        );
+    }
+
+    #[test]
+    fn issue_summary_from_wire_handles_null_assignee_and_team() {
+        let wire: IssueSummaryWire = serde_json::from_str(
+            r#"{
+                "id": "issue-1",
+                "identifier": "ENG-1",
+                "title": "Fix the thing",
+                "state": { "name": "In Review", "type": "started" },
+                "priority": 2,
+                "assignee": null,
+                "team": null,
+                "updatedAt": "2026-07-01T00:00:00Z",
+                "url": "https://linear.app/x/issue/ENG-1"
+            }"#,
+        )
+        .expect("fixture");
+        let summary = issue_summary_from_wire(wire);
+        assert_eq!(summary.assignee_name, None);
+        assert_eq!(summary.team_key, "");
+        assert_eq!(summary.state_name, "In Review");
+        assert_eq!(summary.state_type, "started");
+        assert_eq!(summary.priority, 2);
+    }
+
+    // --- Slice 2: issue detail -------------------------------------------------------
+
+    #[test]
+    fn issue_detail_from_wire_truncates_a_long_description_and_handles_nulls() {
+        let long_description = "d".repeat(ISSUE_DESCRIPTION_MAX_CHARS + 500);
+        let wire = IssueDetailWire {
+            id: "issue-1".to_string(),
+            identifier: "ENG-1".to_string(),
+            title: "Title".to_string(),
+            description: Some(long_description.clone()),
+            state: None,
+            priority: 0.0,
+            assignee: None,
+            team: None,
+            labels: None,
+            url: "https://linear.app/x/issue/ENG-1".to_string(),
+            created_at: "2026-07-01T00:00:00Z".to_string(),
+            updated_at: "2026-07-02T00:00:00Z".to_string(),
+        };
+        let detail = issue_detail_from_wire(wire);
+        let description = detail.description.expect("description present");
+        assert!(description.len() < long_description.len());
+        assert!(description.ends_with(TRUNCATION_SUFFIX));
+        assert_eq!(detail.assignee_name, None);
+        assert_eq!(detail.team_id, "");
+        assert_eq!(detail.team_key, "");
+        assert!(detail.label_names.is_empty());
+    }
+
+    #[test]
+    fn issue_detail_from_wire_maps_team_and_labels() {
+        let data: GetIssueDataWire = serde_json::from_str(
+            r#"{
+                "issue": {
+                    "id": "issue-1",
+                    "identifier": "ENG-1",
+                    "title": "Title",
+                    "description": "short",
+                    "state": { "name": "Todo", "type": "unstarted" },
+                    "priority": 3,
+                    "assignee": { "name": "Ada" },
+                    "team": { "id": "team-1", "key": "ENG" },
+                    "labels": { "nodes": [ { "name": "bug" }, { "name": "urgent" } ] },
+                    "url": "https://linear.app/x/issue/ENG-1",
+                    "createdAt": "2026-06-01T00:00:00Z",
+                    "updatedAt": "2026-07-01T00:00:00Z"
+                }
+            }"#,
+        )
+        .expect("fixture");
+        let detail = issue_detail_from_wire(data.issue.expect("issue present"));
+        assert_eq!(detail.description.as_deref(), Some("short"));
+        assert_eq!(detail.team_id, "team-1");
+        assert_eq!(detail.team_key, "ENG");
+        assert_eq!(detail.assignee_name.as_deref(), Some("Ada"));
+        assert_eq!(detail.label_names, vec!["bug", "urgent"]);
+        assert_eq!(detail.priority, 3);
+    }
+
+    // --- Slice 2: issue comments -----------------------------------------------------
+
+    #[test]
+    fn comment_author_name_prefers_user_then_falls_back_to_bot_actor() {
+        let with_user = CommentWire {
+            id: "c1".to_string(),
+            user: Some(NameOnlyWire {
+                name: "Ada".to_string(),
+            }),
+            bot_actor: Some(NameOnlyWire {
+                name: "GitHub".to_string(),
+            }),
+            body: String::new(),
+            created_at: String::new(),
+            url: String::new(),
+        };
+        assert_eq!(comment_author_name(&with_user).as_deref(), Some("Ada"));
+
+        let bot_only = CommentWire {
+            id: "c2".to_string(),
+            user: None,
+            bot_actor: Some(NameOnlyWire {
+                name: "GitHub".to_string(),
+            }),
+            body: String::new(),
+            created_at: String::new(),
+            url: String::new(),
+        };
+        assert_eq!(comment_author_name(&bot_only).as_deref(), Some("GitHub"));
+
+        let neither = CommentWire {
+            id: "c3".to_string(),
+            user: None,
+            bot_actor: None,
+            body: String::new(),
+            created_at: String::new(),
+            url: String::new(),
+        };
+        assert_eq!(comment_author_name(&neither), None);
+    }
+
+    #[test]
+    fn comment_from_wire_truncates_a_long_body() {
+        let long_body = "b".repeat(COMMENT_BODY_MAX_CHARS + 200);
+        let wire = CommentWire {
+            id: "c1".to_string(),
+            user: Some(NameOnlyWire {
+                name: "Ada".to_string(),
+            }),
+            bot_actor: None,
+            body: long_body.clone(),
+            created_at: "2026-07-01T00:00:00Z".to_string(),
+            url: "https://linear.app/x/issue/ENG-1#comment-c1".to_string(),
+        };
+        let comment = comment_from_wire(wire);
+        assert!(comment.body.len() < long_body.len());
+        assert!(comment.body.ends_with(TRUNCATION_SUFFIX));
+        assert_eq!(comment.author_name.as_deref(), Some("Ada"));
+    }
+
+    #[test]
+    fn issue_comments_fixture_returns_team_id_alongside_comments() {
+        let data: IssueCommentsDataWire = serde_json::from_str(
+            r#"{
+                "issue": {
+                    "team": { "id": "team-1" },
+                    "comments": { "nodes": [
+                        { "id": "c1", "user": { "name": "Ada" }, "botActor": null,
+                          "body": "hello", "createdAt": "2026-07-01T00:00:00Z",
+                          "url": "https://linear.app/x/issue/ENG-1#comment-c1" }
+                    ] }
+                }
+            }"#,
+        )
+        .expect("fixture");
+        let issue = data.issue.expect("issue present");
+        assert_eq!(issue.team.expect("team present").id, "team-1");
+        assert_eq!(issue.comments.expect("comments present").nodes.len(), 1);
+    }
+
+    // --- Slice 2: project updates ----------------------------------------------------
+
+    #[test]
+    fn project_update_from_wire_handles_null_author_and_health_and_truncates_body() {
+        let long_body = "b".repeat(PROJECT_UPDATE_BODY_MAX_CHARS + 200);
+        let wire = ProjectUpdateWire {
+            id: "pu1".to_string(),
+            user: None,
+            body: long_body.clone(),
+            health: None,
+            created_at: "2026-07-01T00:00:00Z".to_string(),
+            url: "https://linear.app/x/project/p1#update-pu1".to_string(),
+        };
+        let update = project_update_from_wire(wire);
+        assert_eq!(update.author_name, None);
+        assert_eq!(update.health, None);
+        assert!(update.body.len() < long_body.len());
+        assert!(update.body.ends_with(TRUNCATION_SUFFIX));
+    }
+
+    #[test]
+    fn project_updates_fixture_returns_team_ids_alongside_updates() {
+        let data: ProjectUpdatesDataWire = serde_json::from_str(
+            r#"{
+                "project": {
+                    "teams": { "nodes": [ { "id": "team-1" }, { "id": "team-2" } ] },
+                    "projectUpdates": { "nodes": [
+                        { "id": "pu1", "user": { "name": "Ada" }, "body": "on track",
+                          "health": "onTrack", "createdAt": "2026-07-01T00:00:00Z",
+                          "url": "https://linear.app/x/project/p1#update-pu1" }
+                    ] }
+                }
+            }"#,
+        )
+        .expect("fixture");
+        let project = data.project.expect("project present");
+        assert_eq!(ids_from_page(project.teams), vec!["team-1", "team-2"]);
+        assert_eq!(
+            project
+                .project_updates
+                .expect("updates present")
+                .nodes
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn project_updates_fixture_missing_project_parses_as_none() {
+        let data: ProjectUpdatesDataWire = serde_json::from_str(r#"{}"#).expect("fixture");
+        assert!(data.project.is_none());
     }
 }
