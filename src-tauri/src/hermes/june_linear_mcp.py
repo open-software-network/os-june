@@ -158,7 +158,7 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Free-text search over issue titles and descriptions.",
+                    "description": "Case-insensitive text match against issue titles only (descriptions and comments are not searched).",
                 },
                 "team_id": {
                     "type": "string",
