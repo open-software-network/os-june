@@ -335,6 +335,16 @@ pub enum LinearApiError {
         status: u16,
         message: String,
     },
+    /// The response could not be interpreted at all (body did not parse, or
+    /// a 2xx carried neither data nor errors). Distinct from [`Self::Api`]
+    /// because it says nothing about whether a mutation applied: a mangled
+    /// success is indistinguishable from a mangled failure, so the action
+    /// dispatch treats it as AMBIGUOUS and reconciles by object UUID. A
+    /// parsed provider rejection (GraphQL errors array, `success: false`
+    /// payload) is never this variant - those are definitive.
+    UnusableResponse {
+        status: u16,
+    },
     Network(String),
 }
 
@@ -349,23 +359,26 @@ impl From<LinearApiError> for AppError {
                 "linear_rate_limited",
                 "Linear is rate limiting requests. Try again in a few minutes.",
             ),
-            // Only a 4xx is a definitive "the request never applied". A 5xx
-            // can arrive after the backend committed (gateway failure), and
-            // a 2xx whose body would not parse most likely DID apply - both
-            // say nothing reliable about the mutation's fate, so they map to
-            // their own code: the action dispatch treats it as an AMBIGUOUS
-            // outcome and reconciles by object UUID instead of reporting a
-            // definitive failure that would invite a duplicate-creating
-            // retry.
-            LinearApiError::Api { status, message } if !(400..500).contains(&status) => {
-                AppError::new(
-                    "linear_upstream_error",
-                    format!("Linear returned an unusable response ({status}): {message}"),
-                )
-            }
+            // A received 5xx can arrive after the backend committed (gateway
+            // failure), so it maps to the ambiguous code and the action
+            // dispatch reconciles by object UUID. Every other Api error is a
+            // PARSED provider rejection (GraphQL errors array or a
+            // success:false payload, which arrive at HTTP 200) - definitive:
+            // the mutation never applied, and the message carries the
+            // actionable reason.
+            LinearApiError::Api { status, message } if status >= 500 => AppError::new(
+                "linear_upstream_error",
+                format!("Linear had a server error ({status}): {message}"),
+            ),
             LinearApiError::Api { status, message } => AppError::new(
                 "linear_api_error",
                 format!("Linear API request failed ({status}): {message}"),
+            ),
+            // Unusable body: the response says nothing about the mutation's
+            // fate, so it shares the ambiguous code with 5xx.
+            LinearApiError::UnusableResponse { status } => AppError::new(
+                "linear_upstream_error",
+                format!("Linear returned an unusable response ({status})."),
             ),
             LinearApiError::Network(message) => AppError::new("network_error", message),
         }
@@ -427,10 +440,7 @@ async fn graphql<T: DeserializeOwned>(
         return Err(LinearApiError::Unauthorized);
     }
     let parsed: GraphqlResponseWire<T> =
-        serde_json::from_str(&body).map_err(|e| LinearApiError::Api {
-            status,
-            message: format!("unexpected response shape: {e}"),
-        })?;
+        serde_json::from_str(&body).map_err(|_| LinearApiError::UnusableResponse { status })?;
     check_graphql_errors(&parsed.errors, status)?;
     if !(200..300).contains(&status) {
         return Err(LinearApiError::Api {
@@ -438,10 +448,9 @@ async fn graphql<T: DeserializeOwned>(
             message: "request failed".to_string(),
         });
     }
-    parsed.data.ok_or(LinearApiError::Api {
-        status,
-        message: "response carried no data".to_string(),
-    })
+    parsed
+        .data
+        .ok_or(LinearApiError::UnusableResponse { status })
 }
 
 /// Classify a GraphQL errors array: `RATELIMITED` (checked in both
@@ -2429,22 +2438,12 @@ mod tests {
             .code,
             "linear_api_error"
         );
-        // Everything outside 4xx maps to its own code so the action dispatch
-        // can treat it as an ambiguous (possibly-applied) outcome and
-        // reconcile by UUID: 5xx gateways can fail after the backend
-        // committed, and a 2xx with an unusable body most likely applied.
-        for status in [200, 204, 302, 500, 502, 503, 504] {
-            assert_eq!(
-                AppError::from(LinearApiError::Api {
-                    status,
-                    message: "unusable".to_string()
-                })
-                .code,
-                "linear_upstream_error",
-                "status {status} must classify as upstream error"
-            );
-        }
-        for status in [400, 404, 422, 499] {
+        // Ambiguity is structural, never inferred from a 2xx status: a
+        // PARSED provider rejection stays definitive even at HTTP 200 (the
+        // GraphQL-over-HTTP norm for validation errors and success:false
+        // payloads), while 5xx and unusable bodies share the ambiguous code
+        // so the action dispatch reconciles by UUID.
+        for status in [200, 204, 302, 400, 404, 422, 499] {
             assert_eq!(
                 AppError::from(LinearApiError::Api {
                     status,
@@ -2452,7 +2451,25 @@ mod tests {
                 })
                 .code,
                 "linear_api_error",
-                "status {status} must stay definitive"
+                "parsed rejection at status {status} must stay definitive"
+            );
+        }
+        for status in [500, 502, 503, 504] {
+            assert_eq!(
+                AppError::from(LinearApiError::Api {
+                    status,
+                    message: "gateway".to_string()
+                })
+                .code,
+                "linear_upstream_error",
+                "status {status} must classify as upstream error"
+            );
+        }
+        for status in [200, 500] {
+            assert_eq!(
+                AppError::from(LinearApiError::UnusableResponse { status }).code,
+                "linear_upstream_error",
+                "unusable body at status {status} must classify as ambiguous"
             );
         }
         assert_eq!(
