@@ -3959,7 +3959,7 @@ fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
     }
     if normalized
         .find(", ")
-        .is_some_and(|end| is_here_instruction_preamble(&normalized[..end]))
+        .is_some_and(|end| is_terminal_here_instruction_preamble(&normalized[..end]))
     {
         return true;
     }
@@ -7093,6 +7093,9 @@ mod tests {
         ));
         assert!(!looks_like_instruction_response(
             "Here's your text message from John. Call him back."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's your text message from John, call him back."
         ));
         assert!(!looks_like_instruction_response(
             "Here's the result of the game."
