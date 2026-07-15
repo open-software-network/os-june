@@ -2401,15 +2401,25 @@ impl Repositories {
         }))
     }
 
+    /// Select the strongest unprocessed recording session for a note. A note can
+    /// accumulate a later, tiny recording after an earlier meeting fails; using
+    /// artifact recency alone would make Retry permanently skip the meeting.
     pub async fn latest_valid_audio_artifact_paths(
         &self,
         note_id: &str,
     ) -> Result<Vec<(String, String, String, String, bool)>, sqlx::error::Error> {
         let session = query(
-            "SELECT recording_session_id
-             FROM audio_artifacts
-             WHERE note_id = ? AND status = 'valid'
-             ORDER BY created_at DESC
+            "SELECT aa.recording_session_id
+             FROM audio_artifacts aa
+             LEFT JOIN note_generation_blocks ngb
+               ON ngb.note_id = aa.note_id
+              AND ngb.recording_session_id = aa.recording_session_id
+             WHERE aa.note_id = ? AND aa.status = 'valid'
+             GROUP BY aa.recording_session_id
+             ORDER BY
+               CASE WHEN MAX(ngb.id) IS NULL THEN 0 ELSE 1 END,
+               MAX(aa.duration_ms) DESC,
+               MAX(aa.created_at) DESC
              LIMIT 1",
         )
         .bind(note_id)
@@ -3541,6 +3551,8 @@ fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::Repositories;
+    use crate::domain::types::RecordingSourceMode;
+    use sqlx::query::query;
 
     async fn test_repositories() -> Repositories {
         let pool = sqlx_sqlite::SqlitePoolOptions::new()
@@ -3556,6 +3568,103 @@ mod tests {
 
     fn scopes(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn retry_prefers_substantial_unprocessed_session_over_newest_artifact() {
+        let repos = test_repositories().await;
+        let note = repos.create_note(None).await.expect("create note");
+
+        repos
+            .create_recording_session(
+                &note.id,
+                "meeting-session",
+                RecordingSourceMode::MicrophonePlusSystem,
+                "/tmp/meeting.partial.wav",
+                "/tmp/meeting.wav",
+                None,
+            )
+            .await
+            .expect("create meeting session");
+        for (source, size) in [("microphone", 93_000_000), ("system", 372_000_000)] {
+            let artifact = repos
+                .create_pending_source_artifact(
+                    &note.id,
+                    "meeting-session",
+                    source,
+                    &format!("/tmp/{source}.partial.wav"),
+                    &format!("/tmp/{source}.wav"),
+                )
+                .await
+                .expect("create meeting artifact");
+            repos
+                .finalize_source_artifact(
+                    &artifact.id,
+                    &format!("/tmp/{source}.wav"),
+                    "valid",
+                    1_940_000,
+                    size,
+                    "meeting-checksum",
+                    1_940_000,
+                    None,
+                    None,
+                )
+                .await
+                .expect("finalize meeting artifact");
+        }
+
+        repos
+            .create_recording_session(
+                &note.id,
+                "short-session",
+                RecordingSourceMode::MicrophoneOnly,
+                "/tmp/short.partial.wav",
+                "/tmp/short.wav",
+                None,
+            )
+            .await
+            .expect("create short session");
+        let short = repos
+            .create_pending_source_artifact(
+                &note.id,
+                "short-session",
+                "microphone",
+                "/tmp/short.partial.wav",
+                "/tmp/short.wav",
+            )
+            .await
+            .expect("create short artifact");
+        repos
+            .finalize_source_artifact(
+                &short.id,
+                "/tmp/short.wav",
+                "valid",
+                920,
+                44_204,
+                "short-checksum",
+                920,
+                None,
+                None,
+            )
+            .await
+            .expect("finalize short artifact");
+
+        query("UPDATE audio_artifacts SET created_at = '2026-07-15T11:32:19.000Z' WHERE recording_session_id = 'short-session'")
+            .execute(&repos.pool)
+            .await
+            .expect("make short artifact newest");
+
+        let sources = repos
+            .latest_valid_audio_artifact_paths(&note.id)
+            .await
+            .expect("select retry sources");
+
+        assert_eq!(sources.len(), 2);
+        assert!(sources
+            .iter()
+            .all(|(_, _, _, session_id, _)| session_id == "meeting-session"));
+        assert_eq!(sources[0].1, "microphone");
+        assert_eq!(sources[1].1, "system");
     }
 
     #[tokio::test]
