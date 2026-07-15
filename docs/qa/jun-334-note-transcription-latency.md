@@ -1,4 +1,4 @@
-# JUN-334 meeting transcription latency
+# JUN-334 note transcription latency
 
 ## Measurement origins
 
@@ -23,11 +23,18 @@ Revisions:
 - Baseline label: `06f4925e + test-only harness`
 - Feature revision, short revision, and label: `961606645af33dec07ba0faacf94f06ba397c93d`, `96160664`, `96160664 feature`
 
-Before the feature run, `src-tauri/src/commands/transcription_benchmark.rs` and the Make target were verified byte-for-byte unchanged from the benchmark source commit.
+Before the feature run, the harness at its historical path,
+`src-tauri/src/commands/transcription_benchmark.rs`, and its historical
+`benchmark-transcription-latency` Make target were verified byte-for-byte
+unchanged from the benchmark source commit. After measurement, the current
+harness moved to `src-tauri/src/commands/note_transcription_benchmark.rs` and
+received glossary-compliance identifier renames. Those later changes affect
+terminology only; they do not change fixture generation, timing origins,
+observation behavior, sample selection, or median calculations.
 
 ## Benchmark method
 
-The ignored command-layer benchmark uses finalized 48 kHz stereo WAV fixtures with distinct microphone and system signals. It exercises the real turn detection, WAV preparation, bounded transcription scheduler, file-backed SQLite persistence, note generation orchestration, and Ready transition. The four cases are microphone-plus-system meetings of 1, 5, and 10 minutes and a 5-minute microphone-only control.
+The ignored command-layer benchmark uses finalized 48 kHz stereo WAV fixtures with distinct Microphone and System signals. It exercises real Turn detection, WAV preparation, the bounded note transcription scheduler, file-backed SQLite persistence, note generation orchestration, and the Ready transition. The four cases are Microphone-plus-System recording sessions of 1, 5, and 10 minutes and a 5-minute Microphone-only control.
 
 Each case has one warm-up, sample `0`, followed by five measured runs, samples `1` to `5`. Every reported median sorts the five measured values for that field independently and selects index `len / 2`. The warm-up is preserved in the raw evidence but excluded from medians.
 
@@ -115,7 +122,7 @@ The dual-source feature medians separate active preparation from producer wall t
 
 The key end-to-end medians are:
 
-| Case | Revision | First request | First persisted | Transcription complete | Ready |
+| Case | Revision | First request | First persisted | Note transcription complete | Ready |
 | --- | --- | ---: | ---: | ---: | ---: |
 | dual-1m | baseline | 382 | 515 | 1055 | 1064 |
 | dual-1m | feature | 256 | 392 | 945 | 955 |
@@ -144,12 +151,12 @@ The benchmark improvement is backed by deterministic tests at the scheduling bou
 
 - `prepared_turn_matches_existing_audio_and_metadata` compares the prepared PCM samples and metadata with the prior extraction and normalization path.
 - `successful_jobs_skip_complete_source_preparation`, `failed_source_prepares_one_lazy_fallback_with_source_operation_id`, `failed_sources_prepare_one_fallback_each`, `echo_trimmed_source_never_prepares_or_transcribes_fallback`, and `valid_cached_turn_suppresses_fallback_after_fresh_failures` prove lazy, once-per-source, normalized fallback behavior without duplicate work.
-- `pipeline_starts_first_request_before_later_preparation_finishes` proves transcription begins while later turns are still being prepared.
+- `pipeline_starts_first_request_before_later_preparation_finishes` proves note transcription begins while later Turns are still being prepared.
 - `streaming_scheduler_never_exceeds_two_provider_calls` and `preparation_report_separates_active_time_from_backpressure` exercise five descriptors and prove provider concurrency two, channel capacity two, fifth-send backpressure, and separate active and wall timings.
 - `streaming_scheduler_preserves_logical_spawn_context` and `pipelined_results_are_sorted_after_reverse_completion` preserve the prior context launch points and chronological output under overlap.
-- Preparation, sink, channel-close, and cancellation regressions prove started work is drained, the first error is preserved, fallback is skipped after preparation failure, and segment files outlive blocking/provider work.
+- Preparation, sink, channel-close, and cancellation regressions prove started work is drained, the first error is preserved, fallback is skipped after preparation failure, and Turn WAV files outlive blocking/provider work.
 - `done_origin_checkpoints_are_monotonic_and_single_shot`, `first_event_timeline_flushes_each_checkpoint_once`, and pipeline failure telemetry tests prove Done-relative checkpoints are monotonic, single-shot, and best-effort.
-- `polls newly persisted turns while transcription remains active` proves the existing App poll renders an exact newly committed turn while the note remains Transcribing, without a production React change.
+- `polls newly persisted turns while note transcription remains active` proves the existing App poll renders an exact newly committed Turn while the Note remains Transcribing, without a production React change.
 
 The Task 2 through Task 6 focused suites, the 69-test native processing module, strict Rust Clippy, frontend regression, typecheck, and repository lint passed before this measurement. The final full repository gate is intentionally separate from this benchmark evidence.
 
@@ -161,24 +168,26 @@ The App regression starts with no saved source turns, changes the next poll resp
 
 ## Scope and limitations
 
-The synthetic fixtures make real audio DSP and SQLite work repeatable, while the loopback responses isolate desktop scheduling. The fake generation endpoint measures orchestration, not production model latency or summary quality. Network variability, production model queueing, recording finalization, and real meeting acoustics are outside this benchmark.
+The synthetic fixtures make real audio DSP and SQLite work repeatable, while the loopback responses isolate desktop scheduling. The fake generation endpoint measures orchestration, not production model latency or generated Note quality. Network variability, production model queueing, recording finalization, and real recording acoustics are outside this benchmark.
 
-The change does not reuse live preview text, increase provider concurrency, add batching, optimize generation, change the one-second UI poll, or persist microphone-only chunks incrementally. It preserves finalized saved audio as the transcription source.
+The change does not reuse live preview text, increase provider concurrency, add batching, optimize generation, change the one-second UI poll, or persist Microphone-only chunks incrementally. It preserves finalized saved audio as the note transcription source.
 
 This is a desktop-only scheduling change and does not require a June API backend deploy.
 
 ## Reproduction commands
 
-Verify that the benchmark remains the audited Task 1 harness, then run the feature measurement without concurrent builds or tests:
+The recorded CSV blocks above retain the historical serialized field
+`handoffToTranscriptionCompleteMs`. The terminology-only rename emits
+`handoffToNoteTranscriptionCompleteMs` for new runs with identical timing
+semantics.
+
+Run the current, glossary-compliant harness without concurrent builds or tests:
 
 ```bash
-git diff --exit-code 68642f6185dd93af14a1892131f3b5e749b533d4 -- \
-  src-tauri/src/commands/transcription_benchmark.rs Makefile
-
 FEATURE_LABEL="$(git rev-parse --short HEAD) feature"
 set -o pipefail
 JUN334_REVISION_LABEL="$FEATURE_LABEL" \
-  make benchmark-transcription-latency 2>&1 | tee /tmp/jun334-feature.log
+  make benchmark-note-transcription-latency 2>&1 | tee /tmp/jun334-feature.log
 
 rg -o 'JUN334_BENCHMARK \{.*\}' /tmp/jun334-feature.log
 ```
@@ -193,5 +202,9 @@ git -C /tmp/os-june-jun334-baseline cherry-pick \
 JUN334_REVISION_LABEL='06f4925e + test-only harness' \
   make -C /tmp/os-june-jun334-baseline benchmark-transcription-latency
 ```
+
+The frozen overlay command intentionally uses the historical target supplied by
+commit `68642f61`; the current worktree uses
+`benchmark-note-transcription-latency`.
 
 The marker must be extracted anywhere on a line because libtest can prefix the first record. A valid log contains exactly 28 markers: iterations `0` through `5` and one median for each of four cases.

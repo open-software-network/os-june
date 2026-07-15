@@ -856,7 +856,7 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument());
   });
 
-  it("polls newly persisted turns while transcription remains active", async () => {
+  it("polls newly persisted turns while note transcription remains active", async () => {
     const selectedNote = note({
       processingStatus: "transcribing",
       activeTab: "transcription",

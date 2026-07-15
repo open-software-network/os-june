@@ -1,8 +1,8 @@
-# Faster Meeting Transcriptions Implementation Plan
+# Faster note transcription implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Reduce the time from pressing Done to the first saved meeting transcript turn and to transcription completion, with reproducible before/after evidence and no transcription-quality or fallback regression.
+**Goal:** Reduce the time from pressing Done to the first saved transcript Turn and to note transcription completion, with reproducible before/after evidence and no note transcription quality or fallback regression.
 
 **Architecture:** Keep the existing saved-audio, source-separated pipeline and provider concurrency of two. Replace eager full-source fallback normalization and the prepare-everything wall with lightweight turn descriptors, one ordered blocking preparation producer, a capacity-two channel, and a context-preserving async consumer; record Done-relative events without putting database writes on the provider-request critical path. A command-layer ignored benchmark exercises real WAV DSP and SQLite persistence against a loopback June API and is overlaid unchanged on the production baseline before any production refactor.
 
@@ -10,21 +10,21 @@
 
 ## Global Constraints
 
-- Optimize the normal Done path for microphone-plus-system meetings; keep microphone-only as a measured control.
-- Final transcription must continue to use finalized, validated saved audio. Never promote live preview text.
+- Optimize the normal Done path for Microphone-plus-System recording sessions; keep Microphone-only as a measured control.
+- Final note transcription must continue to use finalized, validated saved audio. Never promote live preview text.
 - Keep microphone and system sources separate and preserve chronological final output.
 - Keep provider concurrency at exactly `DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY == 2`.
 - Keep the prepared-turn channel capacity at exactly two.
 - Keep retries, cleanup inference, dictionary and completed-turn context, operation IDs, source attribution, partial persistence, coverage, billing, and generation inputs semantically unchanged.
 - A source touched by echo trimming must never use its raw complete-source fallback.
-- Bounds-matched cached successful turns must continue to suppress duplicate transcription and fallback.
+- Bounds-matched cached successful Turns must continue to suppress duplicate note transcription and fallback.
 - Do not add a dependency, migration, June API endpoint, API field, model change, or ADR.
 - Do not change production React components; the current one-second poll and partial-turn UI are correct and need regression coverage only.
 - Never log transcript text, audio bytes, note titles, generated content, bearer tokens, or other user content in latency telemetry.
-- New latency checkpoints are diagnostic and best-effort: a checkpoint write failure must log a warning and must not fail transcription.
+- New latency checkpoints are diagnostic and best-effort: a checkpoint write failure must log a warning and must not fail note transcription.
 - The benchmark begins at post-finalization handoff. Production telemetry begins at the actual `finish_recording` command entry. Never present those origins as the same measurement.
 - The production refactor is blocked unless the five-minute baseline median `turn_wav_extraction.durationMs` is at least 20% of median handoff-to-first-request time.
-- After the refactor, the five-minute median handoff-to-first-committed-turn must improve by at least 20% and median handoff-to-transcription-complete must improve by at least 10%; the microphone-only control must not regress by more than 5%.
+- After the refactor, the five-minute median handoff-to-first-committed-turn must improve by at least 20% and median handoff to note transcription completion must improve by at least 10%; the Microphone-only control must not regress by more than 5%.
 - Do not weaken those thresholds after measuring.
 
 ---
@@ -33,13 +33,22 @@
 
 - Modify `src-tauri/src/domain/processing.rs`: own Done-relative timing values, descriptor and fallback-plan types, preparation functions, the blocking producer, the context-preserving streaming scheduler, lazy fallback, temp-directory lifetime, native deterministic tests, and processing checkpoints.
 - Modify `src-tauri/src/commands.rs`: capture the real Done origin before repository lookup, preserve the existing three-argument benchmark seam, propagate tracked or untracked timing, record queue acquisition, and declare the test-only benchmark child module.
-- Create `src-tauri/src/commands/transcription_benchmark.rs`: own synthetic WAV generation, isolated SQLite setup, loopback June API, command-layer ignored benchmark, sample collection, medians, and JSON output. This file must compile against both the feature branch and `06f4925e` when applied as a test-only overlay.
-- Create `src-tauri/src/commands/transcription_timing_tests.rs`: own the non-ignored command-layer test that proves actual Done-relative checkpoints are single-shot and monotonic without changing the baseline benchmark module after its overlay commit.
+- Create `src-tauri/src/commands/note_transcription_benchmark.rs`: own synthetic WAV generation, isolated SQLite setup, loopback June API, command-layer ignored benchmark, sample collection, medians, and JSON output. This file must compile against both the feature branch and `06f4925e` when applied as a test-only overlay.
+- Create `src-tauri/src/commands/note_transcription_timing_tests.rs`: own the non-ignored command-layer test that proves actual Done-relative checkpoints are single-shot and monotonic without changing the baseline benchmark module after its overlay commit.
 - Modify `src/test/app-notes-reliability.test.tsx`: prove the one-second selected-note poll renders a newly persisted source turn while the note remains Transcribing.
-- Modify `Makefile`: expose the exact release benchmark invocation as `benchmark-transcription-latency`.
-- Create `docs/qa/jun-334-transcription-latency.md`: record baseline identity, overlay identity, machine context, raw benchmark JSON, medians, gate calculations, structural proof, UI bound, and after results.
+- Modify `Makefile`: expose the exact release benchmark invocation as `benchmark-note-transcription-latency`.
+- Create `docs/qa/jun-334-note-transcription-latency.md`: record baseline identity, overlay identity, machine context, raw benchmark JSON, medians, gate calculations, structural proof, UI bound, and after results.
 - Modify `docs/index.md`: index the new QA evidence document.
 - Do not modify `src-tauri/src/audio/turns.rs`, `src/components/note-editor/NoteEditor.tsx`, `src/app/App.tsx`, or `june-api/`; existing primitives and contracts are sufficient.
+
+The measured overlay commit `68642f61` used the historical
+`src-tauri/src/commands/transcription_benchmark.rs` path,
+`transcription_benchmark` module, `benchmark-transcription-latency` target, and
+`handoffToTranscriptionCompleteMs` serialized field. A later glossary-compliance
+rename produced the current names in this plan. That rename is terminology-only
+and does not change executable fixtures, timing origins, observation behavior,
+sample selection, or median calculations. Raw recorded evidence retains the
+historical field name.
 
 ## Mandatory execution gates
 
@@ -54,15 +63,15 @@
 
 **Files:**
 
-- Create: `src-tauri/src/commands/transcription_benchmark.rs`
+- Create: `src-tauri/src/commands/note_transcription_benchmark.rs`
 - Modify: `src-tauri/src/commands.rs` (immediately before the existing `#[cfg(test)] mod tests`)
 - Modify: `Makefile` (next to other Rust test targets)
 
 **Interfaces:**
 
 - Consumes: existing private `finish_recording_session(&Repositories, FinishedRecording, Instant) -> Result<FinishRecordingResponse, AppError>`.
-- Produces: ignored test `commands::transcription_benchmark::benchmark_post_finalization_meeting_latency` and lines prefixed `JUN334_BENCHMARK ` containing serialized `BenchmarkSample` values.
-- Produces: Make target `benchmark-transcription-latency`.
+- Produces: ignored test `commands::note_transcription_benchmark::benchmark_post_finalization_note_transcription_latency` and lines prefixed `JUN334_BENCHMARK ` containing serialized `BenchmarkSample` values.
+- Produces: Make target `benchmark-note-transcription-latency`.
 
 - [ ] **Step 1: Declare the child benchmark module and verify the empty module fails**
 
@@ -70,7 +79,7 @@ Add this immediately before `#[cfg(test)] mod tests` in `src-tauri/src/commands.
 
 ```rust
 #[cfg(test)]
-mod transcription_benchmark;
+mod note_transcription_benchmark;
 ```
 
 Run:
@@ -79,11 +88,11 @@ Run:
 cargo test --manifest-path src-tauri/Cargo.toml --locked --no-run
 ```
 
-Expected: FAIL with Rust error `file not found for module transcription_benchmark`.
+Expected: FAIL with Rust error `file not found for module note_transcription_benchmark`.
 
 - [ ] **Step 2: Create the benchmark data contract and isolated test environment**
 
-Create `src-tauri/src/commands/transcription_benchmark.rs` with these concrete contracts at the top:
+Create `src-tauri/src/commands/note_transcription_benchmark.rs` with these concrete contracts at the top:
 
 ```rust
 use super::finish_recording_session;
@@ -144,7 +153,7 @@ struct BenchmarkSample {
     producer_wall_duration_ms: Option<i64>,
     handoff_to_first_request_ms: i64,
     handoff_to_first_persisted_ms: i64,
-    handoff_to_transcription_complete_ms: i64,
+    handoff_to_note_transcription_complete_ms: i64,
     handoff_to_ready_ms: i64,
 }
 
@@ -171,7 +180,7 @@ impl BenchmarkClock {
 #[derive(Clone)]
 pub(super) struct RequestEvents {
     clock: BenchmarkClock,
-    first_transcription_ms: Arc<Mutex<Option<i64>>>,
+    first_note_transcription_ms: Arc<Mutex<Option<i64>>>,
     first_generation_ms: Arc<Mutex<Option<i64>>>,
     changed: Arc<Notify>,
 }
@@ -180,7 +189,7 @@ impl RequestEvents {
     pub(super) fn new(clock: BenchmarkClock) -> Self {
         Self {
             clock,
-            first_transcription_ms: Arc::new(Mutex::new(None)),
+            first_note_transcription_ms: Arc::new(Mutex::new(None)),
             first_generation_ms: Arc::new(Mutex::new(None)),
             changed: Arc::new(Notify::new()),
         }
@@ -188,7 +197,7 @@ impl RequestEvents {
 
     fn record(&self, path: &str) {
         let slot = match path {
-            "/v1/notes/transcribe" => Some(&self.first_transcription_ms),
+            "/v1/notes/transcribe" => Some(&self.first_note_transcription_ms),
             "/v1/notes/generate" => Some(&self.first_generation_ms),
             _ => None,
         };
@@ -211,18 +220,18 @@ struct BenchmarkObserver {
 static BENCHMARK_OBSERVERS: LazyLock<Mutex<HashMap<String, BenchmarkObserver>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn register_benchmark_observer(session_id: &str, observer: BenchmarkObserver) {
+fn register_benchmark_observer(recording_session_id: &str, observer: BenchmarkObserver) {
     BENCHMARK_OBSERVERS
         .lock()
         .expect("benchmark observer mutex")
-        .insert(session_id.to_string(), observer);
+        .insert(recording_session_id.to_string(), observer);
 }
 
-pub(super) fn record_processing_dequeued(session_id: &str) {
+pub(super) fn record_processing_dequeued(recording_session_id: &str) {
     let observer = BENCHMARK_OBSERVERS
         .lock()
         .expect("benchmark observer mutex")
-        .get(session_id)
+        .get(recording_session_id)
         .cloned();
     if let Some(observer) = observer {
         let mut value = observer.dequeued_ms.lock().expect("dequeue event mutex");
@@ -232,11 +241,11 @@ pub(super) fn record_processing_dequeued(session_id: &str) {
     }
 }
 
-fn remove_benchmark_observer(session_id: &str) {
+fn remove_benchmark_observer(recording_session_id: &str) {
     BENCHMARK_OBSERVERS
         .lock()
         .expect("benchmark observer mutex")
-        .remove(session_id);
+        .remove(recording_session_id);
 }
 ```
 
@@ -244,7 +253,7 @@ In `commands.rs`, immediately after `let _guard = queue_lock.lock().await;`, add
 
 ```rust
 #[cfg(test)]
-transcription_benchmark::record_processing_dequeued(&task_session_id);
+note_transcription_benchmark::record_processing_dequeued(&task_session_id);
 ```
 
 The hook is compiled only in tests, performs no work unless the exact benchmark registered that session, and is included in the benchmark-only commit applied to both revisions.
@@ -322,7 +331,7 @@ fn prepare_case_fixtures(root: &Path, case: BenchmarkCase) -> Vec<(RecordingSour
 
 - [ ] **Step 4: Add the loopback June API**
 
-Implement the server with `TcpListener`. It must record transcription arrival before draining the multipart body, drain exactly `Content-Length`, handle connections concurrently, and close each response:
+Implement the server with `TcpListener`. It must record note transcription arrival before draining the multipart body, drain exactly `Content-Length`, handle connections concurrently, and close each response:
 
 ```rust
 async fn read_http_request(
@@ -443,7 +452,7 @@ ORDER BY created_at ASC, rowid ASC
 
 Do not derive native availability from `transcripts.created_at`: the repository assigns it before awaiting the upsert. The observer timestamp is taken only after another SQLite query can see the committed row, and every target interval therefore uses the same monotonic `BenchmarkClock` as loopback request arrival.
 
-After the observer sees Ready, collect `handoff_to_dequeued_ms` from the registered test-only hook, abort and await the loopback accept task, and remove the observer registration. Treat Failed as an immediate test failure containing only the error code/status, not note content. Set `handoff_to_transcription_complete_ms` from the first `/v1/notes/generate` arrival, not Ready.
+After the observer sees Ready, collect `handoff_to_dequeued_ms` from the registered test-only hook, abort and await the loopback accept task, and remove the observer registration. Treat Failed as an immediate test failure containing only the error code/status, not Note content. Set `handoff_to_note_transcription_complete_ms` from the first `/v1/notes/generate` arrival, not Ready.
 
 Parse these stage fields from checkpoint JSON:
 
@@ -469,7 +478,7 @@ Use this exact test shape. Fixture generation occurs before the timed iteration 
 ```rust
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "release-only JUN-334 benchmark"]
-async fn benchmark_post_finalization_meeting_latency() {
+async fn benchmark_post_finalization_note_transcription_latency() {
     let revision_label = std::env::var("JUN334_REVISION_LABEL")
         .unwrap_or_else(|_| "unlabeled".to_string());
     let root = tempfile::tempdir().expect("benchmark tempdir");
@@ -520,15 +529,15 @@ async fn benchmark_post_finalization_meeting_latency() {
 Add:
 
 ```make
-.PHONY: benchmark-transcription-latency
-benchmark-transcription-latency:
-	cargo test --manifest-path src-tauri/Cargo.toml --locked --release commands::transcription_benchmark::benchmark_post_finalization_meeting_latency -- --ignored --exact --nocapture --test-threads=1
+.PHONY: benchmark-note-transcription-latency
+benchmark-note-transcription-latency:
+	cargo test --manifest-path src-tauri/Cargo.toml --locked --release commands::note_transcription_benchmark::benchmark_post_finalization_note_transcription_latency -- --ignored --exact --nocapture --test-threads=1
 ```
 
 Run:
 
 ```bash
-make benchmark-transcription-latency
+make benchmark-note-transcription-latency
 ```
 
 Expected: PASS and 24 measured/warm-up sample lines plus four median lines, all prefixed `JUN334_BENCHMARK `.
@@ -536,8 +545,8 @@ Expected: PASS and 24 measured/warm-up sample lines plus four median lines, all 
 - [ ] **Step 8: Commit the benchmark-only overlay**
 
 ```bash
-git add src-tauri/src/commands.rs src-tauri/src/commands/transcription_benchmark.rs Makefile
-git commit -m "test: add meeting transcription latency benchmark"
+git add src-tauri/src/commands.rs src-tauri/src/commands/note_transcription_benchmark.rs Makefile
+git commit -m "test: add note transcription latency benchmark"
 ```
 
 - [ ] **Step 9: Run the exact overlay on the production baseline**
@@ -573,7 +582,7 @@ If it is below `0.20`, stop. Do not execute Task 2. Update the design and plan a
 
 - Modify: `src-tauri/src/domain/processing.rs`
 - Modify: `src-tauri/src/commands.rs`
-- Create: `src-tauri/src/commands/transcription_timing_tests.rs`
+- Create: `src-tauri/src/commands/note_transcription_timing_tests.rs`
 - Test: inline `src-tauri/src/domain/processing.rs` test module
 
 **Interfaces:**
@@ -585,7 +594,7 @@ If it is below `0.20`, stop. Do not execute Task 2. Update the design and plan a
 
 - [ ] **Step 1: Write failing timing unit tests**
 
-Add `#[tokio::test] async fn first_event_timeline_flushes_each_checkpoint_once()`. Create a migrated in-memory `Repositories` with one recording session, create a tracked timeline, race two `mark_first_request` calls and two `mark_first_persisted` calls on cloned timelines, call `flush` twice, and query `recording_checkpoints` through `repos.pool`. Assert exact counts of one for `first_transcription_request` and one for `first_transcript_persisted`; parse both details objects and assert each contains only `doneToDurationMs`.
+Add `#[tokio::test] async fn first_event_timeline_flushes_each_checkpoint_once()`. Create a migrated in-memory `Repositories` with one recording session, create a tracked timeline, race two `mark_first_request` calls and two `mark_first_persisted` calls on cloned timelines, call `flush` twice, and query `recording_checkpoints` through `repos.pool`. Assert exact counts of one for `first_note_transcription_request` and one for `first_transcript_persisted`; parse both details objects and assert each contains only `doneToDurationMs`.
 
 Run:
 
@@ -667,12 +676,12 @@ impl FirstEventTimeline {
         }
     }
 
-    async fn flush(&self, repos: &Repositories, session_id: &str) {
+    async fn flush(&self, repos: &Repositories, recording_session_id: &str) {
         if self.flushed.swap(true, Ordering::AcqRel) {
             return;
         }
         for (kind, duration_ms) in [
-            ("first_transcription_request", self.first_request_ms.load(Ordering::Acquire)),
+            ("first_note_transcription_request", self.first_request_ms.load(Ordering::Acquire)),
             ("first_transcript_persisted", self.first_persisted_ms.load(Ordering::Acquire)),
         ] {
             if duration_ms == UNSET_TIMING_MS {
@@ -680,20 +689,20 @@ impl FirstEventTimeline {
             }
             if let Err(error) = repos
                 .add_checkpoint(
-                    session_id,
+                    recording_session_id,
                     kind,
                     Some(serde_json::json!({ "doneToDurationMs": duration_ms }).to_string()),
                 )
                 .await
             {
-                tracing::warn!(session_id, kind, %error, "failed to persist latency checkpoint");
+                tracing::warn!(recording_session_id, kind, %error, "failed to persist latency checkpoint");
             }
         }
     }
 }
 ```
 
-This captures the event synchronously but defers SQLite writes until transcription finishes, so telemetry cannot add a database round trip before the provider request.
+This captures the event synchronously but defers SQLite writes until note transcription finishes, so telemetry cannot add a database round trip before the provider request.
 
 - [ ] **Step 3: Wrap the actual transcriber invocation**
 
@@ -764,19 +773,19 @@ pub async fn finish_recording(
 
 `finish_active_capture_before_start` continues to call the untracked wrapper. Retry and recovery call sites pass `ProcessingTiming::untracked()` explicitly to processing functions.
 
-- [ ] **Step 5: Add validation, dequeue, transcription, generation, and completion checkpoints**
+- [ ] **Step 5: Add validation, dequeue, note transcription, generation, and completion checkpoints**
 
 Add one best-effort helper and use it for every new latency checkpoint:
 
 ```rust
 async fn add_latency_checkpoint(
     repos: &Repositories,
-    session_id: &str,
+    recording_session_id: &str,
     kind: &str,
     details: String,
 ) {
-    if let Err(error) = repos.add_checkpoint(session_id, kind, Some(details)).await {
-        tracing::warn!(session_id, kind, %error, "failed to persist latency checkpoint");
+    if let Err(error) = repos.add_checkpoint(recording_session_id, kind, Some(details)).await {
+        tracing::warn!(recording_session_id, kind, %error, "failed to persist latency checkpoint");
     }
 }
 ```
@@ -787,19 +796,19 @@ For the dual-source path, compute the existing valid-source and blocking-failure
 
 ```rust
 timing.checkpoint_details(serde_json::json!({
-    "durationMs": elapsed_ms(transcription_started),
+    "durationMs": elapsed_ms(note_transcription_started),
     "status": if blocking_error.is_some() { "failed" } else { "succeeded" },
     "successfulTurnCount": persisted_transcripts.len(),
     "failedTurnCount": visible_failures.len(),
 }))
 ```
 
-On a scheduler/preparation error, flush captured first events, add `transcription_complete` with status `failed`, the error code, and stage duration, then propagate the original `AppError`. Omit success/failure counts on this terminal infrastructure path rather than reporting zero after an in-flight sink may already have persisted a turn. Task 4 replaces this with the report-preserving pipeline failure path but retains the same telemetry rule.
+On a scheduler/preparation error, flush captured first events, add `note_transcription_complete` with status `failed`, the error code, and stage duration, then propagate the original `AppError`. Omit success/failure counts on this terminal infrastructure path rather than reporting zero after an in-flight sink may already have persisted a Turn. Task 4 replaces this with the report-preserving pipeline failure path but retains the same telemetry rule.
 
 The microphone-only path has no `persisted_transcripts`, `visible_failures`, or `blocking_error` collections. Give it explicit terminal behavior:
 
-- On ASR failure before a row exists: flush the first-request event, add `transcription_complete` with `status: "failed"`, `successfulTurnCount: 0`, `failedTurnCount: 1`, and the provider error code, then add `processing_complete` with `status: "failed"` before returning the existing user-facing error.
-- On successful `create_transcript`: mark first persistence immediately after the awaited insert, flush first events, add `transcription_complete` with `status: "succeeded"`, `successfulTurnCount: 1`, and `failedTurnCount: 0`, then enter Generating.
+- On ASR failure before a row exists: flush the first-request event, add `note_transcription_complete` with `status: "failed"`, `successfulTurnCount: 0`, `failedTurnCount: 1`, and the provider error code, then add `processing_complete` with `status: "failed"` before returning the existing user-facing error.
+- On successful `create_transcript`: mark first persistence immediately after the awaited insert, flush first events, add `note_transcription_complete` with `status: "succeeded"`, `successfulTurnCount: 1`, and `failedTurnCount: 0`, then enter Generating.
 - On generation failure: add `note_generation` with `status: "failed"` and Done-relative duration, then add `processing_complete` with `status: "failed"` before returning.
 - On Ready: add `note_generation` with `status: "succeeded"`, persist the generated result, then add `processing_complete` with `status: "succeeded"`.
 
@@ -807,7 +816,7 @@ The dual-source generation-failure and Ready branches receive the same Done-rela
 
 - [ ] **Step 6: Add a real command-layer monotonicity test**
 
-Declare `#[cfg(test)] mod transcription_timing_tests;` beside the benchmark module and create `src-tauri/src/commands/transcription_timing_tests.rs`. Reuse Task 1's `pub(super)` database and loopback-server helpers. Define the timing fixture locally so the benchmark-only overlay remains frozen:
+Declare `#[cfg(test)] mod note_transcription_timing_tests;` beside the benchmark module and create `src-tauri/src/commands/note_transcription_timing_tests.rs`. Reuse Task 1's `pub(super)` database and loopback-server helpers. Define the timing fixture locally so the benchmark-only overlay remains frozen:
 
 ```rust
 fn write_one_second_timing_wav(path: &Path) {
@@ -829,11 +838,11 @@ fn write_one_second_timing_wav(path: &Path) {
 
 fn timing_finished_recording(
     note_id: &str,
-    session_id: &str,
+    recording_session_id: &str,
     path: PathBuf,
 ) -> FinishedRecording {
     FinishedRecording {
-        session_id: session_id.to_string(),
+        session_id: recording_session_id.to_string(),
         note_id: note_id.to_string(),
         source_mode: RecordingSourceMode::MicrophoneOnly,
         final_path: path.clone(),
@@ -846,7 +855,7 @@ fn timing_finished_recording(
         }],
         elapsed_ms: 1_000,
         recording: RecordingSessionDto {
-            id: session_id.to_string(),
+            id: recording_session_id.to_string(),
             note_id: note_id.to_string(),
             source_mode: RecordingSourceMode::MicrophoneOnly,
             state: RecordingState::Ready,
@@ -869,9 +878,9 @@ Add `#[tokio::test(flavor = "multi_thread", worker_threads = 4)] async fn done_o
 ```text
 audio_validation
 processing_dequeued
-first_transcription_request
+first_note_transcription_request
 first_transcript_persisted
-transcription_complete
+note_transcription_complete
 note_generation
 processing_complete
 ```
@@ -882,7 +891,7 @@ Assert every adjacent duration is nondecreasing. This test exercises the actual 
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::first_event_timeline_flushes_each_checkpoint_once -- --exact
-cargo test --manifest-path src-tauri/Cargo.toml --locked commands::transcription_timing_tests::done_origin_checkpoints_are_monotonic_and_single_shot -- --exact --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --locked commands::note_transcription_timing_tests::done_origin_checkpoints_are_monotonic_and_single_shot -- --exact --test-threads=1
 cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests
 cargo test --manifest-path src-tauri/Cargo.toml --locked commands::tests
 ```
@@ -892,8 +901,8 @@ Expected: PASS, with exactly one first-request and first-persistence row in the 
 - [ ] **Step 8: Commit timing instrumentation**
 
 ```bash
-git add src-tauri/src/domain/processing.rs src-tauri/src/commands.rs src-tauri/src/commands/transcription_timing_tests.rs
-git commit -m "feat: measure meeting transcription latency"
+git add src-tauri/src/domain/processing.rs src-tauri/src/commands.rs src-tauri/src/commands/note_transcription_timing_tests.rs
+git commit -m "feat: measure note transcription latency"
 ```
 
 ---
@@ -915,7 +924,7 @@ git commit -m "feat: measure meeting transcription latency"
 
 Add `#[test] fn prepared_turn_matches_existing_audio_and_metadata()`: create one real 48 kHz stereo fixture and a fixed-bounds `AudioTurn`; prepare a reference via direct `write_turn_wav` plus `normalize_wav_for_transcription`; prepare the same turn via `prepare_turn_job`; read both WAVs with hound and assert equal `WavSpec`, equal complete `Vec<i16>`, equal source/start/end/index, and equal `turn_operation_id`.
 
-Add `#[tokio::test] async fn successful_jobs_skip_complete_source_preparation()`: use one segmented descriptor per source, a successful fake provider, and an injected fallback preparer backed by `AtomicUsize`; assert both candidates exist and the counter is zero.
+Add `#[tokio::test] async fn successful_jobs_skip_complete_source_preparation()`: use one Turn descriptor per Source, a successful fake provider, and an injected fallback preparer backed by `AtomicUsize`; assert both candidates exist and the counter is zero.
 
 Add `#[tokio::test] async fn failed_source_prepares_one_lazy_fallback_with_source_operation_id()`: fail ordinary microphone requests, succeed the system request and microphone source fallback, capture operation IDs, and assert exactly one microphone fallback preparation, zero system fallback preparations, the existing `artifact-microphone-source` operation-id shape, and no remaining microphone failure.
 
@@ -937,7 +946,7 @@ struct TurnPreparationJob {
     schedule_index: usize,
     turn: AudioTurn,
     temp_dir: PathBuf,
-    segment_path: PathBuf,
+    turn_wav_path: PathBuf,
     normalized_path: PathBuf,
     recorded_silence: bool,
     echo_trimmed: bool,
@@ -990,8 +999,8 @@ fn prepare_turn_job(descriptor: TurnPreparationJob) -> Result<PreparedTurn, AppE
     let raw_path = if descriptor.covers_full_source() {
         descriptor.turn.source_path.clone()
     } else {
-        write_turn_wav(&descriptor.turn, &descriptor.segment_path)?;
-        descriptor.segment_path.clone()
+        write_turn_wav(&descriptor.turn, &descriptor.turn_wav_path)?;
+        descriptor.turn_wav_path.clone()
     };
     let audio_path = normalize_wav_for_transcription(&raw_path, &descriptor.normalized_path)?;
     Ok(PreparedTurn {
@@ -1036,7 +1045,7 @@ plan.echo_trimmed |= descriptor.echo_trimmed;
 plan.end_ms = plan.end_ms.max(descriptor.turn.end_ms);
 ```
 
-Use the first descriptor's artifact, raw source path, recorded-silence value, and turn index. Name the output `segment_dir.join(format!("{}-source-normalized.wav", source))`. A vector preserves microphone-before-system fallback order; do not iterate a `HashMap` for fallbacks.
+Use the first descriptor's artifact, raw Source path, recorded-silence value, and Turn index. Name the output `turn_wav_dir.join(format!("{}-source-normalized.wav", source))`. A vector preserves Microphone-before-System fallback order; do not iterate a `HashMap` for fallbacks.
 
 - [ ] **Step 5: Replace eager fallback normalization and inject the fallback preparer**
 
@@ -1068,7 +1077,7 @@ Expected: PASS. The success test must report zero fallback-preparer invocations.
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests
 git add src-tauri/src/domain/processing.rs
-git commit -m "perf: prepare meeting fallbacks only when needed"
+git commit -m "perf: prepare Source fallbacks only when needed"
 ```
 
 Expected: all processing tests PASS.
@@ -1295,7 +1304,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tes
 cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::preparation_error_joins_in_flight_requests_and_skips_fallback -- --exact
 ```
 
-Expected: PASS. The context test is mandatory; an implementation that lets a slow second preparation inherit the first completion has changed transcription inputs and must be rejected.
+Expected: PASS. The context test is mandatory; an implementation that lets a slow second preparation inherit the first completion has changed note transcription inputs and must be rejected.
 
 - [ ] **Step 7: Re-run existing retry and context regression tests**
 
@@ -1311,7 +1320,7 @@ Expected: PASS with no changed assertions for context text, retry counts, warnin
 
 ```bash
 git add src-tauri/src/domain/processing.rs
-git commit -m "perf: overlap turn preparation and transcription"
+git commit -m "perf: overlap Turn preparation and note transcription"
 ```
 
 ---
@@ -1331,13 +1340,13 @@ git commit -m "perf: overlap turn preparation and transcription"
 
 - [ ] **Step 1: Write failing production-wiring and cleanup tests**
 
-Add `#[tokio::test] async fn segment_temp_dir_is_removed_after_preparation_error()`: create a nested session directory under `tempfile::tempdir`, run the Task 4 error scenario while holding `Arc<TempDirCleanup>`, and assert the directory still exists while the preparation error is draining an in-flight provider. Release the provider, await the original error, assert provider active count and fallback count are zero, assert the directory still exists while the caller owns its guard clone, then drop that clone and assert the directory is absent.
+Add `#[tokio::test] async fn turn_wav_temp_dir_is_removed_after_preparation_error()`: create a nested recording-session directory under `tempfile::tempdir`, run the Task 4 error scenario while holding `Arc<TempDirCleanup>`, and assert the directory still exists while the preparation error is draining an in-flight provider. Release the provider, await the original error, assert provider active count and fallback count are zero, assert the directory still exists while the caller owns its guard clone, then drop that clone and assert the directory is absent.
 
-Add `#[tokio::test] async fn segment_temp_dir_outlives_cancelled_blocking_preparation()`: start the pipeline with a turn preparer that retains a cleanup-guard clone and blocks on a synchronous channel. Wait until the preparer is running, abort the outer pipeline task, await its `JoinHandle`, and assert the `JoinError` is cancelled before dropping the caller's guard clone. Assert the directory still exists, release the preparer, wait for its completion signal, and use a bounded poll to assert the directory is eventually removed after the producer closure drops its final clone. This test is mandatory: a plain lexical guard is not cancellation-safe because dropping a Tokio `spawn_blocking` handle does not stop the blocking closure. Awaiting cancellation before the first existence assertion prevents a lexical-only implementation from passing accidentally.
+Add `#[tokio::test] async fn turn_wav_temp_dir_outlives_cancelled_blocking_preparation()`: start the pipeline with a Turn preparer that retains a cleanup-guard clone and blocks on a synchronous channel. Wait until the preparer is running, abort the outer pipeline task, await its `JoinHandle`, and assert the `JoinError` is cancelled before dropping the caller's guard clone. Assert the directory still exists, release the preparer, wait for its completion signal, and use a bounded poll to assert the directory is eventually removed after the producer closure drops its final clone. This test is mandatory: a plain lexical guard is not cancellation-safe because dropping a Tokio `spawn_blocking` handle does not stop the blocking closure. Awaiting cancellation before the first existence assertion prevents a lexical-only implementation from passing accidentally.
 
 Add `#[tokio::test] async fn preparation_report_separates_active_time_from_backpressure()`: use five descriptors, make each preparer spend a controlled interval in active work, and block provider progress. Two jobs are active and two fit in the capacity-two channel, so assert the producer handle remains pending on the fifth `blocking_send` until one provider permit is released. Then assert `active_preparation_duration_ms` reflects only the five preparer calls, `producer_wall_duration_ms` is larger because it spans the blocked send, and `done_to_preparation_complete_ms` is captured before final pipeline completion.
 
-Extend `preparation_error_joins_in_flight_requests_and_skips_fallback` to assert the returned `TurnPipelineFailure.preparation` is `Some`, contains the completed active/prepared counters, and retains the original preparation error. Add a focused repository-backed assertion that this post-setup pipeline-failure path records exactly one failed `transcription_complete` and one failed `processing_complete` checkpoint without success/failure counts.
+Extend `preparation_error_joins_in_flight_requests_and_skips_fallback` to assert the returned `TurnPipelineFailure.preparation` is `Some`, contains the completed active/prepared counters, and retains the original preparation error. Add a focused repository-backed assertion that this post-setup pipeline-failure path records exactly one failed `note_transcription_complete` and one failed `processing_complete` checkpoint without success/failure counts.
 
 Run the cleanup tests. Expected: FAIL because `TempDirCleanup` and cancellation-safe shared ownership do not exist.
 
@@ -1353,7 +1362,7 @@ impl Drop for TempDirCleanup {
 }
 ```
 
-Create `Arc::new(TempDirCleanup(segment_dir.clone()))` immediately after `create_dir_all(&segment_dir)` succeeds and remove the later explicit cleanup. Return the guard from the setup block and bind it by name outside that block; never destructure it as `_`.
+Create `Arc::new(TempDirCleanup(turn_wav_dir.clone()))` immediately after `create_dir_all(&turn_wav_dir)` succeeds and remove the later explicit cleanup. Return the guard from the setup block and bind it by name outside that block; never destructure it as `_`.
 
 The caller's lexical clone is not enough: cancellation drops the wrapper future but does not stop an already-running `spawn_blocking` closure. Capture guard clones in the production turn preparer, fallback preparer, and transcriber. The transcriber wrapper must retain its clone inside the returned future until that future completes. This guarantees that producer preparation, fallback normalization, or provider work cannot outlive the temp directory even if the outer processing future is aborted.
 
@@ -1383,11 +1392,11 @@ let pipeline_result = prepare_and_transcribe_turn_jobs_bounded(
     transcription_provider.clone(),
     title.clone(),
     dictionary_context,
-    guarded_turn_preparer(Arc::clone(&segment_dir_cleanup)),
-    guarded_fallback_preparer(Arc::clone(&segment_dir_cleanup)),
-    retain_cleanup_during_transcription(
+    guarded_turn_preparer(Arc::clone(&turn_wav_dir_cleanup)),
+    guarded_fallback_preparer(Arc::clone(&turn_wav_dir_cleanup)),
+    retain_cleanup_during_note_transcription(
         instrument_turn_transcriber(default_turn_transcriber(), timeline.clone()),
-        Arc::clone(&segment_dir_cleanup),
+        Arc::clone(&turn_wav_dir_cleanup),
     ),
     Some(result_sink),
     DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
@@ -1399,7 +1408,7 @@ let pipeline = match pipeline_result {
     Ok(pipeline) => {
         persist_turn_preparation_checkpoint(
             repos,
-            session_id,
+            recording_session_id,
             "succeeded",
             Some(&pipeline.preparation),
             reused_transcript_count,
@@ -1412,20 +1421,20 @@ let pipeline = match pipeline_result {
         let error_code = failure.error.code.clone();
         persist_turn_preparation_checkpoint(
             repos,
-            session_id,
+            recording_session_id,
             "failed",
             failure.preparation.as_ref(),
             reused_transcript_count,
             Some(error_code.as_str()),
         )
         .await;
-        timeline.flush(repos, session_id).await;
+        timeline.flush(repos, recording_session_id).await;
         add_latency_checkpoint(
             repos,
-            session_id,
-            "transcription_complete",
+            recording_session_id,
+            "note_transcription_complete",
             timing.checkpoint_details(serde_json::json!({
-                "durationMs": elapsed_ms(transcription_started),
+                "durationMs": elapsed_ms(note_transcription_started),
                 "status": "failed",
                 "error": error_code,
             })),
@@ -1433,7 +1442,7 @@ let pipeline = match pipeline_result {
         .await;
         add_processing_complete_checkpoint(
             repos,
-            session_id,
+            recording_session_id,
             timing,
             processing_started,
             "failed",
@@ -1443,7 +1452,7 @@ let pipeline = match pipeline_result {
     }
 };
 
-drop(segment_dir_cleanup);
+drop(turn_wav_dir_cleanup);
 ```
 
 Implement the best-effort checkpoint helper used above:
@@ -1451,7 +1460,7 @@ Implement the best-effort checkpoint helper used above:
 ```rust
 async fn persist_turn_preparation_checkpoint(
     repos: &Repositories,
-    session_id: &str,
+    recording_session_id: &str,
     status: &str,
     report: Option<&TurnPreparationReport>,
     reused_transcript_count: usize,
@@ -1459,7 +1468,7 @@ async fn persist_turn_preparation_checkpoint(
 ) {
     add_latency_checkpoint(
         repos,
-        session_id,
+        recording_session_id,
         "turn_wav_extraction",
         serde_json::json!({
             "durationMs": report.map(|value| value.active_preparation_duration_ms),
@@ -1483,13 +1492,13 @@ Remove `extraction_started` and the Task 4 temporary `dead_code` allowances now 
 
 - [ ] **Step 5: Preserve failure, coverage, and generation ordering**
 
-Append the fresh outcome to cached candidates as before. Preserve the current dependency order: persist visible failures, query successful persisted transcript rows, compute coverage from those rows, derive and sort inputs, evaluate blocking failures, flush the first-event timeline, write `transcription_complete`, and only then enter Generating. Do not allow a preparation error to reach fallback, coverage, visible-failure handling, or generation.
+Append the fresh outcome to cached candidates as before. Preserve the current dependency order: persist visible failures, query successful persisted transcript rows, compute coverage from those rows, derive and sort inputs, evaluate blocking failures, flush the first-event timeline, write `note_transcription_complete`, and only then enter Generating. Do not allow a preparation error to reach fallback, coverage, visible-failure handling, or generation.
 
 - [ ] **Step 6: Run production-wiring, quality, cleanup, and full Rust tests**
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::segment_temp_dir_is_removed_after_preparation_error -- --exact
-cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::segment_temp_dir_outlives_cancelled_blocking_preparation -- --exact
+cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::turn_wav_temp_dir_is_removed_after_preparation_error -- --exact
+cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::turn_wav_temp_dir_outlives_cancelled_blocking_preparation -- --exact
 cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::preparation_report_separates_active_time_from_backpressure -- --exact
 cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::prepared_turn_matches_existing_audio_and_metadata -- --exact
 pnpm test:rust
@@ -1501,12 +1510,12 @@ Expected: PASS. The quality test must compare the real normalized sample stream,
 
 ```bash
 git add src-tauri/src/domain/processing.rs
-git commit -m "perf: stream prepared meeting turns"
+git commit -m "perf: stream prepared Turns"
 ```
 
 ---
 
-### Task 6: Prove persisted turns become visible during transcription
+### Task 6: Prove persisted Turns become visible during note transcription
 
 **Files:**
 
@@ -1515,12 +1524,12 @@ git commit -m "perf: stream prepared meeting turns"
 **Interfaces:**
 
 - Consumes: existing `App` selected-note one-second polling and `NoteEditor` partial-turn rendering.
-- Produces: Vitest regression `polls newly persisted turns while transcription remains active`.
+- Produces: Vitest regression `polls newly persisted turns while note transcription remains active`.
 - Production React output: unchanged.
 
 - [ ] **Step 1: Add the App-level real-poll regression**
 
-Place the test next to the existing active-note polling tests. Create `selectedNote` with `processingStatus: "transcribing"`, `activeTab: "transcription"`, and an empty `sourceTranscripts` array. Override `bootstrapApp` to return that note, make `mocks.getNote` return a mutable `pollResponse`, render `App`, open Meeting notes, select First note, and wait for the initial Transcribing status. Clear `mocks.getNote` while the existing real one-second interval remains installed.
+Place the test next to the existing active Note polling tests. Create `selectedNote` with `processingStatus: "transcribing"`, `activeTab: "transcription"`, and an empty `sourceTranscripts` array. Override `bootstrapApp` to return that Note, make `mocks.getNote` return a mutable `pollResponse`, render `App`, open Meeting notes, select First note, and wait for the initial Transcribing status. Clear `mocks.getNote` while the existing real one-second interval remains installed.
 
 Assert the turn text is initially absent, then update `pollResponse` to:
 
@@ -1564,7 +1573,7 @@ Do not return a Ready response in this test; it proves the partial turn appears 
 - [ ] **Step 2: Run the test and confirm the existing production path passes**
 
 ```bash
-pnpm test -- src/test/app-notes-reliability.test.tsx -t "polls newly persisted turns while transcription remains active"
+pnpm test -- src/test/app-notes-reliability.test.tsx -t "polls newly persisted turns while note transcription remains active"
 ```
 
 Expected: PASS without editing `App.tsx` or `NoteEditor.tsx`.
@@ -1582,7 +1591,7 @@ git commit -m "test: cover partial transcript polling"
 
 **Files:**
 
-- Create: `docs/qa/jun-334-transcription-latency.md`
+- Create: `docs/qa/jun-334-note-transcription-latency.md`
 - Modify: `docs/index.md`
 
 **Interfaces:**
@@ -1593,7 +1602,7 @@ git commit -m "test: cover partial transcript polling"
 - [ ] **Step 1: Run the unchanged feature benchmark**
 
 ```bash
-JUN334_REVISION_LABEL="$(git rev-parse --short HEAD) feature" make benchmark-transcription-latency
+JUN334_REVISION_LABEL="$(git rev-parse --short HEAD) feature" make benchmark-note-transcription-latency
 ```
 
 Expected: PASS with the same four cases, one warm-up, five measured iterations, delays, and JSON schema used on the baseline overlay.
@@ -1618,10 +1627,10 @@ If any condition fails, do not weaken it and do not open the PR. Diagnose the me
 
 - [ ] **Step 3: Write the QA evidence document**
 
-Create `docs/qa/jun-334-transcription-latency.md` with these sections and populated values:
+Create `docs/qa/jun-334-note-transcription-latency.md` with these sections and populated values:
 
 ```markdown
-# JUN-334 meeting transcription latency
+# JUN-334 note transcription latency
 
 ## Measurement origins
 
@@ -1655,7 +1664,7 @@ Add the QA doc under the appropriate testing/QA section of `docs/index.md`.
 Run:
 
 ```bash
-rg -n "JUN-334|06f4925e \+ test-only harness|0 to 1 second|backend deploy" docs/qa/jun-334-transcription-latency.md
+rg -n "JUN-334|06f4925e \+ test-only harness|0 to 1 second|backend deploy" docs/qa/jun-334-note-transcription-latency.md
 pnpm check
 ```
 
@@ -1664,8 +1673,8 @@ Expected: all four evidence phrases are present and Biome passes.
 - [ ] **Step 5: Commit measured evidence**
 
 ```bash
-git add docs/qa/jun-334-transcription-latency.md docs/index.md
-git commit -m "docs: record transcription latency improvement"
+git add docs/qa/jun-334-note-transcription-latency.md docs/index.md
+git commit -m "docs: record note transcription latency improvement"
 ```
 
 ---
@@ -1688,7 +1697,7 @@ git commit -m "docs: record transcription latency improvement"
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 pnpm check
 pnpm typecheck
-pnpm test -- src/test/app-notes-reliability.test.tsx -t "polls newly persisted turns while transcription remains active"
+pnpm test -- src/test/app-notes-reliability.test.tsx -t "polls newly persisted turns while note transcription remains active"
 cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests
 ```
 
@@ -1712,7 +1721,7 @@ Use the `repo-review` skill with base `origin/main`. Run Standards, Spec, and ad
 git diff --check origin/main...HEAD
 git diff --stat origin/main...HEAD
 git status --short
-rg -n "benchmark-token|OS_JUNE_LOCAL_DEV_BEARER_TOKEN|JUNE_API_URL" src-tauri/src/commands/transcription_benchmark.rs
+rg -n "benchmark-token|OS_JUNE_LOCAL_DEV_BEARER_TOKEN|JUNE_API_URL" src-tauri/src/commands/note_transcription_benchmark.rs
 ```
 
 Expected: clean diff check, expected files only, clean worktree, and only the fixed non-secret benchmark token/env variable names in test code.
@@ -1720,10 +1729,10 @@ Expected: clean diff check, expected files only, clean worktree, and only the fi
 - [ ] **Step 5: Push and open the draft PR**
 
 ```bash
-git push -u origin seriusanbudi/faster-meeting-transcriptions
+git push -u origin seriusanbudi/faster-note-transcription
 ```
 
-Open a draft PR titled `Reduce meeting transcription latency` with:
+Open a draft PR titled `Reduce note transcription latency` with:
 
 - Summary of lazy fallback plus bounded preparation overlap.
 - Root cause: full-source fallback normalization and all-turn preparation happened before the first request.

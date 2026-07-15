@@ -1,6 +1,6 @@
 use super::{
     finish_recording_session_with_timing,
-    transcription_benchmark::{
+    note_transcription_benchmark::{
         benchmark_repositories, spawn_fake_june_api, BenchmarkClock, RequestEvents,
     },
 };
@@ -68,9 +68,13 @@ fn write_one_second_timing_wav(path: &Path) {
     writer.finalize().expect("finalize timing WAV");
 }
 
-fn timing_finished_recording(note_id: &str, session_id: &str, path: PathBuf) -> FinishedRecording {
+fn timing_finished_recording(
+    note_id: &str,
+    recording_session_id: &str,
+    path: PathBuf,
+) -> FinishedRecording {
     FinishedRecording {
-        session_id: session_id.to_string(),
+        session_id: recording_session_id.to_string(),
         note_id: note_id.to_string(),
         source_mode: RecordingSourceMode::MicrophoneOnly,
         final_path: path.clone(),
@@ -83,7 +87,7 @@ fn timing_finished_recording(note_id: &str, session_id: &str, path: PathBuf) -> 
         }],
         elapsed_ms: 1_000,
         recording: RecordingSessionDto {
-            id: session_id.to_string(),
+            id: recording_session_id.to_string(),
             note_id: note_id.to_string(),
             source_mode: RecordingSourceMode::MicrophoneOnly,
             state: RecordingState::Ready,
@@ -103,14 +107,14 @@ async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
     let dir = tempfile::tempdir().expect("timing tempdir");
     let repos = benchmark_repositories(&dir).await;
     let note = repos.create_note(None).await.expect("timing note");
-    let session_id = format!("timing-{}", uuid::Uuid::new_v4());
+    let recording_session_id = format!("timing-{}", uuid::Uuid::new_v4());
     let audio_path = dir.path().join("timing-microphone.wav");
     write_one_second_timing_wav(&audio_path);
     let partial_path = audio_path.with_extension("partial.wav");
     repos
         .create_recording_session(
             &note.id,
-            &session_id,
+            &recording_session_id,
             RecordingSourceMode::MicrophoneOnly,
             &partial_path.to_string_lossy(),
             &audio_path.to_string_lossy(),
@@ -121,7 +125,7 @@ async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
     repos
         .create_pending_source_artifact(
             &note.id,
-            &session_id,
+            &recording_session_id,
             RecordingSource::Microphone.as_db(),
             &partial_path.to_string_lossy(),
             &audio_path.to_string_lossy(),
@@ -145,7 +149,7 @@ async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
     let timing = ProcessingTiming::from_done(Instant::now());
     let response = finish_recording_session_with_timing(
         &repos,
-        timing_finished_recording(&note.id, &session_id, audio_path),
+        timing_finished_recording(&note.id, &recording_session_id, audio_path),
         Instant::now(),
         timing,
     )
@@ -166,7 +170,7 @@ async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
              FROM recording_checkpoints
              WHERE recording_session_id = ? AND kind = 'processing_complete'",
         )
-        .bind(&session_id)
+        .bind(&recording_session_id)
         .fetch_one(&repos.pool)
         .await
         .expect("processing-complete count");
@@ -192,20 +196,23 @@ async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
            AND kind IN (
              'audio_validation',
              'processing_dequeued',
-             'first_transcription_request',
+             'first_note_transcription_request',
              'first_transcript_persisted',
-             'transcription_complete',
+             'note_transcription_complete',
              'note_generation',
              'processing_complete'
            )
          ORDER BY rowid ASC",
     )
-    .bind(&session_id)
+    .bind(&recording_session_id)
     .fetch_all(&repos.pool)
     .await
     .expect("timing checkpoints");
 
-    for first_event_kind in ["first_transcription_request", "first_transcript_persisted"] {
+    for first_event_kind in [
+        "first_note_transcription_request",
+        "first_transcript_persisted",
+    ] {
         assert_eq!(
             rows.iter()
                 .filter(|row| row.get::<String, _>("kind") == first_event_kind)
@@ -218,9 +225,9 @@ async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
     let ordered_kinds = [
         "audio_validation",
         "processing_dequeued",
-        "first_transcription_request",
+        "first_note_transcription_request",
         "first_transcript_persisted",
-        "transcription_complete",
+        "note_transcription_complete",
         "note_generation",
         "processing_complete",
     ];
