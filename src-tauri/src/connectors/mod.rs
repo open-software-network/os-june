@@ -1028,6 +1028,91 @@ pub async fn disconnect(
     Ok(())
 }
 
+// --- Linear team enforcement (agent reads) -----------------------------------------
+//
+// The selected-team grant is the enforcement boundary for every `june_linear`
+// agent read (slice 2, JUN-284): the provider-proxy route handlers (a later
+// chunk) load the grant once per request via [`linear_granted_team_ids`] and
+// check individual reads against it with [`linear_require_team_granted`] /
+// [`linear_require_any_team_granted`]. Both stable error codes are defined
+// here because this is where the caller-level checks live; `linear.rs`
+// itself never sees an `AppHandle` or the repository layer, so it cannot
+// construct these errors directly.
+
+fn linear_teams_not_selected_error() -> AppError {
+    AppError::new(
+        "linear_teams_not_selected",
+        "Select Linear teams in settings before June can read this workspace.",
+    )
+}
+
+fn linear_team_not_granted_error() -> AppError {
+    AppError::new(
+        "linear_team_not_granted",
+        "That team is not in June's selected teams.",
+    )
+}
+
+/// Pure "records -> granted ids or error" mapping behind
+/// [`linear_granted_team_ids`]: an empty selection fails closed rather than
+/// letting a caller silently query an unscoped workspace (spec decision 7).
+fn granted_team_ids_from_records(
+    records: &[crate::db::repositories::SelectedTeamRecord],
+) -> Result<Vec<String>, AppError> {
+    if records.is_empty() {
+        return Err(linear_teams_not_selected_error());
+    }
+    Ok(records.iter().map(|team| team.team_id.clone()).collect())
+}
+
+/// Load the account's selected-team grant for a `june_linear` read. Errors
+/// `linear_teams_not_selected` when the account has no selected teams -
+/// every team-scoped route calls this before doing anything else, so an
+/// empty grant fails the whole request closed rather than reading an
+/// unscoped workspace.
+pub async fn linear_granted_team_ids(
+    app: &tauri::AppHandle,
+    account_id: &str,
+) -> Result<Vec<String>, AppError> {
+    let repos = crate::commands::repositories(app).await?;
+    let records = repos.list_selected_teams(account_id).await?;
+    granted_team_ids_from_records(&records)
+}
+
+/// Validate a single team id against the grant: used where the caller names
+/// one team directly (`list_cycles`'s `team_id`, `search_issues`'s optional
+/// team narrow). Errors `linear_team_not_granted` when `team_id` is not in
+/// `granted_team_ids`.
+pub fn linear_require_team_granted(
+    team_id: &str,
+    granted_team_ids: &[String],
+) -> Result<(), AppError> {
+    if granted_team_ids.iter().any(|granted| granted == team_id) {
+        Ok(())
+    } else {
+        Err(linear_team_not_granted_error())
+    }
+}
+
+/// Validate that at least one of `team_ids` (an already-fetched issue's or
+/// project's linked teams) is in the grant: the post-fetch check for
+/// `get_issue` / `list_issue_comments` / `list_project_updates`. The caller
+/// discards the fetched data on `Err` rather than returning it partially.
+/// Errors `linear_team_not_granted`.
+pub fn linear_require_any_team_granted(
+    team_ids: &[String],
+    granted_team_ids: &[String],
+) -> Result<(), AppError> {
+    let granted = team_ids
+        .iter()
+        .any(|id| granted_team_ids.iter().any(|granted| granted == id));
+    if granted {
+        Ok(())
+    } else {
+        Err(linear_team_not_granted_error())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1219,5 +1304,56 @@ mod tests {
             ),
             Some("a@example.com".to_string())
         );
+    }
+
+    fn selected_team(id: &str) -> crate::db::repositories::SelectedTeamRecord {
+        crate::db::repositories::SelectedTeamRecord {
+            team_id: id.to_string(),
+            team_key: id.to_uppercase(),
+            team_name: format!("Team {id}"),
+        }
+    }
+
+    #[test]
+    fn granted_team_ids_from_records_fails_closed_on_an_empty_selection() {
+        let error = granted_team_ids_from_records(&[]).unwrap_err();
+        assert_eq!(error.code, "linear_teams_not_selected");
+    }
+
+    #[test]
+    fn granted_team_ids_from_records_maps_ids_when_present() {
+        let records = vec![selected_team("eng"), selected_team("design")];
+        let ids = granted_team_ids_from_records(&records).expect("granted ids");
+        assert_eq!(ids, vec!["eng", "design"]);
+    }
+
+    #[test]
+    fn linear_require_team_granted_checks_membership() {
+        let granted = vec!["eng".to_string(), "design".to_string()];
+        assert!(linear_require_team_granted("eng", &granted).is_ok());
+        let error = linear_require_team_granted("ops", &granted).unwrap_err();
+        assert_eq!(error.code, "linear_team_not_granted");
+        // An empty grant refuses every team id, including one that would
+        // otherwise match a non-empty grant.
+        let error = linear_require_team_granted("eng", &[]).unwrap_err();
+        assert_eq!(error.code, "linear_team_not_granted");
+    }
+
+    #[test]
+    fn linear_require_any_team_granted_checks_intersection() {
+        let granted = vec!["eng".to_string(), "design".to_string()];
+        assert!(linear_require_any_team_granted(
+            &["design".to_string(), "ops".to_string()],
+            &granted
+        )
+        .is_ok());
+        let error = linear_require_any_team_granted(&["ops".to_string()], &granted).unwrap_err();
+        assert_eq!(error.code, "linear_team_not_granted");
+        // An empty team-ids list (an entity linked to no team at all) and an
+        // empty grant both refuse to match anything.
+        let error = linear_require_any_team_granted(&[], &granted).unwrap_err();
+        assert_eq!(error.code, "linear_team_not_granted");
+        let error = linear_require_any_team_granted(&["eng".to_string()], &[]).unwrap_err();
+        assert_eq!(error.code, "linear_team_not_granted");
     }
 }
