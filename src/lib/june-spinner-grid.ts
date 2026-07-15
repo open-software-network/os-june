@@ -1,9 +1,8 @@
-// The dot spinner is a full square grid of dots with a smooth highlight that
-// sweeps left to right across it. Every cell is a dot; the dots on June's mark
-// swell bright and large as the wave passes, while the rest of the grid ripples
-// faintly, so a plain dot matrix reads as June. One source of truth so the React
-// spinner (components/DotSpinner.tsx) and the plain-DOM agent HUD (agent-hud.ts,
-// which has no React tree) build the exact same grid.
+// The dot spinner is a full square grid with a smooth brightness highlight that
+// climbs diagonally from the bottom-left. Dots on June's mark brighten to full;
+// field dots ripple faintly, so a plain matrix reads as June. One source of
+// truth keeps the React spinner (components/DotSpinner.tsx) and the plain-DOM
+// agent HUD (agent-hud.ts, which has no React tree) on the exact same grid.
 //
 // June's mark is the two stepped strokes of the squircle logo (see
 // src/assets/june-agents-mark.svg), each ascending low-left → high-right. At 3×3
@@ -11,15 +10,16 @@
 // middle row, up to the top-right corner (a `_/‾` step); at 5×5 it separates
 // into the full two strokes. Each cell carries a sweep order — its diagonal
 // distance from the bottom-left corner — and dot-spinner.css rides a swell keyed
-// to that order, so the crest climbs from bottom-left to top-right, tracing the
-// stroke's path, and loops.
+// to that order, so the crest traces the stroke from bottom-left to top-right,
+// settles, and takes a short breath before the next pass.
 
-export type JuneSpinnerSize = "sm" | "lg";
+export type JuneSpinnerSize = "sm" | "md" | "lg";
 
-// "sm" is the 3×3 grid for inline and small loaders; "lg" is the 5×5 grid for
-// larger standalone loading moments.
+// "sm" and "md" share the compact 3×3 mark at different optical sizes; "lg"
+// uses the full 5×5 mark for larger standalone loading moments.
 export const JUNE_SPINNER_COLS: Record<JuneSpinnerSize, number> = {
   sm: 3,
+  md: 3,
   lg: 5,
 };
 
@@ -46,6 +46,7 @@ const LG_MARK: readonly number[] = [
 
 const JUNE_SPINNER_MARK: Record<JuneSpinnerSize, readonly number[]> = {
   sm: SM_MARK,
+  md: SM_MARK,
   lg: LG_MARK,
 };
 

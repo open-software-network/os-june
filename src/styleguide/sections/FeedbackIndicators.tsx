@@ -38,10 +38,10 @@ export function FeedbackIndicators() {
 
       <h2 className="sg-subheading">Spinner</h2>
       <p className="sg-section-intro">
-        A full dot grid with a smooth highlight that sweeps left to right across it; the dots on
-        June's mark swell brighter as the wave passes, so the matrix reads as June. The default sm
-        (3×3) variant is for inline and small loaders; size="lg" (5×5) is for larger standalone
-        loading moments.
+        A full dot grid with a smooth highlight that climbs June's mark from bottom-left to
+        top-right, then settles briefly before the next pass. The sm and md variants use the compact
+        3×3 mark at two inline sizes; size="lg" uses the full 5×5 mark for standalone loading
+        moments.
       </p>
       <div className="sg-row">
         <div className="sg-card">
@@ -49,6 +49,12 @@ export function FeedbackIndicators() {
             <span className="sg-token-name">Spinner (sm)</span>
           </div>
           <Spinner aria-label="Loading" />
+        </div>
+        <div className="sg-card">
+          <div className="sg-token-meta" style={{ marginBottom: "var(--sp-4)" }}>
+            <span className="sg-token-name">Spinner (md)</span>
+          </div>
+          <Spinner size="md" aria-label="Loading" />
         </div>
         <div className="sg-card">
           <div className="sg-token-meta" style={{ marginBottom: "var(--sp-4)" }}>

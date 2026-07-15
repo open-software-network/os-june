@@ -3,16 +3,15 @@ import { JUNE_SPINNER_COLS, type JuneSpinnerSize, juneSpinnerGrid } from "../lib
 
 // The dot spinner, drawn rather than typeset: a full square grid of perfect
 // circles with a smooth highlight that climbs diagonally from the bottom-left.
-// The dots on June's mark — a stepped stroke from the squircle logo — swell
-// bright and large as the wave traces up it; the rest of the grid ripples
-// faintly, so the matrix reads as June's ascending stroke. The grid and each cell's sweep order
-// live in lib/june-spinner-grid; the motion is pure CSS — see
-// styles/dot-spinner.css — and rests as the mark under prefers-reduced-motion.
-// The grid is a fixed-size square per variant — integer px, deliberately not
-// font-scaled — and wrappers color it via currentColor.
+// June's stepped mark swells bright as the crest traces it; field dots ripple
+// faintly. The grid and sweep order live in lib/june-spinner-grid, while the
+// bounded motion lives in styles/dot-spinner.css and rests as the mark under
+// prefers-reduced-motion. Each variant is a fixed-size, integer-px square rather
+// than a font-scaled glyph, with a neutral gray default that contextual classes
+// can override through currentColor.
 //
-// "sm" is the 3×3 grid for inline and small loaders; "lg" is the 5×5 grid for
-// larger standalone loading moments.
+// "sm" and "md" are compact 3×3 grids; "lg" is the 5×5 board for larger
+// standalone loading moments.
 type DotSpinnerProps = {
   className?: string;
   size?: JuneSpinnerSize;

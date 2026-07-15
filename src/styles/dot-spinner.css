@@ -1,107 +1,179 @@
-/* The dot spinner: a full square grid of tiny real circles with a smooth
- * highlight that climbs diagonally from the bottom-left. Every cell is a dot;
- * the dots on June's mark — a stepped stroke from the squircle logo — swell
- * bright and large as the wave traces up it, while the rest of the grid ripples
- * faintly, so the matrix reads as June's ascending stroke travelling through it. Drawn,
- * not typeset, so the dots stay crisp. The grid and each cell's sweep order live
- * in lib/june-spinner-grid (shared with the agent HUD page entry, which has no
- * React tree). Wrappers set only color (currentColor).
+/* The dot spinner: a full square grid of circles with a brightness highlight
+ * that sweeps diagonally from the bottom-left. The grid rests stable at full
+ * size; as the highlight passes, each dot brightens and gives a small swell —
+ * the mark dots pop a touch more than the field — then settles back. Motion is
+ * mostly tone (a big scale excursion shimmers at 2–3px), with only a light
+ * synchronized swell for life. A bright band glides along June's stepped mark;
+ * field dots ripple faintly. The grid and each cell's sweep order live in
+ * lib/june-spinner-grid (shared with the agent HUD page entry, which has no
+ * React tree). The default is a neutral gray; contextual wrappers can still
+ * override it through currentColor.
  *
- * Two variants: "sm" (3×3) for inline and small loaders — the default — and
- * "lg" (5×5) for larger standalone loading moments. The column count comes from
- * --june-cols, set per instance. */
+ * Three optical variants: "sm" (3×3) for compact inline use, "md" (3×3) for a
+ * slightly larger inline mark, and "lg" (5×5) for standalone loading moments.
+ * The column count comes from --june-cols, set per instance. */
 .dot-spinner {
-  /* Mark dots swell from --june-rest / --june-off up to full size and opacity;
-   * field dots swell only faintly (--june-field-*). Tune these to trade off how
-   * strongly the mark reads against the background grid. */
-  --june-off: 0.35;
-  --june-rest: 0.5;
-  --june-field-off: 0.1;
-  --june-field-rest: 0.42;
-  --june-field-peak: 0.28;
-  --june-field-scale: 0.62;
-  /* One diagonal step of the wave is --june-frame; --june-frames sets the loop
-   * length (the grid's diagonals plus a little trailing breath). */
-  --june-frames: 6;
-  --june-frame: 0.13s;
-  --june-dur: calc(var(--june-frame) * var(--june-frames));
-  /* Integer px so every column shares one subpixel phase. */
+  /* Tonal hierarchy — the mark must always outrank the field so June's shape
+   * reads at every frame, not just at rest. Mark dots sit at --june-off and
+   * brighten to full (1) as the highlight passes; field dots sit dimmer at
+   * --june-field-off and ripple only up to --june-field-peak, which MUST stay
+   * below --june-off. If the field peak ever exceeds the mark's rest, the sweep
+   * paints a diagonal band that hides the logo. All tones are opacity on
+   * currentColor (var(--muted-foreground)), so they track light/dark themes. */
+  --june-off: 0.44;
+  --june-field-off: 0.14;
+  --june-field-peak: 0.26;
+  /* Peak scale as the highlight passes; rest is always 1 so the grid holds
+   * steady. Only the mark swells so the motion stays on June's strokes; keep the
+   * excursion small — a big swell shimmers at this dot size. */
+  --june-swell: 1.16;
+  --june-field-swell: 1;
+  /* Every dot gets the same 500ms brightening and each completed pass gets a
+   * 100ms reset. The compact grid takes a deliberate 130ms diagonal step; the
+   * denser large grid overrides that with an 80ms step so its crest stays
+   * continuous. */
+  --june-frame: calc((var(--t-fast) + var(--t-med)) / 2);
+  --june-pulse: calc(var(--t-fast) + var(--t-med) + var(--t-slow));
+  --june-pause: var(--t-fast);
+  --june-max-order: 4;
+  --june-dur: calc(
+    var(--june-frame) *
+    var(--june-max-order) +
+    var(--june-pulse) +
+    var(--june-pause)
+  );
+  /* Integer px so every column shares one subpixel phase. The gap is set roughly
+   * as wide as the dot so the circles read as discrete points, not a blur. */
   --june-dot: 2px;
-  --june-gap: 1px;
+  --june-gap: 2px;
   --june-cols: 3;
 
   display: inline-grid;
   grid-template-columns: repeat(var(--june-cols), var(--june-dot));
   gap: var(--june-gap);
+  color: var(--muted-foreground);
   line-height: 1;
 }
 
-.dot-spinner[data-size="lg"] {
-  --june-field-off: 0.08;
-  --june-frames: 10;
-  --june-frame: 0.1s;
+.dot-spinner[data-size="md"] {
+  --june-off: 0.44;
+  --june-field-off: 0.14;
+  --june-field-peak: 0.26;
   --june-dot: 3px;
   --june-gap: 2px;
 }
 
-/* Every cell is a dot and rides the swell, phase-shifted by its diagonal order
- * so the crest climbs from bottom-left to top-right. Field dots ripple faintly;
- * mark dots swell to full. ease-in-out keeps the grow and shrink soft. */
+.dot-spinner[data-size="lg"] {
+  --june-off: 0.4;
+  --june-field-off: 0.15;
+  --june-field-peak: 0.24;
+  --june-frame: calc(var(--t-med) / 2);
+  --june-max-order: 8;
+  --june-dot: 3px;
+  --june-gap: 3px;
+}
+
+/* Each cell rests at full size and full-rest tone; the opacity and a light
+ * synchronized swell animate together, shifted by the cell's diagonal order, so
+ * a bright band sweeps across the otherwise stable grid. Cell variables keep the
+ * field and mark tones and swells on the same envelope. */
 .dot-spinner > span {
+  --june-cell-opacity: var(--june-field-off);
+  --june-cell-peak-opacity: var(--june-field-peak);
+  --june-cell-swell: var(--june-field-swell);
+
   width: var(--june-dot);
   height: var(--june-dot);
   border-radius: 50%;
   background: currentColor;
-  opacity: var(--june-field-off);
-  transform: scale(var(--june-field-rest));
-  animation: june-field-sweep var(--june-dur) ease-in-out infinite;
+  opacity: var(--june-cell-opacity);
+  transform: scale(1);
+  animation:
+    june-sweep-sm var(--june-dur) var(--ease-in-out) infinite,
+    june-scale-sm var(--june-dur) var(--ease-in-out) infinite;
   animation-delay: calc(var(--june-order) * var(--june-frame) - var(--june-dur));
-  /* GPU-composite the swell so scaled circles stay smooth. */
-  will-change: transform, opacity;
+  /* GPU-composite the fade and swell so the sweep stays smooth. */
+  will-change: opacity, transform;
 }
 
 .dot-spinner > span[data-mark] {
-  opacity: var(--june-off);
-  transform: scale(var(--june-rest));
-  animation-name: june-mark-sweep;
+  --june-cell-opacity: var(--june-off);
+  --june-cell-peak-opacity: 1;
+  --june-cell-swell: var(--june-swell);
 }
 
-@keyframes june-field-sweep {
+.dot-spinner[data-size="lg"] > span {
+  animation-name: june-sweep-lg, june-scale-lg;
+}
+
+/* sm/md: 1.12s cycle. Each dot brightens from rest to its peak over 150ms, holds
+ * bright for 200ms, and fades back over 150ms, then rests until the next pass —
+ * the staggered delays turn that into a bright band gliding across the grid. The
+ * 100ms all-rest tail is the settle before the sweep begins again. */
+@keyframes june-sweep-sm {
   0%,
+  44.643%,
   100% {
-    opacity: var(--june-field-off);
-    transform: scale(var(--june-field-rest));
+    opacity: var(--june-cell-opacity);
   }
 
-  40% {
-    opacity: var(--june-field-peak);
-    transform: scale(var(--june-field-scale));
+  13.393%,
+  31.25% {
+    opacity: var(--june-cell-peak-opacity);
   }
 }
 
-@keyframes june-mark-sweep {
+/* lg: the same 500ms brightening inside a 1.24s cycle, with closer diagonals. */
+@keyframes june-sweep-lg {
   0%,
+  40.323%,
   100% {
-    opacity: var(--june-off);
-    transform: scale(var(--june-rest));
+    opacity: var(--june-cell-opacity);
   }
 
-  40% {
-    opacity: 1;
+  12.097%,
+  28.226% {
+    opacity: var(--june-cell-peak-opacity);
+  }
+}
+
+/* The light swell that rides with the brightness: rest at full size, pop to the
+ * cell's peak scale across the same window, then settle. The grid holds steady
+ * between passes because rest is always scale 1. */
+@keyframes june-scale-sm {
+  0%,
+  44.643%,
+  100% {
     transform: scale(1);
+  }
+
+  13.393%,
+  31.25% {
+    transform: scale(var(--june-cell-swell));
+  }
+}
+
+@keyframes june-scale-lg {
+  0%,
+  40.323%,
+  100% {
+    transform: scale(1);
+  }
+
+  12.097%,
+  28.226% {
+    transform: scale(var(--june-cell-swell));
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* The spinner rests as the mark: both strokes up and bright, the field dim. */
+  /* The spinner rests as the mark: the strokes bright, the field dim. */
   .dot-spinner > span {
     animation: none;
     opacity: var(--june-field-off);
-    transform: scale(var(--june-field-rest));
   }
 
   .dot-spinner > span[data-mark] {
     opacity: 1;
-    transform: scale(1);
   }
 }

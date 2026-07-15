@@ -17074,8 +17074,8 @@ input:focus-visible,
 }
 
 /* App-wide loading indicator: the dot spinner that draws June's mark. Its size
- * is fixed per variant (data-size sm/lg) in dot-spinner.css, not font-scaled;
- * color inherits via currentColor. */
+ * is fixed per variant (data-size sm/md/lg) in dot-spinner.css, not font-scaled;
+ * the default color is the theme's neutral muted foreground. */
 .spinner {
   display: inline-flex;
   flex-shrink: 0;
@@ -17086,6 +17086,13 @@ input:focus-visible,
 
 /* The dot spinner itself lives in dot-spinner.css (shared with the agent
  * HUD page entry). */
+
+/* Solid controls need their own contrast foreground instead of the spinner's
+ * default gray. */
+.agent-composer-send .dot-spinner,
+.primary-action.primary-solid .dot-spinner {
+  color: currentColor;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .sign-in-prompt-spinner,
