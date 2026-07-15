@@ -39,9 +39,14 @@ impl AgentAdmissionControl {
     }
 
     fn admit(&self, user_id: &UserId, content_length: usize) -> Result<AgentAdmission, ApiError> {
-        let weight_kib = content_length
-            .div_ceil(1024)
-            .clamp(1, self.total_budget_kib);
+        let weight_kib = content_length.div_ceil(1024).max(1);
+        // A request that cannot fit the whole budget is REJECTED, not clamped and
+        // admitted — clamping would let it buffer beyond the budget and defeat the
+        // memory guarantee (JUN-336 review). Config validation keeps the budget at
+        // or above every route cap, so a real request never trips this.
+        if weight_kib > self.total_budget_kib {
+            return Err(ApiError::service_overloaded());
+        }
         let weight_kib = u32::try_from(weight_kib).map_err(|_| ApiError::service_overloaded())?;
         let body_permit = self
             .body_budget_kib
@@ -328,21 +333,20 @@ mod tests {
     }
 
     #[test]
-    fn oversized_request_is_clamped_to_the_whole_budget() {
+    fn request_weight_over_budget_is_rejected_not_admitted() {
+        // A request that cannot fit the whole budget is load-shed rather than
+        // clamped and admitted (which would buffer beyond the budget). Config
+        // validation keeps this unreachable in production; the guard is defensive.
         let control = AgentAdmissionControl::new(4 * 1024, 100);
         let user_a = user("usr_a");
-        let user_b = user("usr_b");
 
-        let oversized = control
-            .admit(&user_a, 100 * 1024 * 1024)
-            .expect("oversized admission");
         let err = control
-            .admit(&user_b, 1024)
+            .admit(&user_a, 100 * 1024 * 1024)
             .err()
-            .expect("concurrent request must shed");
+            .expect("oversized request must be rejected");
         assert!(matches!(err, ApiError::ServiceOverloaded));
 
-        drop(oversized);
-        assert!(control.admit(&user_b, 1024).is_ok());
+        // A request within the budget still admits (the whole budget here).
+        assert!(control.admit(&user_a, 4 * 1024).is_ok());
     }
 }

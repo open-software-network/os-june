@@ -137,7 +137,9 @@ impl ApiError {
     /// (an SSE body cannot set response headers).
     pub(crate) fn retry_after_secs(&self) -> Option<u64> {
         match self {
-            Self::AuthorizationDenied => Some(TRANSIENT_RETRY_AFTER_SECS),
+            // Load-shedding (503) is transient by definition: tell clients when to
+            // come back so admission overload degrades gracefully (JUN-336).
+            Self::AuthorizationDenied | Self::ServiceOverloaded => Some(TRANSIENT_RETRY_AFTER_SECS),
             _ => None,
         }
     }
@@ -261,6 +263,8 @@ mod tests {
         let response = ApiError::ServiceOverloaded.into_response();
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        // Load-shedding is transient — clients get a Retry-After to back off.
+        assert!(response.headers().get(header::RETRY_AFTER).is_some());
         let body = body_json(response).await;
         assert_eq!(body["error_code"], 5032);
         assert_eq!(body["message"], "server_busy");

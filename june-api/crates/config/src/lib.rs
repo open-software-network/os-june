@@ -1278,6 +1278,18 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
         "server.max_agent_concurrent_requests_per_user",
         config.server.max_agent_concurrent_requests_per_user,
     )?;
+    // The global in-flight body budget must be at least the largest single
+    // large-body route cap (image edit, ~66 MiB), or the admission control would
+    // load-shed EVERY request on that route — and, worse, an operator could tune
+    // the budget below a route cap and defeat the memory-safety guarantee it
+    // exists to provide (JUN-336 review). max_image_edit_bytes is the largest of
+    // the agent route caps (image/video 66 MiB > audio 25 MiB > chat 12 MiB).
+    if config.server.max_agent_inflight_body_bytes < config.server.max_image_edit_bytes {
+        return Err(ConfigError::InvalidRequired {
+            field: "server.max_agent_inflight_body_bytes",
+            reason: "must be >= the largest agent route body cap (server.max_image_edit_bytes)",
+        });
+    }
     // The extractor cap must never sit BELOW the desktop provider proxy's fixed
     // 12 MiB chat body cap (mirrored here as `DEFAULT_MAX_AGENT_CHAT_BYTES`), or a
     // configured override silently reintroduces the JUN-336 regression: the proxy
@@ -1920,6 +1932,24 @@ mod tests {
             server.max_agent_concurrent_requests_per_user,
             DEFAULT_MAX_AGENT_CONCURRENT_REQUESTS_PER_USER
         );
+        // The default budget must clear the largest route cap so admission never
+        // load-sheds every request on a route.
+        assert!(server.max_agent_inflight_body_bytes >= server.max_image_edit_bytes);
+    }
+
+    #[test]
+    fn agent_inflight_budget_below_largest_route_cap_is_rejected() {
+        // An operator override that drops the global budget below a single route
+        // cap must fail loudly at load, not silently defeat the memory guarantee.
+        let mut config = AppConfig::default();
+        config.server.max_agent_inflight_body_bytes = config.server.max_image_edit_bytes - 1;
+        assert!(matches!(
+            validate_request_limits(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "server.max_agent_inflight_body_bytes",
+                ..
+            })
+        ));
     }
 
     #[test]
