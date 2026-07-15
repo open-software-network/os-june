@@ -53,6 +53,11 @@ and a [local AI agent](https://www.opensoftware.co/june/local-ai-agent). They
 are useful starting assets, but their organic purpose should not substitute
 for campaign-matched paid landing-page variants.
 
+**Research-scope exception:** This proposal was explicitly commissioned to use
+current evidence from similar products. Named products are therefore limited
+to attributed research evidence and sources; campaign copy and positioning
+must not name or compare them.
+
 **External benchmark:** Adjacent products provide price context at several
 levels, but their pricing does not establish demand for June or prove June's
 conversion or willingness to pay.
