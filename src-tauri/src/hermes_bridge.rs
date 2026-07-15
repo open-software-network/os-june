@@ -1511,6 +1511,15 @@ pub async fn connectors_apply_runtime(
     reapply_hermes_runtime(&app, &bridge).await
 }
 
+/// Serializes `reapply_hermes_runtime` so two rapid settings toggles cannot
+/// interleave their stop/restart cycles. Reapply stops live runtimes before
+/// restarting them; without this lock a later toggle could observe that
+/// transient "no live connections" window, no-op, and let the earlier restart
+/// finish with the now-stale setting. Because each reapply re-renders
+/// `config.yaml` from the persisted settings file, serializing also guarantees
+/// the last reapply to run reads the last-persisted value.
+static REAPPLY_RUNTIME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Re-render `config.yaml` for every live runtime and restart the routine
 /// gateway so a settings change that feeds the rendered config (connector MCP
 /// servers, the `platform_toolsets.cron` allowlist, SOUL.md) takes effect
@@ -1522,6 +1531,12 @@ pub(crate) async fn reapply_hermes_runtime(
     app: &AppHandle,
     bridge: &HermesBridge,
 ) -> Result<(), AppError> {
+    // Serialize the whole stop/restart cycle: a concurrent reapply must wait
+    // rather than race through the window where this one has stopped runtimes
+    // but not yet restarted them. Each reapply re-reads the persisted settings
+    // when it re-renders config, so the last one to acquire the lock lands the
+    // last-persisted choice.
+    let _reapply_guard = REAPPLY_RUNTIME_LOCK.lock().await;
     // Capture each live runtime's working directory alongside its mode so the
     // restart lands in the same project the user was in. Restarting with
     // cwd: None would drop a custom cwd back to the default workspace, so a
@@ -13989,6 +14004,41 @@ mcp_servers:
         assert!(cron_platform_toolsets(&configs)
             .split(", ")
             .any(|toolset| toolset == "memory"));
+    }
+
+    #[tokio::test]
+    async fn reapply_runtime_lock_serializes_concurrent_reapplies() {
+        // Regression for the rapid-toggle race: reapply stops live runtimes
+        // before restarting them, so two overlapping reapplies could let the
+        // later one observe the earlier one's "no live connections" window and
+        // no-op while the earlier restart finished with a stale setting.
+        // `REAPPLY_RUNTIME_LOCK` (held across the whole cycle) must make the
+        // critical sections mutually exclusive so the last-persisted setting is
+        // the one that lands.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let active = active.clone();
+            let max_seen = max_seen.clone();
+            handles.push(tokio::spawn(async move {
+                let _guard = REAPPLY_RUNTIME_LOCK.lock().await;
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_seen.fetch_max(now, Ordering::SeqCst);
+                // Yield across an await so a missing lock would interleave here.
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("reapply task");
+        }
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            1,
+            "reapply critical sections overlapped: lock is not serializing",
+        );
     }
 
     #[test]

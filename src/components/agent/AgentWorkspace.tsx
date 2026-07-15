@@ -5697,6 +5697,21 @@ export function AgentWorkspace({
       ? reserveComposerDispatch(sentModelTarget.targetStoredSessionId)
       : undefined;
     const sentStartedNewSession = sentModelTarget.targetStoredSessionId === null;
+    // prompt.submit prepends the injected `[June project context]` block for a
+    // project-filed session (see prepareProjectPrompt at the dispatch site), so
+    // the size guard must estimate that same larger text — otherwise a project
+    // with long instructions can slip a near-limit prompt past the warning and
+    // fail only after submit. Mirror the dispatch: ambient project context plus
+    // this send's last delivered signature, so the block counts exactly when it
+    // will actually be injected and dedup-skipped turns aren't over-warned.
+    // (The steer path never calls prompt.submit, so it estimates the raw text.)
+    const sizeEstimateContent = (baseContent: string, targetSessionId?: string): string => {
+      const previousSignature =
+        !newSessionModeRef.current && targetSessionId
+          ? projectContextSignaturesBySessionId.get(targetSessionId)
+          : undefined;
+      return prepareProjectPrompt(baseContent, projectContext, previousSignature).text;
+    };
     if (message) {
       try {
         const handledBuiltinCommand = await handleBuiltinComposerSlashCommand(
@@ -5748,7 +5763,7 @@ export function AgentWorkspace({
         return;
       }
       const sizeWarning = oversizedComposerInputWarning({
-        content: prepared.runtimeContent,
+        content: sizeEstimateContent(prepared.runtimeContent, attachmentQueueSessionId),
         inputSignature: composerInputSignature,
         attachments,
         model: generationModel,
@@ -5894,7 +5909,7 @@ export function AgentWorkspace({
         : prepared.runtimeContent;
       preparedForRecovery = { ...prepared, runtimeContent };
       const sizeWarning = oversizedComposerInputWarning({
-        content: runtimeContent,
+        content: sizeEstimateContent(runtimeContent, selectedHermesSessionId ?? undefined),
         inputSignature: composerInputSignature,
         attachments,
         model: generationModel,

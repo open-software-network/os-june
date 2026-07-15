@@ -10338,6 +10338,71 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("counts injected project context in the composer size warning", async () => {
+    // Regression: prompt.submit prepends the `[June project context]` block for
+    // a project-filed session, but the guard used to estimate the pre-injection
+    // text. A short prompt that fits the model alone can go over once a project
+    // with long instructions is injected, so the send bypassed the warning and
+    // failed only after submit. The base prompt here is well under the 30-token
+    // window; only the injected block tips it over.
+    const sizeSession = {
+      id: "session-size-guard",
+      title: "Size guard session",
+      preview: "",
+      last_active: "2026-06-04T12:00:00Z",
+    };
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "short-context",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "short-context",
+      models: [
+        {
+          provider: "venice",
+          id: "short-context",
+          name: "Short context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 30,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AgentWorkspace
+        initialSession={sizeSession}
+        sessionInProject
+        projectContext={{
+          id: "project-size-guard",
+          name: "Launch",
+          instructions:
+            "Always surface launch risks, blockers, and the rollback plan in every reply, and keep the changelog and stakeholder list current across the whole release window.",
+        }}
+      />,
+    );
+
+    await findCurrentModelLabel("Short context");
+    // ~16 chars => ~4 tokens on its own, comfortably under the 30-token window.
+    await user.type(screen.getByRole("textbox"), "Ship the release");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText(/This message is about/)).toHaveTextContent(
+      "over Short context's 30 token context window.",
+    );
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
+  });
+
   it("switches to a larger-context model from the oversize composer warning", async () => {
     let selectedModel = "short-context";
     const models = [
