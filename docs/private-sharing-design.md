@@ -116,7 +116,10 @@ MVP payload by construction.
   for the link they opened rather than whichever active invite matches first.
   It only narrows the match (the binding/email authorization still applies).
   It is optional: an owner fetching their own share is served without an
-  envelope regardless.
+  envelope regardless. View fetches lock the share row for the transaction,
+  so an owner deletion and a recipient fetch have a single commit order: once
+  deletion commits, no concurrent fetch can return ciphertext copied before
+  that deletion.
 - `GET /s/{share_id}` - the viewer HTML shell (no auth, no content, no
   share-existence signal; the same page is served for any well-formed id).
   `X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: no-referrer`, strict

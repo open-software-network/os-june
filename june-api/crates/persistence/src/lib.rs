@@ -267,6 +267,7 @@ impl ShareStore for PgShareStore {
             SELECT id, owner_user_id, kind, ciphertext, iv
             FROM shares
             WHERE share_id = $1 AND deleted_at IS NULL
+            FOR UPDATE
             ",
         )
         .bind(share_id)
