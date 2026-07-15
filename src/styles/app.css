@@ -534,10 +534,10 @@ input:focus-visible,
   overflow-y: auto;
   overscroll-behavior: contain;
   margin: calc(-1 * var(--detail-bar-h)) calc(-1 * var(--sp-8)) 0;
-  /* The fixed composer is outside layout. Its measured overlap grows with the
-   * Up next queue and shrinks as rows drain; the final gap keeps the last chat
-   * item visibly separated from the top of that floating surface. */
-  padding: var(--detail-bar-h) var(--sp-8) calc(var(--agent-composer-clearance, 0px) + var(--sp-5));
+  /* The fixed composer is outside layout. Keep the resting gap here; its live
+   * overlap is reserved on the in-flow .agent-main child below so WebKit
+   * cannot absorb it into a non-scrolling flex viewport. */
+  padding: var(--detail-bar-h) var(--sp-8) var(--sp-5);
   /* Center the thread column from the LEFT GUTTER, not margin:auto inside the
    * scroller: the classic scrollbar steals an engine-specific slice of the
    * content box (8px custom in Chrome, wider native in WKWebView), and auto
@@ -584,7 +584,11 @@ input:focus-visible,
  * Auto margins here would re-split the scrollbar's bite into the centering.
  * The hero's .agent-main has no scrollbar and keeps margin:auto. */
 .agent-scroll .agent-main {
-  margin: 0;
+  /* The measured composer overlap grows with the Up next queue and shrinks as
+   * rows drain. It must live on this in-flow child, not as outer scroller
+   * padding: WKWebView can otherwise report no scroll range when a short thread
+   * fits the full viewport but not the unobscured space above the composer. */
+  margin: 0 0 var(--agent-composer-clearance, 0px);
 }
 
 .agent-detail-title {
@@ -3109,12 +3113,12 @@ input:focus-visible,
   overflow: hidden;
   /* Concentric with the card: inner radius = outer - the card's 4px inset. */
   border-radius: calc(var(--r-lg) - var(--sp-1));
-  /* The gray canvas itself gradates into the card surface at the bottom (and
+  /* The quiet canvas tint gradates into the card surface at the bottom (and
    * the dot field thins out over the same run), so the footer transition is
    * owned by the background rather than an overlay fading in on top. */
   background: linear-gradient(
     to bottom,
-    color-mix(in oklch, var(--secondary) 97%, var(--foreground)) 62%,
+    color-mix(in oklch, var(--secondary) 60%, var(--card)) 62%,
     var(--card)
   );
   color: var(--muted-foreground);
@@ -3128,7 +3132,7 @@ input:focus-visible,
 [data-theme="dark"] .agent-generated-video-placeholder,
 [data-theme="dark"] .agent-generated-media-reveal {
   --agent-generated-dot-alpha: 0.05;
-  --agent-generated-sheen-glow: 0.27;
+  --agent-generated-sheen-glow: 0.15;
   --agent-generated-mark-alpha: 0.3;
   color: var(--foreground);
 }

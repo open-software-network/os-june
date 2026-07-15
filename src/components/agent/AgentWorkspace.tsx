@@ -9650,7 +9650,7 @@ export function AgentWorkspace({
     // persisted, never retried.
     w.__imageGenDemo = (
       show: boolean | "complete" = true,
-      prompt = "a calm mountain lake at dawn",
+      prompt = "Generate an image of a wide, zoomed-out view of people sunbathing along the Rio Grande in New Mexico, painted in the style of Claude Monet. The riverbank is as crowded and lively as a New Jersey beach, creating a striking contrast with the high-desert landscape.",
     ) => {
       if (!selectedHermesSessionId || selectedHermesSessionIsProvisional) {
         return "Open a real session first, then run __imageGenDemo().";
@@ -9695,6 +9695,32 @@ export function AgentWorkspace({
           [selectedHermesSessionId]: show
             ? [
                 ...others,
+                {
+                  id: `${turnId}:seed-user`,
+                  role: "user" as const,
+                  createdAt: new Date(startedAt - 120_000).toISOString(),
+                  status: "complete" as const,
+                  parts: [
+                    {
+                      type: "text" as const,
+                      text: "I'm putting together a visual concept for a summer scene in New Mexico.",
+                      status: "complete" as const,
+                    },
+                  ],
+                },
+                {
+                  id: `${turnId}:seed-assistant`,
+                  role: "assistant" as const,
+                  createdAt: new Date(startedAt - 60_000).toISOString(),
+                  status: "complete" as const,
+                  parts: [
+                    {
+                      type: "text" as const,
+                      text: "What kind of setting and atmosphere would you like the image to have?",
+                      status: "complete" as const,
+                    },
+                  ],
+                },
                 ...runningImageSlashTurns({
                   id: turnId,
                   prompt,
