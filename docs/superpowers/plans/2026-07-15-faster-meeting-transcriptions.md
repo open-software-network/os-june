@@ -1331,15 +1331,17 @@ git commit -m "perf: overlap turn preparation and transcription"
 
 - [ ] **Step 1: Write failing production-wiring and cleanup tests**
 
-Add `#[tokio::test] async fn segment_temp_dir_is_removed_after_preparation_error()`: create a nested session directory under `tempfile::tempdir`, run the Task 4 error scenario while holding `TempDirCleanup`, release the in-flight provider, await the error, drop the guard, and assert the nested directory is absent and provider active count is zero.
+Add `#[tokio::test] async fn segment_temp_dir_is_removed_after_preparation_error()`: create a nested session directory under `tempfile::tempdir`, run the Task 4 error scenario while holding `Arc<TempDirCleanup>`, and assert the directory still exists while the preparation error is draining an in-flight provider. Release the provider, await the original error, assert provider active count and fallback count are zero, assert the directory still exists while the caller owns its guard clone, then drop that clone and assert the directory is absent.
+
+Add `#[tokio::test] async fn segment_temp_dir_outlives_cancelled_blocking_preparation()`: start the pipeline with a turn preparer that retains a cleanup-guard clone and blocks on a synchronous channel. Wait until the preparer is running, abort the outer pipeline task, await its `JoinHandle`, and assert the `JoinError` is cancelled before dropping the caller's guard clone. Assert the directory still exists, release the preparer, wait for its completion signal, and use a bounded poll to assert the directory is eventually removed after the producer closure drops its final clone. This test is mandatory: a plain lexical guard is not cancellation-safe because dropping a Tokio `spawn_blocking` handle does not stop the blocking closure. Awaiting cancellation before the first existence assertion prevents a lexical-only implementation from passing accidentally.
 
 Add `#[tokio::test] async fn preparation_report_separates_active_time_from_backpressure()`: use five descriptors, make each preparer spend a controlled interval in active work, and block provider progress. Two jobs are active and two fit in the capacity-two channel, so assert the producer handle remains pending on the fifth `blocking_send` until one provider permit is released. Then assert `active_preparation_duration_ms` reflects only the five preparer calls, `producer_wall_duration_ms` is larger because it spans the blocked send, and `done_to_preparation_complete_ms` is captured before final pipeline completion.
 
-Extend `preparation_error_joins_in_flight_requests_and_skips_fallback` to assert the returned `TurnPipelineFailure.preparation` is `Some`, contains the completed active/prepared counters, and retains the original preparation error.
+Extend `preparation_error_joins_in_flight_requests_and_skips_fallback` to assert the returned `TurnPipelineFailure.preparation` is `Some`, contains the completed active/prepared counters, and retains the original preparation error. Add a focused repository-backed assertion that this post-setup pipeline-failure path records exactly one failed `transcription_complete` and one failed `processing_complete` checkpoint without success/failure counts.
 
-Run the cleanup test. Expected: FAIL because early `?` can bypass the current explicit `remove_dir_all`.
+Run the cleanup tests. Expected: FAIL because `TempDirCleanup` and cancellation-safe shared ownership do not exist.
 
-- [ ] **Step 2: Add the lexical temp-directory guard**
+- [ ] **Step 2: Add cancellation-safe shared temp-directory ownership**
 
 ```rust
 struct TempDirCleanup(PathBuf);
@@ -1351,7 +1353,11 @@ impl Drop for TempDirCleanup {
 }
 ```
 
-Create the guard immediately after `create_dir_all(&segment_dir)` succeeds and remove the later explicit cleanup. The guard may drop only after the wrapper has joined the producer, all provider jobs, and any fallback `spawn_blocking` work.
+Create `Arc::new(TempDirCleanup(segment_dir.clone()))` immediately after `create_dir_all(&segment_dir)` succeeds and remove the later explicit cleanup. Return the guard from the setup block and bind it by name outside that block; never destructure it as `_`.
+
+The caller's lexical clone is not enough: cancellation drops the wrapper future but does not stop an already-running `spawn_blocking` closure. Capture guard clones in the production turn preparer, fallback preparer, and transcriber. The transcriber wrapper must retain its clone inside the returned future until that future completes. This guarantees that producer preparation, fallback normalization, or provider work cannot outlive the temp directory even if the outer processing future is aborted.
+
+On the ordinary success path, drop the caller's clone immediately after `prepare_and_transcribe_turn_jobs_bounded` returns and before coverage or generation. On an ordinary error it drops during the return. Spawned owners keep the directory alive until their own work actually stops.
 
 - [ ] **Step 3: Build descriptors and fallback plans without WAV I/O**
 
@@ -1363,11 +1369,11 @@ let fallback_plans = build_source_fallback_plans(&preparation_jobs);
 
 This must happen before moving `preparation_jobs` into the producer.
 
-Capture `let reused_transcript_count = cached_candidates.len();` before moving cached candidates into `transcription_outcome` and use that value in both success and failure preparation checkpoints.
+Capture `let reused_transcript_count = cached_candidates.len();` before moving cached candidates into `transcription_outcome` and use that value in both success and failure preparation checkpoints. Invoke the wrapper even when every turn was cached (zero descriptors), so the session receives a zero-job preparation report.
 
 - [ ] **Step 4: Call the pipeline and persist accurate preparation details**
 
-Invoke the wrapper with production closures and match its report-preserving result:
+Invoke the wrapper with production closures that retain cleanup-guard clones and match its report-preserving result:
 
 ```rust
 let pipeline_result = prepare_and_transcribe_turn_jobs_bounded(
@@ -1377,9 +1383,12 @@ let pipeline_result = prepare_and_transcribe_turn_jobs_bounded(
     transcription_provider.clone(),
     title.clone(),
     dictionary_context,
-    Arc::new(prepare_turn_job),
-    Arc::new(prepare_source_fallback),
-    instrument_turn_transcriber(default_turn_transcriber(), timeline.clone()),
+    guarded_turn_preparer(Arc::clone(&segment_dir_cleanup)),
+    guarded_fallback_preparer(Arc::clone(&segment_dir_cleanup)),
+    retain_cleanup_during_transcription(
+        instrument_turn_transcriber(default_turn_transcriber(), timeline.clone()),
+        Arc::clone(&segment_dir_cleanup),
+    ),
     Some(result_sink),
     DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
     timing,
@@ -1422,9 +1431,19 @@ let pipeline = match pipeline_result {
             })),
         )
         .await;
+        add_processing_complete_checkpoint(
+            repos,
+            session_id,
+            timing,
+            processing_started,
+            "failed",
+        )
+        .await;
         return Err(failure.error);
     }
 };
+
+drop(segment_dir_cleanup);
 ```
 
 Implement the best-effort checkpoint helper used above:
@@ -1460,14 +1479,17 @@ async fn persist_turn_preparation_checkpoint(
 
 `durationMs` remains the active preparation field for compatibility. `producerWallDurationMs` includes channel backpressure and must never be compared directly with the baseline synchronous duration. Do not label wrapper return time as preparation completion.
 
+Remove `extraction_started` and the Task 4 temporary `dead_code` allowances now that the wrapper and report types are production-reachable. Mark the legacy `transcribe_turn_jobs_bounded` and `spawn_turn_jobs` helpers `#[cfg(test)]` because only regression tests keep using them after this wiring.
+
 - [ ] **Step 5: Preserve failure, coverage, and generation ordering**
 
-Append the fresh outcome to cached candidates as before. Persist visible failures, compute coverage, query persisted transcripts, sort inputs, and evaluate blocking failures before writing `transcription_complete` and entering Generating. Do not allow a preparation error to reach fallback, coverage, or generation.
+Append the fresh outcome to cached candidates as before. Preserve the current dependency order: persist visible failures, query successful persisted transcript rows, compute coverage from those rows, derive and sort inputs, evaluate blocking failures, flush the first-event timeline, write `transcription_complete`, and only then enter Generating. Do not allow a preparation error to reach fallback, coverage, visible-failure handling, or generation.
 
 - [ ] **Step 6: Run production-wiring, quality, cleanup, and full Rust tests**
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::segment_temp_dir_is_removed_after_preparation_error -- --exact
+cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::segment_temp_dir_outlives_cancelled_blocking_preparation -- --exact
 cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::preparation_report_separates_active_time_from_backpressure -- --exact
 cargo test --manifest-path src-tauri/Cargo.toml --locked domain::processing::tests::prepared_turn_matches_existing_audio_and_metadata -- --exact
 pnpm test:rust
