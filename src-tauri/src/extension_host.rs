@@ -683,18 +683,36 @@ pub fn host_manifest_json(shim_path: &std::path::Path) -> Value {
 /// dictation helper probing shape). Dev builds compile the shim next to the
 /// app executable (`target/<profile>/june-nm-shim`); bundled builds carry it
 /// under `Resources/native/bin/`.
-fn shim_candidates(app: &AppHandle) -> Vec<PathBuf> {
+fn shim_candidates_for_build(
+    exe_path: Option<&std::path::Path>,
+    resource_dir: Option<&std::path::Path>,
+    debug_build: bool,
+) -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Ok(exe_path) = std::env::current_exe() {
+    if let Some(exe_path) = exe_path {
         if let Some(exe_dir) = exe_path.parent() {
             paths.push(exe_dir.join("june-nm-shim"));
-            paths.push(exe_dir.join("../Resources/native/bin/june-nm-shim"));
+            if !debug_build {
+                paths.push(exe_dir.join("../Resources/native/bin/june-nm-shim"));
+            }
         }
     }
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        paths.push(resource_dir.join("native").join("bin").join("june-nm-shim"));
+    if !debug_build {
+        if let Some(resource_dir) = resource_dir {
+            paths.push(resource_dir.join("native").join("bin").join("june-nm-shim"));
+        }
     }
     paths
+}
+
+fn shim_candidates(app: &AppHandle) -> Vec<PathBuf> {
+    let exe_path = std::env::current_exe().ok();
+    let resource_dir = app.path().resource_dir().ok();
+    shim_candidates_for_build(
+        exe_path.as_deref(),
+        resource_dir.as_deref(),
+        cfg!(debug_assertions),
+    )
 }
 
 fn chrome_native_messaging_hosts_dir() -> Option<PathBuf> {
@@ -1015,6 +1033,17 @@ mod tests {
         assert_eq!(
             origins,
             &[Value::String(format!("chrome-extension://{EXTENSION_ID}/"))]
+        );
+    }
+
+    #[test]
+    fn debug_registration_never_falls_back_to_a_bundled_release_shim() {
+        let executable = std::path::Path::new("/repo/src-tauri/target/debug/June");
+        let resources = std::path::Path::new("/Applications/June.app/Contents/Resources");
+
+        assert_eq!(
+            shim_candidates_for_build(Some(executable), Some(resources), true),
+            vec![PathBuf::from("/repo/src-tauri/target/debug/june-nm-shim")]
         );
     }
 

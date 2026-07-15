@@ -201,6 +201,80 @@ describe("native payload chunking", () => {
   });
 });
 
+describe("navigation", () => {
+  function navigationController() {
+    const harness = chromeHarness();
+    const controller = new BrowserController();
+    controller.registry.start("task");
+    controller.registry.addShared("task", 10);
+    return { controller, ...harness };
+  }
+
+  it("returns a stable failure when Chrome rejects the navigation", async () => {
+    const { controller, sendCommand } = navigationController();
+    sendCommand.mockImplementation(async (_target: unknown, method: string) => {
+      if (method === "Page.navigate") {
+        return { frameId: "frame-10", errorText: "net::ERR_NAME_NOT_RESOLVED" };
+      }
+      return {};
+    });
+
+    const result = await controller.execute(
+      browserRequest(10, "navigate", {
+        session_id: "task",
+        tab_id: 10,
+        url: "https://private.invalid/secret",
+      }),
+    );
+
+    expect(result.response).toMatchObject({ success: false, errorCode: "navigation_failed" });
+    expect(result.response.message).not.toContain("ERR_NAME_NOT_RESOLVED");
+    expect(result.response.message).not.toContain("private.invalid");
+    expect(sendCommand).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "Page.getFrameTree",
+      expect.anything(),
+    );
+  });
+
+  it("waits for the committed document and returns its final URL", async () => {
+    const { controller, sendCommand } = navigationController();
+    sendCommand.mockImplementation(async (_target: unknown, method: string) => {
+      if (method === "Page.navigate") {
+        return { frameId: "frame-10", loaderId: "loader-2" };
+      }
+      if (method === "Page.getFrameTree") {
+        return {
+          frameTree: {
+            frame: {
+              id: "frame-10",
+              loaderId: "loader-2",
+              url: "https://example.com/final",
+            },
+          },
+        };
+      }
+      if (method === "Runtime.evaluate") return { result: { value: "complete" } };
+      return {};
+    });
+
+    await expect(
+      controller.execute(
+        browserRequest(11, "navigate", {
+          session_id: "task",
+          tab_id: 10,
+          url: "https://example.com/start",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      response: {
+        success: true,
+        data: { tabId: 10, url: "https://example.com/final" },
+      },
+    });
+  });
+});
+
 describe("attended reference actions", () => {
   const element = {
     tag: "button",

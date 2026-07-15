@@ -81,15 +81,22 @@ export function AgentSettingsSection({
   // default for a setting with security weight.
   const [cliAccessEnabled, setCliAccessEnabled] = useState<boolean | null>(null);
   const [cliAccessSaving, setCliAccessSaving] = useState(false);
+  const [cliAccessLoadFailed, setCliAccessLoadFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     hermesAgentCliAccess()
       .then((status) => {
-        if (!cancelled) setCliAccessEnabled(status.enabled);
+        if (!cancelled) {
+          setCliAccessEnabled(status.enabled);
+          setCliAccessLoadFailed(false);
+        }
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(messageFromError(err));
+        if (!cancelled) {
+          setCliAccessLoadFailed(true);
+          setError(messageFromError(err));
+        }
       });
     return () => {
       cancelled = true;
@@ -115,6 +122,21 @@ export function AgentSettingsSection({
       setCliAccessEnabled(status.enabled);
       setError(null);
     } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setCliAccessSaving(false);
+    }
+  }
+
+  async function handleCliAccessRetry() {
+    setCliAccessSaving(true);
+    setCliAccessLoadFailed(false);
+    try {
+      const status = await hermesAgentCliAccess();
+      setCliAccessEnabled(status.enabled);
+      setError(null);
+    } catch (err) {
+      setCliAccessLoadFailed(true);
       setError(messageFromError(err));
     } finally {
       setCliAccessSaving(false);
@@ -410,12 +432,23 @@ export function AgentSettingsSection({
                 </p>
               </div>
               <div className="settings-row-control">
-                <Switch
-                  checked={cliAccessEnabled === true}
-                  disabled={cliAccessEnabled === null || cliAccessSaving}
-                  onCheckedChange={(enabled) => void handleCliAccessChange(enabled)}
-                  aria-label="Allow agent CLI access"
-                />
+                {cliAccessLoadFailed ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    disabled={cliAccessSaving}
+                    onClick={() => void handleCliAccessRetry()}
+                  >
+                    {cliAccessSaving ? "Trying again..." : "Try again"}
+                  </button>
+                ) : (
+                  <Switch
+                    checked={cliAccessEnabled === true}
+                    disabled={cliAccessEnabled === null || cliAccessSaving}
+                    onCheckedChange={(enabled) => void handleCliAccessChange(enabled)}
+                    aria-label="Allow agent CLI access"
+                  />
+                )}
               </div>
             </div>
           </div>

@@ -289,6 +289,61 @@ async function waitUntilReady(tabId: number): Promise<void> {
   throw toolError("navigation_timeout", "The page did not become ready in time.");
 }
 
+type PageNavigation = { frameId?: unknown; loaderId?: unknown; errorText?: unknown };
+type PageFrame = { id?: unknown; loaderId?: unknown; url?: unknown };
+
+function canonicalUrl(value: string): string | null {
+  try {
+    return new URL(value).href;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForCommittedNavigation(
+  tabId: number,
+  requestedUrl: string,
+  navigation: PageNavigation,
+): Promise<string> {
+  if (typeof navigation.frameId !== "string") {
+    throw toolError("navigation_failed", "Chrome did not start the navigation.");
+  }
+  const expectedUrl = canonicalUrl(requestedUrl);
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    try {
+      const result = (await cdp(tabId, "Page.getFrameTree")) as {
+        frameTree?: { frame?: PageFrame };
+      };
+      const frame = result.frameTree?.frame;
+      const frameUrl = typeof frame?.url === "string" ? frame.url : null;
+      const expectedDocument =
+        frame?.id === navigation.frameId &&
+        (typeof navigation.loaderId === "string"
+          ? frame.loaderId === navigation.loaderId
+          : frameUrl !== null && canonicalUrl(frameUrl) === expectedUrl);
+      if (expectedDocument && frameUrl !== null) {
+        const ready = (await cdp(tabId, "Runtime.evaluate", {
+          expression: "document.readyState",
+          returnByValue: true,
+        })) as { result?: { value?: unknown } };
+        if (ready.result?.value === "complete" || ready.result?.value === "interactive") {
+          const finalUrl = canonicalUrl(frameUrl);
+          if (finalUrl?.startsWith("http://") || finalUrl?.startsWith("https://")) {
+            return finalUrl;
+          }
+          throw toolError("navigation_failed", "Chrome did not reach a web page.");
+        }
+      }
+    } catch (error) {
+      if ((error as Partial<ToolFailure>).browserSafeCode === true) throw error;
+      // Navigation can replace the execution context between polling calls.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw toolError("navigation_timeout", "The page did not become ready in time.");
+}
+
 function interactiveRole(role?: string): boolean {
   return [
     "button",
@@ -784,9 +839,12 @@ export class BrowserController {
     if (tool === "navigate") {
       const url = stringArg(args, "url");
       this.registry.invalidate(sessionId, tabId);
-      await cdp(tabId, "Page.navigate", { url });
-      await waitUntilReady(tabId);
-      return { tabId, url };
+      const navigation = (await cdp(tabId, "Page.navigate", { url })) as PageNavigation;
+      if (typeof navigation.errorText === "string" && navigation.errorText.length > 0) {
+        throw toolError("navigation_failed", "Chrome could not navigate to that page.");
+      }
+      const finalUrl = await waitForCommittedNavigation(tabId, url, navigation);
+      return { tabId, url: finalUrl };
     }
     if (tool === "snapshot") return this.snapshot(sessionId, tabId, taskTab);
     if (tool === "inspect_reference") {

@@ -451,15 +451,6 @@ impl BrowserBroker {
                 .collect::<Vec<_>>();
             (transports, sessions, cancelled)
         };
-        for pending in &cancelled {
-            self.finish_approval(
-                pending,
-                "cancelled_by_task_end",
-                "browser_action_cancelled_by_task_end",
-            )
-            .await?;
-            tracing::info!(action_id = %pending.approval_id, outcome = "cancelled_by_task_end", "browser approval state changed");
-        }
         if !cancelled.is_empty() {
             self.notify_approvals_changed();
         }
@@ -487,6 +478,30 @@ impl BrowserBroker {
                 code = %error.code,
                 "browser session teardown failed during access revocation"
             );
+        }
+        // The grant and every live session are already gone. Ledger writes are
+        // intentionally best-effort from here so a database failure cannot
+        // keep a revoked browser attachment alive or block credential cleanup.
+        for pending in &cancelled {
+            match self
+                .finish_approval(
+                    pending,
+                    "cancelled_by_task_end",
+                    "browser_action_cancelled_by_task_end",
+                )
+                .await
+            {
+                Ok(()) => {
+                    tracing::info!(action_id = %pending.approval_id, outcome = "cancelled_by_task_end", "browser approval state changed");
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        action_id = %pending.approval_id,
+                        code = %error.code,
+                        "browser approval cancellation ledger write failed after revocation"
+                    );
+                }
+            }
         }
         // Revocation must remain durable even if Chrome disappeared before it
         // acknowledged detach. The broker gate is already closed and the
@@ -1575,18 +1590,24 @@ impl BrowserBroker {
 
         match execution {
             Ok(()) => {
+                {
+                    let mut state = self.lock();
+                    if allow_site {
+                        if let Some(session) = state.sessions.get_mut(&pending.key.session_id) {
+                            session.allowed_origins.insert(pending.origin.clone());
+                        }
+                    }
+                    state
+                        .resolved_actions
+                        .insert(pending.key.clone(), BrowserActionOutcome::Executed);
+                }
+                // Record the irreversible in-memory outcome before fallible
+                // ledger bookkeeping. A retry must never execute the action a
+                // second time just because the approval receipt could not be
+                // persisted.
                 self.record_approval_event(&pending, "approved").await?;
                 self.evaluate_outcome(&declaration, "executed", None, true)
                     .await;
-                let mut state = self.lock();
-                if allow_site {
-                    if let Some(session) = state.sessions.get_mut(&pending.key.session_id) {
-                        session.allowed_origins.insert(pending.origin);
-                    }
-                }
-                state
-                    .resolved_actions
-                    .insert(pending.key, BrowserActionOutcome::Executed);
                 tracing::info!(action_id = %approval_id, outcome = "approved", "browser approval state changed");
                 Ok(())
             }
@@ -1889,6 +1910,7 @@ fn extension_request_error(message: String, response: &Value) -> AppError {
                     | "session_not_found"
                     | "tab_not_owned"
                     | "invalid_arguments"
+                    | "navigation_failed"
                     | "navigation_timeout"
                     | "tab_open_failed"
                     | "snapshot_invalidated"
@@ -2148,14 +2170,14 @@ mod tests {
         });
         let response = json!({
             "success": false,
-            "errorCode": "navigation_timeout",
+            "errorCode": "navigation_failed",
             "message": "Page text from https://private.example/secret: field-value-123",
         });
 
         let error =
             extension_request_error(extension_failure_message("navigate", &arguments), &response);
 
-        assert_eq!(error.code, "navigation_timeout");
+        assert_eq!(error.code, "navigation_failed");
         assert!(error.message.contains("navigate"));
         assert!(error.message.contains("session-123"));
         assert!(error.message.contains("tab 42"));
@@ -2955,6 +2977,8 @@ mod tests {
         element: Mutex<InteractiveElement>,
         url: Mutex<String>,
         action_count: std::sync::atomic::AtomicUsize,
+        closed: std::sync::atomic::AtomicUsize,
+        terminated: std::sync::atomic::AtomicUsize,
     }
 
     impl AttendedInteractionTransport {
@@ -2968,6 +2992,8 @@ mod tests {
                 }),
                 url: Mutex::new("https://example.com:443/checkout".into()),
                 action_count: std::sync::atomic::AtomicUsize::new(0),
+                closed: std::sync::atomic::AtomicUsize::new(0),
+                terminated: std::sync::atomic::AtomicUsize::new(0),
             }
         }
 
@@ -3019,10 +3045,20 @@ mod tests {
                             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         json!({ "epoch": 1, "snapshot": "fresh snapshot" })
                     }
+                    "close_session" => {
+                        self.closed
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        json!({})
+                    }
                     _ => json!({}),
                 };
                 Ok(TransportResponse::data(data))
             })
+        }
+
+        fn terminate_session(&self, _session_id: &str) {
+            self.terminated
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -3128,6 +3164,38 @@ mod tests {
         ] {
             assert!(!serialized.contains(sentinel));
         }
+    }
+
+    #[tokio::test]
+    async fn approved_action_replay_stays_idempotent_when_ledger_write_fails() {
+        let (_temp, broker, transport, session_id, repositories) =
+            attended_interaction_broker("Purchase now").await;
+        let arguments = click_arguments(&session_id, "e0:n1");
+        let parked = broker
+            .execute(BrowserTransportKind::Attended, "click", arguments.clone())
+            .await
+            .expect("park");
+        repositories.pool.close().await;
+
+        let error = broker
+            .respond_to_approval(parked["actionId"].as_str().unwrap(), true, false)
+            .await
+            .expect_err("approval receipt write must fail");
+        assert_eq!(error.code, "browser_outcome_ledger_failed");
+        assert_eq!(transport.action_count(), 1);
+
+        broker.configure_outcome_repository(test_outcome_repositories().await);
+        let replay = broker
+            .execute(BrowserTransportKind::Attended, "click", arguments)
+            .await
+            .expect("completed action replay");
+        assert_eq!(replay["executed"], true);
+        assert_eq!(transport.action_count(), 1);
+        assert!(broker
+            .pending_approvals()
+            .await
+            .expect("pending")
+            .is_empty());
     }
 
     #[tokio::test]
@@ -3258,6 +3326,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn grant_revoke_tears_down_sessions_when_ledger_write_fails() {
+        let (_temp, broker, transport, session_id, repositories) =
+            attended_interaction_broker("Send message").await;
+        broker
+            .execute(
+                BrowserTransportKind::Attended,
+                "click",
+                click_arguments(&session_id, "e0:n1"),
+            )
+            .await
+            .expect("park");
+        repositories.pool.close().await;
+
+        broker
+            .set_enabled(false)
+            .await
+            .expect("revocation remains authoritative");
+
+        assert_eq!(broker.active_session_count(), 0);
+        assert_eq!(
+            transport
+                .terminated
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            transport.closed.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert!(broker
+            .pending_approvals()
+            .await
+            .expect("pending")
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn site_allow_skips_parking_then_expires_with_task() {
         let (_temp, broker, transport, session_id, _repositories) =
             attended_interaction_broker("Send message").await;
@@ -3364,7 +3469,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sensitive_fill_requires_human_takeover_and_never_dispatches_input() {
+    async fn sensitive_text_input_requires_human_takeover_and_never_dispatches_input() {
         let (_temp, broker, transport, session_id, _repositories) =
             attended_interaction_broker("Password").await;
         transport.set_element(InteractiveElement {
@@ -3373,21 +3478,33 @@ mod tests {
             label: "Password".into(),
             ..InteractiveElement::default()
         });
-        let refusal = broker
-            .execute(
-                BrowserTransportKind::Attended,
+        for (tool, arguments) in [
+            (
                 "fill",
                 json!({
-                    "session_id": session_id,
+                    "session_id": &session_id,
                     "tab_id": 7,
                     "ref": "e0:n1",
                     "text": "never dispatched",
                 }),
-            )
-            .await
-            .expect_err("sensitive fill");
-        assert_eq!(refusal.code, "browser_human_takeover_required");
-        assert!(refusal.message.contains("take over"));
+            ),
+            (
+                "press",
+                json!({
+                    "session_id": &session_id,
+                    "tab_id": 7,
+                    "ref": "e0:n1",
+                    "key": "a",
+                }),
+            ),
+        ] {
+            let refusal = broker
+                .execute(BrowserTransportKind::Attended, tool, arguments)
+                .await
+                .expect_err("sensitive input");
+            assert_eq!(refusal.code, "browser_human_takeover_required");
+            assert!(refusal.message.contains("take over"));
+        }
         assert_eq!(transport.action_count(), 0);
         assert!(broker
             .pending_approvals()

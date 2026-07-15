@@ -30,6 +30,7 @@ export function BrowserUseCapabilityRow() {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
+    let pairingEventObserved = false;
     void hermesBrowserAccess()
       .then((current) => {
         if (!cancelled) setGrantEnabled(current.enabled);
@@ -39,14 +40,6 @@ export function BrowserUseCapabilityRow() {
           setGrantEnabled(false);
           setError(messageFromError(err));
         }
-      });
-    void extensionPairingStatus()
-      .then((current) => {
-        if (!cancelled) setStatus(current);
-      })
-      .catch(() => {
-        // Status stays unknown; the row falls back to the not-connected
-        // subtitle and the Connect action below.
       });
     void browserTransportPolicy()
       .then((policy) => {
@@ -60,12 +53,35 @@ export function BrowserUseCapabilityRow() {
       if (cancelled) cleanup();
       else unlistenPolicy = cleanup;
     });
-    void listen<ExtensionPairingStatus>(EXTENSION_PAIRING_CHANGED_EVENT, (event) => {
-      if (!cancelled) setStatus(event.payload);
-    }).then((cleanup) => {
-      if (cancelled) cleanup();
-      else unlisten = cleanup;
-    });
+    void (async () => {
+      try {
+        const cleanup = await listen<ExtensionPairingStatus>(
+          EXTENSION_PAIRING_CHANGED_EVENT,
+          (event) => {
+            pairingEventObserved = true;
+            if (!cancelled) setStatus(event.payload);
+          },
+        );
+        if (cancelled) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+      } catch {
+        // Fall through to the snapshot. A failed subscription should not
+        // prevent Settings from showing the current pairing state.
+      }
+
+      try {
+        const current = await extensionPairingStatus();
+        // An event delivered after subscription is newer than a snapshot that
+        // was already in flight. Never overwrite that event with stale state.
+        if (!cancelled && !pairingEventObserved) setStatus(current);
+      } catch {
+        // Status stays unknown; the row falls back to the not-connected
+        // subtitle and the Connect action below.
+      }
+    })();
     return () => {
       cancelled = true;
       unlisten?.();

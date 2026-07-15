@@ -98,6 +98,7 @@ const mocks = vi.hoisted(() => ({
   hermesAgentCliAccess: vi.fn(),
   setHermesAgentCliAccess: vi.fn(),
   hermesBrowserAccess: vi.fn(),
+  registerBrowserExtensionHost: vi.fn(),
   setHermesBrowserAccess: vi.fn(),
   listHermesSessions: vi.fn(),
   gatewayRequest: vi.fn(),
@@ -155,6 +156,7 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
   hermesBrowserAccess: mocks.hermesBrowserAccess,
+  registerBrowserExtensionHost: mocks.registerBrowserExtensionHost,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
@@ -604,6 +606,10 @@ describe("AgentWorkspace", () => {
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
     mocks.hermesBrowserAccess.mockResolvedValue({ enabled: false });
+    mocks.registerBrowserExtensionHost.mockResolvedValue({
+      manifestPath: "/tmp/june-browser-host.json",
+      shimPath: "/tmp/june-nm-shim",
+    });
     mocks.hermesBridgeSkills.mockResolvedValue([]);
     mocks.getHermesBridgeSkill.mockImplementation(async (name: string) => ({
       name,
@@ -6068,6 +6074,7 @@ describe("AgentWorkspace", () => {
     // Approving persists the same stored grant as the Settings toggle (the
     // setter also restarts both runtime modes)...
     await waitFor(() => expect(mocks.setHermesBrowserAccess).toHaveBeenCalledWith(true));
+    expect(mocks.registerBrowserExtensionHost).toHaveBeenCalledOnce();
     // ...and June is told the grant is live, so it retries the turn that
     // asked on the restarted runtime.
     await waitFor(() =>
@@ -6075,6 +6082,16 @@ describe("AgentWorkspace", () => {
         session_id: "runtime-session-1",
         text: expect.stringContaining("I enabled Browser use"),
       }),
+    );
+    expect(mocks.setHermesBrowserAccess.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.registerBrowserExtensionHost.mock.invocationCallOrder[0],
+    );
+    const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
+      ([method]) => method === "prompt.submit",
+    );
+    expect(submitIndex).toBeGreaterThanOrEqual(0);
+    expect(mocks.registerBrowserExtensionHost.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.gatewayRequest.mock.invocationCallOrder[submitIndex],
     );
     expect(await screen.findByText("Browser use enabled")).toBeInTheDocument();
   });

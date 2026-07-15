@@ -73,7 +73,9 @@ pub fn classify_managed_action(
     action: ManagedAction<'_>,
     element: &InteractiveElement,
 ) -> ActionClass {
-    if matches!(action, ManagedAction::Fill) && is_sensitive_field(element) {
+    if matches!(action, ManagedAction::Fill | ManagedAction::Press(_))
+        && is_sensitive_field(element)
+    {
         return ActionClass::SensitiveField;
     }
 
@@ -1051,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_fill_classification_blocks_sensitive_fields_only() {
+    fn managed_text_input_classification_blocks_sensitive_fields_only() {
         for sensitive in [
             InteractiveElement {
                 tag: "input".into(),
@@ -1073,6 +1075,10 @@ mod tests {
                 classify_managed_action(ManagedAction::Fill, &sensitive),
                 ActionClass::SensitiveField
             );
+            assert_eq!(
+                classify_managed_action(ManagedAction::Press("a"), &sensitive),
+                ActionClass::SensitiveField
+            );
         }
         let ordinary = InteractiveElement {
             tag: "input".into(),
@@ -1081,6 +1087,10 @@ mod tests {
         };
         assert_eq!(
             classify_managed_action(ManagedAction::Fill, &ordinary),
+            ActionClass::Routine
+        );
+        assert_eq!(
+            classify_managed_action(ManagedAction::Press("a"), &ordinary),
             ActionClass::Routine
         );
     }

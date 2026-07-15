@@ -152,6 +152,46 @@ describe("ConnectorsSection", () => {
     expect(within(row).queryByText(/finish connecting/i)).toBeNull();
   });
 
+  it("subscribes before reading pairing state and ignores an older snapshot", async () => {
+    const handlers = new Map<string, (event: { payload: unknown }) => void>();
+    let finishPairingListen: ((cleanup: () => void) => void) | undefined;
+    let finishStatus: ((status: { paired: boolean; listenerRunning: boolean }) => void) | undefined;
+    mocks.hermesBrowserAccess.mockResolvedValue({ enabled: true });
+    mocks.extensionPairingStatus.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishStatus = resolve;
+        }),
+    );
+    mocks.listen.mockImplementation((event: string, handler: (e: { payload: unknown }) => void) => {
+      handlers.set(event, handler);
+      if (event === "june://extension-pairing-changed") {
+        return new Promise((resolve) => {
+          finishPairingListen = resolve;
+        });
+      }
+      return Promise.resolve(() => {});
+    });
+
+    render(<ConnectorsSection />);
+
+    await waitFor(() => expect(finishPairingListen).toBeDefined());
+    expect(mocks.extensionPairingStatus).not.toHaveBeenCalled();
+    act(() => finishPairingListen?.(() => {}));
+    await waitFor(() => expect(mocks.extensionPairingStatus).toHaveBeenCalledOnce());
+
+    act(() => {
+      handlers.get("june://extension-pairing-changed")?.({
+        payload: { paired: true, listenerRunning: true, extensionVersion: "0.1.0" },
+      });
+      finishStatus?.({ paired: false, listenerRunning: true });
+    });
+
+    const row = (await screen.findByText("Browser use")).closest("li") as HTMLElement;
+    expect(await within(row).findByText("Connected")).toBeInTheDocument();
+    expect(within(row).queryByText("Finish setup")).toBeNull();
+  });
+
   it("disconnects Browser use by revoking the shared grant", async () => {
     mocks.hermesBrowserAccess.mockResolvedValue({ enabled: true });
     mocks.extensionPairingStatus.mockResolvedValue({

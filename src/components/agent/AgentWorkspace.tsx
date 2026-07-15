@@ -115,6 +115,7 @@ import {
   openHermesTuiDebug,
   osAccountsUpgrade,
   providerModelSettings,
+  registerBrowserExtensionHost,
   retryAgentTask,
   imagePromptMayBeExplicit,
   revealPath,
@@ -8089,6 +8090,7 @@ export function AgentWorkspace({
     setBrowserAccessSubmitting(true);
     try {
       await setHermesBrowserAccess(true);
+      await registerBrowserExtensionHost();
       setBrowserAccessEnabled(true);
       await submitHermesSession(BROWSER_ACCESS_ENABLED_MESSAGE);
       setError(null);
