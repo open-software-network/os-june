@@ -4030,6 +4030,7 @@ fn is_here_instruction_subject_marker(word: &str) -> bool {
             | "draft"
             | "improvements"
             | "rewrite"
+            | "summary"
     )
 }
 
@@ -7118,6 +7119,9 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here's what you dictated: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is a summary: Send it today."
         ));
         assert!(looks_like_instruction_response(
             "Here's your corrected transcript. Send it today."
