@@ -3914,17 +3914,7 @@ fn looks_like_instruction_response(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase().replace('’', "'");
     looks_like_report_summary_response(&normalized)
         || normalized.starts_with("sure")
-        || [
-            "here is the corrected transcript:",
-            "here's the corrected transcript:",
-            "here is the cleaned-up text:",
-            "here's the cleaned-up text:",
-            "here is the cleaned up text:",
-            "here's the cleaned up text:",
-            "here you go:",
-        ]
-        .iter()
-        .any(|prefix| normalized.starts_with(prefix))
+        || looks_like_here_prefaced_instruction_response(&normalized)
         || normalized.starts_with("summary:")
         || normalized.starts_with("the transcript ")
         || normalized.starts_with("the user expresses")
@@ -3946,6 +3936,24 @@ fn looks_like_instruction_response(value: &str) -> bool {
         || normalized.contains(" spelled correctly ")
         || normalized.contains("rewritten text")
         || normalized.contains("normalized transcript")
+}
+
+fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
+    let Some((preamble, _)) = normalized.split_once(':') else {
+        return false;
+    };
+    if preamble == "here you go" {
+        return true;
+    }
+    let Some(subject) = ["here is ", "here's ", "here are "]
+        .iter()
+        .find_map(|prefix| preamble.strip_prefix(prefix))
+    else {
+        return false;
+    };
+    ["transcript", "text", "notes"]
+        .iter()
+        .any(|marker| subject.contains(marker))
 }
 
 fn looks_like_report_summary_response(normalized: &str) -> bool {
@@ -6901,6 +6909,12 @@ mod tests {
             "Here’s the corrected transcript: Hello."
         ));
         assert!(looks_like_instruction_response("Here you go: Hello."));
+        assert!(looks_like_instruction_response(
+            "Here is the transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here are the cleaned notes: Hello."
+        ));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
         ));
