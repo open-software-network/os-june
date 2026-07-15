@@ -323,13 +323,14 @@ async fn integration_agent_chat_stream_returns_upstream_sse_body() -> Result<(),
 #[tokio::test]
 async fn integration_agent_chat_accepts_tool_heavy_body_over_small_json_cap()
 -> Result<(), Box<dyn Error>> {
-    // 1.25 MiB: STRICTLY above `test_state`'s shared `max_json_bytes` (1 MiB in
-    // tests/support), so it would 413 under the old shared-cap route — this is
-    // what makes the test distinguish the fix from the bug. It stays under both
-    // the 3 MiB agent chat body cap (so the extractor lets it through) and the
-    // 1.5M-char semantic cap (so `validate_agent_chat_body` accepts it), and
-    // must reach the handler and stream from the mocked upstream (200, not 413).
-    let body = tool_heavy_chat_body_with_len(1024 * 1024 + 256 * 1024)?;
+    // 4 MiB: STRICTLY above `test_state`'s shared `max_json_bytes` (1 MiB in
+    // tests/support) so it would 413 under the old shared-cap route, AND above
+    // the previous 3 MiB agent cap so it exercises the raised 1M-token capacity.
+    // It stays under both the 12 MiB agent chat body cap (so the extractor lets
+    // it through) and the 6M-char semantic cap (~4.19M chars here, so
+    // `validate_agent_chat_body` accepts it), and must reach the handler and
+    // stream from the mocked upstream (200, not 413).
+    let body = tool_heavy_chat_body_with_len(4 * 1024 * 1024)?;
     let router = router(test_state());
     let response = match router
         .oneshot(raw_json_request_with_auth("/v1/chat/completions", body)?)

@@ -76,14 +76,16 @@ pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
     base64_encoded_len(IMAGE_EDIT_SOURCE_MAX_BYTES) + IMAGE_EDIT_JSON_OVERHEAD_BYTES;
 /// Dedicated request-body cap for `/v1/chat/completions`. Sized to the
 /// desktop provider proxy's chat body cap
-/// (`JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES`, 3 MiB, in
+/// (`JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES`, 12 MiB, in
 /// `src-tauri/src/hermes_bridge.rs`) so an in-window agent chat request the
 /// proxy forwards is never rejected here by a stricter outer gate before
-/// `validate_agent_chat_body` can size-check it (JUN-336). This is only an
-/// abuse ceiling above every valid agent chat request; semantic size rejection
-/// stays in `validate_agent_chat_body`. Keep this in sync with the proxy
-/// constant across the src-tauri / june-api workspace boundary.
-pub const DEFAULT_MAX_AGENT_CHAT_BYTES: usize = 3 * 1024 * 1024;
+/// `validate_agent_chat_body` can size-check it (JUN-336). 12 MiB is the
+/// byte-image of the 6M-char semantic cap (`MAX_AGENT_TOTAL_STRING_CHARS`) at
+/// ~2 bytes/char, sized for a 1M-token context window. This is only an abuse
+/// ceiling above every valid agent chat request; semantic size rejection stays
+/// in `validate_agent_chat_body`. Keep this in sync with the proxy constant
+/// across the src-tauri / june-api workspace boundary.
+pub const DEFAULT_MAX_AGENT_CHAT_BYTES: usize = 12 * 1024 * 1024;
 
 // --- Video generation (ADR 0015) ---------------------------------------------
 //
@@ -409,7 +411,7 @@ pub struct ServerConfig {
     /// image after base64 expansion plus fixed request overhead.
     pub max_image_edit_bytes: usize,
     /// JSON body cap for `/v1/chat/completions`, sized to the desktop proxy's
-    /// 3 MiB chat body cap so an in-window agent chat request is not rejected by
+    /// 12 MiB chat body cap so an in-window agent chat request is not rejected by
     /// a stricter outer gate before semantic validation (JUN-336).
     pub max_agent_chat_bytes: usize,
 }
@@ -1255,16 +1257,16 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
         config.server.max_agent_chat_bytes,
     )?;
     // The extractor cap must never sit BELOW the desktop provider proxy's fixed
-    // 3 MiB chat body cap (mirrored here as `DEFAULT_MAX_AGENT_CHAT_BYTES`), or a
+    // 12 MiB chat body cap (mirrored here as `DEFAULT_MAX_AGENT_CHAT_BYTES`), or a
     // configured override silently reintroduces the JUN-336 regression: the proxy
-    // still forwards a 1-3 MiB agent chat request, but this route 413s it before
+    // still forwards a 1-12 MiB agent chat request, but this route 413s it before
     // `validate_agent_chat_body` runs. `max_json_bytes` is NOT the right floor —
     // an override of e.g. 1 MiB clears it yet is still stricter than the proxy.
     // The compile-time asserts only pin the default; this guards overrides.
     if config.server.max_agent_chat_bytes < DEFAULT_MAX_AGENT_CHAT_BYTES {
         return Err(ConfigError::InvalidRequired {
             field: "server.max_agent_chat_bytes",
-            reason: "must be >= the 3 MiB desktop proxy chat body cap",
+            reason: "must be >= the 12 MiB desktop proxy chat body cap",
         });
     }
     validate_positive_usize_config(
@@ -1869,8 +1871,8 @@ mod tests {
     }
 
     #[test]
-    fn default_agent_chat_body_limit_is_the_dedicated_3_mib_cap() {
-        assert_eq!(DEFAULT_MAX_AGENT_CHAT_BYTES, 3 * 1024 * 1024);
+    fn default_agent_chat_body_limit_is_the_dedicated_12_mib_cap() {
+        assert_eq!(DEFAULT_MAX_AGENT_CHAT_BYTES, 12 * 1024 * 1024);
         assert_eq!(
             AppConfig::default().server.max_agent_chat_bytes,
             DEFAULT_MAX_AGENT_CHAT_BYTES
@@ -1885,7 +1887,7 @@ mod tests {
 
     #[test]
     fn agent_chat_body_limit_below_proxy_cap_is_rejected() {
-        // An override BELOW the 3 MiB desktop proxy cap must fail loudly at load,
+        // An override BELOW the 12 MiB desktop proxy cap must fail loudly at load,
         // even when it clears the shared small-JSON cap — otherwise the proxy
         // forwards a 1-3 MiB agent chat request that this route then 413s,
         // reopening JUN-336 (Codex review on PR #776).

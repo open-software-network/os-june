@@ -9,9 +9,10 @@ max_json_bytes = 524288
 max_issue_report_bytes = 315621376
 max_image_edit_bytes = 69921452
 # Dedicated body cap for /v1/chat/completions, aligned with the desktop
-# provider proxy's 3 MiB chat body cap (JUN-336). Kept above the semantic
+# provider proxy's 12 MiB chat body cap (JUN-336) — the byte-image of the 6M-char
+# semantic cap, sized for a 1M-token context window. Kept above the semantic
 # agent chat string caps so in-window requests reach validate_agent_chat_body.
-max_agent_chat_bytes = 3145728
+max_agent_chat_bytes = 12582912
 
 # Public facts shown on the /verify attestation page. source_commit is not
 # set here — the Docker build stamps it via JUNE__ATTESTATION__SOURCE_COMMIT.
