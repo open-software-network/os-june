@@ -18,7 +18,10 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, AtomicI64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -35,6 +38,7 @@ const TRANSCRIPTION_CONTEXT_MAX_CHARS: usize = 1_200;
 const TRANSCRIPTION_CONTEXT_MAX_TURNS: usize = 6;
 const DICTIONARY_CONTEXT_MAX_ENTRIES: usize = 80;
 const DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY: usize = 2;
+const PREPARED_TURN_CHANNEL_CAPACITY: usize = DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY;
 const TRANSCRIPT_COVERAGE_WARN_RATIO: f64 = 0.8;
 const TRANSCRIPT_COVERAGE_WARN_MIN_MISSING_MS: i64 = 60_000;
 const TRANSIENT_TRANSCRIPTION_ATTEMPTS: usize = 3;
@@ -92,6 +96,282 @@ fn turn_cache_key(source: &str, turn_index: i64) -> String {
 
 fn elapsed_ms(started: Instant) -> i64 {
     started.elapsed().as_millis().min(i64::MAX as u128) as i64
+}
+
+const UNSET_TIMING_MS: i64 = -1;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ProcessingTiming {
+    done_started: Option<Instant>,
+}
+
+impl ProcessingTiming {
+    pub(crate) fn from_done(done_started: Instant) -> Self {
+        Self {
+            done_started: Some(done_started),
+        }
+    }
+
+    pub(crate) fn untracked() -> Self {
+        Self::default()
+    }
+
+    fn done_to_duration_ms(self) -> Option<i64> {
+        self.done_started.map(elapsed_ms)
+    }
+
+    pub(crate) fn checkpoint_details(self, mut details: serde_json::Value) -> String {
+        if let (Some(duration_ms), Some(object)) =
+            (self.done_to_duration_ms(), details.as_object_mut())
+        {
+            object.insert("doneToDurationMs".to_string(), duration_ms.into());
+        }
+        details.to_string()
+    }
+}
+
+#[derive(Clone)]
+struct FirstEventTimeline {
+    timing: ProcessingTiming,
+    first_request_ms: Arc<AtomicI64>,
+    first_persisted_ms: Arc<AtomicI64>,
+    flushed: Arc<AtomicBool>,
+}
+
+impl FirstEventTimeline {
+    fn new(timing: ProcessingTiming) -> Self {
+        Self {
+            timing,
+            first_request_ms: Arc::new(AtomicI64::new(UNSET_TIMING_MS)),
+            first_persisted_ms: Arc::new(AtomicI64::new(UNSET_TIMING_MS)),
+            flushed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn mark_first_request(&self) {
+        self.mark(&self.first_request_ms);
+    }
+
+    fn mark_first_persisted(&self) {
+        self.mark(&self.first_persisted_ms);
+    }
+
+    fn mark(&self, slot: &AtomicI64) {
+        if let Some(duration_ms) = self.timing.done_to_duration_ms() {
+            let _ = slot.compare_exchange(
+                UNSET_TIMING_MS,
+                duration_ms,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+
+    async fn flush(&self, repos: &Repositories, recording_session_id: &str) {
+        if self.flushed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        for (kind, duration_ms) in [
+            (
+                "first_note_transcription_request",
+                self.first_request_ms.load(Ordering::Acquire),
+            ),
+            (
+                "first_transcript_persisted",
+                self.first_persisted_ms.load(Ordering::Acquire),
+            ),
+        ] {
+            if duration_ms == UNSET_TIMING_MS {
+                continue;
+            }
+            add_latency_checkpoint(
+                repos,
+                recording_session_id,
+                kind,
+                serde_json::json!({ "doneToDurationMs": duration_ms }).to_string(),
+            )
+            .await;
+        }
+    }
+}
+
+pub(crate) async fn add_latency_checkpoint(
+    repos: &Repositories,
+    recording_session_id: &str,
+    kind: &str,
+    details: String,
+) {
+    if let Err(error) = repos
+        .add_checkpoint(recording_session_id, kind, Some(details))
+        .await
+    {
+        tracing::warn!(recording_session_id, kind, %error, "failed to persist latency checkpoint");
+    }
+}
+
+async fn add_processing_complete_checkpoint(
+    repos: &Repositories,
+    recording_session_id: &str,
+    timing: ProcessingTiming,
+    processing_started: Instant,
+    status: &str,
+) {
+    add_latency_checkpoint(
+        repos,
+        recording_session_id,
+        "processing_complete",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(processing_started),
+            "status": status,
+        })),
+    )
+    .await;
+}
+
+async fn add_infrastructure_note_transcription_failure_checkpoint(
+    repos: &Repositories,
+    recording_session_id: &str,
+    timing: ProcessingTiming,
+    note_transcription_started: Instant,
+    error_code: &str,
+) {
+    add_latency_checkpoint(
+        repos,
+        recording_session_id,
+        "note_transcription_complete",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(note_transcription_started),
+            "status": "failed",
+            "error": error_code,
+        })),
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finalize_infrastructure_note_transcription_failure(
+    repos: &Repositories,
+    recording_session_id: &str,
+    timeline: &FirstEventTimeline,
+    timing: ProcessingTiming,
+    note_transcription_started: Instant,
+    processing_started: Instant,
+    error: AppError,
+) -> AppError {
+    timeline.flush(repos, recording_session_id).await;
+    add_infrastructure_note_transcription_failure_checkpoint(
+        repos,
+        recording_session_id,
+        timing,
+        note_transcription_started,
+        &error.code,
+    )
+    .await;
+    add_processing_complete_checkpoint(
+        repos,
+        recording_session_id,
+        timing,
+        processing_started,
+        "failed",
+    )
+    .await;
+    error
+}
+
+async fn persist_turn_preparation_checkpoint(
+    repos: &Repositories,
+    recording_session_id: &str,
+    status: &str,
+    report: Option<&TurnPreparationReport>,
+    reused_transcript_count: usize,
+    error: Option<&str>,
+) {
+    add_latency_checkpoint(
+        repos,
+        recording_session_id,
+        "turn_wav_extraction",
+        serde_json::json!({
+            "durationMs": report.map(|value| value.active_preparation_duration_ms),
+            "activePreparationDurationMs": report.map(|value| value.active_preparation_duration_ms),
+            "producerWallDurationMs": report.map(|value| value.producer_wall_duration_ms),
+            "doneToPreparationCompleteMs": report
+                .and_then(|value| value.done_to_preparation_complete_ms),
+            "jobCount": report.map(|value| value.prepared_count).unwrap_or(0),
+            "reusedTranscriptCount": reused_transcript_count,
+            "status": status,
+            "error": error,
+        })
+        .to_string(),
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn persist_turn_pipeline_result(
+    repos: &Repositories,
+    recording_session_id: &str,
+    pipeline_result: Result<TurnPipelineResult, TurnPipelineFailure>,
+    reused_transcript_count: usize,
+    timeline: &FirstEventTimeline,
+    timing: ProcessingTiming,
+    note_transcription_started: Instant,
+    processing_started: Instant,
+) -> Result<TurnPipelineResult, AppError> {
+    match pipeline_result {
+        Ok(pipeline) => {
+            persist_turn_preparation_checkpoint(
+                repos,
+                recording_session_id,
+                "succeeded",
+                Some(&pipeline.preparation),
+                reused_transcript_count,
+                None,
+            )
+            .await;
+            Ok(pipeline)
+        }
+        Err(failure) => {
+            let error_code = failure.error.code.clone();
+            persist_turn_preparation_checkpoint(
+                repos,
+                recording_session_id,
+                "failed",
+                failure.preparation.as_ref(),
+                reused_transcript_count,
+                Some(error_code.as_str()),
+            )
+            .await;
+            timeline.flush(repos, recording_session_id).await;
+            add_latency_checkpoint(
+                repos,
+                recording_session_id,
+                "note_transcription_complete",
+                timing.checkpoint_details(serde_json::json!({
+                    "durationMs": elapsed_ms(note_transcription_started),
+                    "status": "failed",
+                    "error": error_code,
+                })),
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                recording_session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            Err(failure.error)
+        }
+    }
+}
+
+struct TempDirCleanup(PathBuf);
+
+impl Drop for TempDirCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn session_temp_dir(prefix: &str, session_id: &str) -> PathBuf {
@@ -269,7 +549,7 @@ pub fn manual_notes_for_generation(note: &NoteDto) -> Option<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn process_saved_audio(
+pub(crate) async fn process_saved_audio(
     repos: &Repositories,
     note_id: &str,
     session_id: &str,
@@ -279,23 +559,68 @@ pub async fn process_saved_audio(
     existing_generated_note: Option<String>,
     manual_notes: Option<String>,
     recorded_silence: bool,
+    timing: ProcessingTiming,
 ) -> Result<NoteDto, AppError> {
+    let processing_started = Instant::now();
+    let note_transcription_started = Instant::now();
+    let timeline = FirstEventTimeline::new(timing);
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
     let temp_dir = session_temp_dir("os-june-transcription", session_id);
     let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
-    let normalized_audio_path = normalize_wav_for_transcription(
+    if let Err(error) = std::fs::create_dir_all(&temp_dir) {
+        let error = AppError::new("audio_normalize_failed", error.to_string());
+        return Err(finalize_infrastructure_note_transcription_failure(
+            repos,
+            session_id,
+            &timeline,
+            timing,
+            note_transcription_started,
+            processing_started,
+            error,
+        )
+        .await);
+    }
+    let _temp_dir_cleanup = TempDirCleanup(temp_dir.clone());
+    let normalized_audio_path = match normalize_wav_for_transcription(
         &audio_path,
         &temp_dir.join(format!("{audio_artifact_id}-normalized.wav")),
-    )?;
+    ) {
+        Ok(path) => path,
+        Err(error) => {
+            return Err(finalize_infrastructure_note_transcription_failure(
+                repos,
+                session_id,
+                &timeline,
+                timing,
+                note_transcription_started,
+                processing_started,
+                error,
+            )
+            .await);
+        }
+    };
     let transcription_provider = crate::providers::configured_transcription_provider();
-    let dictionary_entries = repos.list_dictionary_entries().await?;
+    let dictionary_entries = match repos.list_dictionary_entries().await {
+        Ok(entries) => entries,
+        Err(error) => {
+            return Err(finalize_infrastructure_note_transcription_failure(
+                repos,
+                session_id,
+                &timeline,
+                timing,
+                note_transcription_started,
+                processing_started,
+                AppError::from(error),
+            )
+            .await);
+        }
+    };
     let dictionary_context = build_dictionary_context(&dictionary_entries);
+    let transcriber = instrument_turn_transcriber(default_turn_transcriber(), timeline.clone());
     let transcription = match transcribe_prepared_audio(
-        default_turn_transcriber(),
+        transcriber,
         TranscribePreparedAudioRequest {
             provider: transcription_provider.clone(),
             audio_path: normalized_audio_path,
@@ -314,6 +639,20 @@ pub async fn process_saved_audio(
     {
         Ok(transcription) => transcription,
         Err(error) => {
+            timeline.flush(repos, session_id).await;
+            add_latency_checkpoint(
+                repos,
+                session_id,
+                "note_transcription_complete",
+                timing.checkpoint_details(serde_json::json!({
+                    "durationMs": elapsed_ms(note_transcription_started),
+                    "status": "failed",
+                    "successfulTurnCount": 0,
+                    "failedTurnCount": 1,
+                    "error": error.code,
+                })),
+            )
+            .await;
             let user_message = user_facing_transcription_failure_message(
                 &error.code,
                 &error.message,
@@ -327,6 +666,14 @@ pub async fn process_saved_audio(
                 persist_microphone_only_transcript_coverage(repos, session_id, "microphone", &[])
                     .await;
             }
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
             repos
                 .set_note_status(
                     note_id,
@@ -351,7 +698,7 @@ pub async fn process_saved_audio(
         dictionary_context.as_deref(),
     )
     .await;
-    let transcript_row = repos
+    let transcript_row = match repos
         .create_transcript(
             note_id,
             audio_artifact_id,
@@ -359,11 +706,56 @@ pub async fn process_saved_audio(
             transcript.language.clone(),
             &transcript.provider,
         )
-        .await?;
+        .await
+    {
+        Ok(row) => row,
+        Err(error) => {
+            let error = AppError::from(error);
+            timeline.flush(repos, session_id).await;
+            add_infrastructure_note_transcription_failure_checkpoint(
+                repos,
+                session_id,
+                timing,
+                note_transcription_started,
+                &error.code,
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    timeline.mark_first_persisted();
+    timeline.flush(repos, session_id).await;
+    add_latency_checkpoint(
+        repos,
+        session_id,
+        "note_transcription_complete",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(note_transcription_started),
+            "status": "succeeded",
+            "successfulTurnCount": 1,
+            "failedTurnCount": 0,
+        })),
+    )
+    .await;
 
-    repos
+    if let Err(error) = repos
         .set_note_status(note_id, ProcessingStatus::Generating, None)
-        .await?;
+        .await
+    {
+        let error = AppError::from(error);
+        add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "failed")
+            .await;
+        return Err(error);
+    }
+    let generation_started = Instant::now();
     let generated = match generate_note_from_transcript(GenerationRequest {
         provider: crate::providers::generation_provider(),
         operation_id: Some(note_id.to_string()),
@@ -378,6 +770,25 @@ pub async fn process_saved_audio(
     {
         Ok(generated) => generated,
         Err(error) => {
+            add_latency_checkpoint(
+                repos,
+                session_id,
+                "note_generation",
+                timing.checkpoint_details(serde_json::json!({
+                    "durationMs": elapsed_ms(generation_started),
+                    "status": "failed",
+                    "error": error.code,
+                })),
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
             repos
                 .set_note_status(
                     note_id,
@@ -388,7 +799,17 @@ pub async fn process_saved_audio(
             return Err(error);
         }
     };
-    let generation_result_id = repos
+    add_latency_checkpoint(
+        repos,
+        session_id,
+        "note_generation",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(generation_started),
+            "status": "succeeded",
+        })),
+    )
+    .await;
+    let generation_result_id = match repos
         .create_generation_result(
             note_id,
             &transcript_row.id,
@@ -397,8 +818,23 @@ pub async fn process_saved_audio(
             &generated.provider,
             &generated.prompt_version,
         )
-        .await?;
-    let note = repos
+        .await
+    {
+        Ok(id) => id,
+        Err(error) => {
+            let error = AppError::from(error);
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    let note = match repos
         .set_generated_note_for_session(
             note_id,
             Some(session_id),
@@ -406,12 +842,29 @@ pub async fn process_saved_audio(
             generated.title_suggestion,
             generated.content,
         )
-        .await?;
+        .await
+    {
+        Ok(note) => note,
+        Err(error) => {
+            let error = AppError::from(error);
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "succeeded")
+        .await;
     Ok(note)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn process_saved_source_audio(
+pub(crate) async fn process_saved_source_audio(
     repos: &Repositories,
     note_id: &str,
     session_id: &str,
@@ -420,249 +873,305 @@ pub async fn process_saved_source_audio(
     title: String,
     existing_generated_note: Option<String>,
     manual_notes: Option<String>,
+    timing: ProcessingTiming,
 ) -> Result<NoteDto, AppError> {
+    let processing_started = Instant::now();
+    let note_transcription_started = Instant::now();
+    let timeline = FirstEventTimeline::new(timing);
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
     let transcription_provider = crate::providers::configured_transcription_provider();
-    let dictionary_entries = repos.list_dictionary_entries().await?;
-    let dictionary_context = build_dictionary_context(&dictionary_entries);
-    let processing_started = Instant::now();
-    let detection_started = Instant::now();
-    let SilentSystemDropOutcome {
-        kept: sources,
-        dropped,
-    } = partition_silent_system_sources(sources);
-    for drop in &dropped {
-        repos
-            .add_source_checkpoint(
+    let dictionary_entries = match repos.list_dictionary_entries().await {
+        Ok(entries) => entries,
+        Err(error) => {
+            return Err(finalize_infrastructure_note_transcription_failure(
+                repos,
                 session_id,
-                Some(drop.artifact_id.as_str()),
-                Some(drop.source.as_str()),
-                "silent_source_dropped",
-                Some(
-                    serde_json::json!({
-                        "source": drop.source,
-                        "maxRms": drop.max_rms,
-                    })
-                    .to_string(),
-                ),
+                &timeline,
+                timing,
+                note_transcription_started,
+                processing_started,
+                AppError::from(error),
             )
-            .await?;
-    }
-    let detection_sources = sources
-        .iter()
-        .map(
-            |(artifact_id, source, audio_path, _recorded_silence)| DetectionSource {
-                artifact_id: artifact_id.clone(),
-                source: source.clone(),
-                path: audio_path.clone(),
-            },
-        )
-        .collect::<Vec<_>>();
-    // Detection now carries real DSP (GCC-PHAT probes, adaptive
-    // cancellation passes over full recordings) — CPU-bound for minutes on
-    // long meetings, so it must not pin an async runtime worker.
-    let (turns, echo_rejection) =
-        tokio::task::spawn_blocking(move || detect_turns_with_report(&detection_sources))
-            .await
-            .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))??;
-    // Echo rejection silently rewrites the microphone timeline; leave a
-    // trace (which lag, how much trimmed) so missing-speech reports can be
-    // diagnosed, mirroring the silent_source_dropped checkpoint.
-    if echo_rejection.attempted() {
+            .await);
+        }
+    };
+    let dictionary_context = build_dictionary_context(&dictionary_entries);
+    let pipeline_setup = async {
+        let detection_started = Instant::now();
+        let SilentSystemDropOutcome {
+            kept: sources,
+            dropped,
+        } = partition_silent_system_sources(sources);
+        for drop in &dropped {
+            repos
+                .add_source_checkpoint(
+                    session_id,
+                    Some(drop.artifact_id.as_str()),
+                    Some(drop.source.as_str()),
+                    "silent_source_dropped",
+                    Some(
+                        serde_json::json!({
+                            "source": drop.source,
+                            "maxRms": drop.max_rms,
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await?;
+        }
+        let detection_sources = sources
+            .iter()
+            .map(
+                |(artifact_id, source, audio_path, _recorded_silence)| DetectionSource {
+                    artifact_id: artifact_id.clone(),
+                    source: source.clone(),
+                    path: audio_path.clone(),
+                },
+            )
+            .collect::<Vec<_>>();
+        // Detection now carries real DSP (GCC-PHAT probes, adaptive
+        // cancellation passes over full recordings) — CPU-bound for minutes on
+        // long meetings, so it must not pin an async runtime worker.
+        let (turns, echo_rejection) =
+            tokio::task::spawn_blocking(move || detect_turns_with_report(&detection_sources))
+                .await
+                .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))??;
+        // Echo rejection silently rewrites the microphone timeline; leave a
+        // trace (which lag, how much trimmed) so missing-speech reports can be
+        // diagnosed, mirroring the silent_source_dropped checkpoint.
+        if echo_rejection.attempted() {
+            repos
+                .add_checkpoint(
+                    session_id,
+                    "echo_rejection",
+                    Some(
+                        serde_json::json!({
+                            "pairLagsMs": echo_rejection.pair_lags_ms,
+                            "trimmedTurnCount": echo_rejection.trimmed_turn_count,
+                            "trimmedMs": echo_rejection.trimmed_ms,
+                            "droppedTurnCount": echo_rejection.dropped_turn_count,
+                            "durationMs": elapsed_ms(detection_started),
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await?;
+        }
+        let turns = add_full_source_turns_for_missing_sources(&sources, turns, &echo_rejection);
+        let turns = coalesce_turns_for_transcription_avoiding_echo(
+            turns,
+            &echo_rejection.microphone_echo_spans,
+        );
+        // Coverage is measured against the post-trim turn list on purpose:
+        // speaker bleed removed by echo rejection is not lost speech.
+        let coverage_turns = turns.clone();
         repos
             .add_checkpoint(
                 session_id,
-                "echo_rejection",
+                "turn_detection",
                 Some(
                     serde_json::json!({
-                        "pairLagsMs": echo_rejection.pair_lags_ms,
-                        "trimmedTurnCount": echo_rejection.trimmed_turn_count,
-                        "trimmedMs": echo_rejection.trimmed_ms,
-                        "droppedTurnCount": echo_rejection.dropped_turn_count,
                         "durationMs": elapsed_ms(detection_started),
+                        "sourceCount": sources.len(),
+                        "turnCount": turns.len(),
                     })
                     .to_string(),
                 ),
             )
             .await?;
-    }
-    let turns = add_full_source_turns_for_missing_sources(&sources, turns, &echo_rejection);
-    let turns = coalesce_turns_for_transcription_avoiding_echo(
-        turns,
-        &echo_rejection.microphone_echo_spans,
-    );
-    // Coverage is measured against the post-trim turn list on purpose:
-    // speaker bleed removed by echo rejection is not lost speech.
-    let coverage_turns = turns.clone();
-    repos
-        .add_checkpoint(
-            session_id,
-            "turn_detection",
-            Some(
-                serde_json::json!({
-                    "durationMs": elapsed_ms(detection_started),
-                    "sourceCount": sources.len(),
-                    "turnCount": turns.len(),
-                })
-                .to_string(),
-            ),
-        )
-        .await?;
 
-    let segment_dir = session_temp_dir("os-june-turns", session_id);
-    let _ = std::fs::remove_dir_all(&segment_dir);
-    std::fs::create_dir_all(&segment_dir)
-        .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+        let turn_wav_dir = session_temp_dir("os-june-turns", session_id);
+        let _ = std::fs::remove_dir_all(&turn_wav_dir);
+        std::fs::create_dir_all(&turn_wav_dir)
+            .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+        let turn_wav_dir_cleanup = Arc::new(TempDirCleanup(turn_wav_dir.clone()));
 
-    let extraction_started = Instant::now();
-    let existing_transcripts = repos
-        .successful_source_turn_transcripts_for_session(session_id)
-        .await?;
-    let existing_by_turn = existing_transcripts
-        .into_iter()
-        .filter_map(|transcript| {
-            Some((
-                turn_cache_key(transcript.source.as_deref()?, transcript.turn_index?),
-                transcript,
-            ))
-        })
-        .collect::<HashMap<_, _>>();
-    let mut transcription_jobs = Vec::new();
-    let mut cached_candidates = Vec::new();
-    let mut normalized_sources: HashMap<PathBuf, PathBuf> = HashMap::new();
-    for turn in turns {
-        if let Some(existing) = existing_by_turn.get(&turn_cache_key(&turn.source, turn.turn_index))
-        {
-            // The cache key is positional; turn detection changes across app
-            // versions (echo rejection trims and splits microphone turns), so
-            // an index alone can point at a different stretch of audio than
-            // the transcript was made from. Reuse only when the cached bounds
-            // confirm it is the same turn — otherwise fall through and
-            // re-transcribe rather than replay text from the wrong span.
-            let bounds_match = existing.start_ms.is_some_and(|start| {
-                (start - turn.start_ms).abs() <= CACHED_TURN_BOUNDS_TOLERANCE_MS
-            }) && existing
-                .end_ms
-                .is_some_and(|end| (end - turn.end_ms).abs() <= CACHED_TURN_BOUNDS_TOLERANCE_MS);
-            if bounds_match {
-                cached_candidates.push(TranscriptCandidate {
-                    artifact_id: turn.artifact_id,
-                    language: existing.language.clone(),
-                    provider: transcription_provider.clone(),
-                    input: SourceTranscriptInput {
-                        source: existing
-                            .source
-                            .clone()
-                            .unwrap_or_else(|| turn.source.clone()),
-                        text: existing.text.clone(),
-                        valid: existing.status == "succeeded" && !existing.text.trim().is_empty(),
-                        warning: None,
-                        recorded_silence: existing.recorded_silence,
-                        start_ms: existing.start_ms.or(Some(turn.start_ms)),
-                        end_ms: existing.end_ms.or(Some(turn.end_ms)),
-                        turn_index: existing.turn_index.or(Some(turn.turn_index)),
-                    },
+        let existing_transcripts = repos
+            .successful_source_turn_transcripts_for_session(session_id)
+            .await?;
+        let existing_by_turn = existing_transcripts
+            .into_iter()
+            .filter_map(|transcript| {
+                Some((
+                    turn_cache_key(transcript.source.as_deref()?, transcript.turn_index?),
+                    transcript,
+                ))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut preparation_jobs = Vec::new();
+        let mut cached_candidates = Vec::new();
+        for turn in turns {
+            if let Some(existing) =
+                existing_by_turn.get(&turn_cache_key(&turn.source, turn.turn_index))
+            {
+                // The cache key is positional; turn detection changes across app
+                // versions (echo rejection trims and splits microphone turns), so
+                // an index alone can point at a different stretch of audio than
+                // the transcript was made from. Reuse only when the cached bounds
+                // confirm it is the same turn — otherwise fall through and
+                // re-transcribe rather than replay text from the wrong span.
+                let bounds_match = existing.start_ms.is_some_and(|start| {
+                    (start - turn.start_ms).abs() <= CACHED_TURN_BOUNDS_TOLERANCE_MS
+                }) && existing.end_ms.is_some_and(|end| {
+                    (end - turn.end_ms).abs() <= CACHED_TURN_BOUNDS_TOLERANCE_MS
                 });
-                continue;
+                if bounds_match {
+                    cached_candidates.push(TranscriptCandidate {
+                        artifact_id: turn.artifact_id,
+                        language: existing.language.clone(),
+                        provider: transcription_provider.clone(),
+                        input: SourceTranscriptInput {
+                            source: existing
+                                .source
+                                .clone()
+                                .unwrap_or_else(|| turn.source.clone()),
+                            text: existing.text.clone(),
+                            valid: existing.status == "succeeded"
+                                && !existing.text.trim().is_empty(),
+                            warning: None,
+                            recorded_silence: existing.recorded_silence,
+                            start_ms: existing.start_ms.or(Some(turn.start_ms)),
+                            end_ms: existing.end_ms.or(Some(turn.end_ms)),
+                            turn_index: existing.turn_index.or(Some(turn.turn_index)),
+                        },
+                    });
+                    continue;
+                }
             }
-        }
 
-        let segment_path = segment_dir.join(format!(
-            "{:04}-{}-{}-{}.wav",
-            turn.turn_index, turn.source, turn.start_ms, turn.end_ms
-        ));
-        let source_audio_path = normalized_full_source(
-            &mut normalized_sources,
-            &segment_dir,
-            &turn.source,
-            &turn.source_path,
-        )?;
-        let covers_full_source = turn.end_ms <= turn.start_ms;
-        let raw_audio_path = if covers_full_source {
-            turn.source_path.clone()
-        } else {
-            write_turn_wav(&turn, &segment_path)?;
-            segment_path.clone()
-        };
-        let audio_path = normalize_wav_for_transcription(
-            &raw_audio_path,
-            &segment_dir.join(format!(
+            let turn_wav_path = turn_wav_dir.join(format!(
+                "{:04}-{}-{}-{}.wav",
+                turn.turn_index, turn.source, turn.start_ms, turn.end_ms
+            ));
+            let normalized_path = turn_wav_dir.join(format!(
                 "{:04}-{}-{}-{}-normalized.wav",
                 turn.turn_index, turn.source, turn.start_ms, turn.end_ms
-            )),
-        )?;
-        let recorded_silence = source_recorded_silence(&sources, &turn.artifact_id);
-        transcription_jobs.push(TurnTranscriptionJob {
-            echo_trimmed: echo_rejection
+            ));
+            let recorded_silence = source_recorded_silence(&sources, &turn.artifact_id);
+            let echo_trimmed = echo_rejection
                 .trimmed_artifact_ids
-                .contains(&turn.artifact_id),
-            artifact_id: turn.artifact_id,
-            source: turn.source,
-            audio_path,
-            temp_dir: segment_dir.clone(),
-            source_path: source_audio_path,
-            recorded_silence,
-            covers_full_source,
-            source_fallback: false,
-            start_ms: turn.start_ms,
-            end_ms: turn.end_ms,
-            turn_index: turn.turn_index,
-        });
+                .contains(&turn.artifact_id);
+            preparation_jobs.push(TurnPreparationJob {
+                schedule_index: preparation_jobs.len(),
+                turn,
+                temp_dir: turn_wav_dir.clone(),
+                turn_wav_path,
+                normalized_path,
+                recorded_silence,
+                echo_trimmed,
+            });
+        }
+        let fallback_plans = build_source_fallback_plans(&preparation_jobs);
+
+        Ok::<_, AppError>((
+            sources,
+            coverage_turns,
+            turn_wav_dir_cleanup,
+            preparation_jobs,
+            fallback_plans,
+            cached_candidates,
+        ))
     }
-    repos
-        .add_checkpoint(
-            session_id,
-            "turn_wav_extraction",
-            Some(
-                serde_json::json!({
-                    "durationMs": elapsed_ms(extraction_started),
-                    "jobCount": transcription_jobs.len(),
-                    "reusedTranscriptCount": cached_candidates.len(),
-                })
-                .to_string(),
-            ),
-        )
-        .await?;
+    .await;
+    let (
+        sources,
+        coverage_turns,
+        turn_wav_dir_cleanup,
+        preparation_jobs,
+        fallback_plans,
+        cached_candidates,
+    ) = match pipeline_setup {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            timeline.flush(repos, session_id).await;
+            add_infrastructure_note_transcription_failure_checkpoint(
+                repos,
+                session_id,
+                timing,
+                note_transcription_started,
+                &error.code,
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
 
     let persist_repos = repos.clone();
     let persist_note_id = note_id.to_string();
     let persist_session_id = session_id.to_string();
+    let persist_timeline = timeline.clone();
     let result_sink: TurnResultSink = Arc::new(move |event| {
         let repos = persist_repos.clone();
         let note_id = persist_note_id.clone();
         let session_id = persist_session_id.clone();
+        let timeline = persist_timeline.clone();
         Box::pin(async move {
-            persist_turn_transcription_event(&repos, &note_id, &session_id, source_mode, event)
-                .await
+            persist_turn_transcription_event(
+                &repos,
+                &note_id,
+                &session_id,
+                source_mode,
+                event,
+                timeline,
+            )
+            .await
         })
     });
 
+    let reused_transcript_count = cached_candidates.len();
     let mut transcription_outcome = TranscriptionOutcome {
         candidates: cached_candidates,
         failures: Vec::new(),
     };
-    if !transcription_jobs.is_empty() {
-        let mut fresh_outcome = transcribe_turn_jobs_bounded(
-            transcription_jobs,
-            &transcription_outcome.candidates,
-            transcription_provider.clone(),
-            title.clone(),
-            dictionary_context,
-            default_turn_transcriber(),
-            Some(result_sink),
-            DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
-        )
-        .await?;
-        transcription_outcome
-            .candidates
-            .append(&mut fresh_outcome.candidates);
-        transcription_outcome
-            .failures
-            .append(&mut fresh_outcome.failures);
-    }
-    let _ = std::fs::remove_dir_all(&segment_dir);
+    let transcriber = retain_cleanup_during_note_transcription(
+        instrument_turn_transcriber(default_turn_transcriber(), timeline.clone()),
+        Arc::clone(&turn_wav_dir_cleanup),
+    );
+    let pipeline_result = prepare_and_transcribe_turn_jobs_bounded(
+        preparation_jobs,
+        fallback_plans,
+        &transcription_outcome.candidates,
+        transcription_provider.clone(),
+        title.clone(),
+        dictionary_context,
+        guarded_turn_preparer(Arc::clone(&turn_wav_dir_cleanup)),
+        guarded_fallback_preparer(Arc::clone(&turn_wav_dir_cleanup)),
+        transcriber,
+        Some(result_sink),
+        DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+        timing,
+    )
+    .await;
+    let pipeline = persist_turn_pipeline_result(
+        repos,
+        session_id,
+        pipeline_result,
+        reused_transcript_count,
+        &timeline,
+        timing,
+        note_transcription_started,
+        processing_started,
+    )
+    .await?;
+    drop(turn_wav_dir_cleanup);
+
+    let mut fresh_outcome = pipeline.outcome;
+    transcription_outcome
+        .candidates
+        .append(&mut fresh_outcome.candidates);
+    transcription_outcome
+        .failures
+        .append(&mut fresh_outcome.failures);
 
     let has_valid_transcript = !transcription_outcome.candidates.is_empty();
     let visible_failures =
@@ -676,7 +1185,7 @@ pub async fn process_saved_source_audio(
             .as_deref()
             .unwrap_or("Source did not produce a usable transcript.");
         let persistence_started = Instant::now();
-        repos
+        if let Err(error) = repos
             .upsert_failed_source_turn_transcript(
                 note_id,
                 session_id,
@@ -689,8 +1198,29 @@ pub async fn process_saved_source_audio(
                 failure.input.end_ms.unwrap_or_default(),
                 failure.input.turn_index.unwrap_or_default(),
             )
-            .await?;
-        repos
+            .await
+        {
+            let error = AppError::from(error);
+            timeline.flush(repos, session_id).await;
+            add_infrastructure_note_transcription_failure_checkpoint(
+                repos,
+                session_id,
+                timing,
+                note_transcription_started,
+                &error.code,
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+        if let Err(error) = repos
             .add_source_checkpoint(
                 session_id,
                 Some(failure.artifact_id.as_str()),
@@ -705,12 +1235,57 @@ pub async fn process_saved_source_audio(
                     .to_string(),
                 ),
             )
-            .await?;
+            .await
+        {
+            let error = AppError::from(error);
+            timeline.flush(repos, session_id).await;
+            add_infrastructure_note_transcription_failure_checkpoint(
+                repos,
+                session_id,
+                timing,
+                note_transcription_started,
+                &error.code,
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
     }
 
-    let persisted_transcripts = repos
+    let persisted_transcripts = match repos
         .successful_source_turn_transcripts_for_session(session_id)
-        .await?;
+        .await
+    {
+        Ok(transcripts) => transcripts,
+        Err(error) => {
+            let error = AppError::from(error);
+            timeline.flush(repos, session_id).await;
+            add_infrastructure_note_transcription_failure_checkpoint(
+                repos,
+                session_id,
+                timing,
+                note_transcription_started,
+                &error.code,
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
     let transcript_coverage = compute_transcript_coverage(
         &sources,
         &coverage_turns,
@@ -748,35 +1323,49 @@ pub async fn process_saved_source_audio(
         .map(source_transcript_input_from_row)
         .collect::<Vec<_>>();
     let valid_sources = valid_sources_for_processing(transcript_inputs);
-    if valid_sources.is_empty() {
+    let blocking_error = if valid_sources.is_empty() {
         let failure_message = source_failure_summary(&transcription_outcome.failures)
             .unwrap_or_else(|| "No selected source produced a usable transcript.".to_string());
+        Some(AppError::new("transcription_failed", failure_message))
+    } else {
+        blocking_transcription_failure_summary(&visible_failures)
+            .map(|failure_message| AppError::new("transcription_partially_failed", failure_message))
+    };
+    timeline.flush(repos, session_id).await;
+    add_latency_checkpoint(
+        repos,
+        session_id,
+        "note_transcription_complete",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(note_transcription_started),
+            "status": if blocking_error.is_some() { "failed" } else { "succeeded" },
+            "successfulTurnCount": persisted_transcripts.len(),
+            "failedTurnCount": visible_failures.len(),
+        })),
+    )
+    .await;
+    if let Some(error) = blocking_error {
+        add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "failed")
+            .await;
         repos
             .set_note_status(
                 note_id,
                 ProcessingStatus::Failed,
-                Some(failure_message.clone()),
+                Some(error.message.clone()),
             )
             .await?;
-        return Err(AppError::new("transcription_failed", failure_message));
-    }
-    if let Some(failure_message) = blocking_transcription_failure_summary(&visible_failures) {
-        repos
-            .set_note_status(
-                note_id,
-                ProcessingStatus::Failed,
-                Some(failure_message.clone()),
-            )
-            .await?;
-        return Err(AppError::new(
-            "transcription_partially_failed",
-            failure_message,
-        ));
+        return Err(error);
     }
     let labeled_transcript = labeled_transcript_from_sources(&valid_sources);
-    repos
+    if let Err(error) = repos
         .set_note_status(note_id, ProcessingStatus::Generating, None)
-        .await?;
+        .await
+    {
+        let error = AppError::from(error);
+        add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "failed")
+            .await;
+        return Err(error);
+    }
     let generation_started = Instant::now();
     let generated = match generate_note_from_transcript(GenerationRequest {
         provider: crate::providers::generation_provider(),
@@ -792,6 +1381,25 @@ pub async fn process_saved_source_audio(
     {
         Ok(generated) => generated,
         Err(error) => {
+            add_latency_checkpoint(
+                repos,
+                session_id,
+                "note_generation",
+                timing.checkpoint_details(serde_json::json!({
+                    "durationMs": elapsed_ms(generation_started),
+                    "status": "failed",
+                    "error": error.code,
+                })),
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
             repos
                 .set_note_status(
                     note_id,
@@ -799,39 +1407,22 @@ pub async fn process_saved_source_audio(
                     Some(error.message.clone()),
                 )
                 .await?;
-            repos
-                .add_checkpoint(
-                    session_id,
-                    "note_generation",
-                    Some(
-                        serde_json::json!({
-                            "durationMs": elapsed_ms(generation_started),
-                            "status": "failed",
-                            "error": error.code,
-                        })
-                        .to_string(),
-                    ),
-                )
-                .await?;
             return Err(error);
         }
     };
-    repos
-        .add_checkpoint(
-            session_id,
-            "note_generation",
-            Some(
-                serde_json::json!({
-                    "durationMs": elapsed_ms(generation_started),
-                    "status": "succeeded",
-                    "transcriptCount": valid_sources.len(),
-                })
-                .to_string(),
-            ),
-        )
-        .await?;
+    add_latency_checkpoint(
+        repos,
+        session_id,
+        "note_generation",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(generation_started),
+            "status": "succeeded",
+            "transcriptCount": valid_sources.len(),
+        })),
+    )
+    .await;
     let transcript_id = first_transcript_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let generation_result_id = repos
+    let generation_result_id = match repos
         .create_generation_result(
             note_id,
             &transcript_id,
@@ -840,8 +1431,23 @@ pub async fn process_saved_source_audio(
             &generated.provider,
             &generated.prompt_version,
         )
-        .await?;
-    let note = repos
+        .await
+    {
+        Ok(id) => id,
+        Err(error) => {
+            let error = AppError::from(error);
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    let note = match repos
         .set_generated_note_for_session(
             note_id,
             Some(session_id),
@@ -849,19 +1455,24 @@ pub async fn process_saved_source_audio(
             generated.title_suggestion,
             generated.content,
         )
-        .await?;
-    repos
-        .add_checkpoint(
-            session_id,
-            "processing_complete",
-            Some(
-                serde_json::json!({
-                    "durationMs": elapsed_ms(processing_started),
-                })
-                .to_string(),
-            ),
-        )
-        .await?;
+        .await
+    {
+        Ok(note) => note,
+        Err(error) => {
+            let error = AppError::from(error);
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "succeeded")
+        .await;
     Ok(note)
 }
 
@@ -1147,18 +1758,83 @@ enum TurnTranscriptionResult {
 }
 
 #[derive(Debug, Clone)]
+struct TurnPreparationJob {
+    schedule_index: usize,
+    turn: AudioTurn,
+    temp_dir: PathBuf,
+    turn_wav_path: PathBuf,
+    normalized_path: PathBuf,
+    recorded_silence: bool,
+    echo_trimmed: bool,
+}
+
+impl TurnPreparationJob {
+    fn covers_full_source(&self) -> bool {
+        covers_full_source(self.turn.start_ms, self.turn.end_ms)
+    }
+}
+
+#[derive(Debug)]
+struct PreparedTurn {
+    schedule_index: usize,
+    job: TurnTranscriptionJob,
+}
+
+#[derive(Debug)]
+struct TurnLaunchPermit {
+    schedule_index: usize,
+    context: Option<String>,
+}
+
+#[derive(Debug)]
+struct TurnPreparationReport {
+    prepared_count: usize,
+    active_preparation_duration_ms: i64,
+    producer_wall_duration_ms: i64,
+    done_to_preparation_complete_ms: Option<i64>,
+    error: Option<AppError>,
+}
+
+#[derive(Debug)]
+struct TurnPipelineResult {
+    outcome: TranscriptionOutcome,
+    preparation: TurnPreparationReport,
+}
+
+#[derive(Debug)]
+struct TurnPipelineFailure {
+    error: AppError,
+    preparation: Option<TurnPreparationReport>,
+}
+
+#[derive(Debug, Clone)]
+struct SourceFallbackPlan {
+    artifact_id: String,
+    source: String,
+    source_path: PathBuf,
+    normalized_path: PathBuf,
+    temp_dir: PathBuf,
+    recorded_silence: bool,
+    all_turns_cover_full_source: bool,
+    echo_trimmed: bool,
+    end_ms: i64,
+    turn_index: i64,
+}
+
+impl SourceFallbackPlan {
+    fn eligible(&self) -> bool {
+        !self.all_turns_cover_full_source && !self.echo_trimmed
+    }
+}
+
+#[derive(Debug, Clone)]
 struct TurnTranscriptionJob {
     artifact_id: String,
     source: String,
     audio_path: PathBuf,
     temp_dir: PathBuf,
-    source_path: PathBuf,
     recorded_silence: bool,
-    covers_full_source: bool,
     source_fallback: bool,
-    /// The source lost audio to echo trimming; full-source fallbacks must
-    /// not run for it (the raw file contains the trimmed bleed verbatim).
-    echo_trimmed: bool,
     start_ms: i64,
     end_ms: i64,
     turn_index: i64,
@@ -1166,12 +1842,66 @@ struct TurnTranscriptionJob {
 
 type TranscriptionFuture =
     Pin<Box<dyn Future<Output = Result<TranscriptionProviderResult, AppError>> + Send>>;
+type TurnPreparer = Arc<dyn Fn(TurnPreparationJob) -> Result<PreparedTurn, AppError> + Send + Sync>;
+type SourceFallbackPreparer =
+    Arc<dyn Fn(SourceFallbackPlan) -> Result<TurnTranscriptionJob, AppError> + Send + Sync>;
 type TurnTranscriber = Arc<dyn Fn(TranscriptionRequest) -> TranscriptionFuture + Send + Sync>;
 type TurnResultFuture = Pin<Box<dyn Future<Output = Result<(), AppError>> + Send>>;
 type TurnResultSink = Arc<dyn Fn(CompletedTurnTranscription) -> TurnResultFuture + Send + Sync>;
 
+fn retain_cleanup_during_blocking_work<Input: 'static, Output: 'static>(
+    inner: Arc<dyn Fn(Input) -> Result<Output, AppError> + Send + Sync>,
+    cleanup: Arc<TempDirCleanup>,
+) -> Arc<dyn Fn(Input) -> Result<Output, AppError> + Send + Sync> {
+    Arc::new(move |input| {
+        let _cleanup = Arc::clone(&cleanup);
+        inner(input)
+    })
+}
+
+fn retain_cleanup_during_turn_preparation(
+    inner: TurnPreparer,
+    cleanup: Arc<TempDirCleanup>,
+) -> TurnPreparer {
+    retain_cleanup_during_blocking_work(inner, cleanup)
+}
+
+fn guarded_turn_preparer(cleanup: Arc<TempDirCleanup>) -> TurnPreparer {
+    let inner: TurnPreparer = Arc::new(prepare_turn_job);
+    retain_cleanup_during_turn_preparation(inner, cleanup)
+}
+
+fn guarded_fallback_preparer(cleanup: Arc<TempDirCleanup>) -> SourceFallbackPreparer {
+    let inner: SourceFallbackPreparer = Arc::new(prepare_source_fallback);
+    retain_cleanup_during_blocking_work(inner, cleanup)
+}
+
+fn retain_cleanup_during_note_transcription(
+    inner: TurnTranscriber,
+    cleanup: Arc<TempDirCleanup>,
+) -> TurnTranscriber {
+    Arc::new(move |request| {
+        let cleanup = Arc::clone(&cleanup);
+        let future = inner(request);
+        Box::pin(async move {
+            let _cleanup = cleanup;
+            future.await
+        })
+    })
+}
+
 fn default_turn_transcriber() -> TurnTranscriber {
     Arc::new(|request| Box::pin(transcribe_saved_audio(request)))
+}
+
+fn instrument_turn_transcriber(
+    inner: TurnTranscriber,
+    timeline: FirstEventTimeline,
+) -> TurnTranscriber {
+    Arc::new(move |request| {
+        timeline.mark_first_request();
+        inner(request)
+    })
 }
 
 struct TranscribePreparedAudioRequest {
@@ -1203,30 +1933,124 @@ struct TranscribePreparedAudioResult {
     chunk_outcomes: Vec<TranscriptionChunkOutcome>,
 }
 
-/// Full-source normalized audio, prepared once per source. The per-turn job
-/// loop used to normalize the WHOLE source recording again for every turn —
-/// the output name carried the turn index, so nothing was ever reused — and
-/// an hour of meeting audio was decoded, resampled, and rewritten dozens of
-/// times before the first transcription request even left the machine. The
-/// normalized copy only exists to serve as the full-source fallback when
-/// every turn of a source fails, so one per source is all there is to make.
-fn normalized_full_source(
-    cache: &mut HashMap<PathBuf, PathBuf>,
-    segment_dir: &Path,
-    source: &str,
-    source_path: &Path,
-) -> Result<PathBuf, AppError> {
-    if let Some(prepared) = cache.get(source_path) {
-        return Ok(prepared.clone());
+fn prepare_turn_job(descriptor: TurnPreparationJob) -> Result<PreparedTurn, AppError> {
+    let raw_path = if descriptor.covers_full_source() {
+        descriptor.turn.source_path.clone()
+    } else {
+        write_turn_wav(&descriptor.turn, &descriptor.turn_wav_path)?;
+        descriptor.turn_wav_path.clone()
+    };
+    let audio_path = normalize_wav_for_transcription(&raw_path, &descriptor.normalized_path)?;
+    Ok(PreparedTurn {
+        schedule_index: descriptor.schedule_index,
+        job: TurnTranscriptionJob {
+            artifact_id: descriptor.turn.artifact_id,
+            source: descriptor.turn.source,
+            audio_path,
+            temp_dir: descriptor.temp_dir,
+            recorded_silence: descriptor.recorded_silence,
+            source_fallback: false,
+            start_ms: descriptor.turn.start_ms,
+            end_ms: descriptor.turn.end_ms,
+            turn_index: descriptor.turn.turn_index,
+        },
+    })
+}
+
+fn prepare_source_fallback(plan: SourceFallbackPlan) -> Result<TurnTranscriptionJob, AppError> {
+    let audio_path = normalize_wav_for_transcription(&plan.source_path, &plan.normalized_path)?;
+    Ok(TurnTranscriptionJob {
+        artifact_id: plan.artifact_id,
+        source: plan.source,
+        audio_path,
+        temp_dir: plan.temp_dir,
+        recorded_silence: plan.recorded_silence,
+        source_fallback: true,
+        start_ms: 0,
+        end_ms: plan.end_ms,
+        turn_index: plan.turn_index,
+    })
+}
+
+fn build_source_fallback_plans(descriptors: &[TurnPreparationJob]) -> Vec<SourceFallbackPlan> {
+    let mut plans = Vec::<SourceFallbackPlan>::new();
+    let mut source_indices = HashMap::<String, usize>::new();
+    for descriptor in descriptors {
+        if let Some(index) = source_indices.get(&descriptor.turn.source).copied() {
+            let plan = &mut plans[index];
+            plan.all_turns_cover_full_source &= descriptor.covers_full_source();
+            plan.echo_trimmed |= descriptor.echo_trimmed;
+            plan.end_ms = plan.end_ms.max(descriptor.turn.end_ms);
+            continue;
+        }
+
+        source_indices.insert(descriptor.turn.source.clone(), plans.len());
+        plans.push(SourceFallbackPlan {
+            artifact_id: descriptor.turn.artifact_id.clone(),
+            source: descriptor.turn.source.clone(),
+            source_path: descriptor.turn.source_path.clone(),
+            normalized_path: descriptor
+                .temp_dir
+                .join(format!("{}-source-normalized.wav", descriptor.turn.source)),
+            temp_dir: descriptor.temp_dir.clone(),
+            recorded_silence: descriptor.recorded_silence,
+            all_turns_cover_full_source: descriptor.covers_full_source(),
+            echo_trimmed: descriptor.echo_trimmed,
+            end_ms: descriptor.turn.end_ms,
+            turn_index: descriptor.turn.turn_index,
+        });
     }
-    let output = segment_dir.join(format!(
-        "{}-{:02}-source-normalized.wav",
-        source,
-        cache.len()
-    ));
-    let prepared = normalize_wav_for_transcription(source_path, &output)?;
-    cache.insert(source_path.to_path_buf(), prepared.clone());
-    Ok(prepared)
+    // `sort_by_key` is stable, so unrecognized sources retain descriptor order.
+    plans.sort_by_key(|plan| match plan.source.as_str() {
+        "microphone" => 0,
+        "system" => 1,
+        _ => 2,
+    });
+    plans
+}
+
+fn spawn_turn_preparation(
+    descriptors: Vec<TurnPreparationJob>,
+    preparer: TurnPreparer,
+    timing: ProcessingTiming,
+) -> (
+    tokio::sync::mpsc::Receiver<Result<PreparedTurn, AppError>>,
+    tokio::task::JoinHandle<TurnPreparationReport>,
+) {
+    let (sender, receiver) = tokio::sync::mpsc::channel(PREPARED_TURN_CHANNEL_CAPACITY);
+    let handle = tokio::task::spawn_blocking(move || {
+        let producer_started = Instant::now();
+        let mut prepared_count = 0;
+        let mut active_preparation_duration_ms = 0_i64;
+        let mut terminal_error = None;
+        for descriptor in descriptors {
+            let preparation_started = Instant::now();
+            let prepared = preparer(descriptor);
+            active_preparation_duration_ms =
+                active_preparation_duration_ms.saturating_add(elapsed_ms(preparation_started));
+            match prepared {
+                Ok(prepared) => {
+                    prepared_count += 1;
+                    if sender.blocking_send(Ok(prepared)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.blocking_send(Err(error.clone()));
+                    terminal_error = Some(error);
+                    break;
+                }
+            }
+        }
+        TurnPreparationReport {
+            prepared_count,
+            active_preparation_duration_ms,
+            producer_wall_duration_ms: elapsed_ms(producer_started),
+            done_to_preparation_complete_ms: timing.done_to_duration_ms(),
+            error: terminal_error,
+        }
+    });
+    (receiver, handle)
 }
 
 async fn transcribe_prepared_audio(
@@ -1449,6 +2273,374 @@ fn retry_jitter_ms(operation_id: &str, attempt: usize) -> u64 {
     hash % (TRANSIENT_TRANSCRIPTION_RETRY_JITTER_MS + 1)
 }
 
+fn turn_context(
+    dictionary_context: Option<&str>,
+    completed_inputs: &[SourceTranscriptInput],
+) -> Option<String> {
+    merge_transcription_context(
+        dictionary_context,
+        build_transcription_context(completed_inputs).as_deref(),
+    )
+}
+
+async fn sink_and_record_completed_turn(
+    event: CompletedTurnTranscription,
+    result_sink: Option<&TurnResultSink>,
+    completed_inputs: &mut Vec<SourceTranscriptInput>,
+    outcome: &mut TranscriptionOutcome,
+) -> Result<(), AppError> {
+    if let Some(sink) = result_sink {
+        sink(event.clone()).await?;
+    }
+    match event.result {
+        TurnTranscriptionResult::Candidate(candidate) => {
+            completed_inputs.push(candidate.input.clone());
+            outcome.candidates.push(candidate);
+        }
+        TurnTranscriptionResult::Failure(failure) => {
+            completed_inputs.push(failure.input.clone());
+            outcome.failures.push(failure);
+        }
+    }
+    Ok(())
+}
+
+fn stop_stream_after_error(
+    terminal_error: &mut Option<AppError>,
+    receiver: &mut tokio::sync::mpsc::Receiver<Result<PreparedTurn, AppError>>,
+    permits: &mut VecDeque<TurnLaunchPermit>,
+    error: AppError,
+) {
+    if terminal_error.is_none() {
+        *terminal_error = Some(error);
+    }
+    receiver.close();
+    permits.clear();
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn transcribe_prepared_turn_stream(
+    mut receiver: tokio::sync::mpsc::Receiver<Result<PreparedTurn, AppError>>,
+    total_jobs: usize,
+    provider: String,
+    title: String,
+    dictionary_context: Option<String>,
+    transcriber: TurnTranscriber,
+    result_sink: Option<TurnResultSink>,
+    max_concurrency: usize,
+) -> Result<TranscriptionOutcome, AppError> {
+    let max_concurrency = max_concurrency.max(1);
+    let initial_permit_count = total_jobs.min(max_concurrency);
+    let initial_context = turn_context(dictionary_context.as_deref(), &[]);
+    let mut permits = (0..initial_permit_count)
+        .map(|schedule_index| TurnLaunchPermit {
+            schedule_index,
+            context: initial_context.clone(),
+        })
+        .collect::<VecDeque<_>>();
+    let mut next_permit_index = permits.len();
+    let mut join_set = tokio::task::JoinSet::new();
+    let mut completed_inputs = Vec::<SourceTranscriptInput>::new();
+    let mut outcome = TranscriptionOutcome::default();
+    let mut terminal_error = None::<AppError>;
+    let mut receiver_open = true;
+    let mut received_count = 0_usize;
+
+    if total_jobs == 0 {
+        return Ok(outcome);
+    }
+
+    loop {
+        if terminal_error.is_some() && join_set.is_empty() {
+            break;
+        }
+        if terminal_error.is_none() && received_count == total_jobs && join_set.is_empty() {
+            break;
+        }
+
+        let can_receive = terminal_error.is_none()
+            && receiver_open
+            && received_count < total_jobs
+            && !permits.is_empty();
+        let can_join = !join_set.is_empty();
+
+        if !can_receive && !can_join {
+            if terminal_error.is_none() {
+                stop_stream_after_error(
+                    &mut terminal_error,
+                    &mut receiver,
+                    &mut permits,
+                    AppError::new(
+                        "audio_turn_failed",
+                        "turn preparation ended before every job was received",
+                    ),
+                );
+                continue;
+            }
+            break;
+        }
+
+        tokio::select! {
+            biased;
+            prepared = receiver.recv(), if can_receive => {
+                match prepared {
+                    Some(Ok(prepared)) => {
+                        let Some(permit) = permits.pop_front() else {
+                            stop_stream_after_error(
+                                &mut terminal_error,
+                                &mut receiver,
+                                &mut permits,
+                                AppError::new("audio_turn_failed", "prepared turn order changed"),
+                            );
+                            continue;
+                        };
+                        if prepared.schedule_index != permit.schedule_index {
+                            stop_stream_after_error(
+                                &mut terminal_error,
+                                &mut receiver,
+                                &mut permits,
+                                AppError::new("audio_turn_failed", "prepared turn order changed"),
+                            );
+                            continue;
+                        }
+                        received_count += 1;
+                        let provider = provider.clone();
+                        let title = title.clone();
+                        let transcriber = Arc::clone(&transcriber);
+                        join_set.spawn(async move {
+                            transcribe_one_turn_job(
+                                prepared.job,
+                                provider,
+                                title,
+                                permit.context,
+                                transcriber,
+                            )
+                            .await
+                        });
+                    }
+                    Some(Err(error)) => {
+                        stop_stream_after_error(
+                            &mut terminal_error,
+                            &mut receiver,
+                            &mut permits,
+                            error,
+                        );
+                    }
+                    None => {
+                        receiver_open = false;
+                        if received_count < total_jobs {
+                            stop_stream_after_error(
+                                &mut terminal_error,
+                                &mut receiver,
+                                &mut permits,
+                                AppError::new(
+                                    "audio_turn_failed",
+                                    "turn preparation ended before every job was received",
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            joined = join_set.join_next(), if can_join => {
+                let joined = joined.expect("join branch requires a nonempty JoinSet");
+                match joined {
+                    Ok(Ok(event)) => {
+                        let accepted = sink_and_record_completed_turn(
+                            event,
+                            result_sink.as_ref(),
+                            &mut completed_inputs,
+                            &mut outcome,
+                        )
+                        .await;
+                        if let Err(error) = accepted {
+                            stop_stream_after_error(
+                                &mut terminal_error,
+                                &mut receiver,
+                                &mut permits,
+                                error,
+                            );
+                        } else if terminal_error.is_none() && next_permit_index < total_jobs {
+                            permits.push_back(TurnLaunchPermit {
+                                schedule_index: next_permit_index,
+                                context: turn_context(
+                                    dictionary_context.as_deref(),
+                                    &completed_inputs,
+                                ),
+                            });
+                            next_permit_index += 1;
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        stop_stream_after_error(
+                            &mut terminal_error,
+                            &mut receiver,
+                            &mut permits,
+                            error,
+                        );
+                    }
+                    Err(error) => {
+                        stop_stream_after_error(
+                            &mut terminal_error,
+                            &mut receiver,
+                            &mut permits,
+                            AppError::new("transcription_failed", error.to_string()),
+                        );
+                    }
+                }
+            }
+        }
+
+        debug_assert!(join_set.len() + permits.len() <= max_concurrency);
+    }
+
+    if let Some(error) = terminal_error {
+        return Err(error);
+    }
+    if received_count != total_jobs {
+        return Err(AppError::new(
+            "audio_turn_failed",
+            "turn preparation ended before every job was received",
+        ));
+    }
+    sort_transcription_outcome(&mut outcome);
+    Ok(outcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn transcribe_source_fallbacks(
+    outcome: &mut TranscriptionOutcome,
+    fallback_plans: Vec<SourceFallbackPlan>,
+    cached_candidates: &[TranscriptCandidate],
+    provider: &str,
+    title: &str,
+    dictionary_context: Option<&str>,
+    fallback_preparer: &SourceFallbackPreparer,
+    transcriber: &TurnTranscriber,
+    result_sink: Option<&TurnResultSink>,
+) -> Result<(), AppError> {
+    for plan in fallback_plans {
+        let has_candidate = outcome
+            .candidates
+            .iter()
+            .chain(cached_candidates.iter())
+            .any(|candidate| {
+                candidate.input.source == plan.source
+                    && candidate.input.valid
+                    && !candidate.input.text.trim().is_empty()
+            });
+        if has_candidate || !plan.eligible() {
+            continue;
+        }
+        let fallback_preparer = Arc::clone(fallback_preparer);
+        let job = tokio::task::spawn_blocking(move || fallback_preparer(plan))
+            .await
+            .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))??;
+        let event = transcribe_one_turn_job(
+            job,
+            provider.to_string(),
+            title.to_string(),
+            dictionary_context.map(str::to_string),
+            Arc::clone(transcriber),
+        )
+        .await?;
+        if let TurnTranscriptionResult::Candidate(candidate) = &event.result {
+            outcome
+                .failures
+                .retain(|failure| failure.input.source != candidate.input.source);
+        }
+        if let Some(sink) = result_sink {
+            sink(event.clone()).await?;
+        }
+        match event.result {
+            TurnTranscriptionResult::Candidate(candidate) => outcome.candidates.push(candidate),
+            TurnTranscriptionResult::Failure(failure) => outcome.failures.push(failure),
+        }
+    }
+    sort_transcription_outcome(outcome);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn prepare_and_transcribe_turn_jobs_bounded(
+    descriptors: Vec<TurnPreparationJob>,
+    fallback_plans: Vec<SourceFallbackPlan>,
+    cached_candidates: &[TranscriptCandidate],
+    provider: String,
+    title: String,
+    dictionary_context: Option<String>,
+    turn_preparer: TurnPreparer,
+    fallback_preparer: SourceFallbackPreparer,
+    transcriber: TurnTranscriber,
+    result_sink: Option<TurnResultSink>,
+    max_concurrency: usize,
+    timing: ProcessingTiming,
+) -> Result<TurnPipelineResult, TurnPipelineFailure> {
+    let total_jobs = descriptors.len();
+    let (receiver, producer) = spawn_turn_preparation(descriptors, turn_preparer, timing);
+    let consumer_result = transcribe_prepared_turn_stream(
+        receiver,
+        total_jobs,
+        provider.clone(),
+        title.clone(),
+        dictionary_context.clone(),
+        Arc::clone(&transcriber),
+        result_sink.clone(),
+        max_concurrency,
+    )
+    .await;
+    let producer_result = producer.await;
+    let preparation = match producer_result {
+        Ok(report) => report,
+        Err(join_error) => {
+            let error = consumer_result
+                .err()
+                .unwrap_or_else(|| AppError::new("audio_turn_failed", join_error.to_string()));
+            return Err(TurnPipelineFailure {
+                error,
+                preparation: None,
+            });
+        }
+    };
+    let mut outcome = match consumer_result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return Err(TurnPipelineFailure {
+                error,
+                preparation: Some(preparation),
+            });
+        }
+    };
+    if let Some(error) = preparation.error.clone() {
+        return Err(TurnPipelineFailure {
+            error,
+            preparation: Some(preparation),
+        });
+    }
+    if let Err(error) = transcribe_source_fallbacks(
+        &mut outcome,
+        fallback_plans,
+        cached_candidates,
+        &provider,
+        &title,
+        dictionary_context.as_deref(),
+        &fallback_preparer,
+        &transcriber,
+        result_sink.as_ref(),
+    )
+    .await
+    {
+        return Err(TurnPipelineFailure {
+            error,
+            preparation: Some(preparation),
+        });
+    }
+    Ok(TurnPipelineResult {
+        outcome,
+        preparation,
+    })
+}
+
 #[cfg(test)]
 async fn transcribe_turn_jobs_by_source_lane(
     jobs: Vec<TurnTranscriptionJob>,
@@ -1459,10 +2651,12 @@ async fn transcribe_turn_jobs_by_source_lane(
 ) -> Result<TranscriptionOutcome, AppError> {
     transcribe_turn_jobs_bounded(
         jobs,
+        Vec::new(),
         &[],
         provider,
         title,
         dictionary_context,
+        Arc::new(prepare_source_fallback),
         transcriber,
         None,
         DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
@@ -1470,24 +2664,21 @@ async fn transcribe_turn_jobs_by_source_lane(
     .await
 }
 
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 async fn transcribe_turn_jobs_bounded(
     jobs: Vec<TurnTranscriptionJob>,
+    fallback_plans: Vec<SourceFallbackPlan>,
     cached_candidates: &[TranscriptCandidate],
     provider: String,
     title: String,
     dictionary_context: Option<String>,
+    fallback_preparer: SourceFallbackPreparer,
     transcriber: TurnTranscriber,
     result_sink: Option<TurnResultSink>,
     max_concurrency: usize,
 ) -> Result<TranscriptionOutcome, AppError> {
     let max_concurrency = max_concurrency.max(1);
-    let mut source_jobs: HashMap<String, Vec<TurnTranscriptionJob>> = HashMap::new();
-    for job in &jobs {
-        source_jobs
-            .entry(job.source.clone())
-            .or_default()
-            .push(job.clone());
-    }
     let mut pending = VecDeque::from(jobs);
     let mut join_set = tokio::task::JoinSet::new();
     let mut completed_inputs = Vec::new();
@@ -1532,50 +2723,22 @@ async fn transcribe_turn_jobs_bounded(
         );
     }
 
-    for (_source, lane_jobs) in source_jobs {
-        let has_candidate = outcome
-            .candidates
-            .iter()
-            .chain(cached_candidates.iter())
-            .any(|candidate| {
-                candidate.input.source == lane_jobs[0].source
-                    && candidate.input.valid
-                    && !candidate.input.text.trim().is_empty()
-            });
-        if has_candidate {
-            continue;
-        }
-        let Some(job) = full_source_fallback_job(&lane_jobs) else {
-            continue;
-        };
-        let provider = provider.clone();
-        let title = title.clone();
-        let transcriber = Arc::clone(&transcriber);
-        let event = transcribe_one_turn_job(
-            job,
-            provider,
-            title,
-            dictionary_context.clone(),
-            transcriber,
-        )
-        .await?;
-        if let TurnTranscriptionResult::Candidate(candidate) = &event.result {
-            outcome
-                .failures
-                .retain(|failure| failure.input.source != candidate.input.source);
-        }
-        if let Some(sink) = result_sink.as_ref() {
-            sink(event.clone()).await?;
-        }
-        match event.result {
-            TurnTranscriptionResult::Candidate(candidate) => outcome.candidates.push(candidate),
-            TurnTranscriptionResult::Failure(failure) => outcome.failures.push(failure),
-        }
-    }
-    sort_transcription_outcome(&mut outcome);
+    transcribe_source_fallbacks(
+        &mut outcome,
+        fallback_plans,
+        cached_candidates,
+        &provider,
+        &title,
+        dictionary_context.as_deref(),
+        &fallback_preparer,
+        &transcriber,
+        result_sink.as_ref(),
+    )
+    .await?;
     Ok(outcome)
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn spawn_turn_jobs(
     pending: &mut VecDeque<TurnTranscriptionJob>,
@@ -1719,6 +2882,7 @@ async fn persist_turn_transcription_event(
     session_id: &str,
     source_mode: RecordingSourceMode,
     event: CompletedTurnTranscription,
+    timeline: FirstEventTimeline,
 ) -> Result<(), AppError> {
     let (artifact_id, source, start_ms, end_ms, turn_index, status) = match &event.result {
         TurnTranscriptionResult::Candidate(candidate) => (
@@ -1777,6 +2941,7 @@ async fn persist_turn_transcription_event(
             candidate.input.turn_index.unwrap_or_default(),
         )
         .await?;
+    timeline.mark_first_persisted();
     tracing::info!(
         %session_id,
         source = %candidate.input.source,
@@ -1802,33 +2967,6 @@ async fn persist_turn_transcription_event(
         )
         .await?;
     Ok(())
-}
-
-fn full_source_fallback_job(jobs: &[TurnTranscriptionJob]) -> Option<TurnTranscriptionJob> {
-    let first = jobs.first()?;
-    if jobs.iter().all(|job| job.covers_full_source) {
-        return None;
-    }
-    // Echo rejection deliberately removed audio from this lane; the raw
-    // full-source file contains the trimmed bleed verbatim, so a lane-level
-    // retry through it would re-attribute remote speech to the microphone.
-    if jobs.iter().any(|job| job.echo_trimmed) {
-        return None;
-    }
-    Some(TurnTranscriptionJob {
-        echo_trimmed: false,
-        artifact_id: first.artifact_id.clone(),
-        source: first.source.clone(),
-        audio_path: first.source_path.clone(),
-        temp_dir: first.temp_dir.clone(),
-        source_path: first.source_path.clone(),
-        recorded_silence: first.recorded_silence,
-        covers_full_source: true,
-        source_fallback: true,
-        start_ms: 0,
-        end_ms: jobs.iter().map(|job| job.end_ms).max().unwrap_or(0),
-        turn_index: first.turn_index,
-    })
 }
 
 fn turn_operation_id(job: &TurnTranscriptionJob) -> String {
@@ -2220,6 +3358,7 @@ fn tail_chars(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::june_api::TranscriptionProviderResult;
+    use sqlx::row::Row;
     use std::{
         collections::HashMap,
         path::PathBuf,
@@ -2230,45 +3369,642 @@ mod tests {
         time::Duration,
     };
 
-    #[test]
-    fn full_source_normalization_runs_once_per_source() {
-        // Every turn of a source shares one normalized full-source copy; the
-        // job loop used to produce a fresh one per turn (a full decode,
-        // resample, and rewrite of the entire recording each time).
-        let dir =
-            std::env::temp_dir().join(format!("os-june-normalize-cache-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let source = dir.join("microphone.wav");
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: 16_000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut writer = hound::WavWriter::create(&source, spec).unwrap();
-        // Quiet samples force a real normalization pass with an output file.
-        for sample in [100i16, -120, 90, -80] {
-            writer.write_sample(sample).unwrap();
+    struct DropNotifier(Option<tokio::sync::mpsc::UnboundedSender<()>>);
+
+    impl Drop for DropNotifier {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
         }
-        writer.finalize().unwrap();
+    }
 
-        let mut cache = HashMap::new();
-        let first = normalized_full_source(&mut cache, &dir, "microphone", &source).unwrap();
-        let second = normalized_full_source(&mut cache, &dir, "microphone", &source).unwrap();
+    async fn test_source_processing_repositories() -> (Repositories, String) {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note(None).await.expect("note");
+        let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
+        repos
+            .create_recording_session(
+                &note.id,
+                &recording_session_id,
+                RecordingSourceMode::MicrophonePlusSystem,
+                "microphone.partial.wav",
+                "microphone.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+        (repos, recording_session_id)
+    }
 
-        assert_eq!(first, second);
-        let normalized_outputs = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .contains("source-normalized")
-            })
-            .count();
-        assert_eq!(normalized_outputs, 1);
-        let _ = std::fs::remove_dir_all(dir);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn first_event_timeline_flushes_each_checkpoint_once() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note(None).await.expect("note");
+        let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
+        repos
+            .create_recording_session(
+                &note.id,
+                &recording_session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "microphone.partial.wav",
+                "microphone.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+
+        let timeline = FirstEventTimeline::new(ProcessingTiming::from_done(Instant::now()));
+        let first_request = timeline.clone();
+        let second_request = timeline.clone();
+        let first_persisted = timeline.clone();
+        let second_persisted = timeline.clone();
+        let barrier = Arc::new(tokio::sync::Barrier::new(5));
+        let first_request_barrier = Arc::clone(&barrier);
+        let second_request_barrier = Arc::clone(&barrier);
+        let first_persisted_barrier = Arc::clone(&barrier);
+        let second_persisted_barrier = Arc::clone(&barrier);
+        let (first_request, second_request, first_persisted, second_persisted, _) = tokio::join!(
+            tokio::spawn(async move {
+                first_request_barrier.wait().await;
+                first_request.mark_first_request();
+            }),
+            tokio::spawn(async move {
+                second_request_barrier.wait().await;
+                second_request.mark_first_request();
+            }),
+            tokio::spawn(async move {
+                first_persisted_barrier.wait().await;
+                first_persisted.mark_first_persisted();
+            }),
+            tokio::spawn(async move {
+                second_persisted_barrier.wait().await;
+                second_persisted.mark_first_persisted();
+            }),
+            async {
+                barrier.wait().await;
+            },
+        );
+        first_request.expect("first request marker");
+        second_request.expect("second request marker");
+        first_persisted.expect("first persistence marker");
+        second_persisted.expect("second persistence marker");
+
+        let second_flush = timeline.clone();
+        tokio::join!(
+            timeline.flush(&repos, &recording_session_id),
+            second_flush.flush(&repos, &recording_session_id),
+        );
+
+        let rows = sqlx::query::query(
+            "SELECT kind, details
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('first_note_transcription_request', 'first_transcript_persisted')
+             ORDER BY rowid ASC",
+        )
+        .bind(&recording_session_id)
+        .fetch_all(&repos.pool)
+        .await
+        .expect("first-event checkpoints");
+        assert_eq!(rows.len(), 2);
+
+        for expected_kind in [
+            "first_note_transcription_request",
+            "first_transcript_persisted",
+        ] {
+            let matching = rows
+                .iter()
+                .filter(|row| row.get::<String, _>("kind") == expected_kind)
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1, "checkpoint count for {expected_kind}");
+            let details = matching[0]
+                .get::<Option<String>, _>("details")
+                .expect("checkpoint details");
+            let details: serde_json::Value =
+                serde_json::from_str(&details).expect("checkpoint details JSON");
+            let object = details.as_object().expect("checkpoint details object");
+            assert_eq!(object.len(), 1);
+            assert!(object["doneToDurationMs"].as_i64().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn microphone_only_setup_failure_persists_terminal_checkpoints_once() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note(None).await.expect("note");
+        let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
+        repos
+            .create_recording_session(
+                &note.id,
+                &recording_session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "microphone.partial.wav",
+                "microphone.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+
+        let temp_dir = session_temp_dir("os-june-transcription", &recording_session_id);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_file(&temp_dir);
+        std::fs::write(&temp_dir, b"block note transcription directory creation")
+            .expect("blocking note transcription file");
+        let expected_message = std::fs::create_dir_all(&temp_dir)
+            .expect_err("regular file must block directory creation")
+            .to_string();
+
+        let result = process_saved_audio(
+            &repos,
+            &note.id,
+            &recording_session_id,
+            "microphone-artifact",
+            PathBuf::from("unused-microphone.wav"),
+            "Setup failure".to_string(),
+            None,
+            None,
+            false,
+            ProcessingTiming::from_done(Instant::now()),
+        )
+        .await;
+        std::fs::remove_file(&temp_dir).expect("remove blocking note transcription file");
+
+        let error = result.expect_err("microphone-only setup must fail");
+        assert_eq!(error.code, "audio_normalize_failed");
+        assert_eq!(error.message, expected_message);
+        assert!(error.details.is_none());
+
+        let rows = sqlx::query::query(
+            "SELECT kind, details
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('note_transcription_complete', 'processing_complete')
+             ORDER BY rowid ASC",
+        )
+        .bind(&recording_session_id)
+        .fetch_all(&repos.pool)
+        .await
+        .expect("terminal checkpoints");
+        assert_eq!(rows.len(), 2, "one checkpoint for each terminal kind");
+
+        let note_transcription_rows = rows
+            .iter()
+            .filter(|row| row.get::<String, _>("kind") == "note_transcription_complete")
+            .collect::<Vec<_>>();
+        assert_eq!(note_transcription_rows.len(), 1);
+        let note_transcription_details = note_transcription_rows[0]
+            .get::<Option<String>, _>("details")
+            .expect("note transcription checkpoint details");
+        let note_transcription_details: serde_json::Value =
+            serde_json::from_str(&note_transcription_details)
+                .expect("note transcription details JSON");
+        assert_eq!(note_transcription_details["status"], "failed");
+        assert_eq!(
+            note_transcription_details["error"],
+            "audio_normalize_failed"
+        );
+        assert!(note_transcription_details["durationMs"].as_i64().is_some());
+        assert!(note_transcription_details["doneToDurationMs"]
+            .as_i64()
+            .is_some());
+
+        let processing_rows = rows
+            .iter()
+            .filter(|row| row.get::<String, _>("kind") == "processing_complete")
+            .collect::<Vec<_>>();
+        assert_eq!(processing_rows.len(), 1);
+        let processing_details = processing_rows[0]
+            .get::<Option<String>, _>("details")
+            .expect("processing checkpoint details");
+        let processing_details: serde_json::Value =
+            serde_json::from_str(&processing_details).expect("processing details JSON");
+        assert_eq!(processing_details["status"], "failed");
+        assert!(processing_details["durationMs"].as_i64().is_some());
+        assert!(processing_details["doneToDurationMs"].as_i64().is_some());
+    }
+
+    #[tokio::test]
+    async fn source_processing_dictionary_load_failure_persists_terminal_checkpoints_once() {
+        let (repos, recording_session_id) = test_source_processing_repositories().await;
+        let note_id: String =
+            sqlx::query_scalar::query_scalar("SELECT note_id FROM recording_sessions WHERE id = ?")
+                .bind(&recording_session_id)
+                .fetch_one(&repos.pool)
+                .await
+                .expect("recording session note");
+        sqlx::query::query("DROP TABLE dictionary_entries")
+            .execute(&repos.pool)
+            .await
+            .expect("drop dictionary table");
+
+        let error = process_saved_source_audio(
+            &repos,
+            &note_id,
+            &recording_session_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            Vec::new(),
+            "Dictionary failure".to_string(),
+            None,
+            None,
+            ProcessingTiming::from_done(Instant::now()),
+        )
+        .await
+        .expect_err("dictionary load must fail");
+        assert_eq!(error.code, "storage_unavailable");
+
+        let rows = sqlx::query::query(
+            "SELECT kind, details
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('note_transcription_complete', 'processing_complete')
+             ORDER BY rowid ASC",
+        )
+        .bind(&recording_session_id)
+        .fetch_all(&repos.pool)
+        .await
+        .expect("terminal checkpoints");
+        assert_eq!(rows.len(), 2, "one checkpoint for each terminal kind");
+
+        let details_for = |kind: &str| {
+            let row = rows
+                .iter()
+                .find(|row| row.get::<String, _>("kind") == kind)
+                .unwrap_or_else(|| panic!("missing {kind} checkpoint"));
+            let details = row
+                .get::<Option<String>, _>("details")
+                .expect("checkpoint details");
+            serde_json::from_str::<serde_json::Value>(&details).expect("checkpoint details JSON")
+        };
+
+        let note_transcription = details_for("note_transcription_complete");
+        assert_eq!(note_transcription["status"], "failed");
+        assert_eq!(note_transcription["error"], "storage_unavailable");
+        assert!(note_transcription["durationMs"].as_i64().is_some());
+        assert!(note_transcription["doneToDurationMs"].as_i64().is_some());
+
+        let processing = details_for("processing_complete");
+        assert_eq!(processing["status"], "failed");
+        assert!(processing["durationMs"].as_i64().is_some());
+        assert!(processing["doneToDurationMs"].as_i64().is_some());
+    }
+
+    #[tokio::test]
+    async fn eager_preparation_failure_persists_terminal_checkpoints_without_counts() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note(None).await.expect("note");
+        let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
+        repos
+            .create_recording_session(
+                &note.id,
+                &recording_session_id,
+                RecordingSourceMode::MicrophonePlusSystem,
+                "microphone.partial.wav",
+                "microphone.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+
+        let source_dir = tempfile::tempdir().expect("source temp dir");
+        let source_path = source_dir.path().join("microphone.wav");
+        write_loud_wav(&source_path, 48_000, 48_000);
+
+        let turn_wav_dir = session_temp_dir("os-june-turns", &recording_session_id);
+        let _ = std::fs::remove_dir_all(&turn_wav_dir);
+        let _ = std::fs::remove_file(&turn_wav_dir);
+        std::fs::write(&turn_wav_dir, b"block turn directory creation")
+            .expect("blocking turn WAV file");
+        let expected_message = std::fs::create_dir_all(&turn_wav_dir)
+            .expect_err("regular file must block directory creation")
+            .to_string();
+
+        let result = process_saved_source_audio(
+            &repos,
+            &note.id,
+            &recording_session_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            vec![(
+                "microphone-artifact".to_string(),
+                "microphone".to_string(),
+                source_path,
+                false,
+            )],
+            "Preparation failure".to_string(),
+            None,
+            None,
+            ProcessingTiming::from_done(Instant::now()),
+        )
+        .await;
+        std::fs::remove_file(&turn_wav_dir).expect("remove blocking turn WAV file");
+
+        let error = result.expect_err("eager preparation must fail");
+        assert_eq!(error.code, "audio_turn_failed");
+        assert_eq!(error.message, expected_message);
+        assert!(error.details.is_none());
+
+        let rows = sqlx::query::query(
+            "SELECT kind, details
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('note_transcription_complete', 'processing_complete')
+             ORDER BY rowid ASC",
+        )
+        .bind(&recording_session_id)
+        .fetch_all(&repos.pool)
+        .await
+        .expect("terminal checkpoints");
+        assert_eq!(rows.len(), 2, "one checkpoint for each terminal kind");
+
+        let note_transcription_rows = rows
+            .iter()
+            .filter(|row| row.get::<String, _>("kind") == "note_transcription_complete")
+            .collect::<Vec<_>>();
+        assert_eq!(note_transcription_rows.len(), 1);
+        let note_transcription_details = note_transcription_rows[0]
+            .get::<Option<String>, _>("details")
+            .expect("note transcription checkpoint details");
+        let note_transcription_details: serde_json::Value =
+            serde_json::from_str(&note_transcription_details)
+                .expect("note transcription details JSON");
+        let note_transcription_details = note_transcription_details
+            .as_object()
+            .expect("note transcription details object");
+        assert_eq!(note_transcription_details["status"], "failed");
+        assert_eq!(note_transcription_details["error"], "audio_turn_failed");
+        assert!(note_transcription_details["durationMs"].as_i64().is_some());
+        assert!(note_transcription_details["doneToDurationMs"]
+            .as_i64()
+            .is_some());
+        assert!(!note_transcription_details.contains_key("successfulTurnCount"));
+        assert!(!note_transcription_details.contains_key("failedTurnCount"));
+
+        let processing_rows = rows
+            .iter()
+            .filter(|row| row.get::<String, _>("kind") == "processing_complete")
+            .collect::<Vec<_>>();
+        assert_eq!(processing_rows.len(), 1);
+        let processing_details = processing_rows[0]
+            .get::<Option<String>, _>("details")
+            .expect("processing checkpoint details");
+        let processing_details: serde_json::Value =
+            serde_json::from_str(&processing_details).expect("processing details JSON");
+        assert_eq!(processing_details["status"], "failed");
+        assert!(processing_details["durationMs"].as_i64().is_some());
+        assert!(processing_details["doneToDurationMs"].as_i64().is_some());
+
+        let turn_detection_count: i64 = sqlx::query_scalar::query_scalar(
+            "SELECT COUNT(*)
+             FROM recording_checkpoints
+             WHERE recording_session_id = ? AND kind = 'turn_detection'",
+        )
+        .bind(&recording_session_id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("turn-detection checkpoint count");
+        assert_eq!(
+            turn_detection_count, 1,
+            "detection completed before failure"
+        );
+
+        let first_event_count: i64 = sqlx::query_scalar::query_scalar(
+            "SELECT COUNT(*)
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('first_note_transcription_request', 'first_transcript_persisted')",
+        )
+        .bind(&recording_session_id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("first-event checkpoint count");
+        assert_eq!(first_event_count, 0, "provider work never started");
+    }
+
+    #[tokio::test]
+    async fn pipeline_failure_persists_preparation_and_terminal_checkpoints_once() {
+        let (repos, recording_session_id) = test_source_processing_repositories().await;
+        let timing = ProcessingTiming::from_done(Instant::now());
+        let timeline = FirstEventTimeline::new(timing);
+        let expected_error = AppError {
+            code: "audio_turn_failed".to_string(),
+            message: "planned pipeline preparation failure".to_string(),
+            details: Some(serde_json::json!({ "stage": "producer" })),
+        };
+        let failure = TurnPipelineFailure {
+            error: expected_error.clone(),
+            preparation: Some(TurnPreparationReport {
+                prepared_count: 1,
+                active_preparation_duration_ms: 42,
+                producer_wall_duration_ms: 137,
+                done_to_preparation_complete_ms: Some(211),
+                error: Some(expected_error.clone()),
+            }),
+        };
+
+        let returned_error = persist_turn_pipeline_result(
+            &repos,
+            &recording_session_id,
+            Err(failure),
+            3,
+            &timeline,
+            timing,
+            Instant::now(),
+            Instant::now(),
+        )
+        .await
+        .expect_err("pipeline failure should be returned");
+        assert_eq!(returned_error.code, expected_error.code);
+        assert_eq!(returned_error.message, expected_error.message);
+        assert_eq!(returned_error.details, expected_error.details);
+
+        let rows = sqlx::query::query(
+            "SELECT kind, details
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('turn_wav_extraction', 'note_transcription_complete', 'processing_complete')
+             ORDER BY rowid ASC",
+        )
+        .bind(&recording_session_id)
+        .fetch_all(&repos.pool)
+        .await
+        .expect("pipeline failure checkpoints");
+        assert_eq!(rows.len(), 3);
+
+        let details_for = |kind: &str| {
+            let matching = rows
+                .iter()
+                .filter(|row| row.get::<String, _>("kind") == kind)
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1, "checkpoint count for {kind}");
+            let details = matching[0]
+                .get::<Option<String>, _>("details")
+                .expect("checkpoint details");
+            serde_json::from_str::<serde_json::Value>(&details).expect("checkpoint details JSON")
+        };
+
+        let preparation = details_for("turn_wav_extraction");
+        assert_eq!(preparation["durationMs"], 42);
+        assert_eq!(preparation["activePreparationDurationMs"], 42);
+        assert_eq!(preparation["producerWallDurationMs"], 137);
+        assert_eq!(preparation["doneToPreparationCompleteMs"], 211);
+        assert_eq!(preparation["jobCount"], 1);
+        assert_eq!(preparation["reusedTranscriptCount"], 3);
+        assert_eq!(preparation["status"], "failed");
+        assert_eq!(preparation["error"], "audio_turn_failed");
+
+        let note_transcription = details_for("note_transcription_complete");
+        assert_eq!(note_transcription["status"], "failed");
+        assert_eq!(note_transcription["error"], "audio_turn_failed");
+        assert!(note_transcription["durationMs"].as_i64().is_some());
+        assert!(note_transcription["doneToDurationMs"].as_i64().is_some());
+        let note_transcription = note_transcription
+            .as_object()
+            .expect("note transcription object");
+        assert!(!note_transcription.contains_key("successfulTurnCount"));
+        assert!(!note_transcription.contains_key("failedTurnCount"));
+
+        let processing = details_for("processing_complete");
+        assert_eq!(processing["status"], "failed");
+        assert!(processing["durationMs"].as_i64().is_some());
+        assert!(processing["doneToDurationMs"].as_i64().is_some());
+    }
+
+    #[tokio::test]
+    async fn zero_descriptor_pipeline_persists_all_cached_preparation_checkpoint() {
+        let (repos, recording_session_id) = test_source_processing_repositories().await;
+        let timing = ProcessingTiming::from_done(Instant::now());
+        let timeline = FirstEventTimeline::new(timing);
+        let preparation_calls = Arc::new(AtomicUsize::new(0));
+        let turn_preparer = {
+            let preparation_calls = Arc::clone(&preparation_calls);
+            Arc::new(move |_descriptor: TurnPreparationJob| {
+                preparation_calls.fetch_add(1, Ordering::SeqCst);
+                Err(AppError::new("unexpected", "unexpected preparation"))
+            }) as TurnPreparer
+        };
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_preparer = {
+            let fallback_calls = Arc::clone(&fallback_calls);
+            Arc::new(move |_plan: SourceFallbackPlan| {
+                fallback_calls.fetch_add(1, Ordering::SeqCst);
+                Err(AppError::new("unexpected", "unexpected fallback"))
+            }) as SourceFallbackPreparer
+        };
+        let transcriber_calls = Arc::new(AtomicUsize::new(0));
+        let transcriber = {
+            let transcriber_calls = Arc::clone(&transcriber_calls);
+            Arc::new(move |_request: TranscriptionRequest| {
+                transcriber_calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async {
+                    Err(AppError::new("unexpected", "unexpected note transcription"))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let pipeline = prepare_and_transcribe_turn_jobs_bounded(
+            Vec::new(),
+            Vec::new(),
+            &[],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            turn_preparer,
+            fallback_preparer,
+            transcriber,
+            None,
+            DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+            timing,
+        )
+        .await
+        .expect("zero-descriptor pipeline should succeed");
+        assert_eq!(preparation_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(transcriber_calls.load(Ordering::SeqCst), 0);
+        let expected_producer_wall_ms = pipeline.preparation.producer_wall_duration_ms;
+        let expected_done_to_preparation_ms = pipeline
+            .preparation
+            .done_to_preparation_complete_ms
+            .expect("tracked zero-descriptor preparation completion");
+
+        let returned = persist_turn_pipeline_result(
+            &repos,
+            &recording_session_id,
+            Ok(pipeline),
+            4,
+            &timeline,
+            timing,
+            Instant::now(),
+            Instant::now(),
+        )
+        .await
+        .expect("zero-descriptor pipeline should succeed");
+        assert!(returned.outcome.candidates.is_empty());
+
+        let details: String = sqlx::query_scalar::query_scalar(
+            "SELECT details
+             FROM recording_checkpoints
+             WHERE recording_session_id = ? AND kind = 'turn_wav_extraction'",
+        )
+        .bind(&recording_session_id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("zero-descriptor preparation checkpoint");
+        let details: serde_json::Value =
+            serde_json::from_str(&details).expect("preparation details JSON");
+        assert_eq!(details["durationMs"], 0);
+        assert_eq!(details["activePreparationDurationMs"], 0);
+        assert_eq!(details["producerWallDurationMs"], expected_producer_wall_ms);
+        assert_eq!(
+            details["doneToPreparationCompleteMs"],
+            expected_done_to_preparation_ms
+        );
+        assert_eq!(details["jobCount"], 0);
+        assert_eq!(details["reusedTranscriptCount"], 4);
+        assert_eq!(details["status"], "succeeded");
+        assert!(details["error"].is_null());
+
+        let terminal_count: i64 = sqlx::query_scalar::query_scalar(
+            "SELECT COUNT(*)
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('note_transcription_complete', 'processing_complete')",
+        )
+        .bind(&recording_session_id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("terminal checkpoint count");
+        assert_eq!(terminal_count, 0);
     }
 
     #[test]
@@ -2585,10 +4321,12 @@ mod tests {
                 test_job("s1", "system", 1),
                 test_job("m2", "microphone", 2),
             ],
+            Vec::new(),
             &[],
             crate::providers::OPENAI_PROVIDER.to_string(),
             "Meeting".to_string(),
             None,
+            Arc::new(prepare_source_fallback),
             transcriber,
             None,
             1,
@@ -2632,10 +4370,12 @@ mod tests {
 
         transcribe_turn_jobs_bounded(
             vec![test_job("m0", "microphone", 0), test_job("s1", "system", 1)],
+            Vec::new(),
             &[],
             crate::providers::OPENAI_PROVIDER.to_string(),
             "Meeting".to_string(),
             Some("Custom dictionary terms:\n- DIM".to_string()),
+            Arc::new(prepare_source_fallback),
             transcriber,
             None,
             1,
@@ -2871,53 +4611,6 @@ mod tests {
         assert_ne!(turn_operation_id(&mic), turn_operation_id(&system));
         assert_eq!(turn_operation_id(&mic), "artifact-m0-microphone-turn-0");
         assert_eq!(turn_operation_id(&system), "artifact-s0-system-turn-0");
-    }
-
-    #[tokio::test]
-    async fn failed_segmented_lane_retries_full_source_audio() {
-        let seen_paths = Arc::new(Mutex::new(Vec::new()));
-        let transcriber = {
-            let seen_paths = Arc::clone(&seen_paths);
-            Arc::new(move |request: TranscriptionRequest| {
-                let seen_paths = Arc::clone(&seen_paths);
-                Box::pin(async move {
-                    let path = request.audio_path.to_string_lossy().to_string();
-                    seen_paths.lock().unwrap().push(path.clone());
-                    if path == "full-microphone" {
-                        Ok(TranscriptionProviderResult {
-                            text: "quiet but usable speech".to_string(),
-                            language: None,
-                            provider: "test".to_string(),
-                        })
-                    } else {
-                        Err(AppError::new("no_speech", "no_speech"))
-                    }
-                }) as TranscriptionFuture
-            }) as TurnTranscriber
-        };
-
-        let outcome = transcribe_turn_jobs_by_source_lane(
-            vec![segmented_test_job(
-                "microphone-segment",
-                "full-microphone",
-                "microphone",
-                0,
-            )],
-            crate::providers::OPENAI_PROVIDER.to_string(),
-            "Meeting".to_string(),
-            None,
-            transcriber,
-        )
-        .await
-        .expect("source lane should retry full source audio");
-
-        assert_eq!(outcome.failures.len(), 0);
-        assert_eq!(outcome.candidates.len(), 1);
-        assert_eq!(outcome.candidates[0].input.text, "quiet but usable speech");
-        assert_eq!(
-            seen_paths.lock().unwrap().as_slice(),
-            ["microphone-segment", "full-microphone"]
-        );
     }
 
     #[test]
@@ -3857,50 +5550,2000 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn pipeline_starts_first_request_before_later_preparation_finishes() {
+        let descriptors = vec![
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
+        ];
+        let (later_preparation_began_tx, mut later_preparation_began_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let (release_later_preparation_tx, release_later_preparation_rx) =
+            std::sync::mpsc::channel();
+        let release_later_preparation_rx = Arc::new(Mutex::new(release_later_preparation_rx));
+        let later_preparation_finished = Arc::new(AtomicBool::new(false));
+        let turn_preparer = {
+            let release_later_preparation_rx = Arc::clone(&release_later_preparation_rx);
+            let later_preparation_finished = Arc::clone(&later_preparation_finished);
+            Arc::new(move |descriptor: TurnPreparationJob| {
+                if descriptor.schedule_index == 1 {
+                    later_preparation_began_tx.send(()).unwrap();
+                    release_later_preparation_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+                    later_preparation_finished.store(true, Ordering::SeqCst);
+                }
+                Ok(prepared_test_turn(&descriptor))
+            }) as TurnPreparer
+        };
+        let (provider_started_tx, mut provider_started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let transcriber = Arc::new(move |request: TranscriptionRequest| {
+            provider_started_tx.send(request.operation_id()).unwrap();
+            Box::pin(async move { Ok(test_provider_result(&request.operation_id())) })
+                as TranscriptionFuture
+        }) as TurnTranscriber;
+
+        let mut pipeline = tokio::spawn(async move {
+            prepare_and_transcribe_turn_jobs_bounded(
+                descriptors,
+                Vec::new(),
+                &[],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                turn_preparer,
+                Arc::new(|plan| Ok(fake_fallback_job(plan))),
+                transcriber,
+                None,
+                DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+                ProcessingTiming::untracked(),
+            )
+            .await
+        });
+
+        let preparation_began =
+            tokio::time::timeout(Duration::from_secs(2), later_preparation_began_rx.recv()).await;
+        let provider_started =
+            tokio::time::timeout(Duration::from_secs(2), provider_started_rx.recv()).await;
+        let overlapped = !later_preparation_finished.load(Ordering::SeqCst);
+        let _ = release_later_preparation_tx.send(());
+        let pipeline_result = tokio::time::timeout(Duration::from_secs(2), &mut pipeline).await;
+        if pipeline_result.is_err() {
+            pipeline.abort();
+        }
+
+        assert!(preparation_began.is_ok(), "later preparation never began");
+        assert!(
+            provider_started.is_ok(),
+            "the first provider request never began"
+        );
+        assert!(
+            overlapped,
+            "the first provider request waited for later preparation"
+        );
+        let result = pipeline_result
+            .expect("pipeline timed out")
+            .expect("pipeline task panicked")
+            .expect("pipeline should succeed");
+        assert_eq!(result.preparation.prepared_count, 2);
+        assert_eq!(result.outcome.candidates.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn streaming_scheduler_never_exceeds_two_provider_calls() {
+        let descriptors = (0..5)
+            .map(|index| {
+                turn_preparation_job(
+                    index,
+                    if index % 2 == 0 {
+                        "microphone"
+                    } else {
+                        "system"
+                    },
+                    index as i64,
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+        let (fifth_preparation_started_tx, mut fifth_preparation_started_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let turn_preparer = Arc::new(move |descriptor: TurnPreparationJob| {
+            if descriptor.schedule_index == 4 {
+                fifth_preparation_started_tx.send(()).unwrap();
+            }
+            Ok(prepared_test_turn(&descriptor))
+        }) as TurnPreparer;
+        let (receiver, mut producer) = spawn_turn_preparation(
+            descriptors.clone(),
+            turn_preparer,
+            ProcessingTiming::untracked(),
+        );
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let provider_gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let transcriber = {
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let provider_gate = Arc::clone(&provider_gate);
+            Arc::new(move |request: TranscriptionRequest| {
+                let active = Arc::clone(&active);
+                let max_active = Arc::clone(&max_active);
+                let provider_gate = Arc::clone(&provider_gate);
+                let started_tx = started_tx.clone();
+                let operation_id = request.operation_id();
+                Box::pin(async move {
+                    let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_active.fetch_max(now_active, Ordering::SeqCst);
+                    started_tx.send(operation_id.clone()).unwrap();
+                    let permit = provider_gate.acquire_owned().await.unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    drop(permit);
+                    Ok(test_provider_result(&operation_id))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let mut scheduler = tokio::spawn(transcribe_prepared_turn_stream(
+            receiver,
+            descriptors.len(),
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            transcriber,
+            None,
+            DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+        ));
+
+        let first_started = tokio::time::timeout(Duration::from_secs(2), started_rx.recv()).await;
+        let second_started = tokio::time::timeout(Duration::from_secs(2), started_rx.recv()).await;
+        let fifth_preparation_started =
+            tokio::time::timeout(Duration::from_secs(2), fifth_preparation_started_rx.recv()).await;
+        let third_started_before_release = started_rx.try_recv().ok();
+        let active_before_release = active.load(Ordering::SeqCst);
+        let max_before_release = max_active.load(Ordering::SeqCst);
+        let producer_probe = tokio::time::timeout(Duration::from_millis(50), &mut producer).await;
+        let producer_was_backpressured = producer_probe.is_err();
+        provider_gate.add_permits(5);
+        let scheduler_result = tokio::time::timeout(Duration::from_secs(2), &mut scheduler).await;
+        let producer_result = match producer_probe {
+            Ok(result) => Ok(result),
+            Err(_) => tokio::time::timeout(Duration::from_secs(2), &mut producer).await,
+        };
+        if scheduler_result.is_err() {
+            scheduler.abort();
+        }
+        if producer_result.is_err() {
+            producer.abort();
+        }
+
+        let mut started_before_release = vec![
+            first_started
+                .expect("the first provider observation timed out")
+                .expect("the first provider channel closed"),
+            second_started
+                .expect("the second provider observation timed out")
+                .expect("the second provider channel closed"),
+        ];
+        started_before_release.sort_unstable();
+        assert_eq!(
+            started_before_release,
+            vec![
+                "artifact-microphone-turn-0".to_string(),
+                "artifact-system-turn-1".to_string(),
+            ]
+        );
+        assert!(
+            fifth_preparation_started.is_ok(),
+            "the producer never prepared its fifth descriptor"
+        );
+        assert!(
+            third_started_before_release.is_none(),
+            "a third provider call started before capacity was released"
+        );
+        assert!(
+            producer_was_backpressured,
+            "the fifth send was not blocked behind two active and two buffered jobs"
+        );
+        assert_eq!(active_before_release, 2);
+        assert_eq!(max_before_release, 2);
+        let outcome = scheduler_result
+            .expect("scheduler timed out")
+            .expect("scheduler task panicked")
+            .expect("scheduler should succeed");
+        assert_eq!(outcome.candidates.len(), 5);
+        let report = producer_result
+            .expect("producer timed out")
+            .expect("producer task panicked");
+        assert_eq!(report.prepared_count, 5);
+        assert!(report.error.is_none());
+        assert_eq!(max_active.load(Ordering::SeqCst), 2);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn preparation_report_separates_active_time_from_backpressure() {
+        const ACTIVE_WORK_MS: u64 = 15;
+        const BACKPRESSURE_PROBE_MS: u64 = 60;
+        const POST_PREPARATION_HOLD_MS: u64 = 60;
+
+        let descriptors = (0..5)
+            .map(|index| {
+                turn_preparation_job(
+                    index,
+                    if index % 2 == 0 {
+                        "microphone"
+                    } else {
+                        "system"
+                    },
+                    index as i64,
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+        let (fifth_active_work_finished_tx, mut fifth_active_work_finished_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let (producer_finished_tx, mut producer_finished_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let preparation_calls = Arc::new(AtomicUsize::new(0));
+        let turn_preparer = {
+            let preparation_calls = Arc::clone(&preparation_calls);
+            let producer_finished = DropNotifier(Some(producer_finished_tx));
+            Arc::new(move |descriptor: TurnPreparationJob| {
+                let _keep_notifier_alive = &producer_finished;
+                preparation_calls.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(ACTIVE_WORK_MS));
+                if descriptor.schedule_index == 4 {
+                    fifth_active_work_finished_tx.send(()).unwrap();
+                }
+                Ok(prepared_test_turn(&descriptor))
+            }) as TurnPreparer
+        };
+        let provider_gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let (provider_started_tx, mut provider_started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let transcriber = {
+            let provider_gate = Arc::clone(&provider_gate);
+            let active = Arc::clone(&active);
+            Arc::new(move |request: TranscriptionRequest| {
+                let provider_gate = Arc::clone(&provider_gate);
+                let active = Arc::clone(&active);
+                let provider_started_tx = provider_started_tx.clone();
+                let operation_id = request.operation_id();
+                Box::pin(async move {
+                    active.fetch_add(1, Ordering::SeqCst);
+                    provider_started_tx.send(()).unwrap();
+                    let permit = provider_gate.acquire_owned().await.unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    permit.forget();
+                    Ok(test_provider_result(&operation_id))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let done_started = Instant::now();
+        let mut pipeline = tokio::spawn(async move {
+            prepare_and_transcribe_turn_jobs_bounded(
+                descriptors,
+                Vec::new(),
+                &[],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                turn_preparer,
+                Arc::new(|plan| Ok(fake_fallback_job(plan))),
+                transcriber,
+                None,
+                DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+                ProcessingTiming::from_done(done_started),
+            )
+            .await
+        });
+
+        for _ in 0..DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY {
+            tokio::time::timeout(Duration::from_secs(2), provider_started_rx.recv())
+                .await
+                .expect("provider start timed out")
+                .expect("provider-start channel closed");
+        }
+        tokio::time::timeout(Duration::from_secs(2), fifth_active_work_finished_rx.recv())
+            .await
+            .expect("fifth active preparation did not finish")
+            .expect("fifth-active-work channel closed");
+        assert_eq!(active.load(Ordering::SeqCst), 2);
+        assert_eq!(preparation_calls.load(Ordering::SeqCst), 5);
+        let producer_probe = tokio::time::timeout(
+            Duration::from_millis(BACKPRESSURE_PROBE_MS),
+            producer_finished_rx.recv(),
+        )
+        .await;
+        assert!(
+            producer_probe.is_err(),
+            "the producer was not blocked on the fifth capacity-two send"
+        );
+
+        provider_gate.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(2), producer_finished_rx.recv())
+            .await
+            .expect("producer did not finish after channel capacity opened")
+            .expect("producer-finished channel closed");
+        let pipeline_probe = tokio::time::timeout(
+            Duration::from_millis(POST_PREPARATION_HOLD_MS),
+            &mut pipeline,
+        )
+        .await;
+        assert!(
+            pipeline_probe.is_err(),
+            "pipeline completed when only one provider permit was released"
+        );
+
+        provider_gate.add_permits(8);
+        let pipeline_result = match pipeline_probe {
+            Ok(result) => Ok(result),
+            Err(_) => tokio::time::timeout(Duration::from_secs(2), &mut pipeline).await,
+        };
+        let final_done_to_ms = elapsed_ms(done_started);
+        let result = pipeline_result
+            .expect("pipeline timed out")
+            .expect("pipeline task panicked")
+            .expect("pipeline should succeed");
+        let report = result.preparation;
+
+        assert_eq!(report.prepared_count, 5);
+        assert_eq!(preparation_calls.load(Ordering::SeqCst), 5);
+        assert!(report.error.is_none());
+        assert!(
+            report.active_preparation_duration_ms >= (ACTIVE_WORK_MS * 5) as i64,
+            "active preparation time omitted controlled preparer work: {:?}",
+            report
+        );
+        assert!(
+            report.producer_wall_duration_ms
+                >= report.active_preparation_duration_ms + BACKPRESSURE_PROBE_MS as i64 - 10,
+            "producer wall time did not include channel backpressure: {:?}",
+            report
+        );
+        let done_to_preparation_complete_ms = report
+            .done_to_preparation_complete_ms
+            .expect("tracked timing should capture producer completion");
+        assert!(
+            final_done_to_ms
+                >= done_to_preparation_complete_ms + POST_PREPARATION_HOLD_MS as i64 - 10,
+            "preparation completion was measured at final pipeline return: {:?}",
+            report
+        );
+        assert_eq!(result.outcome.candidates.len(), 5);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn streaming_scheduler_preserves_logical_spawn_context() {
+        let descriptors = vec![
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
+            turn_preparation_job(2, "microphone", 2, false),
+        ];
+        let (release_second_tx, release_second_rx) = std::sync::mpsc::channel();
+        let release_second_rx = Arc::new(Mutex::new(release_second_rx));
+        let turn_preparer = {
+            let release_second_rx = Arc::clone(&release_second_rx);
+            Arc::new(move |descriptor: TurnPreparationJob| {
+                if descriptor.schedule_index == 1 {
+                    release_second_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+                }
+                Ok(prepared_test_turn(&descriptor))
+            }) as TurnPreparer
+        };
+        let contexts = Arc::new(Mutex::new(Vec::<(String, Option<String>)>::new()));
+        let transcriber = {
+            let contexts = Arc::clone(&contexts);
+            Arc::new(move |request: TranscriptionRequest| {
+                let text = request.audio_path.to_string_lossy().to_string();
+                contexts
+                    .lock()
+                    .unwrap()
+                    .push((text.clone(), request.context));
+                Box::pin(async move { Ok(test_provider_result(&text)) }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let sink = {
+            let release_second_tx = release_second_tx.clone();
+            Arc::new(move |event: CompletedTurnTranscription| {
+                let release_second_tx = release_second_tx.clone();
+                Box::pin(async move {
+                    if completed_turn_index(&event) == 0 {
+                        let _ = release_second_tx.send(());
+                    }
+                    Ok(())
+                }) as TurnResultFuture
+            }) as TurnResultSink
+        };
+        let dictionary_context = "Custom dictionary terms:\n- DIM".to_string();
+        let expected_dictionary_context = dictionary_context.clone();
+        let mut pipeline = tokio::spawn(async move {
+            prepare_and_transcribe_turn_jobs_bounded(
+                descriptors,
+                Vec::new(),
+                &[],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                Some(dictionary_context),
+                turn_preparer,
+                Arc::new(|plan| Ok(fake_fallback_job(plan))),
+                transcriber,
+                Some(sink),
+                DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+                ProcessingTiming::untracked(),
+            )
+            .await
+        });
+
+        let pipeline_result = tokio::time::timeout(Duration::from_secs(2), &mut pipeline).await;
+        if pipeline_result.is_err() {
+            let _ = release_second_tx.send(());
+            let _ = tokio::time::timeout(Duration::from_secs(2), &mut pipeline).await;
+        }
+        let result = pipeline_result
+            .expect("pipeline timed out")
+            .expect("pipeline task panicked")
+            .expect("pipeline should succeed");
+        assert_eq!(result.outcome.candidates.len(), 3);
+
+        let contexts = contexts.lock().unwrap();
+        let contexts = contexts.iter().cloned().collect::<HashMap<_, _>>();
+        assert_eq!(
+            contexts["ordinary-microphone-0.wav"],
+            Some(expected_dictionary_context.clone())
+        );
+        assert_eq!(
+            contexts["ordinary-system-1.wav"],
+            Some(expected_dictionary_context)
+        );
+        let third_context = contexts["ordinary-microphone-2.wav"]
+            .as_ref()
+            .expect("the third turn should receive completed context");
+        assert!(third_context.contains("Custom dictionary terms"));
+        assert!(third_context.contains("Microphone: ordinary-microphone-0.wav"));
+        assert!(!third_context.contains("System: ordinary-system-1.wav"));
+    }
+
+    #[tokio::test]
+    async fn pipelined_results_are_sorted_after_reverse_completion() {
+        let descriptors = vec![
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
+        ];
+        let blocked_first = Arc::new(tokio::sync::Semaphore::new(0));
+        let transcriber = {
+            let blocked_first = Arc::clone(&blocked_first);
+            Arc::new(move |request: TranscriptionRequest| {
+                let blocked_first = Arc::clone(&blocked_first);
+                let operation_id = request.operation_id();
+                let text = request.audio_path.to_string_lossy().to_string();
+                Box::pin(async move {
+                    if operation_id.ends_with("turn-0") {
+                        let permit = blocked_first.acquire_owned().await.unwrap();
+                        drop(permit);
+                    }
+                    Ok(test_provider_result(&text))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let sink_order = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let sink_order = Arc::clone(&sink_order);
+            let blocked_first = Arc::clone(&blocked_first);
+            Arc::new(move |event: CompletedTurnTranscription| {
+                let sink_order = Arc::clone(&sink_order);
+                let blocked_first = Arc::clone(&blocked_first);
+                Box::pin(async move {
+                    let turn_index = completed_turn_index(&event);
+                    sink_order.lock().unwrap().push(turn_index);
+                    if turn_index == 1 {
+                        blocked_first.add_permits(1);
+                    }
+                    Ok(())
+                }) as TurnResultFuture
+            }) as TurnResultSink
+        };
+        let turn_preparer =
+            Arc::new(|descriptor: TurnPreparationJob| Ok(prepared_test_turn(&descriptor)))
+                as TurnPreparer;
+        let mut pipeline = tokio::spawn(async move {
+            prepare_and_transcribe_turn_jobs_bounded(
+                descriptors,
+                Vec::new(),
+                &[],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                turn_preparer,
+                Arc::new(|plan| Ok(fake_fallback_job(plan))),
+                transcriber,
+                Some(sink),
+                DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+                ProcessingTiming::untracked(),
+            )
+            .await
+        });
+
+        let pipeline_result = tokio::time::timeout(Duration::from_secs(2), &mut pipeline).await;
+        if pipeline_result.is_err() {
+            blocked_first.add_permits(1);
+            let _ = tokio::time::timeout(Duration::from_secs(2), &mut pipeline).await;
+        }
+        let result = pipeline_result
+            .expect("pipeline timed out")
+            .expect("pipeline task panicked")
+            .expect("pipeline should succeed");
+        assert_eq!(*sink_order.lock().unwrap(), vec![1, 0]);
+        assert_eq!(
+            result
+                .outcome
+                .candidates
+                .iter()
+                .map(|candidate| (
+                    candidate.input.source.as_str(),
+                    candidate.input.text.as_str(),
+                    candidate.input.start_ms,
+                    candidate.input.end_ms,
+                    candidate.input.turn_index,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "microphone",
+                    "ordinary-microphone-0.wav",
+                    Some(100),
+                    Some(600),
+                    Some(0),
+                ),
+                (
+                    "system",
+                    "ordinary-system-1.wav",
+                    Some(1_100),
+                    Some(1_600),
+                    Some(1),
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn preparation_error_joins_in_flight_requests_and_skips_fallback() {
+        const ACTIVE_WORK_MS: u64 = 15;
+        let descriptors = vec![
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
+        ];
+        let fallback_plans = build_source_fallback_plans(&descriptors);
+        let (provider_began_tx, provider_began_rx) = std::sync::mpsc::channel();
+        let provider_began_rx = Arc::new(Mutex::new(provider_began_rx));
+        let (provider_observed_tx, mut provider_observed_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let (preparation_error_tx, mut preparation_error_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let planned_error = AppError {
+            code: "audio_turn_failed".to_string(),
+            message: "planned preparation failure".to_string(),
+            details: Some(serde_json::json!({ "stage": "turn-preparation" })),
+        };
+        let expected_error = planned_error.clone();
+        let turn_preparer = {
+            let provider_began_rx = Arc::clone(&provider_began_rx);
+            Arc::new(move |descriptor: TurnPreparationJob| {
+                std::thread::sleep(Duration::from_millis(ACTIVE_WORK_MS));
+                if descriptor.schedule_index == 1 {
+                    provider_began_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+                    preparation_error_tx.send(()).unwrap();
+                    return Err(planned_error.clone());
+                }
+                Ok(prepared_test_turn(&descriptor))
+            }) as TurnPreparer
+        };
+        let active = Arc::new(AtomicUsize::new(0));
+        let provider_gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let transcriber = {
+            let active = Arc::clone(&active);
+            let provider_gate = Arc::clone(&provider_gate);
+            Arc::new(move |request: TranscriptionRequest| {
+                let active = Arc::clone(&active);
+                let provider_gate = Arc::clone(&provider_gate);
+                let provider_began_tx = provider_began_tx.clone();
+                let provider_observed_tx = provider_observed_tx.clone();
+                let operation_id = request.operation_id();
+                Box::pin(async move {
+                    active.fetch_add(1, Ordering::SeqCst);
+                    provider_began_tx.send(()).unwrap();
+                    provider_observed_tx.send(()).unwrap();
+                    let permit = provider_gate.acquire_owned().await.unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    drop(permit);
+                    Ok(test_provider_result(&operation_id))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let persisted_turns = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let persisted_turns = Arc::clone(&persisted_turns);
+            Arc::new(move |event: CompletedTurnTranscription| {
+                let persisted_turns = Arc::clone(&persisted_turns);
+                Box::pin(async move {
+                    persisted_turns
+                        .lock()
+                        .unwrap()
+                        .push(completed_turn_index(&event));
+                    Ok(())
+                }) as TurnResultFuture
+            }) as TurnResultSink
+        };
+        let fallback_count = Arc::new(AtomicUsize::new(0));
+        let fallback_preparer = {
+            let fallback_count = Arc::clone(&fallback_count);
+            Arc::new(move |plan: SourceFallbackPlan| {
+                fallback_count.fetch_add(1, Ordering::SeqCst);
+                Ok(fake_fallback_job(plan))
+            }) as SourceFallbackPreparer
+        };
+        let done_started = Instant::now();
+        let mut pipeline = tokio::spawn(async move {
+            prepare_and_transcribe_turn_jobs_bounded(
+                descriptors,
+                fallback_plans,
+                &[],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                turn_preparer,
+                fallback_preparer,
+                transcriber,
+                Some(sink),
+                DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+                ProcessingTiming::from_done(done_started),
+            )
+            .await
+        });
+
+        let provider_observed =
+            tokio::time::timeout(Duration::from_secs(2), provider_observed_rx.recv()).await;
+        let preparation_error_observed =
+            tokio::time::timeout(Duration::from_secs(2), preparation_error_rx.recv()).await;
+        let pending_probe = tokio::time::timeout(Duration::from_millis(50), &mut pipeline).await;
+        let pipeline_was_pending = pending_probe.is_err();
+        provider_gate.add_permits(1);
+        let pipeline_result = match pending_probe {
+            Ok(result) => Ok(result),
+            Err(_) => tokio::time::timeout(Duration::from_secs(2), &mut pipeline).await,
+        };
+        if pipeline_result.is_err() {
+            pipeline.abort();
+        }
+
+        assert!(provider_observed.is_ok(), "provider work never began");
+        assert!(
+            preparation_error_observed.is_ok(),
+            "preparation never returned its error"
+        );
+        assert!(
+            pipeline_was_pending,
+            "pipeline returned before draining in-flight provider work"
+        );
+        let failure = pipeline_result
+            .expect("pipeline timed out")
+            .expect("pipeline task panicked")
+            .expect_err("pipeline should return the preparation error");
+        assert_eq!(failure.error.code, "audio_turn_failed");
+        assert_eq!(failure.error.message, "planned preparation failure");
+        assert_eq!(failure.error.details, expected_error.details);
+        let preparation = failure
+            .preparation
+            .expect("producer report should survive preparation failure");
+        assert_eq!(preparation.prepared_count, 1);
+        assert!(
+            preparation.active_preparation_duration_ms >= (ACTIVE_WORK_MS * 2) as i64,
+            "report omitted active work from the failed preparation attempt: {:?}",
+            preparation
+        );
+        assert!(
+            preparation.producer_wall_duration_ms >= preparation.active_preparation_duration_ms,
+            "producer wall time must include all active preparation: {:?}",
+            preparation
+        );
+        assert!(preparation.done_to_preparation_complete_ms.is_some());
+        let report_error = preparation.error.expect("report should keep its error");
+        assert_eq!(report_error.code, "audio_turn_failed");
+        assert_eq!(report_error.message, "planned preparation failure");
+        assert_eq!(report_error.details, expected_error.details);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(*persisted_turns.lock().unwrap(), vec![0]);
+        assert_eq!(fallback_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn turn_wav_temp_dir_is_removed_after_preparation_error() {
+        let root = tempfile::tempdir().expect("temp root");
+        let turn_wav_dir = root.path().join("session").join("turns");
+        std::fs::create_dir_all(&turn_wav_dir).expect("turn WAV temp dir");
+        let turn_wav_dir_cleanup = Arc::new(TempDirCleanup(turn_wav_dir.clone()));
+
+        let descriptors = vec![
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
+        ];
+        let fallback_plans = build_source_fallback_plans(&descriptors);
+        let (provider_began_tx, provider_began_rx) = std::sync::mpsc::channel();
+        let provider_began_rx = Arc::new(Mutex::new(provider_began_rx));
+        let (preparation_failed_tx, mut preparation_failed_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let turn_preparer = {
+            let cleanup = Arc::clone(&turn_wav_dir_cleanup);
+            let provider_began_rx = Arc::clone(&provider_began_rx);
+            Arc::new(move |descriptor: TurnPreparationJob| {
+                let _cleanup = Arc::clone(&cleanup);
+                if descriptor.schedule_index == 1 {
+                    provider_began_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+                    preparation_failed_tx.send(()).unwrap();
+                    return Err(AppError::new(
+                        "audio_turn_failed",
+                        "planned preparation failure",
+                    ));
+                }
+                Ok(prepared_test_turn(&descriptor))
+            }) as TurnPreparer
+        };
+        let active = Arc::new(AtomicUsize::new(0));
+        let provider_gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let transcriber = {
+            let cleanup = Arc::clone(&turn_wav_dir_cleanup);
+            let active = Arc::clone(&active);
+            let provider_gate = Arc::clone(&provider_gate);
+            Arc::new(move |request: TranscriptionRequest| {
+                let cleanup = Arc::clone(&cleanup);
+                let active = Arc::clone(&active);
+                let provider_gate = Arc::clone(&provider_gate);
+                let provider_began_tx = provider_began_tx.clone();
+                let operation_id = request.operation_id();
+                Box::pin(async move {
+                    let _cleanup = cleanup;
+                    active.fetch_add(1, Ordering::SeqCst);
+                    provider_began_tx.send(()).unwrap();
+                    let permit = provider_gate.acquire_owned().await.unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    drop(permit);
+                    Ok(test_provider_result(&operation_id))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let fallback_count = Arc::new(AtomicUsize::new(0));
+        let fallback_preparer = {
+            let fallback_count = Arc::clone(&fallback_count);
+            Arc::new(move |plan: SourceFallbackPlan| {
+                fallback_count.fetch_add(1, Ordering::SeqCst);
+                Ok(fake_fallback_job(plan))
+            }) as SourceFallbackPreparer
+        };
+        let mut pipeline = tokio::spawn(async move {
+            prepare_and_transcribe_turn_jobs_bounded(
+                descriptors,
+                fallback_plans,
+                &[],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                turn_preparer,
+                fallback_preparer,
+                transcriber,
+                None,
+                DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+                ProcessingTiming::untracked(),
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), preparation_failed_rx.recv())
+            .await
+            .expect("preparation failure observation timed out")
+            .expect("preparation failure observation channel closed");
+        assert_eq!(active.load(Ordering::SeqCst), 1);
+        assert!(
+            turn_wav_dir.exists(),
+            "temp directory was removed while provider work was draining"
+        );
+        let pending_probe = tokio::time::timeout(Duration::from_millis(50), &mut pipeline).await;
+        assert!(
+            pending_probe.is_err(),
+            "pipeline returned before its in-flight provider was drained"
+        );
+
+        provider_gate.add_permits(1);
+        let pipeline_result = match pending_probe {
+            Ok(result) => Ok(result),
+            Err(_) => tokio::time::timeout(Duration::from_secs(2), &mut pipeline).await,
+        };
+        let failure = pipeline_result
+            .expect("pipeline timed out")
+            .expect("pipeline task panicked")
+            .expect_err("pipeline should return the preparation error");
+        assert_eq!(failure.error.code, "audio_turn_failed");
+        assert_eq!(failure.error.message, "planned preparation failure");
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(fallback_count.load(Ordering::SeqCst), 0);
+        assert!(
+            turn_wav_dir.exists(),
+            "caller's cleanup guard should retain the directory"
+        );
+
+        drop(turn_wav_dir_cleanup);
+        assert!(!turn_wav_dir.exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn turn_wav_temp_dir_outlives_cancelled_blocking_preparation() {
+        let root = tempfile::tempdir().expect("temp root");
+        let turn_wav_dir = root.path().join("session").join("turns");
+        std::fs::create_dir_all(&turn_wav_dir).expect("turn WAV temp dir");
+        let turn_wav_dir_cleanup = Arc::new(TempDirCleanup(turn_wav_dir.clone()));
+
+        let descriptor = turn_preparation_job(0, "microphone", 0, false);
+        let (preparation_started_tx, mut preparation_started_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let (release_preparation_tx, release_preparation_rx) = std::sync::mpsc::channel();
+        let release_preparation_rx = Arc::new(Mutex::new(release_preparation_rx));
+        let (preparation_finished_tx, mut preparation_finished_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let blocking_preparer = {
+            let release_preparation_rx = Arc::clone(&release_preparation_rx);
+            Arc::new(move |descriptor: TurnPreparationJob| {
+                preparation_started_tx.send(()).unwrap();
+                release_preparation_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+                preparation_finished_tx.send(()).unwrap();
+                Ok(prepared_test_turn(&descriptor))
+            }) as TurnPreparer
+        };
+        let turn_preparer = retain_cleanup_during_turn_preparation(
+            blocking_preparer,
+            Arc::clone(&turn_wav_dir_cleanup),
+        );
+        let transcriber: TurnTranscriber = Arc::new(|_request| {
+            Box::pin(async { Err(AppError::new("unexpected", "unexpected provider call")) })
+        });
+        let pipeline = tokio::spawn(async move {
+            prepare_and_transcribe_turn_jobs_bounded(
+                vec![descriptor],
+                Vec::new(),
+                &[],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                turn_preparer,
+                Arc::new(|plan| Ok(fake_fallback_job(plan))),
+                transcriber,
+                None,
+                DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+                ProcessingTiming::untracked(),
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), preparation_started_rx.recv())
+            .await
+            .expect("blocking preparation did not start")
+            .expect("preparation-start channel closed");
+        pipeline.abort();
+        let join_error = pipeline
+            .await
+            .expect_err("aborted pipeline task should be cancelled");
+        assert!(join_error.is_cancelled());
+        assert!(turn_wav_dir.exists());
+
+        drop(turn_wav_dir_cleanup);
+        assert!(
+            turn_wav_dir.exists(),
+            "blocking preparation must retain the temp directory after caller cancellation"
+        );
+
+        release_preparation_tx
+            .send(())
+            .expect("release blocking preparation");
+        tokio::time::timeout(Duration::from_secs(2), preparation_finished_rx.recv())
+            .await
+            .expect("blocking preparation did not finish")
+            .expect("preparation-finished channel closed");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while turn_wav_dir.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("turn WAV temp directory was not eventually removed");
+    }
+
+    #[tokio::test]
+    async fn note_transcription_future_retains_turn_wav_temp_dir_after_wrapper_drop() {
+        let root = tempfile::tempdir().expect("temp root");
+        let turn_wav_dir = root.path().join("session").join("turns");
+        std::fs::create_dir_all(&turn_wav_dir).expect("turn WAV temp dir");
+        let turn_wav_dir_cleanup = Arc::new(TempDirCleanup(turn_wav_dir.clone()));
+        let provider_gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (provider_started_tx, mut provider_started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let inner = {
+            let provider_gate = Arc::clone(&provider_gate);
+            Arc::new(move |_request: TranscriptionRequest| {
+                let provider_gate = Arc::clone(&provider_gate);
+                let provider_started_tx = provider_started_tx.clone();
+                Box::pin(async move {
+                    provider_started_tx.send(()).unwrap();
+                    let permit = provider_gate.acquire_owned().await.unwrap();
+                    drop(permit);
+                    Ok(test_provider_result("transcribed"))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let guarded =
+            retain_cleanup_during_note_transcription(inner, Arc::clone(&turn_wav_dir_cleanup));
+        let future = guarded(TranscriptionRequest {
+            provider: crate::providers::OPENAI_PROVIDER.to_string(),
+            audio_path: PathBuf::from("prepared.wav"),
+            title: "Meeting".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("operation".to_string()),
+            preview: false,
+        });
+
+        drop(guarded);
+        drop(turn_wav_dir_cleanup);
+        assert!(
+            turn_wav_dir.exists(),
+            "the returned note transcription future must own the cleanup guard"
+        );
+
+        let provider = tokio::spawn(future);
+        tokio::time::timeout(Duration::from_secs(2), provider_started_rx.recv())
+            .await
+            .expect("provider future did not start")
+            .expect("provider-start channel closed");
+        assert!(turn_wav_dir.exists());
+        provider_gate.add_permits(1);
+        provider
+            .await
+            .expect("provider task panicked")
+            .expect("provider failed");
+        assert!(!turn_wav_dir.exists());
+    }
+
+    #[tokio::test]
+    async fn empty_pipeline_returns_without_polling_disabled_branches() {
+        let transcriber_calls = Arc::new(AtomicUsize::new(0));
+        let transcriber = {
+            let transcriber_calls = Arc::clone(&transcriber_calls);
+            Arc::new(move |_request: TranscriptionRequest| {
+                transcriber_calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Err(AppError::new("unexpected", "unexpected provider call")) })
+                    as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let fallback_calls = Arc::new(AtomicUsize::new(0));
+        let fallback_preparer = {
+            let fallback_calls = Arc::clone(&fallback_calls);
+            Arc::new(move |plan: SourceFallbackPlan| {
+                fallback_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(fake_fallback_job(plan))
+            }) as SourceFallbackPreparer
+        };
+        let sink_calls = Arc::new(AtomicUsize::new(0));
+        let sink = {
+            let sink_calls = Arc::clone(&sink_calls);
+            Arc::new(move |_event: CompletedTurnTranscription| {
+                sink_calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { Ok(()) }) as TurnResultFuture
+            }) as TurnResultSink
+        };
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            prepare_and_transcribe_turn_jobs_bounded(
+                Vec::new(),
+                Vec::new(),
+                &[],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                Arc::new(|descriptor| Ok(prepared_test_turn(&descriptor))),
+                fallback_preparer,
+                transcriber,
+                Some(sink),
+                0,
+                ProcessingTiming::untracked(),
+            ),
+        )
+        .await
+        .expect("empty pipeline timed out")
+        .expect("empty pipeline should succeed");
+
+        assert!(result.outcome.candidates.is_empty());
+        assert!(result.outcome.failures.is_empty());
+        assert_eq!(result.preparation.prepared_count, 0);
+        assert!(result.preparation.error.is_none());
+        assert_eq!(transcriber_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(sink_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn streaming_scheduler_finishes_after_exact_job_count_with_sender_open() {
+        let descriptors = [
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
+        ];
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        for descriptor in &descriptors {
+            sender
+                .send(Ok(prepared_test_turn(descriptor)))
+                .await
+                .unwrap();
+        }
+        let operation_ids = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = successful_test_transcriber(Arc::clone(&operation_ids));
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            transcribe_prepared_turn_stream(
+                receiver,
+                descriptors.len(),
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                transcriber,
+                None,
+                0,
+            ),
+        )
+        .await
+        .expect("scheduler waited for channel closure")
+        .expect("scheduler should succeed after the exact job count");
+
+        assert_eq!(outcome.candidates.len(), 2);
+        assert!(outcome.failures.is_empty());
+        assert_eq!(operation_ids.lock().unwrap().len(), 2);
+        drop(sender);
+    }
+
+    #[tokio::test]
+    async fn premature_preparation_close_drains_started_provider_and_sink() {
+        let descriptor = turn_preparation_job(0, "microphone", 0, false);
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        sender
+            .send(Ok(prepared_test_turn(&descriptor)))
+            .await
+            .unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let provider_gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (provider_started_tx, mut provider_started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let transcriber = {
+            let active = Arc::clone(&active);
+            let provider_gate = Arc::clone(&provider_gate);
+            Arc::new(move |request: TranscriptionRequest| {
+                let active = Arc::clone(&active);
+                let provider_gate = Arc::clone(&provider_gate);
+                let provider_started_tx = provider_started_tx.clone();
+                let operation_id = request.operation_id();
+                Box::pin(async move {
+                    active.fetch_add(1, Ordering::SeqCst);
+                    provider_started_tx.send(()).unwrap();
+                    let permit = provider_gate.acquire_owned().await.unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    drop(permit);
+                    Ok(test_provider_result(&operation_id))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let sink_turns = Arc::new(Mutex::new(Vec::new()));
+        let sink = {
+            let sink_turns = Arc::clone(&sink_turns);
+            Arc::new(move |event: CompletedTurnTranscription| {
+                let sink_turns = Arc::clone(&sink_turns);
+                Box::pin(async move {
+                    sink_turns
+                        .lock()
+                        .unwrap()
+                        .push(completed_turn_index(&event));
+                    Ok(())
+                }) as TurnResultFuture
+            }) as TurnResultSink
+        };
+        let mut scheduler = tokio::spawn(transcribe_prepared_turn_stream(
+            receiver,
+            2,
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            transcriber,
+            Some(sink),
+            DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+        ));
+
+        let provider_started =
+            tokio::time::timeout(Duration::from_secs(2), provider_started_rx.recv()).await;
+        drop(sender);
+        let pending_probe = tokio::time::timeout(Duration::from_millis(50), &mut scheduler).await;
+        let scheduler_was_pending = pending_probe.is_err();
+        provider_gate.add_permits(1);
+        let scheduler_result = match pending_probe {
+            Ok(result) => Ok(result),
+            Err(_) => tokio::time::timeout(Duration::from_secs(2), &mut scheduler).await,
+        };
+        if scheduler_result.is_err() {
+            scheduler.abort();
+        }
+
+        assert!(provider_started.is_ok(), "provider work never began");
+        assert!(
+            scheduler_was_pending,
+            "scheduler returned before draining its started provider"
+        );
+        let error = scheduler_result
+            .expect("scheduler timed out")
+            .expect("scheduler task panicked")
+            .expect_err("premature channel closure should fail");
+        assert_eq!(error.code, "audio_turn_failed");
+        assert_eq!(
+            error.message,
+            "turn preparation ended before every job was received"
+        );
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(*sink_turns.lock().unwrap(), vec![0]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sink_error_drains_started_work_and_joins_blocked_producer() {
+        let descriptors = (0..5)
+            .map(|index| {
+                turn_preparation_job(
+                    index,
+                    if index % 2 == 0 {
+                        "microphone"
+                    } else {
+                        "system"
+                    },
+                    index as i64,
+                    false,
+                )
+            })
+            .collect::<Vec<_>>();
+        let fallback_plans = build_source_fallback_plans(&descriptors);
+        let (fifth_preparation_started_tx, mut fifth_preparation_started_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        let (release_fifth_preparation_tx, release_fifth_preparation_rx) =
+            std::sync::mpsc::channel();
+        let release_fifth_preparation_rx = Arc::new(Mutex::new(release_fifth_preparation_rx));
+        let turn_preparer = {
+            let release_fifth_preparation_rx = Arc::clone(&release_fifth_preparation_rx);
+            Arc::new(move |descriptor: TurnPreparationJob| {
+                if descriptor.schedule_index == 4 {
+                    fifth_preparation_started_tx.send(()).unwrap();
+                    release_fifth_preparation_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+                }
+                Ok(prepared_test_turn(&descriptor))
+            }) as TurnPreparer
+        };
+        let first_provider_gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let second_provider_gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let (provider_started_tx, mut provider_started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let transcriber = {
+            let first_provider_gate = Arc::clone(&first_provider_gate);
+            let second_provider_gate = Arc::clone(&second_provider_gate);
+            let active = Arc::clone(&active);
+            Arc::new(move |request: TranscriptionRequest| {
+                let first_provider_gate = Arc::clone(&first_provider_gate);
+                let second_provider_gate = Arc::clone(&second_provider_gate);
+                let active = Arc::clone(&active);
+                let provider_started_tx = provider_started_tx.clone();
+                let operation_id = request.operation_id();
+                let turn_index = if operation_id.ends_with("turn-0") {
+                    0
+                } else if operation_id.ends_with("turn-1") {
+                    1
+                } else if operation_id.ends_with("turn-2") {
+                    2
+                } else {
+                    3
+                };
+                Box::pin(async move {
+                    active.fetch_add(1, Ordering::SeqCst);
+                    provider_started_tx.send(operation_id.clone()).unwrap();
+                    match turn_index {
+                        0 => {
+                            let permit = first_provider_gate.acquire_owned().await.unwrap();
+                            drop(permit);
+                        }
+                        1 => {
+                            let permit = second_provider_gate.acquire_owned().await.unwrap();
+                            drop(permit);
+                        }
+                        _ => {}
+                    }
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(test_provider_result(&operation_id))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let sink_order = Arc::new(Mutex::new(Vec::new()));
+        let (sink_invoked_tx, mut sink_invoked_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = {
+            let sink_order = Arc::clone(&sink_order);
+            Arc::new(move |event: CompletedTurnTranscription| {
+                let sink_order = Arc::clone(&sink_order);
+                let sink_invoked_tx = sink_invoked_tx.clone();
+                Box::pin(async move {
+                    let turn_index = completed_turn_index(&event);
+                    sink_order.lock().unwrap().push(turn_index);
+                    sink_invoked_tx.send(turn_index).unwrap();
+                    match turn_index {
+                        0 => Err(AppError::new("sink_failed", "first sink failure")),
+                        1 => Err(AppError::new("sink_failed", "second sink failure")),
+                        _ => Ok(()),
+                    }
+                }) as TurnResultFuture
+            }) as TurnResultSink
+        };
+        let fallback_count = Arc::new(AtomicUsize::new(0));
+        let fallback_preparer = {
+            let fallback_count = Arc::clone(&fallback_count);
+            Arc::new(move |plan: SourceFallbackPlan| {
+                fallback_count.fetch_add(1, Ordering::SeqCst);
+                Ok(fake_fallback_job(plan))
+            }) as SourceFallbackPreparer
+        };
+        let mut pipeline = tokio::spawn(async move {
+            prepare_and_transcribe_turn_jobs_bounded(
+                descriptors,
+                fallback_plans,
+                &[],
+                crate::providers::OPENAI_PROVIDER.to_string(),
+                "Meeting".to_string(),
+                None,
+                turn_preparer,
+                fallback_preparer,
+                transcriber,
+                Some(sink),
+                DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+                ProcessingTiming::untracked(),
+            )
+            .await
+        });
+
+        let fifth_preparation_started =
+            tokio::time::timeout(Duration::from_secs(2), fifth_preparation_started_rx.recv()).await;
+        let first_started =
+            tokio::time::timeout(Duration::from_secs(2), provider_started_rx.recv()).await;
+        let second_started =
+            tokio::time::timeout(Duration::from_secs(2), provider_started_rx.recv()).await;
+        first_provider_gate.add_permits(1);
+        let first_sink = tokio::time::timeout(Duration::from_secs(2), sink_invoked_rx.recv()).await;
+        let pending_after_first_sink_error =
+            tokio::time::timeout(Duration::from_millis(50), async {
+                while !pipeline.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .is_err();
+        second_provider_gate.add_permits(1);
+        let second_sink =
+            tokio::time::timeout(Duration::from_secs(2), sink_invoked_rx.recv()).await;
+        let unexpected_provider_start = provider_started_rx.try_recv().ok();
+        let pending_probe = tokio::time::timeout(Duration::from_millis(50), &mut pipeline).await;
+        let pending_until_producer_joined = pending_probe.is_err();
+        let _ = release_fifth_preparation_tx.send(());
+        let pipeline_result = match pending_probe {
+            Ok(result) => Ok(result),
+            Err(_) => tokio::time::timeout(Duration::from_secs(2), &mut pipeline).await,
+        };
+        if pipeline_result.is_err() {
+            pipeline.abort();
+        }
+        let late_provider_start = provider_started_rx.try_recv().ok();
+
+        assert!(
+            fifth_preparation_started.is_ok(),
+            "the producer never reached the backpressured fifth descriptor"
+        );
+        let mut started = vec![
+            first_started
+                .expect("the first provider observation timed out")
+                .expect("the first provider channel closed"),
+            second_started
+                .expect("the second provider observation timed out")
+                .expect("the second provider channel closed"),
+        ];
+        started.sort_unstable();
+        assert_eq!(
+            started,
+            vec![
+                "artifact-microphone-turn-0".to_string(),
+                "artifact-system-turn-1".to_string(),
+            ]
+        );
+        assert!(
+            unexpected_provider_start.is_none(),
+            "provider work launched after the first sink error"
+        );
+        assert!(
+            late_provider_start.is_none(),
+            "provider work launched after the pipeline began draining"
+        );
+        assert_eq!(first_sink.expect("the first sink was not invoked"), Some(0));
+        assert!(
+            pending_after_first_sink_error,
+            "pipeline returned before draining the second provider"
+        );
+        assert_eq!(
+            second_sink.expect("the second sink was not invoked"),
+            Some(1)
+        );
+        assert!(
+            pending_until_producer_joined,
+            "pipeline returned before its blocked producer was released and joined"
+        );
+        let failure = pipeline_result
+            .expect("pipeline timed out")
+            .expect("pipeline task panicked")
+            .expect_err("the first sink error should fail the pipeline");
+        assert_eq!(failure.error.code, "sink_failed");
+        assert_eq!(failure.error.message, "first sink failure");
+        let preparation = failure
+            .preparation
+            .expect("producer report should survive sink failure");
+        assert_eq!(preparation.prepared_count, 5);
+        assert!(preparation.error.is_none());
+        assert_eq!(*sink_order.lock().unwrap(), vec![0, 1]);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(fallback_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn prepared_turn_matches_existing_audio_and_metadata() {
+        let dir = std::env::temp_dir().join(format!(
+            "os-june-prepared-turn-golden-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source_path = dir.join("source.wav");
+        let source_spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&source_path, source_spec).unwrap();
+        for frame in 0..(48_000 * 2) {
+            let left = if frame % 4 < 2 {
+                12_000_i16
+            } else {
+                -9_000_i16
+            };
+            let right = if frame % 6 < 3 { 4_000_i16 } else { -7_000_i16 };
+            writer.write_sample(left).unwrap();
+            writer.write_sample(right).unwrap();
+        }
+        writer.finalize().unwrap();
+        let source_bytes = std::fs::read(&source_path).unwrap();
+
+        let turn = AudioTurn {
+            artifact_id: "artifact".to_string(),
+            source: "microphone".to_string(),
+            source_path: source_path.clone(),
+            extraction_start_ms: 250,
+            start_ms: 400,
+            end_ms: 1_250,
+            turn_index: 7,
+        };
+        let reference_turn_wav_path = dir.join("reference-turn.wav");
+        let reference_normalized_path = dir.join("reference-normalized.wav");
+        write_turn_wav(&turn, &reference_turn_wav_path).unwrap();
+        let reference_audio_path =
+            normalize_wav_for_transcription(&reference_turn_wav_path, &reference_normalized_path)
+                .unwrap();
+        let reference_job = TurnTranscriptionJob {
+            artifact_id: turn.artifact_id.clone(),
+            source: turn.source.clone(),
+            audio_path: reference_audio_path.clone(),
+            temp_dir: dir.clone(),
+            recorded_silence: true,
+            source_fallback: false,
+            start_ms: turn.start_ms,
+            end_ms: turn.end_ms,
+            turn_index: turn.turn_index,
+        };
+
+        let prepared = prepare_turn_job(TurnPreparationJob {
+            schedule_index: 3,
+            turn,
+            temp_dir: dir.clone(),
+            turn_wav_path: dir.join("actual-turn.wav"),
+            normalized_path: dir.join("actual-normalized.wav"),
+            recorded_silence: true,
+            echo_trimmed: false,
+        })
+        .unwrap();
+
+        let mut reference_reader = hound::WavReader::open(&reference_audio_path).unwrap();
+        let reference_spec = reference_reader.spec();
+        let reference_samples = reference_reader
+            .samples::<i16>()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let mut actual_reader = hound::WavReader::open(&prepared.job.audio_path).unwrap();
+        let actual_spec = actual_reader.spec();
+        let actual_samples = actual_reader
+            .samples::<i16>()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(actual_spec, reference_spec);
+        assert_eq!(actual_samples, reference_samples);
+        assert_eq!(
+            actual_spec,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 16_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            }
+        );
+        assert_eq!(std::fs::read(&source_path).unwrap(), source_bytes);
+        assert_eq!(prepared.schedule_index, 3);
+        assert_eq!(prepared.job.artifact_id, reference_job.artifact_id);
+        assert_eq!(prepared.job.source, reference_job.source);
+        assert_eq!(prepared.job.start_ms, reference_job.start_ms);
+        assert_eq!(prepared.job.end_ms, reference_job.end_ms);
+        assert_eq!(prepared.job.turn_index, reference_job.turn_index);
+        assert_eq!(
+            prepared.job.recorded_silence,
+            reference_job.recorded_silence
+        );
+        assert_eq!(prepared.job.temp_dir, reference_job.temp_dir);
+        assert!(!prepared.job.source_fallback);
+        assert_eq!(
+            turn_operation_id(&prepared.job),
+            turn_operation_id(&reference_job)
+        );
+        assert_eq!(
+            turn_operation_id(&prepared.job),
+            "artifact-microphone-turn-7"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fallback_plans_use_canonical_source_order_and_stable_unknown_order() {
+        let descriptors = vec![
+            turn_preparation_job(0, "system", 0, false),
+            turn_preparation_job(1, "unknown-first", 1, false),
+            turn_preparation_job(2, "microphone", 2, false),
+            turn_preparation_job(3, "unknown-second", 3, false),
+            turn_preparation_job(4, "unknown-first", 4, false),
+        ];
+
+        let fallback_plans = build_source_fallback_plans(&descriptors);
+
+        assert_eq!(
+            fallback_plans
+                .iter()
+                .map(|plan| plan.source.as_str())
+                .collect::<Vec<_>>(),
+            vec!["microphone", "system", "unknown-first", "unknown-second"]
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_jobs_skip_complete_source_preparation() {
+        let descriptors = vec![
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
+        ];
+        let fallback_plans = build_source_fallback_plans(&descriptors);
+        assert_eq!(
+            fallback_plans
+                .iter()
+                .map(|plan| plan.source.as_str())
+                .collect::<Vec<_>>(),
+            vec!["microphone", "system"]
+        );
+        let ordinary_jobs = descriptors
+            .iter()
+            .map(fake_ordinary_job)
+            .collect::<Vec<_>>();
+        let fallback_preparations = Arc::new(AtomicUsize::new(0));
+        let fallback_preparer = {
+            let fallback_preparations = Arc::clone(&fallback_preparations);
+            Arc::new(move |plan: SourceFallbackPlan| {
+                fallback_preparations.fetch_add(1, Ordering::SeqCst);
+                Ok(fake_fallback_job(plan))
+            }) as SourceFallbackPreparer
+        };
+        let operation_ids = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = successful_test_transcriber(Arc::clone(&operation_ids));
+
+        let outcome = transcribe_turn_jobs_bounded(
+            ordinary_jobs,
+            fallback_plans,
+            &[],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            fallback_preparer,
+            transcriber,
+            None,
+            DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fallback_preparations.load(Ordering::SeqCst), 0);
+        assert_eq!(outcome.candidates.len(), 2);
+        assert!(outcome.failures.is_empty());
+        let mut candidate_sources = outcome
+            .candidates
+            .iter()
+            .map(|candidate| candidate.input.source.as_str())
+            .collect::<Vec<_>>();
+        candidate_sources.sort_unstable();
+        assert_eq!(candidate_sources, vec!["microphone", "system"]);
+        let mut operation_ids = operation_ids.lock().unwrap().clone();
+        operation_ids.sort();
+        assert_eq!(
+            operation_ids,
+            vec!["artifact-microphone-turn-0", "artifact-system-turn-1",]
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_source_prepares_one_lazy_fallback_with_source_operation_id() {
+        let descriptors = vec![
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
+            turn_preparation_job(2, "microphone", 2, false),
+        ];
+        let fallback_plans = build_source_fallback_plans(&descriptors);
+        let expected_microphone_end_ms = descriptors[2].turn.end_ms;
+        let raw_microphone_path = descriptors[0].turn.source_path.clone();
+        let ordinary_jobs = descriptors
+            .iter()
+            .map(fake_ordinary_job)
+            .collect::<Vec<_>>();
+        let fallback_calls = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
+        let fallback_preparer = {
+            let fallback_calls = Arc::clone(&fallback_calls);
+            Arc::new(move |plan: SourceFallbackPlan| {
+                *fallback_calls
+                    .lock()
+                    .unwrap()
+                    .entry(plan.source.clone())
+                    .or_default() += 1;
+                Ok(fake_fallback_job(plan))
+            }) as SourceFallbackPreparer
+        };
+        let requests = Arc::new(Mutex::new(Vec::<(String, PathBuf)>::new()));
+        let transcriber = {
+            let requests = Arc::clone(&requests);
+            Arc::new(move |request: TranscriptionRequest| {
+                let requests = Arc::clone(&requests);
+                Box::pin(async move {
+                    let operation_id = request.operation_id();
+                    requests
+                        .lock()
+                        .unwrap()
+                        .push((operation_id.clone(), request.audio_path.clone()));
+                    if operation_id == "artifact-system-turn-1"
+                        || operation_id == "artifact-microphone-source"
+                    {
+                        Ok(test_provider_result(&operation_id))
+                    } else {
+                        Err(AppError::new("no_speech", "no_speech"))
+                    }
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        let outcome = transcribe_turn_jobs_bounded(
+            ordinary_jobs,
+            fallback_plans,
+            &[],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            fallback_preparer,
+            transcriber,
+            None,
+            DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            *fallback_calls.lock().unwrap(),
+            HashMap::from([("microphone".to_string(), 1)])
+        );
+        assert!(outcome.failures.is_empty());
+        assert_eq!(outcome.candidates.len(), 2);
+        let microphone = outcome
+            .candidates
+            .iter()
+            .find(|candidate| candidate.input.source == "microphone")
+            .unwrap();
+        assert_eq!(microphone.input.start_ms, Some(0));
+        assert_eq!(microphone.input.end_ms, Some(expected_microphone_end_ms));
+        assert_eq!(microphone.input.turn_index, Some(0));
+
+        let requests = requests.lock().unwrap();
+        let mut operation_ids = requests
+            .iter()
+            .map(|(operation_id, _)| operation_id.clone())
+            .collect::<Vec<_>>();
+        operation_ids.sort();
+        assert_eq!(
+            operation_ids,
+            vec![
+                "artifact-microphone-source",
+                "artifact-microphone-turn-0",
+                "artifact-microphone-turn-2",
+                "artifact-system-turn-1",
+            ]
+        );
+        let fallback_path = requests
+            .iter()
+            .find(|(operation_id, _)| operation_id == "artifact-microphone-source")
+            .map(|(_, path)| path)
+            .unwrap();
+        assert_eq!(fallback_path, &PathBuf::from("prepared-microphone.wav"));
+        assert_ne!(fallback_path, &raw_microphone_path);
+        assert!(requests
+            .iter()
+            .all(|(_, audio_path)| audio_path != &raw_microphone_path));
+    }
+
+    #[tokio::test]
+    async fn failed_sources_prepare_one_fallback_each() {
+        let descriptors = vec![
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
+        ];
+        let fallback_plans = build_source_fallback_plans(&descriptors);
+        let ordinary_jobs = descriptors
+            .iter()
+            .map(fake_ordinary_job)
+            .collect::<Vec<_>>();
+        let fallback_calls = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
+        let fallback_preparer = {
+            let fallback_calls = Arc::clone(&fallback_calls);
+            Arc::new(move |plan: SourceFallbackPlan| {
+                *fallback_calls
+                    .lock()
+                    .unwrap()
+                    .entry(plan.source.clone())
+                    .or_default() += 1;
+                Ok(fake_fallback_job(plan))
+            }) as SourceFallbackPreparer
+        };
+        let operation_ids = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = {
+            let operation_ids = Arc::clone(&operation_ids);
+            Arc::new(move |request: TranscriptionRequest| {
+                let operation_ids = Arc::clone(&operation_ids);
+                Box::pin(async move {
+                    let operation_id = request.operation_id();
+                    operation_ids.lock().unwrap().push(operation_id.clone());
+                    if operation_id.ends_with("-source") {
+                        Ok(test_provider_result(&operation_id))
+                    } else {
+                        Err(AppError::new("no_speech", "no_speech"))
+                    }
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        let outcome = transcribe_turn_jobs_bounded(
+            ordinary_jobs,
+            fallback_plans,
+            &[],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            fallback_preparer,
+            transcriber,
+            None,
+            DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            *fallback_calls.lock().unwrap(),
+            HashMap::from([("microphone".to_string(), 1), ("system".to_string(), 1),])
+        );
+        assert!(outcome.failures.is_empty());
+        assert_eq!(outcome.candidates.len(), 2);
+        let operation_ids = operation_ids.lock().unwrap();
+        let mut sorted_operation_ids = operation_ids.clone();
+        sorted_operation_ids.sort();
+        assert_eq!(
+            sorted_operation_ids,
+            vec![
+                "artifact-microphone-source",
+                "artifact-microphone-turn-0",
+                "artifact-system-source",
+                "artifact-system-turn-1",
+            ]
+        );
+        assert_eq!(
+            operation_ids
+                .iter()
+                .filter(|operation_id| operation_id.ends_with("-source"))
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["artifact-microphone-source", "artifact-system-source"]
+        );
+    }
+
+    #[tokio::test]
+    async fn echo_trimmed_source_never_prepares_or_transcribes_fallback() {
+        let descriptors = vec![
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "microphone", 1, true),
+        ];
+        let fallback_plans = build_source_fallback_plans(&descriptors);
+        assert_eq!(fallback_plans.len(), 1);
+        assert!(fallback_plans[0].echo_trimmed);
+        assert!(!fallback_plans[0].eligible());
+        let ordinary_jobs = descriptors
+            .iter()
+            .map(fake_ordinary_job)
+            .collect::<Vec<_>>();
+        let fallback_preparations = Arc::new(AtomicUsize::new(0));
+        let fallback_preparer = {
+            let fallback_preparations = Arc::clone(&fallback_preparations);
+            Arc::new(move |plan: SourceFallbackPlan| {
+                fallback_preparations.fetch_add(1, Ordering::SeqCst);
+                Ok(fake_fallback_job(plan))
+            }) as SourceFallbackPreparer
+        };
+        let operation_ids = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = {
+            let operation_ids = Arc::clone(&operation_ids);
+            Arc::new(move |request: TranscriptionRequest| {
+                let operation_ids = Arc::clone(&operation_ids);
+                Box::pin(async move {
+                    operation_ids.lock().unwrap().push(request.operation_id());
+                    Err(AppError::new("no_speech", "no_speech"))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        let outcome = transcribe_turn_jobs_bounded(
+            ordinary_jobs,
+            fallback_plans,
+            &[],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            fallback_preparer,
+            transcriber,
+            None,
+            DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fallback_preparations.load(Ordering::SeqCst), 0);
+        assert!(outcome.candidates.is_empty());
+        assert_eq!(outcome.failures.len(), 2);
+        let mut operation_ids = operation_ids.lock().unwrap().clone();
+        operation_ids.sort();
+        assert_eq!(
+            operation_ids,
+            vec!["artifact-microphone-turn-0", "artifact-microphone-turn-1",]
+        );
+        assert!(operation_ids
+            .iter()
+            .all(|operation_id| !operation_id.ends_with("-source")));
+    }
+
+    #[tokio::test]
+    async fn valid_cached_turn_suppresses_fallback_after_fresh_failures() {
+        let descriptors = vec![turn_preparation_job(0, "microphone", 1, false)];
+        let fallback_plans = build_source_fallback_plans(&descriptors);
+        assert!(fallback_plans[0].eligible());
+        let ordinary_jobs = descriptors
+            .iter()
+            .map(fake_ordinary_job)
+            .collect::<Vec<_>>();
+        let cached_candidates = vec![TranscriptCandidate {
+            artifact_id: "artifact".to_string(),
+            language: None,
+            provider: crate::providers::OPENAI_PROVIDER.to_string(),
+            input: SourceTranscriptInput {
+                source: "microphone".to_string(),
+                text: "cached turn".to_string(),
+                valid: true,
+                warning: None,
+                recorded_silence: false,
+                start_ms: Some(100),
+                end_ms: Some(600),
+                turn_index: Some(0),
+            },
+        }];
+        let fallback_preparations = Arc::new(AtomicUsize::new(0));
+        let fallback_preparer = {
+            let fallback_preparations = Arc::clone(&fallback_preparations);
+            Arc::new(move |plan: SourceFallbackPlan| {
+                fallback_preparations.fetch_add(1, Ordering::SeqCst);
+                Ok(fake_fallback_job(plan))
+            }) as SourceFallbackPreparer
+        };
+        let operation_ids = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = {
+            let operation_ids = Arc::clone(&operation_ids);
+            Arc::new(move |request: TranscriptionRequest| {
+                let operation_ids = Arc::clone(&operation_ids);
+                Box::pin(async move {
+                    operation_ids.lock().unwrap().push(request.operation_id());
+                    Err(AppError::new("no_speech", "no_speech"))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        let outcome = transcribe_turn_jobs_bounded(
+            ordinary_jobs,
+            fallback_plans,
+            &cached_candidates,
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            fallback_preparer,
+            transcriber,
+            None,
+            DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fallback_preparations.load(Ordering::SeqCst), 0);
+        assert!(outcome.candidates.is_empty());
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.failures[0].input.source, "microphone");
+        assert_eq!(
+            operation_ids.lock().unwrap().as_slice(),
+            ["artifact-microphone-turn-1"]
+        );
+    }
+
+    fn turn_preparation_job(
+        schedule_index: usize,
+        source: &str,
+        turn_index: i64,
+        echo_trimmed: bool,
+    ) -> TurnPreparationJob {
+        let start_ms = turn_index * 1_000 + 100;
+        TurnPreparationJob {
+            schedule_index,
+            turn: AudioTurn {
+                artifact_id: "artifact".to_string(),
+                source: source.to_string(),
+                source_path: PathBuf::from(format!("raw-{source}.wav")),
+                extraction_start_ms: start_ms,
+                start_ms,
+                end_ms: start_ms + 500,
+                turn_index,
+            },
+            temp_dir: PathBuf::from("turn-temp"),
+            turn_wav_path: PathBuf::from(format!("turn-{source}-{turn_index}.wav")),
+            normalized_path: PathBuf::from(format!("ordinary-{source}-{turn_index}.wav")),
+            recorded_silence: false,
+            echo_trimmed,
+        }
+    }
+
+    fn fake_ordinary_job(descriptor: &TurnPreparationJob) -> TurnTranscriptionJob {
+        TurnTranscriptionJob {
+            artifact_id: descriptor.turn.artifact_id.clone(),
+            source: descriptor.turn.source.clone(),
+            audio_path: descriptor.normalized_path.clone(),
+            temp_dir: descriptor.temp_dir.clone(),
+            recorded_silence: descriptor.recorded_silence,
+            source_fallback: false,
+            start_ms: descriptor.turn.start_ms,
+            end_ms: descriptor.turn.end_ms,
+            turn_index: descriptor.turn.turn_index,
+        }
+    }
+
+    fn prepared_test_turn(descriptor: &TurnPreparationJob) -> PreparedTurn {
+        PreparedTurn {
+            schedule_index: descriptor.schedule_index,
+            job: fake_ordinary_job(descriptor),
+        }
+    }
+
+    fn completed_turn_index(event: &CompletedTurnTranscription) -> i64 {
+        match &event.result {
+            TurnTranscriptionResult::Candidate(candidate) => {
+                candidate.input.turn_index.unwrap_or_default()
+            }
+            TurnTranscriptionResult::Failure(failure) => {
+                failure.input.turn_index.unwrap_or_default()
+            }
+        }
+    }
+
+    fn fake_fallback_job(plan: SourceFallbackPlan) -> TurnTranscriptionJob {
+        let audio_path = PathBuf::from(format!("prepared-{}.wav", plan.source));
+        TurnTranscriptionJob {
+            artifact_id: plan.artifact_id,
+            source: plan.source,
+            audio_path,
+            temp_dir: plan.temp_dir,
+            recorded_silence: plan.recorded_silence,
+            source_fallback: true,
+            start_ms: 0,
+            end_ms: plan.end_ms,
+            turn_index: plan.turn_index,
+        }
+    }
+
+    fn test_provider_result(text: &str) -> TranscriptionProviderResult {
+        TranscriptionProviderResult {
+            text: text.to_string(),
+            language: None,
+            provider: "test".to_string(),
+        }
+    }
+
+    fn successful_test_transcriber(operation_ids: Arc<Mutex<Vec<String>>>) -> TurnTranscriber {
+        Arc::new(move |request: TranscriptionRequest| {
+            let operation_ids = Arc::clone(&operation_ids);
+            Box::pin(async move {
+                let operation_id = request.operation_id();
+                operation_ids.lock().unwrap().push(operation_id.clone());
+                Ok(test_provider_result(&operation_id))
+            }) as TranscriptionFuture
+        })
+    }
+
     fn test_job(path: &str, source: &str, turn_index: i64) -> TurnTranscriptionJob {
         TurnTranscriptionJob {
             artifact_id: format!("artifact-{path}"),
             source: source.to_string(),
             audio_path: PathBuf::from(path),
             temp_dir: std::env::temp_dir(),
-            source_path: PathBuf::from(path),
             recorded_silence: false,
-            covers_full_source: true,
             source_fallback: false,
-            echo_trimmed: false,
             start_ms: turn_index * 1_000,
             end_ms: turn_index * 1_000 + 500,
             turn_index,
-        }
-    }
-
-    #[test]
-    fn echo_trimmed_lane_never_falls_back_to_the_full_source() {
-        // If every kept remainder of an echo-trimmed microphone lane fails to
-        // transcribe, retrying with the raw full-source file would transcribe
-        // the trimmed bleed verbatim — the misattribution the trim removed.
-        let mut jobs = vec![segmented_test_job(
-            "remainder.wav",
-            "microphone.wav",
-            "microphone",
-            0,
-        )];
-        assert!(full_source_fallback_job(&jobs).is_some());
-
-        jobs[0].echo_trimmed = true;
-        assert!(full_source_fallback_job(&jobs).is_none());
-    }
-
-    fn segmented_test_job(
-        path: &str,
-        source_path: &str,
-        source: &str,
-        turn_index: i64,
-    ) -> TurnTranscriptionJob {
-        TurnTranscriptionJob {
-            source_path: PathBuf::from(source_path),
-            covers_full_source: false,
-            ..test_job(path, source, turn_index)
         }
     }
 

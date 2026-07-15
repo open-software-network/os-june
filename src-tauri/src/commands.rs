@@ -17,7 +17,8 @@ use crate::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::{
         processing::{
-            manual_notes_for_generation, process_saved_audio, process_saved_source_audio,
+            add_latency_checkpoint, manual_notes_for_generation, process_saved_audio,
+            process_saved_source_audio, ProcessingTiming,
         },
         processing_queue,
         types::{
@@ -1228,10 +1229,13 @@ pub async fn finish_recording(
     app: AppHandle,
     request: SessionRequest,
 ) -> Result<FinishRecordingResponse, AppError> {
+    let timing = ProcessingTiming::from_done(Instant::now());
     let repos = repositories(&app).await?;
     let finalization_started = Instant::now();
     let finished = finish_capture(&request.session_id)?;
-    let response = finish_recording_session(&repos, finished, finalization_started).await?;
+    let response =
+        finish_recording_session_with_timing(&repos, finished, finalization_started, timing)
+            .await?;
     if response.processing_started {
         crate::p3a::record_question_best_effort(
             app,
@@ -1253,6 +1257,21 @@ async fn finish_recording_session(
     repos: &Repositories,
     finished: crate::audio::capture::FinishedRecording,
     finalization_started: Instant,
+) -> Result<FinishRecordingResponse, AppError> {
+    finish_recording_session_with_timing(
+        repos,
+        finished,
+        finalization_started,
+        ProcessingTiming::untracked(),
+    )
+    .await
+}
+
+async fn finish_recording_session_with_timing(
+    repos: &Repositories,
+    finished: crate::audio::capture::FinishedRecording,
+    finalization_started: Instant,
+    timing: ProcessingTiming,
 ) -> Result<FinishRecordingResponse, AppError> {
     let finalization_ms = finalization_started
         .elapsed()
@@ -1511,6 +1530,18 @@ async fn finish_recording_session(
         )
         .await?;
 
+    add_latency_checkpoint(
+        repos,
+        &finished.session_id,
+        "audio_validation",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": validation_started.elapsed().as_millis().min(i64::MAX as u128) as i64,
+            "validSourceCount": valid_sources.len(),
+            "sourceCount": finished.sources.len(),
+        })),
+    )
+    .await;
+
     if valid_sources.is_empty() {
         repos
             .set_note_status(
@@ -1527,27 +1558,6 @@ async fn finish_recording_session(
             processing_started: false,
             warnings,
         });
-    }
-
-    if let Err(error) = repos
-        .add_checkpoint(
-            &finished.session_id,
-            "audio_validation",
-            Some(
-                serde_json::json!({
-                    "durationMs": validation_started.elapsed().as_millis().min(i64::MAX as u128) as i64,
-                    "validSourceCount": valid_sources.len(),
-                    "sourceCount": finished.sources.len(),
-                })
-                .to_string(),
-            ),
-        )
-        .await
-    {
-        eprintln!(
-            "failed to persist audio_validation checkpoint for {}: {}",
-            finished.session_id, error
-        );
     }
 
     // Capture is single-instance, but processing runs asynchronously — so the
@@ -1578,6 +1588,15 @@ async fn finish_recording_session(
     tokio::spawn(async move {
         let queue_lock = ticket.lock();
         let _guard = queue_lock.lock().await;
+        #[cfg(test)]
+        note_transcription_benchmark::record_processing_dequeued(&task_session_id);
+        add_latency_checkpoint(
+            &task_repos,
+            &task_session_id,
+            "processing_dequeued",
+            timing.checkpoint_details(serde_json::json!({})),
+        )
+        .await;
         // Now that earlier jobs on this note are done, read the latest note so
         // generation has the freshest existing content as context.
         let note = match task_repos.get_note(&task_note_id).await {
@@ -1607,6 +1626,7 @@ async fn finish_recording_session(
                 existing_generated_note,
                 manual_notes,
                 recorded_silence,
+                timing,
             )
             .await
         } else {
@@ -1619,6 +1639,7 @@ async fn finish_recording_session(
                 title,
                 existing_generated_note,
                 manual_notes,
+                timing,
             )
             .await
         };
@@ -1804,9 +1825,25 @@ pub async fn retry_processing(
 
     let task_repos = repos.clone();
     let task_note_id = request.note_id.clone();
+    let task_recording_session_id = sources
+        .first()
+        .map(
+            |(_id, _source, _path, recording_session_id, _recorded_silence)| {
+                recording_session_id.clone()
+            },
+        )
+        .unwrap_or_default();
     tokio::spawn(async move {
         let queue_lock = ticket.lock();
         let _guard = queue_lock.lock().await;
+        let timing = ProcessingTiming::untracked();
+        add_latency_checkpoint(
+            &task_repos,
+            &task_recording_session_id,
+            "processing_dequeued",
+            timing.checkpoint_details(serde_json::json!({})),
+        )
+        .await;
         let note = match task_repos.get_note(&task_note_id).await {
             Ok(note) => note,
             Err(_) => {
@@ -1832,6 +1869,7 @@ pub async fn retry_processing(
                 existing_generated_note,
                 manual_notes,
                 recorded_silence,
+                timing,
             )
             .await
         } else {
@@ -1853,6 +1891,7 @@ pub async fn retry_processing(
                 title,
                 existing_generated_note,
                 manual_notes,
+                timing,
             )
             .await
         };
@@ -2005,6 +2044,7 @@ pub async fn recover_recording(
             note.title,
             existing_generated_note,
             manual_notes,
+            ProcessingTiming::untracked(),
         )
         .await;
     }
@@ -2078,6 +2118,7 @@ pub async fn recover_recording(
         existing_generated_note,
         manual_notes,
         validation.recorded_silence,
+        ProcessingTiming::untracked(),
     )
     .await
 }
@@ -2429,6 +2470,12 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
     AppPaths::from_data_dir(data_dir)
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))
 }
+
+#[cfg(test)]
+mod note_transcription_benchmark;
+
+#[cfg(test)]
+mod note_transcription_timing_tests;
 
 #[cfg(test)]
 mod tests {
