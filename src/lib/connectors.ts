@@ -324,25 +324,73 @@ export const SANDBOXED_ROUTINE_BASE_TOOLSETS = [
 export const CONNECTOR_READ_TOOLSETS = ["june_gmail", "june_gcal", "june_linear"];
 
 /** Action connector MCP servers: every mutating call parks for approval in
- * the Rust proxy. */
-export const CONNECTOR_ACTION_TOOLSETS = ["june_gmail_actions", "june_gcal_actions"];
+ * the Rust proxy. Linear has no autonomous mode in v1 (see `grantable` on
+ * `ConnectorActionTool`), but its actions server still parks for approval
+ * like the Google ones, so it belongs in this list too. */
+export const CONNECTOR_ACTION_TOOLSETS = [
+  "june_gmail_actions",
+  "june_gcal_actions",
+  "june_linear_actions",
+];
 
-/** One grantable connector action tool, for the autonomous grant checklist.
- * `id` is the raw tool name the Rust proxy consults grants by. */
+/** One connector action tool, for the approvals-surface label lookup
+ * (`actionToolLabel`) and the autonomous grant checklist. `id` is the raw
+ * tool name the Rust proxy consults grants by. `grantable` is false for
+ * every Linear tool: Linear has no autonomous mode in v1, so its tools get
+ * approvals-surface labels but must never appear in the earned-autonomy
+ * grant checklist (only the checklist consumer filters on this field). */
 export type ConnectorActionTool = {
   id: string;
   server: string;
   label: string;
+  grantable: boolean;
 };
 
 export const CONNECTOR_ACTION_TOOLS: readonly ConnectorActionTool[] = Object.freeze([
-  { id: "create_draft", server: "june_gmail_actions", label: "Create drafts" },
-  { id: "send_email", server: "june_gmail_actions", label: "Send email" },
-  { id: "modify_labels", server: "june_gmail_actions", label: "Change labels" },
-  { id: "archive", server: "june_gmail_actions", label: "Archive mail" },
-  { id: "create_event", server: "june_gcal_actions", label: "Create events" },
-  { id: "respond_to_invite", server: "june_gcal_actions", label: "Respond to invites" },
+  { id: "create_draft", server: "june_gmail_actions", label: "Create drafts", grantable: true },
+  { id: "send_email", server: "june_gmail_actions", label: "Send email", grantable: true },
+  { id: "modify_labels", server: "june_gmail_actions", label: "Change labels", grantable: true },
+  { id: "archive", server: "june_gmail_actions", label: "Archive mail", grantable: true },
+  { id: "create_event", server: "june_gcal_actions", label: "Create events", grantable: true },
+  {
+    id: "respond_to_invite",
+    server: "june_gcal_actions",
+    label: "Respond to invites",
+    grantable: true,
+  },
+  {
+    id: "create_issue",
+    server: "june_linear_actions",
+    label: "Create issues",
+    grantable: false,
+  },
+  {
+    id: "update_issue",
+    server: "june_linear_actions",
+    label: "Update issues",
+    grantable: false,
+  },
+  {
+    id: "add_comment",
+    server: "june_linear_actions",
+    label: "Comment on issues",
+    grantable: false,
+  },
+  {
+    id: "create_project_update",
+    server: "june_linear_actions",
+    label: "Post project updates",
+    grantable: false,
+  },
 ]);
+
+/** The connector action tools eligible for the earned-autonomy grant
+ * checklist. Linear tools are excluded: Linear has no autonomous mode in
+ * v1, so they must never be offered as grantable even though they have
+ * approvals-surface labels above. */
+export const GRANTABLE_CONNECTOR_ACTION_TOOLS: readonly ConnectorActionTool[] = Object.freeze(
+  CONNECTOR_ACTION_TOOLS.filter((tool) => tool.grantable),
+);
 
 const ACTION_TOOL_LABELS: Readonly<Record<string, string>> = Object.freeze(
   Object.fromEntries(CONNECTOR_ACTION_TOOLS.map((tool) => [tool.id, tool.label])),

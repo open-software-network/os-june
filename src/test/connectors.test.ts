@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  actionToolLabel,
   AUTONOMY_RUN_THRESHOLD,
   BUNDLE_META,
   autonomyRuntimeNeedsRestart,
+  CONNECTOR_ACTION_TOOLS,
   CONNECTOR_ACTION_TOOLSETS,
   CONNECTOR_READ_TOOLSETS,
   GOOGLE_SCOPE_BUNDLES,
+  GRANTABLE_CONNECTOR_ACTION_TOOLS,
   LINEAR_SCOPE_BUNDLES,
   SANDBOXED_ROUTINE_BASE_TOOLSETS,
   TRIGGER_META,
@@ -249,6 +252,7 @@ describe("routineToolsetsFor", () => {
     const toolsets = routineToolsetsFor("approval", { unrestricted: false });
     expect(toolsets).toContain("june_gmail_actions");
     expect(toolsets).toContain("june_gcal_actions");
+    expect(toolsets).toContain("june_linear_actions");
     expect(toolsets).toContain("june_gmail");
   });
 
@@ -355,6 +359,61 @@ describe("providerFromServer", () => {
     expect(providerFromServer("june_notion_actions")).toBeNull();
     expect(providerFromServer("june_linear")).toBe("linear");
     expect(providerFromServer("june_linear_auto_xyz")).toBe("linear");
+    expect(providerFromServer("june_linear_actions")).toBe("linear");
     expect(providerFromServer("web")).toBeNull();
+  });
+});
+
+describe("connector action tools", () => {
+  it("registers june_linear_actions as an action toolset", () => {
+    expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_linear_actions");
+    expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_gmail_actions");
+    expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_gcal_actions");
+  });
+
+  it("labels the four Linear action tools for the approvals surface", () => {
+    expect(actionToolLabel("create_issue")).toBe("Create issues");
+    expect(actionToolLabel("update_issue")).toBe("Update issues");
+    expect(actionToolLabel("add_comment")).toBe("Comment on issues");
+    expect(actionToolLabel("create_project_update")).toBe("Post project updates");
+  });
+
+  it("marks every Google action tool grantable and every Linear action tool not grantable", () => {
+    const google = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server !== "june_linear_actions");
+    const linear = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server === "june_linear_actions");
+    expect(google.length).toBeGreaterThan(0);
+    expect(linear).toHaveLength(4);
+    for (const tool of google) {
+      expect(tool.grantable).toBe(true);
+    }
+    for (const tool of linear) {
+      expect(tool.grantable).toBe(false);
+    }
+  });
+
+  it("excludes Linear tools from the earned-autonomy grant checklist while keeping Google tools", () => {
+    // The grant-checklist consumer must read GRANTABLE_CONNECTOR_ACTION_TOOLS
+    // (not CONNECTOR_ACTION_TOOLS directly) so Linear's four write tools never
+    // appear as grantable, per the "Linear has no autonomy" decision.
+    const ids = GRANTABLE_CONNECTOR_ACTION_TOOLS.map((tool) => tool.id);
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        "create_draft",
+        "send_email",
+        "modify_labels",
+        "archive",
+        "create_event",
+        "respond_to_invite",
+      ]),
+    );
+    expect(ids).not.toEqual(
+      expect.arrayContaining([
+        "create_issue",
+        "update_issue",
+        "add_comment",
+        "create_project_update",
+      ]),
+    );
+    expect(GRANTABLE_CONNECTOR_ACTION_TOOLS.every((tool) => tool.grantable)).toBe(true);
   });
 });

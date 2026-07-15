@@ -146,10 +146,11 @@ export function ConnectorApprovalsTray() {
     ),
   ].slice(0, 3);
 
-  // Dev-only: only Google ships today, so a real queue only ever stacks one
-  // mark. The demo driver sets window.__connectorApprovalsStack to preview the
-  // overlapping-logo treatment with 2 to 3 marks; production ignores it and
-  // shows one mark per distinct provider (guarded on import.meta.env.DEV).
+  // Dev-only: a real queue stacks one mark per connected provider (Google
+  // and Linear can both park actions). The demo driver sets
+  // window.__connectorApprovalsStack to preview the overlapping-logo
+  // treatment with 2 to 3 marks; production ignores it and shows one mark
+  // per distinct provider (guarded on import.meta.env.DEV).
   const demoStackCount =
     import.meta.env.DEV && stackProviders.length > 0
       ? Number(
