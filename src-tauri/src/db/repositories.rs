@@ -87,6 +87,14 @@ pub struct ConnectorGrant {
     pub account_id: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoutineBrowserGrantRecord {
+    pub job_id: String,
+    pub server_name: String,
+    pub token: String,
+    pub enabled: bool,
+}
+
 impl Repositories {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
@@ -672,12 +680,73 @@ impl Repositories {
         Ok(())
     }
 
-    /// Remove every connector row keyed to a routine when the routine itself is
+    pub async fn list_routine_browser_grants(
+        &self,
+    ) -> Result<Vec<RoutineBrowserGrantRecord>, AppError> {
+        let rows = query(
+            "SELECT job_id, server_name, token, enabled FROM routine_browser_grants ORDER BY job_id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| RoutineBrowserGrantRecord {
+                job_id: row.get("job_id"),
+                server_name: row.get("server_name"),
+                token: row.get("token"),
+                enabled: row.get("enabled"),
+            })
+            .collect())
+    }
+
+    pub async fn routine_browser_grant(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<RoutineBrowserGrantRecord>, AppError> {
+        let row = query(
+            "SELECT job_id, server_name, token, enabled FROM routine_browser_grants WHERE job_id = ?",
+        )
+        .bind(job_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| RoutineBrowserGrantRecord {
+            job_id: row.get("job_id"),
+            server_name: row.get("server_name"),
+            token: row.get("token"),
+            enabled: row.get("enabled"),
+        }))
+    }
+
+    pub async fn set_routine_browser_grant(
+        &self,
+        grant: &RoutineBrowserGrantRecord,
+    ) -> Result<(), AppError> {
+        query(
+            "INSERT INTO routine_browser_grants (job_id, server_name, token, enabled, created_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(job_id) DO UPDATE SET
+               server_name = excluded.server_name,
+               token = excluded.token,
+               enabled = excluded.enabled,
+               created_at = excluded.created_at",
+        )
+        .bind(&grant.job_id)
+        .bind(&grant.server_name)
+        .bind(&grant.token)
+        .bind(grant.enabled)
+        .bind(timestamp())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Remove every June-owned row keyed to a routine when the routine itself is
     /// deleted: its triggers (so the poller stops firing a missing job), its
     /// per-job event cursor, its trust row and credited-run ledger, and its
-    /// autonomy grants (so a deleted routine can never keep an auto MCP server
-    /// or a live grant token). Email cursors are per account, not per job, so
-    /// they are left for the account's own lifecycle.
+    /// autonomy grants, and its Browser use credential (so a deleted routine
+    /// can never keep a per-job MCP server or a live token). Email cursors are
+    /// per account, not per job, so they are left for the account's own
+    /// lifecycle.
     pub async fn delete_routine_connector_state(
         &self,
         job_id: &str,
@@ -701,6 +770,10 @@ impl Repositories {
             .execute(&mut *tx)
             .await?;
         query("DELETE FROM routine_trust WHERE job_id = ?")
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM routine_browser_grants WHERE job_id = ?")
             .bind(job_id)
             .execute(&mut *tx)
             .await?;
@@ -3858,6 +3931,15 @@ mod tests {
             )
             .await
             .expect("grant");
+        repos
+            .set_routine_browser_grant(&super::RoutineBrowserGrantRecord {
+                job_id: "job-1".to_string(),
+                server_name: "june_browser_routine_job1".to_string(),
+                token: "browser-token".to_string(),
+                enabled: true,
+            })
+            .await
+            .expect("browser grant");
 
         repos
             .delete_routine_connector_state("job-1")
@@ -3884,12 +3966,56 @@ mod tests {
             .await
             .expect("grants")
             .is_empty());
+        assert!(repos
+            .routine_browser_grant("job-1")
+            .await
+            .expect("browser grant")
+            .is_none());
         // The account itself survives; only the per-job rows are cleared.
         assert!(repos
             .get_connector_account("user@example.com")
             .await
             .expect("account")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn routine_browser_grant_persists_disabled_credentials_for_request_time_refusal() {
+        let repos = test_repositories().await;
+        let enabled = super::RoutineBrowserGrantRecord {
+            job_id: "job-1".to_string(),
+            server_name: "june_browser_routine_job1".to_string(),
+            token: "browser-token".to_string(),
+            enabled: true,
+        };
+        repos
+            .set_routine_browser_grant(&enabled)
+            .await
+            .expect("enable browser");
+
+        let disabled = super::RoutineBrowserGrantRecord {
+            enabled: false,
+            ..enabled.clone()
+        };
+        repos
+            .set_routine_browser_grant(&disabled)
+            .await
+            .expect("disable browser");
+
+        assert_eq!(
+            repos
+                .routine_browser_grant("job-1")
+                .await
+                .expect("get browser grant"),
+            Some(disabled.clone())
+        );
+        assert_eq!(
+            repos
+                .list_routine_browser_grants()
+                .await
+                .expect("list browser grants"),
+            vec![disabled]
+        );
     }
 
     #[tokio::test]

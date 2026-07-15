@@ -118,3 +118,21 @@ capability escalation (an Unrestricted agent already has a shell), and the
 same shape exists in the shipped Agent CLI access grant, so the fix is a
 shared one: bind the grant to a value the app can verify rather than trusting
 file presence. Tracked separately; it is not closed by this ADR.
+
+## Addendum, 2026-07-15: routine opt-in is bound by a per-job credential
+
+The gateway marks cron execution only with the process-global value
+`HERMES_CRON_SESSION=1`; it does not expose the active job id to MCP children,
+and multiple jobs can run concurrently. That marker therefore cannot bind a
+browser request to one routine, and a job id supplied in the request body
+would be forgeable by the model.
+
+Each opted-in routine instead receives a distinct June-authored MCP server and
+random bearer credential. The routine's stored `enabled_toolsets` selects that
+server. The provider proxy maps the credential to June-side routine state, and
+the Rust browser broker re-checks that routine's opt-in on every request,
+including requests made through an already-running managed session. Disabling
+the opt-in retains the credential only for authentication and refusal, removes
+the server from rendered configuration, and makes the broker return
+`browser_routine_not_opted_in`. Attended credentials remain a separate class
+and never consult routine opt-ins.

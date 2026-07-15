@@ -1986,6 +1986,21 @@ export async function registerBrowserExtensionHost() {
   return invoke<RegisterBrowserExtensionHostResult>("register_browser_extension_host");
 }
 
+export type RoutineBrowserAccess = {
+  enabled: boolean;
+  serverName?: string | null;
+};
+
+export async function routineBrowserAccessGet(jobId: string) {
+  return invoke<RoutineBrowserAccess>("routine_browser_access_get", { jobId });
+}
+
+export async function routineBrowserAccessSet(input: { jobId: string; enabled: boolean }) {
+  return invoke<RoutineBrowserAccess>("routine_browser_access_set", {
+    request: input,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Private Google connectors (local mode)
 // ---------------------------------------------------------------------------

@@ -187,6 +187,12 @@ Turning it off disables June's internal `june_browser` MCP server and ends
 active browser broker sessions.
 _Avoid_: browser permission, browser toggle.
 
+**Routine Browser use opt-in**:
+The default-off, per-routine grant that lets one sandboxed routine use June's
+anonymous managed browser for public pages. It is distinct from the attended
+Browser access grant and never exposes the user's signed-in browser session.
+_Avoid_: routine browser permission, global routine browsing.
+
 **Computer use**:
 The consent-gated capability (JUN-278 phase 2) that lets the agent operate
 Mac apps in the background - no cursor, focus, or Space theft - via the

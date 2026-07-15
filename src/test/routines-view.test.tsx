@@ -51,6 +51,8 @@ const tauriMocks = vi.hoisted(() => ({
   routineTrustGet: vi.fn(),
   routineTrustRecordRun: vi.fn(),
   routineTrustSet: vi.fn(),
+  routineBrowserAccessGet: vi.fn(),
+  routineBrowserAccessSet: vi.fn(),
   connectorTriggersList: vi.fn(),
   connectorTriggerSet: vi.fn(),
   connectorTriggerDelete: vi.fn(),
@@ -144,6 +146,12 @@ beforeEach(() => {
   tauriMocks.connectorsConnect.mockResolvedValue(googleAccount());
   tauriMocks.connectorsApplyRuntime.mockResolvedValue(undefined);
   tauriMocks.routineTrustGet.mockResolvedValue(null);
+  tauriMocks.routineBrowserAccessGet.mockResolvedValue({ enabled: false });
+  tauriMocks.routineBrowserAccessSet.mockImplementation(async (input: { enabled: boolean }) =>
+    input.enabled
+      ? { enabled: true, serverName: "june_browser_routine_abc123" }
+      : { enabled: false },
+  );
   tauriMocks.routineTrustRecordRun.mockResolvedValue(null);
   tauriMocks.routineTrustSet.mockImplementation(
     async (input: { trustMode: string; autonomousTools?: string[] }) => ({
@@ -722,6 +730,34 @@ describe("RoutinesView connector templates", () => {
 });
 
 describe("RoutinesView detail", () => {
+  it("keeps routine browser use off by default and persists an explicit opt-in", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    const browser = await screen.findByRole("switch", {
+      name: "Allow browser use for this routine",
+    });
+    expect(browser).not.toBeChecked();
+
+    await userEvent.click(browser);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(tauriMocks.routineBrowserAccessSet).toHaveBeenCalledWith({
+        jobId: "abc123",
+        enabled: true,
+      }),
+    );
+    expect(mocks.updateRoutine).toHaveBeenCalledWith(
+      "abc123",
+      expect.objectContaining({
+        enabledToolsets: expect.arrayContaining(["june_browser_routine_abc123"]),
+      }),
+    );
+    expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalled();
+  });
+
   it("opens a routine with its full instructions", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
     renderView();

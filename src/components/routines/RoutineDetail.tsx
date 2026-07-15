@@ -36,11 +36,14 @@ import {
   connectorsList,
   routineTrustGet,
   routineTrustSet,
+  routineBrowserAccessGet,
+  routineBrowserAccessSet,
   type ConnectorAccount,
   type ConnectorTrigger,
   type HermesSessionInfo,
   type RoutineTrust,
   type RoutineTrustMode,
+  type RoutineBrowserAccess,
 } from "../../lib/tauri";
 import {
   HERMES_SERVER_ERROR_MESSAGE,
@@ -115,6 +118,8 @@ export function RoutineDetail({
   const [draft, setDraft] = useState<ScheduleDraft>(() => draftFromSchedule(routine.schedule));
   const [prompt, setPrompt] = useState(routine.prompt);
   const [unrestricted, setUnrestricted] = useState(() => routineUnrestricted(routine));
+  const [storedBrowserAccess, setStoredBrowserAccess] = useState<RoutineBrowserAccess | null>(null);
+  const [browserAccess, setBrowserAccess] = useState(false);
   // Connector trust + trigger. All loads degrade quietly: a routine without
   // a trust record (or a build without the connectors module) reads as
   // read only with no trigger, which is exactly the stored default.
@@ -165,6 +170,13 @@ export function RoutineDetail({
         setAutonomousTools(trust.autonomousTools);
       })
       .catch(() => {});
+    routineBrowserAccessGet(routine.job_id)
+      .then((access) => {
+        if (cancelled) return;
+        setStoredBrowserAccess(access);
+        setBrowserAccess(access.enabled);
+      })
+      .catch(() => {});
     connectorTriggersList(routine.job_id)
       .then((triggers) => {
         if (cancelled) return;
@@ -213,6 +225,8 @@ export function RoutineDetail({
     JSON.stringify(draft) !== JSON.stringify(draftFromSchedule(routine.schedule));
   const promptChanged = prompt !== routine.prompt;
   const modeChanged = unrestricted !== routineUnrestricted(routine);
+  const browserAccessChanged =
+    storedBrowserAccess !== null && browserAccess !== storedBrowserAccess.enabled;
   const storedTrustMode = storedTrust?.trustMode ?? "read_only";
   const storedTools = storedTrust?.autonomousTools ?? [];
   const trustChanged =
@@ -227,6 +241,7 @@ export function RoutineDetail({
     scheduleChanged ||
     promptChanged ||
     modeChanged ||
+    browserAccessChanged ||
     trustChanged ||
     triggerChanged;
 
@@ -274,10 +289,25 @@ export function RoutineDetail({
     // The trust record before this save, so a failed cron-job update can roll
     // the trust/grant change back and keep the two in sync.
     const previousTrust = storedTrust;
+    const previousBrowserAccess = storedBrowserAccess;
 
     // Whether this save added or removed a per-job autonomy server, which only
     // enters the rendered config when the runtime restarts.
     let autoServersChanged = false;
+
+    let nextBrowserAccess = storedBrowserAccess;
+    if (browserAccessChanged) {
+      try {
+        nextBrowserAccess = await routineBrowserAccessSet({
+          jobId: routine.job_id,
+          enabled: browserAccess,
+        });
+        setStoredBrowserAccess(nextBrowserAccess);
+      } catch (err) {
+        toast.error(messageFromError(err));
+        return;
+      }
+    }
 
     // Trust first: an autonomous grant mints per-job auto server names that
     // the toolset override must reference.
@@ -294,6 +324,7 @@ export function RoutineDetail({
         updates.enabledToolsets = routineToolsetsFor(trustMode, {
           unrestricted,
           autonomousServers: stored.autonomousServers,
+          routineBrowserServer: nextBrowserAccess?.serverName ?? undefined,
         });
         autoServersChanged = autonomyRuntimeNeedsRestart({
           previousServers,
@@ -303,16 +334,33 @@ export function RoutineDetail({
           nextTools: stored.autonomousTools ?? [],
         });
       } catch (err) {
+        if (browserAccessChanged && previousBrowserAccess) {
+          try {
+            const restored = await routineBrowserAccessSet({
+              jobId: routine.job_id,
+              enabled: previousBrowserAccess.enabled,
+            });
+            setStoredBrowserAccess(restored);
+          } catch (restoreError) {
+            toast.error(messageFromError(restoreError));
+          }
+        }
         toast.error(messageFromError(err));
         return;
       }
-    } else if (modeChanged) {
+    } else if (modeChanged || browserAccessChanged) {
       // No trust change: connector routines recompose their toolsets around
       // the new base; plain routines keep the legacy boolean path.
       if (storedTrust) {
         updates.enabledToolsets = routineToolsetsFor(trustMode, {
           unrestricted,
           autonomousServers: storedTrust.autonomousServers,
+          routineBrowserServer: nextBrowserAccess?.serverName ?? undefined,
+        });
+      } else if (nextBrowserAccess?.enabled && nextBrowserAccess.serverName) {
+        updates.enabledToolsets = routineToolsetsFor("read_only", {
+          unrestricted,
+          routineBrowserServer: nextBrowserAccess.serverName,
         });
       } else {
         updates.unrestricted = unrestricted;
@@ -359,6 +407,18 @@ export function RoutineDetail({
           // re-render/restart after a successful rollback just as we do after
           // a successful autonomous change below.
           if (autoServersChanged) await connectorsApplyRuntime();
+        } catch (err) {
+          toast.error(messageFromError(err));
+        }
+      }
+      if (browserAccessChanged && previousBrowserAccess) {
+        try {
+          const restored = await routineBrowserAccessSet({
+            jobId: routine.job_id,
+            enabled: previousBrowserAccess.enabled,
+          });
+          setStoredBrowserAccess(restored);
+          await connectorsApplyRuntime();
         } catch (err) {
           toast.error(messageFromError(err));
         }
@@ -417,7 +477,7 @@ export function RoutineDetail({
     // A new or removed per-job autonomy server only takes effect once the
     // runtime re-renders its config. Best-effort: it also registers on the
     // next runtime start.
-    if (autoServersChanged) {
+    if (autoServersChanged || browserAccessChanged) {
       await connectorsApplyRuntime().catch(() => {});
     }
   }
@@ -660,6 +720,23 @@ export function RoutineDetail({
               </h2>
               <div className="settings-card">
                 <RoutineModePicker unrestricted={unrestricted} onChange={setUnrestricted} />
+                <div className="settings-row">
+                  <div className="settings-row-info">
+                    <div className="settings-row-title">Browser use</div>
+                    <div className="settings-row-description">
+                      Allow this routine to browse public pages anonymously when Browser use is
+                      enabled. Consequential actions stay blocked.
+                    </div>
+                  </div>
+                  <div className="settings-row-control">
+                    <Switch
+                      checked={browserAccess}
+                      disabled={storedBrowserAccess === null}
+                      aria-label="Allow browser use for this routine"
+                      onCheckedChange={setBrowserAccess}
+                    />
+                  </div>
+                </div>
                 {routine.script ? (
                   <p className="routine-detail-script-note">
                     This routine has an attached script ({routine.script}) that runs outside the
