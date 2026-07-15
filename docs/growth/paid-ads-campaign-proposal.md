@@ -248,16 +248,17 @@ Growth has four sequential $5,000 campaign cash release tranches:
 | Growth tranche | Evidence | Media | External cash work | Campaign cash cap | Release authority |
 | --- | --- | ---: | ---: | ---: | --- |
 | 1 | Planning assumption | $4,250 | $750 | $5,000 | Lean may authorize only this tranche after every Lean-to-Growth gate passes |
-| 2 | Planning assumption | $4,250 | $750 | $5,000 | Release only after tranche 1's cohort matures and both tranche 1 independently and cumulative Growth pass every applicable Lean-to-Growth gate |
-| 3 | Planning assumption | $4,250 | $750 | $5,000 | Release only after tranche 2's cohort matures and both tranche 2 independently and cumulative Growth pass every applicable Lean-to-Growth gate |
-| 4 | Planning assumption | $4,250 | $750 | $5,000 | Release only after tranche 3's cohort matures and both tranche 3 independently and cumulative Growth pass every applicable Lean-to-Growth gate |
+| 2 | Planning assumption | $4,250 | $750 | $5,000 | Intra-Growth release gate |
+| 3 | Planning assumption | $4,250 | $750 | $5,000 | Intra-Growth release gate |
+| 4 | Planning assumption | $4,250 | $750 | $5,000 | Intra-Growth release gate |
 | Total | Calculated output | $17,000 | $3,000 | $20,000 | Full Growth cap; never committed at entry |
 
 **Planning assumption:** Growth retains eight weeks of active media execution
 across released tranches. Sixty-day maturity holds pause the calendar and do
 not count as active media weeks. Each released tranche must deliver at least
 80% of its $4,250 media cap, or $3,400, unless a stop rule ends the tranche. A
-stopped or underexposed tranche cannot authorize Scale.
+stopped or underexposed tranche cannot authorize the next Growth tranche or
+Scale.
 
 ### Scale
 
@@ -549,6 +550,47 @@ gross-revenue payback. It therefore cannot unlock Growth even if its 6%
 click-to-Free and $50 cost per completed Free meet the leading diagnostic
 gates. The table's raw Upside point estimate also cannot authorize Growth;
 every uncertainty and fully loaded contribution gate must pass on matured data.
+
+### Intra-Growth release gate
+
+Before releasing Growth tranches 2, 3, or 4, every condition below must pass:
+
+- **Planning assumption:** The prior Growth tranche completed two active media
+  weeks.
+- **Planning assumption:** At least 80% of the prior tranche's $4,250 media
+  cap, or $3,400, received valid exposure under the approved measurement
+  contract.
+- **Planning assumption:** The prior tranche cohort and all cumulative Growth
+  cohorts matured through their 60-day and approved refund/cancellation
+  windows.
+- **Planning assumption:** The latest tranche has at least 10 net incremental
+  paid Plan starts, and cumulative Growth has at least `10 x number of completed
+  Growth tranches` net incremental paid Plan starts.
+- **Planning assumption:** For both the latest tranche independently and
+  cumulative Growth, the lower bound for click-to-completed-Free is at least 6%
+  and the upper bound for cost per completed Free is no more than $50.
+- **Planning assumption:** For both scopes, each compared wedge has at least
+  300 paid clicks.
+- **Planning assumption:** For both scopes, the lower bound for seven-day
+  first-value activation is at least 25%, after at least 20 completed Free
+  accounts mature for seven days.
+- **Planning assumption:** For both scopes, the lower bound for 60-day
+  Free-to-paid conversion is at least 8%.
+- **Planning assumption:** For both scopes, the upper bound for campaign cash
+  CAC is no more than $400.
+- **Planning assumption:** For both scopes, the conservative bound reaches
+  retention-aware cumulative expected contribution recovery no later than
+  month 18. If expected lifetime contribution never recovers fully loaded
+  contribution CAC, the gate fails.
+- **Planning assumption:** Fixed cell and cohort samples are met and every
+  required measurement is computable for both scopes.
+- **Planning assumption:** No unresolved privacy, policy, misleading-copy, or
+  brand issue exists.
+
+All conditions use the pre-registered conservative uncertainty rule. A stopped,
+underexposed, suppressed, or unmeasurable latest or cumulative scope fails the
+Intra-Growth release gate and cannot release the next tranche. No release may
+change a campaign, tranche, reserve, cell, or geographic cap.
 
 Move from Growth to Scale only when all of these are true:
 
