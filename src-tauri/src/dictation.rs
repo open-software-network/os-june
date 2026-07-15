@@ -3951,7 +3951,7 @@ fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
     else {
         return false;
     };
-    ["transcript", "text", "notes"]
+    ["transcript", "text", "notes", "version"]
         .iter()
         .any(|marker| subject.contains(marker))
 }
@@ -6914,6 +6914,9 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here are the cleaned notes: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the cleaned-up version: Hello."
         ));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
