@@ -1,6 +1,6 @@
-import type { LiveTranscriptEventDto } from "./tauri";
+import type { LiveTranscriptEventDto, TranscriptDto } from "./tauri";
 
-const LIVE_TRANSCRIPT_EVENT_LIMIT = 32;
+const LIVE_TRANSCRIPT_COHERENCE_GAP_MS = 500;
 
 export function upsertLiveTranscriptEvent(
   current: LiveTranscriptEventDto[],
@@ -10,20 +10,70 @@ export function upsertLiveTranscriptEvent(
     .filter((event) => !isSameLiveSegment(event, next))
     .concat(next)
     .sort(compareLiveTranscriptEvents);
-  return coalesceAdjacentLiveTranscriptEvents(events).slice(-LIVE_TRANSCRIPT_EVENT_LIMIT);
+  return events;
 }
 
-function coalesceAdjacentLiveTranscriptEvents(events: LiveTranscriptEventDto[]) {
+/**
+ * Coalescing is presentation-only. The stored preview events retain their
+ * segment ids so persisted transcript spans can replace exactly the preview
+ * time range they supersede.
+ */
+export function coalesceLiveTranscriptEventsForDisplay(events: LiveTranscriptEventDto[]) {
   const coalesced: LiveTranscriptEventDto[] = [];
-  for (const event of events) {
+  for (const event of [...events].sort(compareLiveTranscriptEvents)) {
     const previous = coalesced.at(-1);
-    if (previous && isSameLiveTurn(previous, event)) {
+    if (
+      previous &&
+      isSameLiveTurn(previous, event) &&
+      event.startMs - previous.endMs <= LIVE_TRANSCRIPT_COHERENCE_GAP_MS
+    ) {
       coalesced[coalesced.length - 1] = mergeLiveTranscriptEvents(previous, event);
     } else {
       coalesced.push(event);
     }
   }
   return coalesced;
+}
+
+/**
+ * Saved-audio transcript rows are authoritative. A row may only supersede a
+ * live preview from the same recording session, Source, and time span;
+ * legacy rows without a recording session id deliberately reconcile nothing.
+ */
+export function reconcileLiveTranscriptEvents(
+  events: LiveTranscriptEventDto[],
+  persisted: TranscriptDto[],
+) {
+  return events.filter(
+    (event) =>
+      !persisted.some(
+        (turn) =>
+          turn.recordingSessionId === event.sessionId &&
+          turn.source === event.source &&
+          rangesOverlap(event.startMs, event.endMs, turn.startMs, turn.endMs),
+      ),
+  );
+}
+
+/** Clear completed-session previews while preserving a currently active take. */
+export function clearTerminalLiveTranscriptEvents(
+  events: LiveTranscriptEventDto[],
+  noteId: string,
+  protectedSessionIds: readonly string[] = [],
+) {
+  const protectedSessions = new Set(protectedSessionIds);
+  return events.filter(
+    (event) => event.noteId !== noteId || protectedSessions.has(event.sessionId),
+  );
+}
+
+function rangesOverlap(leftStart: number, leftEnd: number, rightStart?: number, rightEnd?: number) {
+  return (
+    rightStart !== undefined &&
+    rightEnd !== undefined &&
+    leftStart < rightEnd &&
+    rightStart < leftEnd
+  );
 }
 
 function isSameLiveSegment(left: LiveTranscriptEventDto, right: LiveTranscriptEventDto) {

@@ -122,7 +122,10 @@ import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { errorCode, messageFromError } from "../lib/errors";
 import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
-import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
+import {
+  clearTerminalLiveTranscriptEvents,
+  upsertLiveTranscriptEvent,
+} from "../lib/live-transcript-preview";
 import {
   RECORDING_INACTIVITY_RESPONSE_MS,
   RECORDING_INACTIVITY_SNOOZE_MS,
@@ -2363,10 +2366,27 @@ export function App() {
   }, [state.recordingStatus?.sessionId, state.recordingStatus?.state]);
 
   useEffect(() => {
-    if (!state.recordingStatus) {
-      setLiveTranscriptEvents([]);
+    if (
+      !selectedNote ||
+      (selectedNote.processingStatus !== "ready" && selectedNote.processingStatus !== "failed") ||
+      (selectedNote.queuedRecordings ?? 0) > 0
+    ) {
+      return;
     }
-  }, [state.recordingStatus?.sessionId]);
+    const protectedSessionIds = [...finishingSessionsRef.current];
+    if (recordingNoteId === selectedNote.id && state.recordingStatus?.sessionId) {
+      protectedSessionIds.push(state.recordingStatus.sessionId);
+    }
+    setLiveTranscriptEvents((current) =>
+      clearTerminalLiveTranscriptEvents(current, selectedNote.id, protectedSessionIds),
+    );
+  }, [
+    recordingNoteId,
+    selectedNote?.id,
+    selectedNote?.processingStatus,
+    selectedNote?.queuedRecordings,
+    state.recordingStatus?.sessionId,
+  ]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -2916,7 +2936,6 @@ export function App() {
       if (!startAlreadyClaimed) {
         recordingStartInFlightRef.current = true;
       }
-      setLiveTranscriptEvents([]);
       setRecordingNote(noteId);
       const startingStatus = startingRecordingStatus(noteId, requestedSourceMode);
       recordingStatusRef.current = startingStatus;
@@ -3269,7 +3288,6 @@ export function App() {
     // notes…") plus a queued count tell the user work is still in flight.
     const owningNoteId = recordingNoteIdRef.current;
     dispatch({ type: "recordingStatusCleared" });
-    setLiveTranscriptEvents([]);
     setRecordingNote(undefined);
     playRecordingSound("stop");
     // Optimistically flip the note that owns this recording to transcribing.
@@ -4088,9 +4106,9 @@ export function App() {
                       recoveryBlockedReason={
                         fundingRequired ? RECOVERY_FUNDING_DISABLED_REASON : undefined
                       }
-                      liveTranscript={
-                        selectedNoteId === recordingNoteId ? liveTranscriptEvents : []
-                      }
+                      liveTranscript={liveTranscriptEvents.filter(
+                        (event) => event.noteId === selectedNoteId,
+                      )}
                       sourceMode={sourceMode}
                       sourceReadiness={sourceReadiness}
                       recovery={selectedRecovery}
@@ -4130,7 +4148,10 @@ export function App() {
                           return;
                         }
                         try {
-                          const note = await retryProcessing(selectedNote.id);
+                          const note = await retryProcessing(
+                            selectedNote.id,
+                            selectedNote.retryRecordingSessionId,
+                          );
                           dispatch({ type: "noteProcessingUpdated", note });
                         } catch (err) {
                           const message = messageFromError(err);

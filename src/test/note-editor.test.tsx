@@ -304,6 +304,86 @@ describe("NoteEditor", () => {
     expect(screen.getByText("Live preview")).toBeInTheDocument();
   });
 
+  it("shows saved-audio text instead of an overlapping preview from the same session", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "saved-turn",
+              text: "Authoritative words from saved audio",
+              recordingSessionId: "session-1",
+              spanId: "span-1",
+              sourceMode: "microphoneOnly",
+              source: "microphone",
+              startMs: 0,
+              endMs: 8000,
+              status: "succeeded",
+            },
+          ],
+        })}
+        liveTranscript={[
+          {
+            noteId: "note-1",
+            sessionId: "session-1",
+            sourceMode: "microphoneOnly",
+            source: "microphone",
+            segmentId: "microphone-0",
+            startMs: 0,
+            endMs: 8000,
+            text: "Different provisional provider words",
+            stability: "final",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Authoritative words from saved audio")).toBeInTheDocument();
+    expect(screen.queryByText("Different provisional provider words")).not.toBeInTheDocument();
+  });
+
+  it("does not let a saved turn from one session hide another session's preview", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "saved-session-a",
+              text: "Saved session A",
+              recordingSessionId: "session-a",
+              spanId: "span-a",
+              sourceMode: "microphoneOnly",
+              source: "microphone",
+              startMs: 0,
+              endMs: 8000,
+              status: "succeeded",
+            },
+          ],
+        })}
+        liveTranscript={[
+          {
+            noteId: "note-1",
+            sessionId: "session-b",
+            sourceMode: "microphoneOnly",
+            source: "microphone",
+            segmentId: "microphone-0",
+            startMs: 0,
+            endMs: 8000,
+            text: "Still-visible session B preview",
+            stability: "final",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Saved session A")).toBeInTheDocument();
+    expect(screen.getByText("Still-visible session B preview")).toBeInTheDocument();
+  });
+
   it("shows system-source live transcript preview turns while recording", () => {
     render(
       <NoteEditor
@@ -347,7 +427,7 @@ describe("NoteEditor", () => {
       />,
     );
 
-    // The system lane must surface in the live preview, labelled "System",
+    // The System Source must surface in the live preview, labelled "System",
     // alongside the microphone turn, not be dropped or mislabelled.
     expect(screen.getByText("What the meeting played back")).toBeInTheDocument();
     expect(screen.getByText("What I said into the mic")).toBeInTheDocument();
