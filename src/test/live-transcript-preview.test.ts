@@ -204,4 +204,11 @@ describe("live transcript preview", () => {
       otherNote,
     ]);
   });
+
+  it("preserves the event array when reconciliation removes nothing", () => {
+    const events = [liveEvent()];
+
+    expect(reconcileLiveTranscriptEvents(events, [])).toBe(events);
+    expect(clearTerminalLiveTranscriptEvents(events, "note-1", [])).toBe(events);
+  });
 });

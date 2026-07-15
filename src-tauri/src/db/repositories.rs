@@ -836,16 +836,23 @@ impl Repositories {
             })
             .unwrap_or_default();
         let title: String = row.get("title");
-
-        let retry_recording_session_id = self.retry_recording_session_id(note_id).await?;
+        let processing_status =
+            ProcessingStatus::from(row.get::<String, _>("processing_status").as_str());
+        // Selecting the strongest retry session is intentionally more
+        // expensive than the ordinary note hydration queries. Only failed
+        // notes render Retry; processing polls and ready-note fetches should
+        // not pay for the aggregate job/generation ranking query.
+        let retry_recording_session_id = if processing_status == ProcessingStatus::Failed {
+            self.retry_recording_session_id(note_id).await?
+        } else {
+            None
+        };
 
         Ok(NoteDto {
             id: row.get("id"),
             title: title.clone(),
             preview: preview_for(&title, &content),
-            processing_status: ProcessingStatus::from(
-                row.get::<String, _>("processing_status").as_str(),
-            ),
+            processing_status,
             folder_ids,
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
@@ -5149,6 +5156,14 @@ mod tests {
             .all(|(_, _, _, session_id, _)| session_id == "meeting-session"));
         assert_eq!(sources[0].1, "microphone");
         assert_eq!(sources[1].1, "system");
+        repos
+            .set_note_status(
+                &note.id,
+                ProcessingStatus::Failed,
+                Some("Saved meeting needs retry".to_string()),
+            )
+            .await
+            .expect("mark note failed");
         let hydrated = repos.get_note(&note.id).await.expect("hydrate note");
         assert_eq!(
             hydrated.retry_recording_session_id.as_deref(),

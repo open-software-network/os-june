@@ -9,6 +9,7 @@ use crate::{
 };
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
@@ -70,6 +71,11 @@ const IMAGE_REQUEST_RETRY_DELAY: Duration = Duration::from_millis(250);
 // Keep equal to june-config DEFAULT_VIDEO_MAX_RESPONSE_BYTES. The desktop
 // cannot read june-config, and the VPS download_url path bypasses June API.
 const JUNE_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
+// Mirrors june-api::validation::MAX_ID_CHARS. Internal operation IDs may carry
+// durable span and fingerprint detail that is useful locally but too large for
+// the public noteId field. Hash only at the wire boundary so retry jitter,
+// diagnostics, and the durable ledger retain their full identities.
+const JUNE_API_MAX_ID_CHARS: usize = 128;
 const NOTE_GENERATE_SYSTEM_PROMPT: &str =
     include_str!("../../june-api/crates/services/src/prompts/note_generate.md");
 const LOCAL_SAFETY_CONTEXT: &str = "\
@@ -311,7 +317,7 @@ pub async fn transcribe_saved_audio(
     let model = crate::providers::transcription_model();
     let send_venice_api_key = model_accepts_venice_api_key(&model);
     let mut form = Form::new()
-        .text("noteId", request.operation_id())
+        .text("noteId", june_api_operation_id(&request.operation_id()))
         .text("title", title_or_placeholder(&request.title))
         .text("model", model)
         .part("audio", audio_part(audio, &filename, &request.audio_path)?);
@@ -354,7 +360,7 @@ pub async fn generate_note_from_transcript(
     let model = crate::providers::generation_model();
     let send_venice_api_key = model_accepts_venice_api_key(&model);
     let body = GenerateBody {
-        note_id: request.operation_id(),
+        note_id: june_api_operation_id(&request.operation_id()),
         prompt_version: crate::domain::processing::PROMPT_VERSION.to_string(),
         title: title_or_placeholder(&request.title),
         transcript: transcript.to_string(),
@@ -2754,6 +2760,18 @@ fn title_or_placeholder(title: &str) -> String {
     }
 }
 
+fn june_api_operation_id(operation_id: &str) -> String {
+    if operation_id.chars().count() <= JUNE_API_MAX_ID_CHARS {
+        return operation_id.to_string();
+    }
+
+    let mut digest = Sha256::new();
+    digest.update(b"june-api-operation-id-v1\0");
+    digest.update((operation_id.len() as u64).to_be_bytes());
+    digest.update(operation_id.as_bytes());
+    format!("june-op-{:x}", digest.finalize())
+}
+
 fn june_api_url() -> String {
     crate::os_accounts::load_local_env();
     std::env::var("JUNE_API_URL")
@@ -2837,6 +2855,28 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some(APP_VERSION)
         );
+    }
+
+    #[test]
+    fn june_api_operation_id_preserves_ids_within_the_wire_limit() {
+        assert_eq!(june_api_operation_id("note-1"), "note-1");
+        assert_eq!(
+            june_api_operation_id(&"a".repeat(JUNE_API_MAX_ID_CHARS)),
+            "a".repeat(JUNE_API_MAX_ID_CHARS)
+        );
+    }
+
+    #[test]
+    fn june_api_operation_id_hashes_long_ids_stably_and_distinctly() {
+        let first = june_api_operation_id(&format!("{}-chunk-0", "durable-operation".repeat(12)));
+        let repeated =
+            june_api_operation_id(&format!("{}-chunk-0", "durable-operation".repeat(12)));
+        let second = june_api_operation_id(&format!("{}-chunk-1", "durable-operation".repeat(12)));
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
+        assert!(first.starts_with("june-op-"));
+        assert!(first.chars().count() <= JUNE_API_MAX_ID_CHARS);
     }
 
     fn generate_success_envelope(content: &str) -> String {

@@ -44,7 +44,10 @@ export function reconcileLiveTranscriptEvents(
   events: LiveTranscriptEventDto[],
   persisted: TranscriptDto[],
 ) {
-  return events.filter((event) => !hasAuthoritativeOverlap(event, persisted));
+  return preserveReferenceWhenUnchanged(
+    events,
+    events.filter((event) => !hasAuthoritativeOverlap(event, persisted)),
+  );
 }
 
 /**
@@ -59,12 +62,22 @@ export function clearTerminalLiveTranscriptEvents(
   protectedSessionIds: readonly string[] = [],
 ) {
   const protectedSessions = new Set(protectedSessionIds);
-  return events.filter(
-    (event) =>
-      event.noteId !== noteId ||
-      protectedSessions.has(event.sessionId) ||
-      !hasAuthoritativeOverlap(event, persisted),
+  return preserveReferenceWhenUnchanged(
+    events,
+    events.filter(
+      (event) =>
+        event.noteId !== noteId ||
+        protectedSessions.has(event.sessionId) ||
+        !hasAuthoritativeOverlap(event, persisted),
+    ),
   );
+}
+
+function preserveReferenceWhenUnchanged(
+  current: LiveTranscriptEventDto[],
+  filtered: LiveTranscriptEventDto[],
+) {
+  return filtered.length === current.length ? current : filtered;
 }
 
 function hasAuthoritativeOverlap(event: LiveTranscriptEventDto, persisted: TranscriptDto[]) {
