@@ -5,6 +5,7 @@ import {
   pauseRoutine,
   removeRoutine,
   resumeRoutine,
+  routineCreationPrompt,
   triggerRoutine,
   updateRoutine,
   UNRESTRICTED_ROUTINE_TOOLSETS,
@@ -192,6 +193,41 @@ describe("Routines Hermes integration", () => {
       enabled_toolsets: string[];
     };
     expect(sent.enabled_toolsets).not.toContain("memory");
+  });
+
+  it("strips native memory from the described unrestricted routine prompt when memory is off", async () => {
+    mocks.memorySettings.mockResolvedValue({ enabled: false });
+
+    const prompt = await routineCreationPrompt("Summarize my day", { unrestricted: true });
+
+    // The unrestricted mode line is the only place the prompt names toolsets,
+    // so an absent "memory" here means the described override can't grant it.
+    expect(prompt).toContain("enabled_toolsets set to exactly:");
+    expect(prompt).not.toContain("memory");
+    expect(prompt).toContain("terminal");
+  });
+
+  it("keeps native memory in the described unrestricted routine prompt when memory is on", async () => {
+    const prompt = await routineCreationPrompt("Summarize my day", { unrestricted: true });
+
+    expect(prompt).toContain("memory");
+  });
+
+  it("fails closed: drops native memory from the described unrestricted prompt when the setting can't be read", async () => {
+    mocks.memorySettings.mockRejectedValue(new Error("unavailable"));
+
+    const prompt = await routineCreationPrompt("Summarize my day", { unrestricted: true });
+
+    expect(prompt).not.toContain("memory");
+  });
+
+  it("does not set an explicit toolset override (or read the memory setting) for a sandboxed described routine", async () => {
+    const prompt = await routineCreationPrompt("Summarize my day");
+
+    // Sandboxed routines carry no explicit enabled_toolsets, so the Rust cron
+    // gate covers them; nothing to strip and no setting to consult.
+    expect(prompt).toContain("Do not set enabled_toolsets");
+    expect(mocks.memorySettings).not.toHaveBeenCalled();
   });
 
   it("does not queue a manual run when the persistent gateway cannot start", async () => {

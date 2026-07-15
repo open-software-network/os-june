@@ -274,11 +274,27 @@ export function removeRoutine(jobId: string) {
  * outcome. The mode line carries the user's per-routine sandbox choice:
  * sandboxed routines must NOT set enabled_toolsets (the cron platform gate
  * in config.yaml then applies), unrestricted ones set the explicit
- * override. */
-export function routineCreationPrompt(description: string, options?: { unrestricted?: boolean }) {
-  const mode = options?.unrestricted
-    ? `I chose to run this routine unrestricted. Create the job with enabled_toolsets set to exactly: ${UNRESTRICTED_ROUTINE_TOOLSETS.join(", ")}.`
-    : "I chose the sandboxed default for this routine. Do not set enabled_toolsets on the job: it then runs with the restricted cron toolset (web reading, vision, todo, memory, session search) and cannot use the terminal, change files, execute code, or drive a browser. Do not attach a script to the job either: cron scripts run as plain shell subprocesses outside that sandbox. If the task clearly needs any of this, stop and tell me it requires an unrestricted routine instead of creating it.";
+ * override.
+ *
+ * Async because the unrestricted branch strips the native `memory` toolset
+ * from the list it embeds when Memory is off — this describe path sends a
+ * direct agent prompt to the cronjob tool, so it bypasses createRoutine /
+ * updateRoutine and their `stripNativeMemoryIfDisabled` guard; without the
+ * strip here the explicit `enabled_toolsets` it dictates would override the
+ * gated `platform_toolsets.cron` and grant Hermes' unscoped store behind the
+ * global off switch. Fail-closed via the same helper. */
+export async function routineCreationPrompt(
+  description: string,
+  options?: { unrestricted?: boolean },
+): Promise<string> {
+  let mode: string;
+  if (options?.unrestricted) {
+    const toolsets = await stripNativeMemoryIfDisabled(UNRESTRICTED_ROUTINE_TOOLSETS);
+    mode = `I chose to run this routine unrestricted. Create the job with enabled_toolsets set to exactly: ${toolsets.join(", ")}.`;
+  } else {
+    mode =
+      "I chose the sandboxed default for this routine. Do not set enabled_toolsets on the job: it then runs with the restricted cron toolset (web reading, vision, todo, memory, session search) and cannot use the terminal, change files, execute code, or drive a browser. Do not attach a script to the job either: cron scripts run as plain shell subprocesses outside that sandbox. If the task clearly needs any of this, stop and tell me it requires an unrestricted routine instead of creating it.";
+  }
   return [
     "Set up a new routine (a scheduled cron job) for me using your cronjob tool.",
     `Here is what it should do: ${description.trim()}`,
