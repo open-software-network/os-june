@@ -12,8 +12,9 @@ connector data path.
 Every team-scoped read (issues, cycles, and team-linked projects) is
 enforced against the workspace's selected-team grant in Rust, not here: a
 request naming a team or project outside the grant fails closed with a
-stable error. This server is read-only; there is no mutating counterpart in
-this slice.
+stable error. This server is read-only: mutating actions live in the
+separate `june_linear_actions` server, where every call parks for the
+user's approval.
 
 The connected workspace id is passed in via the environment and included in
 every proxy call as `account_id`.

@@ -349,6 +349,16 @@ impl From<LinearApiError> for AppError {
                 "linear_rate_limited",
                 "Linear is rate limiting requests. Try again in a few minutes.",
             ),
+            // A received 5xx says nothing reliable about whether a mutation
+            // applied (a gateway can fail the response after the backend
+            // committed), so it gets its own code: the action dispatch
+            // treats it as an AMBIGUOUS outcome and reconciles by object
+            // UUID instead of reporting a definitive failure that would
+            // invite a duplicate-creating retry.
+            LinearApiError::Api { status, message } if status >= 500 => AppError::new(
+                "linear_upstream_error",
+                format!("Linear had a server error ({status}): {message}"),
+            ),
             LinearApiError::Api { status, message } => AppError::new(
                 "linear_api_error",
                 format!("Linear API request failed ({status}): {message}"),
@@ -2415,6 +2425,19 @@ mod tests {
             .code,
             "linear_api_error"
         );
+        // 5xx maps to its own code so the action dispatch can treat it as an
+        // ambiguous (possibly-applied) outcome and reconcile by UUID.
+        for status in [500, 502, 503, 504] {
+            assert_eq!(
+                AppError::from(LinearApiError::Api {
+                    status,
+                    message: "gateway".to_string()
+                })
+                .code,
+                "linear_upstream_error",
+                "status {status} must classify as upstream error"
+            );
+        }
         assert_eq!(
             AppError::from(LinearApiError::Network("down".to_string())).code,
             "network_error"

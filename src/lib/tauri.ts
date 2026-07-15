@@ -2146,9 +2146,10 @@ export async function connectorsSetSelectedTeams(input: {
 }
 
 /** Restarts the Hermes runtimes so a connect/disconnect/grant change lands in
- * the rendered MCP config. Call after connectorsConnect resolves. Google
- * only today — Linear ships no MCP server in this slice, so there is no
- * runtime surface for a Linear grant to apply. */
+ * the rendered MCP config. Call after connectorsConnect resolves for BOTH
+ * providers: Google registers its four servers, and Linear registers
+ * june_linear plus june_linear_actions once the workspace has selected
+ * teams. */
 export async function connectorsApplyRuntime() {
   return invoke<void>("connectors_apply_runtime");
 }

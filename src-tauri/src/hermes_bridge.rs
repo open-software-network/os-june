@@ -10006,7 +10006,11 @@ async fn dispatch_connector_route(
 /// arrived as an actual provider response (rejection, auth, rate limit) or
 /// failed before anything was sent (token resolution), and is definitive.
 fn linear_outcome_is_ambiguous(error: &AppError) -> bool {
-    error.code == "network_error"
+    // Transport loss AND received 5xx are both "the mutation may have
+    // applied": a gateway error can arrive after Linear's backend committed
+    // the write. Everything else (4xx validation, auth, rate limit) is a
+    // definitive rejection that never applied.
+    error.code == "network_error" || error.code == "linear_upstream_error"
 }
 
 fn outgoing_email_from_body(
@@ -14616,14 +14620,20 @@ mcp_servers:
     }
 
     #[test]
-    fn linear_outcome_ambiguity_is_transport_only() {
-        // Only a transport failure on the mutation POST is ambiguous: the
-        // request may or may not have reached Linear.
+    fn linear_outcome_ambiguity_covers_transport_and_upstream_errors() {
+        // Transport failure on the mutation POST: the request may or may not
+        // have reached Linear.
         assert!(linear_outcome_is_ambiguous(&AppError::new(
             "network_error",
             "connection reset"
         )));
-        // Provider responses and pre-send failures are definitive.
+        // Received 5xx: a gateway can fail the response after the backend
+        // committed the write, so it is just as ambiguous.
+        assert!(linear_outcome_is_ambiguous(&AppError::new(
+            "linear_upstream_error",
+            "Linear had a server error (503): request failed"
+        )));
+        // Definitive provider rejections and pre-send failures never applied.
         for code in [
             "linear_api_error",
             "linear_unauthorized",

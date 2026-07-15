@@ -438,7 +438,15 @@ def call_proxy(
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Could not reach the June connector proxy: {exc.reason}")
+        # A timeout or dropped connection here does NOT mean the write was
+        # lost: the approval may have landed late and the mutation may still
+        # have applied. Surface do-not-retry wording so the model never
+        # replays a possibly-committed write with a fresh id.
+        raise RuntimeError(
+            "June could not confirm whether Linear applied this change "
+            f"(the connection dropped: {exc.reason}). Do not retry "
+            "automatically; ask the user to check Linear first."
+        )
 
     try:
         envelope = json.loads(body) if body else {}
