@@ -423,9 +423,10 @@ Move from Lean to Growth only when all of these are true:
 - **Planning assumption:** Matured 60-day Free-to-paid conversion is at least
   8%.
 - **Planning assumption:** The privacy-reviewed aggregate design produces a
-  coarse all-in CAC estimate of no more than $600, twice the Scale ceiling.
-  This is a spending-containment gate for controlled Growth validation, not a
-  claim of precise paid CAC.
+  coarse all-in CAC estimate of no more than $400. This requires the Lean test
+  to outperform the 10-paid operating minimum within the $5,000 cap, preserving
+  headroom for controlled Growth validation. It is a spending-containment gate,
+  not a claim of precise paid CAC.
 
 **Calculated output:** The Lean base scenario projects 4 paid subscribers, 5%
 60-day Free-to-paid, $1,250 all-in CAC, and 44.6 months gross-revenue payback.
