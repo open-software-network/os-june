@@ -1988,7 +1988,12 @@ fn blocking_transcription_failure_summary(
                 .warning
                 .as_deref()
                 .unwrap_or("Source did not produce a usable transcript.");
-            !is_no_speech_message(warning)
+            // Validation already proved this whole source was recorded as
+            // silence. If another source produced a usable transcript, keep
+            // the silent lane visible for diagnostics without blocking note
+            // generation. The user-facing warning has already been expanded
+            // beyond the provider's raw `no_speech` marker at this point.
+            !failure.input.recorded_silence && !is_no_speech_message(warning)
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -3559,6 +3564,28 @@ mod tests {
         );
 
         assert_eq!(visible.len(), 1);
+        assert!(blocking_transcription_failure_summary(&visible).is_none());
+    }
+
+    #[test]
+    fn validated_silent_microphone_does_not_block_successful_system_transcript() {
+        let visible = vec![FailedTranscriptCandidate {
+            artifact_id: "mic".to_string(),
+            input: SourceTranscriptInput {
+                source: "microphone".to_string(),
+                text: String::new(),
+                valid: false,
+                warning: Some(
+                    "The microphone recorded silence for the whole session. Check that the right microphone is selected in Settings and that macOS input volume is up."
+                        .to_string(),
+                ),
+                recorded_silence: true,
+                start_ms: Some(0),
+                end_ms: Some(0),
+                turn_index: Some(0),
+            },
+        }];
+
         assert!(blocking_transcription_failure_summary(&visible).is_none());
     }
 
