@@ -875,15 +875,29 @@ pub(crate) async fn process_saved_source_audio(
     manual_notes: Option<String>,
     timing: ProcessingTiming,
 ) -> Result<NoteDto, AppError> {
+    let processing_started = Instant::now();
+    let note_transcription_started = Instant::now();
     let timeline = FirstEventTimeline::new(timing);
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
     let transcription_provider = crate::providers::configured_transcription_provider();
-    let dictionary_entries = repos.list_dictionary_entries().await?;
+    let dictionary_entries = match repos.list_dictionary_entries().await {
+        Ok(entries) => entries,
+        Err(error) => {
+            return Err(finalize_infrastructure_note_transcription_failure(
+                repos,
+                session_id,
+                &timeline,
+                timing,
+                note_transcription_started,
+                processing_started,
+                AppError::from(error),
+            )
+            .await);
+        }
+    };
     let dictionary_context = build_dictionary_context(&dictionary_entries);
-    let processing_started = Instant::now();
-    let note_transcription_started = Instant::now();
     let pipeline_setup = async {
         let detection_started = Instant::now();
         let SilentSystemDropOutcome {
@@ -3592,6 +3606,71 @@ mod tests {
         assert_eq!(processing_details["status"], "failed");
         assert!(processing_details["durationMs"].as_i64().is_some());
         assert!(processing_details["doneToDurationMs"].as_i64().is_some());
+    }
+
+    #[tokio::test]
+    async fn source_processing_dictionary_load_failure_persists_terminal_checkpoints_once() {
+        let (repos, recording_session_id) = test_source_processing_repositories().await;
+        let note_id: String =
+            sqlx::query_scalar::query_scalar("SELECT note_id FROM recording_sessions WHERE id = ?")
+                .bind(&recording_session_id)
+                .fetch_one(&repos.pool)
+                .await
+                .expect("recording session note");
+        sqlx::query::query("DROP TABLE dictionary_entries")
+            .execute(&repos.pool)
+            .await
+            .expect("drop dictionary table");
+
+        let error = process_saved_source_audio(
+            &repos,
+            &note_id,
+            &recording_session_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            Vec::new(),
+            "Dictionary failure".to_string(),
+            None,
+            None,
+            ProcessingTiming::from_done(Instant::now()),
+        )
+        .await
+        .expect_err("dictionary load must fail");
+        assert_eq!(error.code, "storage_unavailable");
+
+        let rows = sqlx::query::query(
+            "SELECT kind, details
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('note_transcription_complete', 'processing_complete')
+             ORDER BY rowid ASC",
+        )
+        .bind(&recording_session_id)
+        .fetch_all(&repos.pool)
+        .await
+        .expect("terminal checkpoints");
+        assert_eq!(rows.len(), 2, "one checkpoint for each terminal kind");
+
+        let details_for = |kind: &str| {
+            let row = rows
+                .iter()
+                .find(|row| row.get::<String, _>("kind") == kind)
+                .unwrap_or_else(|| panic!("missing {kind} checkpoint"));
+            let details = row
+                .get::<Option<String>, _>("details")
+                .expect("checkpoint details");
+            serde_json::from_str::<serde_json::Value>(&details).expect("checkpoint details JSON")
+        };
+
+        let note_transcription = details_for("note_transcription_complete");
+        assert_eq!(note_transcription["status"], "failed");
+        assert_eq!(note_transcription["error"], "storage_unavailable");
+        assert!(note_transcription["durationMs"].as_i64().is_some());
+        assert!(note_transcription["doneToDurationMs"].as_i64().is_some());
+
+        let processing = details_for("processing_complete");
+        assert_eq!(processing["status"], "failed");
+        assert!(processing["durationMs"].as_i64().is_some());
+        assert!(processing["doneToDurationMs"].as_i64().is_some());
     }
 
     #[tokio::test]
