@@ -3975,6 +3975,9 @@ fn is_here_instruction_preamble(preamble: &str) -> bool {
         "result",
         "content",
         "output",
+        "message",
+        "email",
+        "response",
     ]
     .iter()
     .any(|marker| subject.contains(marker))
@@ -6979,6 +6982,10 @@ mod tests {
         ));
         assert!(looks_like_instruction_response("Here is the transcript."));
         assert!(looks_like_instruction_response("Here you go."));
+        assert!(looks_like_instruction_response(
+            "Here's the cleaned-up message: Hello."
+        ));
+        assert!(looks_like_instruction_response("Here is the email: Hello."));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
         ));
