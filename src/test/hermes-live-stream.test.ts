@@ -13,6 +13,7 @@ const RECEIVED_AT = "2026-07-15T00:00:00.000Z";
 
 type TranscriptEvent = Extract<JuneHermesEvent, { kind: "transcript" }>;
 type ReasoningEvent = Extract<JuneHermesEvent, { kind: "reasoning" }>;
+type ToolEvent = Extract<JuneHermesEvent, { kind: "tool" }>;
 
 function delivery(eventId: string, textOffset?: number): HermesEventDelivery {
   return {
@@ -76,6 +77,21 @@ function reasoningEvent(delta: string, eventId: string, full = false): Reasoning
     sessionId: "session-1",
     delta,
     ...(full ? { full: true } : {}),
+    receivedAt: RECEIVED_AT,
+    delivery: delivery(eventId),
+  };
+}
+
+function toolEvent(eventId: string): ToolEvent {
+  return {
+    kind: "tool",
+    sessionId: "session-1",
+    toolCallId: "tool-1",
+    phase: "start",
+    key: "tool-1",
+    name: "read_file",
+    text: "",
+    isClarify: false,
     receivedAt: RECEIVED_AT,
     delivery: delivery(eventId),
   };
@@ -200,6 +216,42 @@ describe("Hermes live stream", () => {
     expect(transcriptDeltas(stream, "m1")).toBe("AB");
     expect(stream.transcriptByMessageId.m1?.nextTextOffset).toBe(2);
     expect(stream.transcriptByMessageId.m1?.pendingByTextOffset).toEqual({});
+  });
+
+  it("keeps a buffered transcript slot ahead of later tool events until its gap resolves", () => {
+    const stream = append(
+      createHermesLiveStream(),
+      startEvent("m1", "start-1"),
+      deltaEvent("m1", "B", "delta-b", 1),
+      toolEvent("tool-start"),
+      deltaEvent("m1", "A", "delta-a", 0),
+    );
+    const events = hermesLiveEvents(stream);
+    const renderedParts = buildAgentChatTurns([], [], events).flatMap((turn) => turn.parts);
+
+    expect(events.map((event) => event.kind)).toEqual(["transcript", "transcript", "tool"]);
+    expect(events[1]).toMatchObject({ kind: "transcript", messageId: "m1", delta: "AB" });
+    expect(renderedParts.map((part) => part.type)).toEqual(["text", "tool"]);
+  });
+
+  it("uses a final snapshot to fill an unresolved buffered slot without moving it past a tool", () => {
+    const stream = append(
+      createHermesLiveStream(),
+      startEvent("m1", "start-1"),
+      deltaEvent("m1", "B", "delta-b", 1),
+      toolEvent("tool-start"),
+      completeEvent("m1", "AB", "complete-1"),
+    );
+    const events = hermesLiveEvents(stream);
+
+    expect(events.map((event) => event.kind)).toEqual([
+      "transcript",
+      "transcript",
+      "tool",
+      "transcript",
+    ]);
+    expect(events[1]).toMatchObject({ kind: "transcript", messageId: "m1", delta: "AB" });
+    expect(renderedAssistantText(stream)).toBe("AB");
   });
 
   it("keeps full reasoning snapshots separate from compacted incremental reasoning", () => {

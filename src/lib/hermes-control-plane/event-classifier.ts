@@ -173,15 +173,14 @@ function classifyTranscript(
   receivedAt: string,
 ): JuneHermesEvent {
   const complete = type === "message.complete";
-  const delta =
-    type === "message.delta" ? rawDeltaText(payload) : complete ? eventText(payload) : undefined;
+  const delta = type === "message.delta" || complete ? rawDeltaText(payload) : undefined;
   const failed = complete && stringValue(payload?.status)?.toLowerCase() === "error";
   return {
     kind: "transcript",
     sessionId: sessionId ?? "",
     messageId: stringValue(payload?.message_id) ?? stringValue(payload?.messageId),
-    // Complete text follows the builder's nine-key visible-text chain, not the
-    // old four-key classifier fallback, so summary/status-only turns survive.
+    // Only answer-bearing fields can become transcript prose. Activity fields
+    // such as summary/status/output/result/command stay in their own families.
     delta,
     complete,
     // The transcript builder gates failed-turn notices on message.complete

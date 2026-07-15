@@ -148,7 +148,7 @@ describe("classifyHermesEvent — transcript", () => {
     }
   });
 
-  it("marks failed completes and reads complete text from the builder's summary chain", () => {
+  it("marks failed completes without promoting summary or status to answer text", () => {
     const complete = classifyHermesEvent(
       event("message.complete", { summary: "  Summary only  ", status: "ERROR" }),
     );
@@ -156,8 +156,31 @@ describe("classifyHermesEvent — transcript", () => {
     if (complete.kind === "transcript") {
       expect(complete.complete).toBe(true);
       expect(complete.failed).toBe(true);
-      expect(complete.delta).toBe("Summary only");
+      expect(complete.delta).toBe("");
     }
+  });
+
+  it("keeps activity-only complete payloads out of an empty transcript baseline", () => {
+    for (const [field, value] of [
+      ["summary", "summarizing"],
+      ["status", "working"],
+      ["output", "tool output"],
+      ["result", "tool result"],
+      ["command", "run command"],
+    ] as const) {
+      const complete = classifyHermesEvent(event("message.complete", { [field]: value }));
+      expect(complete.kind, field).toBe("transcript");
+      if (complete.kind === "transcript") expect(complete.delta, field).toBe("");
+    }
+  });
+
+  it("does not expose a prefix-colliding activity value as completed answer prose", () => {
+    const complete = classifyHermesEvent(
+      event("message.complete", { message_id: "m1", status: "ha!" }),
+    );
+
+    expect(complete.kind).toBe("transcript");
+    if (complete.kind === "transcript") expect(complete.delta).toBe("");
   });
 
   it("preserves local delivery identity plus stable source id and explicit text offset", () => {

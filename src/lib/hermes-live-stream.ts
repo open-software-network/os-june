@@ -12,6 +12,7 @@ export type HermesLiveStream = {
       replayCandidate?: string;
       nextTextOffset?: number;
       pendingByTextOffset: Record<number, JuneHermesEvent>;
+      pendingRevisionByTextOffset: Record<number, number>;
     }
   >;
   persistedMessageIds: Record<string, true>;
@@ -98,6 +99,7 @@ function appendTranscriptEvent(stream: HermesLiveStream, event: TranscriptEvent)
       stream.transcriptByMessageId[messageId] = {
         ...existing,
         pendingByTextOffset: { ...existing.pendingByTextOffset },
+        pendingRevisionByTextOffset: { ...existing.pendingRevisionByTextOffset },
         replayCandidate: "",
       };
       return;
@@ -112,6 +114,7 @@ function appendTranscriptEvent(stream: HermesLiveStream, event: TranscriptEvent)
     ? {
         ...existing,
         pendingByTextOffset: { ...existing.pendingByTextOffset },
+        pendingRevisionByTextOffset: { ...existing.pendingRevisionByTextOffset },
       }
     : emptyTranscriptState();
   if (state.complete) return;
@@ -120,11 +123,22 @@ function appendTranscriptEvent(stream: HermesLiveStream, event: TranscriptEvent)
     const baseline = visibleTranscriptText(stream.entries, messageId);
     const snapshot = event.delta ?? "";
     const monotonicText = snapshot.startsWith(baseline) ? snapshot : baseline;
+    const suffix = monotonicText.slice(baseline.length);
+    const pendingRevisions = Object.values(state.pendingRevisionByTextOffset);
+    if (suffix && pendingRevisions.length > 0) {
+      insertSemanticEntryAtRevision(
+        stream,
+        { ...event, complete: false, failed: false, delta: suffix },
+        stream.revision,
+        Math.min(...pendingRevisions),
+      );
+    }
     appendSemanticEntry(stream, { ...event, delta: monotonicText }, stream.revision);
     stream.transcriptByMessageId[messageId] = {
       complete: true,
       visibleLength: monotonicText.length,
       pendingByTextOffset: {},
+      pendingRevisionByTextOffset: {},
       ...(state.nextTextOffset === undefined ? {} : { nextTextOffset: monotonicText.length }),
     };
     return;
@@ -156,54 +170,109 @@ function appendOffsetTranscriptEvent(
   event: TranscriptEvent,
   textOffset: number,
 ) {
-  const accepted = tryAppendOffsetChunk(stream, messageId, event, textOffset);
-  if (!accepted && state.pendingByTextOffset[textOffset] === undefined) {
+  if (state.pendingByTextOffset[textOffset] === undefined) {
     state.pendingByTextOffset[textOffset] = event;
+    state.pendingRevisionByTextOffset[textOffset] = stream.revision;
   }
 
+  let virtualText = visibleTranscriptText(stream.entries, messageId);
+  let appendedText = "";
+  let appendedEvent: TranscriptEvent | undefined;
+  let earliestRevision: number | undefined;
   let flushed = true;
   while (flushed) {
     flushed = false;
-    const visibleLength = visibleTranscriptText(stream.entries, messageId).length;
     const pendingOffsets = Object.keys(state.pendingByTextOffset)
       .map(Number)
-      .filter((offset) => offset <= visibleLength)
+      .filter((offset) => offset <= virtualText.length)
       .sort((left, right) => left - right);
 
     for (const pendingOffset of pendingOffsets) {
       const pending = state.pendingByTextOffset[pendingOffset];
       if (pending?.kind !== "transcript") continue;
-      if (!tryAppendOffsetChunk(stream, messageId, pending, pendingOffset)) continue;
+      const suffix = verifiedOffsetSuffix(virtualText, pending.delta ?? "", pendingOffset);
+      if (suffix === undefined) continue;
+
+      virtualText += suffix;
+      if (suffix) {
+        appendedText += suffix;
+        appendedEvent = pending;
+        const pendingRevision = state.pendingRevisionByTextOffset[pendingOffset] ?? stream.revision;
+        earliestRevision =
+          earliestRevision === undefined
+            ? pendingRevision
+            : Math.min(earliestRevision, pendingRevision);
+      }
       delete state.pendingByTextOffset[pendingOffset];
+      delete state.pendingRevisionByTextOffset[pendingOffset];
       flushed = true;
-      break;
     }
   }
 
-  state.visibleLength = visibleTranscriptText(stream.entries, messageId).length;
+  if (appendedText && appendedEvent && earliestRevision !== undefined) {
+    insertSemanticEntryAtRevision(
+      stream,
+      { ...appendedEvent, delta: appendedText },
+      stream.revision,
+      earliestRevision,
+    );
+  }
+
+  state.visibleLength = virtualText.length;
   state.nextTextOffset = state.visibleLength;
 }
 
-function tryAppendOffsetChunk(
-  stream: HermesLiveStream,
-  messageId: string,
-  event: TranscriptEvent,
+function verifiedOffsetSuffix(
+  visibleText: string,
+  delta: string,
   textOffset: number,
-): boolean {
-  const visibleText = visibleTranscriptText(stream.entries, messageId);
-  if (textOffset > visibleText.length) return false;
+): string | undefined {
+  if (textOffset > visibleText.length) return undefined;
 
-  const delta = event.delta ?? "";
   const overlapLength = Math.min(delta.length, Math.max(visibleText.length - textOffset, 0));
   if (visibleText.slice(textOffset, textOffset + overlapLength) !== delta.slice(0, overlapLength)) {
-    return false;
+    return undefined;
   }
 
-  const suffix = delta.slice(Math.max(visibleText.length - textOffset, 0));
-  if (suffix) {
-    appendSemanticEntry(stream, { ...event, delta: suffix }, stream.revision);
+  return delta.slice(Math.max(visibleText.length - textOffset, 0));
+}
+
+function insertSemanticEntryAtRevision(
+  stream: HermesLiveStream,
+  event: TranscriptEvent,
+  revision: number,
+  orderingRevision: number,
+) {
+  const insertionIndex = stream.entries.findIndex(
+    ({ event: existing, revision: existingRevision }) => {
+      if (existingRevision <= orderingRevision) return false;
+      return !(
+        existing.kind === "transcript" &&
+        existing.complete !== true &&
+        existing.messageId === event.messageId &&
+        existing.delta !== undefined
+      );
+    },
+  );
+
+  if (insertionIndex < 0) {
+    appendSemanticEntry(stream, event, revision);
+    return;
   }
-  return true;
+
+  const previous = stream.entries[insertionIndex - 1];
+  if (previous?.event.kind === "transcript" && canCoalesceTranscript(previous.event, event)) {
+    stream.entries[insertionIndex - 1] = {
+      event: {
+        ...event,
+        delta: (previous.event.delta ?? "") + (event.delta ?? ""),
+      },
+      revision,
+    };
+    return;
+  }
+
+  stream.entries.splice(insertionIndex, 0, { event, revision });
 }
 
 function appendSemanticEntry(stream: HermesLiveStream, event: JuneHermesEvent, revision: number) {
@@ -275,6 +344,7 @@ function emptyTranscriptState(): TranscriptState {
     complete: false,
     visibleLength: 0,
     pendingByTextOffset: {},
+    pendingRevisionByTextOffset: {},
   };
 }
 
