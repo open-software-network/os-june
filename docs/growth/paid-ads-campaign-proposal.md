@@ -17,7 +17,7 @@ This document uses four evidence labels throughout:
 
 ## Executive decision
 
-**Planning assumption:** Approve Lean as a six-week message and measurement
+**Planning assumption:** Propose Lean as a six-week message and measurement
 test. Do not pre-approve Growth or Scale. The business outcome is conversion
 from Free to a paid Pro or Max Plan. The diagnostic path is:
 
@@ -28,13 +28,14 @@ June's agent is the expansion story after a person understands the first job.
 
 | Campaign tier | Evidence | Duration | Media cap | External cash setup, creative, and analysis cap | Campaign cash cap | Decision |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Lean | Planning assumption | 6 weeks | $4,000 | $1,000 | $5,000 | Launch after Phase 0 |
+| Lean | Planning assumption | 6 weeks | $4,000 | $1,000 | $5,000 | Launch only after Phase 0, dry run, cap acceptance, and named approval |
 | Growth | Planning assumption | 8 weeks | $17,000 | $3,000 | $20,000 | Hold until matured Lean economics pass |
 | Scale | Planning assumption | 12 weeks | $54,000 | $6,000 | $60,000 | Hold until matured economics pass |
 
 Campaign cash means media plus the stated external cash setup, creative, and
 analysis allowance. These are caps, not spending commitments. Reserved media
 never releases automatically, and any stop rule can leave part of a cap unspent.
+Evidence never substitutes for named release authority.
 
 ## Product and positioning diagnosis
 
@@ -205,6 +206,12 @@ that cell and do not create a new cell or reset its evidence.
 ### Lean
 
 **Planning assumption:** Run in the US only for six weeks.
+
+**Planning assumption:** Before any Lean media or external campaign cash
+releases, Phase 0 must be approved, the full dry run must pass, and the $4,000
+media cap, $1,000 external cash cap, and $5,000 campaign cash cap must be
+accepted. Growth, Finance, and the privacy reviewer must then each give fresh
+named approval for Lean launch.
 
 | Allocation | Evidence | Amount | Share of media | Purpose |
 | --- | --- | ---: | ---: | --- |
@@ -503,7 +510,7 @@ use them as evidence that paid acquisition economics passed.
 
 | Period | Evidence | Required work |
 | --- | --- | --- |
-| Before week 1 | Planning assumption | Approve Phase 0, establish holdouts, freeze definitions, pass the full dry run, and quality-check pages |
+| Before week 1 | Planning assumption | Approve Phase 0, establish holdouts, freeze definitions, pass the full dry run, accept Lean caps, collect fresh named Growth, Finance, and privacy approval, and quality-check pages |
 | Every active media day and before any release | Planning assumption | Verify every approved measurement source, cohort window, estimator, and scorecard output is available, uncontaminated, and still distinguishes paid cohorts from organic; latch the fail-closed pause on any failure |
 | Lean weeks 1 to 2 | Planning assumption | Launch all three wedges at controlled bids, review search terms and placements twice weekly, and resolve brand or privacy issues immediately |
 | Lean weeks 3 to 4 | Planning assumption | Stop failed cells, refresh one variable at a time, and compare wedge-level click-to-Free only where traffic is sufficient |
@@ -544,6 +551,9 @@ Move from Lean to Growth only when all of these are true:
   inputs, and the conservative bound reaches cumulative expected contribution
   recovery no later than month 18. If expected lifetime contribution never
   recovers fully loaded contribution CAC, the gate fails.
+- **Planning assumption:** After every condition above passes, Growth, Finance,
+  and the privacy reviewer each give fresh named approval to release Growth
+  tranche 1.
 
 **Calculated output:** The Lean base scenario projects 4 paid Plan starts, 5%
 60-day Free-to-paid, $1,250 campaign cash CAC, and 44.6 months campaign cash
@@ -624,6 +634,9 @@ Move from Growth to Scale only when all of these are true:
 - **Planning assumption:** For both scopes, the lower bound for Max Plan share
   is at least 10% of paid Plan starts, or Pro Plan economics pass independently
   without relying on Max Plan mix.
+- **Planning assumption:** After every condition above passes, Growth, Finance,
+  and the privacy reviewer each give fresh named approval to release Scale
+  tranche 1.
 
 ### Intra-Scale release gate
 
@@ -681,10 +694,13 @@ reserve from $7,650 to $6,650 or the Scale new paid acquisition channel and
 cell test reserve from $13,500 to $12,500. The campaign-tier media and campaign
 cash caps do not change.
 
-The first $500 is the pre-defined seed. The second $500 may release only when
-measurement is computable, no stop, privacy, policy, or brand issue exists, the
-first seed did not reach the frozen sample, and Growth, Finance, and the privacy
-reviewer approve.
+The first $500 is the pre-defined seed. It may release only after measurement
+is computable, no stop, privacy, policy, misleading-copy, or brand issue exists,
+and Growth, Finance, and the privacy reviewer each give fresh named approval for
+that first seed. The second $500 may release only when measurement remains
+computable, no stop, privacy, policy, misleading-copy, or brand issue exists,
+the first seed did not reach the frozen sample, and Growth, Finance, and the
+privacy reviewer each give fresh named approval for that second seed.
 
 ### Post-seed new-cell release increments
 
