@@ -235,6 +235,44 @@ describe("AgentSessionsList", () => {
     expect(hermesMocks.deleteHermesSession).toHaveBeenNthCalledWith(2, "running-session");
   });
 
+  it("drops a session from the bulk selection when it is marked complete", async () => {
+    const user = userEvent.setup();
+    const props = {
+      sessions,
+      folders: [] as FolderDto[],
+      sessionFolderIds: {},
+      workingSessionIds: new Set(["running-session"]),
+      waitingSessionIds: new Set(["waiting-session"]),
+      onSelectSession: vi.fn(),
+      onNewSession: vi.fn(),
+      onRenameSession: vi.fn(),
+      onOpenMoveDialog: vi.fn(),
+      onOpenMoveSessions: vi.fn(),
+      onRemoveFromProject: vi.fn(),
+    };
+    const { rerender } = render(<AgentSessionsList {...props} />);
+
+    await user.click(screen.getByLabelText("Select Waiting session"));
+    await user.click(screen.getByLabelText("Select Running session"));
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveTextContent("2 selected");
+
+    // Waiting session becomes complete: it must leave the selection so a bulk
+    // delete can no longer wipe it along with the still-active selection.
+    rerender(
+      <AgentSessionsList
+        {...props}
+        completedSessionIds={{ "waiting-session": "2026-06-05T10:00:00Z" }}
+      />,
+    );
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveTextContent("1 selected");
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Delete session" }));
+
+    expect(hermesMocks.deleteHermesSession).toHaveBeenCalledTimes(1);
+    expect(hermesMocks.deleteHermesSession).toHaveBeenCalledWith("running-session");
+  });
+
   it("renames a session row from the action menu", async () => {
     const user = userEvent.setup();
     const onRenameSession = vi.fn();

@@ -1023,9 +1023,13 @@ impl Repositories {
         completed: bool,
     ) -> Result<(), sqlx::error::Error> {
         if completed {
+            // Idempotent: keep the original completion time if the session is
+            // already complete, so a redundant mark never re-sorts the Completed
+            // list. A genuine re-completion goes through unmark (row deleted)
+            // then mark, which inserts a fresh timestamp.
             query(
                 "INSERT INTO completed_sessions (session_id, completed_at) VALUES (?, ?)
-                 ON CONFLICT(session_id) DO UPDATE SET completed_at = excluded.completed_at",
+                 ON CONFLICT(session_id) DO NOTHING",
             )
             .bind(session_id)
             .bind(timestamp())

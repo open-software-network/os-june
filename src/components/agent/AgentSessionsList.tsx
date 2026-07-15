@@ -116,18 +116,28 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
           .includes(normalized),
       );
     }, [sortedSessions, query, waitingSessionIds, workingSessionIds]);
-    const activeSessions = filteredSessions.filter((session) => !completedSessionIds[session.id]);
-    const completedSessions = filteredSessions
-      .filter((session) => Boolean(completedSessionIds[session.id]))
-      .sort((a, b) =>
-        (completedSessionIds[b.id] ?? "").localeCompare(completedSessionIds[a.id] ?? ""),
-      );
+    const activeSessions = useMemo(
+      () => filteredSessions.filter((session) => !completedSessionIds[session.id]),
+      [filteredSessions, completedSessionIds],
+    );
+    const completedSessions = useMemo(
+      () =>
+        filteredSessions
+          .filter((session) => Boolean(completedSessionIds[session.id]))
+          .sort((a, b) =>
+            (completedSessionIds[b.id] ?? "").localeCompare(completedSessionIds[a.id] ?? ""),
+          ),
+      [filteredSessions, completedSessionIds],
+    );
+    // Bulk selection only ever acts on active sessions: a completed session must
+    // never be counted, moved, or deleted from the selection toolbar, even if it
+    // was selected while still active (JUN-203 review).
     const selectedSessionIds = useMemo(
       () =>
-        sortedSessions
+        activeSessions
           .filter((session) => selectedIds.has(session.id))
           .map((session) => session.id),
-      [sortedSessions, selectedIds],
+      [activeSessions, selectedIds],
     );
     const visibleSelectedCount = activeSessions.filter((session) =>
       selectedIds.has(session.id),
@@ -157,17 +167,20 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
     const barMounted = selectedCount > 0 || exit !== null;
     const isExiting = selectedCount === 0 && exit !== null;
 
+    // Keep the selection confined to active sessions: drop ids that were
+    // deleted or marked complete (completing a selected session must not leave
+    // it in the bulk selection, or delete/move would still act on it).
     useEffect(() => {
-      const sessionIds = new Set(sessions.map((session) => session.id));
+      const activeIds = new Set(activeSessions.map((session) => session.id));
       setSelectedIds((previous) => {
-        const next = new Set([...previous].filter((id) => sessionIds.has(id)));
+        const next = new Set([...previous].filter((id) => activeIds.has(id)));
         return next.size === previous.size ? previous : next;
       });
-      if (sessions.length === 0) {
+      if (activeSessions.length === 0) {
         setConfirmBulkDelete(false);
         setBulkDeleteError(null);
       }
-    }, [sessions]);
+    }, [activeSessions]);
 
     function toggleSelected(sessionId: string) {
       setSelectedIds((previous) => {

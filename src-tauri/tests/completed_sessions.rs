@@ -54,6 +54,9 @@ async fn marking_same_session_complete_twice_is_idempotent() {
         .set_session_completed("hermes-session-1", true)
         .await
         .expect("mark complete");
+    let first = repos.list_completed_sessions().await.expect("list");
+    let first_completed_at = first[0].completed_at.clone();
+
     repos
         .set_session_completed("hermes-session-1", true)
         .await
@@ -62,4 +65,6 @@ async fn marking_same_session_complete_twice_is_idempotent() {
     let completed = repos.list_completed_sessions().await.expect("list");
     assert_eq!(completed.len(), 1);
     assert_eq!(completed[0].session_id, "hermes-session-1");
+    // Re-marking preserves the original completion time (does not re-sort).
+    assert_eq!(completed[0].completed_at, first_completed_at);
 }
