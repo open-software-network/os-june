@@ -219,9 +219,10 @@ campaign cash CAC from a handful of conversions.
 
 ### Growth
 
-**Planning assumption:** Run for eight active media weeks. Cap the eventual
-geographic allocation at 70% US, 10% Canada, 10% UK, and 10% Australia unless
-the affected cells pass a documented reserve-release decision.
+**Planning assumption:** Run for eight active media weeks. The cumulative
+geographic media caps are hard maxima: 70% US, 10% Canada, 10% UK, and 10%
+Australia. No approval, cell pass, reserve release, or reallocation may exceed
+them.
 
 Growth is a controlled paid-economics validation tier, not permission to scale
 automatically. It tests whether the matured Lean signal survives more spend,
@@ -247,20 +248,24 @@ Growth has four sequential $5,000 campaign cash release tranches:
 | Growth tranche | Evidence | Media | External cash work | Campaign cash cap | Release authority |
 | --- | --- | ---: | ---: | ---: | --- |
 | 1 | Planning assumption | $4,250 | $750 | $5,000 | Lean may authorize only this tranche after every Lean-to-Growth gate passes |
-| 2 | Planning assumption | $4,250 | $750 | $5,000 | Release only after tranche 1's acquired cohort matures through 60 days and every Lean-to-Growth gate still passes |
-| 3 | Planning assumption | $4,250 | $750 | $5,000 | Release only after tranche 2's acquired cohort matures through 60 days and every Lean-to-Growth gate still passes |
-| 4 | Planning assumption | $4,250 | $750 | $5,000 | Release only after tranche 3's acquired cohort matures through 60 days and every Lean-to-Growth gate still passes |
+| 2 | Planning assumption | $4,250 | $750 | $5,000 | Release only after tranche 1's cohort matures and both tranche 1 independently and cumulative Growth pass every applicable Lean-to-Growth gate |
+| 3 | Planning assumption | $4,250 | $750 | $5,000 | Release only after tranche 2's cohort matures and both tranche 2 independently and cumulative Growth pass every applicable Lean-to-Growth gate |
+| 4 | Planning assumption | $4,250 | $750 | $5,000 | Release only after tranche 3's cohort matures and both tranche 3 independently and cumulative Growth pass every applicable Lean-to-Growth gate |
 | Total | Calculated output | $17,000 | $3,000 | $20,000 | Full Growth cap; never committed at entry |
 
 **Planning assumption:** Growth retains eight weeks of active media execution
 across released tranches. Sixty-day maturity holds pause the calendar and do
-not count as active media weeks.
+not count as active media weeks. Each released tranche must deliver at least
+80% of its $4,250 media cap, or $3,400, unless a stop rule ends the tranche. A
+stopped or underexposed tranche cannot authorize Scale.
 
 ### Scale
 
-**Planning assumption:** Run for twelve active media weeks. Keep the same 70%
-US, 10% Canada, 10% UK, and 10% Australia maximum envelope. Every new Scale
-paid acquisition channel remains reserved until its cells pass.
+**Planning assumption:** Run for twelve active media weeks. The cumulative
+geographic media caps are hard maxima: 70% US, 10% Canada, 10% UK, and 10%
+Australia. No approval, cell pass, reserve release, or reallocation may exceed
+them. Every new Scale paid acquisition channel remains reserved until its cells
+pass.
 
 | Allocation | Evidence | Amount | Share of media | Purpose |
 | --- | --- | ---: | ---: | --- |
@@ -274,6 +279,24 @@ paid acquisition channel remains reserved until its cells pass.
 
 **Calculated output:** The maximum geographic media envelopes are $37,800 US
 and $5,400 each for Canada, the UK, and Australia after cells earn release.
+
+Scale has four sequential $15,000 campaign cash release tranches:
+
+| Scale tranche | Evidence | Media | External cash work | Campaign cash cap | Active media | Release authority |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| 1 | Planning assumption | $13,500 | $1,500 | $15,000 | 3 weeks | The Growth-to-Scale gate may authorize only this tranche |
+| 2 | Planning assumption | $13,500 | $1,500 | $15,000 | 3 weeks | Release only after tranche 1's cohort matures and both tranche 1 independently and cumulative Scale pass every applicable Scale gate |
+| 3 | Planning assumption | $13,500 | $1,500 | $15,000 | 3 weeks | Release only after tranche 2's cohort matures and both tranche 2 independently and cumulative Scale pass every applicable Scale gate |
+| 4 | Planning assumption | $13,500 | $1,500 | $15,000 | 3 weeks | Release only after tranche 3's cohort matures and both tranche 3 independently and cumulative Scale pass every applicable Scale gate |
+| Total | Calculated output | $54,000 | $6,000 | $60,000 | 12 weeks | Full Scale cap; never committed at entry |
+
+**Planning assumption:** A Scale tranche cohort is mature only after its
+60-day and approved refund/cancellation windows close. Applicable Scale gates
+use the pre-registered uncertainty rule, cell and cohort samples, campaign cash
+CAC, Plan mix, and retention-aware fully loaded contribution payback. A stopped
+or underexposed Scale tranche cannot authorize the next tranche. Each released
+Scale tranche must deliver at least 80% of its $13,500 media cap, or $10,800,
+unless a stop rule ends it.
 
 No reallocation can bypass a paid acquisition channel pause, a wedge stop, the
 measurement guardrail, or the reserve-release gate.
@@ -327,12 +350,21 @@ The forecast models three distinct acquisition-cost boundaries:
   landing work, and incremental Free credits and usage, divided by net matured
   incremental paid Plan starts.
 
-Fully loaded contribution payback uses fully loaded contribution CAC and
-Finance-approved Plan-level contribution. It is longer than the table's
-campaign cash gross-revenue payback and cannot be calculated until Finance
-supplies contribution, margin, retention, refund, and cancellation inputs. The
-table also does not model churn, refunds, referral lift, or expansion, so it
-must not be presented as realized return on ad spend.
+Retention-aware fully loaded contribution payback is the first month when the
+acquired cohort's cumulative expected contribution reaches fully loaded
+contribution CAC under the conservative bound. Expected contribution in every
+month is net of retention, cancellations, refunds, promotions and credits, and
+contribution margin. If cumulative expected contribution never recovers fully
+loaded contribution CAC within the cohort's expected lifetime, the gate fails.
+
+This retention-aware contribution measure is separate from the forecast
+table's campaign cash gross-revenue payback, which remains campaign cash CAC
+divided by weighted new MRR. None of the nine scenario formulas or values
+change. Finance must supply the monthly retention curve, expected lifetime,
+cancellation and refund treatment, promotion and credit treatment, and
+Plan-level contribution margin before the retention-aware measure is
+available. The table also does not model churn, refunds, referral lift, or
+expansion, so it must not be presented as realized return on ad spend.
 
 ## Creative and landing-page matrix
 
@@ -383,10 +415,12 @@ must freeze every item below before launch:
 | Assignment unit | Planning assumption | Define the pre-registered paid acquisition cell and coarse cohort window, plus geo or time holdout assignment; creative variants remain nested inside a cell |
 | Data flow and consent | Planning assumption | Document each source, destination, vendor, consent surface, and vendor configuration while keeping June P3A separate |
 | Gate definitions | Planning assumption | Fix the numerator, denominator, minimum sample, maturity window, exclusions, and source system for every rate, cost, Plan-mix, and payback gate |
+| Tranche exposure | Planning assumption | Require at least 80% of each released media cap unless a stop rule ends the tranche; a stopped or underexposed tranche cannot authorize the next campaign tier or tranche |
 | Cohort persistence | Planning assumption | Keep only a thresholded aggregate cohort key stable through its activation, 60-day paid, refund, and cancellation windows; never persist a person-level campaign join |
 | Incrementality estimator | Planning assumption | Pre-register the holdout estimator, comparison periods, contamination handling, and a conservative one-sided uncertainty bound; do not substitute a raw point estimate or change the method after results are visible |
 | Aggregation threshold | Planning assumption | Freeze the minimum reportable cohort size and suppression rule for every output; no gate may rely on a suppressed or under-threshold cell |
 | Paid Plan treatment | Planning assumption | Define how Plan starts, upgrades, refunds, cancellations, and promotional periods become net matured incremental paid Plan starts |
+| Contribution recovery model | Planning assumption | Freeze the monthly retention curve, expected lifetime, cancellation and refund treatment, promotion and credit treatment, contribution margin, and conservative recovery bound |
 | Referral treatment | Planning assumption | Identify referrals in aggregate, report them separately, and exclude them from every paid-media numerator and acquisition-cost result |
 | Retention and deletion | Planning assumption | Set purpose-limited retention through the last maturity window and a verified deletion schedule for cohort keys and vendor data |
 | Access | Planning assumption | Name the privacy reviewer who controls aggregate production and limit Growth and Finance to thresholded scorecard outputs, never person rows |
@@ -394,7 +428,7 @@ must freeze every item below before launch:
 
 The frozen gate arithmetic is:
 
-| Metric | Evidence | Numerator | Denominator |
+| Metric | Evidence | Numerator | Denominator or recovery threshold |
 | --- | --- | --- | --- |
 | Click-to-completed-Free | Planning assumption | Matured incremental completed Free accounts assigned by the pre-registered estimator | Valid platform-reported paid clicks in the same cell and cohort window |
 | Cost per completed Free | Planning assumption | Paid media spend in the same cell and cohort window | Matured incremental completed Free accounts |
@@ -404,7 +438,7 @@ The frozen gate arithmetic is:
 | Media CAC | Calculated output | Paid media spend | Net matured incremental paid Plan starts |
 | Campaign cash CAC | Calculated output | Paid media plus stated external cash setup, creative, and analysis | Net matured incremental paid Plan starts |
 | Fully loaded contribution CAC | Calculated output | Campaign cash spend plus incremental internal Growth labor, privacy and legal review, engineering, tooling, landing work, and incremental Free credits and usage | Net matured incremental paid Plan starts |
-| Fully loaded contribution payback | Calculated output | Fully loaded contribution CAC | Finance-approved monthly Plan contribution |
+| Retention-aware fully loaded contribution payback | Calculated output | Cumulative expected contribution through month m under the conservative bound, net each month of retention, cancellations, refunds, promotions and credits, and contribution margin | Fully loaded contribution CAC; report the first month m that reaches it, or fail the gate if expected lifetime contribution never does |
 
 No measurement method is approved by this proposal. Phase 0 may accept only a
 combination that passes the dry run without a person-level campaign join, such
@@ -455,7 +489,7 @@ analytics](https://business.linkedin.com/en-us/marketing-solutions/reporting-ana
 | Referral starts | Planning assumption | Separate aggregate only if authorized | Exclude from paid acquisition results |
 | Media CAC | Calculated output | Forecast only; do not claim as observed | Calculate only from approved aggregate cohorts |
 | Campaign cash CAC | Calculated output | Forecast only; do not claim as observed | Calculate only from approved aggregate cohorts |
-| Fully loaded contribution CAC and payback | Calculated output | Unavailable | Calculate only after Finance approves all contribution inputs |
+| Fully loaded contribution CAC and retention-aware payback | Calculated output | Unavailable | Calculate month-by-month recovery only after Finance approves the retention, lifetime, adjustment, and contribution inputs |
 
 **Observed fact:** June ships a "Give a month, get a month" referral loop with
 nudges after completed-value moments. Referral can lift total acquisition, but
@@ -505,8 +539,9 @@ Move from Lean to Growth only when all of these are true:
   than $400. This requires the Lean test to outperform the 10-paid operating
   minimum within the $5,000 campaign cash cap.
 - **Planning assumption:** Finance approves the fully loaded contribution
-  inputs and the upper bound for fully loaded contribution payback is no longer
-  than 18 months.
+  inputs, and the conservative bound reaches cumulative expected contribution
+  recovery no later than month 18. If expected lifetime contribution never
+  recovers fully loaded contribution CAC, the gate fails.
 
 **Calculated output:** The Lean base scenario projects 4 paid Plan starts, 5%
 60-day Free-to-paid, $1,250 campaign cash CAC, and 44.6 months campaign cash
@@ -517,33 +552,52 @@ every uncertainty and fully loaded contribution gate must pass on matured data.
 
 Move from Growth to Scale only when all of these are true:
 
-- **Planning assumption:** At least 30 net incremental paid Plan starts have
-  matured through the 60-day and approved refund/cancellation windows.
-- **Planning assumption:** The lower bound for 60-day Free-to-paid conversion
-  is at least 8%.
-- **Planning assumption:** The upper bound for campaign cash CAC is no more
-  than $300 under the privacy-reviewed aggregate design.
-- **Planning assumption:** Finance approves the fully loaded contribution
-  inputs and the upper bound for fully loaded contribution payback is no longer
-  than 12 months.
-- **Planning assumption:** The lower bound for Max Plan share is at least 10%
-  of paid Plan starts, or Pro Plan economics pass independently without relying
-  on Max Plan mix.
+- **Planning assumption:** All four Growth tranches and all eight active media
+  weeks are complete.
+- **Planning assumption:** Every Growth tranche delivered at least 80% of its
+  released media cap. A tranche ended by a stop rule or otherwise underexposed
+  cannot authorize Scale.
+- **Planning assumption:** Every Growth tranche cohort has matured through its
+  60-day and approved refund/cancellation windows.
+- **Planning assumption:** At least 30 cumulative net incremental paid Plan
+  starts have matured through those windows.
+- **Planning assumption:** Both the latest Growth tranche independently and
+  cumulative Growth pass every applicable gate under the pre-registered
+  uncertainty rule and fully loaded contribution model.
+- **Planning assumption:** For both scopes, the lower bound for 60-day
+  Free-to-paid conversion is at least 8%.
+- **Planning assumption:** For both scopes, the upper bound for campaign cash
+  CAC is no more than $300 under the privacy-reviewed aggregate design.
+- **Planning assumption:** For both scopes, Finance approves the fully loaded
+  contribution inputs, and the conservative bound reaches cumulative expected
+  contribution recovery no later than month 12. If expected lifetime
+  contribution never recovers fully loaded contribution CAC, the gate fails.
+- **Planning assumption:** For both scopes, the lower bound for Max Plan share
+  is at least 10% of paid Plan starts, or Pro Plan economics pass independently
+  without relying on Max Plan mix.
 
 No reserved funds release automatically. Campaign-wide success never
 authorizes a new cell. Every new Growth paid acquisition channel or geography
 and every new Scale paid acquisition channel remains inside its explicit test
-reserve. For Growth and Scale, a new cell may receive only the lesser of $500
-or 5% of campaign-tier media as its pre-defined seed before it passes. The
-calculated seed cap is $500 for Growth (`min($500, 5% x $17,000)`) and $500 for
-Scale (`min($500, 5% x $54,000)`).
+reserve. For Growth and Scale, a new cell has a maximum $1,000 seed budget,
+released as two sequential $500 increments and drawn from the existing reserve,
+not added to the campaign-tier cap. The seed derives from the frozen activation
+sample and cost ceiling: `20 completed Free x $50 = $1,000`.
 
-After a seed, further release requires the cell to have computable measurement,
-the fixed Phase 0 sample, passing cost per completed Free and seven-day
-activation, matured campaign cash and fully loaded contribution economics under
-the pre-registered uncertainty rule, and named approval from Growth, Finance,
-and the privacy reviewer. Creative variants stay nested within the cell. If the
-cell lacks the fixed sample or any approval, its funds remain reserved.
+**Calculated output:** One fully seeded cell reduces the Growth new-cell test
+reserve from $7,650 to $6,650 or the Scale new paid acquisition channel and
+cell test reserve from $13,500 to $12,500. The campaign-tier media and campaign
+cash caps do not change.
+
+The first $500 is the pre-defined seed. The second $500 may release only when
+measurement is computable, no stop, privacy, policy, or brand issue exists, the
+first seed did not reach the frozen sample, and Growth, Finance, and the privacy
+reviewer approve. Any release beyond cumulative seed spend requires the cell to
+reach the fixed Phase 0 sample and pass cost per completed Free, seven-day
+activation, matured campaign cash economics, and retention-aware fully loaded
+contribution economics under the pre-registered uncertainty rule. After $1,000,
+no additional funds release until every cell gate passes. Creative variants
+stay nested within the cell; otherwise, its funds remain reserved.
 
 ### Stop and pause rules
 
@@ -566,7 +620,7 @@ cell lacks the fixed sample or any approval, its funds remain reserved.
 | Item | Evidence | Risk or dependency | Required response |
 | --- | --- | --- | --- |
 | Attribution design | Observed fact | Current June P3A cannot measure the paid funnel | Complete separate Phase 0 privacy review before launch |
-| Finance inputs | Observed fact | Gross margin and retention are missing | Finance supplies Plan-level margin, retention, refunds, cancellations, and contribution definition |
+| Finance inputs | Observed fact | Retention-aware contribution recovery is unavailable | Finance supplies the monthly retention curve, expected lifetime, cancellations, refunds, promotions and credits, Plan-level contribution margin, and conservative recovery inputs |
 | Sixty-day lag | Planning assumption | Early optimization can reward cheap accounts that never pay | Use leading diagnostics, but mature cohorts before campaign cash and contribution gates |
 | Landing variants | Planning assumption | Organic guides may not match paid queries or disclose the right pricing context | Build one campaign-matched variant per wedge and preserve the source guides |
 | Creative production | Planning assumption | June's agent breadth is difficult to explain in a cold static ad | Lead with one completed job and reserve breadth for the landing page or longer video |
