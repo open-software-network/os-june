@@ -112,12 +112,20 @@ pub async fn authorize(
     flow: &ConnectFlow,
     client_id: &str,
     scopes: &[&str],
+    loopback_ports: &[u16],
 ) -> Result<LinearAuthorizedGrant, AppError> {
-    let authorization =
-        oauth::loopback_authorize(flow, "Linear", |redirect_uri, code_challenge, state| {
+    // Fixed candidate ports, not an ephemeral one: Linear matches the
+    // registered callback URL exactly (port included), so the redirect URI
+    // must be one whose URL is registered on the OAuth application.
+    let authorization = oauth::loopback_authorize(
+        flow,
+        "Linear",
+        oauth::LoopbackPort::Candidates(loopback_ports.to_vec()),
+        |redirect_uri, code_challenge, state| {
             build_auth_url(client_id, redirect_uri, scopes, code_challenge, state)
-        })
-        .await?;
+        },
+    )
+    .await?;
 
     let tokens = exchange_code(
         client_id,
@@ -346,6 +354,11 @@ struct GraphqlErrorWire {
 struct GraphqlErrorExtensionsWire {
     #[serde(default)]
     code: Option<String>,
+    /// Linear also tags errors with a human category here (e.g.
+    /// "authentication error"); carried because auth failures are not
+    /// guaranteed to arrive as HTTP 401.
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
 }
 
 /// Shared GraphQL POST for the identity and teams documents. HTTP 401 maps
@@ -397,6 +410,27 @@ async fn graphql<T: DeserializeOwned>(
 fn check_graphql_errors(errors: &[GraphqlErrorWire], status: u16) -> Result<(), LinearApiError> {
     if errors.is_empty() {
         return Ok(());
+    }
+    // Linear signals failures through GraphQL error codes rather than
+    // semantic HTTP statuses (rate limiting arrives as HTTP 400), so a
+    // revoked or invalid token cannot be assumed to arrive as HTTP 401
+    // either: classify an authentication-flavored code or type as
+    // Unauthorized so the callers' refresh-and-retry and the
+    // reconnect_required transition still fire.
+    let unauthorized = errors.iter().any(|error| {
+        error.extensions.as_ref().is_some_and(|extensions| {
+            extensions
+                .code
+                .as_deref()
+                .is_some_and(|code| code.to_ascii_uppercase().contains("AUTHENTICATION"))
+                || extensions
+                    .kind
+                    .as_deref()
+                    .is_some_and(|kind| kind.to_ascii_lowercase().contains("authentication"))
+        })
+    });
+    if unauthorized {
+        return Err(LinearApiError::Unauthorized);
     }
     let rate_limited = errors.iter().any(|error| {
         error
@@ -661,6 +695,37 @@ mod tests {
         );
         assert!(parse_scope_field("").is_empty());
         assert!(parse_scope_field(" , ,").is_empty());
+    }
+
+    #[test]
+    fn graphql_auth_errors_classify_as_unauthorized_at_any_status() {
+        // Linear signals failures through GraphQL error codes rather than
+        // semantic HTTP statuses, so an auth failure must classify as
+        // Unauthorized even when it arrives as HTTP 400/200.
+        let errors: Vec<GraphqlErrorWire> = serde_json::from_str(
+            r#"[{"message":"Authentication required","extensions":{"code":"AUTHENTICATION_ERROR"}}]"#,
+        )
+        .expect("errors parse");
+        assert!(matches!(
+            check_graphql_errors(&errors, 400),
+            Err(LinearApiError::Unauthorized)
+        ));
+        let errors: Vec<GraphqlErrorWire> = serde_json::from_str(
+            r#"[{"message":"boom","extensions":{"type":"authentication error"}}]"#,
+        )
+        .expect("errors parse");
+        assert!(matches!(
+            check_graphql_errors(&errors, 200),
+            Err(LinearApiError::Unauthorized)
+        ));
+        // A non-auth error at HTTP 400 still classifies as a plain API error.
+        let errors: Vec<GraphqlErrorWire> =
+            serde_json::from_str(r#"[{"message":"boom","extensions":{"code":"INTERNAL_ERROR"}}]"#)
+                .expect("errors parse");
+        assert!(matches!(
+            check_graphql_errors(&errors, 400),
+            Err(LinearApiError::Api { status: 400, .. })
+        ));
     }
 
     #[test]

@@ -26,8 +26,17 @@ Yes. The token exchange at `POST https://api.linear.app/oauth/token` marks
 and `redirect_uri` complete the exchange. `code_challenge_method` supports
 `plain` and `S256`; June always uses S256. PKCE is optional on Linear's side,
 so June must enforce it client-side rather than rely on the provider requiring
-it. `http://localhost:<port>/...` redirect URIs are accepted, matching the
-existing loopback flow in `connectors/oauth.rs`.
+it. `http://localhost:<port>/...` redirect URIs are accepted as registered
+callback URLs.
+
+**Redirect URI matching caveat:** unlike Google, Linear matches the redirect
+URI against the registered callback URLs exactly - it does not implement RFC
+8252's rule to ignore the port on loopback addresses (observed in the wild:
+Linear's MCP OAuth rejects ephemeral loopback ports). June therefore binds
+one of a fixed candidate port list (`44741`, `44742`, `44743`; override with
+`LINEAR_OAUTH_LOOPBACK_PORT`) and the OAuth application must register a
+`http://127.0.0.1:<port>/callback` URL for each candidate. Confirm during
+live verification.
 
 ### 2. Refresh-token rotation, lifetime, revoke
 

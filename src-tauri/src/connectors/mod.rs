@@ -92,7 +92,7 @@ impl ConnectorAccountStatus {
 
 /// Non-secret account descriptor returned to the frontend and used by the
 /// proxy to enumerate accounts. The account id IS the Google account email
-/// for a Google row; a later Linear chunk keys it by workspace id instead.
+/// for a Google row, and the Linear workspace id for a Linear row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectorAccount {
@@ -223,6 +223,31 @@ fn require_linear_client_id() -> Result<String, AppError> {
         ));
     }
     Ok(client_id)
+}
+
+/// The callback ports registered on the Linear OAuth application
+/// (`http://127.0.0.1:<port>/callback`, one URL per port). Linear matches
+/// the registered callback URL exactly - it does not ignore the loopback
+/// port the way Google does (RFC 8252) - so the connect listener must bind
+/// one of exactly these. Keep this list in sync with the OAuth app's
+/// registered callback URLs.
+const LINEAR_LOOPBACK_PORTS: &[u16] = &[44741, 44742, 44743];
+const LINEAR_OAUTH_LOOPBACK_PORT_ENV: &str = "LINEAR_OAUTH_LOOPBACK_PORT";
+
+/// The candidate loopback ports for a Linear connect: the
+/// `LINEAR_OAUTH_LOOPBACK_PORT` override alone when it parses as a port
+/// (for an OAuth app registered with a custom callback URL), otherwise the
+/// registered defaults.
+fn linear_loopback_ports() -> Vec<u16> {
+    crate::os_accounts::load_local_env();
+    linear_loopback_ports_from(&env_trimmed(LINEAR_OAUTH_LOOPBACK_PORT_ENV))
+}
+
+fn linear_loopback_ports_from(override_value: &str) -> Vec<u16> {
+    match override_value.parse::<u16>() {
+        Ok(port) if port != 0 => vec![port],
+        _ => LINEAR_LOOPBACK_PORTS.to_vec(),
+    }
 }
 
 // --- Access tokens ----------------------------------------------------------------
@@ -784,7 +809,7 @@ pub async fn begin_connect_linear(
     }
 
     let requested = scopes::requested_linear_scopes(bundles);
-    let grant = linear::authorize(flow, &client_id, &requested).await?;
+    let grant = linear::authorize(flow, &client_id, &requested, &linear_loopback_ports()).await?;
     let identity = grant.identity;
     let workspace_id = identity.workspace_id.clone();
 
@@ -1119,6 +1144,21 @@ mod tests {
         let metadata: ConnectorAccountMetadata = serde_json::from_str(&raw).unwrap();
         assert_eq!(metadata.workspace_name.as_deref(), Some("Acme"));
         assert_eq!(metadata.workspace_url_key, None);
+    }
+
+    #[test]
+    fn linear_loopback_ports_prefer_a_valid_env_override_only() {
+        // A parseable non-zero override narrows the candidates to that port.
+        assert_eq!(linear_loopback_ports_from("50000"), vec![50000]);
+        // Empty, garbage, zero, and out-of-range values all fall back to the
+        // registered defaults instead of breaking the connect flow.
+        assert_eq!(linear_loopback_ports_from(""), LINEAR_LOOPBACK_PORTS);
+        assert_eq!(
+            linear_loopback_ports_from("not-a-port"),
+            LINEAR_LOOPBACK_PORTS
+        );
+        assert_eq!(linear_loopback_ports_from("0"), LINEAR_LOOPBACK_PORTS);
+        assert_eq!(linear_loopback_ports_from("70000"), LINEAR_LOOPBACK_PORTS);
     }
 
     #[test]

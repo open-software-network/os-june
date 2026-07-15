@@ -1,5 +1,4 @@
-//! Connector token custody, shared by every provider (Google today, Linear
-//! in a later chunk).
+//! Connector token custody, shared by every provider (Google and Linear).
 //!
 //! Tokens live in the OS keychain, one entry per connected account (user =
 //! the caller-supplied account id: a Google account email, or a Linear
@@ -50,8 +49,8 @@ pub struct StoredConnectorTokens {
 }
 
 /// Write `tokens` to the keychain, keyed by `(provider, account_id)`.
-/// `account_id` is the caller-supplied keychain user: today always the
-/// Google account email; a later Linear chunk passes a workspace id.
+/// `account_id` is the caller-supplied keychain user: a Google account
+/// email, or a Linear workspace id.
 pub async fn store_tokens(
     provider: ConnectorProvider,
     account_id: &str,

@@ -6970,23 +6970,30 @@ fn sync_june_recorder_mcp(
 }
 
 /// Writes the four connector MCP scripts and returns their configs, but ONLY
-/// when at least one Google account is connected. v1 registers a single account
-/// context: the first connected account's email is passed to every server, and
-/// each proxy call carries it as `account_id`. Returns `None` when no account
-/// is connected, in which case the connector servers are not registered at all.
+/// when at least one Google account is connected. v1 registers a single
+/// account context: the first connected GOOGLE account's email is passed to
+/// every server, and each proxy call carries it as `account_id`. Returns
+/// `None` when no Google account is connected (a connected Linear workspace
+/// does not count), in which case the connector servers are not registered
+/// at all.
 async fn sync_june_connector_mcps(
     app: &AppHandle,
     hermes_command: &str,
 ) -> Result<Option<ConnectorMcpConfigs>, AppError> {
     // Listing reads the non-secret DB index only (no keychain prompt). v1 uses
-    // the first CONNECTED account for the base servers; multi-account is a
-    // documented follow-up. A `reconnect_required` account is skipped so a
-    // stale first account does not hand the base servers a dead email while a
-    // healthy account exists.
+    // the first CONNECTED Google account for the base servers; multi-account
+    // is a documented follow-up. The provider filter matters: the base
+    // servers are Gmail/Calendar, so a connected Linear workspace (whose
+    // email may even be empty) must never be the account they bind to. A
+    // `reconnect_required` account is skipped so a stale first account does
+    // not hand the base servers a dead email while a healthy account exists.
     let account_email = match crate::connectors::list_accounts(app).await {
         Ok(accounts) => accounts
             .into_iter()
-            .find(|account| account.status == crate::connectors::ConnectorAccountStatus::Connected)
+            .find(|account| {
+                account.provider == crate::connectors::ConnectorProvider::Google
+                    && account.status == crate::connectors::ConnectorAccountStatus::Connected
+            })
             .map(|account| account.email),
         Err(error) => {
             // A DB read failure must not wedge the whole bridge start; skip the
