@@ -13438,14 +13438,20 @@ const GENERATED_MEDIA_FIELD = {
   ripplePush: 5,
   rippleGlow: 0.4,
   ripplePaintMix: 0.95,
-  /* Mark sparkle: each logo dot glints on its own deterministic cadence -
-   * a twinkle of color and brightness only, never size. The exponent keeps
-   * the glint to a short flash out of each slow cycle, so only a few dots
-   * shine at any moment. */
+  /* Mark sparkle: each logo dot glints on its own deterministic cadence - a
+   * brief flash of brightness with a whisper of the theme accent, never size.
+   * The glint is luminance-led on purpose: `--brand` is a mid-tone, so mixing
+   * a dot fully to it (as an earlier, higher sparkMix did) *darkens* the
+   * near-white mark in dark mode - a glint that dims instead of catching light
+   * - and muddies it to salmon in light mode. Keeping the mix low leaves the
+   * glint reading as light on the dot with only a warm cast; the ripple keeps
+   * the bold, fully-accent burst (ripplePaintMix) for a deliberate press. The
+   * exponent keeps each glint a short flash out of a slow cycle, so only a few
+   * dots shine at any moment. */
   sparkMinRadPerSec: 0.5,
   sparkSpanRadPerSec: 0.7,
   sparkExponent: 10,
-  sparkMix: 0.95,
+  sparkMix: 0.3,
   sparkAlphaBoost: 0.32,
   /* The dot field thins out over this many px at the canvas bottom, into the
    * card-surface gradient the CSS background lands on. */
