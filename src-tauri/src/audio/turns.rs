@@ -372,6 +372,20 @@ pub fn split_wav_for_transcription(
     output_dir: &Path,
     stem: &str,
 ) -> Result<Vec<PathBuf>, AppError> {
+    split_wav_for_transcription_with_max_duration(
+        input_path,
+        output_dir,
+        stem,
+        MAX_TRANSCRIPTION_CHUNK_MS,
+    )
+}
+
+pub fn split_wav_for_transcription_with_max_duration(
+    input_path: &Path,
+    output_dir: &Path,
+    stem: &str,
+    max_chunk_ms: i64,
+) -> Result<Vec<PathBuf>, AppError> {
     let mut reader = WavReader::open(input_path)
         .map_err(|error| AppError::new("audio_chunk_failed", error.to_string()))?;
     let spec = reader.spec();
@@ -380,13 +394,14 @@ pub fn split_wav_for_transcription(
     let sample_rate = spec.sample_rate.max(1) as i64;
     let total_frames = reader.duration() as i64;
     let duration_ms = (total_frames * 1000) / sample_rate;
-    if duration_ms <= MAX_TRANSCRIPTION_CHUNK_MS {
+    let max_chunk_ms = max_chunk_ms.max(1);
+    if duration_ms <= max_chunk_ms {
         return Ok(vec![input_path.to_path_buf()]);
     }
 
     std::fs::create_dir_all(output_dir)
         .map_err(|error| AppError::new("audio_chunk_failed", error.to_string()))?;
-    let frames_per_chunk = ((sample_rate * MAX_TRANSCRIPTION_CHUNK_MS) / 1000).max(1) as usize;
+    let frames_per_chunk = ((sample_rate * max_chunk_ms) / 1000).max(1) as usize;
     let mut chunks = Vec::new();
     let mut writer: Option<WavWriter<std::io::BufWriter<std::fs::File>>> = None;
     let mut chunk_index = 0_usize;
@@ -430,7 +445,7 @@ pub fn split_wav_for_transcription(
 
     debug_assert!(
         !chunks.is_empty(),
-        "split_wav_for_transcription: no chunks produced for audio longer than MAX_TRANSCRIPTION_CHUNK_MS"
+        "split_wav_for_transcription: no chunks produced for audio longer than max_chunk_ms"
     );
     Ok(chunks)
 }
