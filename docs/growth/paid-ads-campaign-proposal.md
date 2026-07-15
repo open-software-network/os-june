@@ -561,6 +561,9 @@ Before releasing Growth tranches 2, 3, or 4, every condition below must pass:
 - **Planning assumption:** At least 80% of the prior tranche's $4,250 media
   cap, or $3,400, received valid exposure under the approved measurement
   contract.
+- **Planning assumption:** Every completed Growth tranche completed two active
+  media weeks and at least 80% of each tranche's $4,250 media cap, or $3,400,
+  received valid exposure.
 - **Planning assumption:** The prior tranche cohort and all cumulative Growth
   cohorts matured through their 60-day and approved refund/cancellation
   windows.
@@ -587,6 +590,9 @@ Before releasing Growth tranches 2, 3, or 4, every condition below must pass:
   required measurement is computable for both scopes.
 - **Planning assumption:** No unresolved privacy, policy, misleading-copy, or
   brand issue exists.
+- **Planning assumption:** After all latest-tranche and cumulative Growth
+  conditions above pass, Growth, Finance, and the privacy reviewer each give
+  fresh named approval for this single Growth tranche release.
 
 All conditions use the pre-registered conservative uncertainty rule. A stopped,
 underexposed, suppressed, or unmeasurable latest or cumulative scope fails the
@@ -628,6 +634,9 @@ Before releasing Scale tranches 2, 3, or 4, every condition below must pass:
 - **Planning assumption:** At least 80% of the prior tranche's $13,500 media
   cap, or $10,800, received valid exposure under the approved measurement
   contract.
+- **Planning assumption:** Every completed Scale tranche completed three active
+  media weeks and at least 80% of each tranche's $13,500 media cap, or $10,800,
+  received valid exposure.
 - **Planning assumption:** The prior tranche cohort and all cumulative Scale
   cohorts matured through their 60-day and approved refund/cancellation
   windows.
@@ -650,6 +659,9 @@ Before releasing Scale tranches 2, 3, or 4, every condition below must pass:
   required measurement is computable for both scopes.
 - **Planning assumption:** No unresolved privacy, policy, misleading-copy, or
   brand issue exists.
+- **Planning assumption:** After all latest-tranche and cumulative Scale
+  conditions above pass, Growth, Finance, and the privacy reviewer each give
+  fresh named approval for this single Scale tranche release.
 
 All conditions use the pre-registered conservative uncertainty rule. A stopped,
 underexposed, suppressed, or unmeasurable latest or cumulative scope fails the
