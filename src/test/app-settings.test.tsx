@@ -6,6 +6,7 @@ import { beginMaxGrantWait, clearMaxGrantWait, markMaxGrantWaitSlow } from "../l
 import type { AccountStatus, DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
 import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
+import { AGENT_SOUNDS_ENABLED_KEY } from "../lib/agent-sound-settings";
 import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { TELEMETRY_INFO_URL } from "../lib/p3a";
@@ -3971,6 +3972,35 @@ describe("AppSettings", () => {
     await user.click(hudSwitch);
     expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
     expect(mocks.agentHudShow).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles agent sounds from Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    const soundsSwitch = await screen.findByRole("switch", {
+      name: "Play agent sounds",
+    });
+
+    expect(soundsSwitch).toHaveAttribute("aria-checked", "true");
+
+    await user.click(soundsSwitch);
+    expect(localStorage.getItem(AGENT_SOUNDS_ENABLED_KEY)).toBe("false");
+
+    await user.click(soundsSwitch);
+    expect(localStorage.getItem(AGENT_SOUNDS_ENABLED_KEY)).toBe("true");
   });
 
   it("edits June's character from Agent settings", async () => {

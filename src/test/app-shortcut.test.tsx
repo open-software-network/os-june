@@ -95,6 +95,7 @@ const mocks = vi.hoisted(() => ({
   p3aSettings: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
+  preloadAgentSounds: vi.fn(),
   providerModelSettings: vi.fn(),
   setP3aEnabled: vi.fn(),
   videoGenerate: vi.fn(),
@@ -117,6 +118,10 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("../lib/recording-sounds", () => ({
   playRecordingSound: mocks.playRecordingSound,
   preloadRecordingSounds: mocks.preloadRecordingSounds,
+}));
+
+vi.mock("../lib/agent-sounds", () => ({
+  preloadAgentSounds: mocks.preloadAgentSounds,
 }));
 
 vi.mock("../lib/hermes-adapter", async (importOriginal) => ({

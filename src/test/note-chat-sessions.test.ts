@@ -15,8 +15,11 @@ import {
   stageSessionModelSelection,
 } from "../lib/hermes-session-model-selection";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
+import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
 
 const mocks = vi.hoisted(() => ({
+  canAttributeUntaggedAgentRun: vi.fn(() => true),
+  cancelAgentRunMonitoring: vi.fn(),
   gatewayRequest: vi.fn(),
   gatewayConnect: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
@@ -25,11 +28,20 @@ const mocks = vi.hoisted(() => ({
   listHermesSessions: vi.fn(),
   hermesBridgeStatus: vi.fn(),
   listVeniceModels: vi.fn(),
+  markAgentRunSucceeded: vi.fn(),
   providerModelSettings: vi.fn(),
   setCostQuality: vi.fn(),
   setLocalGenerationEnabled: vi.fn(),
   setVeniceModel: vi.fn(),
   startHermesBridge: vi.fn(),
+  startAgentRunMonitoring: vi.fn(),
+}));
+
+vi.mock("../lib/agent-run-monitor", () => ({
+  canAttributeUntaggedAgentRun: mocks.canAttributeUntaggedAgentRun,
+  cancelAgentRunMonitoring: mocks.cancelAgentRunMonitoring,
+  markAgentRunSucceeded: mocks.markAgentRunSucceeded,
+  startAgentRunMonitoring: mocks.startAgentRunMonitoring,
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -163,6 +175,7 @@ describe("note chat session map", () => {
       return Promise.resolve({});
     });
     mocks.gatewayConnect.mockResolvedValue(undefined);
+    mocks.canAttributeUntaggedAgentRun.mockReturnValue(true);
   });
 
   it("remembers and recalls the session for a note", () => {
@@ -605,7 +618,10 @@ describe("note chat session map", () => {
       }
     });
     expect(result.current.working).toBe(false);
-    expect(mocks.gatewayRequest).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat"),
+    );
+    mocks.gatewayRequest.mockClear();
 
     await act(async () => {
       expect(await result.current.submit("What should we do next?")).toBe(true);
@@ -629,6 +645,140 @@ describe("note chat session map", () => {
         },
       ],
     ]);
+  });
+
+  it("hands a completed note chat to app-lifetime settlement monitoring", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    await act(async () => {
+      expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+    });
+    expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith({
+      storedSessionId: "stored-note-chat",
+      runtimeSessionId: "runtime-note-chat",
+      title: "Launch planning",
+      fullMode: false,
+      settlementHeld: false,
+    });
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-note-chat",
+          payload: { status: "success" },
+        });
+      }
+    });
+    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat");
+  });
+
+  it("keeps monitoring a note-chat run after its panel unmounts", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result, unmount } = renderHook(() =>
+      useNoteChat({ id: "note-1", title: "Launch planning" }),
+    );
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    await act(async () => {
+      expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+    });
+
+    unmount();
+
+    expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalledWith("stored-note-chat");
+  });
+
+  it("ignores a late successful terminal after stopping note chat", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    await act(async () => {
+      expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+    });
+
+    act(() => result.current.stop());
+    expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledWith("stored-note-chat");
+    mocks.markAgentRunSucceeded.mockClear();
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-note-chat",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+  });
+
+  it("does not attribute an untagged terminal when another sandboxed run exists", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.canAttributeUntaggedAgentRun.mockReturnValue(false);
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    await act(async () => {
+      expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+    });
+    mocks.markAgentRunSucceeded.mockClear();
+    mocks.cancelAgentRunMonitoring.mockClear();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    expect(result.current.working).toBe(true);
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+    expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalled();
+  });
+
+  it("dispatches a failed status for a failure-flavored note-chat terminal", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const statuses: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statuses.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    try {
+      const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+      await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+      await act(async () => {
+        expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+      });
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-note-chat",
+            payload: { status: "timeout" },
+          });
+        }
+      });
+
+      expect(statuses).toContainEqual(
+        expect.objectContaining({
+          sessionId: "stored-note-chat",
+          status: "failed",
+          summary: "June stopped before replying.",
+        }),
+      );
+      expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledWith("stored-note-chat");
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    }
   });
 
   it("waits behind an earlier cross-surface Send before submitting the same model", async () => {

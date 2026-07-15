@@ -292,6 +292,14 @@
    * neutrals mix from this so clay's high chroma doesn't over-cream the greys;
    * the Appearance picker overrides both --brand and --brand-wash together. */
   --brand-wash: #976851;
+  /* Luminous accent for brief clay details (the image-gen mark's glint and its
+   * press ripple). Mixing --brand with white lifts lightness but drops chroma,
+   * which reads as dusty *mud* the moment it's painted over the light dot
+   * field. So the real value (below, under @supports) pins the glint to a fixed
+   * high lightness AND healthy chroma via relative color syntax, keeping only
+   * the active brand's hue - a clean, warm, saturated spark in either theme.
+   * This color-mix is the graceful fallback for engines without oklch(from). */
+  --brand-bright: color-mix(in oklch, var(--brand) 72%, var(--on-solid));
 
   --record: oklch(60% 0.22 27);
   /* Soft dusty tint of the brand, for quiet button backdrops and hovers
@@ -356,6 +364,26 @@
     0 1px 2px oklch(24% 0.002 84.59 / 4%), 0 2px 6px oklch(24% 0.002 84.59 / 5%),
     0 8px 16px oklch(24% 0.002 84.59 / 4%), 0 18px 40px oklch(24% 0.002 84.59 / 8%);
   --shadow-inset: 0 0 0 1px oklch(0% 0 none / 4%);
+}
+
+/* The luminous clay glint (see --brand-bright above), inheriting only the
+ * active brand's hue so it stays themed across every Appearance preset. The
+ * spark reads differently against each theme's field, so lightness and chroma
+ * are tuned per theme rather than shared:
+ *
+ * - Light: the dots sit on a near-white field and the neutral gray has almost
+ *   no chroma, so a pale clay collapses into it. You can't out-brighten white,
+ *   so the pop is driven by CHROMA - a vivid, slightly deeper clay separates
+ *   cleanly from the gray - not by lightness (which would only wash it out).
+ * - Dark: a lifted, high-lightness clay glows against the dark field, so keep
+ *   lightness high and chroma moderate. */
+@supports (color: oklch(from red l c h)) {
+  :root {
+    --brand-bright: oklch(from var(--brand) 0.7 0.19 h);
+  }
+  [data-theme="dark"] {
+    --brand-bright: oklch(from var(--brand) 0.72 0.15 h);
+  }
 }
 
 :root[data-brand-transition="true"],
