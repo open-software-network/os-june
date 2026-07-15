@@ -2,6 +2,7 @@ import type { HermesGatewayEvent } from "../hermes-gateway";
 import type {
   BackgroundHermesActivity,
   BackgroundHermesPhase,
+  HermesEventDelivery,
   JuneHermesEvent,
   PendingHermesAction,
   PendingHermesActionResolution,
@@ -22,6 +23,13 @@ import { sanitizePayload } from "./sanitize";
  * through as `unsupported`, which is visible and safe rather than dropped.
  */
 export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
+  const event = classifyHermesEventWithoutDelivery(raw);
+  const payload = (raw?.payload ?? undefined) as RawHermesPayload | undefined;
+  const delivery = deliveryOf(raw, payload);
+  return delivery ? { ...event, delivery } : event;
+}
+
+function classifyHermesEventWithoutDelivery(raw: HermesGatewayEvent): JuneHermesEvent {
   const type = typeof raw?.type === "string" ? raw.type : "";
   const sessionId = stringValue(raw?.session_id);
   const payload = (raw?.payload ?? undefined) as RawHermesPayload | undefined;
@@ -113,6 +121,49 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
     sanitizedPayload: payload === undefined ? undefined : sanitizePayload(payload),
     receivedAt,
   };
+}
+
+function deliveryOf(
+  raw: HermesGatewayEvent,
+  payload: RawHermesPayload | undefined,
+): HermesEventDelivery | undefined {
+  const connectionId = deliveryInteger(raw.delivery?.connectionId);
+  const sequence = deliveryInteger(raw.delivery?.sequence);
+  const eventId =
+    stringValue(payload?.event_id) ??
+    stringValue(payload?.eventId) ??
+    stringValue(raw.event_id) ??
+    stringValue(raw.eventId);
+  const textOffset =
+    textOffsetValue(payload?.text_offset) ??
+    textOffsetValue(payload?.textOffset) ??
+    textOffsetValue(raw.text_offset) ??
+    textOffsetValue(raw.textOffset);
+
+  if (
+    connectionId === undefined &&
+    sequence === undefined &&
+    eventId === undefined &&
+    textOffset === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(connectionId === undefined ? {} : { connectionId }),
+    ...(sequence === undefined ? {} : { sequence }),
+    ...(eventId === undefined ? {} : { eventId }),
+    ...(textOffset === undefined ? {} : { textOffset }),
+  };
+}
+
+function deliveryInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function textOffsetValue(value: unknown): number | undefined {
+  const parsed = numberValue(value);
+  return parsed !== undefined && Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function classifyTranscript(

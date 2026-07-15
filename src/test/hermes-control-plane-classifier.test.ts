@@ -159,6 +159,53 @@ describe("classifyHermesEvent — transcript", () => {
       expect(complete.delta).toBe("Summary only");
     }
   });
+
+  it("preserves local delivery identity plus stable source id and explicit text offset", () => {
+    const snakeCase = classifyHermesEvent({
+      ...event("message.delta", {
+        message_id: "m1",
+        delta: "B",
+        event_id: "source-event-1",
+        text_offset: 1,
+      }),
+      delivery: { connectionId: 4, sequence: 9 },
+    });
+    expect(snakeCase.delivery).toEqual({
+      connectionId: 4,
+      sequence: 9,
+      eventId: "source-event-1",
+      textOffset: 1,
+    });
+
+    const camelCase = classifyHermesEvent({
+      ...event("message.delta", {
+        messageId: "m1",
+        delta: "A",
+        eventId: "source-event-2",
+        textOffset: "0",
+      }),
+      delivery: { connectionId: 5, sequence: 1 },
+    });
+    expect(camelCase.delivery).toEqual({
+      connectionId: 5,
+      sequence: 1,
+      eventId: "source-event-2",
+      textOffset: 0,
+    });
+  });
+
+  it("never reinterprets generic sequence or offset payload fields as text offsets", () => {
+    const result = classifyHermesEvent(
+      event("message.delta", {
+        message_id: "m1",
+        delta: "A",
+        sequence: 11,
+        offset: 42,
+      }),
+    );
+
+    expect(result.delivery).toBeUndefined();
+  });
 });
 
 describe("classifyHermesEvent — reasoning", () => {

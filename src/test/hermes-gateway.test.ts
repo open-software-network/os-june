@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HermesGatewayClient, HermesGatewayError, isSessionBusyError } from "../lib/hermes-gateway";
+import {
+  HermesGatewayClient,
+  HermesGatewayError,
+  isSessionBusyError,
+  type HermesGatewayEvent,
+} from "../lib/hermes-gateway";
 
 type Listener = (event: unknown) => void;
 
@@ -180,5 +185,76 @@ describe("HermesGatewayClient", () => {
     // Intentional teardown → listeners stay quiet.
     client.close();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("stamps one stable delivery identity per frame and renews it after reconnect", async () => {
+    const client = new HermesGatewayClient();
+    const firstHandler: HermesGatewayEvent[] = [];
+    const secondHandler: HermesGatewayEvent[] = [];
+    client.onEvent((event) => firstHandler.push(event));
+    client.onEvent((event) => secondHandler.push(event));
+
+    const firstConnect = client.connect("ws://gateway");
+    const firstSocket = FakeWebSocket.instances[0];
+    firstSocket.open();
+    await firstConnect;
+    firstSocket.message({
+      method: "event",
+      params: { type: "message.delta", payload: { delta: "A" } },
+    });
+    firstSocket.message({
+      method: "event",
+      params: { type: "message.delta", payload: { delta: "B" } },
+    });
+
+    expect(firstHandler).toHaveLength(2);
+    expect(firstHandler[0]).toBe(secondHandler[0]);
+    expect(firstHandler[0]?.delivery).toBe(secondHandler[0]?.delivery);
+    expect(firstHandler.map((event) => event.delivery?.sequence)).toEqual([1, 2]);
+    const firstConnectionId = firstHandler[0]?.delivery?.connectionId;
+    expect(firstConnectionId).toBeTypeOf("number");
+    expect(firstHandler[1]?.delivery?.connectionId).toBe(firstConnectionId);
+
+    firstSocket.close();
+    const secondConnect = client.connect("ws://gateway");
+    const secondSocket = FakeWebSocket.instances[1];
+    secondSocket.open();
+    await secondConnect;
+    secondSocket.message({
+      method: "event",
+      params: { type: "message.delta", payload: { delta: "C" } },
+    });
+
+    expect(firstHandler[2]?.delivery?.sequence).toBe(1);
+    expect(firstHandler[2]?.delivery?.connectionId).not.toBe(firstConnectionId);
+  });
+
+  it("does not reuse a connection id when a dropped client is replaced", async () => {
+    const firstClient = new HermesGatewayClient();
+    const firstEvents: HermesGatewayEvent[] = [];
+    firstClient.onEvent((event) => firstEvents.push(event));
+    const firstConnect = firstClient.connect("ws://gateway");
+    FakeWebSocket.instances[0].open();
+    await firstConnect;
+    FakeWebSocket.instances[0].message({
+      method: "event",
+      params: { type: "message.delta", payload: { delta: "A" } },
+    });
+    FakeWebSocket.instances[0].close();
+
+    const replacementClient = new HermesGatewayClient();
+    const replacementEvents: HermesGatewayEvent[] = [];
+    replacementClient.onEvent((event) => replacementEvents.push(event));
+    const replacementConnect = replacementClient.connect("ws://gateway");
+    FakeWebSocket.instances[1].open();
+    await replacementConnect;
+    FakeWebSocket.instances[1].message({
+      method: "event",
+      params: { type: "message.delta", payload: { delta: "B" } },
+    });
+
+    expect(replacementEvents[0]?.delivery?.connectionId).not.toBe(
+      firstEvents[0]?.delivery?.connectionId,
+    );
   });
 });

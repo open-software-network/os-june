@@ -145,10 +145,23 @@ export type BackgroundHermesActivity = {
   lastEventAt: string;
 };
 
+/** Delivery metadata used to deduplicate one gateway dispatch without treating
+ * equal text as a duplicate. Source ids and text offsets survive reconnects;
+ * connection ids and sequences are local to one gateway client connection. */
+export type HermesEventDelivery = {
+  connectionId?: number;
+  sequence?: number;
+  eventId?: string;
+  /** UTF-16 code-unit offset within the transcript message. */
+  textOffset?: number;
+};
+
 /** Common fields all normalized June events carry. */
 type JuneHermesEventBase = {
   /** ISO timestamp when June observed or minted the event. */
   receivedAt: string;
+  /** Stable source metadata when available, else local dispatch identity. */
+  delivery?: HermesEventDelivery;
 };
 
 /**
