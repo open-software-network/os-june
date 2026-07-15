@@ -29,4 +29,10 @@ CREATE TABLE share_invites (
 );
 
 CREATE INDEX idx_share_invites_share ON share_invites (share_id);
-CREATE INDEX idx_share_invites_email ON share_invites (email) WHERE revoked_at IS NULL;
+-- At most one active (non-revoked) invite per email per share. The viewer
+-- authorizes by any active invite matching a verified email, so a duplicate
+-- active row would survive revoking the first. Enforced in the database so it
+-- holds under concurrent add-invite requests regardless of isolation level;
+-- revoked rows are excluded so re-inviting after a revoke is allowed.
+CREATE UNIQUE INDEX idx_share_invites_active_email
+    ON share_invites (share_id, email) WHERE revoked_at IS NULL;

@@ -6,6 +6,7 @@ import { beginMaxGrantWait, clearMaxGrantWait, markMaxGrantWaitSlow } from "../l
 import type { AccountStatus, DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
 import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
+import { AGENT_SOUNDS_ENABLED_KEY } from "../lib/agent-sound-settings";
 import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { TELEMETRY_INFO_URL } from "../lib/p3a";
@@ -3302,6 +3303,199 @@ describe("AppSettings", () => {
     ).toBeInTheDocument();
   });
 
+  it("asks for a billing choice when a Venice key is saved while Auto is selected", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+      },
+    });
+    mocks.setVeniceApiKey.mockResolvedValue({
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      veniceApiKeyConfigured: true,
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    // The save lands, but Auto would keep billing June credits, so the
+    // explicit choice dialog appears with the leading suggested Venice model.
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use GLM 5.2" }));
+    await waitFor(() =>
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "zai-org-glm-5-2"),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the billing choice dialog open when the model switch fails", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+      },
+    });
+    mocks.setVeniceApiKey.mockResolvedValue({
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      veniceApiKeyConfigured: true,
+    });
+    mocks.setVeniceModel.mockRejectedValueOnce(new Error("switch failed"));
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use GLM 5.2" }));
+
+    // The failed save must not read as a completed switch: the dialog stays
+    // open for a retry or an explicit Keep Auto.
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use GLM 5.2" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument(),
+    );
+    expect(mocks.setVeniceModel).toHaveBeenLastCalledWith("generation", "zai-org-glm-5-2");
+  });
+
+  it("keeps Auto when the billing choice dialog is declined", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+      },
+    });
+    mocks.setVeniceApiKey.mockResolvedValue({
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      veniceApiKeyConfigured: true,
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Keep Auto" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument(),
+    );
+    expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+  });
+
+  it("does not ask for a billing choice when a concrete model is selected", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Key saved.")).toBeInTheDocument();
+    expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument();
+  });
+
+  it("shows the Auto billing note in the model picker while a Venice key is saved", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        veniceApiKeyConfigured: true,
+      },
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(await screen.findByRole("button", { name: "Change text model" }));
+
+    expect(
+      await screen.findByText(
+        "Auto is billed to June credits and does not use your Venice API key.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("defaults the model picker to curated suggestions", async () => {
     const user = userEvent.setup();
     render(
@@ -3778,6 +3972,35 @@ describe("AppSettings", () => {
     await user.click(hudSwitch);
     expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
     expect(mocks.agentHudShow).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles agent sounds from Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    const soundsSwitch = await screen.findByRole("switch", {
+      name: "Play agent sounds",
+    });
+
+    expect(soundsSwitch).toHaveAttribute("aria-checked", "true");
+
+    await user.click(soundsSwitch);
+    expect(localStorage.getItem(AGENT_SOUNDS_ENABLED_KEY)).toBe("false");
+
+    await user.click(soundsSwitch);
+    expect(localStorage.getItem(AGENT_SOUNDS_ENABLED_KEY)).toBe("true");
   });
 
   it("edits June's character from Agent settings", async () => {

@@ -13,6 +13,7 @@ pub const ERR_INTERNAL: i32 = 5000;
 pub const ERR_UPSTREAM: i32 = 5001;
 pub const ERR_METERING: i32 = 5031;
 pub const ERR_SHARING_UNAVAILABLE: i32 = 5011;
+pub const ERR_SERVICE_OVERLOADED: i32 = 5032;
 pub const ERR_TIMEOUT: i32 = 5041;
 pub(crate) const TRANSIENT_RETRY_AFTER_SECS: u64 = 2;
 

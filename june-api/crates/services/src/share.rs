@@ -6,14 +6,13 @@
 
 use crate::error::ServiceError;
 use june_domain::{
-    NewShare, NewShareInvite, ShareInviteRecord, ShareKind, ShareRecord, ShareStore,
-    ShareStoreError, ShareViewRecord, UserId, ViewerIdentity,
+    MAX_INVITES_PER_SHARE, NewShare, NewShareInvite, ShareInviteRecord, ShareKind, ShareRecord,
+    ShareStore, ShareStoreError, ShareViewRecord, UserId, ViewRequest, ViewerIdentity,
 };
 use std::sync::Arc;
 
 /// 20 random bytes, base64url: 160 bits of entropy, non-sequential.
 const ID_RANDOM_BYTES: usize = 20;
-const MAX_INVITES_PER_SHARE: usize = 50;
 const MAX_EMAIL_CHARS: usize = 254;
 /// AES-256-GCM of a 32-byte content key: 32 + 16-byte tag.
 const ENVELOPE_BYTES: usize = 48;
@@ -159,21 +158,33 @@ impl ShareService {
     /// Recipient (or owner) fetch. The caller's verified emails are resolved
     /// through OS Accounts with the caller's own token; the store matches,
     /// binds, and stamps access.
+    // Caller identity (viewer + token) and target (share + invite) are all
+    // independent inputs; bundling them would only obscure the call site.
+    #[allow(clippy::too_many_arguments)]
     pub async fn view(
         &self,
         viewer: &UserId,
         access_token: &str,
         share_id: &str,
+        invite_id: Option<&str>,
     ) -> Result<ShareViewRecord, ServiceError> {
         let emails = self.identity.verified_emails(access_token).await?;
-        Ok(self.store.fetch_view(share_id, &viewer.0, &emails).await?)
+        Ok(self
+            .store
+            .fetch_view(ViewRequest {
+                share_id,
+                viewer_user_id: &viewer.0,
+                viewer_emails: &emails,
+                invite_id,
+            })
+            .await?)
     }
 }
 
 fn normalized_invites(
     invites: Vec<InviteInput>,
 ) -> Result<Vec<(String, NewShareInvite)>, ServiceError> {
-    invites
+    let normalized = invites
         .into_iter()
         .map(|invite| {
             let email = invite.email.trim().to_ascii_lowercase();
@@ -197,7 +208,19 @@ fn normalized_invites(
                 },
             ))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    // Reject duplicate emails within one request: two active invites for the
+    // same address let revoking one leave the other open. (Collisions with
+    // existing invites are caught atomically by the store.)
+    let mut seen = std::collections::HashSet::new();
+    for (_, invite) in &normalized {
+        if !seen.insert(invite.email.as_str()) {
+            return Err(ServiceError::InvalidInput {
+                reason: "an email appears more than once in the invite list".to_string(),
+            });
+        }
+    }
+    Ok(normalized)
 }
 
 fn validate_iv(iv: &[u8]) -> Result<(), ServiceError> {
@@ -229,6 +252,12 @@ impl From<ShareStoreError> for ServiceError {
     fn from(error: ShareStoreError) -> Self {
         match error {
             ShareStoreError::NotFound => Self::ShareNotFound,
+            ShareStoreError::InviteLimitExceeded => Self::InvalidInput {
+                reason: format!("a share can have at most {MAX_INVITES_PER_SHARE} invites"),
+            },
+            ShareStoreError::DuplicateActiveInvite => Self::InvalidInput {
+                reason: "that email already has an active invite on this share".to_string(),
+            },
             ShareStoreError::Unavailable { reason } => {
                 tracing::error!(%reason, "share store unavailable");
                 Self::ShareUnavailable
@@ -246,7 +275,7 @@ mod tests {
     use async_trait::async_trait;
     use june_domain::{
         DomainError, NewShare, NewShareInvite, ShareInviteRecord, ShareKind, ShareRecord,
-        ShareStore, ShareStoreError, ShareViewRecord, UserId, ViewerIdentity,
+        ShareStore, ShareStoreError, ShareViewRecord, UserId, ViewRequest, ViewerIdentity,
     };
     use pretty_assertions::assert_eq;
     use std::sync::{Arc, Mutex};
@@ -295,9 +324,7 @@ mod tests {
         }
         async fn fetch_view(
             &self,
-            _share_id: &str,
-            _viewer_user_id: &str,
-            _viewer_emails: &[String],
+            _request: ViewRequest<'_>,
         ) -> Result<ShareViewRecord, ShareStoreError> {
             Err(ShareStoreError::NotFound)
         }

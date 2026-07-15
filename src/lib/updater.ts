@@ -1,5 +1,4 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { relaunch } from "@tauri-apps/plugin-process";
 
 /** The two release streams. Wire form matches the Rust `ReleaseChannel`. */
 export type ReleaseChannel = "stable" | "rc";
@@ -78,6 +77,14 @@ function installStagedUpdate(onEvent?: (event: DownloadEvent) => void): Promise<
   return invoke("install_update", { onEvent: channel });
 }
 
+/**
+ * Relaunches June to finish a staged update. Routes through the Rust
+ * `relaunch_for_update` command instead of the plugin `relaunch()` so June's
+ * child processes (the dictation helper, the Hermes runtime) are torn down
+ * before the process restarts. A bare relaunch can skip that teardown and orphan
+ * the helper, which then blocks the new instance from reading permissions
+ * (JUN-338).
+ */
 export function relaunchJune() {
-  return relaunch();
+  return invoke("relaunch_for_update");
 }

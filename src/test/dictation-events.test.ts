@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDictationHelperEvent } from "../lib/dictation-events";
+import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
 
 describe("parseDictationHelperEvent", () => {
   it("parses valid JSON helper events", () => {
@@ -38,5 +38,34 @@ describe("parseDictationHelperEvent", () => {
     expect(parseDictationHelperEvent("{")).toBeUndefined();
     expect(parseDictationHelperEvent({ payload: {} })).toBeUndefined();
     expect(parseDictationHelperEvent({ type: "" })).toBeUndefined();
+  });
+});
+
+describe("dictation workflow activity", () => {
+  it.each([
+    "recording_ready",
+    "listening_started",
+    "audio_level",
+    "finalizing_transcript",
+    "paste_target",
+  ])("treats %s as active", (eventType) => {
+    expect(nextDictationWorkflowActive(false, eventType)).toBe(true);
+  });
+
+  it.each([
+    "recording_discarded",
+    "final_transcript",
+    "paste_completed",
+    "agent_session_prompt",
+    "error",
+    "helper_unavailable",
+    "shutdown_ack",
+  ])("treats %s as finished", (eventType) => {
+    expect(nextDictationWorkflowActive(true, eventType)).toBe(false);
+  });
+
+  it("preserves state for unrelated helper events", () => {
+    expect(nextDictationWorkflowActive(true, "permission_status")).toBe(true);
+    expect(nextDictationWorkflowActive(false, "dictation_diagnostics")).toBe(false);
   });
 });

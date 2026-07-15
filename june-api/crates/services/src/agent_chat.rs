@@ -11,7 +11,7 @@ use crate::{
 use june_domain::{
     ActionSlug, AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStreamOutcome,
     Credits, DomainError, ModelId, ModelKind, OsAccountsClient, ProviderCredentials, Receipt,
-    UserId,
+    UpstreamRouteMetadata, UserId,
 };
 use std::sync::Arc;
 
@@ -146,6 +146,7 @@ impl AgentChatService {
             return Ok(AgentChatStreamOutput {
                 content_type: stream.content_type,
                 provider: stream.provider,
+                route: stream.route,
                 chunks: stream.chunks,
             });
         }
@@ -195,6 +196,7 @@ impl AgentChatService {
         Ok(AgentChatStreamOutput {
             content_type: stream.content_type,
             provider: stream.provider,
+            route: stream.route,
             chunks: stream.chunks,
         })
     }
@@ -217,6 +219,7 @@ pub struct AgentChatOutput {
 pub struct AgentChatStreamOutput {
     pub content_type: String,
     pub provider: String,
+    pub route: UpstreamRouteMetadata,
     pub chunks: tokio::sync::mpsc::UnboundedReceiver<Result<bytes::Bytes, DomainError>>,
 }
 

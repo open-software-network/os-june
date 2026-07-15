@@ -170,6 +170,12 @@ import {
   type AgentSessionStatusKind,
 } from "../../lib/agent-events";
 import {
+  cancelAgentRunMonitoring,
+  markAgentRunSucceeded,
+  releaseAgentRunSettlement,
+  startAgentRunMonitoring,
+} from "../../lib/agent-run-monitor";
+import {
   HermesGatewayClient,
   isSessionBusyError,
   type HermesGatewayEvent,
@@ -229,6 +235,7 @@ import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
 import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
 import { HermesTracePanel } from "./HermesTracePanel";
 import { MarkdownContent, highlightText } from "./MarkdownContent";
+import { SmoothedStreamingMarkdown } from "./SmoothedStreamingMarkdown";
 import {
   ComposerModelPicker,
   PrivacyModeBadge,
@@ -2649,6 +2656,10 @@ export function AgentWorkspace({
   // shows as a name-only stub so the pill never goes blank while configured.
   const [defaultGenerationModelId, setDefaultGenerationModelId] = useState("");
   const [generationCostQuality, setGenerationCostQuality] = useState<number | undefined>();
+  // Mirrors the saved Venice API key's presence so the model picker's Auto
+  // section can show its billing note (Auto meters June credits, never the
+  // key). Refreshed with every provider-settings read.
+  const [veniceApiKeyConfigured, setVeniceApiKeyConfigured] = useState(false);
   // Preference saves from the picker's drill-in: writes are chained so they
   // persist in click order, and versioned so only the newest call's outcome
   // touches the UI (mirrors Settings' saveCostQuality discipline). Rollback
@@ -3042,6 +3053,7 @@ export function AgentWorkspace({
   }
 
   function recordSessionErrorActivity(sessionId: string, message: string) {
+    cancelAgentRunSettlement(sessionId);
     hermesActivityStore.record(
       { kind: "error", sessionId, message, receivedAt: new Date().toISOString() },
       hermesModeFor(sessionId),
@@ -3779,6 +3791,7 @@ export function AgentWorkspace({
       confirmedCostQualityRef.current = settings.costQuality;
       generationCostQualityRef.current = settings.costQuality;
       setGenerationCostQuality(settings.costQuality);
+      setVeniceApiKeyConfigured(settings.veniceApiKeyConfigured);
       return selectedModelId;
     },
     [],
@@ -3790,10 +3803,17 @@ export function AgentWorkspace({
   const loadGenerationModel = useCallback(async () => {
     const requestId = ++generationModelRequestSequence.current;
     try {
-      const [settingsResponse, modelsResponse] = await Promise.all([
-        providerModelSettings(),
-        listVeniceModels("generation"),
-      ]);
+      const settingsPromise = providerModelSettings();
+      const modelsPromise = listVeniceModels("generation");
+      // Surfaced before the catalog await: the settings read is local IPC, so
+      // key-presence state (the Auto billing note) refreshes even when the
+      // remote catalog fetch fails.
+      modelsPromise.catch(() => {});
+      const settingsResponse = await settingsPromise;
+      if (requestId === generationModelRequestSequence.current) {
+        setVeniceApiKeyConfigured(settingsResponse.settings.veniceApiKeyConfigured);
+      }
+      const modelsResponse = await modelsPromise;
       const selectedModelId = generationSelectionId(
         settingsResponse.settings,
         modelsResponse.selectedModel,
@@ -4425,6 +4445,12 @@ export function AgentWorkspace({
         for (const entry of entries) entry.dispatchReservation?.cancel();
       }
       pendingSteerBySessionIdRef.current = {};
+      // Settlement monitoring belongs to the app lifetime, not this view.
+      // Release runs with no queued local continuation before the workspace
+      // gateway closes so they can still alert from Notes or Settings.
+      for (const sessionId of workingSessionIdsRef.current) {
+        if (!hasAutomaticContinuation(sessionId)) releaseAgentRunSettlement(sessionId);
+      }
       const consentRequest = imageSafeModeConsentRequestRef.current;
       imageSafeModeConsentRequestRef.current = null;
       consentRequest?.resolve({ action: "dismiss" });
@@ -6755,6 +6781,11 @@ export function AgentWorkspace({
         pendingActionStore.resolveSession(storedSessionId);
       }
       if (status) {
+        if (status === "completed") {
+          markAgentRunSucceeded(storedSessionId);
+        } else if (status === "failed" || status === "cancelled") {
+          cancelAgentRunSettlement(storedSessionId);
+        }
         dispatchAgentSessionStatus({
           sessionId: storedSessionId,
           title: sessionDisplayTitle,
@@ -7294,6 +7325,13 @@ export function AgentWorkspace({
           session_id: runtimeSessionId,
           text: promptSubmitContent,
         });
+        startAgentRunMonitoring({
+          storedSessionId,
+          runtimeSessionId,
+          title: sessionDisplayTitle,
+          fullMode: sessionUnrestricted(storedSessionId),
+          settlementHeld: true,
+        });
         // JUN-171 (Phase A): the held fast-path images have now ridden along
         // with a successful follow-up prompt, either as structured image bytes or
         // in the non-vision path fallback. Clear only after prompt.submit accepts
@@ -7578,6 +7616,24 @@ export function AgentWorkspace({
     );
   }
 
+  function cancelAgentRunSettlement(storedSessionId: string) {
+    cancelAgentRunMonitoring(storedSessionId);
+  }
+
+  function hasAutomaticContinuation(storedSessionId: string) {
+    if (pendingAttachmentPreparationsRef.current[storedSessionId]?.size) return true;
+    if (pendingSteerBySessionIdRef.current[storedSessionId]?.length) return true;
+    // A failed row is still unresolved continuation work: announcing "ready"
+    // after its delivery error would contradict the needs-input alert and the
+    // visible Retry action.
+    return (queuedAttachmentFollowUpsRef.current[storedSessionId] ?? []).length > 0;
+  }
+
+  function watchCompletedAgentRunSettle(storedSessionId: string) {
+    if (hasAutomaticContinuation(storedSessionId)) return;
+    releaseAgentRunSettlement(storedSessionId);
+  }
+
   async function reconcileWorkingSessionsAgainstRuntime() {
     const working = Array.from(workingSessionIdsRef.current);
     const misses = workingReconcileMissesRef.current;
@@ -7688,6 +7744,7 @@ export function AgentWorkspace({
         );
         const activityCounts = clearSessionActivity(sessionId);
         if (wasActive) {
+          markAgentRunSucceeded(sessionId);
           dispatchAgentSessionStatus({
             sessionId,
             title:
@@ -8353,6 +8410,7 @@ export function AgentWorkspace({
       ? undefined
       : hermesSessionItemsRef.current.find((candidate) => candidate.id === queueKey);
     if (!isNewSessionRecovery && !session) {
+      const summary = "This session is no longer available.";
       item.dispatchReservation?.cancel();
       updateQueuedAttachmentFollowUps(queueKey, (items) =>
         items.map((candidate) =>
@@ -8361,11 +8419,18 @@ export function AgentWorkspace({
                 ...candidate,
                 dispatchReservation: undefined,
                 status: "failed",
-                error: "This session is no longer available.",
+                error: summary,
               }
             : candidate,
         ),
       );
+      cancelAgentRunSettlement(queueKey);
+      dispatchAgentSessionStatus({
+        sessionId: queueKey,
+        title: "Agent session",
+        status: "failed",
+        summary,
+      });
       return false;
     }
     const dispatchReservation =
@@ -8430,12 +8495,15 @@ export function AgentWorkspace({
       return;
     }
     continuingSources.set(storedSessionId, source);
-    const finishContinuation = () => {
+    const finishContinuation = (watchForSettlement: boolean) => {
       continuingSources.delete(storedSessionId);
       const pendingSource = pendingCompletedAgentRunSourcesRef.current.get(storedSessionId);
-      if (!pendingSource) return;
-      pendingCompletedAgentRunSourcesRef.current.delete(storedSessionId);
-      continueAfterCompletedAgentRun(storedSessionId, pendingSource);
+      if (pendingSource) {
+        pendingCompletedAgentRunSourcesRef.current.delete(storedSessionId);
+        continueAfterCompletedAgentRun(storedSessionId, pendingSource);
+        return;
+      }
+      if (watchForSettlement) watchCompletedAgentRunSettle(storedSessionId);
     };
     const submittedSteers = pendingSteerBySessionIdRef.current[storedSessionId] ?? [];
     const unconsumedSteers = submittedSteers.filter(
@@ -8479,7 +8547,7 @@ export function AgentWorkspace({
         earliestPendingPreparationOrder < queueHeadOrder
       ) {
         completedAgentRunAwaitingAttachmentPreparationRef.current.add(storedSessionId);
-        finishContinuation();
+        finishContinuation(false);
         return;
       }
       if (steerFollowUps.length) {
@@ -8490,28 +8558,30 @@ export function AgentWorkspace({
           for (const followUp of steerFollowUps) {
             removeQueuedAttachmentFollowUp(storedSessionId, followUp.id);
           }
-          finishContinuation();
+          finishContinuation(false);
           return;
         }
         // Each Send captured its own model and FIFO position. Dispatch the
         // merged queue head; later completions advance one agent run at a time.
+        let followUpStarted = false;
         try {
-          await deliverQueuedAttachmentFollowUp(storedSessionId, undefined, {
+          followUpStarted = await deliverQueuedAttachmentFollowUp(storedSessionId, undefined, {
             afterCompletion: true,
           });
         } catch (err) {
           setError(messageFromError(err), { sessionId: storedSessionId });
         } finally {
-          finishContinuation();
+          finishContinuation(!followUpStarted);
         }
         return;
       }
+      let followUpStarted = false;
       try {
-        await deliverQueuedAttachmentFollowUp(storedSessionId, undefined, {
+        followUpStarted = await deliverQueuedAttachmentFollowUp(storedSessionId, undefined, {
           afterCompletion: true,
         });
       } finally {
-        finishContinuation();
+        finishContinuation(!followUpStarted);
       }
     }, 0);
   }
@@ -9004,6 +9074,7 @@ export function AgentWorkspace({
   // the RPC fails (gateway drop, runtime session already gone).
   async function stopHermesSession(sessionId: string) {
     if (stoppingSessionIds.has(sessionId)) return;
+    cancelAgentRunSettlement(sessionId);
     setStoppingSessionIds((current) => new Set(current).add(sessionId));
 
     // Stop the UI FIRST, synchronously, before the interrupt RPC. Stopping
@@ -9217,6 +9288,7 @@ export function AgentWorkspace({
   // clears messages, pending sends, activity-store state, and live events so a
   // running session doesn't linger as phantom "working" work.
   function removeHermesSessionLocally(sessionId: string, selectNext = true) {
+    cancelAgentRunSettlement(sessionId);
     setHermesSessionItems((current) => {
       const next = current.filter((session) => session.id !== sessionId);
       setSelectedHermesSessionId((selected) => {
@@ -9688,6 +9760,11 @@ export function AgentWorkspace({
     selectedHermesSessionId ? hermesTurns : taskTurns,
     chatArtifacts,
   );
+  const surfacedConversationArtifacts = surfacedArtifactsFromTurns(
+    selectedHermesSessionId ? hermesTurns : taskTurns,
+    turnArtifacts,
+    chatArtifacts,
+  );
   const activeThinkingKey = selectedHermesSessionId
     ? `session:${selectedHermesSessionId}:active`
     : selectedTask
@@ -9704,7 +9781,7 @@ export function AgentWorkspace({
   }, []);
   // Every file the conversation has surfaced, in turn order — the session
   // bar's files button keeps them reachable after their cards scroll away.
-  const surfacedArtifacts = [...turnArtifacts.values()].flat().concat(devArtifacts);
+  const surfacedArtifacts = surfacedConversationArtifacts.concat(devArtifacts);
   const downloadPathBackedArtifact = (path: string, displayName: string) => {
     const requestSessionId = selectedHermesSessionIdRef.current;
     void downloadHermesBridgeFile(path)
@@ -9813,6 +9890,14 @@ export function AgentWorkspace({
   const transcriptProgrammaticScrollRef = useRef(false);
   const transcriptProgrammaticScrollTimeoutRef = useRef<number | undefined>();
   const transcriptLastScrollTopRef = useRef(0);
+
+  const pinTranscriptAfterVisibleReveal = useCallback(() => {
+    if (!transcriptShouldStickToBottomRef.current) return;
+    const scroller = agentScrollRef.current;
+    if (!scroller || typeof scroller.scrollTo !== "function") return;
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "auto" });
+    transcriptLastScrollTopRef.current = scroller.scrollTop;
+  }, []);
 
   // History for the selected conversation has landed: a session gets an entry
   // in hermesSessionMessages (even an empty one) once its fetch resolves;
@@ -10584,6 +10669,7 @@ export function AgentWorkspace({
             model={generationModel}
             options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
             costQuality={activeGenerationCostQuality}
+            veniceApiKeyConfigured={veniceApiKeyConfigured}
             search={modelSearch}
             popoverRef={composerModelPopoverRef}
             searchRef={composerModelSearchRef}
@@ -10790,6 +10876,7 @@ export function AgentWorkspace({
             )
           }
           branchingMessageId={branchingMessageId}
+          onVisibleMarkdownChange={pinTranscriptAfterVisibleReveal}
         />
       ))}
       <AgentThinking
@@ -10855,6 +10942,7 @@ export function AgentWorkspace({
             onTopUp={handleTopUp}
             topUpLabel={topUpLabel}
             fundingTier={fundingTier}
+            onVisibleMarkdownChange={pinTranscriptAfterVisibleReveal}
             onApproval={(part, choice) => {
               const sessionId = part.sessionId ?? selectedTask.hermesSessionId;
               if (!sessionId) return;
@@ -12706,6 +12794,7 @@ function AgentChatTurnRow({
   onTopUp,
   topUpLabel,
   fundingTier,
+  onVisibleMarkdownChange,
   onBranch,
   branchingMessageId,
   turn,
@@ -12741,6 +12830,7 @@ function AgentChatTurnRow({
   onTopUp?: () => void;
   topUpLabel?: string;
   fundingTier?: FundingTier;
+  onVisibleMarkdownChange?: (visibleMarkdown: string) => void;
   /** Fork the conversation from this turn into a new session (feature 07).
    * Optional: only Hermes-session rows pass it — task rows and the dev gallery
    * omit it, so the action is absent there. */
@@ -12971,13 +13061,7 @@ function AgentChatTurnRow({
             onOpenChange={(open) => onThinkingOpenChange(thinkingKey, open)}
           />
         ) : null}
-        {visibleToolParts.length > 0 ? (
-          <div className="agent-tool-stack">
-            {visibleToolParts.map((tool) => (
-              <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
-            ))}
-          </div>
-        ) : null}
+        {visibleToolParts.length > 0 ? <AgentToolStack parts={visibleToolParts} /> : null}
         {runningMediaTools.map((tool) =>
           tool.media === "image" ? (
             <AgentGeneratedImage
@@ -13008,9 +13092,11 @@ function AgentChatTurnRow({
                 {/* A part can retain raw MEDIA deltas while streaming or when
                     a terminal/error event arrives without message.complete.
                     Those transport references never belong in assistant prose. */}
-                <MarkdownContent
+                <SmoothedStreamingMarkdown
                   markdown={stripRenderedMediaReferences(part.text, part.status === "running")}
+                  running={part.status === "running"}
                   repairProse
+                  onVisibleMarkdownChange={onVisibleMarkdownChange}
                 />
               </div>
             )
@@ -13480,15 +13566,22 @@ const GENERATED_MEDIA_FIELD = {
   ripplePush: 5,
   rippleGlow: 0.4,
   ripplePaintMix: 0.95,
-  /* Mark sparkle: each logo dot glints on its own deterministic cadence -
-   * a twinkle of color and brightness only, never size. The exponent keeps
-   * the glint to a short flash out of each slow cycle, so only a few dots
-   * shine at any moment. */
-  sparkMinRadPerSec: 0.5,
-  sparkSpanRadPerSec: 0.7,
-  sparkExponent: 10,
-  sparkMix: 0.95,
-  sparkAlphaBoost: 0.32,
+  /* Mark sparkle: each logo dot glints on its own deterministic cadence - a
+   * brief flash of clay brightness, never size. The glint is clay-tinted
+   * (sparkMix) rather than gray so the mark reads as warm, but the tint only
+   * lands clean because --brand-bright is a *luminous* clay (fixed high
+   * lightness + healthy chroma); a duller white-mixed clay turns to mud over
+   * the light dot field. The pulse uses a near-instant attack and a longer
+   * release, matching the clean snap of a light catching an edge instead of a
+   * soft sine-wave throb. The staggered cadence keeps the mark alive without
+   * making every dot pulse at once; the press ripple keeps the fuller accent
+   * burst (ripplePaintMix) for a deliberate tap. */
+  sparkMinRadPerSec: 1.6,
+  sparkSpanRadPerSec: 1.2,
+  sparkAttackRatio: 0.025,
+  sparkDecayRatio: 0.1,
+  sparkMix: 0.72,
+  sparkAlphaBoost: 0.52,
   /* The dot field thins out over this many px at the canvas bottom, into the
    * card-surface gradient the CSS background lands on. */
   bottomFadePx: 56,
@@ -13638,11 +13731,20 @@ function GeneratedMediaDotField() {
           dx += (rx / dist) * F.ripplePush * band;
           dy += (ry / dist) * F.ripplePush * band;
         }
-        // The glint: a brief accent flash out of each logo dot's slow cycle.
+        // The glint: a quick accent strike with a slightly longer fade, out of
+        // each logo dot's staggered cycle.
         let spark = 0;
         if (animated && dot.mark > 0) {
-          const wave = 0.5 + 0.5 * Math.sin(seconds * dot.sparkOmega + dot.sparkPhase);
-          spark = wave ** F.sparkExponent * dot.mark;
+          const cycle =
+            ((seconds * dot.sparkOmega + dot.sparkPhase) % (Math.PI * 2)) / (Math.PI * 2);
+          if (cycle < F.sparkAttackRatio) {
+            const progress = cycle / F.sparkAttackRatio;
+            spark = progress * progress * (3 - 2 * progress);
+          } else if (cycle < F.sparkAttackRatio + F.sparkDecayRatio) {
+            const progress = (cycle - F.sparkAttackRatio) / F.sparkDecayRatio;
+            spark = 1 - progress * progress * (3 - 2 * progress);
+          }
+          spark *= dot.mark;
         }
         // Partial glyph coverage blends the dot between field and mark, so
         // the mark's rounded corners and bevels stay soft on the lattice.
@@ -15140,6 +15242,60 @@ function AgentToolPartRow({ part }: { part: Extract<AgentChatPart, { type: "tool
   );
 }
 
+// Long tool runs stop growing the transcript a row per call: past this many
+// rows, settled (complete/failed) calls fold behind a single count line while
+// running calls stay visible below it, so what June is doing right now is
+// never hidden and failures are still called out on the fold itself.
+const AGENT_TOOL_STACK_FOLD_THRESHOLD = 3;
+
+function AgentToolStack({ parts }: { parts: Extract<AgentChatPart, { type: "tool" }>[] }) {
+  const settled = parts.filter((part) => part.status !== "running");
+  const folded = parts.length > AGENT_TOOL_STACK_FOLD_THRESHOLD && settled.length >= 2;
+  if (!folded) {
+    return (
+      <div className="agent-tool-stack">
+        {parts.map((tool) => (
+          <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
+        ))}
+      </div>
+    );
+  }
+  const running = parts.filter((part) => part.status === "running");
+  const failedCount = settled.filter((part) => part.status === "failed").length;
+  return (
+    <div className="agent-tool-stack">
+      {/* Uncontrolled like the per-row disclosures: the browser owns the open
+       * state, so rows settling into the fold don't snap it shut. */}
+      <details
+        className="agent-tool-disclosure agent-tool-fold"
+        data-status={failedCount > 0 ? "failed" : "complete"}
+      >
+        <summary>
+          <span className="agent-tool-icon">
+            <IconConsoleSimple size={15} className="agent-tool-icon-glyph" />
+            <span className="agent-tool-icon-expand">+</span>
+            <span className="agent-tool-icon-minimize">−</span>
+          </span>
+          <span className="agent-tool-name">{settled.length} actions</span>
+          {failedCount > 0 ? (
+            <span className="agent-tool-live-status" data-status="failed">
+              {failedCount} failed
+            </span>
+          ) : null}
+        </summary>
+        <div className="agent-tool-fold-body">
+          {settled.map((tool) => (
+            <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
+          ))}
+        </div>
+      </details>
+      {running.map((tool) => (
+        <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
+      ))}
+    </div>
+  );
+}
+
 function AgentArtifactList({
   artifacts,
   onDownload,
@@ -15881,6 +16037,72 @@ function assignArtifactsToTurns(
   return byTurn;
 }
 
+// The inline media renderer owns generated-image cards, so
+// assignArtifactsToTurns deliberately excludes their workspace files. The
+// Files panel still needs those path-backed images: collect them beside the
+// ordinary per-turn artifacts, preserving conversation order and listing each
+// file once.
+function surfacedArtifactsFromTurns(
+  turns: AgentChatTurn[],
+  artifactsByTurn: Map<string, AgentArtifact[]>,
+  availableArtifacts: AgentArtifact[],
+): AgentArtifact[] {
+  const surfaced: AgentArtifact[] = [];
+  const surfacedPaths = new Set<string>();
+  const surfacedImageAliases = new Set<string>();
+
+  function addArtifact(artifact: AgentArtifact) {
+    if (surfacedPaths.has(artifact.path)) return;
+    surfacedPaths.add(artifact.path);
+    surfaced.push(artifact);
+  }
+
+  for (const turn of turns) {
+    for (const artifact of artifactsByTurn.get(turn.id) ?? []) addArtifact(artifact);
+    for (const part of turn.parts) {
+      if (part.type !== "image" || part.status !== "complete") continue;
+      const imagePath = part.path?.trim();
+      if (!imagePath) continue;
+      const aliases = generatedImagePathAliases(imagePath, part.name);
+      if (aliases.some((alias) => surfacedImageAliases.has(alias))) continue;
+      const matchingArtifacts = availableArtifacts.filter(
+        (artifact) => artifact.path === imagePath,
+      );
+      const matchedArtifact = matchingArtifacts.length === 1 ? matchingArtifacts[0] : undefined;
+      if (matchedArtifact) {
+        addArtifact(matchedArtifact);
+      } else {
+        addArtifact({
+          name: part.name?.trim() || "Generated image",
+          path: imagePath,
+          rootLabel: "Workspace",
+        });
+      }
+      for (const alias of aliases) surfacedImageAliases.add(alias);
+    }
+  }
+
+  return surfaced;
+}
+
+export function generatedImagePathAliases(path: string, displayName?: string): string[] {
+  const normalized = path.replaceAll("\\", "/");
+  const isBare = !normalized.includes("/");
+  if (!isBare && !/\/(?:image_cache|images)\//i.test(normalized)) return [];
+  const aliases = new Set<string>();
+  const pathName = normalized.split("/").at(-1);
+  if (pathName) aliases.add(normalizedGeneratedImageName(pathName));
+  const name = displayName?.trim();
+  if (name && (/\.june-source-[^.]+(?=\.[^.]+$)/i.test(name) || /^generated-image-/i.test(name))) {
+    aliases.add(normalizedGeneratedImageName(name));
+  }
+  return [...aliases];
+}
+
+function normalizedGeneratedImageName(name: string): string {
+  return name.replace(/\.june-source-[^.]+(?=\.[^.]+$)/i, "").toLowerCase();
+}
+
 function includesQuery(value: unknown, query: string) {
   return safeText(value).toLowerCase().includes(query);
 }
@@ -16074,7 +16296,15 @@ function agentStatusFromHermesEvent(event: JuneHermesEvent): AgentSessionStatusK
   if (event.kind === "error") return "failed";
   if (event.kind === "pending_action") return "waitingForUser";
   if (event.kind === "pending_action_resolution") return "running";
-  if (isTerminalHermesEvent(event)) return "completed";
+  if (event.kind === "transcript" && event.complete) {
+    return event.failed ? "failed" : "completed";
+  }
+  if (event.kind === "lifecycle" && event.flavor === "terminal") {
+    const status = event.status.toLowerCase();
+    if (/(?:cancel|stop|interrupt|abort)/.test(status)) return "cancelled";
+    if (/(?:fail|error|timeout)/.test(status)) return "failed";
+    return "completed";
+  }
   if (
     event.kind === "tool" ||
     event.kind === "reasoning" ||
@@ -16331,7 +16561,7 @@ function DownloadToastMessage({ action, fileName }: { action: string; fileName: 
   const label = `${action} ${fileName}`;
   return (
     <span className="june-download-toast-message" aria-label={label}>
-      <span>{action}</span>
+      <span className="june-download-toast-action">{action}</span>
       <span className="june-download-toast-file" title={fileName}>
         {fileName}
       </span>

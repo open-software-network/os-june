@@ -51,6 +51,16 @@ impl TokenVerifier for LocalDevTokenVerifier {
         }
         Err(AuthError::InvalidToken)
     }
+
+    async fn verify_scope(
+        &self,
+        access_jwt: &str,
+        _required_scope: &str,
+    ) -> Result<UserId, AuthError> {
+        // Local-dev tokens are configured out of band and intentionally stand
+        // in for the production desktop/viewer grants.
+        self.verify(access_jwt).await
+    }
 }
 
 #[derive(Clone, Debug, Default)]

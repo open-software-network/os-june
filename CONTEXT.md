@@ -38,14 +38,25 @@ _Avoid_: accounts, the identity service, the auth service.
 
 **Upstream provider**:
 A third-party AI service June API calls on the user's behalf — currently
-**OpenAI** (transcription only) and **Venice** (transcription, generation,
-agent chat, web). Service-managed upstream provider API keys live only in June
-API's environment, never in June. A user's explicit Venice BYOK credential is
-stored locally by June and forwarded only on eligible Venice requests. In code,
-each upstream sits behind a domain trait
+**OpenAI** (transcription only), **Venice** (transcription, generation, agent
+chat, web), and **Phala** (TEE fallback for routed text inference).
+Service-managed upstream provider API keys live only in June API's environment,
+never in June. A user's explicit Venice BYOK credential is stored locally by
+June and forwarded only on eligible Venice requests. In code, each direct
+integration sits behind a domain trait
 (`Transcriber`, `Generator`, `AgentChatCompleter`, ...) defined in
-`june-domain` and implemented in `june-providers`.
+`june-domain` and implemented in `june-providers`; routed text calls reuse the
+OpenAI-compatible Venice adapter and report the selected upstream as additive
+route metadata.
 _Avoid_: AI provider, model provider, vendor, "the LLM".
+
+**Model routing service**:
+The Open Software API (`os-api`) used for service-managed text inference. June
+API requests `preferred` private routing; the service selects Venice private
+zero-retention first and Phala TEE as fallback, without falling below
+zero-retention. Venice BYOK requests remain direct and do not use this routing
+policy.
+_Avoid_: gateway (reserved for Hermes), router (unqualified).
 
 ### Notes
 

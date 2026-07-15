@@ -95,25 +95,34 @@ import {
   updateNote,
   agentHudHide,
   agentHudShow,
+  agentOpenReady,
   type LiveTranscriptEventDto,
 } from "../lib/tauri";
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
+import { preloadAgentSounds } from "../lib/agent-sounds";
 import { isMacLikePlatform, isPrimaryShortcut } from "../lib/platform";
 import { mergeSourceReadiness } from "../lib/source-readiness";
 import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_GALLERY_EVENT,
   AGENT_OPEN_EVENT,
+  AGENT_RUN_SETTLED_EVENT,
   AGENT_SESSION_STATUS_EVENT,
   dispatchAgentSessionStatus,
   emitAgentSessionsChanged,
   type AgentGalleryDetail,
+  type AgentRunSettledDetail,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
-import { notifyAgentSessionStatus } from "../lib/agent-notifications";
+import {
+  notifyAgentRunSettled,
+  notifyAgentSessionStatus,
+  type AgentAttentionContext,
+} from "../lib/agent-notifications";
+import { getAgentSoundsEnabled } from "../lib/agent-sound-settings";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { errorCode, messageFromError } from "../lib/errors";
-import { parseDictationHelperEvent } from "../lib/dictation-events";
+import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
 import {
@@ -389,6 +398,8 @@ export function App() {
   // native menu state.
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
   const [activeAgentSessionId, setActiveAgentSessionId] = useState<string>();
+  const activeAgentSessionIdRef = useRef(activeAgentSessionId);
+  activeAgentSessionIdRef.current = activeAgentSessionId;
   const [activeAgentSessionSeed, setActiveAgentSessionSeed] = useState<HermesSessionInfo>();
   const setActiveAgentSession = useCallback((session: HermesSessionInfo | undefined) => {
     setActiveAgentSessionId(session?.id);
@@ -495,6 +506,7 @@ export function App() {
   // setRecordingNote so they can't drift.
   const [recordingNoteId, setRecordingNoteIdState] = useState<string | undefined>(undefined);
   const recordingStatusRef = useRef(state.recordingStatus);
+  const dictationWorkflowActiveRef = useRef(false);
   const recordingInactivityTrackerRef = useRef<RecordingInactivityTracker>({});
   const [recordingInactivityPrompt, setRecordingInactivityPrompt] =
     useState<RecordingInactivityPrompt | null>(null);
@@ -652,6 +664,21 @@ export function App() {
     void import("../lib/toast-demo").then(({ registerToastDemo }) => {
       if (cancelled) return;
       ({ dispose } = registerToastDemo());
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, []);
+  // Dev console driver (window.__juneSounds) for hearing the full recording
+  // and agent sound family without walking each production lifecycle.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/june-sounds-demo").then(({ registerJuneSoundsDemo }) => {
+      if (cancelled) return;
+      ({ dispose } = registerJuneSoundsDemo());
     });
     return () => {
       cancelled = true;
@@ -952,6 +979,8 @@ export function App() {
   // open note changes (below) so it never flies out onto a different or
   // brand-new note the user didn't open it on.
   const [noteChatOpen, setNoteChatOpen] = useState(false);
+  const noteChatOpenRef = useRef(noteChatOpen);
+  noteChatOpenRef.current = noteChatOpen;
   const [confirmDeleteNote, setConfirmDeleteNote] = useState(false);
   const [shareNoteOpen, setShareNoteOpen] = useState(false);
   useEffect(() => {
@@ -966,6 +995,8 @@ export function App() {
   const noteChat = useNoteChat(
     selectedNote ? { id: selectedNote.id, title: selectedNote.title } : null,
   );
+  const noteChatSessionIdRef = useRef(noteChat.storedSessionId);
+  noteChatSessionIdRef.current = noteChat.storedSessionId;
   async function handleExportNotePdf() {
     if (!selectedNote) return;
     await exportNoteAsPdf(selectedNote.title, {
@@ -1439,6 +1470,7 @@ export function App() {
 
   useEffect(() => {
     preloadRecordingSounds();
+    preloadAgentSounds();
   }, []);
 
   // The card scroller's thumb fades in with scroll/pointer activity and back
@@ -1625,26 +1657,89 @@ export function App() {
   }, [openSettings]);
 
   useEffect(() => {
+    let aborted = false;
+
     function openAgentWorkspace(session?: HermesSessionInfo) {
       setAgentOrigin(undefined);
       setActiveAgentSession(session);
       setActiveView("agent");
     }
 
-    function handleOpenEvent(event: Event) {
-      const detail = (event as CustomEvent<{ session?: HermesSessionInfo }>).detail;
-      openAgentWorkspace(detail?.session);
+    // Notification clicks carry only a session id (the session may have
+    // changed since the notification was posted). Resolve it against the
+    // known sessions, refreshing from the bridge when it is not cached. The
+    // workspace opens immediately for feedback and upgrades to the chat when
+    // the lookup lands; a session that no longer exists stays on the agent
+    // view rather than dropping the click on an unrelated one. The sequence
+    // counter keeps a slow lookup for an older click from overriding a newer
+    // one. A cold start can reach this before the Hermes bridge is up, so a
+    // failed listing (as opposed to a successful listing that lacks the id)
+    // retries while the bridge boots instead of eating the click.
+    const sessionLookupAttempts = 20;
+    const sessionLookupRetryMs = 1_000;
+    let openSequence = 0;
+    async function openAgentSessionById(sessionId: string) {
+      openSequence += 1;
+      const sequence = openSequence;
+      const cached = agentMenuBarSessionsRef.current.find((session) => session.id === sessionId);
+      if (cached) {
+        openAgentWorkspace(cached);
+        return;
+      }
+      openAgentWorkspace(undefined);
+      for (let attempt = 0; attempt < sessionLookupAttempts; attempt += 1) {
+        let sessions: HermesSessionInfo[];
+        try {
+          sessions = await listHermesSessions({});
+        } catch {
+          await new Promise((resolve) => window.setTimeout(resolve, sessionLookupRetryMs));
+          if (aborted || sequence !== openSequence) return;
+          continue;
+        }
+        if (aborted || sequence !== openSequence) return;
+        const session = sessions.find((candidate) => candidate.id === sessionId);
+        if (session) openAgentWorkspace(session);
+        return;
+      }
     }
 
-    let aborted = false;
+    function handleOpenPayload(payload?: { session?: HermesSessionInfo; sessionId?: string }) {
+      if (payload?.session) {
+        openAgentWorkspace(payload.session);
+        return;
+      }
+      if (payload?.sessionId) {
+        void openAgentSessionById(payload.sessionId);
+        // The backend keeps the clicked session queued in case the emit
+        // raced a webview reload; this event was received, so drain it.
+        void agentOpenReady().catch(() => {});
+        return;
+      }
+      openAgentWorkspace(undefined);
+    }
+
+    function handleOpenEvent(event: Event) {
+      handleOpenPayload(
+        (event as CustomEvent<{ session?: HermesSessionInfo; sessionId?: string }>).detail,
+      );
+    }
+
     let unlisten: (() => void) | undefined;
     window.addEventListener(AGENT_OPEN_EVENT, handleOpenEvent);
-    void listen<{ session?: HermesSessionInfo }>(AGENT_OPEN_EVENT, (event) => {
-      openAgentWorkspace(event.payload?.session);
+    void listen<{ session?: HermesSessionInfo; sessionId?: string }>(AGENT_OPEN_EVENT, (event) => {
+      handleOpenPayload(event.payload);
     }).then((cleanup) => {
       if (aborted) cleanup();
       else unlisten = cleanup;
     });
+
+    // Listeners are registered; drain a notification click that launched the
+    // app before the webview could hear the open event.
+    void agentOpenReady()
+      .then((sessionId) => {
+        if (!aborted && sessionId) void openAgentSessionById(sessionId);
+      })
+      .catch(() => {});
 
     return () => {
       aborted = true;
@@ -1654,14 +1749,57 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    async function attentionContextFor(sessionId?: string): Promise<AgentAttentionContext> {
+      let windowFocused = document.hasFocus();
+      try {
+        const appWindow = getCurrentWindow();
+        if (typeof appWindow.isFocused === "function") {
+          windowFocused = await appWindow.isFocused();
+        }
+      } catch {
+        // Browser previews do not expose a Tauri window; document focus is enough.
+      }
+      const away = document.visibilityState !== "visible" || !windowFocused;
+      const recordingState = recordingStatusRef.current?.state;
+      const recordingCaptureActive =
+        recordingState === "recording" ||
+        recordingState === "paused" ||
+        recordingState === "finalizing" ||
+        recordingState === "validating";
+      return {
+        away,
+        viewingSession:
+          !away &&
+          ((activeViewRef.current === "agent" &&
+            (!sessionId || sessionId === activeAgentSessionIdRef.current)) ||
+            (activeViewRef.current === "meetings" &&
+              noteChatOpenRef.current &&
+              !!sessionId &&
+              sessionId === noteChatSessionIdRef.current)),
+        captureActive: recordingCaptureActive || dictationWorkflowActiveRef.current,
+        soundsEnabled: getAgentSoundsEnabled(),
+      };
+    }
+
     const handleAgentStatus = (event: Event) => {
       const detail = (event as CustomEvent<AgentSessionStatusDetail>).detail;
+      if (!detail || (detail.status !== "waitingForUser" && detail.status !== "failed")) return;
+      void attentionContextFor(detail.sessionId).then((context) =>
+        notifyAgentSessionStatus(detail, context),
+      );
+    };
+    const handleAgentRunSettled = (event: Event) => {
+      const detail = (event as CustomEvent<AgentRunSettledDetail>).detail;
       if (!detail) return;
-      void notifyAgentSessionStatus(detail);
+      void attentionContextFor(detail.sessionId).then((context) =>
+        notifyAgentRunSettled(detail, context),
+      );
     };
     window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatus);
+    window.addEventListener(AGENT_RUN_SETTLED_EVENT, handleAgentRunSettled);
     return () => {
       window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatus);
+      window.removeEventListener(AGENT_RUN_SETTLED_EVENT, handleAgentRunSettled);
     };
   }, []);
 
@@ -1922,6 +2060,10 @@ export function App() {
     void listen<string>("dictation-event", (event) => {
       const helperEvent = parseDictationHelperEvent(event.payload);
       if (!helperEvent) return;
+      dictationWorkflowActiveRef.current = nextDictationWorkflowActive(
+        dictationWorkflowActiveRef.current,
+        helperEvent.type,
+      );
       if (helperEvent.type === "final_transcript") {
         // T3 of the referral delight nudge: a dictation landed (often while
         // June is backgrounded; the card waits to be found).
@@ -2001,14 +2143,11 @@ export function App() {
     if (!accessibilityBlocked) setAccessibilityBannerDismissed(false);
   }, [accessibilityBlocked]);
 
-  // The Rust readiness check probes mic via cpal, which doesn't reflect
-  // TCC denial. Trust the dictation helper's AVCaptureDevice status
-  // instead — that's the authoritative macOS API for the mic privacy
-  // entry.
   // recordNoticesMicOverride is the dev __recordNoticesDemo hook parking the
   // mic-blocked notice; it is always null in production (the state never leaves
   // its initial value), so real behavior is untouched.
-  const microphoneBlocked = recordNoticesMicOverride ?? isDeniedPermission(microphoneStatus);
+  const microphoneBlocked =
+    recordNoticesMicOverride ?? isMicrophoneRecordingBlocked(microphoneStatus, sourceReadiness);
 
   const refreshPermissionStatuses = useCallback(() => {
     void dictationHelperCommand({ type: "get_permission_status" }).catch(() => undefined);
@@ -2830,6 +2969,17 @@ export function App() {
         setRecordingNote(undefined);
         recordingStatusRef.current = undefined;
         dispatch({ type: "recordingStatusCleared" });
+        // A TCC denial resolved inside start_recording (the first-run prompt
+        // declined, or the grant revoked after the readiness probe): re-probe
+        // so the persistent mic-blocked notice appears with its Enable action,
+        // not just this transient error (JUN-319).
+        if (errorCode(err) === "microphone_permission_missing") {
+          void checkRecordingSourceReadiness(requestedSourceMode)
+            .then((readiness) =>
+              setSourceReadiness((previous) => mergeSourceReadiness(previous, readiness)),
+            )
+            .catch(() => undefined);
+        }
         setError(messageFromError(err));
         return false;
       } finally {
@@ -4431,6 +4581,24 @@ function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
 
 function isDeniedPermission(state?: string) {
   return state === "denied" || state === "restricted";
+}
+
+// TCC grants are bundle-scoped, so the two microphone signals cover different
+// bundles: the dictation helper reports its own grant, while the Rust
+// readiness probe (AVCaptureDevice in recording_source_readiness) reads the
+// main app's — the one recording actually uses. Either reporting a denial
+// means Record would start a take with no audio, so either flips the
+// actionable mic-blocked notice before a doomed recording can start (JUN-319).
+// `not_determined` stays startable: the start path fires the main app's own
+// TCC prompt.
+export function isMicrophoneRecordingBlocked(
+  helperStatus: string | undefined,
+  readiness: RecordingSourceReadinessDto | undefined,
+) {
+  const readinessState = readiness?.sources.find(
+    (source) => source.source === "microphone",
+  )?.permissionState;
+  return isDeniedPermission(helperStatus) || isDeniedPermission(readinessState);
 }
 
 // Accessibility is a plain bool from the helper (AXIsProcessTrusted),

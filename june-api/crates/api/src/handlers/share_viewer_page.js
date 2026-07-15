@@ -252,6 +252,7 @@
       showStatus("This link is incomplete. Ask for a fresh share link.", true);
       return;
     }
+    var inviteId = fragment.slice(0, dot);
     var inviteKey;
     try {
       inviteKey = b64urlDecode(fragment.slice(dot + 1));
@@ -265,7 +266,14 @@
       return;
     }
     showStatus("Decrypting…", false);
-    var response = await fetch("/v1/shares/" + encodeURIComponent(shareId) + "/view", {
+    // Send the invite id (not the key) so the server returns this link's own
+    // envelope even if the same address holds more than one active invite.
+    var viewUrl =
+      "/v1/shares/" +
+      encodeURIComponent(shareId) +
+      "/view?invite=" +
+      encodeURIComponent(inviteId);
+    var response = await fetch(viewUrl, {
       headers: { authorization: "Bearer " + token },
     });
     if (response.status === 401) {

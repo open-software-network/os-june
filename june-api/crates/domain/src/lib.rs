@@ -73,6 +73,7 @@ pub struct GeneratedNote {
     pub content: String,
     pub title_suggestion: Option<String>,
     pub provider: String,
+    pub route: UpstreamRouteMetadata,
     pub usage: TokenUsage,
 }
 
@@ -81,6 +82,7 @@ pub struct GeneratedNote {
 pub struct CleanedText {
     pub text: String,
     pub provider: String,
+    pub route: UpstreamRouteMetadata,
     pub usage: TokenUsage,
 }
 
@@ -90,7 +92,16 @@ pub struct AgentChatCompletion {
     pub body: Vec<u8>,
     pub content_type: String,
     pub provider: String,
+    pub route: UpstreamRouteMetadata,
     pub usage: TokenUsage,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamRouteMetadata {
+    pub provider: Option<String>,
+    pub privacy_level: Option<String>,
+    pub endpoint: Option<String>,
 }
 
 /// A streaming agent chat completion: response headers have been received
@@ -104,6 +115,7 @@ pub struct AgentChatCompletion {
 pub struct AgentChatStream {
     pub content_type: String,
     pub provider: String,
+    pub route: UpstreamRouteMetadata,
     pub chunks: tokio::sync::mpsc::UnboundedReceiver<Result<bytes::Bytes, DomainError>>,
     pub outcome: tokio::sync::oneshot::Receiver<AgentChatStreamOutcome>,
 }
@@ -621,6 +633,15 @@ pub trait OsAccountsClient: Send + Sync {
 #[async_trait]
 pub trait TokenVerifier: Send + Sync {
     async fn verify(&self, access_jwt: &str) -> Result<UserId, AuthError>;
+
+    /// Verify the token and require one exact OS Accounts OAuth scope.
+    /// Security-sensitive callers must use this instead of trusting that any
+    /// audience-valid token carries the authority needed for their endpoint.
+    async fn verify_scope(
+        &self,
+        access_jwt: &str,
+        required_scope: &str,
+    ) -> Result<UserId, AuthError>;
 }
 
 #[async_trait]
@@ -714,6 +735,23 @@ pub struct ShareViewRecord {
     pub envelope: Option<(Vec<u8>, Vec<u8>)>,
 }
 
+/// Everything a store needs to resolve a recipient (or owner) view. See
+/// [`ShareStore::fetch_view`] for the matching and authorization rules.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewRequest<'a> {
+    pub share_id: &'a str,
+    pub viewer_user_id: &'a str,
+    /// Lowercased, verified-only emails on the caller's account.
+    pub viewer_emails: &'a [String],
+    /// Invite id from the link fragment (never the key). Pins selection to a
+    /// specific invite; `None` matches by binding-then-oldest.
+    pub invite_id: Option<&'a str>,
+}
+
+/// Hard ceiling on invites per share, enforced by every store so repeated
+/// `add_invites` calls cannot grow a share's ACL without bound.
+pub const MAX_INVITES_PER_SHARE: usize = 50;
+
 #[derive(Debug, Error)]
 pub enum ShareStoreError {
     /// Unknown share, unknown invite, revoked, or not owned by the caller.
@@ -721,6 +759,14 @@ pub enum ShareStoreError {
     /// apart from this signal (non-enumeration).
     #[error("share not found")]
     NotFound,
+    /// The share already carries `MAX_INVITES_PER_SHARE` invites.
+    #[error("invite limit exceeded")]
+    InviteLimitExceeded,
+    /// One of the invited emails already holds a non-revoked invite on the
+    /// share. The viewer authorizes by any active invite for a verified email,
+    /// so a second active row would survive revoking the first.
+    #[error("duplicate active invite")]
+    DuplicateActiveInvite,
     #[error("share store unavailable: {reason}")]
     Unavailable { reason: String },
 }
@@ -754,11 +800,17 @@ pub trait ShareStore: Send + Sync {
     /// verified-only) against non-revoked invites, binds the recipient user
     /// id on first access, stamps access, and returns the view. Owners are
     /// served their own shares without an envelope.
+    ///
+    /// `ViewRequest::invite_id` pins selection to a specific invite (the id the
+    /// viewer carries in its link fragment). It is authorization-narrowing
+    /// only: the invite must still belong to the share, be non-revoked, and be
+    /// bound to the caller or match one of `viewer_emails`. Pinning matters
+    /// when an email holds more than one active invite (re-invite mints a fresh
+    /// envelope/key), so a link must resolve to *its* envelope, not an older
+    /// one. `None` falls back to matching by binding-then-oldest.
     async fn fetch_view(
         &self,
-        share_id: &str,
-        viewer_user_id: &str,
-        viewer_emails: &[String],
+        request: ViewRequest<'_>,
     ) -> Result<ShareViewRecord, ShareStoreError>;
 }
 

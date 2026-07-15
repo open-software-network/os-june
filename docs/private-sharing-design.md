@@ -97,16 +97,29 @@ MVP payload by construction.
 - `GET /v1/shares/{share_id}` - owner detail: invites with
   `state` (`pending` | `accepted` | `revoked`) and `lastAccessAt`.
 - `POST /v1/shares/{share_id}/invites` - owner adds invites (same shape as
-  create) -> new invite ids.
+  create) -> new invite ids. An email that already holds a non-revoked invite
+  on the share is rejected (400): the viewer authorizes by any active invite
+  for a verified email, so a second active row would survive revoking the
+  first. Re-inviting is allowed once the prior invite is revoked.
 - `DELETE /v1/shares/{share_id}/invites/{invite_id}` - owner revokes.
 - `DELETE /v1/shares/{share_id}` - owner unshares entirely.
-- `GET /v1/shares/{share_id}/view` - **recipient** fetch. Resolves the
-  caller's verified emails via OS Accounts `/me` (the access JWT carries
-  only `sub`), matches non-revoked invites, binds `recipient_user_id` on
-  first access, records an access event, and returns
+- `GET /v1/shares/{share_id}/view?invite={invite_id}` - **recipient** fetch.
+  Resolves the caller's verified emails via OS Accounts `/me` (the access JWT
+  carries only `sub`), matches non-revoked invites, binds `recipient_user_id`
+  on first access, records an access event, and returns
   `{ kind, ciphertextB64, ivB64, envelopeB64, envelopeIvB64 }` (the owner's
-  display name travels inside the encrypted payload).
-  Owners can also fetch their own shares here.
+  display name travels inside the encrypted payload). The `invite` query
+  parameter is the invite id from the link fragment (the key material stays
+  in the fragment and never reaches the server); it pins the response to that
+  invite's envelope, so a caller whose account holds more than one active
+  invite (e.g. two verified emails each invited separately) gets the envelope
+  for the link they opened rather than whichever active invite matches first.
+  It only narrows the match (the binding/email authorization still applies).
+  It is optional: an owner fetching their own share is served without an
+  envelope regardless. View fetches lock the share row for the transaction,
+  so an owner deletion and a recipient fetch have a single commit order: once
+  deletion commits, no concurrent fetch can return ciphertext copied before
+  that deletion.
 - `GET /s/{share_id}` - the viewer HTML shell (no auth, no content, no
   share-existence signal; the same page is served for any well-formed id).
   `X-Robots-Tag: noindex, nofollow`, `Referrer-Policy: no-referrer`, strict
@@ -118,7 +131,9 @@ non-owned/unknown/revoked share returns the same 404 envelope
 chars of base64url randomness (`shr_` + 20 random bytes); invite ids
 likewise (`shi_` prefix). Invite, view, and create endpoints are
 rate-limited per user and per IP (in-memory token bucket; single-instance
-CVM makes this sufficient for MVP).
+CVM makes this sufficient for MVP). The multi-MiB create and add-invite JSON
+bodies also pass header authentication and byte-weighted admission before
+Axum buffers or parses them.
 
 ## Storage
 
@@ -134,7 +149,11 @@ unchanged, so the rollout cannot regress existing deployments.
 
 Tables: `shares` (id, owner_user_id, kind, ciphertext, iv, created_at,
 deleted_at) and `share_invites` (id, share_id, email, envelope, envelope_iv,
-recipient_user_id, accepted_at, revoked_at, last_access_at, created_at).
+recipient_user_id, accepted_at, revoked_at, last_access_at, created_at). A
+partial unique index on `share_invites (share_id, email) WHERE revoked_at IS
+NULL` enforces at most one active invite per email per share in the database,
+so the uniqueness guarantee holds under concurrent add-invite requests, not
+just the application-level check.
 
 ### Local key store scope (desktop)
 
@@ -164,7 +183,11 @@ explicit self allowances). Flow:
 1. Parse `share_id` from the path and `invite_id.IK` from the fragment.
 2. OS Accounts PKCE sign-in (public OAuth client "June share viewer",
    redirect back to `/s/callback`; the fragment survives via sessionStorage).
-3. `GET /v1/shares/{id}/view` with the Bearer token.
+3. `GET /v1/shares/{id}/view?invite={invite_id}` with the Bearer token (the
+   invite id, not the key, selects the envelope). The viewer OAuth client
+   requests only `profile:read`; June API requires `credits:spend` on every
+   other authenticated surface, so this browser-readable token cannot invoke
+   paid June operations.
 4. Decrypt envelope with IK -> CK; decrypt ciphertext with CK; render
    read-only (markdown for notes, chat transcript for sessions).
 5. First-entry Granola-style prompt: "[Owner] shared this [meeting note /

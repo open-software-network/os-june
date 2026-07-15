@@ -27,6 +27,21 @@ struct Envelope {
     success: bool,
 }
 
+// OS Accounts `/me` returns the account's addresses as `emails[]`, each tagged
+// with a `verified` flag (shipped with the ADR-0011 provider-agnostic identity
+// work and in production since 2026-06-02). We read only that array and keep
+// only verified addresses, because the share ACL authorizes by verified email:
+// an unverified address must never resolve an invite.
+//
+// The legacy singular `data.email` field is deliberately NOT used as a fallback.
+// It carries no `verified` flag and can hold an unverified primary (e.g. a
+// Stripe-collected billing address), so trusting it would let someone claim a
+// share bound to an address they have not proven they own. The desktop `MeWire`
+// (`src-tauri/src/os_accounts.rs`) reads only `email` because that is all it
+// needs; serde ignores the `emails` it doesn't model, so that struct is no
+// evidence the array is absent. If `/me` ever omitted `emails[]`, resolving to
+// an empty set and failing closed with `share_not_found` is the correct, safe
+// outcome for an access-control path.
 #[derive(Debug, Deserialize)]
 struct MeWire {
     #[serde(default)]

@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use june_domain::{
-    NewShare, NewShareInvite, ShareInviteRecord, ShareKind, ShareRecord, ShareStore,
-    ShareStoreError, ShareViewRecord,
+    MAX_INVITES_PER_SHARE, NewShare, NewShareInvite, ShareInviteRecord, ShareKind, ShareRecord,
+    ShareStore, ShareStoreError, ShareViewRecord, ViewRequest,
 };
 use sqlx::{
     PgPool, Row,
@@ -152,6 +152,7 @@ impl ShareStore for PgShareStore {
             r"
             SELECT id FROM shares
             WHERE share_id = $1 AND owner_user_id = $2 AND deleted_at IS NULL
+            FOR UPDATE
             ",
         )
         .bind(share_id)
@@ -160,6 +161,37 @@ impl ShareStore for PgShareStore {
         .await
         .map_err(query_error)?
         .ok_or(ShareStoreError::NotFound)?;
+        let existing =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM share_invites WHERE share_id = $1")
+                .bind(row_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(query_error)?;
+        let total = usize::try_from(existing).unwrap_or(usize::MAX);
+        if total.saturating_add(invites.len()) > MAX_INVITES_PER_SHARE {
+            return Err(ShareStoreError::InviteLimitExceeded);
+        }
+        // Reject any email that already holds a non-revoked invite on this
+        // share. The viewer authorizes by any active invite for a verified
+        // email, so a second active row would survive revoking the first.
+        let new_emails: Vec<String> = invites
+            .iter()
+            .map(|(_, invite)| invite.email.clone())
+            .collect();
+        let clash = sqlx::query_scalar::<_, i64>(
+            r"
+            SELECT COUNT(*) FROM share_invites
+            WHERE share_id = $1 AND revoked_at IS NULL AND email = ANY($2)
+            ",
+        )
+        .bind(row_id)
+        .bind(&new_emails)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(query_error)?;
+        if clash > 0 {
+            return Err(ShareStoreError::DuplicateActiveInvite);
+        }
         for (invite_id, invite) in &invites {
             insert_invite(&mut tx, row_id, invite_id, invite).await?;
         }
@@ -221,16 +253,21 @@ impl ShareStore for PgShareStore {
 
     async fn fetch_view(
         &self,
-        share_id: &str,
-        viewer_user_id: &str,
-        viewer_emails: &[String],
+        request: ViewRequest<'_>,
     ) -> Result<ShareViewRecord, ShareStoreError> {
+        let ViewRequest {
+            share_id,
+            viewer_user_id,
+            viewer_emails,
+            invite_id,
+        } = request;
         let mut tx = self.pool.begin().await.map_err(query_error)?;
         let share_row = sqlx::query(
             r"
             SELECT id, owner_user_id, kind, ciphertext, iv
             FROM shares
             WHERE share_id = $1 AND deleted_at IS NULL
+            FOR UPDATE
             ",
         )
         .bind(share_id)
@@ -255,22 +292,32 @@ impl ShareStore for PgShareStore {
             });
         }
 
-        // Match a non-revoked invite: first by an existing recipient binding,
-        // then by any of the caller's verified emails.
+        // Match a non-revoked invite. The invited email must still be one of
+        // the caller's currently-verified emails ($3) — enforced even for an
+        // already-bound invite, so access lapses if the recipient later removes
+        // that address from their account. Among those, the invite must be
+        // unbound or bound to this caller. When the viewer carries an invite id
+        // ($4), pin to that invite so a caller holding several verified emails
+        // gets the envelope for the link they opened; the id only narrows the
+        // match, it never widens the authorization.
         let invite_row = sqlx::query(
             r"
             SELECT id, envelope, envelope_iv
             FROM share_invites
             WHERE share_id = $1
               AND revoked_at IS NULL
-              AND (recipient_user_id = $2 OR (recipient_user_id IS NULL AND email = ANY($3)))
+              AND email = ANY($3)
+              AND (recipient_user_id IS NULL OR recipient_user_id = $2)
+              AND ($4::text IS NULL OR invite_id = $4)
             ORDER BY (recipient_user_id = $2) DESC, created_at ASC
             LIMIT 1
+            FOR UPDATE
             ",
         )
         .bind(row_id)
         .bind(viewer_user_id)
         .bind(viewer_emails)
+        .bind(invite_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(query_error)?
@@ -279,20 +326,27 @@ impl ShareStore for PgShareStore {
         let envelope: Vec<u8> = invite_row.try_get("envelope").map_err(query_error)?;
         let envelope_iv: Vec<u8> = invite_row.try_get("envelope_iv").map_err(query_error)?;
 
-        sqlx::query(
+        let updated = sqlx::query(
             r"
             UPDATE share_invites
             SET recipient_user_id = COALESCE(recipient_user_id, $2),
                 accepted_at = COALESCE(accepted_at, now()),
                 last_access_at = now()
             WHERE id = $1
+              AND revoked_at IS NULL
+              AND email = ANY($3)
+              AND (recipient_user_id IS NULL OR recipient_user_id = $2)
             ",
         )
         .bind(invite_row_id)
         .bind(viewer_user_id)
+        .bind(viewer_emails)
         .execute(&mut *tx)
         .await
         .map_err(query_error)?;
+        if updated.rows_affected() == 0 {
+            return Err(ShareStoreError::NotFound);
+        }
         tx.commit().await.map_err(query_error)?;
 
         Ok(ShareViewRecord {
@@ -324,8 +378,22 @@ async fn insert_invite(
     .bind(&invite.envelope_iv)
     .execute(&mut **tx)
     .await
-    .map_err(query_error)?;
+    .map_err(insert_invite_error)?;
     Ok(())
+}
+
+/// Maps a violation of the active-email uniqueness index to a clean
+/// `DuplicateActiveInvite`. This is the authoritative guard: it fires even
+/// when two concurrent add-invite transactions both pass the pre-insert clash
+/// check under READ COMMITTED. Any other error (including an `invite_id`
+/// collision, which is astronomically unlikely) falls through unchanged.
+fn insert_invite_error(error: sqlx::Error) -> ShareStoreError {
+    if let sqlx::Error::Database(db_error) = &error
+        && db_error.constraint() == Some("idx_share_invites_active_email")
+    {
+        return ShareStoreError::DuplicateActiveInvite;
+    }
+    query_error(error)
 }
 
 fn share_record(row: &sqlx::postgres::PgRow) -> Result<ShareRecord, ShareStoreError> {

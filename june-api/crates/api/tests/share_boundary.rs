@@ -17,8 +17,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use june_api::ShareViewerInfo;
 use june_domain::{
-    DomainError, NewShare, NewShareInvite, ShareInviteRecord, ShareKind, ShareRecord, ShareStore,
-    ShareStoreError, ShareViewRecord, ViewerIdentity,
+    DomainError, MAX_INVITES_PER_SHARE, NewShare, NewShareInvite, ShareInviteRecord, ShareKind,
+    ShareRecord, ShareStore, ShareStoreError, ShareViewRecord, ViewRequest, ViewerIdentity,
 };
 use june_services::{ShareService, ShareServiceDeps};
 use pretty_assertions::assert_eq;
@@ -142,6 +142,17 @@ impl ShareStore for MemoryShareStore {
             .get_mut(share_id)
             .filter(|share| share.owner == owner && !share.deleted)
             .ok_or(ShareStoreError::NotFound)?;
+        if share.invites.len() + invites.len() > MAX_INVITES_PER_SHARE {
+            return Err(ShareStoreError::InviteLimitExceeded);
+        }
+        if invites.iter().any(|(_, invite)| {
+            share
+                .invites
+                .iter()
+                .any(|existing| !existing.revoked && existing.email == invite.email)
+        }) {
+            return Err(ShareStoreError::DuplicateActiveInvite);
+        }
         for (invite_id, invite) in invites {
             share.invites.push(StoredInvite {
                 invite_id,
@@ -189,10 +200,14 @@ impl ShareStore for MemoryShareStore {
 
     async fn fetch_view(
         &self,
-        share_id: &str,
-        viewer_user_id: &str,
-        viewer_emails: &[String],
+        request: ViewRequest<'_>,
     ) -> Result<ShareViewRecord, ShareStoreError> {
+        let ViewRequest {
+            share_id,
+            viewer_user_id,
+            viewer_emails,
+            invite_id,
+        } = request;
         let mut shares = self.shares.lock().expect("lock");
         let share = shares
             .get_mut(share_id)
@@ -216,9 +231,15 @@ impl ShareStore for MemoryShareStore {
             .iter_mut()
             .find(|invite| {
                 !invite.revoked
-                    && (invite.recipient_user_id.as_deref() == Some(viewer_user_id)
-                        || (invite.recipient_user_id.is_none()
-                            && viewer_emails.contains(&invite.email)))
+                    && invite_id.is_none_or(|id| invite.invite_id == id)
+                    // The invited email must still be currently verified, even
+                    // for an already-bound invite; among those, the invite must
+                    // be unbound or bound to this caller.
+                    && viewer_emails.contains(&invite.email)
+                    && invite
+                        .recipient_user_id
+                        .as_deref()
+                        .is_none_or(|bound| bound == viewer_user_id)
             })
             .ok_or(ShareStoreError::NotFound)?;
         invite.recipient_user_id = Some(viewer_user_id.to_string());
@@ -319,6 +340,235 @@ async fn share_endpoints_answer_501_until_configured() {
     let (status, body) = call(&router, create_request(OWNER, &[invite_wire("a@b.c")])).await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     assert_eq!(body["message"], "sharing_unavailable");
+}
+
+#[tokio::test]
+async fn viewer_shell_fails_closed_when_sharing_disabled() {
+    // A misconfigured deployment (DATABASE_URL set, VIEWER_CLIENT_ID blank)
+    // disables the share service. The browser viewer shell must fail closed to
+    // 501 like the API paths, not render a viewer that bounces recipients to
+    // OS Accounts with an empty `client_id`.
+    let router = june_api::router(state_with_share(None));
+    let request = Request::builder()
+        .method("GET")
+        .uri("/s/shr_anything")
+        .body(Body::empty())
+        .expect("request builds");
+    let (status, body) = call(&router, request).await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(body["message"], "sharing_unavailable");
+}
+
+#[tokio::test]
+async fn each_invite_link_resolves_to_its_own_envelope_by_invite_id() {
+    // One recipient user holding two verified emails, each with its own invite.
+    // The addresses differ, so both invites stay active (per-email uniqueness
+    // still holds). A link's invite id must select that invite's envelope, not
+    // merely the first active invite the caller's emails happen to match.
+    const RECIPIENT_TWO: &str = "user:usr_friend|first@example.com,second@example.com";
+
+    let router = share_router();
+    let (status, body) = call(
+        &router,
+        create_request(
+            OWNER,
+            &[json!({
+                "email": "first@example.com",
+                "envelopeB64": BASE64.encode([0x11u8; 48]),
+                "envelopeIvB64": BASE64.encode([0x21u8; 12]),
+            })],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let share_id = body["data"]["shareId"]
+        .as_str()
+        .expect("share id")
+        .to_string();
+    let invite_one = body["data"]["invites"][0]["inviteId"]
+        .as_str()
+        .expect("invite one")
+        .to_string();
+
+    let (status, body) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/shares/{share_id}/invites")),
+            OWNER,
+        )
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            json!({
+                "invites": [{
+                    "email": "second@example.com",
+                    "envelopeB64": BASE64.encode([0x33u8; 48]),
+                    "envelopeIvB64": BASE64.encode([0x44u8; 12]),
+                }]
+            })
+            .to_string(),
+        ))
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let invite_two = body["data"]["invites"][0]["inviteId"]
+        .as_str()
+        .expect("invite two")
+        .to_string();
+    assert_ne!(invite_one, invite_two);
+
+    // The second link resolves to invite_two's envelope for this user.
+    let (status, body) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/shares/{share_id}/view?invite={invite_two}")),
+            RECIPIENT_TWO,
+        )
+        .body(Body::empty())
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["envelopeB64"], BASE64.encode([0x33u8; 48]));
+    assert_eq!(body["data"]["envelopeIvB64"], BASE64.encode([0x44u8; 12]));
+
+    // The first link still resolves to its own envelope for the same user.
+    let (status, body) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/shares/{share_id}/view?invite={invite_one}")),
+            RECIPIENT_TWO,
+        )
+        .body(Body::empty())
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["envelopeB64"], BASE64.encode([0x11u8; 48]));
+    assert_eq!(body["data"]["envelopeIvB64"], BASE64.encode([0x21u8; 12]));
+}
+
+#[tokio::test]
+async fn bound_invite_lapses_when_the_recipient_loses_the_verified_email() {
+    let router = share_router();
+    let (status, body) = call(
+        &router,
+        create_request(OWNER, &[invite_wire("friend@example.com")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let share_id = body["data"]["shareId"]
+        .as_str()
+        .expect("share id")
+        .to_string();
+
+    // First view binds the invite to usr_friend (the token carries the email).
+    let (status, _) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/shares/{share_id}/view")),
+            "user:usr_friend|friend@example.com",
+        )
+        .body(Body::empty())
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Same user, but the invited email is no longer in their verified set:
+    // access must lapse (byte-identical 404), not persist through the binding.
+    let (status, body) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/v1/shares/{share_id}/view")),
+            "user:usr_friend|other@example.com",
+        )
+        .body(Body::empty())
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["message"], "share_not_found");
+}
+
+#[tokio::test]
+async fn create_with_the_same_email_twice_in_one_request_is_rejected() {
+    let router = share_router();
+    let (status, _) = call(
+        &router,
+        create_request(
+            OWNER,
+            &[
+                invite_wire("dup@example.com"),
+                invite_wire("Dup@example.com"),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn duplicate_active_invite_is_rejected_but_reinvite_after_revoke_is_allowed() {
+    let router = share_router();
+    let (status, body) = call(
+        &router,
+        create_request(OWNER, &[invite_wire("friend@example.com")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let share_id = body["data"]["shareId"]
+        .as_str()
+        .expect("share id")
+        .to_string();
+    let invite_id = body["data"]["invites"][0]["inviteId"]
+        .as_str()
+        .expect("invite id")
+        .to_string();
+
+    let add = |email: &str| {
+        let body = json!({ "invites": [invite_wire(email)] });
+        authed(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/shares/{share_id}/invites")),
+            OWNER,
+        )
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request builds")
+    };
+
+    // The address is already active (case-insensitively): re-inviting is refused.
+    let (status, _) = call(&router, add("Friend@Example.com")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Revoke that invite, then the same address can be invited again.
+    let (status, _) = call(
+        &router,
+        authed(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/shares/{share_id}/invites/{invite_id}")),
+            OWNER,
+        )
+        .body(Body::empty())
+        .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(&router, add("friend@example.com")).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -567,4 +817,58 @@ async fn robots_txt_disallows_share_paths() {
         .expect("body reads");
     let text = String::from_utf8_lossy(&bytes).to_string();
     assert!(text.contains("Disallow: /s/"));
+}
+
+#[tokio::test]
+async fn invites_cannot_grow_past_the_cumulative_cap() {
+    let router = share_router();
+    let (_, body) = call(
+        &router,
+        create_request(OWNER, &[invite_wire("friend@example.com")]),
+    )
+    .await;
+    let share_id = body["data"]["shareId"]
+        .as_str()
+        .expect("share id")
+        .to_string();
+
+    // Fill to the cap in batches, then one more must fail.
+    let mut added = 1;
+    while added < MAX_INVITES_PER_SHARE {
+        let batch: Vec<Value> = (0..(MAX_INVITES_PER_SHARE - added).min(40))
+            .map(|n| invite_wire(&format!("extra{added}x{n}@example.com")))
+            .collect();
+        added += batch.len();
+        let request = authed(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/shares/{share_id}/invites")),
+            OWNER,
+        )
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({ "invites": batch }).to_string()))
+        .expect("request builds");
+        let (status, _) = call(&router, request).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let request = authed(
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/shares/{share_id}/invites")),
+        OWNER,
+    )
+    .header(header::CONTENT_TYPE, "application/json")
+    .body(Body::from(
+        json!({ "invites": [invite_wire("overflow@example.com")] }).to_string(),
+    ))
+    .expect("request builds");
+    let (status, body) = call(&router, request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("at most")
+    );
 }

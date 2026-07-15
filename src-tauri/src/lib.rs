@@ -14,6 +14,7 @@ pub mod macos_menu_icons;
 pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;
+pub mod notifications;
 pub mod os_accounts;
 pub mod p3a;
 pub mod providers;
@@ -270,6 +271,8 @@ pub fn run() {
             agent_hud::agent_hud_hide,
             agent_hud::agent_hud_set_layout,
             agent_hud::agent_hud_open_agent,
+            notifications::send_app_notification,
+            notifications::agent_open_ready,
             meeting_hud::meeting_hud_latest_status,
             meeting_hud::meeting_hud_reopen,
             providers::provider_model_settings,
@@ -321,6 +324,7 @@ pub fn run() {
             updates::set_release_channel,
             updates::fetch_update,
             updates::install_update,
+            updates::relaunch_for_update,
         ])
         .manage(RecordingPresenceBoundsState::default())
         .manage(hermes_bridge::HermesBridge::default())
@@ -335,6 +339,7 @@ pub fn run() {
             updates::setup(app);
             dictation::setup(app);
             agent_hud::setup(app);
+            notifications::setup(app);
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);

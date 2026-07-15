@@ -280,6 +280,11 @@ these shared metrics.
 
 ## Explicit deferrals
 
+The highest-scoring provider deferrals now have a separate follow-on decision
+package in [integrations-next-ten.md](integrations-next-ten.md). Their scores
+and ordering remain unchanged from this portfolio so the extension does not
+rewrite the original top-ten decision.
+
 - **Dropbox, Box, OneDrive-only, and SharePoint-only plugins:** valuable file
   access, but Google Workspace, Microsoft 365, Notion, and local Documents cover
   the dominant jobs first. Provider-specific file stores remain candidates.
