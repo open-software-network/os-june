@@ -2118,21 +2118,86 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
     paths
 }
 
-/// The dictation helper binary's basename, shared by the bundled-binary lookup
-/// and the orphan reap below.
+/// The dictation helper binary's basename, used by the ownership-aware orphan
+/// reap below to confirm a recorded pid is still a dictation helper.
 #[cfg(target_os = "macos")]
 const DICTATION_HELPER_NAME: &str = "june-dictation-helper";
 
-/// Kills any dictation helper orphaned by a prior app instance before a fresh
+/// Records which app instance owns the currently-spawned helper. Persisted next
+/// to a spawn so a *later* instance can tell an orphan (owner gone) from a
+/// helper a still-running instance owns, and reap only the former.
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HelperOwnershipRecord {
+    /// The app process that spawned the helper (`std::process::id()`).
+    app_pid: u32,
+    /// The spawned helper process.
+    helper_pid: u32,
+}
+
+#[cfg(target_os = "macos")]
+fn helper_ownership_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|directory| directory.join("dictation-helper-owner.json"))
+}
+
+/// Records the just-spawned helper's pid alongside our own app pid, so the next
+/// instance's [`reap_orphaned_helper`] can establish ownership. Best-effort:
+/// a failure only means a future instance cannot reap this helper by record.
+#[cfg(target_os = "macos")]
+fn record_helper_ownership(app: &AppHandle, helper_pid: u32) {
+    let Some(path) = helper_ownership_path(app) else {
+        return;
+    };
+    let record = HelperOwnershipRecord {
+        app_pid: std::process::id(),
+        helper_pid,
+    };
+    if let Ok(serialized) = serde_json::to_string(&record) {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(&path, serialized);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn record_helper_ownership(_app: &AppHandle, _helper_pid: u32) {}
+
+/// Reaps a dictation helper orphaned by a *prior* app instance before a fresh
 /// one is spawned. A stale helper — most often left by an in-app update relaunch
 /// that skipped teardown (JUN-338) — keeps the global CGEventTap and its stdio,
 /// so a newly spawned helper collides with it and never delivers a clean
-/// permission status. Best-effort and macOS-only. Safe to call here because
-/// `spawn_helper` only ever runs with no live helper of ours: first `setup`, or
-/// a supervised respawn after the previous helper already exited.
+/// permission status.
+///
+/// Ownership-aware, never a name-wide sweep: it kills only the exact pid the
+/// last spawn recorded, and only when that helper's owning app is gone *and* the
+/// pid is still a dictation helper (guarding against pid reuse). A helper a
+/// concurrently-running instance owns has a live owner, so it is never touched —
+/// which matters because debug builds allow multiple instances. If ownership
+/// cannot be established, nothing is killed. macOS-only, best-effort.
 #[cfg(target_os = "macos")]
-fn reap_orphaned_helpers() {
-    let _ = reap_orphaned_helpers_command()
+fn reap_orphaned_helper(app: &AppHandle) {
+    let Some(path) = helper_ownership_path(app) else {
+        return;
+    };
+    let Some(record) = fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<HelperOwnershipRecord>(&raw).ok())
+    else {
+        return;
+    };
+    if !should_reap_recorded_helper(
+        process_alive(record.app_pid),
+        is_dictation_helper_process(record.helper_pid),
+    ) {
+        return;
+    }
+    let _ = Command::new("/bin/kill")
+        .arg("-KILL")
+        .arg(record.helper_pid.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -2140,21 +2205,59 @@ fn reap_orphaned_helpers() {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn reap_orphaned_helpers() {}
+fn reap_orphaned_helper(_app: &AppHandle) {}
 
-/// Pure command construction so a test can assert the reap targets the helper by
-/// name. Matches on the full command line (`pkill -f`): the absolute spawn path
-/// always contains the binary name, so a truncated accounting name cannot hide
-/// the orphan, and no other process on the system carries this string.
+/// The kill decision, factored out so it is unit-testable without real
+/// processes: reap only an orphan (owner no longer alive) that is still a
+/// dictation helper (pid not reused for something else).
 #[cfg(target_os = "macos")]
-fn reap_orphaned_helpers_command() -> Command {
-    let mut cmd = Command::new("/usr/bin/pkill");
-    cmd.arg("-f").arg(DICTATION_HELPER_NAME);
-    cmd
+fn should_reap_recorded_helper(owner_alive: bool, helper_is_dictation: bool) -> bool {
+    !owner_alive && helper_is_dictation
+}
+
+/// Whether a pid is live and signalable by us (`kill -0`). Same-user only, which
+/// is all June ever records.
+#[cfg(target_os = "macos")]
+fn process_alive(pid: u32) -> bool {
+    Command::new("/bin/kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Whether the process at `pid` is (still) a dictation helper, by matching the
+/// executable basename from `ps -o comm=`. Returns false when the pid is dead or
+/// was reused for an unrelated process, so a stale record never kills a stranger.
+#[cfg(target_os = "macos")]
+fn is_dictation_helper_process(pid: u32) -> bool {
+    let Ok(output) = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("comm=")
+        .stdin(Stdio::null())
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .rsplit('/')
+        .next()
+        .map(|basename| basename == DICTATION_HELPER_NAME)
+        .unwrap_or(false)
 }
 
 fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
-    reap_orphaned_helpers();
+    reap_orphaned_helper(app);
 
     let helper_path = helper_candidates(app)
         .into_iter()
@@ -2199,6 +2302,11 @@ fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
             "Helper stderr was unavailable.",
         )
     })?;
+
+    // Record ownership so the next instance can reap this exact helper if we
+    // exit without tearing it down (e.g. an update relaunch), and never touch a
+    // helper another live instance owns (JUN-338).
+    record_helper_ownership(app, child.id());
 
     // Recorded before handing stdout to the reader so the supervisor can tell a
     // healthy helper (ran a while, then died) from a crash loop.
@@ -4468,17 +4576,15 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn reap_orphaned_helpers_targets_helper_by_name() {
-        let cmd = reap_orphaned_helpers_command();
-        assert_eq!(cmd.get_program(), std::ffi::OsStr::new("/usr/bin/pkill"));
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        // `-f` matches the full command line so the absolute spawn path (which
-        // always contains the binary name) is caught even when the accounting
-        // name is truncated.
-        assert_eq!(args, ["-f", DICTATION_HELPER_NAME]);
+    fn reap_recorded_helper_only_when_owner_dead_and_identity_matches() {
+        // The orphan case: owner gone, pid still a dictation helper -> reap.
+        assert!(should_reap_recorded_helper(false, true));
+        // Owner still alive (e.g. a second dev instance) -> never touch its
+        // helper.
+        assert!(!should_reap_recorded_helper(true, true));
+        // Owner gone but the pid was reused for something else -> leave it.
+        assert!(!should_reap_recorded_helper(false, false));
+        assert!(!should_reap_recorded_helper(true, false));
     }
 
     #[test]

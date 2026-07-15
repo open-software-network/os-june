@@ -268,8 +268,8 @@ pub async fn install_update(
 /// reaps June's children. On an update the `.app` bundle is swapped, so a
 /// skipped teardown orphans the dictation helper — which keeps the global
 /// CGEventTap and its stdio — and the relaunched instance then cannot bring up a
-/// clean helper, so every helper-reported permission (mic, accessibility,
-/// system audio) reads missing even though the grants are intact (JUN-338).
+/// clean helper, so every helper-reported permission (dictation mic and
+/// accessibility) reads missing even though the grants are intact (JUN-338).
 /// Tearing down explicitly here guarantees the helper (and the Hermes runtime)
 /// are gone before the new instance starts.
 #[tauri::command]

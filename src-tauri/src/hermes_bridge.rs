@@ -11,7 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -436,6 +436,12 @@ pub struct HermesBridge {
     /// Recently delivered recorder request ids (see
     /// `recorder_request_recently_completed`).
     recorder_completed: Mutex<std::collections::VecDeque<String>>,
+    /// Latched once at app teardown (`shutdown`). A start that observes it set
+    /// must not leave a registered runtime behind, so the teardown that is about
+    /// to reap the process tree does not race an in-flight start that re-orphans
+    /// it (JUN-338). Set *before* the drain; checked under the `processes` lock
+    /// at registration, so the flag and the drain observe a single ordering.
+    shutting_down: AtomicBool,
 }
 
 struct HermesProcess {
@@ -1040,6 +1046,17 @@ async fn start_hermes_bridge_inner(
     // sees the winner's running process.
     let _start_guard = bridge.start_lock.lock().await;
 
+    // Bail fast if the app is tearing down: no point building a runtime the
+    // teardown is about to reap, and a late spawn could re-orphan the tree. The
+    // authoritative, race-free check is the one at registration below; this is
+    // only an early out.
+    if bridge.shutting_down.load(Ordering::SeqCst) {
+        return Err(AppError::new(
+            "hermes_bridge_shutting_down",
+            "June is shutting down; Hermes runtime start skipped.",
+        ));
+    }
+
     // Ensure the requested mode (None = the sandboxed default). The other
     // mode's process — if one is up — is deliberately untouched: the pair
     // runs side by side so a session in one mode never kills the other's
@@ -1248,6 +1265,22 @@ async fn start_hermes_bridge_inner(
                 drop(guard);
                 return Ok(status_for(live_connections(bridge)?, Some(full_mode)));
             }
+        }
+        // Race-free teardown handshake (JUN-338): `shutdown` latches the flag
+        // *before* it drains under this same lock. If it is set here, the drain
+        // has already run (or is about to) and would miss a process we register
+        // now, re-orphaning the tree the teardown is reaping. Reap what we
+        // spawned instead of registering it.
+        if bridge.shutting_down.load(Ordering::SeqCst) {
+            drop(guard);
+            #[cfg(unix)]
+            kill_process_group(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::new(
+                "hermes_bridge_shutting_down",
+                "June is shutting down; Hermes runtime start skipped.",
+            ));
         }
         guard.insert(
             full_mode,
@@ -3380,6 +3413,11 @@ fn hermes_file_mime_type(path: &Path) -> Option<&'static str> {
 
 pub fn shutdown(app: &tauri::AppHandle) {
     let bridge = app.state::<HermesBridge>();
+    // Latch teardown *before* draining so an in-flight `start_hermes_bridge_inner`
+    // cannot register a runtime after the drain and re-orphan the tree we are
+    // about to reap (JUN-338). The flag is permanent: nothing restarts the
+    // bridge after shutdown. See the registration handshake in that function.
+    bridge.shutting_down.store(true, Ordering::SeqCst);
     let _ = stop_hermes_bridge_inner(&bridge);
     let proxy = bridge
         .provider_proxy
