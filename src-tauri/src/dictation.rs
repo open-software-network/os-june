@@ -3962,9 +3962,17 @@ fn is_here_instruction_preamble(preamble: &str) -> bool {
     else {
         return false;
     };
-    ["transcript", "dictation", "text", "notes", "version"]
-        .iter()
-        .any(|marker| subject.contains(marker))
+    [
+        "transcript",
+        "dictation",
+        "text",
+        "notes",
+        "version",
+        "result",
+        "content",
+    ]
+    .iter()
+    .any(|marker| subject.contains(marker))
 }
 
 fn looks_like_report_summary_response(normalized: &str) -> bool {
@@ -6954,6 +6962,12 @@ mod tests {
         assert!(looks_like_instruction_response("Here you are: Hello."));
         assert!(looks_like_instruction_response(
             "Here is the cleaned dictation: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the result: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned content: Hello."
         ));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
