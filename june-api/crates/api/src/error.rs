@@ -1,7 +1,7 @@
 use crate::envelope::{
     ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE,
-    ERR_UPSTREAM, TRANSIENT_RETRY_AFTER_SECS,
+    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_SERVICE_OVERLOADED, ERR_UNAUTHORIZED,
+    ERR_UNPROCESSABLE, ERR_UPSTREAM, TRANSIENT_RETRY_AFTER_SECS,
 };
 use axum::{
     Json,
@@ -33,6 +33,8 @@ pub enum ApiError {
     Upstream,
     #[error("metering_provider_failed")]
     Metering,
+    #[error("server_busy")]
+    ServiceOverloaded,
     #[error("internal_error")]
     Internal,
 }
@@ -64,6 +66,10 @@ impl ApiError {
             code: ERR_NOT_FOUND,
             message: message.into(),
         }
+    }
+
+    pub fn service_overloaded() -> Self {
+        Self::ServiceOverloaded
     }
 
     pub(crate) fn response_parts(&self) -> (StatusCode, serde_json::Value) {
@@ -110,6 +116,11 @@ impl ApiError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 ERR_METERING,
                 "metering_provider_failed",
+            ),
+            Self::ServiceOverloaded => error_parts(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ERR_SERVICE_OVERLOADED,
+                "server_busy",
             ),
             Self::Internal => error_parts(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -242,6 +253,17 @@ mod tests {
         let body = body_json(response).await;
         assert_eq!(body["error_code"], 5031);
         assert_eq!(body["message"], "metering_provider_failed");
+        assert_eq!(body["success"], false);
+    }
+
+    #[tokio::test]
+    async fn service_overloaded_maps_to_503_with_structured_code() {
+        let response = ApiError::ServiceOverloaded.into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_json(response).await;
+        assert_eq!(body["error_code"], 5032);
+        assert_eq!(body["message"], "server_busy");
         assert_eq!(body["success"], false);
     }
 }

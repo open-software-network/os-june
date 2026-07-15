@@ -321,6 +321,30 @@ async fn integration_agent_chat_stream_returns_upstream_sse_body() -> Result<(),
 }
 
 #[tokio::test]
+async fn integration_agent_admission_preserves_authenticated_happy_path()
+-> Result<(), Box<dyn Error>> {
+    let body = serde_json::json!({
+        "model": "text-model",
+        "stream": true,
+        "messages": [{ "role": "user", "content": "hello" }]
+    })
+    .to_string();
+    let response = send(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_LENGTH, body.len())
+            .header(header::AUTHORIZATION, AUTHORIZATION)
+            .body(Body::from(body))?,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_agent_chat_accepts_tool_heavy_body_over_small_json_cap()
 -> Result<(), Box<dyn Error>> {
     // 4 MiB: STRICTLY above `test_state`'s shared `max_json_bytes` (1 MiB in

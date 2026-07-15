@@ -86,6 +86,13 @@ pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
 /// in `validate_agent_chat_body`. Keep this in sync with the proxy constant
 /// across the src-tauri / june-api workspace boundary.
 pub const DEFAULT_MAX_AGENT_CHAT_BYTES: usize = 12 * 1024 * 1024;
+/// Global cap on the total in-flight request-body bytes buffered across the
+/// large-body agent routes, so concurrent authenticated requests cannot exhaust
+/// the shared TEE (JUN-336). Conservative default; tune against real traffic.
+pub const DEFAULT_MAX_AGENT_INFLIGHT_BODY_BYTES: usize = 1024 * 1024 * 1024;
+/// Max concurrent large-body agent requests a single user may have in flight
+/// before June API load-sheds with 503 (JUN-336).
+pub const DEFAULT_MAX_AGENT_CONCURRENT_REQUESTS_PER_USER: usize = 8;
 
 // --- Video generation (ADR 0015) ---------------------------------------------
 //
@@ -414,6 +421,10 @@ pub struct ServerConfig {
     /// 12 MiB chat body cap so an in-window agent chat request is not rejected by
     /// a stricter outer gate before semantic validation (JUN-336).
     pub max_agent_chat_bytes: usize,
+    /// Global in-flight request-body budget for the large-body agent routes.
+    pub max_agent_inflight_body_bytes: usize,
+    /// Per-user concurrent request cap for the large-body agent routes.
+    pub max_agent_concurrent_requests_per_user: usize,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -956,6 +967,9 @@ impl Default for AppConfig {
                 max_issue_report_bytes: DEFAULT_MAX_ISSUE_REPORT_BYTES,
                 max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
                 max_agent_chat_bytes: DEFAULT_MAX_AGENT_CHAT_BYTES,
+                max_agent_inflight_body_bytes: DEFAULT_MAX_AGENT_INFLIGHT_BODY_BYTES,
+                max_agent_concurrent_requests_per_user:
+                    DEFAULT_MAX_AGENT_CONCURRENT_REQUESTS_PER_USER,
             },
             local_dev: LocalDevConfig::default(),
             os_accounts: OsAccountsConfig {
@@ -1256,6 +1270,14 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
         "server.max_agent_chat_bytes",
         config.server.max_agent_chat_bytes,
     )?;
+    validate_positive_usize_config(
+        "server.max_agent_inflight_body_bytes",
+        config.server.max_agent_inflight_body_bytes,
+    )?;
+    validate_positive_usize_config(
+        "server.max_agent_concurrent_requests_per_user",
+        config.server.max_agent_concurrent_requests_per_user,
+    )?;
     // The extractor cap must never sit BELOW the desktop provider proxy's fixed
     // 12 MiB chat body cap (mirrored here as `DEFAULT_MAX_AGENT_CHAT_BYTES`), or a
     // configured override silently reintroduces the JUN-336 regression: the proxy
@@ -1520,9 +1542,10 @@ fn validate_positive_rate(
 mod tests {
     use super::{
         AppConfig, ConfigError, DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS, DEFAULT_IMAGE_HOLD_TTL_SECS,
-        DEFAULT_MAX_AGENT_CHAT_BYTES, DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_MAX_ISSUE_REPORT_BYTES,
-        DEFAULT_REQUEST_TIMEOUT_SECS, DEFAULT_VIDEO_HOLD_TTL_SECS, DEFAULT_VIDEO_JOB_MAX_SECS,
-        DEFAULT_VIDEO_MAX_RESPONSE_BYTES, IMAGE_EDIT_SOURCE_MAX_BYTES,
+        DEFAULT_MAX_AGENT_CHAT_BYTES, DEFAULT_MAX_AGENT_CONCURRENT_REQUESTS_PER_USER,
+        DEFAULT_MAX_AGENT_INFLIGHT_BODY_BYTES, DEFAULT_MAX_IMAGE_EDIT_BYTES,
+        DEFAULT_MAX_ISSUE_REPORT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, DEFAULT_VIDEO_HOLD_TTL_SECS,
+        DEFAULT_VIDEO_JOB_MAX_SECS, DEFAULT_VIDEO_MAX_RESPONSE_BYTES, IMAGE_EDIT_SOURCE_MAX_BYTES,
         IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS, ISSUE_REPORT_ATTACHMENT_MAX_BYTES, ModelPriceConfig,
         ModelProvider, ModelType, OPENAI_API_KEY_PLACEHOLDERS,
         OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS,
@@ -1882,6 +1905,20 @@ mod tests {
         assert!(
             AppConfig::default().server.max_agent_chat_bytes
                 >= AppConfig::default().server.max_json_bytes
+        );
+    }
+
+    #[test]
+    fn default_agent_admission_limits_match_their_constants() {
+        let server = AppConfig::default().server;
+
+        assert_eq!(
+            server.max_agent_inflight_body_bytes,
+            DEFAULT_MAX_AGENT_INFLIGHT_BODY_BYTES
+        );
+        assert_eq!(
+            server.max_agent_concurrent_requests_per_user,
+            DEFAULT_MAX_AGENT_CONCURRENT_REQUESTS_PER_USER
         );
     }
 

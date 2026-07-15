@@ -26,8 +26,8 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 pub use envelope::{
     ApiResponse, ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_TIMEOUT, ERR_UNAUTHORIZED,
-    ERR_UNPROCESSABLE, ERR_UPSTREAM,
+    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_SERVICE_OVERLOADED, ERR_TIMEOUT,
+    ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
 };
 pub use error::ApiError;
 pub use handlers::dictate::{
@@ -138,10 +138,10 @@ pub fn router(state: ApiState) -> Router {
 }
 
 /// The large-body routes — those whose cap is well above the shared 512 KiB
-/// small-JSON cap — grouped so `require_authenticated_bearer` runs, as the
+/// small-JSON cap — grouped so authentication and admission control run, as the
 /// outermost layer, before any of their body-limit layers buffer a request.
-/// Grouping keeps the unauthenticated resource-exhaustion surface closed for
-/// every multi-MiB route at once instead of route by route (JUN-336 review).
+/// Grouping keeps both unauthenticated and authenticated resource-exhaustion
+/// surfaces closed for every multi-MiB route at once (JUN-336 review).
 fn authenticated_body_routes(state: &ApiState, limits: ApiLimits) -> Router<ApiState> {
     Router::new()
         .route(
@@ -173,7 +173,7 @@ fn authenticated_body_routes(state: &ApiState, limits: ApiLimits) -> Router<ApiS
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            require_authenticated_bearer,
+            authenticate_and_admit,
         ))
 }
 
@@ -184,7 +184,7 @@ async fn handle_timeout_error(error: BoxError) -> axum::response::Response {
     error::ApiError::Internal.into_response()
 }
 
-/// Header-only bearer authentication run BEFORE the body extractor on the
+/// Header-only bearer authentication and admission run BEFORE the body extractor on the
 /// large-body routes (those whose cap exceeds the shared 512 KiB small-JSON
 /// cap). Without it, an unauthenticated client could force June API to buffer
 /// and JSON-parse a multi-MiB body — up to `max_agent_chat_bytes` (12 MiB),
@@ -193,12 +193,23 @@ async fn handle_timeout_error(error: BoxError) -> axum::response::Response {
 /// resource-exhaustion path that widened with the JUN-336 cap increase. The
 /// verify is a cached-JWKS signature check, so re-checking in the handler is
 /// cheap; keeping the handler check makes each handler correct on its own.
-async fn require_authenticated_bearer(
+async fn authenticate_and_admit(
     State(state): State<ApiState>,
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    auth::authenticated_user(&state, request.headers()).await?;
+    // Auth on headers before the body is buffered (JUN-336).
+    let user_id = auth::authenticated_user(&state, request.headers()).await?;
+    // Byte-weighted global + per-user admission BEFORE body extraction, so
+    // concurrent authenticated large bodies cannot exhaust the shared TEE
+    // (JUN-336 review). Held through body extraction + handler, released after.
+    let content_length = request
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let _admission = state.admit_agent_request(&user_id, content_length)?;
     Ok(next.run(request).await)
 }
 

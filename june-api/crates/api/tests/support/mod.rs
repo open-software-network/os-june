@@ -344,6 +344,8 @@ pub(crate) fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
             max_issue_report_bytes: DEFAULT_MAX_ISSUE_REPORT_BYTES,
             max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
             max_agent_chat_bytes: DEFAULT_MAX_AGENT_CHAT_BYTES,
+            max_agent_inflight_body_bytes: 1024 * 1024 * 1024,
+            max_agent_concurrent_requests_per_user: 1024,
             request_timeout_secs: deps.request_timeout_secs,
         },
         attestation: deps.attestation,
