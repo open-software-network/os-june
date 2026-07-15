@@ -3941,11 +3941,20 @@ fn looks_like_instruction_response(value: &str) -> bool {
 fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
     let normalized = normalized.replace('’', "'");
     let normalized = normalized.as_str();
-    let strong_preamble_end = [":", ". ", "! ", "? ", "\n", " - ", " — ", " – ", "—", "–"]
+    let structural_preamble_end = [":", "\n", " - ", " — ", " – ", "—", "–"]
         .iter()
         .filter_map(|separator| normalized.find(separator))
         .min();
-    if strong_preamble_end.is_some_and(|end| is_here_instruction_preamble(&normalized[..end])) {
+    if structural_preamble_end.is_some_and(|end| is_here_instruction_preamble(&normalized[..end])) {
+        return true;
+    }
+    let punctuation_preamble_end = [". ", "! ", "? "]
+        .iter()
+        .filter_map(|separator| normalized.find(separator))
+        .min();
+    if punctuation_preamble_end
+        .is_some_and(|end| is_terminal_here_instruction_preamble(&normalized[..end]))
+    {
         return true;
     }
     if normalized
@@ -7057,6 +7066,9 @@ mod tests {
         assert!(looks_like_instruction_response("Here is the email: Hello."));
         assert!(!looks_like_instruction_response(
             "Here's your text message from John."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's your text message from John. Call him back."
         ));
         assert!(!looks_like_instruction_response(
             "Here's the result of the game."
