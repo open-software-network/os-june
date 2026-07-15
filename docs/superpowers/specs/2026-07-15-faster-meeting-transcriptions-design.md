@@ -1,6 +1,6 @@
 # Faster meeting transcriptions design
 
-**Status:** Revised for JUN-334 review; pending written-spec approval
+**Status:** Approved on 2026-07-15 after JUN-334 review; independent plan-audit corrections incorporated
 
 **Target:** Reduce the time from pressing Done until the first saved transcript
 turn appears and until transcription completes. Note generation latency is not
@@ -201,20 +201,26 @@ Benchmark both processing paths:
 - microphone-only is the control case because it uses a separate serial chunk
   pipeline and will not benefit from this design.
 
-Proceed with the selected production change only when the five-minute baseline
-shows that the local turn-preparation wall from detection completion to the
-first provider request consumes at least 20 percent of
-handoff-to-first-provider-request. If the primary preparation wall misses that
-threshold, stop and revise the design around the measured bottleneck. If the
-microphone-only control is slower, report it explicitly and create a scoped
-follow-up rather than implying this PR improves every meeting mode.
+Proceed with the selected production change only when the five-minute
+baseline's existing `turn_wav_extraction.durationMs` median consumes at least
+20 percent of median handoff-to-first-provider-request. That stage is the
+current synchronous cache lookup, extraction, ordinary-turn normalization,
+and eager fallback-normalization wall. Do not substitute detection-checkpoint
+to request-arrival time: that interval also includes unrelated checkpoint I/O,
+request setup, authentication, and socket work. If the primary preparation
+wall misses the threshold, stop and revise the design around the measured
+bottleneck. If the microphone-only control is slower, report it explicitly and
+create a scoped follow-up rather than implying this PR improves every meeting
+mode.
 
-After implementation, the median handoff-to-first-provider-request or
-handoff-to-first-persisted-turn must improve by at least 20 percent, while
-handoff-to-transcription-complete and the microphone-only control must not
-regress by more than 5 percent. Exact structural tests must also show zero
-complete-source fallback preparation on the successful path. Do not weaken
-these thresholds after seeing the results.
+After implementation, the five-minute median handoff-to-first-committed-turn
+must improve by at least 20 percent and median
+handoff-to-transcription-complete must improve by at least 10 percent. The
+microphone-only control must not regress by more than 5 percent. First-request
+latency remains a reported diagnostic rather than a substitute for either user
+outcome. Exact structural tests must also show zero complete-source fallback
+preparation on the successful path. Do not weaken these thresholds after
+seeing the results.
 
 ## Detailed design
 
@@ -300,6 +306,12 @@ normal sink, then returns the preparation error. It must not proceed to
 complete-source fallback or note generation after a terminal preparation
 error.
 
+The producer returns a preparation report on success and failure. The caller
+persists that report and flushes any captured first-event telemetry before it
+propagates a terminal error. Error draining never creates replacement launch
+permits, and receiver closure counts as success only after every scheduled
+descriptor has been received.
+
 Provider errors retain the current per-turn failure and retry behavior. They do
 not stop preparation of later turns. If every ordinary provider result for a
 source is unusable, the lazy fallback rules apply.
@@ -341,12 +353,26 @@ first-event checkpoint is written once even when two requests race. Details may
 contain durations, counts, source, and turn index, but never transcript text,
 audio bytes, titles, or note content.
 
+Preparation reporting separates active DSP time from backpressured producer
+wall time. `activePreparationDurationMs` sums time inside the synchronous
+preparer. `producerWallDurationMs` includes capacity-two channel backpressure,
+and `doneToPreparationCompleteMs` records when the producer actually finishes.
+Do not compare backpressured producer wall time with the baseline's synchronous
+`turn_wav_extraction.durationMs` as though their semantics were identical.
+
+All new latency checkpoints are diagnostic and best-effort. Their write
+failures are logged and never fail processing. The microphone-only path records
+its own one-row success/failure counts and explicitly flushes first-event,
+transcription-complete, generation, and processing-complete telemetry on each
+terminal path rather than borrowing dual-source-only variables.
+
 Apply the corresponding Done-origin metrics to the microphone-only control so
 the benchmark compares the two real processing paths. The benchmark's loopback
 server timestamp is the authority for actual request arrival; the production
 checkpoint remains useful for installed-app diagnostics.
 
-The first-persistence checkpoint measures native data availability. Frontend
+The first-persistence checkpoint is marked after the successful upsert and
+measures native data availability. Frontend
 visibility is reported as that timestamp plus the current 0-to-1-second poll
 window and observed query/render time, not as an invented exact timestamp.
 
@@ -448,8 +474,11 @@ Run a loopback fake June API with a fixed 100 ms transcription delay, 25 ms
 cleanup delay, and immediate generation response for
 `/v1/notes/transcribe`, `/v1/dictate/cleanup`, and `/v1/notes/generate`. Only
 the remote service is fake; WAV work and persistence are real. The fake server
-records when the first transcription request arrives. SQLite observation
-records the first successful transcript row, and the first generate request is
+records when the first transcription request arrives. A concurrent SQLite
+observer records the monotonic instant when a successful transcript row first
+becomes queryable after commit; the row's `created_at` is not used because it
+is assigned before the upsert completes. A baseline-compatible test-only hook
+records acquisition of the processing ticket. The first generate request is
 the unambiguous boundary that transcription has completed.
 
 Apply the benchmark-only harness unchanged to a temporary worktree at baseline
@@ -461,6 +490,8 @@ microphone-only control. Report medians for:
 - post-finalization handoff to validation completion and processing-ticket
   acquisition;
 - turn detection and ordinary preparation wall;
+- active preparation time and backpressured producer wall time after the
+  refactor, reported with their distinct semantics;
 - handoff to first fake-provider request arrival;
 - handoff to first successful transcript persistence;
 - handoff to transcription completion;
