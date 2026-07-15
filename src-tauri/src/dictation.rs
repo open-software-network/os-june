@@ -4046,7 +4046,14 @@ fn is_here_instruction_subject_marker(word: &str) -> bool {
 fn is_here_instruction_cleanup_modifier(word: &str) -> bool {
     matches!(
         word,
-        "clean" | "cleaned" | "corrected" | "normalized" | "punctuated" | "rewritten"
+        "clean"
+            | "cleaned"
+            | "corrected"
+            | "final"
+            | "normalized"
+            | "polished"
+            | "punctuated"
+            | "rewritten"
     )
 }
 
@@ -4081,13 +4088,18 @@ fn is_generic_here_instruction_preamble(preamble: &str) -> bool {
     {
         return true;
     }
-    preamble.starts_with("here, i")
+    (preamble.starts_with("here, i") || preamble.starts_with("here i"))
         && preamble
             .split(|character: char| !character.is_ascii_alphanumeric())
             .any(|word| {
                 matches!(
                     word,
-                    "cleaned" | "corrected" | "normalized" | "punctuated" | "rewritten"
+                    "cleaned"
+                        | "corrected"
+                        | "normalized"
+                        | "polished"
+                        | "punctuated"
+                        | "rewritten"
                 )
             })
 }
@@ -7150,6 +7162,15 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here it is, punctuated: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the final transcript. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the polished version. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here I've cleaned it up: Send it today."
         ));
         assert!(looks_like_instruction_response(
             "Here's your corrected transcript. Send it today."
