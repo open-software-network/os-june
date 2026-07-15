@@ -4047,6 +4047,8 @@ fn is_generic_here_instruction_preamble(preamble: &str) -> bool {
             | "here's what i heard"
             | "here is what i got"
             | "here's what i got"
+            | "here is what you said"
+            | "here's what you said"
     ) {
         return true;
     }
@@ -7096,6 +7098,9 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here are the improvements: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is what you said: Send it today."
         ));
         assert!(looks_like_instruction_response(
             "Here is the transcription: Send it today."
