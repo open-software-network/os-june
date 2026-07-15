@@ -1998,6 +1998,152 @@ pub async fn create_project_update(
     project_update_ref_from_payload(data.project_update_create)
 }
 
+// --- Reconciliation lookups --------------------------------------------------------
+//
+// Minimal existence probes for the ambiguous-mutation flow: when a create's
+// outcome is unknown (transport loss after the request may have been sent),
+// the route layer looks the object up by the client-minted UUID it supplied
+// as the input id. Ok(Some) means the create landed; Ok(None) means Linear
+// confirms no such object exists; Err means the probe itself could not
+// confirm either way (the caller keeps the action ambiguous).
+//
+// The schema declares these lookups NON-NULL (`issue(id:): Issue!`,
+// `comment(id:): Comment!`, `projectUpdate(id:): ProjectUpdate!`), so a
+// missing object arrives as a GraphQL error, not a null field. Both signals
+// are handled defensively: a null/absent data field maps to Ok(None), and an
+// Api-class error whose message reads as "does not exist" maps to Ok(None)
+// via [`is_not_found_api_error`]. Auth, rate-limit, and transport errors
+// pass through as Err - they say nothing about existence.
+
+/// Minimal issue reference used by reconciliation (and its success payload
+/// when a lost create turns out to have landed).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearIssueRef {
+    pub id: String,
+    pub identifier: String,
+    pub url: String,
+}
+
+const ISSUE_REF_QUERY: &str =
+    "query IssueRef($id: String!) { issue(id: $id) { id identifier url } }";
+const COMMENT_REF_QUERY: &str = "query CommentRef($id: String!) { comment(id: $id) { id url } }";
+const PROJECT_UPDATE_REF_QUERY: &str =
+    "query ProjectUpdateRef($id: String!) { projectUpdate(id: $id) { id url } }";
+
+#[derive(Deserialize)]
+struct IssueRefDataWire {
+    #[serde(default)]
+    issue: Option<IssueRefWire>,
+}
+
+#[derive(Deserialize)]
+struct IssueRefWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    identifier: String,
+    #[serde(default)]
+    url: String,
+}
+
+#[derive(Deserialize)]
+struct CommentRefDataWire {
+    #[serde(default)]
+    comment: Option<IdUrlWire>,
+}
+
+#[derive(Deserialize)]
+struct ProjectUpdateRefDataWire {
+    #[serde(default, rename = "projectUpdate")]
+    project_update: Option<IdUrlWire>,
+}
+
+/// True when an API-class error reads as "the entity does not exist". Linear
+/// signals a missing lookup target through the errors array (the lookup
+/// return types are non-null), and the exact message is not contractual, so
+/// this matches the common phrasings case-insensitively. Only `Api` errors
+/// are ever classified: auth, rate-limit, and network failures say nothing
+/// about whether the object exists.
+fn is_not_found_api_error(error: &LinearApiError) -> bool {
+    match error {
+        LinearApiError::Api { message, .. } => {
+            let lowered = message.to_ascii_lowercase();
+            lowered.contains("not found")
+                || lowered.contains("could not find")
+                || lowered.contains("does not exist")
+        }
+        _ => false,
+    }
+}
+
+/// Probe whether an issue with this id exists (see the section comment for
+/// the Ok(None) semantics). Used to reconcile an ambiguous `create_issue`.
+pub async fn get_issue_ref(
+    access_token: &str,
+    issue_id: &str,
+) -> Result<Option<LinearIssueRef>, LinearApiError> {
+    match graphql::<IssueRefDataWire>(
+        access_token,
+        ISSUE_REF_QUERY,
+        serde_json::json!({ "id": issue_id }),
+    )
+    .await
+    {
+        Ok(data) => Ok(data.issue.map(|issue| LinearIssueRef {
+            id: issue.id,
+            identifier: issue.identifier,
+            url: issue.url,
+        })),
+        Err(error) if is_not_found_api_error(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Probe whether a comment with this id exists. Used to reconcile an
+/// ambiguous `add_comment`.
+pub async fn get_comment_ref(
+    access_token: &str,
+    comment_id: &str,
+) -> Result<Option<LinearCommentRef>, LinearApiError> {
+    match graphql::<CommentRefDataWire>(
+        access_token,
+        COMMENT_REF_QUERY,
+        serde_json::json!({ "id": comment_id }),
+    )
+    .await
+    {
+        Ok(data) => Ok(data.comment.map(|comment| LinearCommentRef {
+            id: comment.id,
+            url: comment.url,
+        })),
+        Err(error) if is_not_found_api_error(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Probe whether a project update with this id exists. Used to reconcile an
+/// ambiguous `create_project_update`.
+pub async fn get_project_update_ref(
+    access_token: &str,
+    project_update_id: &str,
+) -> Result<Option<LinearProjectUpdateRef>, LinearApiError> {
+    match graphql::<ProjectUpdateRefDataWire>(
+        access_token,
+        PROJECT_UPDATE_REF_QUERY,
+        serde_json::json!({ "id": project_update_id }),
+    )
+    .await
+    {
+        Ok(data) => Ok(data.project_update.map(|update| LinearProjectUpdateRef {
+            id: update.id,
+            url: update.url,
+        })),
+        Err(error) if is_not_found_api_error(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2945,5 +3091,57 @@ mod tests {
         let payload: ProjectUpdatePayloadWire =
             serde_json::from_str(r#"{ "success": false }"#).expect("fixture");
         assert!(project_update_ref_from_payload(payload).is_err());
+    }
+
+    #[test]
+    fn not_found_classification_only_matches_api_errors_reading_as_missing() {
+        for message in [
+            "Entity not found",
+            "Issue not found: 0d1f...",
+            "Could not find referenced Comment",
+            "record does not exist",
+        ] {
+            assert!(is_not_found_api_error(&LinearApiError::Api {
+                status: 200,
+                message: message.to_string(),
+            }));
+        }
+        // Other API failures, and every non-Api class, say nothing about
+        // existence and must never read as "confirmed absent".
+        assert!(!is_not_found_api_error(&LinearApiError::Api {
+            status: 500,
+            message: "internal error".to_string(),
+        }));
+        assert!(!is_not_found_api_error(&LinearApiError::Network(
+            "connection reset".to_string()
+        )));
+        assert!(!is_not_found_api_error(&LinearApiError::RateLimited));
+        assert!(!is_not_found_api_error(&LinearApiError::Unauthorized));
+    }
+
+    #[test]
+    fn reconciliation_ref_wires_parse_present_and_null_objects() {
+        let data: IssueRefDataWire = serde_json::from_str(
+            r#"{ "issue": { "id": "i1", "identifier": "ENG-7", "url": "https://linear.app/x/issue/ENG-7" } }"#,
+        )
+        .expect("fixture");
+        let issue = data.issue.expect("present");
+        assert_eq!(issue.identifier, "ENG-7");
+        let data: IssueRefDataWire = serde_json::from_str(r#"{ "issue": null }"#).expect("fixture");
+        assert!(data.issue.is_none());
+
+        let data: CommentRefDataWire =
+            serde_json::from_str(r#"{ "comment": { "id": "c1", "url": "u" } }"#).expect("fixture");
+        assert!(data.comment.is_some());
+        let data: CommentRefDataWire = serde_json::from_str(r#"{}"#).expect("fixture");
+        assert!(data.comment.is_none());
+
+        let data: ProjectUpdateRefDataWire =
+            serde_json::from_str(r#"{ "projectUpdate": { "id": "pu1", "url": "u" } }"#)
+                .expect("fixture");
+        assert!(data.project_update.is_some());
+        let data: ProjectUpdateRefDataWire =
+            serde_json::from_str(r#"{ "projectUpdate": null }"#).expect("fixture");
+        assert!(data.project_update.is_none());
     }
 }
