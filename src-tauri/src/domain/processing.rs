@@ -18,7 +18,10 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, AtomicI64, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -92,6 +95,153 @@ fn turn_cache_key(source: &str, turn_index: i64) -> String {
 
 fn elapsed_ms(started: Instant) -> i64 {
     started.elapsed().as_millis().min(i64::MAX as u128) as i64
+}
+
+const UNSET_TIMING_MS: i64 = -1;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ProcessingTiming {
+    done_started: Option<Instant>,
+}
+
+impl ProcessingTiming {
+    pub(crate) fn from_done(done_started: Instant) -> Self {
+        Self {
+            done_started: Some(done_started),
+        }
+    }
+
+    pub(crate) fn untracked() -> Self {
+        Self::default()
+    }
+
+    fn done_to_duration_ms(self) -> Option<i64> {
+        self.done_started.map(elapsed_ms)
+    }
+
+    pub(crate) fn checkpoint_details(self, mut details: serde_json::Value) -> String {
+        if let (Some(duration_ms), Some(object)) =
+            (self.done_to_duration_ms(), details.as_object_mut())
+        {
+            object.insert("doneToDurationMs".to_string(), duration_ms.into());
+        }
+        details.to_string()
+    }
+}
+
+#[derive(Clone)]
+struct FirstEventTimeline {
+    timing: ProcessingTiming,
+    first_request_ms: Arc<AtomicI64>,
+    first_persisted_ms: Arc<AtomicI64>,
+    flushed: Arc<AtomicBool>,
+}
+
+impl FirstEventTimeline {
+    fn new(timing: ProcessingTiming) -> Self {
+        Self {
+            timing,
+            first_request_ms: Arc::new(AtomicI64::new(UNSET_TIMING_MS)),
+            first_persisted_ms: Arc::new(AtomicI64::new(UNSET_TIMING_MS)),
+            flushed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn mark_first_request(&self) {
+        self.mark(&self.first_request_ms);
+    }
+
+    fn mark_first_persisted(&self) {
+        self.mark(&self.first_persisted_ms);
+    }
+
+    fn mark(&self, slot: &AtomicI64) {
+        if let Some(duration_ms) = self.timing.done_to_duration_ms() {
+            let _ = slot.compare_exchange(
+                UNSET_TIMING_MS,
+                duration_ms,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+    }
+
+    async fn flush(&self, repos: &Repositories, session_id: &str) {
+        if self.flushed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        for (kind, duration_ms) in [
+            (
+                "first_transcription_request",
+                self.first_request_ms.load(Ordering::Acquire),
+            ),
+            (
+                "first_transcript_persisted",
+                self.first_persisted_ms.load(Ordering::Acquire),
+            ),
+        ] {
+            if duration_ms == UNSET_TIMING_MS {
+                continue;
+            }
+            add_latency_checkpoint(
+                repos,
+                session_id,
+                kind,
+                serde_json::json!({ "doneToDurationMs": duration_ms }).to_string(),
+            )
+            .await;
+        }
+    }
+}
+
+pub(crate) async fn add_latency_checkpoint(
+    repos: &Repositories,
+    session_id: &str,
+    kind: &str,
+    details: String,
+) {
+    if let Err(error) = repos.add_checkpoint(session_id, kind, Some(details)).await {
+        tracing::warn!(session_id, kind, %error, "failed to persist latency checkpoint");
+    }
+}
+
+async fn add_processing_complete_checkpoint(
+    repos: &Repositories,
+    session_id: &str,
+    timing: ProcessingTiming,
+    processing_started: Instant,
+    status: &str,
+) {
+    add_latency_checkpoint(
+        repos,
+        session_id,
+        "processing_complete",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(processing_started),
+            "status": status,
+        })),
+    )
+    .await;
+}
+
+async fn add_infrastructure_transcription_failure_checkpoint(
+    repos: &Repositories,
+    session_id: &str,
+    timing: ProcessingTiming,
+    transcription_started: Instant,
+    error_code: &str,
+) {
+    add_latency_checkpoint(
+        repos,
+        session_id,
+        "transcription_complete",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(transcription_started),
+            "status": "failed",
+            "error": error_code,
+        })),
+    )
+    .await;
 }
 
 fn session_temp_dir(prefix: &str, session_id: &str) -> PathBuf {
@@ -269,7 +419,7 @@ pub fn manual_notes_for_generation(note: &NoteDto) -> Option<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn process_saved_audio(
+pub(crate) async fn process_saved_audio(
     repos: &Repositories,
     note_id: &str,
     session_id: &str,
@@ -279,7 +429,11 @@ pub async fn process_saved_audio(
     existing_generated_note: Option<String>,
     manual_notes: Option<String>,
     recorded_silence: bool,
+    timing: ProcessingTiming,
 ) -> Result<NoteDto, AppError> {
+    let processing_started = Instant::now();
+    let transcription_started = Instant::now();
+    let timeline = FirstEventTimeline::new(timing);
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
@@ -294,8 +448,9 @@ pub async fn process_saved_audio(
     let transcription_provider = crate::providers::configured_transcription_provider();
     let dictionary_entries = repos.list_dictionary_entries().await?;
     let dictionary_context = build_dictionary_context(&dictionary_entries);
+    let transcriber = instrument_turn_transcriber(default_turn_transcriber(), timeline.clone());
     let transcription = match transcribe_prepared_audio(
-        default_turn_transcriber(),
+        transcriber,
         TranscribePreparedAudioRequest {
             provider: transcription_provider.clone(),
             audio_path: normalized_audio_path,
@@ -314,6 +469,20 @@ pub async fn process_saved_audio(
     {
         Ok(transcription) => transcription,
         Err(error) => {
+            timeline.flush(repos, session_id).await;
+            add_latency_checkpoint(
+                repos,
+                session_id,
+                "transcription_complete",
+                timing.checkpoint_details(serde_json::json!({
+                    "durationMs": elapsed_ms(transcription_started),
+                    "status": "failed",
+                    "successfulTurnCount": 0,
+                    "failedTurnCount": 1,
+                    "error": error.code,
+                })),
+            )
+            .await;
             let user_message = user_facing_transcription_failure_message(
                 &error.code,
                 &error.message,
@@ -327,6 +496,14 @@ pub async fn process_saved_audio(
                 persist_microphone_only_transcript_coverage(repos, session_id, "microphone", &[])
                     .await;
             }
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
             repos
                 .set_note_status(
                     note_id,
@@ -351,7 +528,7 @@ pub async fn process_saved_audio(
         dictionary_context.as_deref(),
     )
     .await;
-    let transcript_row = repos
+    let transcript_row = match repos
         .create_transcript(
             note_id,
             audio_artifact_id,
@@ -359,11 +536,56 @@ pub async fn process_saved_audio(
             transcript.language.clone(),
             &transcript.provider,
         )
-        .await?;
+        .await
+    {
+        Ok(row) => row,
+        Err(error) => {
+            let error = AppError::from(error);
+            timeline.flush(repos, session_id).await;
+            add_infrastructure_transcription_failure_checkpoint(
+                repos,
+                session_id,
+                timing,
+                transcription_started,
+                &error.code,
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    timeline.mark_first_persisted();
+    timeline.flush(repos, session_id).await;
+    add_latency_checkpoint(
+        repos,
+        session_id,
+        "transcription_complete",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(transcription_started),
+            "status": "succeeded",
+            "successfulTurnCount": 1,
+            "failedTurnCount": 0,
+        })),
+    )
+    .await;
 
-    repos
+    if let Err(error) = repos
         .set_note_status(note_id, ProcessingStatus::Generating, None)
-        .await?;
+        .await
+    {
+        let error = AppError::from(error);
+        add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "failed")
+            .await;
+        return Err(error);
+    }
+    let generation_started = Instant::now();
     let generated = match generate_note_from_transcript(GenerationRequest {
         provider: crate::providers::generation_provider(),
         operation_id: Some(note_id.to_string()),
@@ -378,6 +600,25 @@ pub async fn process_saved_audio(
     {
         Ok(generated) => generated,
         Err(error) => {
+            add_latency_checkpoint(
+                repos,
+                session_id,
+                "note_generation",
+                timing.checkpoint_details(serde_json::json!({
+                    "durationMs": elapsed_ms(generation_started),
+                    "status": "failed",
+                    "error": error.code,
+                })),
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
             repos
                 .set_note_status(
                     note_id,
@@ -388,7 +629,17 @@ pub async fn process_saved_audio(
             return Err(error);
         }
     };
-    let generation_result_id = repos
+    add_latency_checkpoint(
+        repos,
+        session_id,
+        "note_generation",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(generation_started),
+            "status": "succeeded",
+        })),
+    )
+    .await;
+    let generation_result_id = match repos
         .create_generation_result(
             note_id,
             &transcript_row.id,
@@ -397,8 +648,23 @@ pub async fn process_saved_audio(
             &generated.provider,
             &generated.prompt_version,
         )
-        .await?;
-    let note = repos
+        .await
+    {
+        Ok(id) => id,
+        Err(error) => {
+            let error = AppError::from(error);
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    let note = match repos
         .set_generated_note_for_session(
             note_id,
             Some(session_id),
@@ -406,12 +672,29 @@ pub async fn process_saved_audio(
             generated.title_suggestion,
             generated.content,
         )
-        .await?;
+        .await
+    {
+        Ok(note) => note,
+        Err(error) => {
+            let error = AppError::from(error);
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "succeeded")
+        .await;
     Ok(note)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn process_saved_source_audio(
+pub(crate) async fn process_saved_source_audio(
     repos: &Repositories,
     note_id: &str,
     session_id: &str,
@@ -420,7 +703,9 @@ pub async fn process_saved_source_audio(
     title: String,
     existing_generated_note: Option<String>,
     manual_notes: Option<String>,
+    timing: ProcessingTiming,
 ) -> Result<NoteDto, AppError> {
+    let timeline = FirstEventTimeline::new(timing);
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
@@ -428,6 +713,7 @@ pub async fn process_saved_source_audio(
     let dictionary_entries = repos.list_dictionary_entries().await?;
     let dictionary_context = build_dictionary_context(&dictionary_entries);
     let processing_started = Instant::now();
+    let transcription_started = Instant::now();
     let detection_started = Instant::now();
     let SilentSystemDropOutcome {
         kept: sources,
@@ -629,13 +915,22 @@ pub async fn process_saved_source_audio(
     let persist_repos = repos.clone();
     let persist_note_id = note_id.to_string();
     let persist_session_id = session_id.to_string();
+    let persist_timeline = timeline.clone();
     let result_sink: TurnResultSink = Arc::new(move |event| {
         let repos = persist_repos.clone();
         let note_id = persist_note_id.clone();
         let session_id = persist_session_id.clone();
+        let timeline = persist_timeline.clone();
         Box::pin(async move {
-            persist_turn_transcription_event(&repos, &note_id, &session_id, source_mode, event)
-                .await
+            persist_turn_transcription_event(
+                &repos,
+                &note_id,
+                &session_id,
+                source_mode,
+                event,
+                timeline,
+            )
+            .await
         })
     });
 
@@ -644,17 +939,41 @@ pub async fn process_saved_source_audio(
         failures: Vec::new(),
     };
     if !transcription_jobs.is_empty() {
-        let mut fresh_outcome = transcribe_turn_jobs_bounded(
+        let transcriber = instrument_turn_transcriber(default_turn_transcriber(), timeline.clone());
+        let mut fresh_outcome = match transcribe_turn_jobs_bounded(
             transcription_jobs,
             &transcription_outcome.candidates,
             transcription_provider.clone(),
             title.clone(),
             dictionary_context,
-            default_turn_transcriber(),
+            transcriber,
             Some(result_sink),
             DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
         )
-        .await?;
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                timeline.flush(repos, session_id).await;
+                add_infrastructure_transcription_failure_checkpoint(
+                    repos,
+                    session_id,
+                    timing,
+                    transcription_started,
+                    &error.code,
+                )
+                .await;
+                add_processing_complete_checkpoint(
+                    repos,
+                    session_id,
+                    timing,
+                    processing_started,
+                    "failed",
+                )
+                .await;
+                return Err(error);
+            }
+        };
         transcription_outcome
             .candidates
             .append(&mut fresh_outcome.candidates);
@@ -676,7 +995,7 @@ pub async fn process_saved_source_audio(
             .as_deref()
             .unwrap_or("Source did not produce a usable transcript.");
         let persistence_started = Instant::now();
-        repos
+        if let Err(error) = repos
             .upsert_failed_source_turn_transcript(
                 note_id,
                 session_id,
@@ -689,8 +1008,29 @@ pub async fn process_saved_source_audio(
                 failure.input.end_ms.unwrap_or_default(),
                 failure.input.turn_index.unwrap_or_default(),
             )
-            .await?;
-        repos
+            .await
+        {
+            let error = AppError::from(error);
+            timeline.flush(repos, session_id).await;
+            add_infrastructure_transcription_failure_checkpoint(
+                repos,
+                session_id,
+                timing,
+                transcription_started,
+                &error.code,
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+        if let Err(error) = repos
             .add_source_checkpoint(
                 session_id,
                 Some(failure.artifact_id.as_str()),
@@ -705,12 +1045,57 @@ pub async fn process_saved_source_audio(
                     .to_string(),
                 ),
             )
-            .await?;
+            .await
+        {
+            let error = AppError::from(error);
+            timeline.flush(repos, session_id).await;
+            add_infrastructure_transcription_failure_checkpoint(
+                repos,
+                session_id,
+                timing,
+                transcription_started,
+                &error.code,
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
     }
 
-    let persisted_transcripts = repos
+    let persisted_transcripts = match repos
         .successful_source_turn_transcripts_for_session(session_id)
-        .await?;
+        .await
+    {
+        Ok(transcripts) => transcripts,
+        Err(error) => {
+            let error = AppError::from(error);
+            timeline.flush(repos, session_id).await;
+            add_infrastructure_transcription_failure_checkpoint(
+                repos,
+                session_id,
+                timing,
+                transcription_started,
+                &error.code,
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
     let transcript_coverage = compute_transcript_coverage(
         &sources,
         &coverage_turns,
@@ -748,35 +1133,49 @@ pub async fn process_saved_source_audio(
         .map(source_transcript_input_from_row)
         .collect::<Vec<_>>();
     let valid_sources = valid_sources_for_processing(transcript_inputs);
-    if valid_sources.is_empty() {
+    let blocking_error = if valid_sources.is_empty() {
         let failure_message = source_failure_summary(&transcription_outcome.failures)
             .unwrap_or_else(|| "No selected source produced a usable transcript.".to_string());
+        Some(AppError::new("transcription_failed", failure_message))
+    } else {
+        blocking_transcription_failure_summary(&visible_failures)
+            .map(|failure_message| AppError::new("transcription_partially_failed", failure_message))
+    };
+    timeline.flush(repos, session_id).await;
+    add_latency_checkpoint(
+        repos,
+        session_id,
+        "transcription_complete",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(transcription_started),
+            "status": if blocking_error.is_some() { "failed" } else { "succeeded" },
+            "successfulTurnCount": persisted_transcripts.len(),
+            "failedTurnCount": visible_failures.len(),
+        })),
+    )
+    .await;
+    if let Some(error) = blocking_error {
+        add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "failed")
+            .await;
         repos
             .set_note_status(
                 note_id,
                 ProcessingStatus::Failed,
-                Some(failure_message.clone()),
+                Some(error.message.clone()),
             )
             .await?;
-        return Err(AppError::new("transcription_failed", failure_message));
-    }
-    if let Some(failure_message) = blocking_transcription_failure_summary(&visible_failures) {
-        repos
-            .set_note_status(
-                note_id,
-                ProcessingStatus::Failed,
-                Some(failure_message.clone()),
-            )
-            .await?;
-        return Err(AppError::new(
-            "transcription_partially_failed",
-            failure_message,
-        ));
+        return Err(error);
     }
     let labeled_transcript = labeled_transcript_from_sources(&valid_sources);
-    repos
+    if let Err(error) = repos
         .set_note_status(note_id, ProcessingStatus::Generating, None)
-        .await?;
+        .await
+    {
+        let error = AppError::from(error);
+        add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "failed")
+            .await;
+        return Err(error);
+    }
     let generation_started = Instant::now();
     let generated = match generate_note_from_transcript(GenerationRequest {
         provider: crate::providers::generation_provider(),
@@ -792,6 +1191,25 @@ pub async fn process_saved_source_audio(
     {
         Ok(generated) => generated,
         Err(error) => {
+            add_latency_checkpoint(
+                repos,
+                session_id,
+                "note_generation",
+                timing.checkpoint_details(serde_json::json!({
+                    "durationMs": elapsed_ms(generation_started),
+                    "status": "failed",
+                    "error": error.code,
+                })),
+            )
+            .await;
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
             repos
                 .set_note_status(
                     note_id,
@@ -799,39 +1217,22 @@ pub async fn process_saved_source_audio(
                     Some(error.message.clone()),
                 )
                 .await?;
-            repos
-                .add_checkpoint(
-                    session_id,
-                    "note_generation",
-                    Some(
-                        serde_json::json!({
-                            "durationMs": elapsed_ms(generation_started),
-                            "status": "failed",
-                            "error": error.code,
-                        })
-                        .to_string(),
-                    ),
-                )
-                .await?;
             return Err(error);
         }
     };
-    repos
-        .add_checkpoint(
-            session_id,
-            "note_generation",
-            Some(
-                serde_json::json!({
-                    "durationMs": elapsed_ms(generation_started),
-                    "status": "succeeded",
-                    "transcriptCount": valid_sources.len(),
-                })
-                .to_string(),
-            ),
-        )
-        .await?;
+    add_latency_checkpoint(
+        repos,
+        session_id,
+        "note_generation",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": elapsed_ms(generation_started),
+            "status": "succeeded",
+            "transcriptCount": valid_sources.len(),
+        })),
+    )
+    .await;
     let transcript_id = first_transcript_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let generation_result_id = repos
+    let generation_result_id = match repos
         .create_generation_result(
             note_id,
             &transcript_id,
@@ -840,8 +1241,23 @@ pub async fn process_saved_source_audio(
             &generated.provider,
             &generated.prompt_version,
         )
-        .await?;
-    let note = repos
+        .await
+    {
+        Ok(id) => id,
+        Err(error) => {
+            let error = AppError::from(error);
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    let note = match repos
         .set_generated_note_for_session(
             note_id,
             Some(session_id),
@@ -849,19 +1265,24 @@ pub async fn process_saved_source_audio(
             generated.title_suggestion,
             generated.content,
         )
-        .await?;
-    repos
-        .add_checkpoint(
-            session_id,
-            "processing_complete",
-            Some(
-                serde_json::json!({
-                    "durationMs": elapsed_ms(processing_started),
-                })
-                .to_string(),
-            ),
-        )
-        .await?;
+        .await
+    {
+        Ok(note) => note,
+        Err(error) => {
+            let error = AppError::from(error);
+            add_processing_complete_checkpoint(
+                repos,
+                session_id,
+                timing,
+                processing_started,
+                "failed",
+            )
+            .await;
+            return Err(error);
+        }
+    };
+    add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "succeeded")
+        .await;
     Ok(note)
 }
 
@@ -1172,6 +1593,16 @@ type TurnResultSink = Arc<dyn Fn(CompletedTurnTranscription) -> TurnResultFuture
 
 fn default_turn_transcriber() -> TurnTranscriber {
     Arc::new(|request| Box::pin(transcribe_saved_audio(request)))
+}
+
+fn instrument_turn_transcriber(
+    inner: TurnTranscriber,
+    timeline: FirstEventTimeline,
+) -> TurnTranscriber {
+    Arc::new(move |request| {
+        timeline.mark_first_request();
+        inner(request)
+    })
 }
 
 struct TranscribePreparedAudioRequest {
@@ -1719,6 +2150,7 @@ async fn persist_turn_transcription_event(
     session_id: &str,
     source_mode: RecordingSourceMode,
     event: CompletedTurnTranscription,
+    timeline: FirstEventTimeline,
 ) -> Result<(), AppError> {
     let (artifact_id, source, start_ms, end_ms, turn_index, status) = match &event.result {
         TurnTranscriptionResult::Candidate(candidate) => (
@@ -1777,6 +2209,7 @@ async fn persist_turn_transcription_event(
             candidate.input.turn_index.unwrap_or_default(),
         )
         .await?;
+    timeline.mark_first_persisted();
     tracing::info!(
         %session_id,
         source = %candidate.input.source,
@@ -2220,6 +2653,7 @@ fn tail_chars(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::june_api::TranscriptionProviderResult;
+    use sqlx::row::Row;
     use std::{
         collections::HashMap,
         path::PathBuf,
@@ -2229,6 +2663,103 @@ mod tests {
         },
         time::Duration,
     };
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn first_event_timeline_flushes_each_checkpoint_once() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note(None).await.expect("note");
+        let session_id = format!("session-{}", uuid::Uuid::new_v4());
+        repos
+            .create_recording_session(
+                &note.id,
+                &session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "microphone.partial.wav",
+                "microphone.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+
+        let timeline = FirstEventTimeline::new(ProcessingTiming::from_done(Instant::now()));
+        let first_request = timeline.clone();
+        let second_request = timeline.clone();
+        let first_persisted = timeline.clone();
+        let second_persisted = timeline.clone();
+        let barrier = Arc::new(tokio::sync::Barrier::new(5));
+        let first_request_barrier = Arc::clone(&barrier);
+        let second_request_barrier = Arc::clone(&barrier);
+        let first_persisted_barrier = Arc::clone(&barrier);
+        let second_persisted_barrier = Arc::clone(&barrier);
+        let (first_request, second_request, first_persisted, second_persisted, _) = tokio::join!(
+            tokio::spawn(async move {
+                first_request_barrier.wait().await;
+                first_request.mark_first_request();
+            }),
+            tokio::spawn(async move {
+                second_request_barrier.wait().await;
+                second_request.mark_first_request();
+            }),
+            tokio::spawn(async move {
+                first_persisted_barrier.wait().await;
+                first_persisted.mark_first_persisted();
+            }),
+            tokio::spawn(async move {
+                second_persisted_barrier.wait().await;
+                second_persisted.mark_first_persisted();
+            }),
+            async {
+                barrier.wait().await;
+            },
+        );
+        first_request.expect("first request marker");
+        second_request.expect("second request marker");
+        first_persisted.expect("first persistence marker");
+        second_persisted.expect("second persistence marker");
+
+        let second_flush = timeline.clone();
+        tokio::join!(
+            timeline.flush(&repos, &session_id),
+            second_flush.flush(&repos, &session_id),
+        );
+
+        let rows = sqlx::query::query(
+            "SELECT kind, details
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('first_transcription_request', 'first_transcript_persisted')
+             ORDER BY rowid ASC",
+        )
+        .bind(&session_id)
+        .fetch_all(&repos.pool)
+        .await
+        .expect("first-event checkpoints");
+        assert_eq!(rows.len(), 2);
+
+        for expected_kind in ["first_transcription_request", "first_transcript_persisted"] {
+            let matching = rows
+                .iter()
+                .filter(|row| row.get::<String, _>("kind") == expected_kind)
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1, "checkpoint count for {expected_kind}");
+            let details = matching[0]
+                .get::<Option<String>, _>("details")
+                .expect("checkpoint details");
+            let details: serde_json::Value =
+                serde_json::from_str(&details).expect("checkpoint details JSON");
+            let object = details.as_object().expect("checkpoint details object");
+            assert_eq!(object.len(), 1);
+            assert!(object["doneToDurationMs"].as_i64().is_some());
+        }
+    }
 
     #[test]
     fn full_source_normalization_runs_once_per_source() {
