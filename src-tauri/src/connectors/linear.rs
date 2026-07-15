@@ -386,10 +386,12 @@ struct GraphqlErrorExtensionsWire {
     kind: Option<String>,
 }
 
-/// Shared GraphQL POST for the identity and teams documents. HTTP 401 maps
-/// to `Unauthorized`; a `RATELIMITED` code anywhere in the errors array maps
-/// to `RateLimited`; any other GraphQL error surfaces the first message
-/// (bounded). Never logs or echoes the access token.
+/// Shared GraphQL POST for every fixed document in this module - queries
+/// and mutations alike (a mutation document is just a different query
+/// string to the same endpoint). HTTP 401 maps to `Unauthorized`; a
+/// `RATELIMITED` code anywhere in the errors array maps to `RateLimited`;
+/// any other GraphQL error surfaces the first message (bounded). Never logs
+/// or echoes the access token.
 async fn graphql<T: DeserializeOwned>(
     access_token: &str,
     query: &str,
@@ -1662,6 +1664,340 @@ pub async fn list_project_updates(
     Ok((team_ids, updates))
 }
 
+// --- Slice 3: write operations ---------------------------------------------------
+//
+// Four fixed mutation documents - issue create/update, comment create,
+// project update create - and NOTHING else (no delete/archive/admin
+// mutations exist by design). They ride the same [`graphql`] POST as the
+// reads: a mutation document is just a query string plus variables to that
+// endpoint, so error classification (auth, RATELIMITED, bounded messages)
+// is identical. Grant enforcement, the `expected_updated_at` conflict
+// check, approval parking, and the action journal all live in the CALLER
+// (the provider-proxy route layer): these functions are plain mutations so
+// they stay unit-testable without an app handle.
+//
+// Creates are retry-safe by construction: the caller mints a v4 UUID and
+// passes it as the input's `id`, which Linear adopts as the created
+// object's id (spike doc). Replaying the same input after an ambiguous
+// outcome can then be reconciled by querying that id instead of guessing.
+
+/// Issue priority is an Int 0-4 at Linear (0 = none, 1 = urgent .. 4 = low);
+/// out-of-range values are clamped rather than rejected so an off-by-one
+/// caller degrades to the nearest real priority.
+const ISSUE_PRIORITY_MAX: i64 = 4;
+
+fn clamp_priority(priority: Option<i64>) -> Option<i64> {
+    priority.map(|value| value.clamp(0, ISSUE_PRIORITY_MAX))
+}
+
+/// The mutation payload said `success: false` without an accompanying
+/// GraphQL error (an error array would already have surfaced through
+/// [`check_graphql_errors`]). Nothing was applied.
+fn mutation_not_applied() -> LinearApiError {
+    LinearApiError::Api {
+        status: 200,
+        message: "Linear reported the change was not applied".to_string(),
+    }
+}
+
+/// Fields for `issueCreate`. Serializes directly as the GraphQL
+/// `IssueCreateInput` variable: camelCase keys, absent optionals OMITTED
+/// from the JSON (never serialized as null).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearIssueCreate {
+    /// Client-minted v4 UUID; Linear adopts it as the issue id, making the
+    /// create idempotent and reconcilable (this same value is the journal's
+    /// action id).
+    pub id: String,
+    pub team_id: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+}
+
+/// Fields for `issueUpdate`. Every field is optional and absent fields are
+/// OMITTED from the serialized input (`skip_serializing_if`), so an update
+/// can never null a field the caller did not name. The allowed field set is
+/// deliberately narrow (no labels, relations, or lifecycle fields).
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearIssueUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignee_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cycle_id: Option<String>,
+}
+
+/// Fields for `commentCreate`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearCommentCreate {
+    /// Client-minted v4 UUID (see [`LinearIssueCreate::id`]).
+    pub id: String,
+    pub issue_id: String,
+    pub body: String,
+}
+
+/// Fields for `projectUpdateCreate`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearProjectUpdateCreate {
+    /// Client-minted v4 UUID (see [`LinearIssueCreate::id`]).
+    pub id: String,
+    pub project_id: String,
+    pub body: String,
+    /// One of [`PROJECT_UPDATE_HEALTH_VALUES`]; validated before the request
+    /// because the wire value is a GraphQL enum (`ProjectUpdateHealthType`)
+    /// and a typo would otherwise surface as an opaque provider error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
+}
+
+/// The `ProjectUpdateHealthType` enum values, verbatim from the schema.
+pub const PROJECT_UPDATE_HEALTH_VALUES: [&str; 3] = ["onTrack", "atRisk", "offTrack"];
+
+fn validate_project_update_health(health: Option<&str>) -> Result<(), LinearApiError> {
+    match health {
+        None => Ok(()),
+        Some(value) if PROJECT_UPDATE_HEALTH_VALUES.contains(&value) => Ok(()),
+        Some(_) => Err(LinearApiError::Api {
+            status: 400,
+            message: format!(
+                "health must be one of: {}",
+                PROJECT_UPDATE_HEALTH_VALUES.join(", ")
+            ),
+        }),
+    }
+}
+
+// The mutation selections reuse the read summary shape so the tool's reply
+// after a write matches what search_issues/get_issue return for the same
+// issue.
+const CREATE_ISSUE_MUTATION: &str = "mutation CreateIssue($input: IssueCreateInput!) \
+     { issueCreate(input: $input) { success issue { id identifier title \
+     state { name type } priority assignee { name } team { key } updatedAt url } } }";
+
+const UPDATE_ISSUE_MUTATION: &str =
+    "mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) \
+     { issueUpdate(id: $id, input: $input) { success issue { id identifier title \
+     state { name type } priority assignee { name } team { key } updatedAt url } } }";
+
+const ADD_COMMENT_MUTATION: &str = "mutation AddComment($input: CommentCreateInput!) \
+     { commentCreate(input: $input) { success comment { id url } } }";
+
+const CREATE_PROJECT_UPDATE_MUTATION: &str =
+    "mutation CreateProjectUpdate($input: ProjectUpdateCreateInput!) \
+     { projectUpdateCreate(input: $input) { success projectUpdate { id url } } }";
+
+#[derive(Deserialize)]
+struct IssueCreateDataWire {
+    #[serde(rename = "issueCreate")]
+    issue_create: IssuePayloadWire,
+}
+
+#[derive(Deserialize)]
+struct IssueUpdateDataWire {
+    #[serde(rename = "issueUpdate")]
+    issue_update: IssuePayloadWire,
+}
+
+#[derive(Deserialize)]
+struct IssuePayloadWire {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    issue: Option<IssueSummaryWire>,
+}
+
+/// Map an `IssuePayload` to the returned summary: `success: false` (with no
+/// GraphQL error array, or that would have surfaced already) and a missing
+/// issue both mean the mutation did not take effect.
+fn issue_from_payload(payload: IssuePayloadWire) -> Result<LinearIssueSummary, LinearApiError> {
+    if !payload.success {
+        return Err(mutation_not_applied());
+    }
+    payload
+        .issue
+        .map(issue_summary_from_wire)
+        .ok_or_else(mutation_not_applied)
+}
+
+#[derive(Deserialize)]
+struct CommentCreateDataWire {
+    #[serde(rename = "commentCreate")]
+    comment_create: CommentPayloadWire,
+}
+
+#[derive(Deserialize)]
+struct CommentPayloadWire {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    comment: Option<IdUrlWire>,
+}
+
+#[derive(Deserialize)]
+struct IdUrlWire {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    url: String,
+}
+
+/// The created comment, as returned to the agent: the id (the UUID June
+/// minted) plus the canonical Linear URL.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearCommentRef {
+    pub id: String,
+    pub url: String,
+}
+
+fn comment_ref_from_payload(
+    payload: CommentPayloadWire,
+) -> Result<LinearCommentRef, LinearApiError> {
+    if !payload.success {
+        return Err(mutation_not_applied());
+    }
+    payload
+        .comment
+        .map(|comment| LinearCommentRef {
+            id: comment.id,
+            url: comment.url,
+        })
+        .ok_or_else(mutation_not_applied)
+}
+
+#[derive(Deserialize)]
+struct ProjectUpdateCreateDataWire {
+    #[serde(rename = "projectUpdateCreate")]
+    project_update_create: ProjectUpdatePayloadWire,
+}
+
+#[derive(Deserialize)]
+struct ProjectUpdatePayloadWire {
+    #[serde(default)]
+    success: bool,
+    #[serde(default, rename = "projectUpdate")]
+    project_update: Option<IdUrlWire>,
+}
+
+/// The created project update: the id (the UUID June minted) plus its URL.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearProjectUpdateRef {
+    pub id: String,
+    pub url: String,
+}
+
+fn project_update_ref_from_payload(
+    payload: ProjectUpdatePayloadWire,
+) -> Result<LinearProjectUpdateRef, LinearApiError> {
+    if !payload.success {
+        return Err(mutation_not_applied());
+    }
+    payload
+        .project_update
+        .map(|update| LinearProjectUpdateRef {
+            id: update.id,
+            url: update.url,
+        })
+        .ok_or_else(mutation_not_applied)
+}
+
+/// Create an issue. The caller validates `input.team_id` against the
+/// selected-team grant BEFORE calling (this fn is a plain mutation) and has
+/// already minted `input.id`; the priority is clamped to Linear's 0-4 range
+/// here rather than rejected.
+pub async fn create_issue(
+    access_token: &str,
+    input: LinearIssueCreate,
+) -> Result<LinearIssueSummary, LinearApiError> {
+    let input = LinearIssueCreate {
+        priority: clamp_priority(input.priority),
+        ..input
+    };
+    let data: IssueCreateDataWire = graphql(
+        access_token,
+        CREATE_ISSUE_MUTATION,
+        serde_json::json!({ "input": input }),
+    )
+    .await?;
+    issue_from_payload(data.issue_create)
+}
+
+/// Update an issue's narrow allowed field set. A PLAIN mutation: the
+/// `expected_updated_at` conflict check is the CALLER's job - the route
+/// layer pre-reads the issue (which also grant-checks its team), compares
+/// `updatedAt` against the agent-supplied value, and only calls this when
+/// they match. Absent fields are omitted from the input, never nulled.
+pub async fn update_issue(
+    access_token: &str,
+    issue_id: &str,
+    input: LinearIssueUpdate,
+) -> Result<LinearIssueSummary, LinearApiError> {
+    let input = LinearIssueUpdate {
+        priority: clamp_priority(input.priority),
+        ..input
+    };
+    let data: IssueUpdateDataWire = graphql(
+        access_token,
+        UPDATE_ISSUE_MUTATION,
+        serde_json::json!({ "id": issue_id, "input": input }),
+    )
+    .await?;
+    issue_from_payload(data.issue_update)
+}
+
+/// Add a comment to an issue. The caller grant-checks the issue's team via
+/// a pre-flight read and has already minted `input.id`.
+pub async fn add_comment(
+    access_token: &str,
+    input: LinearCommentCreate,
+) -> Result<LinearCommentRef, LinearApiError> {
+    let data: CommentCreateDataWire = graphql(
+        access_token,
+        ADD_COMMENT_MUTATION,
+        serde_json::json!({ "input": input }),
+    )
+    .await?;
+    comment_ref_from_payload(data.comment_create)
+}
+
+/// Create a project status update. The caller grant-checks the project's
+/// teams via a pre-flight read and has already minted `input.id`; the
+/// health value is validated against [`PROJECT_UPDATE_HEALTH_VALUES`] here.
+pub async fn create_project_update(
+    access_token: &str,
+    input: LinearProjectUpdateCreate,
+) -> Result<LinearProjectUpdateRef, LinearApiError> {
+    validate_project_update_health(input.health.as_deref())?;
+    let data: ProjectUpdateCreateDataWire = graphql(
+        access_token,
+        CREATE_PROJECT_UPDATE_MUTATION,
+        serde_json::json!({ "input": input }),
+    )
+    .await?;
+    project_update_ref_from_payload(data.project_update_create)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2398,5 +2734,216 @@ mod tests {
     fn project_updates_fixture_missing_project_parses_as_none() {
         let data: ProjectUpdatesDataWire = serde_json::from_str(r#"{}"#).expect("fixture");
         assert!(data.project.is_none());
+    }
+
+    // --- Slice 3: write operations -------------------------------------------------
+
+    #[test]
+    fn issue_create_input_serializes_camel_case_and_omits_absent_optionals() {
+        let input = LinearIssueCreate {
+            id: "0d1f2e3a-0000-4000-8000-000000000001".to_string(),
+            team_id: "team-1".to_string(),
+            title: "Fix the flaky test".to_string(),
+            description: None,
+            priority: None,
+            assignee_id: None,
+            project_id: None,
+        };
+        let json = serde_json::to_value(&input).expect("serialize");
+        // The client-minted UUID is present; absent optionals are OMITTED,
+        // never serialized as null.
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "0d1f2e3a-0000-4000-8000-000000000001",
+                "teamId": "team-1",
+                "title": "Fix the flaky test",
+            })
+        );
+
+        let input = LinearIssueCreate {
+            id: "0d1f2e3a-0000-4000-8000-000000000002".to_string(),
+            team_id: "team-1".to_string(),
+            title: "Title".to_string(),
+            description: Some("Body".to_string()),
+            priority: Some(2),
+            assignee_id: Some("user-1".to_string()),
+            project_id: Some("project-1".to_string()),
+        };
+        let json = serde_json::to_value(&input).expect("serialize");
+        assert_eq!(json["description"], "Body");
+        assert_eq!(json["priority"], 2);
+        assert_eq!(json["assigneeId"], "user-1");
+        assert_eq!(json["projectId"], "project-1");
+    }
+
+    #[test]
+    fn issue_update_input_omits_every_absent_field() {
+        // Only the named field serializes: an omitted field can never null
+        // out its current value at Linear.
+        let input = LinearIssueUpdate {
+            title: Some("New title".to_string()),
+            ..LinearIssueUpdate::default()
+        };
+        let json = serde_json::to_value(&input).expect("serialize");
+        assert_eq!(json, serde_json::json!({ "title": "New title" }));
+
+        let input = LinearIssueUpdate {
+            state_id: Some("state-1".to_string()),
+            cycle_id: Some("cycle-1".to_string()),
+            ..LinearIssueUpdate::default()
+        };
+        let json = serde_json::to_value(&input).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({ "stateId": "state-1", "cycleId": "cycle-1" })
+        );
+
+        // A fully empty update serializes to an empty object.
+        let json = serde_json::to_value(LinearIssueUpdate::default()).expect("serialize");
+        assert_eq!(json, serde_json::json!({}));
+    }
+
+    #[test]
+    fn priority_clamps_to_linears_zero_to_four_range() {
+        assert_eq!(clamp_priority(None), None);
+        assert_eq!(clamp_priority(Some(0)), Some(0));
+        assert_eq!(clamp_priority(Some(4)), Some(4));
+        assert_eq!(clamp_priority(Some(9)), Some(4));
+        assert_eq!(clamp_priority(Some(-1)), Some(0));
+    }
+
+    #[test]
+    fn comment_and_project_update_inputs_carry_the_client_minted_id() {
+        let comment = LinearCommentCreate {
+            id: "0d1f2e3a-0000-4000-8000-000000000003".to_string(),
+            issue_id: "issue-1".to_string(),
+            body: "Looks good".to_string(),
+        };
+        let json = serde_json::to_value(&comment).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "id": "0d1f2e3a-0000-4000-8000-000000000003",
+                "issueId": "issue-1",
+                "body": "Looks good",
+            })
+        );
+
+        let update = LinearProjectUpdateCreate {
+            id: "0d1f2e3a-0000-4000-8000-000000000004".to_string(),
+            project_id: "project-1".to_string(),
+            body: "On track for the release".to_string(),
+            health: Some("onTrack".to_string()),
+        };
+        let json = serde_json::to_value(&update).expect("serialize");
+        assert_eq!(json["id"], "0d1f2e3a-0000-4000-8000-000000000004");
+        assert_eq!(json["projectId"], "project-1");
+        assert_eq!(json["health"], "onTrack");
+        // Absent health is omitted, not null.
+        let update = LinearProjectUpdateCreate {
+            id: "x".to_string(),
+            project_id: "project-1".to_string(),
+            body: "b".to_string(),
+            health: None,
+        };
+        let json = serde_json::to_value(&update).expect("serialize");
+        assert!(json.get("health").is_none());
+    }
+
+    #[test]
+    fn project_update_health_validates_against_the_schema_enum() {
+        assert!(validate_project_update_health(None).is_ok());
+        for value in PROJECT_UPDATE_HEALTH_VALUES {
+            assert!(validate_project_update_health(Some(value)).is_ok());
+        }
+        // Wrong casing and arbitrary strings are rejected before the request.
+        for value in ["ontrack", "OnTrack", "green", ""] {
+            let error = validate_project_update_health(Some(value)).unwrap_err();
+            match error {
+                LinearApiError::Api { status, message } => {
+                    assert_eq!(status, 400);
+                    assert!(message.contains("onTrack"));
+                }
+                other => panic!("expected Api error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn issue_mutation_payload_maps_success_and_rejection() {
+        // Success with an issue: the read-summary shape comes back.
+        let data: IssueCreateDataWire = serde_json::from_str(
+            r#"{
+                "issueCreate": {
+                    "success": true,
+                    "issue": {
+                        "id": "issue-1",
+                        "identifier": "ENG-42",
+                        "title": "Created",
+                        "state": { "name": "Todo", "type": "unstarted" },
+                        "priority": 2,
+                        "assignee": null,
+                        "team": { "key": "ENG" },
+                        "updatedAt": "2026-07-15T00:00:00Z",
+                        "url": "https://linear.app/x/issue/ENG-42"
+                    }
+                }
+            }"#,
+        )
+        .expect("fixture");
+        let summary = issue_from_payload(data.issue_create).expect("summary");
+        assert_eq!(summary.identifier, "ENG-42");
+        assert_eq!(summary.team_key, "ENG");
+
+        // success=false with no error array: the mutation did not apply.
+        let data: IssueUpdateDataWire =
+            serde_json::from_str(r#"{ "issueUpdate": { "success": false, "issue": null } }"#)
+                .expect("fixture");
+        assert!(matches!(
+            issue_from_payload(data.issue_update),
+            Err(LinearApiError::Api { status: 200, .. })
+        ));
+
+        // success=true but no issue node is equally unusable.
+        let payload: IssuePayloadWire =
+            serde_json::from_str(r#"{ "success": true }"#).expect("fixture");
+        assert!(issue_from_payload(payload).is_err());
+    }
+
+    #[test]
+    fn comment_and_project_update_payloads_map_success_and_rejection() {
+        let data: CommentCreateDataWire = serde_json::from_str(
+            r#"{
+                "commentCreate": {
+                    "success": true,
+                    "comment": { "id": "comment-1", "url": "https://linear.app/x/c/1" }
+                }
+            }"#,
+        )
+        .expect("fixture");
+        let comment = comment_ref_from_payload(data.comment_create).expect("comment");
+        assert_eq!(comment.id, "comment-1");
+        assert_eq!(comment.url, "https://linear.app/x/c/1");
+
+        let payload: CommentPayloadWire =
+            serde_json::from_str(r#"{ "success": false }"#).expect("fixture");
+        assert!(comment_ref_from_payload(payload).is_err());
+
+        let data: ProjectUpdateCreateDataWire = serde_json::from_str(
+            r#"{
+                "projectUpdateCreate": {
+                    "success": true,
+                    "projectUpdate": { "id": "update-1", "url": "https://linear.app/x/pu/1" }
+                }
+            }"#,
+        )
+        .expect("fixture");
+        let update = project_update_ref_from_payload(data.project_update_create).expect("update");
+        assert_eq!(update.id, "update-1");
+
+        let payload: ProjectUpdatePayloadWire =
+            serde_json::from_str(r#"{ "success": false }"#).expect("fixture");
+        assert!(project_update_ref_from_payload(payload).is_err());
     }
 }

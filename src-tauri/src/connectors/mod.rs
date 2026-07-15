@@ -1113,6 +1113,95 @@ pub fn linear_require_any_team_granted(
     }
 }
 
+// --- Linear writes: action ids, journal, stable errors (slice 3) --------------------
+//
+// Every Linear mutation is journaled in `connector_actions` (migration 015)
+// around the provider call: `pending` before, then exactly one of
+// `committed` / `failed` / `ambiguous`. The journal is an AUDIT surface, not
+// a gate: a journal write failure is logged and swallowed, because failing
+// the user's already-approved mutation over local bookkeeping would be
+// strictly worse than a missing journal row (the mutation itself stays
+// reconcilable through its client-minted object id). The stable write-flow
+// error constructors live here, next to the read-flow ones above, so their
+// wording exists in exactly one place.
+
+/// Mint the client-side v4 UUID for a Linear create: it becomes the created
+/// object's id at Linear (making the create idempotent and reconcilable)
+/// AND the journal's action id. Hyphenated lowercase, e.g.
+/// `67e55044-10b1-426f-9247-bb680e5fe0c8`.
+pub fn mint_action_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// The update conflicted with a newer edit: the issue's `updatedAt` no
+/// longer matches the `expected_updated_at` the agent supplied from its last
+/// read. The route layer returns this WITHOUT mutating anything.
+pub fn linear_issue_conflict_error() -> AppError {
+    AppError::new(
+        "linear_issue_conflict",
+        "This issue changed since June last read it. Re-read it and try again.",
+    )
+}
+
+/// The mutation's outcome is unknown (timeout or transport loss, and the
+/// reconciliation lookup could not confirm the object exists). Carries the
+/// action id so the user can locate the attempt; the agent must NOT retry.
+pub fn linear_action_ambiguous_error(action_id: &str) -> AppError {
+    AppError::new(
+        "linear_action_ambiguous",
+        format!(
+            "June could not confirm whether Linear applied this change. Check Linear before retrying; action id {action_id}."
+        ),
+    )
+}
+
+/// Journal a mutation attempt as `pending` before the provider call.
+/// Best-effort by design: on a DB failure this logs a warning and returns -
+/// the journal must never block or fail a mutation the user approved.
+pub async fn journal_action_pending(
+    app: &tauri::AppHandle,
+    action_id: &str,
+    account_id: &str,
+    tool: &str,
+    summary: &str,
+) {
+    let result = match crate::commands::repositories(app).await {
+        Ok(repos) => repos
+            .insert_connector_action(action_id, account_id, tool, summary)
+            .await
+            .map_err(AppError::from),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = result {
+        tracing::warn!(
+            error_code = %error.code,
+            tool,
+            "journaling pending connector action failed; continuing with the mutation"
+        );
+    }
+}
+
+/// Record a journaled mutation's outcome (`committed` / `ambiguous` /
+/// `failed`). Best-effort like [`journal_action_pending`]: the user-facing
+/// outcome of the mutation is already decided by the time this runs, so a
+/// journal failure is logged, never surfaced.
+pub async fn journal_action_resolved(app: &tauri::AppHandle, action_id: &str, status: &str) {
+    let result = match crate::commands::repositories(app).await {
+        Ok(repos) => repos
+            .resolve_connector_action(action_id, status)
+            .await
+            .map_err(AppError::from),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = result {
+        tracing::warn!(
+            error_code = %error.code,
+            status,
+            "resolving journaled connector action failed"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1355,5 +1444,43 @@ mod tests {
         assert_eq!(error.code, "linear_team_not_granted");
         let error = linear_require_any_team_granted(&["eng".to_string()], &[]).unwrap_err();
         assert_eq!(error.code, "linear_team_not_granted");
+    }
+
+    #[test]
+    fn mint_action_id_produces_hyphenated_lowercase_v4_uuids() {
+        let id = mint_action_id();
+        let bytes: Vec<char> = id.chars().collect();
+        assert_eq!(bytes.len(), 36);
+        for position in [8, 13, 18, 23] {
+            assert_eq!(bytes[position], '-', "hyphen expected at {position}");
+        }
+        // RFC 4122: version nibble is 4, variant nibble is 8|9|a|b.
+        assert_eq!(bytes[14], '4');
+        assert!(matches!(bytes[19], '8' | '9' | 'a' | 'b'));
+        assert_eq!(id, id.to_lowercase());
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+
+        // Practically collision-free: 1000 mints, 1000 distinct ids.
+        let mut ids: Vec<String> = (0..1000).map(|_| mint_action_id()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 1000);
+    }
+
+    #[test]
+    fn linear_write_errors_carry_stable_codes_and_wording() {
+        let conflict = linear_issue_conflict_error();
+        assert_eq!(conflict.code, "linear_issue_conflict");
+        assert_eq!(
+            conflict.message,
+            "This issue changed since June last read it. Re-read it and try again."
+        );
+
+        let ambiguous = linear_action_ambiguous_error("action-123");
+        assert_eq!(ambiguous.code, "linear_action_ambiguous");
+        assert_eq!(
+            ambiguous.message,
+            "June could not confirm whether Linear applied this change. Check Linear before retrying; action id action-123."
+        );
     }
 }

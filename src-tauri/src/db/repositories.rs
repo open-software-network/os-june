@@ -58,6 +58,24 @@ pub struct SelectedTeamRecord {
     pub team_name: String,
 }
 
+/// One journaled connector mutation attempt. The `action_id` is the
+/// client-minted v4 UUID that is ALSO the created object's id at the
+/// provider, so an ambiguous outcome can be reconciled by querying that id.
+/// Status lifecycle: `pending` (written before the mutation) then exactly
+/// one of `committed` / `ambiguous` / `failed`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectorActionRecord {
+    pub action_id: String,
+    pub account_id: String,
+    pub tool: String,
+    /// Short human description of the mutation target (e.g. "ENG: Fix the
+    /// flaky test"); never carries tokens or full content bodies.
+    pub summary: String,
+    pub status: String,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoutineTrustRecord {
     pub job_id: String,
@@ -338,6 +356,64 @@ impl Repositories {
         Ok(rows.into_iter().map(selected_team_from_row).collect())
     }
 
+    /// Journal a mutation attempt as `pending` BEFORE the provider call. The
+    /// action id is the client-minted UUID handed to the provider as the
+    /// object id, so the row exists even if the process dies mid-mutation.
+    pub async fn insert_connector_action(
+        &self,
+        action_id: &str,
+        account_id: &str,
+        tool: &str,
+        summary: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        query(
+            "INSERT INTO connector_actions (action_id, account_id, tool, summary, status, created_at)
+             VALUES (?, ?, ?, ?, 'pending', ?)",
+        )
+        .bind(action_id)
+        .bind(account_id)
+        .bind(tool)
+        .bind(summary)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Record a journaled mutation's outcome: `committed`, `ambiguous`, or
+    /// `failed` (the table's CHECK constraint rejects anything else). Also
+    /// stamps `resolved_at`. Resolving an unknown action id is a no-op, not
+    /// an error: the pending write is best-effort and may not exist.
+    pub async fn resolve_connector_action(
+        &self,
+        action_id: &str,
+        status: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        query("UPDATE connector_actions SET status = ?, resolved_at = ? WHERE action_id = ?")
+            .bind(status)
+            .bind(&now)
+            .bind(action_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_connector_action(
+        &self,
+        action_id: &str,
+    ) -> Result<Option<ConnectorActionRecord>, sqlx::error::Error> {
+        let row = query(
+            "SELECT action_id, account_id, tool, summary, status, created_at, resolved_at
+             FROM connector_actions WHERE action_id = ?",
+        )
+        .bind(action_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(connector_action_from_row))
+    }
+
     pub async fn set_connector_account_status(
         &self,
         account_id: &str,
@@ -354,7 +430,8 @@ impl Repositories {
     }
 
     /// Remove the account row plus everything keyed to it (triggers, polling
-    /// cursors, autonomy grants, and selected teams) in one transaction.
+    /// cursors, autonomy grants, selected teams, and journaled actions) in
+    /// one transaction.
     /// Clearing the grants matters for security: without it, reconnecting the
     /// same email would silently revive the per-job autonomous action servers
     /// the user granted to the old connection.
@@ -376,6 +453,10 @@ impl Repositories {
             .execute(&mut *tx)
             .await?;
         query("DELETE FROM connector_selected_teams WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM connector_actions WHERE account_id = ?")
             .bind(account_id)
             .execute(&mut *tx)
             .await?;
@@ -3467,6 +3548,18 @@ fn selected_team_from_row(row: sqlx_sqlite::SqliteRow) -> SelectedTeamRecord {
     }
 }
 
+fn connector_action_from_row(row: sqlx_sqlite::SqliteRow) -> ConnectorActionRecord {
+    ConnectorActionRecord {
+        action_id: row.get("action_id"),
+        account_id: row.get("account_id"),
+        tool: row.get("tool"),
+        summary: row.get("summary"),
+        status: row.get("status"),
+        created_at: row.get("created_at"),
+        resolved_at: row.get::<Option<String>, _>("resolved_at"),
+    }
+}
+
 fn routine_trust_from_row(row: sqlx_sqlite::SqliteRow) -> RoutineTrustRecord {
     RoutineTrustRecord {
         job_id: row.get("job_id"),
@@ -3739,6 +3832,15 @@ mod tests {
             )
             .await
             .expect("set selected teams");
+        repos
+            .insert_connector_action(
+                "action-1",
+                "user@example.com",
+                "create_issue",
+                "ENG: Fix the flaky test",
+            )
+            .await
+            .expect("insert action");
 
         repos
             .delete_connector_account("user@example.com")
@@ -3775,6 +3877,102 @@ mod tests {
             .await
             .expect("teams")
             .is_empty());
+        // The action journal rows for the account go with it.
+        assert!(repos
+            .get_connector_action("action-1")
+            .await
+            .expect("action")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn connector_action_insert_resolve_and_get_round_trip() {
+        let repos = test_repositories().await;
+
+        // Unknown action id: no row, and resolving it is a harmless no-op
+        // (the pending write is best-effort).
+        assert!(repos
+            .get_connector_action("missing")
+            .await
+            .expect("get")
+            .is_none());
+        repos
+            .resolve_connector_action("missing", "committed")
+            .await
+            .expect("resolving an unknown action id is a no-op");
+
+        repos
+            .insert_connector_action(
+                "0d1f2e3a-0000-4000-8000-000000000001",
+                "workspace-1",
+                "create_issue",
+                "ENG: Fix the flaky test",
+            )
+            .await
+            .expect("insert");
+        let action = repos
+            .get_connector_action("0d1f2e3a-0000-4000-8000-000000000001")
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(action.account_id, "workspace-1");
+        assert_eq!(action.tool, "create_issue");
+        assert_eq!(action.summary, "ENG: Fix the flaky test");
+        assert_eq!(action.status, "pending");
+        assert!(!action.created_at.is_empty());
+        assert_eq!(action.resolved_at, None);
+
+        repos
+            .resolve_connector_action("0d1f2e3a-0000-4000-8000-000000000001", "committed")
+            .await
+            .expect("resolve");
+        let action = repos
+            .get_connector_action("0d1f2e3a-0000-4000-8000-000000000001")
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(action.status, "committed");
+        assert!(action.resolved_at.is_some());
+
+        // The action id is a PRIMARY KEY: journaling the same mutation twice
+        // is a bug the database surfaces rather than silently absorbing.
+        assert!(repos
+            .insert_connector_action(
+                "0d1f2e3a-0000-4000-8000-000000000001",
+                "workspace-1",
+                "create_issue",
+                "duplicate",
+            )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn connector_action_status_check_rejects_unknown_values() {
+        let repos = test_repositories().await;
+        repos
+            .insert_connector_action("action-1", "workspace-1", "add_comment", "ENG-42")
+            .await
+            .expect("insert");
+        // The CHECK constraint is the last line of defense against a typo'd
+        // status string reaching the journal.
+        assert!(repos
+            .resolve_connector_action("action-1", "bogus")
+            .await
+            .is_err());
+        let action = repos
+            .get_connector_action("action-1")
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(action.status, "pending");
+        // Every legal terminal status passes the constraint.
+        for status in ["committed", "ambiguous", "failed"] {
+            repos
+                .resolve_connector_action("action-1", status)
+                .await
+                .unwrap_or_else(|_| panic!("status {status} should pass the CHECK"));
+        }
     }
 
     #[tokio::test]
