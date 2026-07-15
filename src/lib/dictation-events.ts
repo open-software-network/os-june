@@ -19,12 +19,12 @@ const DICTATION_ACTIVE_EVENTS = new Set([
   "listening_started",
   "audio_level",
   "finalizing_transcript",
-  "final_transcript",
   "paste_target",
 ]);
 
 const DICTATION_FINISHED_EVENTS = new Set([
   "recording_discarded",
+  "final_transcript",
   "paste_completed",
   "agent_session_prompt",
   "error",

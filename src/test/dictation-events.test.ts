@@ -47,7 +47,6 @@ describe("dictation workflow activity", () => {
     "listening_started",
     "audio_level",
     "finalizing_transcript",
-    "final_transcript",
     "paste_target",
   ])("treats %s as active", (eventType) => {
     expect(nextDictationWorkflowActive(false, eventType)).toBe(true);
@@ -55,6 +54,7 @@ describe("dictation workflow activity", () => {
 
   it.each([
     "recording_discarded",
+    "final_transcript",
     "paste_completed",
     "agent_session_prompt",
     "error",

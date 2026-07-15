@@ -19,6 +19,7 @@ export type StartAgentRunMonitoringInput = {
 };
 
 type AgentRunMonitor = StartAgentRunMonitoringInput & {
+  canProbeBeforeObservedActive: boolean;
   generation: number;
   observedActive: boolean;
   succeeded: boolean;
@@ -57,6 +58,7 @@ export function startAgentRunMonitoring(input: StartAgentRunMonitoringInput) {
 
   const run: AgentRunMonitor = {
     ...input,
+    canProbeBeforeObservedActive: previous === undefined,
     generation: ++nextGeneration,
     observedActive: false,
     succeeded: false,
@@ -150,7 +152,7 @@ function startSettlementIfReady(run: AgentRunMonitor) {
       // UI disappears.
       if (
         !run.succeeded &&
-        run.observedActive &&
+        (run.observedActive || (run.canProbeBeforeObservedActive && matchingRows.length === 0)) &&
         matchingRows.every((row) => row.status === "idle")
       ) {
         const outcome = await persistedTerminalOutcome(run.storedSessionId);

@@ -184,6 +184,20 @@ describe("agent run monitor", () => {
     });
   });
 
+  it("settles a fast completion that disappears before an active row is observed", async () => {
+    startRun();
+    await flush();
+
+    expect(monitorMocks.sessions).toHaveBeenCalledOnce();
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
+  });
+
   it("uses the persisted reply when the session status only reaches idle", async () => {
     const finishRuntime = activeRuntime();
     monitorMocks.sessions.mockResolvedValue({
