@@ -278,23 +278,33 @@ fn classify_refresh_failure(status: u16, error_code: Option<&str>) -> LinearRefr
 /// 400 when the token was already revoked; both leave the grant dead, so
 /// both count as success. Other failures are swallowed after logging the
 /// HTTP status: local custody removal is the real disconnect.
-pub async fn revoke(token: &str) -> bool {
+pub async fn revoke(token: &str, token_type_hint: &str) -> bool {
     match oauth::http_client()
         .post(REVOKE_ENDPOINT)
-        .form(&[("token", token)])
+        .form(&[("token", token), ("token_type_hint", token_type_hint)])
         .send()
         .await
     {
         Ok(response) => {
             let status = response.status().as_u16();
-            let ok = response.status().is_success() || status == 400;
+            let ok = response.status().is_success();
             if !ok {
-                tracing::warn!(status, "linear revoke failed");
+                // 400 can mean "already revoked" but ALSO "could not revoke"
+                // (e.g. an unidentifiable token), so it is never silently
+                // success: log the OAuth error word (never the body) so a
+                // grant surviving a revoking disconnect is diagnosable.
+                let error_code = match response.text().await {
+                    Ok(body) => serde_json::from_str::<TokenErrorBody>(&body)
+                        .ok()
+                        .and_then(|body| body.error),
+                    Err(_) => None,
+                };
+                tracing::warn!(status, token_type_hint, error_code = ?error_code, "linear revoke did not confirm");
             }
             ok
         }
         Err(_) => {
-            tracing::warn!("linear revoke request failed");
+            tracing::warn!(token_type_hint, "linear revoke request failed");
             false
         }
     }
