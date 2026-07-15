@@ -35,7 +35,7 @@ import { exportNoteAsPdf } from "../lib/note-pdf";
 import { NoteChatPanel } from "../components/note-chat/NoteChatPanel";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
 import { ShareDialog } from "../components/share/ShareDialog";
-import { buildNotePayload } from "../lib/share-payload";
+import { buildNotePayload, noteReadyToShare } from "../lib/share-payload";
 import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
 import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
 import type { RecordNoticesDemoApi } from "../lib/record-notices-demo";
@@ -1016,7 +1016,9 @@ export function App() {
       askJuneOpen={noteChatOpen}
       askJuneWorking={noteChat.working}
       onAskJune={() => setNoteChatOpen((open) => !open)}
-      onShare={() => setShareNoteOpen(true)}
+      onShare={
+        noteReadyToShare(selectedNote.processingStatus) ? () => setShareNoteOpen(true) : undefined
+      }
       onExportPdf={() => void handleExportNotePdf()}
       onDelete={() => setConfirmDeleteNote(true)}
     />

@@ -5,10 +5,17 @@
  * the MVP.
  */
 
+import type { ProcessingStatus } from "./tauri";
+
 export type SharePayloadMessage = {
   role: "user" | "assistant";
   content: string;
 };
+
+/** A note snapshot is stable only outside the recording/processing pipeline. */
+export function noteReadyToShare(status: ProcessingStatus): boolean {
+  return !["recording", "validating", "transcribing", "generating"].includes(status);
+}
 
 export function buildNotePayload({
   title,

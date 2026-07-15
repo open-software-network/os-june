@@ -149,10 +149,26 @@ async fn revoke_item_share(
     item_id: &str,
 ) -> Result<(), AppError> {
     if let Some(record) = repos.share_key_for_item(item_kind, item_id).await? {
-        crate::june_api::share_delete(&record.share_id).await?;
+        delete_remote_share_or_accept_missing(&record.share_id).await?;
         repos.delete_share_keys(&record.share_id).await?;
     }
     Ok(())
+}
+
+async fn delete_remote_share_or_accept_missing(share_id: &str) -> Result<(), AppError> {
+    match crate::june_api::share_delete(share_id).await {
+        Ok(()) => Ok(()),
+        // `share_not_found` is deliberately ambiguous for non-enumeration. For
+        // deletion, either meaning is terminal for this local profile: the
+        // remote share is already absent or cannot be managed by this account,
+        // so retaining the stale key would permanently block item deletion.
+        Err(error) if is_share_not_found(&error) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_share_not_found(error: &AppError) -> bool {
+    error.code == "june_request_failed" && error.message == "share_not_found"
 }
 
 #[tauri::command]
@@ -2454,7 +2470,7 @@ pub async fn share_revoke_invite(request: ShareRevokeInviteRequest) -> Result<()
 
 #[tauri::command]
 pub async fn share_delete(app: AppHandle, request: ShareDeleteRequest) -> Result<(), AppError> {
-    crate::june_api::share_delete(&request.share_id).await?;
+    delete_remote_share_or_accept_missing(&request.share_id).await?;
     // The share is gone server-side; its locally retained keys are useless
     // and should not outlive it.
     repositories(&app)
@@ -2588,9 +2604,25 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
 mod tests {
     use super::{
         apply_system_audio_permission_probe_result, assemble_recording_source_readiness,
-        capture_start_timeout_error, recovery_validation_expected_duration_ms,
+        capture_start_timeout_error, is_share_not_found, recovery_validation_expected_duration_ms,
         should_probe_system_audio_permission, start_capture_with_timeout_and_cleanup,
     };
+
+    #[test]
+    fn recognizes_only_the_ambiguous_share_not_found_error() {
+        assert!(is_share_not_found(&AppError::new(
+            "june_request_failed",
+            "share_not_found"
+        )));
+        assert!(!is_share_not_found(&AppError::new(
+            "june_request_failed",
+            "network error"
+        )));
+        assert!(!is_share_not_found(&AppError::new(
+            "storage_unavailable",
+            "share_not_found"
+        )));
+    }
     use crate::{
         audio::capture::{is_capture_active, CaptureStartState, StartedRecording, StartedSource},
         domain::types::{

@@ -12,7 +12,7 @@ import {
   unwrapKey,
   wrapKey,
 } from "../lib/share-crypto";
-import { buildNotePayload, buildSessionPayload } from "../lib/share-payload";
+import { buildNotePayload, buildSessionPayload, noteReadyToShare } from "../lib/share-payload";
 
 describe("share-crypto", () => {
   it("generates distinct 32-byte keys", async () => {
@@ -107,6 +107,17 @@ describe("share-crypto", () => {
 });
 
 describe("share-payload", () => {
+  it("allows stable notes and blocks recording or processing snapshots", () => {
+    expect(noteReadyToShare("draft")).toBe(true);
+    expect(noteReadyToShare("ready")).toBe(true);
+    expect(noteReadyToShare("failed")).toBe(true);
+    expect(noteReadyToShare("recoverable")).toBe(true);
+    expect(noteReadyToShare("recording")).toBe(false);
+    expect(noteReadyToShare("validating")).toBe(false);
+    expect(noteReadyToShare("transcribing")).toBe(false);
+    expect(noteReadyToShare("generating")).toBe(false);
+  });
+
   it("builds a canonical note payload", () => {
     const payload = buildNotePayload({
       title: "Title",

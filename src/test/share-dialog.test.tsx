@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -470,6 +470,38 @@ describe("ShareDialog", () => {
     // Once it settles, unshare is available again.
     resolveAdd({ invites: [{ inviteId: "shi_2", email: "second@example.com" }] });
     await waitFor(() => expect(screen.getByRole("button", { name: "Unshare" })).toBeEnabled());
+  });
+
+  it("blocks every close path while an invite is in flight", async () => {
+    let resolveCreate: (value: {
+      shareId: string;
+      invites: { inviteId: string; email: string }[];
+    }) => void = () => {};
+    mocks.shareCreate.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={onClose} item={noteItem()} />);
+
+    await user.type(await screen.findByLabelText("Invite by email"), "friend@example.com");
+    await user.click(screen.getByRole("button", { name: "Invite" }));
+    await waitFor(() => expect(mocks.shareCreate).toHaveBeenCalledTimes(1));
+
+    expect(screen.getByRole("button", { name: "Done" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    resolveCreate({
+      shareId: "shr_1",
+      invites: [{ inviteId: "shi_1", email: "friend@example.com" }],
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Done" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("clears a pending unshare confirmation when the dialog switches items", async () => {

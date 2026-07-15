@@ -344,6 +344,15 @@ export function ShareDialog({
     setLoadFailed(false);
   }, [shareId]);
 
+  // Closing the dialog while an invite is in flight would let the owner delete
+  // the source item before the create/add continuation persists its local key.
+  // Use the synchronous ref as well as state so even a same-tick close attempt
+  // cannot escape before React renders the disabled controls.
+  const handleClose = useCallback(() => {
+    if (invitingRef.current) return;
+    onClose();
+  }, [onClose]);
+
   const emailValid = EMAIL_PATTERN.test(email.trim().toLowerCase());
   const itemNoun = item.kind === "note" ? "note" : "session";
 
@@ -351,7 +360,8 @@ export function ShareDialog({
     <>
       <Dialog
         open={open}
-        onClose={onClose}
+        onClose={handleClose}
+        disableBackdropClose={inviteBusy}
         title={`Share ${itemNoun}`}
         description={`Invite people by email. Each person gets their own private link to "${item.title || (item.kind === "note" ? "Untitled note" : "Untitled session")}".`}
         width={480}
@@ -372,7 +382,12 @@ export function ShareDialog({
                 Unshare
               </button>
             ) : null}
-            <button type="button" className="primary-action primary-solid" onClick={onClose}>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              disabled={inviteBusy}
+              onClick={handleClose}
+            >
               Done
             </button>
           </>

@@ -174,6 +174,11 @@ by a second identity replaces the profile's single mapping for that item
 profile-scoped store. Full per-identity local storage is out of scope for
 JUN-308.
 
+Deleting a locally shared item revokes its remote share first and then removes
+the local keys. A `share_not_found` response is treated as an already-absent
+remote share for this deletion path, so a stale local mapping cannot make the
+note or session permanently undeletable; other failures still fail closed.
+
 ## Recipient viewer
 
 Served by june-api (precedent: `/verify` already serves HTML). Static shell
