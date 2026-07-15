@@ -3914,7 +3914,6 @@ fn looks_like_instruction_response(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase();
     looks_like_report_summary_response(&normalized)
         || normalized.starts_with("sure")
-        || normalized.starts_with("here")
         || normalized.starts_with("summary:")
         || normalized.starts_with("the transcript ")
         || normalized.starts_with("the user expresses")
@@ -6293,6 +6292,32 @@ mod tests {
     }
 
     #[test]
+    fn literal_dictation_starting_with_heres_maps_to_paste_command() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "Here's the API key to Poncho.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            None,
+            DictationStyle::Standard,
+        );
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({
+                "type": "paste_text",
+                "text": "Here's the API key to Poncho.",
+            })
+        );
+        assert!(outcome.event.is_none());
+        assert_eq!(
+            outcome.transcript.as_ref().map(|item| item.text.as_str()),
+            Some("Here's the API key to Poncho.")
+        );
+    }
+
+    #[test]
     fn summary_like_transcription_discards_with_visible_error() {
         let outcome = outcome_from_transcription_result(
             Ok(TranscriptionProviderResult {
@@ -6873,6 +6898,9 @@ mod tests {
         ));
         assert!(!looks_like_instruction_response(
             "User reported the bug to support."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's the API key to Poncho."
         ));
     }
 
