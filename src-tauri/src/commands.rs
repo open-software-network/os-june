@@ -388,12 +388,22 @@ pub async fn set_memory_enabled(
         persist_memory_settings(&path, &settings)?;
         settings
     };
-    // The toggle feeds two things assembled from settings at spawn: the SOUL
-    // memory stanza and the native `memory` entry in `platform_toolsets.cron`.
-    // Re-render config.yaml for live runtimes AND restart the routine gateway
-    // (a bare stop would leave the launchd gateway serving a stale config that
-    // still grants routines the native memory toolset behind the off switch).
-    crate::hermes_bridge::reapply_hermes_runtime(&app, &bridge).await?;
+    // The persisted file is the authoritative enforcement point: the write
+    // boundary and the next Hermes spawn both read it, so the user's choice
+    // already holds regardless of what happens next. Re-rendering config.yaml
+    // for live runtimes and restarting the routine gateway (the SOUL stanza +
+    // the native `memory` entry in `platform_toolsets.cron`) is a best-effort
+    // "apply now"; on failure the change still lands on the next spawn. Never
+    // fail the command or roll back here — rolling back an "off" toggle would
+    // silently leave memory ON, the wrong direction for a privacy switch — so
+    // log and still return the persisted state so the UI can't diverge from
+    // the file.
+    if let Err(error) = crate::hermes_bridge::reapply_hermes_runtime(&app, &bridge).await {
+        tracing::warn!(
+            ?error,
+            "memory setting saved but live runtime reapply failed; it will take effect on the next spawn",
+        );
+    }
     Ok(settings)
 }
 
