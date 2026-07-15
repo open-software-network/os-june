@@ -386,12 +386,18 @@ export function ConnectorsSection() {
     if (!teamsAccountId || teamsPayload.length === 0 || savingTeams) return;
     setSavingTeams(true);
     try {
-      // No connectorsApplyRuntime() here, unlike connect/disconnect: a teams
-      // change never registers or drops the june_linear server, it only
-      // narrows or widens what an already-registered server may read, and
-      // that grant is enforced per-request in Rust. So a teams save never
-      // needs a restart.
+      // The june_linear server only registers once at least one team is
+      // selected, so the FIRST teams save (zero selected before this save)
+      // crosses the registration boundary and must apply the runtime - a
+      // connect-then-select flow would otherwise leave the server
+      // unregistered until an unrelated restart. Later edits never
+      // (de)register the server: the grant is enforced per-request in Rust,
+      // so they skip the restart.
+      const crossesRegistrationBoundary = (teamsAccount?.selectedTeams.length ?? 0) === 0;
       await connectorsSetSelectedTeams({ accountId: teamsAccountId, teams: teamsPayload });
+      if (crossesRegistrationBoundary) {
+        await connectorsApplyRuntime();
+      }
       await refresh();
       setTeamsAccountId(null);
       toast.success("Linear teams updated");

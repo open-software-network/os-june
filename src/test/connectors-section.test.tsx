@@ -294,9 +294,31 @@ describe("ConnectorsSection — Linear", () => {
       }),
     );
     expect(await screen.findByText(/1 team selected/i)).toBeInTheDocument();
-    // A teams save only narrows/widens what an already-registered server may
-    // read (enforced per-request in Rust); it never registers or drops a
-    // server, so it must not trigger a runtime apply.
+    // This save crossed the registration boundary (zero teams before it),
+    // which is what lets june_linear register at all - so it must apply the
+    // runtime.
+    expect(mocks.connectorsApplyRuntime).toHaveBeenCalled();
+  });
+
+  it("skips the runtime apply when a teams edit does not cross the registration boundary", async () => {
+    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [TEAM_ENG] })]);
+    mocks.connectorsSetSelectedTeams.mockResolvedValue(
+      linearAccount({ selectedTeams: [TEAM_ENG, TEAM_DESIGN] }),
+    );
+    render(<ConnectorsSection />);
+    await screen.findByText(/1 team selected/i);
+
+    await userEvent.click(screen.getByRole("button", { name: "Manage teams" }));
+    const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
+    await waitFor(() => expect(mocks.connectorsLinearTeams).toHaveBeenCalled());
+
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: /design/i }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save teams" }));
+
+    await waitFor(() => expect(mocks.connectorsSetSelectedTeams).toHaveBeenCalled());
+    // The server was already registered (a team was selected before this
+    // edit); the grant change is enforced per-request in Rust, so no
+    // restart.
     expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
   });
 

@@ -6990,13 +6990,6 @@ fn sync_june_recorder_mcp(
     })
 }
 
-/// Writes the four connector MCP scripts and returns their configs, but ONLY
-/// when at least one Google account is connected. v1 registers a single
-/// account context: the first connected GOOGLE account's email is passed to
-/// every server, and each proxy call carries it as `account_id`. Returns
-/// `None` when no Google account is connected (a connected Linear workspace
-/// does not count), in which case the connector servers are not registered
-/// at all.
 /// True when this connected account should back the `june_linear` read
 /// server: a CONNECTED Linear workspace with at least one selected team. The
 /// team gate is the registration counterpart of the fail-closed grant checks
@@ -7009,6 +7002,13 @@ fn linear_read_server_account(account: &crate::connectors::ConnectorAccount) -> 
         && !account.selected_teams.is_empty()
 }
 
+/// Writes the connector MCP scripts and returns their configs: the four
+/// Gmail/Calendar servers when a Google account is connected, and the
+/// `june_linear` read server when a Linear workspace is connected with at
+/// least one selected team. Returns `None` only when NEITHER provider has a
+/// registrable account, in which case no connector server is registered.
+/// v1 registers a single account context per provider; each proxy call
+/// carries that account as `account_id`.
 async fn sync_june_connector_mcps(
     app: &AppHandle,
     hermes_command: &str,
@@ -9297,8 +9297,13 @@ async fn dispatch_connector_route(
             Ok(serde_json::json!({ "teams": teams }))
         }
         "/v1/linear/list_users" => {
-            // Workspace-level directory data (spec decision 3): no team
-            // filter, and the summaries carry no emails (decision 4).
+            // Workspace-level directory data (spec decision 3): the listing
+            // is not scoped by the selected-teams grant, and the summaries
+            // carry no emails (decision 4). The grant is still loaded first
+            // so an empty selection fails closed like every other route -
+            // the registration gate makes that unreachable in practice, but
+            // "no teams selected means no reads" holds without exception.
+            let _granted = crate::connectors::linear_granted_team_ids(app, account_id).await?;
             let first = body_u32(body, "first");
             let users = connector_linear_call(app, account_id, |token| async move {
                 crate::connectors::linear::list_users(&token, first).await
