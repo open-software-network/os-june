@@ -413,7 +413,7 @@ must freeze every item below before launch:
 | --- | --- | --- |
 | Assignment unit | Planning assumption | Define the pre-registered paid acquisition cell and coarse cohort window, plus geo or time holdout assignment; creative variants remain nested inside a cell |
 | Data flow and consent | Planning assumption | Document each source, destination, vendor, consent surface, and vendor configuration while keeping June P3A separate |
-| Measurement health | Planning assumption | Define continuous source-to-scorecard health checks, alert ownership, the fail-closed latch, and a privacy-reviewed reconciliation procedure for every affected cohort and window |
+| Measurement health | Planning assumption | Define continuous source-to-scorecard availability, contamination, and paid-versus-organic distinction checks, alert ownership, the fail-closed latch, and a privacy-reviewed reconciliation procedure for every affected cohort and window |
 | Gate definitions | Planning assumption | Fix the numerator, denominator, minimum sample, maturity window, exclusions, and source system for every rate, cost, Plan-mix, and payback gate |
 | Tranche exposure | Planning assumption | Require at least 80% of each released media cap unless a stop rule ends the tranche; a stopped or underexposed tranche cannot authorize the next campaign tier or tranche |
 | Cohort persistence | Planning assumption | Keep only a thresholded aggregate cohort key stable through its activation, 60-day paid, refund, and cancellation windows; never persist a person-level campaign join |
@@ -503,7 +503,7 @@ use them as evidence that paid acquisition economics passed.
 | Period | Evidence | Required work |
 | --- | --- | --- |
 | Before week 1 | Planning assumption | Approve Phase 0, establish holdouts, freeze definitions, pass the full dry run, and quality-check pages |
-| Every active media day and before any release | Planning assumption | Verify every approved measurement source, cohort window, estimator, and scorecard output is healthy; latch the fail-closed pause on any loss |
+| Every active media day and before any release | Planning assumption | Verify every approved measurement source, cohort window, estimator, and scorecard output is available, uncontaminated, and still distinguishes paid cohorts from organic; latch the fail-closed pause on any failure |
 | Lean weeks 1 to 2 | Planning assumption | Launch all three wedges at controlled bids, review search terms and placements twice weekly, and resolve brand or privacy issues immediately |
 | Lean weeks 3 to 4 | Planning assumption | Stop failed cells, refresh one variable at a time, and compare wedge-level click-to-Free only where traffic is sufficient |
 | Lean weeks 5 to 6 | Planning assumption | Hold winning cells stable, do not force the cap to spend, and prepare the initial readout |
@@ -671,12 +671,14 @@ cash caps do not change.
 The first $500 is the pre-defined seed. The second $500 may release only when
 measurement is computable, no stop, privacy, policy, or brand issue exists, the
 first seed did not reach the frozen sample, and Growth, Finance, and the privacy
-reviewer approve. Any release beyond cumulative seed spend requires the cell to
-reach the fixed Phase 0 sample and pass cost per completed Free, seven-day
-activation, matured campaign cash economics, and retention-aware fully loaded
-contribution economics under the pre-registered uncertainty rule. After $1,000,
-no additional funds release until every cell gate passes. Creative variants
-stay nested within the cell; otherwise, its funds remain reserved.
+reviewer approve. Any release beyond the cumulative $1,000 seed requires named
+approval from Growth, Finance, and the privacy reviewer, alongside evidence that
+the cell reached the fixed Phase 0 sample and passed cost per completed Free,
+seven-day activation, matured campaign cash economics, and retention-aware fully
+loaded contribution economics under the pre-registered uncertainty rule. After
+$1,000, no additional funds release until every cell gate and named approval
+passes. Creative variants stay nested within the cell; otherwise, its funds
+remain reserved.
 
 ### Stop and pause rules
 
@@ -688,10 +690,11 @@ stay nested within the cell; otherwise, its funds remain reserved.
 - **Planning assumption:** Separately pause a paid acquisition cell when fewer
   than 25% of at least 20 completed Free accounts complete the wedge's
   first-value job after each account has matured for seven days.
-- **Planning assumption:** Any loss of an approved measurement source, cohort
-  window, estimator, or required scorecard output immediately latches a pause
-  on all active and scheduled media and all external campaign cash commitments
-  across Lean, Growth, and Scale.
+- **Planning assumption:** Any loss or contamination of an approved measurement
+  source, cohort window, estimator, or required scorecard output, or any
+  inability to distinguish paid cohorts from organic even when outputs still
+  exist, immediately latches a pause on all active and scheduled media and all
+  external campaign cash commitments across Lean, Growth, and Scale.
 - **Planning assumption:** The latch remains until the privacy reviewer verifies
   measurement is restored and every affected cohort and window is reconciled.
 - **Planning assumption:** Blind time does not count toward active media weeks
