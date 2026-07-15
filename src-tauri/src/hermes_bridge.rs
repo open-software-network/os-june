@@ -62,7 +62,9 @@ const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 // 1M-token context window. This is a 127.0.0.1 loopback proxy for a single-user
 // desktop, so the memory/DoS surface of the larger buffer is minimal. A body
 // over this cap is genuinely beyond any model window and degrades to the
-// context-overflow notice (recognizable wording in `read_http_request`).
+// context-overflow notice (recognizable wording in
+// `provider_proxy_body_too_large_message`, enforced after auth in
+// `handle_june_provider_connection`).
 // Cross-workspace invariant (JUN-336): this MUST equal june-api's dedicated
 // `/v1/chat/completions` extractor cap (`DEFAULT_MAX_AGENT_CHAT_BYTES` in
 // june-api/crates/config/src/lib.rs). june-api is a separate cargo workspace
@@ -8318,8 +8320,8 @@ async fn handle_june_provider_connection(
     mut stream: tokio::net::TcpStream,
     state: Arc<ProviderProxyState>,
 ) -> io::Result<()> {
-    let request = match read_http_request(&mut stream).await {
-        Ok(request) => request,
+    let (mut request, content_length, leftover) = match read_http_head(&mut stream).await {
+        Ok(head) => head,
         Err(error) => {
             let _ = write_json_response(
                 &mut stream,
@@ -8336,6 +8338,9 @@ async fn handle_june_provider_connection(
         &state.recorder_token,
         &state.connector_token,
     );
+    // Authenticate on the parsed headers BEFORE reading the body, so an
+    // unauthenticated local process cannot force the loopback proxy to buffer a
+    // declared (up to 12 MiB) body before the 401 (JUN-336 review).
     if !provider_proxy_authorized(&request, required_token) {
         write_json_response(
             &mut stream,
@@ -8345,6 +8350,24 @@ async fn handle_june_provider_connection(
         .await?;
         return Ok(());
     }
+    if content_length > provider_proxy_max_body_bytes(&request.path) {
+        // Enforced here (was inside the old read_http_request) so it runs after
+        // auth. Chat bodies keep the context-overflow wording the frontend
+        // classifier keys on ("maximum context length" / `prompt_too_long`), so
+        // an over-cap chat body degrades into the recoverable overflow notice;
+        // image bodies use an image-specific message. Only authenticated callers
+        // reach this — an unauthenticated over-cap request is already a 401.
+        write_json_response(
+            &mut stream,
+            400,
+            serde_json::json!({
+                "error": { "message": provider_proxy_body_too_large_message(&request.path) }
+            }),
+        )
+        .await?;
+        return Ok(());
+    }
+    request.body = read_http_body(&mut stream, leftover, content_length).await?;
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/v1/models") => {
             let selected_model = crate::providers::generation_model();
@@ -9398,7 +9421,16 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
-async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<HttpRequest> {
+/// Read and parse the request line + headers only, WITHOUT consuming the body.
+/// Returns the request (with an empty `body`), its declared `Content-Length`,
+/// and any bytes already read past the header terminator. The caller must
+/// authorize on the returned headers before calling `read_http_body`, so an
+/// unauthenticated caller never makes the loopback proxy buffer a large body
+/// (JUN-336 review). The body-size cap is likewise enforced by the caller,
+/// after authentication.
+async fn read_http_head(
+    stream: &mut tokio::net::TcpStream,
+) -> io::Result<(HttpRequest, usize, Vec<u8>)> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -9450,21 +9482,28 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
             }
         })
         .unwrap_or(0);
-    if content_length > provider_proxy_max_body_bytes(&path) {
-        // The handler turns this into a 400 for the client. Chat bodies are
-        // phrased as a context overflow (JUN-169): the wording carries the
-        // tokens Hermes' overflow patterns match ("maximum context length") and
-        // the frontend classifier keys on (`prompt_too_long`), so an over-cap
-        // chat body degrades into the recoverable context-overflow notice
-        // instead of a raw transport error that re-wedges or dead-ends the
-        // session. Image bodies use an image-specific message because they are
-        // bounded by upload size, not model context.
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            provider_proxy_body_too_large_message(&path),
-        ));
-    }
-    let mut body = buffer[header_end..].to_vec();
+    let leftover = buffer[header_end..].to_vec();
+    Ok((
+        HttpRequest {
+            method,
+            path,
+            headers,
+            body: Vec::new(),
+        },
+        content_length,
+        leftover,
+    ))
+}
+
+/// Read the request body. Call ONLY after `read_http_head` and a successful
+/// authorization + body-size check on the head — never for an unauthenticated
+/// or over-cap request (JUN-336).
+async fn read_http_body(
+    stream: &mut tokio::net::TcpStream,
+    mut body: Vec<u8>,
+    content_length: usize,
+) -> io::Result<Vec<u8>> {
+    let mut chunk = [0u8; 4096];
     while body.len() < content_length {
         let read = stream.read(&mut chunk).await?;
         if read == 0 {
@@ -9473,12 +9512,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
         body.extend_from_slice(&chunk[..read]);
     }
     body.truncate(content_length);
-    Ok(HttpRequest {
-        method,
-        path,
-        headers,
-        body,
-    })
+    Ok(body)
 }
 
 fn provider_proxy_max_body_bytes(path: &str) -> usize {
@@ -11005,6 +11039,69 @@ mod tests {
             .expect("read response");
         server.await.expect("server task");
         response
+    }
+
+    #[tokio::test]
+    async fn provider_proxy_rejects_unauthenticated_request_before_reading_body() {
+        // The proxy authenticates on the parsed headers BEFORE reading the body,
+        // so an unauthenticated local process cannot make it buffer a declared
+        // (up to 12 MiB) body (JUN-336 review). We declare a large Content-Length
+        // but send NO body: with auth-before-read the proxy answers 401 at once;
+        // a regression that read the body first would block waiting for bytes
+        // that never arrive, tripping the timeout below.
+        let home = tempfile::tempdir().expect("tempdir");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind proxy listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let state = Arc::new(ProviderProxyState {
+            token: "proxy-token".to_string(),
+            recorder_token: "recorder-token".to_string(),
+            connector_token: "connector-token".to_string(),
+            image_sources: ImageSourceCapabilities {
+                images_dir: home.path().join("images"),
+                secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
+            },
+            videos_dir: home.path().join("videos"),
+            video_generation_enabled: false,
+            app: None,
+            image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
+            model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
+            recorder_requests: Arc::new(Mutex::new(HashMap::new())),
+        });
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            handle_june_provider_connection(stream, state)
+                .await
+                .expect("handle connection");
+        });
+
+        let exchange = async {
+            let mut stream = tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("connect proxy");
+            // Wrong bearer + a large declared body we never send.
+            let request = "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer wrong-token\r\nContent-Length: 5000000\r\n\r\n";
+            stream
+                .write_all(request.as_bytes())
+                .await
+                .expect("write request");
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .await
+                .expect("read response");
+            response
+        };
+
+        let response = tokio::time::timeout(Duration::from_secs(5), exchange)
+            .await
+            .expect("proxy must answer 401 without waiting for the declared body");
+        assert!(
+            response.starts_with("HTTP/1.1 401"),
+            "expected 401 Unauthorized, got: {response}"
+        );
+        server.await.expect("server task");
     }
 
     fn oauth_test_connection() -> HermesBridgeConnection {
