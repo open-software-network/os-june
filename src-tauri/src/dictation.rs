@@ -4088,6 +4088,23 @@ fn is_generic_here_instruction_preamble(preamble: &str) -> bool {
     {
         return true;
     }
+    if let Some(subject) = preamble.strip_prefix("here it is ") {
+        let words: Vec<&str> = subject
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .collect();
+        if words
+            .iter()
+            .copied()
+            .any(is_here_instruction_cleanup_modifier)
+            && words.iter().all(|word| {
+                is_here_instruction_cleanup_modifier(word)
+                    || matches!(*word, "as" | "for" | "requested" | "up" | "you")
+            })
+        {
+            return true;
+        }
+    }
     (preamble.starts_with("here, i") || preamble.starts_with("here i"))
         && preamble
             .split(|character: char| !character.is_ascii_alphanumeric())
@@ -7162,6 +7179,12 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here it is, punctuated: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here it is cleaned up: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here it is punctuated. Send it today."
         ));
         assert!(looks_like_instruction_response(
             "Here is the final transcript. Send it today."
