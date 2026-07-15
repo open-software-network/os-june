@@ -41,12 +41,25 @@ const GOOGLE_OAUTH_CLIENT_SECRET_ENV: &str = "GOOGLE_OAUTH_CLIENT_SECRET";
 #[serde(rename_all = "snake_case")]
 pub enum ConnectorProvider {
     Google,
+    Linear,
 }
 
 impl ConnectorProvider {
     pub fn as_str(&self) -> &'static str {
         match self {
             ConnectorProvider::Google => "google",
+            ConnectorProvider::Linear => "linear",
+        }
+    }
+
+    /// Parse the `connector_accounts.provider` column. Unrecognized values
+    /// default to `Google` (mirrors `ConnectorAccountStatus::from_db`'s
+    /// defaulting style) rather than failing to load the whole account list
+    /// over a single stale or corrupt row.
+    pub fn from_db(value: &str) -> Self {
+        match value {
+            "linear" => ConnectorProvider::Linear,
+            _ => ConnectorProvider::Google,
         }
     }
 }
@@ -75,7 +88,8 @@ impl ConnectorAccountStatus {
 }
 
 /// Non-secret account descriptor returned to the frontend and used by the
-/// proxy to enumerate accounts. The account id IS the Google account email.
+/// proxy to enumerate accounts. The account id IS the Google account email
+/// for a Google row; a later Linear chunk keys it by workspace id instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectorAccount {
@@ -84,6 +98,37 @@ pub struct ConnectorAccount {
     pub email: String,
     pub scopes: Vec<String>,
     pub status: ConnectorAccountStatus,
+    /// Linear workspace display name, parsed from the account's `metadata`
+    /// JSON. Always `None` for Google rows.
+    pub workspace_name: Option<String>,
+    /// Linear workspace url key (the `foo` in `linear.app/foo`), parsed from
+    /// `metadata`. Always `None` for Google rows.
+    pub workspace_url_key: Option<String>,
+    /// The Linear teams this account is scoped to. Always empty for Google
+    /// rows, which have no team concept.
+    pub selected_teams: Vec<SelectedTeamDto>,
+}
+
+/// One Linear team the account is scoped to, as shown to the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectedTeamDto {
+    pub id: String,
+    pub key: String,
+    pub name: String,
+}
+
+/// Non-secret metadata carried on a `connector_accounts` row, beyond the
+/// columns every provider shares (email, scopes, status). Parsed
+/// best-effort from the `metadata` JSON column; unknown or absent keys
+/// resolve to `None` rather than failing account enumeration.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectorAccountMetadata {
+    #[serde(default)]
+    workspace_name: Option<String>,
+    #[serde(default)]
+    workspace_url_key: Option<String>,
 }
 
 // --- Config ------------------------------------------------------------------
@@ -206,7 +251,7 @@ pub async fn google_access_token(
     app: &tauri::AppHandle,
     account_id: &str,
 ) -> Result<String, AppError> {
-    let stored = store::load_tokens(account_id)
+    let stored = store::load_tokens(ConnectorProvider::Google, account_id)
         .await?
         .ok_or_else(not_connected_error)?;
     if access_token_is_fresh(stored.expires_at_unix, now_unix()) {
@@ -243,7 +288,7 @@ async fn refresh_google_access_token_with_freshness_gate(
     let _guard = lock.lock().await;
     // Re-read inside the lock: another caller may have already refreshed
     // (and rotated the refresh token) while we waited.
-    let mut stored = store::load_tokens(account_id)
+    let mut stored = store::load_tokens(ConnectorProvider::Google, account_id)
         .await?
         .ok_or_else(not_connected_error)?;
     if accept_fresh && access_token_is_fresh(stored.expires_at_unix, now_unix()) {
@@ -272,7 +317,7 @@ async fn refresh_google_access_token_with_freshness_gate(
                     stored.refresh_token = rotated.to_string();
                 }
                 stored.expires_at_unix = now_unix() + fresh.expires_in.max(0);
-                store::store_tokens(&stored).await?;
+                store::store_tokens(ConnectorProvider::Google, account_id, &stored).await?;
                 return Ok(stored.access_token.clone());
             }
             oauth::RefreshOutcome::InvalidGrant => {
@@ -340,32 +385,55 @@ async fn mark_reconnect_required(app: &tauri::AppHandle, account_id: &str) {
 pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccount>, AppError> {
     let repos = crate::commands::repositories(app).await?;
     let records = repos.list_connector_accounts().await?;
-    Ok(records
-        .into_iter()
-        .map(|record| ConnectorAccount {
+    let mut accounts = Vec::with_capacity(records.len());
+    for record in records {
+        // Best-effort: a malformed metadata blob degrades to "no workspace
+        // info" rather than failing the whole account list.
+        let metadata: ConnectorAccountMetadata =
+            serde_json::from_str(&record.metadata).unwrap_or_default();
+        let selected_teams = repos
+            .list_selected_teams(&record.account_id)
+            .await?
+            .into_iter()
+            .map(|team| SelectedTeamDto {
+                id: team.team_id,
+                key: team.team_key,
+                name: team.team_name,
+            })
+            .collect();
+        accounts.push(ConnectorAccount {
             account_id: record.account_id,
-            provider: ConnectorProvider::Google,
+            provider: ConnectorProvider::from_db(&record.provider),
             email: record.email,
             scopes: record.scopes,
             status: ConnectorAccountStatus::from_db(&record.status),
-        })
-        .collect())
+            workspace_name: metadata.workspace_name,
+            workspace_url_key: metadata.workspace_url_key,
+            selected_teams,
+        });
+    }
+    Ok(accounts)
 }
 
-/// The email of an already-stored account that differs from the one being
-/// connected, if any. Local mode is single-account (every connector surface
-/// resolves the one connected account), so a second, distinct account is
-/// refused to avoid a cross-account read/write mix-up. Comparison is
-/// case-insensitive, so reconnecting or adding scope to the same email returns
-/// `None` and is allowed.
+/// The email of an already-stored account, for the SAME provider, that
+/// differs from the one being connected, if any. Local mode is
+/// single-account per provider (every connector surface for a given provider
+/// resolves the one connected account for that provider), so a second,
+/// distinct account for that provider is refused to avoid a cross-account
+/// read/write mix-up. A different provider's account never conflicts: a
+/// connected Google account must not block connecting Linear, and vice versa.
+/// Comparison is case-insensitive, so reconnecting or adding scope to the
+/// same email returns `None` and is allowed.
 fn conflicting_existing_account<'a>(
-    existing_emails: impl IntoIterator<Item = &'a str>,
-    connecting: &str,
+    existing: impl IntoIterator<Item = (&'a str, &'a str)>,
+    connecting_provider: &str,
+    connecting_email: &str,
 ) -> Option<String> {
-    existing_emails
+    existing
         .into_iter()
-        .find(|email| !email.eq_ignore_ascii_case(connecting))
-        .map(str::to_string)
+        .filter(|(provider, _)| *provider == connecting_provider)
+        .find(|(_, email)| !email.eq_ignore_ascii_case(connecting_email))
+        .map(|(_, email)| email.to_string())
 }
 
 /// Run the full connect flow (browser consent, loopback callback, code
@@ -389,12 +457,27 @@ pub async fn begin_connect(
         if let Some(record) = repos.get_connector_account(&hint_lower).await? {
             let already_granted = scopes::missing_scopes(&record.scopes, bundles).is_empty();
             if already_granted && record.status == ConnectorAccountStatus::Connected.as_str() {
+                let selected_teams = repos
+                    .list_selected_teams(&record.account_id)
+                    .await?
+                    .into_iter()
+                    .map(|team| SelectedTeamDto {
+                        id: team.team_id,
+                        key: team.team_key,
+                        name: team.team_name,
+                    })
+                    .collect();
+                let metadata: ConnectorAccountMetadata =
+                    serde_json::from_str(&record.metadata).unwrap_or_default();
                 return Ok(ConnectorAccount {
                     account_id: record.account_id,
-                    provider: ConnectorProvider::Google,
+                    provider: ConnectorProvider::from_db(&record.provider),
                     email: record.email,
                     scopes: record.scopes,
                     status: ConnectorAccountStatus::Connected,
+                    workspace_name: metadata.workspace_name,
+                    workspace_url_key: metadata.workspace_url_key,
+                    selected_teams,
                 });
             }
         }
@@ -437,7 +520,10 @@ pub async fn begin_connect(
     // guard is the safety net, not the primary path.
     let existing_accounts = repos.list_connector_accounts().await?;
     if let Some(existing_email) = conflicting_existing_account(
-        existing_accounts.iter().map(|record| record.email.as_str()),
+        existing_accounts
+            .iter()
+            .map(|record| (record.provider.as_str(), record.email.as_str())),
+        ConnectorProvider::Google.as_str(),
         &email,
     ) {
         return Err(AppError::new(
@@ -468,7 +554,7 @@ pub async fn begin_connect(
         .filter(|token| !token.is_empty())
     {
         Some(token) => token.to_string(),
-        None => store::load_tokens(&email)
+        None => store::load_tokens(ConnectorProvider::Google, &email)
             .await?
             .map(|existing| existing.refresh_token.clone())
             .ok_or_else(|| {
@@ -486,7 +572,7 @@ pub async fn begin_connect(
         scopes: granted_scopes.clone(),
         email: email.clone(),
     };
-    store::store_tokens(&tokens).await?;
+    store::store_tokens(ConnectorProvider::Google, &email, &tokens).await?;
 
     repos
         .upsert_connector_account(
@@ -495,6 +581,7 @@ pub async fn begin_connect(
             &email,
             &granted_scopes,
             ConnectorAccountStatus::Connected.as_str(),
+            "{}",
         )
         .await?;
     emit_connectors_changed(app);
@@ -505,6 +592,9 @@ pub async fn begin_connect(
         email,
         scopes: granted_scopes,
         status: ConnectorAccountStatus::Connected,
+        workspace_name: None,
+        workspace_url_key: None,
+        selected_teams: Vec::new(),
     })
 }
 
@@ -522,7 +612,7 @@ pub async fn disconnect(
     revoke_grant: bool,
 ) -> Result<(), AppError> {
     if revoke_grant {
-        if let Ok(Some(stored)) = store::load_tokens(account_id).await {
+        if let Ok(Some(stored)) = store::load_tokens(ConnectorProvider::Google, account_id).await {
             // Revoking either token of the pair invalidates the whole grant;
             // prefer the refresh token.
             let token = if stored.refresh_token.is_empty() {
@@ -535,7 +625,7 @@ pub async fn disconnect(
             }
         }
     }
-    store::delete_tokens(account_id).await?;
+    store::delete_tokens(ConnectorProvider::Google, account_id).await?;
     let repos = crate::commands::repositories(app).await?;
     repos.delete_connector_account(account_id).await?;
     emit_connectors_changed(app);
@@ -553,12 +643,32 @@ mod tests {
             "\"google\""
         );
         assert_eq!(
+            serde_json::to_string(&ConnectorProvider::Linear).unwrap(),
+            "\"linear\""
+        );
+        assert_eq!(
             serde_json::to_string(&ConnectorAccountStatus::ReconnectRequired).unwrap(),
             "\"reconnect_required\""
         );
         assert_eq!(
             serde_json::from_str::<ConnectorAccountStatus>("\"connected\"").unwrap(),
             ConnectorAccountStatus::Connected
+        );
+    }
+
+    #[test]
+    fn provider_from_db_defaults_to_google() {
+        assert_eq!(
+            ConnectorProvider::from_db("google"),
+            ConnectorProvider::Google
+        );
+        assert_eq!(
+            ConnectorProvider::from_db("linear"),
+            ConnectorProvider::Linear
+        );
+        assert_eq!(
+            ConnectorProvider::from_db("unexpected"),
+            ConnectorProvider::Google
         );
     }
 
@@ -570,11 +680,39 @@ mod tests {
             email: "user@example.com".to_string(),
             scopes: vec!["openid".to_string()],
             status: ConnectorAccountStatus::Connected,
+            workspace_name: None,
+            workspace_url_key: None,
+            selected_teams: Vec::new(),
         };
         let json = serde_json::to_value(&account).unwrap();
         assert_eq!(json["accountId"], "user@example.com");
         assert_eq!(json["provider"], "google");
         assert_eq!(json["status"], "connected");
+        assert!(json["workspaceName"].is_null());
+        assert!(json["workspaceUrlKey"].is_null());
+        assert_eq!(json["selectedTeams"], serde_json::json!([]));
+
+        let linear_account = ConnectorAccount {
+            account_id: "workspace-1".to_string(),
+            provider: ConnectorProvider::Linear,
+            email: String::new(),
+            scopes: Vec::new(),
+            status: ConnectorAccountStatus::Connected,
+            workspace_name: Some("Acme".to_string()),
+            workspace_url_key: Some("acme".to_string()),
+            selected_teams: vec![SelectedTeamDto {
+                id: "team-1".to_string(),
+                key: "ENG".to_string(),
+                name: "Engineering".to_string(),
+            }],
+        };
+        let json = serde_json::to_value(&linear_account).unwrap();
+        assert_eq!(json["provider"], "linear");
+        assert_eq!(json["workspaceName"], "Acme");
+        assert_eq!(json["workspaceUrlKey"], "acme");
+        assert_eq!(json["selectedTeams"][0]["id"], "team-1");
+        assert_eq!(json["selectedTeams"][0]["key"], "ENG");
+        assert_eq!(json["selectedTeams"][0]["name"], "Engineering");
     }
 
     #[test]
@@ -604,21 +742,47 @@ mod tests {
     #[test]
     fn single_account_guard_blocks_a_different_account_only() {
         // First-ever connect: nothing stored, nothing conflicts.
-        assert_eq!(conflicting_existing_account([], "a@example.com"), None);
+        assert_eq!(
+            conflicting_existing_account([], "google", "a@example.com"),
+            None
+        );
         // Reconnect or scope-add on the same account (any casing) is allowed.
         assert_eq!(
-            conflicting_existing_account(["a@example.com"], "A@Example.com"),
+            conflicting_existing_account([("google", "a@example.com")], "google", "A@Example.com"),
             None
         );
         // A second, distinct account is refused, naming the stored one.
         assert_eq!(
-            conflicting_existing_account(["a@example.com"], "b@example.com"),
+            conflicting_existing_account([("google", "a@example.com")], "google", "b@example.com"),
             Some("a@example.com".to_string())
         );
         // The stored account is reported even when the new one is also present
         // in the list (defensive: only the differing email matters).
         assert_eq!(
-            conflicting_existing_account(["a@example.com", "b@example.com"], "b@example.com"),
+            conflicting_existing_account(
+                [("google", "a@example.com"), ("google", "b@example.com")],
+                "google",
+                "b@example.com"
+            ),
+            Some("a@example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn single_account_guard_ignores_other_providers() {
+        // A connected Google account must never block connecting a Linear
+        // workspace (and vice versa): the single-account guard is scoped per
+        // provider, not global across the whole connector_accounts table.
+        assert_eq!(
+            conflicting_existing_account([("google", "a@example.com")], "linear", "workspace-1"),
+            None
+        );
+        assert_eq!(
+            conflicting_existing_account(
+                [("linear", "workspace-1"), ("google", "a@example.com")],
+                "google",
+                "b@example.com"
+            ),
             Some("a@example.com".to_string())
         );
     }
