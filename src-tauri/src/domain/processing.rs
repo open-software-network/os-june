@@ -167,13 +167,13 @@ impl FirstEventTimeline {
         }
     }
 
-    async fn flush(&self, repos: &Repositories, session_id: &str) {
+    async fn flush(&self, repos: &Repositories, recording_session_id: &str) {
         if self.flushed.swap(true, Ordering::AcqRel) {
             return;
         }
         for (kind, duration_ms) in [
             (
-                "first_transcription_request",
+                "first_note_transcription_request",
                 self.first_request_ms.load(Ordering::Acquire),
             ),
             (
@@ -186,7 +186,7 @@ impl FirstEventTimeline {
             }
             add_latency_checkpoint(
                 repos,
-                session_id,
+                recording_session_id,
                 kind,
                 serde_json::json!({ "doneToDurationMs": duration_ms }).to_string(),
             )
@@ -197,25 +197,28 @@ impl FirstEventTimeline {
 
 pub(crate) async fn add_latency_checkpoint(
     repos: &Repositories,
-    session_id: &str,
+    recording_session_id: &str,
     kind: &str,
     details: String,
 ) {
-    if let Err(error) = repos.add_checkpoint(session_id, kind, Some(details)).await {
-        tracing::warn!(session_id, kind, %error, "failed to persist latency checkpoint");
+    if let Err(error) = repos
+        .add_checkpoint(recording_session_id, kind, Some(details))
+        .await
+    {
+        tracing::warn!(recording_session_id, kind, %error, "failed to persist latency checkpoint");
     }
 }
 
 async fn add_processing_complete_checkpoint(
     repos: &Repositories,
-    session_id: &str,
+    recording_session_id: &str,
     timing: ProcessingTiming,
     processing_started: Instant,
     status: &str,
 ) {
     add_latency_checkpoint(
         repos,
-        session_id,
+        recording_session_id,
         "processing_complete",
         timing.checkpoint_details(serde_json::json!({
             "durationMs": elapsed_ms(processing_started),
@@ -225,19 +228,19 @@ async fn add_processing_complete_checkpoint(
     .await;
 }
 
-async fn add_infrastructure_transcription_failure_checkpoint(
+async fn add_infrastructure_note_transcription_failure_checkpoint(
     repos: &Repositories,
-    session_id: &str,
+    recording_session_id: &str,
     timing: ProcessingTiming,
-    transcription_started: Instant,
+    note_transcription_started: Instant,
     error_code: &str,
 ) {
     add_latency_checkpoint(
         repos,
-        session_id,
-        "transcription_complete",
+        recording_session_id,
+        "note_transcription_complete",
         timing.checkpoint_details(serde_json::json!({
-            "durationMs": elapsed_ms(transcription_started),
+            "durationMs": elapsed_ms(note_transcription_started),
             "status": "failed",
             "error": error_code,
         })),
@@ -245,9 +248,39 @@ async fn add_infrastructure_transcription_failure_checkpoint(
     .await;
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn finalize_infrastructure_note_transcription_failure(
+    repos: &Repositories,
+    recording_session_id: &str,
+    timeline: &FirstEventTimeline,
+    timing: ProcessingTiming,
+    note_transcription_started: Instant,
+    processing_started: Instant,
+    error: AppError,
+) -> AppError {
+    timeline.flush(repos, recording_session_id).await;
+    add_infrastructure_note_transcription_failure_checkpoint(
+        repos,
+        recording_session_id,
+        timing,
+        note_transcription_started,
+        &error.code,
+    )
+    .await;
+    add_processing_complete_checkpoint(
+        repos,
+        recording_session_id,
+        timing,
+        processing_started,
+        "failed",
+    )
+    .await;
+    error
+}
+
 async fn persist_turn_preparation_checkpoint(
     repos: &Repositories,
-    session_id: &str,
+    recording_session_id: &str,
     status: &str,
     report: Option<&TurnPreparationReport>,
     reused_transcript_count: usize,
@@ -255,7 +288,7 @@ async fn persist_turn_preparation_checkpoint(
 ) {
     add_latency_checkpoint(
         repos,
-        session_id,
+        recording_session_id,
         "turn_wav_extraction",
         serde_json::json!({
             "durationMs": report.map(|value| value.active_preparation_duration_ms),
@@ -276,19 +309,19 @@ async fn persist_turn_preparation_checkpoint(
 #[allow(clippy::too_many_arguments)]
 async fn persist_turn_pipeline_result(
     repos: &Repositories,
-    session_id: &str,
+    recording_session_id: &str,
     pipeline_result: Result<TurnPipelineResult, TurnPipelineFailure>,
     reused_transcript_count: usize,
     timeline: &FirstEventTimeline,
     timing: ProcessingTiming,
-    transcription_started: Instant,
+    note_transcription_started: Instant,
     processing_started: Instant,
 ) -> Result<TurnPipelineResult, AppError> {
     match pipeline_result {
         Ok(pipeline) => {
             persist_turn_preparation_checkpoint(
                 repos,
-                session_id,
+                recording_session_id,
                 "succeeded",
                 Some(&pipeline.preparation),
                 reused_transcript_count,
@@ -301,20 +334,20 @@ async fn persist_turn_pipeline_result(
             let error_code = failure.error.code.clone();
             persist_turn_preparation_checkpoint(
                 repos,
-                session_id,
+                recording_session_id,
                 "failed",
                 failure.preparation.as_ref(),
                 reused_transcript_count,
                 Some(error_code.as_str()),
             )
             .await;
-            timeline.flush(repos, session_id).await;
+            timeline.flush(repos, recording_session_id).await;
             add_latency_checkpoint(
                 repos,
-                session_id,
-                "transcription_complete",
+                recording_session_id,
+                "note_transcription_complete",
                 timing.checkpoint_details(serde_json::json!({
-                    "durationMs": elapsed_ms(transcription_started),
+                    "durationMs": elapsed_ms(note_transcription_started),
                     "status": "failed",
                     "error": error_code,
                 })),
@@ -322,7 +355,7 @@ async fn persist_turn_pipeline_result(
             .await;
             add_processing_complete_checkpoint(
                 repos,
-                session_id,
+                recording_session_id,
                 timing,
                 processing_started,
                 "failed",
@@ -529,21 +562,61 @@ pub(crate) async fn process_saved_audio(
     timing: ProcessingTiming,
 ) -> Result<NoteDto, AppError> {
     let processing_started = Instant::now();
-    let transcription_started = Instant::now();
+    let note_transcription_started = Instant::now();
     let timeline = FirstEventTimeline::new(timing);
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
     let temp_dir = session_temp_dir("os-june-transcription", session_id);
     let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
-    let normalized_audio_path = normalize_wav_for_transcription(
+    if let Err(error) = std::fs::create_dir_all(&temp_dir) {
+        let error = AppError::new("audio_normalize_failed", error.to_string());
+        return Err(finalize_infrastructure_note_transcription_failure(
+            repos,
+            session_id,
+            &timeline,
+            timing,
+            note_transcription_started,
+            processing_started,
+            error,
+        )
+        .await);
+    }
+    let _temp_dir_cleanup = TempDirCleanup(temp_dir.clone());
+    let normalized_audio_path = match normalize_wav_for_transcription(
         &audio_path,
         &temp_dir.join(format!("{audio_artifact_id}-normalized.wav")),
-    )?;
+    ) {
+        Ok(path) => path,
+        Err(error) => {
+            return Err(finalize_infrastructure_note_transcription_failure(
+                repos,
+                session_id,
+                &timeline,
+                timing,
+                note_transcription_started,
+                processing_started,
+                error,
+            )
+            .await);
+        }
+    };
     let transcription_provider = crate::providers::configured_transcription_provider();
-    let dictionary_entries = repos.list_dictionary_entries().await?;
+    let dictionary_entries = match repos.list_dictionary_entries().await {
+        Ok(entries) => entries,
+        Err(error) => {
+            return Err(finalize_infrastructure_note_transcription_failure(
+                repos,
+                session_id,
+                &timeline,
+                timing,
+                note_transcription_started,
+                processing_started,
+                AppError::from(error),
+            )
+            .await);
+        }
+    };
     let dictionary_context = build_dictionary_context(&dictionary_entries);
     let transcriber = instrument_turn_transcriber(default_turn_transcriber(), timeline.clone());
     let transcription = match transcribe_prepared_audio(
@@ -570,9 +643,9 @@ pub(crate) async fn process_saved_audio(
             add_latency_checkpoint(
                 repos,
                 session_id,
-                "transcription_complete",
+                "note_transcription_complete",
                 timing.checkpoint_details(serde_json::json!({
-                    "durationMs": elapsed_ms(transcription_started),
+                    "durationMs": elapsed_ms(note_transcription_started),
                     "status": "failed",
                     "successfulTurnCount": 0,
                     "failedTurnCount": 1,
@@ -639,11 +712,11 @@ pub(crate) async fn process_saved_audio(
         Err(error) => {
             let error = AppError::from(error);
             timeline.flush(repos, session_id).await;
-            add_infrastructure_transcription_failure_checkpoint(
+            add_infrastructure_note_transcription_failure_checkpoint(
                 repos,
                 session_id,
                 timing,
-                transcription_started,
+                note_transcription_started,
                 &error.code,
             )
             .await;
@@ -663,9 +736,9 @@ pub(crate) async fn process_saved_audio(
     add_latency_checkpoint(
         repos,
         session_id,
-        "transcription_complete",
+        "note_transcription_complete",
         timing.checkpoint_details(serde_json::json!({
-            "durationMs": elapsed_ms(transcription_started),
+            "durationMs": elapsed_ms(note_transcription_started),
             "status": "succeeded",
             "successfulTurnCount": 1,
             "failedTurnCount": 0,
@@ -810,7 +883,7 @@ pub(crate) async fn process_saved_source_audio(
     let dictionary_entries = repos.list_dictionary_entries().await?;
     let dictionary_context = build_dictionary_context(&dictionary_entries);
     let processing_started = Instant::now();
-    let transcription_started = Instant::now();
+    let note_transcription_started = Instant::now();
     let pipeline_setup = async {
         let detection_started = Instant::now();
         let SilentSystemDropOutcome {
@@ -895,11 +968,11 @@ pub(crate) async fn process_saved_source_audio(
             )
             .await?;
 
-        let segment_dir = session_temp_dir("os-june-turns", session_id);
-        let _ = std::fs::remove_dir_all(&segment_dir);
-        std::fs::create_dir_all(&segment_dir)
+        let turn_wav_dir = session_temp_dir("os-june-turns", session_id);
+        let _ = std::fs::remove_dir_all(&turn_wav_dir);
+        std::fs::create_dir_all(&turn_wav_dir)
             .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
-        let segment_dir_cleanup = Arc::new(TempDirCleanup(segment_dir.clone()));
+        let turn_wav_dir_cleanup = Arc::new(TempDirCleanup(turn_wav_dir.clone()));
 
         let existing_transcripts = repos
             .successful_source_turn_transcripts_for_session(session_id)
@@ -954,11 +1027,11 @@ pub(crate) async fn process_saved_source_audio(
                 }
             }
 
-            let segment_path = segment_dir.join(format!(
+            let turn_wav_path = turn_wav_dir.join(format!(
                 "{:04}-{}-{}-{}.wav",
                 turn.turn_index, turn.source, turn.start_ms, turn.end_ms
             ));
-            let normalized_path = segment_dir.join(format!(
+            let normalized_path = turn_wav_dir.join(format!(
                 "{:04}-{}-{}-{}-normalized.wav",
                 turn.turn_index, turn.source, turn.start_ms, turn.end_ms
             ));
@@ -969,8 +1042,8 @@ pub(crate) async fn process_saved_source_audio(
             preparation_jobs.push(TurnPreparationJob {
                 schedule_index: preparation_jobs.len(),
                 turn,
-                temp_dir: segment_dir.clone(),
-                segment_path,
+                temp_dir: turn_wav_dir.clone(),
+                turn_wav_path,
                 normalized_path,
                 recorded_silence,
                 echo_trimmed,
@@ -981,7 +1054,7 @@ pub(crate) async fn process_saved_source_audio(
         Ok::<_, AppError>((
             sources,
             coverage_turns,
-            segment_dir_cleanup,
+            turn_wav_dir_cleanup,
             preparation_jobs,
             fallback_plans,
             cached_candidates,
@@ -991,7 +1064,7 @@ pub(crate) async fn process_saved_source_audio(
     let (
         sources,
         coverage_turns,
-        segment_dir_cleanup,
+        turn_wav_dir_cleanup,
         preparation_jobs,
         fallback_plans,
         cached_candidates,
@@ -999,11 +1072,11 @@ pub(crate) async fn process_saved_source_audio(
         Ok(prepared) => prepared,
         Err(error) => {
             timeline.flush(repos, session_id).await;
-            add_infrastructure_transcription_failure_checkpoint(
+            add_infrastructure_note_transcription_failure_checkpoint(
                 repos,
                 session_id,
                 timing,
-                transcription_started,
+                note_transcription_started,
                 &error.code,
             )
             .await;
@@ -1046,9 +1119,9 @@ pub(crate) async fn process_saved_source_audio(
         candidates: cached_candidates,
         failures: Vec::new(),
     };
-    let transcriber = retain_cleanup_during_transcription(
+    let transcriber = retain_cleanup_during_note_transcription(
         instrument_turn_transcriber(default_turn_transcriber(), timeline.clone()),
-        Arc::clone(&segment_dir_cleanup),
+        Arc::clone(&turn_wav_dir_cleanup),
     );
     let pipeline_result = prepare_and_transcribe_turn_jobs_bounded(
         preparation_jobs,
@@ -1057,8 +1130,8 @@ pub(crate) async fn process_saved_source_audio(
         transcription_provider.clone(),
         title.clone(),
         dictionary_context,
-        guarded_turn_preparer(Arc::clone(&segment_dir_cleanup)),
-        guarded_fallback_preparer(Arc::clone(&segment_dir_cleanup)),
+        guarded_turn_preparer(Arc::clone(&turn_wav_dir_cleanup)),
+        guarded_fallback_preparer(Arc::clone(&turn_wav_dir_cleanup)),
         transcriber,
         Some(result_sink),
         DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
@@ -1072,11 +1145,11 @@ pub(crate) async fn process_saved_source_audio(
         reused_transcript_count,
         &timeline,
         timing,
-        transcription_started,
+        note_transcription_started,
         processing_started,
     )
     .await?;
-    drop(segment_dir_cleanup);
+    drop(turn_wav_dir_cleanup);
 
     let mut fresh_outcome = pipeline.outcome;
     transcription_outcome
@@ -1115,11 +1188,11 @@ pub(crate) async fn process_saved_source_audio(
         {
             let error = AppError::from(error);
             timeline.flush(repos, session_id).await;
-            add_infrastructure_transcription_failure_checkpoint(
+            add_infrastructure_note_transcription_failure_checkpoint(
                 repos,
                 session_id,
                 timing,
-                transcription_started,
+                note_transcription_started,
                 &error.code,
             )
             .await;
@@ -1152,11 +1225,11 @@ pub(crate) async fn process_saved_source_audio(
         {
             let error = AppError::from(error);
             timeline.flush(repos, session_id).await;
-            add_infrastructure_transcription_failure_checkpoint(
+            add_infrastructure_note_transcription_failure_checkpoint(
                 repos,
                 session_id,
                 timing,
-                transcription_started,
+                note_transcription_started,
                 &error.code,
             )
             .await;
@@ -1180,11 +1253,11 @@ pub(crate) async fn process_saved_source_audio(
         Err(error) => {
             let error = AppError::from(error);
             timeline.flush(repos, session_id).await;
-            add_infrastructure_transcription_failure_checkpoint(
+            add_infrastructure_note_transcription_failure_checkpoint(
                 repos,
                 session_id,
                 timing,
-                transcription_started,
+                note_transcription_started,
                 &error.code,
             )
             .await;
@@ -1248,9 +1321,9 @@ pub(crate) async fn process_saved_source_audio(
     add_latency_checkpoint(
         repos,
         session_id,
-        "transcription_complete",
+        "note_transcription_complete",
         timing.checkpoint_details(serde_json::json!({
-            "durationMs": elapsed_ms(transcription_started),
+            "durationMs": elapsed_ms(note_transcription_started),
             "status": if blocking_error.is_some() { "failed" } else { "succeeded" },
             "successfulTurnCount": persisted_transcripts.len(),
             "failedTurnCount": visible_failures.len(),
@@ -1675,7 +1748,7 @@ struct TurnPreparationJob {
     schedule_index: usize,
     turn: AudioTurn,
     temp_dir: PathBuf,
-    segment_path: PathBuf,
+    turn_wav_path: PathBuf,
     normalized_path: PathBuf,
     recorded_silence: bool,
     echo_trimmed: bool,
@@ -1789,7 +1862,7 @@ fn guarded_fallback_preparer(cleanup: Arc<TempDirCleanup>) -> SourceFallbackPrep
     retain_cleanup_during_blocking_work(inner, cleanup)
 }
 
-fn retain_cleanup_during_transcription(
+fn retain_cleanup_during_note_transcription(
     inner: TurnTranscriber,
     cleanup: Arc<TempDirCleanup>,
 ) -> TurnTranscriber {
@@ -1850,8 +1923,8 @@ fn prepare_turn_job(descriptor: TurnPreparationJob) -> Result<PreparedTurn, AppE
     let raw_path = if descriptor.covers_full_source() {
         descriptor.turn.source_path.clone()
     } else {
-        write_turn_wav(&descriptor.turn, &descriptor.segment_path)?;
-        descriptor.segment_path.clone()
+        write_turn_wav(&descriptor.turn, &descriptor.turn_wav_path)?;
+        descriptor.turn_wav_path.clone()
     };
     let audio_path = normalize_wav_for_transcription(&raw_path, &descriptor.normalized_path)?;
     Ok(PreparedTurn {
@@ -1913,6 +1986,12 @@ fn build_source_fallback_plans(descriptors: &[TurnPreparationJob]) -> Vec<Source
             turn_index: descriptor.turn.turn_index,
         });
     }
+    // `sort_by_key` is stable, so unrecognized sources retain descriptor order.
+    plans.sort_by_key(|plan| match plan.source.as_str() {
+        "microphone" => 0,
+        "system" => 1,
+        _ => 2,
+    });
     plans
 }
 
@@ -3297,11 +3376,11 @@ mod tests {
             .expect("migrations");
         let repos = Repositories::new(pool);
         let note = repos.create_note(None).await.expect("note");
-        let session_id = format!("session-{}", uuid::Uuid::new_v4());
+        let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
         repos
             .create_recording_session(
                 &note.id,
-                &session_id,
+                &recording_session_id,
                 RecordingSourceMode::MicrophonePlusSystem,
                 "microphone.partial.wav",
                 "microphone.wav",
@@ -3309,7 +3388,7 @@ mod tests {
             )
             .await
             .expect("recording session");
-        (repos, session_id)
+        (repos, recording_session_id)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3324,11 +3403,11 @@ mod tests {
             .expect("migrations");
         let repos = Repositories::new(pool);
         let note = repos.create_note(None).await.expect("note");
-        let session_id = format!("session-{}", uuid::Uuid::new_v4());
+        let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
         repos
             .create_recording_session(
                 &note.id,
-                &session_id,
+                &recording_session_id,
                 RecordingSourceMode::MicrophoneOnly,
                 "microphone.partial.wav",
                 "microphone.wav",
@@ -3375,24 +3454,27 @@ mod tests {
 
         let second_flush = timeline.clone();
         tokio::join!(
-            timeline.flush(&repos, &session_id),
-            second_flush.flush(&repos, &session_id),
+            timeline.flush(&repos, &recording_session_id),
+            second_flush.flush(&repos, &recording_session_id),
         );
 
         let rows = sqlx::query::query(
             "SELECT kind, details
              FROM recording_checkpoints
              WHERE recording_session_id = ?
-               AND kind IN ('first_transcription_request', 'first_transcript_persisted')
+               AND kind IN ('first_note_transcription_request', 'first_transcript_persisted')
              ORDER BY rowid ASC",
         )
-        .bind(&session_id)
+        .bind(&recording_session_id)
         .fetch_all(&repos.pool)
         .await
         .expect("first-event checkpoints");
         assert_eq!(rows.len(), 2);
 
-        for expected_kind in ["first_transcription_request", "first_transcript_persisted"] {
+        for expected_kind in [
+            "first_note_transcription_request",
+            "first_transcript_persisted",
+        ] {
             let matching = rows
                 .iter()
                 .filter(|row| row.get::<String, _>("kind") == expected_kind)
@@ -3410,6 +3492,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn microphone_only_setup_failure_persists_terminal_checkpoints_once() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note(None).await.expect("note");
+        let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
+        repos
+            .create_recording_session(
+                &note.id,
+                &recording_session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "microphone.partial.wav",
+                "microphone.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+
+        let temp_dir = session_temp_dir("os-june-transcription", &recording_session_id);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_file(&temp_dir);
+        std::fs::write(&temp_dir, b"block note transcription directory creation")
+            .expect("blocking note transcription file");
+        let expected_message = std::fs::create_dir_all(&temp_dir)
+            .expect_err("regular file must block directory creation")
+            .to_string();
+
+        let result = process_saved_audio(
+            &repos,
+            &note.id,
+            &recording_session_id,
+            "microphone-artifact",
+            PathBuf::from("unused-microphone.wav"),
+            "Setup failure".to_string(),
+            None,
+            None,
+            false,
+            ProcessingTiming::from_done(Instant::now()),
+        )
+        .await;
+        std::fs::remove_file(&temp_dir).expect("remove blocking note transcription file");
+
+        let error = result.expect_err("microphone-only setup must fail");
+        assert_eq!(error.code, "audio_normalize_failed");
+        assert_eq!(error.message, expected_message);
+        assert!(error.details.is_none());
+
+        let rows = sqlx::query::query(
+            "SELECT kind, details
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('note_transcription_complete', 'processing_complete')
+             ORDER BY rowid ASC",
+        )
+        .bind(&recording_session_id)
+        .fetch_all(&repos.pool)
+        .await
+        .expect("terminal checkpoints");
+        assert_eq!(rows.len(), 2, "one checkpoint for each terminal kind");
+
+        let note_transcription_rows = rows
+            .iter()
+            .filter(|row| row.get::<String, _>("kind") == "note_transcription_complete")
+            .collect::<Vec<_>>();
+        assert_eq!(note_transcription_rows.len(), 1);
+        let note_transcription_details = note_transcription_rows[0]
+            .get::<Option<String>, _>("details")
+            .expect("note transcription checkpoint details");
+        let note_transcription_details: serde_json::Value =
+            serde_json::from_str(&note_transcription_details)
+                .expect("note transcription details JSON");
+        assert_eq!(note_transcription_details["status"], "failed");
+        assert_eq!(
+            note_transcription_details["error"],
+            "audio_normalize_failed"
+        );
+        assert!(note_transcription_details["durationMs"].as_i64().is_some());
+        assert!(note_transcription_details["doneToDurationMs"]
+            .as_i64()
+            .is_some());
+
+        let processing_rows = rows
+            .iter()
+            .filter(|row| row.get::<String, _>("kind") == "processing_complete")
+            .collect::<Vec<_>>();
+        assert_eq!(processing_rows.len(), 1);
+        let processing_details = processing_rows[0]
+            .get::<Option<String>, _>("details")
+            .expect("processing checkpoint details");
+        let processing_details: serde_json::Value =
+            serde_json::from_str(&processing_details).expect("processing details JSON");
+        assert_eq!(processing_details["status"], "failed");
+        assert!(processing_details["durationMs"].as_i64().is_some());
+        assert!(processing_details["doneToDurationMs"].as_i64().is_some());
+    }
+
+    #[tokio::test]
     async fn eager_preparation_failure_persists_terminal_checkpoints_without_counts() {
         let pool = sqlx_sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -3421,11 +3606,11 @@ mod tests {
             .expect("migrations");
         let repos = Repositories::new(pool);
         let note = repos.create_note(None).await.expect("note");
-        let session_id = format!("session-{}", uuid::Uuid::new_v4());
+        let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
         repos
             .create_recording_session(
                 &note.id,
-                &session_id,
+                &recording_session_id,
                 RecordingSourceMode::MicrophonePlusSystem,
                 "microphone.partial.wav",
                 "microphone.wav",
@@ -3438,19 +3623,19 @@ mod tests {
         let source_path = source_dir.path().join("microphone.wav");
         write_loud_wav(&source_path, 48_000, 48_000);
 
-        let segment_dir = session_temp_dir("os-june-turns", &session_id);
-        let _ = std::fs::remove_dir_all(&segment_dir);
-        let _ = std::fs::remove_file(&segment_dir);
-        std::fs::write(&segment_dir, b"block turn directory creation")
-            .expect("blocking segment file");
-        let expected_message = std::fs::create_dir_all(&segment_dir)
+        let turn_wav_dir = session_temp_dir("os-june-turns", &recording_session_id);
+        let _ = std::fs::remove_dir_all(&turn_wav_dir);
+        let _ = std::fs::remove_file(&turn_wav_dir);
+        std::fs::write(&turn_wav_dir, b"block turn directory creation")
+            .expect("blocking turn WAV file");
+        let expected_message = std::fs::create_dir_all(&turn_wav_dir)
             .expect_err("regular file must block directory creation")
             .to_string();
 
         let result = process_saved_source_audio(
             &repos,
             &note.id,
-            &session_id,
+            &recording_session_id,
             RecordingSourceMode::MicrophonePlusSystem,
             vec![(
                 "microphone-artifact".to_string(),
@@ -3464,7 +3649,7 @@ mod tests {
             ProcessingTiming::from_done(Instant::now()),
         )
         .await;
-        std::fs::remove_file(&segment_dir).expect("remove blocking segment file");
+        std::fs::remove_file(&turn_wav_dir).expect("remove blocking turn WAV file");
 
         let error = result.expect_err("eager preparation must fail");
         assert_eq!(error.code, "audio_turn_failed");
@@ -3475,34 +3660,37 @@ mod tests {
             "SELECT kind, details
              FROM recording_checkpoints
              WHERE recording_session_id = ?
-               AND kind IN ('transcription_complete', 'processing_complete')
+               AND kind IN ('note_transcription_complete', 'processing_complete')
              ORDER BY rowid ASC",
         )
-        .bind(&session_id)
+        .bind(&recording_session_id)
         .fetch_all(&repos.pool)
         .await
         .expect("terminal checkpoints");
         assert_eq!(rows.len(), 2, "one checkpoint for each terminal kind");
 
-        let transcription_rows = rows
+        let note_transcription_rows = rows
             .iter()
-            .filter(|row| row.get::<String, _>("kind") == "transcription_complete")
+            .filter(|row| row.get::<String, _>("kind") == "note_transcription_complete")
             .collect::<Vec<_>>();
-        assert_eq!(transcription_rows.len(), 1);
-        let transcription_details = transcription_rows[0]
+        assert_eq!(note_transcription_rows.len(), 1);
+        let note_transcription_details = note_transcription_rows[0]
             .get::<Option<String>, _>("details")
-            .expect("transcription checkpoint details");
-        let transcription_details: serde_json::Value =
-            serde_json::from_str(&transcription_details).expect("transcription details JSON");
-        let transcription_details = transcription_details
+            .expect("note transcription checkpoint details");
+        let note_transcription_details: serde_json::Value =
+            serde_json::from_str(&note_transcription_details)
+                .expect("note transcription details JSON");
+        let note_transcription_details = note_transcription_details
             .as_object()
-            .expect("transcription details object");
-        assert_eq!(transcription_details["status"], "failed");
-        assert_eq!(transcription_details["error"], "audio_turn_failed");
-        assert!(transcription_details["durationMs"].as_i64().is_some());
-        assert!(transcription_details["doneToDurationMs"].as_i64().is_some());
-        assert!(!transcription_details.contains_key("successfulTurnCount"));
-        assert!(!transcription_details.contains_key("failedTurnCount"));
+            .expect("note transcription details object");
+        assert_eq!(note_transcription_details["status"], "failed");
+        assert_eq!(note_transcription_details["error"], "audio_turn_failed");
+        assert!(note_transcription_details["durationMs"].as_i64().is_some());
+        assert!(note_transcription_details["doneToDurationMs"]
+            .as_i64()
+            .is_some());
+        assert!(!note_transcription_details.contains_key("successfulTurnCount"));
+        assert!(!note_transcription_details.contains_key("failedTurnCount"));
 
         let processing_rows = rows
             .iter()
@@ -3523,7 +3711,7 @@ mod tests {
              FROM recording_checkpoints
              WHERE recording_session_id = ? AND kind = 'turn_detection'",
         )
-        .bind(&session_id)
+        .bind(&recording_session_id)
         .fetch_one(&repos.pool)
         .await
         .expect("turn-detection checkpoint count");
@@ -3536,9 +3724,9 @@ mod tests {
             "SELECT COUNT(*)
              FROM recording_checkpoints
              WHERE recording_session_id = ?
-               AND kind IN ('first_transcription_request', 'first_transcript_persisted')",
+               AND kind IN ('first_note_transcription_request', 'first_transcript_persisted')",
         )
-        .bind(&session_id)
+        .bind(&recording_session_id)
         .fetch_one(&repos.pool)
         .await
         .expect("first-event checkpoint count");
@@ -3547,7 +3735,7 @@ mod tests {
 
     #[tokio::test]
     async fn pipeline_failure_persists_preparation_and_terminal_checkpoints_once() {
-        let (repos, session_id) = test_source_processing_repositories().await;
+        let (repos, recording_session_id) = test_source_processing_repositories().await;
         let timing = ProcessingTiming::from_done(Instant::now());
         let timeline = FirstEventTimeline::new(timing);
         let expected_error = AppError {
@@ -3568,7 +3756,7 @@ mod tests {
 
         let returned_error = persist_turn_pipeline_result(
             &repos,
-            &session_id,
+            &recording_session_id,
             Err(failure),
             3,
             &timeline,
@@ -3586,10 +3774,10 @@ mod tests {
             "SELECT kind, details
              FROM recording_checkpoints
              WHERE recording_session_id = ?
-               AND kind IN ('turn_wav_extraction', 'transcription_complete', 'processing_complete')
+               AND kind IN ('turn_wav_extraction', 'note_transcription_complete', 'processing_complete')
              ORDER BY rowid ASC",
         )
-        .bind(&session_id)
+        .bind(&recording_session_id)
         .fetch_all(&repos.pool)
         .await
         .expect("pipeline failure checkpoints");
@@ -3617,14 +3805,16 @@ mod tests {
         assert_eq!(preparation["status"], "failed");
         assert_eq!(preparation["error"], "audio_turn_failed");
 
-        let transcription = details_for("transcription_complete");
-        assert_eq!(transcription["status"], "failed");
-        assert_eq!(transcription["error"], "audio_turn_failed");
-        assert!(transcription["durationMs"].as_i64().is_some());
-        assert!(transcription["doneToDurationMs"].as_i64().is_some());
-        let transcription = transcription.as_object().expect("transcription object");
-        assert!(!transcription.contains_key("successfulTurnCount"));
-        assert!(!transcription.contains_key("failedTurnCount"));
+        let note_transcription = details_for("note_transcription_complete");
+        assert_eq!(note_transcription["status"], "failed");
+        assert_eq!(note_transcription["error"], "audio_turn_failed");
+        assert!(note_transcription["durationMs"].as_i64().is_some());
+        assert!(note_transcription["doneToDurationMs"].as_i64().is_some());
+        let note_transcription = note_transcription
+            .as_object()
+            .expect("note transcription object");
+        assert!(!note_transcription.contains_key("successfulTurnCount"));
+        assert!(!note_transcription.contains_key("failedTurnCount"));
 
         let processing = details_for("processing_complete");
         assert_eq!(processing["status"], "failed");
@@ -3634,7 +3824,7 @@ mod tests {
 
     #[tokio::test]
     async fn zero_descriptor_pipeline_persists_all_cached_preparation_checkpoint() {
-        let (repos, session_id) = test_source_processing_repositories().await;
+        let (repos, recording_session_id) = test_source_processing_repositories().await;
         let timing = ProcessingTiming::from_done(Instant::now());
         let timeline = FirstEventTimeline::new(timing);
         let preparation_calls = Arc::new(AtomicUsize::new(0));
@@ -3658,8 +3848,9 @@ mod tests {
             let transcriber_calls = Arc::clone(&transcriber_calls);
             Arc::new(move |_request: TranscriptionRequest| {
                 transcriber_calls.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async { Err(AppError::new("unexpected", "unexpected transcription")) })
-                    as TranscriptionFuture
+                Box::pin(async {
+                    Err(AppError::new("unexpected", "unexpected note transcription"))
+                }) as TranscriptionFuture
             }) as TurnTranscriber
         };
         let pipeline = prepare_and_transcribe_turn_jobs_bounded(
@@ -3689,7 +3880,7 @@ mod tests {
 
         let returned = persist_turn_pipeline_result(
             &repos,
-            &session_id,
+            &recording_session_id,
             Ok(pipeline),
             4,
             &timeline,
@@ -3706,7 +3897,7 @@ mod tests {
              FROM recording_checkpoints
              WHERE recording_session_id = ? AND kind = 'turn_wav_extraction'",
         )
-        .bind(&session_id)
+        .bind(&recording_session_id)
         .fetch_one(&repos.pool)
         .await
         .expect("zero-descriptor preparation checkpoint");
@@ -3728,9 +3919,9 @@ mod tests {
             "SELECT COUNT(*)
              FROM recording_checkpoints
              WHERE recording_session_id = ?
-               AND kind IN ('transcription_complete', 'processing_complete')",
+               AND kind IN ('note_transcription_complete', 'processing_complete')",
         )
-        .bind(&session_id)
+        .bind(&recording_session_id)
         .fetch_one(&repos.pool)
         .await
         .expect("terminal checkpoint count");
@@ -5283,8 +5474,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn pipeline_starts_first_request_before_later_preparation_finishes() {
         let descriptors = vec![
-            segmented_preparation_job(0, "microphone", 0, false),
-            segmented_preparation_job(1, "system", 1, false),
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
         ];
         let (later_preparation_began_tx, mut later_preparation_began_rx) =
             tokio::sync::mpsc::unbounded_channel();
@@ -5365,7 +5556,7 @@ mod tests {
     async fn streaming_scheduler_never_exceeds_two_provider_calls() {
         let descriptors = (0..5)
             .map(|index| {
-                segmented_preparation_job(
+                turn_preparation_job(
                     index,
                     if index % 2 == 0 {
                         "microphone"
@@ -5500,7 +5691,7 @@ mod tests {
 
         let descriptors = (0..5)
             .map(|index| {
-                segmented_preparation_job(
+                turn_preparation_job(
                     index,
                     if index % 2 == 0 {
                         "microphone"
@@ -5649,9 +5840,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn streaming_scheduler_preserves_logical_spawn_context() {
         let descriptors = vec![
-            segmented_preparation_job(0, "microphone", 0, false),
-            segmented_preparation_job(1, "system", 1, false),
-            segmented_preparation_job(2, "microphone", 2, false),
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
+            turn_preparation_job(2, "microphone", 2, false),
         ];
         let (release_second_tx, release_second_rx) = std::sync::mpsc::channel();
         let release_second_rx = Arc::new(Mutex::new(release_second_rx));
@@ -5744,8 +5935,8 @@ mod tests {
     #[tokio::test]
     async fn pipelined_results_are_sorted_after_reverse_completion() {
         let descriptors = vec![
-            segmented_preparation_job(0, "microphone", 0, false),
-            segmented_preparation_job(1, "system", 1, false),
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
         ];
         let blocked_first = Arc::new(tokio::sync::Semaphore::new(0));
         let transcriber = {
@@ -5847,8 +6038,8 @@ mod tests {
     async fn preparation_error_joins_in_flight_requests_and_skips_fallback() {
         const ACTIVE_WORK_MS: u64 = 15;
         let descriptors = vec![
-            segmented_preparation_job(0, "microphone", 0, false),
-            segmented_preparation_job(1, "system", 1, false),
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
         ];
         let fallback_plans = build_source_fallback_plans(&descriptors);
         let (provider_began_tx, provider_began_rx) = std::sync::mpsc::channel();
@@ -5998,15 +6189,15 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn segment_temp_dir_is_removed_after_preparation_error() {
+    async fn turn_wav_temp_dir_is_removed_after_preparation_error() {
         let root = tempfile::tempdir().expect("temp root");
-        let segment_dir = root.path().join("session").join("turns");
-        std::fs::create_dir_all(&segment_dir).expect("segment temp dir");
-        let segment_dir_cleanup = Arc::new(TempDirCleanup(segment_dir.clone()));
+        let turn_wav_dir = root.path().join("session").join("turns");
+        std::fs::create_dir_all(&turn_wav_dir).expect("turn WAV temp dir");
+        let turn_wav_dir_cleanup = Arc::new(TempDirCleanup(turn_wav_dir.clone()));
 
         let descriptors = vec![
-            segmented_preparation_job(0, "microphone", 0, false),
-            segmented_preparation_job(1, "system", 1, false),
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
         ];
         let fallback_plans = build_source_fallback_plans(&descriptors);
         let (provider_began_tx, provider_began_rx) = std::sync::mpsc::channel();
@@ -6014,7 +6205,7 @@ mod tests {
         let (preparation_failed_tx, mut preparation_failed_rx) =
             tokio::sync::mpsc::unbounded_channel();
         let turn_preparer = {
-            let cleanup = Arc::clone(&segment_dir_cleanup);
+            let cleanup = Arc::clone(&turn_wav_dir_cleanup);
             let provider_began_rx = Arc::clone(&provider_began_rx);
             Arc::new(move |descriptor: TurnPreparationJob| {
                 let _cleanup = Arc::clone(&cleanup);
@@ -6036,7 +6227,7 @@ mod tests {
         let active = Arc::new(AtomicUsize::new(0));
         let provider_gate = Arc::new(tokio::sync::Semaphore::new(0));
         let transcriber = {
-            let cleanup = Arc::clone(&segment_dir_cleanup);
+            let cleanup = Arc::clone(&turn_wav_dir_cleanup);
             let active = Arc::clone(&active);
             let provider_gate = Arc::clone(&provider_gate);
             Arc::new(move |request: TranscriptionRequest| {
@@ -6088,7 +6279,7 @@ mod tests {
             .expect("preparation failure observation channel closed");
         assert_eq!(active.load(Ordering::SeqCst), 1);
         assert!(
-            segment_dir.exists(),
+            turn_wav_dir.exists(),
             "temp directory was removed while provider work was draining"
         );
         let pending_probe = tokio::time::timeout(Duration::from_millis(50), &mut pipeline).await;
@@ -6111,22 +6302,22 @@ mod tests {
         assert_eq!(active.load(Ordering::SeqCst), 0);
         assert_eq!(fallback_count.load(Ordering::SeqCst), 0);
         assert!(
-            segment_dir.exists(),
+            turn_wav_dir.exists(),
             "caller's cleanup guard should retain the directory"
         );
 
-        drop(segment_dir_cleanup);
-        assert!(!segment_dir.exists());
+        drop(turn_wav_dir_cleanup);
+        assert!(!turn_wav_dir.exists());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn segment_temp_dir_outlives_cancelled_blocking_preparation() {
+    async fn turn_wav_temp_dir_outlives_cancelled_blocking_preparation() {
         let root = tempfile::tempdir().expect("temp root");
-        let segment_dir = root.path().join("session").join("turns");
-        std::fs::create_dir_all(&segment_dir).expect("segment temp dir");
-        let segment_dir_cleanup = Arc::new(TempDirCleanup(segment_dir.clone()));
+        let turn_wav_dir = root.path().join("session").join("turns");
+        std::fs::create_dir_all(&turn_wav_dir).expect("turn WAV temp dir");
+        let turn_wav_dir_cleanup = Arc::new(TempDirCleanup(turn_wav_dir.clone()));
 
-        let descriptor = segmented_preparation_job(0, "microphone", 0, false);
+        let descriptor = turn_preparation_job(0, "microphone", 0, false);
         let (preparation_started_tx, mut preparation_started_rx) =
             tokio::sync::mpsc::unbounded_channel();
         let (release_preparation_tx, release_preparation_rx) = std::sync::mpsc::channel();
@@ -6148,7 +6339,7 @@ mod tests {
         };
         let turn_preparer = retain_cleanup_during_turn_preparation(
             blocking_preparer,
-            Arc::clone(&segment_dir_cleanup),
+            Arc::clone(&turn_wav_dir_cleanup),
         );
         let transcriber: TurnTranscriber = Arc::new(|_request| {
             Box::pin(async { Err(AppError::new("unexpected", "unexpected provider call")) })
@@ -6180,11 +6371,11 @@ mod tests {
             .await
             .expect_err("aborted pipeline task should be cancelled");
         assert!(join_error.is_cancelled());
-        assert!(segment_dir.exists());
+        assert!(turn_wav_dir.exists());
 
-        drop(segment_dir_cleanup);
+        drop(turn_wav_dir_cleanup);
         assert!(
-            segment_dir.exists(),
+            turn_wav_dir.exists(),
             "blocking preparation must retain the temp directory after caller cancellation"
         );
 
@@ -6196,20 +6387,20 @@ mod tests {
             .expect("blocking preparation did not finish")
             .expect("preparation-finished channel closed");
         tokio::time::timeout(Duration::from_secs(2), async {
-            while segment_dir.exists() {
+            while turn_wav_dir.exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("segment temp directory was not eventually removed");
+        .expect("turn WAV temp directory was not eventually removed");
     }
 
     #[tokio::test]
-    async fn transcription_future_retains_segment_temp_dir_after_wrapper_drop() {
+    async fn note_transcription_future_retains_turn_wav_temp_dir_after_wrapper_drop() {
         let root = tempfile::tempdir().expect("temp root");
-        let segment_dir = root.path().join("session").join("turns");
-        std::fs::create_dir_all(&segment_dir).expect("segment temp dir");
-        let segment_dir_cleanup = Arc::new(TempDirCleanup(segment_dir.clone()));
+        let turn_wav_dir = root.path().join("session").join("turns");
+        std::fs::create_dir_all(&turn_wav_dir).expect("turn WAV temp dir");
+        let turn_wav_dir_cleanup = Arc::new(TempDirCleanup(turn_wav_dir.clone()));
         let provider_gate = Arc::new(tokio::sync::Semaphore::new(0));
         let (provider_started_tx, mut provider_started_rx) = tokio::sync::mpsc::unbounded_channel();
         let inner = {
@@ -6225,7 +6416,8 @@ mod tests {
                 }) as TranscriptionFuture
             }) as TurnTranscriber
         };
-        let guarded = retain_cleanup_during_transcription(inner, Arc::clone(&segment_dir_cleanup));
+        let guarded =
+            retain_cleanup_during_note_transcription(inner, Arc::clone(&turn_wav_dir_cleanup));
         let future = guarded(TranscriptionRequest {
             provider: crate::providers::OPENAI_PROVIDER.to_string(),
             audio_path: PathBuf::from("prepared.wav"),
@@ -6237,10 +6429,10 @@ mod tests {
         });
 
         drop(guarded);
-        drop(segment_dir_cleanup);
+        drop(turn_wav_dir_cleanup);
         assert!(
-            segment_dir.exists(),
-            "the returned transcription future must own the cleanup guard"
+            turn_wav_dir.exists(),
+            "the returned note transcription future must own the cleanup guard"
         );
 
         let provider = tokio::spawn(future);
@@ -6248,13 +6440,13 @@ mod tests {
             .await
             .expect("provider future did not start")
             .expect("provider-start channel closed");
-        assert!(segment_dir.exists());
+        assert!(turn_wav_dir.exists());
         provider_gate.add_permits(1);
         provider
             .await
             .expect("provider task panicked")
             .expect("provider failed");
-        assert!(!segment_dir.exists());
+        assert!(!turn_wav_dir.exists());
     }
 
     #[tokio::test]
@@ -6318,8 +6510,8 @@ mod tests {
     #[tokio::test]
     async fn streaming_scheduler_finishes_after_exact_job_count_with_sender_open() {
         let descriptors = [
-            segmented_preparation_job(0, "microphone", 0, false),
-            segmented_preparation_job(1, "system", 1, false),
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
         ];
         let (sender, receiver) = tokio::sync::mpsc::channel(2);
         for descriptor in &descriptors {
@@ -6356,7 +6548,7 @@ mod tests {
 
     #[tokio::test]
     async fn premature_preparation_close_drains_started_provider_and_sink() {
-        let descriptor = segmented_preparation_job(0, "microphone", 0, false);
+        let descriptor = turn_preparation_job(0, "microphone", 0, false);
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
         sender
             .send(Ok(prepared_test_turn(&descriptor)))
@@ -6444,7 +6636,7 @@ mod tests {
     async fn sink_error_drains_started_work_and_joins_blocked_producer() {
         let descriptors = (0..5)
             .map(|index| {
-                segmented_preparation_job(
+                turn_preparation_job(
                     index,
                     if index % 2 == 0 {
                         "microphone"
@@ -6689,11 +6881,11 @@ mod tests {
             end_ms: 1_250,
             turn_index: 7,
         };
-        let reference_segment_path = dir.join("reference-segment.wav");
+        let reference_turn_wav_path = dir.join("reference-turn.wav");
         let reference_normalized_path = dir.join("reference-normalized.wav");
-        write_turn_wav(&turn, &reference_segment_path).unwrap();
+        write_turn_wav(&turn, &reference_turn_wav_path).unwrap();
         let reference_audio_path =
-            normalize_wav_for_transcription(&reference_segment_path, &reference_normalized_path)
+            normalize_wav_for_transcription(&reference_turn_wav_path, &reference_normalized_path)
                 .unwrap();
         let reference_job = TurnTranscriptionJob {
             artifact_id: turn.artifact_id.clone(),
@@ -6711,7 +6903,7 @@ mod tests {
             schedule_index: 3,
             turn,
             temp_dir: dir.clone(),
-            segment_path: dir.join("actual-segment.wav"),
+            turn_wav_path: dir.join("actual-turn.wav"),
             normalized_path: dir.join("actual-normalized.wav"),
             recorded_silence: true,
             echo_trimmed: false,
@@ -6767,11 +6959,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn fallback_plans_use_canonical_source_order_and_stable_unknown_order() {
+        let descriptors = vec![
+            turn_preparation_job(0, "system", 0, false),
+            turn_preparation_job(1, "unknown-first", 1, false),
+            turn_preparation_job(2, "microphone", 2, false),
+            turn_preparation_job(3, "unknown-second", 3, false),
+            turn_preparation_job(4, "unknown-first", 4, false),
+        ];
+
+        let fallback_plans = build_source_fallback_plans(&descriptors);
+
+        assert_eq!(
+            fallback_plans
+                .iter()
+                .map(|plan| plan.source.as_str())
+                .collect::<Vec<_>>(),
+            vec!["microphone", "system", "unknown-first", "unknown-second"]
+        );
+    }
+
     #[tokio::test]
     async fn successful_jobs_skip_complete_source_preparation() {
         let descriptors = vec![
-            segmented_preparation_job(0, "microphone", 0, false),
-            segmented_preparation_job(1, "system", 1, false),
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
         ];
         let fallback_plans = build_source_fallback_plans(&descriptors);
         assert_eq!(
@@ -6832,9 +7045,9 @@ mod tests {
     #[tokio::test]
     async fn failed_source_prepares_one_lazy_fallback_with_source_operation_id() {
         let descriptors = vec![
-            segmented_preparation_job(0, "microphone", 0, false),
-            segmented_preparation_job(1, "system", 1, false),
-            segmented_preparation_job(2, "microphone", 2, false),
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
+            turn_preparation_job(2, "microphone", 2, false),
         ];
         let fallback_plans = build_source_fallback_plans(&descriptors);
         let expected_microphone_end_ms = descriptors[2].turn.end_ms;
@@ -6937,8 +7150,8 @@ mod tests {
     #[tokio::test]
     async fn failed_sources_prepare_one_fallback_each() {
         let descriptors = vec![
-            segmented_preparation_job(0, "microphone", 0, false),
-            segmented_preparation_job(1, "system", 1, false),
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "system", 1, false),
         ];
         let fallback_plans = build_source_fallback_plans(&descriptors);
         let ordinary_jobs = descriptors
@@ -7020,8 +7233,8 @@ mod tests {
     #[tokio::test]
     async fn echo_trimmed_source_never_prepares_or_transcribes_fallback() {
         let descriptors = vec![
-            segmented_preparation_job(0, "microphone", 0, false),
-            segmented_preparation_job(1, "microphone", 1, true),
+            turn_preparation_job(0, "microphone", 0, false),
+            turn_preparation_job(1, "microphone", 1, true),
         ];
         let fallback_plans = build_source_fallback_plans(&descriptors);
         assert_eq!(fallback_plans.len(), 1);
@@ -7082,7 +7295,7 @@ mod tests {
 
     #[tokio::test]
     async fn valid_cached_turn_suppresses_fallback_after_fresh_failures() {
-        let descriptors = vec![segmented_preparation_job(0, "microphone", 1, false)];
+        let descriptors = vec![turn_preparation_job(0, "microphone", 1, false)];
         let fallback_plans = build_source_fallback_plans(&descriptors);
         assert!(fallback_plans[0].eligible());
         let ordinary_jobs = descriptors
@@ -7149,7 +7362,7 @@ mod tests {
         );
     }
 
-    fn segmented_preparation_job(
+    fn turn_preparation_job(
         schedule_index: usize,
         source: &str,
         turn_index: i64,
@@ -7168,7 +7381,7 @@ mod tests {
                 turn_index,
             },
             temp_dir: PathBuf::from("turn-temp"),
-            segment_path: PathBuf::from(format!("segment-{source}-{turn_index}.wav")),
+            turn_wav_path: PathBuf::from(format!("turn-{source}-{turn_index}.wav")),
             normalized_path: PathBuf::from(format!("ordinary-{source}-{turn_index}.wav")),
             recorded_silence: false,
             echo_trimmed,

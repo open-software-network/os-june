@@ -72,7 +72,7 @@ struct BenchmarkSample {
     producer_wall_duration_ms: Option<i64>,
     handoff_to_first_request_ms: i64,
     handoff_to_first_persisted_ms: i64,
-    handoff_to_transcription_complete_ms: i64,
+    handoff_to_note_transcription_complete_ms: i64,
     handoff_to_ready_ms: i64,
 }
 
@@ -101,7 +101,7 @@ impl BenchmarkClock {
 #[derive(Clone)]
 pub(super) struct RequestEvents {
     clock: BenchmarkClock,
-    first_transcription_ms: Arc<Mutex<Option<i64>>>,
+    first_note_transcription_ms: Arc<Mutex<Option<i64>>>,
     first_generation_ms: Arc<Mutex<Option<i64>>>,
     changed: Arc<Notify>,
 }
@@ -110,7 +110,7 @@ impl RequestEvents {
     pub(super) fn new(clock: BenchmarkClock) -> Self {
         Self {
             clock,
-            first_transcription_ms: Arc::new(Mutex::new(None)),
+            first_note_transcription_ms: Arc::new(Mutex::new(None)),
             first_generation_ms: Arc::new(Mutex::new(None)),
             changed: Arc::new(Notify::new()),
         }
@@ -118,7 +118,7 @@ impl RequestEvents {
 
     fn record(&self, path: &str) {
         let slot = match path {
-            "/v1/notes/transcribe" => Some(&self.first_transcription_ms),
+            "/v1/notes/transcribe" => Some(&self.first_note_transcription_ms),
             "/v1/notes/generate" => Some(&self.first_generation_ms),
             _ => None,
         };
@@ -131,11 +131,11 @@ impl RequestEvents {
         }
     }
 
-    fn first_transcription_ms(&self) -> i64 {
-        self.first_transcription_ms
+    fn first_note_transcription_ms(&self) -> i64 {
+        self.first_note_transcription_ms
             .lock()
             .expect("request event mutex")
-            .expect("transcription request observed")
+            .expect("note transcription request observed")
     }
 
     fn first_generation_ms(&self) -> i64 {
@@ -155,18 +155,18 @@ struct BenchmarkObserver {
 static BENCHMARK_OBSERVERS: LazyLock<Mutex<HashMap<String, BenchmarkObserver>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn register_benchmark_observer(session_id: &str, observer: BenchmarkObserver) {
+fn register_benchmark_observer(recording_session_id: &str, observer: BenchmarkObserver) {
     BENCHMARK_OBSERVERS
         .lock()
         .expect("benchmark observer mutex")
-        .insert(session_id.to_string(), observer);
+        .insert(recording_session_id.to_string(), observer);
 }
 
-pub(super) fn record_processing_dequeued(session_id: &str) {
+pub(super) fn record_processing_dequeued(recording_session_id: &str) {
     let observer = BENCHMARK_OBSERVERS
         .lock()
         .expect("benchmark observer mutex")
-        .get(session_id)
+        .get(recording_session_id)
         .cloned();
     if let Some(observer) = observer {
         let mut value = observer.dequeued_ms.lock().expect("dequeue event mutex");
@@ -176,11 +176,11 @@ pub(super) fn record_processing_dequeued(session_id: &str) {
     }
 }
 
-fn remove_benchmark_observer(session_id: &str) {
+fn remove_benchmark_observer(recording_session_id: &str) {
     BENCHMARK_OBSERVERS
         .lock()
         .expect("benchmark observer mutex")
-        .remove(session_id);
+        .remove(recording_session_id);
 }
 
 pub(super) async fn benchmark_repositories(dir: &tempfile::TempDir) -> Repositories {
@@ -349,7 +349,7 @@ fn checkpoint_details(row: &sqlx_sqlite::SqliteRow) -> serde_json::Value {
 
 async fn observe_database(
     repos: Repositories,
-    session_id: String,
+    recording_session_id: String,
     note_id: String,
     clock: BenchmarkClock,
     ready: oneshot::Sender<()>,
@@ -366,7 +366,7 @@ async fn observe_database(
              WHERE recording_session_id = ?
              ORDER BY created_at ASC, rowid ASC",
         )
-        .bind(&session_id)
+        .bind(&recording_session_id)
         .fetch_all(&mut *transaction)
         .await
         .expect("observer checkpoints");
@@ -379,7 +379,7 @@ async fn observe_database(
                  AND t.status = 'succeeded'
              ) AS present",
         )
-        .bind(&session_id)
+        .bind(&recording_session_id)
         .fetch_one(&mut *transaction)
         .await
         .expect("observer transcript");
@@ -445,7 +445,7 @@ async fn run_benchmark_iteration(
     let dir = tempfile::tempdir().expect("iteration tempdir");
     let repos = benchmark_repositories(&dir).await;
     let note = repos.create_note(None).await.expect("benchmark note");
-    let session_id = format!("jun334-{}-{iteration}", case.name);
+    let recording_session_id = format!("jun334-{}-{iteration}", case.name);
     let primary_path = fixtures
         .iter()
         .find(|(source, _)| *source == RecordingSource::Microphone)
@@ -455,7 +455,7 @@ async fn run_benchmark_iteration(
     repos
         .create_recording_session(
             &note.id,
-            &session_id,
+            &recording_session_id,
             case.source_mode,
             &partial_path.to_string_lossy(),
             &primary_path.to_string_lossy(),
@@ -468,7 +468,7 @@ async fn run_benchmark_iteration(
         repos
             .create_pending_source_artifact(
                 &note.id,
-                &session_id,
+                &recording_session_id,
                 source.as_db(),
                 &source_partial_path.to_string_lossy(),
                 &path.to_string_lossy(),
@@ -478,7 +478,7 @@ async fn run_benchmark_iteration(
     }
     let elapsed_ms = i64::from(case.duration_minutes) * 60_000;
     let finished = FinishedRecording {
-        session_id: session_id.clone(),
+        session_id: recording_session_id.clone(),
         note_id: note.id.clone(),
         source_mode: case.source_mode,
         final_path: primary_path.clone(),
@@ -494,7 +494,7 @@ async fn run_benchmark_iteration(
             .collect(),
         elapsed_ms,
         recording: RecordingSessionDto {
-            id: session_id.clone(),
+            id: recording_session_id.clone(),
             note_id: note.id.clone(),
             source_mode: case.source_mode,
             state: RecordingState::Validating,
@@ -514,7 +514,7 @@ async fn run_benchmark_iteration(
     std::env::set_var("JUNE_API_URL", format!("http://{address}"));
     let dequeued_ms = Arc::new(Mutex::new(None));
     register_benchmark_observer(
-        &session_id,
+        &recording_session_id,
         BenchmarkObserver {
             clock: clock.clone(),
             dequeued_ms: dequeued_ms.clone(),
@@ -524,7 +524,7 @@ async fn run_benchmark_iteration(
     let (observer_start_tx, observer_start_rx) = oneshot::channel();
     let database_observer = tokio::spawn(observe_database(
         repos.clone(),
-        session_id.clone(),
+        recording_session_id.clone(),
         note.id.clone(),
         clock.clone(),
         observer_ready_tx,
@@ -553,7 +553,7 @@ async fn run_benchmark_iteration(
 
     api_handle.abort();
     let _ = api_handle.await;
-    remove_benchmark_observer(&session_id);
+    remove_benchmark_observer(&recording_session_id);
     let handoff_to_dequeued_ms = dequeued_ms
         .lock()
         .expect("dequeue event mutex")
@@ -572,11 +572,11 @@ async fn run_benchmark_iteration(
         turn_wav_extraction_duration_ms: observation.turn_wav_extraction_duration_ms,
         active_preparation_duration_ms: observation.active_preparation_duration_ms,
         producer_wall_duration_ms: observation.producer_wall_duration_ms,
-        handoff_to_first_request_ms: request_events.first_transcription_ms(),
+        handoff_to_first_request_ms: request_events.first_note_transcription_ms(),
         handoff_to_first_persisted_ms: observation
             .handoff_to_first_persisted_ms
             .expect("persisted transcript observed"),
-        handoff_to_transcription_complete_ms: request_events.first_generation_ms(),
+        handoff_to_note_transcription_complete_ms: request_events.first_generation_ms(),
         handoff_to_ready_ms: observation
             .handoff_to_ready_ms
             .expect("ready status observed"),
@@ -609,7 +609,7 @@ struct BenchmarkMedian<'a> {
     producer_wall_duration_ms: Option<i64>,
     handoff_to_first_request_ms: i64,
     handoff_to_first_persisted_ms: i64,
-    handoff_to_transcription_complete_ms: i64,
+    handoff_to_note_transcription_complete_ms: i64,
     handoff_to_ready_ms: i64,
 }
 
@@ -672,10 +672,10 @@ fn print_case_medians(revision_label: &str, case: &str, samples: &[BenchmarkSamp
                 .map(|sample| sample.handoff_to_first_persisted_ms)
                 .collect(),
         ),
-        handoff_to_transcription_complete_ms: median(
+        handoff_to_note_transcription_complete_ms: median(
             samples
                 .iter()
-                .map(|sample| sample.handoff_to_transcription_complete_ms)
+                .map(|sample| sample.handoff_to_note_transcription_complete_ms)
                 .collect(),
         ),
         handoff_to_ready_ms: median(
@@ -693,7 +693,7 @@ fn print_case_medians(revision_label: &str, case: &str, samples: &[BenchmarkSamp
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "release-only JUN-334 benchmark"]
-async fn benchmark_post_finalization_meeting_latency() {
+async fn benchmark_post_finalization_note_transcription_latency() {
     let revision_label =
         std::env::var("JUN334_REVISION_LABEL").unwrap_or_else(|_| "unlabeled".to_string());
     let root = tempfile::tempdir().expect("benchmark tempdir");

@@ -1589,7 +1589,7 @@ async fn finish_recording_session_with_timing(
         let queue_lock = ticket.lock();
         let _guard = queue_lock.lock().await;
         #[cfg(test)]
-        transcription_benchmark::record_processing_dequeued(&task_session_id);
+        note_transcription_benchmark::record_processing_dequeued(&task_session_id);
         add_latency_checkpoint(
             &task_repos,
             &task_session_id,
@@ -1825,9 +1825,13 @@ pub async fn retry_processing(
 
     let task_repos = repos.clone();
     let task_note_id = request.note_id.clone();
-    let task_session_id = sources
+    let task_recording_session_id = sources
         .first()
-        .map(|(_id, _source, _path, session_id, _recorded_silence)| session_id.clone())
+        .map(
+            |(_id, _source, _path, recording_session_id, _recorded_silence)| {
+                recording_session_id.clone()
+            },
+        )
         .unwrap_or_default();
     tokio::spawn(async move {
         let queue_lock = ticket.lock();
@@ -1835,7 +1839,7 @@ pub async fn retry_processing(
         let timing = ProcessingTiming::untracked();
         add_latency_checkpoint(
             &task_repos,
-            &task_session_id,
+            &task_recording_session_id,
             "processing_dequeued",
             timing.checkpoint_details(serde_json::json!({})),
         )
@@ -2468,10 +2472,10 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
 }
 
 #[cfg(test)]
-mod transcription_benchmark;
+mod note_transcription_benchmark;
 
 #[cfg(test)]
-mod transcription_timing_tests;
+mod note_transcription_timing_tests;
 
 #[cfg(test)]
 mod tests {

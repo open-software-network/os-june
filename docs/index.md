@@ -125,9 +125,14 @@ Per-repo config the engineering skills read before acting (see the
 ## QA
 
 - [qa/agent-driven-integration.md](qa/agent-driven-integration.md) — QA strategy (3 layers, skill-first agent-driven)
-- [qa/jun-334-transcription-latency.md](qa/jun-334-transcription-latency.md) — measured baseline and proof for meeting transcription latency
+- [qa/jun-334-note-transcription-latency.md](qa/jun-334-note-transcription-latency.md) — measured baseline and proof for note transcription latency
 - `qa/feature-user-stories.tsv` — story → code → test traceability matrix
 - `qa/agent-e2e-qa-runs/` — dated end-to-end QA run logs
+
+## Feature designs and implementation plans
+
+- [superpowers/specs/2026-07-15-faster-note-transcription-design.md](superpowers/specs/2026-07-15-faster-note-transcription-design.md) — approved JUN-334 design for reducing note transcription latency
+- [superpowers/plans/2026-07-15-faster-note-transcription.md](superpowers/plans/2026-07-15-faster-note-transcription.md) — executable JUN-334 implementation plan for the approved design
 
 ## Feature specs (Spec Kit)
 

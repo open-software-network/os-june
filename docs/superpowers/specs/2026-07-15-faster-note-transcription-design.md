@@ -1,13 +1,15 @@
-# Faster meeting transcriptions design
+# Faster note transcription design
 
 **Status:** Approved on 2026-07-15 after JUN-334 review; independent plan-audit corrections incorporated
 
 **Target:** Reduce the time from pressing Done until the first saved transcript
-turn appears and until transcription completes. Note generation latency is not
+Turn appears and until note transcription completes. Note generation latency is not
 part of this change.
 
 **Tracking issue:** JUN-334, "Reduce meeting transcription latency and ship a
 measured improvement"
+
+The quoted external title refers to June's note transcription path.
 
 ## JUN-334 alignment
 
@@ -19,41 +21,42 @@ Its initial technical triage was written without access to the June desktop
 source and does not apply to this repository. June has no Centaur
 `workflows/muesli_meeting_ingest.py` workflow or meeting-upload ingestion path.
 Pressing Done finalizes and validates local WAVs, the desktop detects and
-prepares source turns, June API transcribes them, successful turns are persisted
-incrementally, and note generation starts only after transcription finishes.
-June also does not perform an unconditional final full-audio accuracy
-transcription. Complete-source ASR is a failure-only fallback. The analogous
+prepares Source Turns, and June API performs note transcription for them.
+Successful Turns are persisted incrementally, and note generation starts only
+after note transcription finishes. June also does not perform an unconditional final
+full-audio accuracy note transcription. Complete-source ASR is a failure-only
+fallback. The analogous
 duplicate work in the real path is eager complete-source normalization before
 ordinary turns have had a chance to succeed.
 
 JUN-66, completed by commit `0d769d59`, added the note-processing progress UI.
 The current UI retains a stable Preparing audio, Transcribing audio, or
-Generating notes indicator and renders persisted source turns during
-transcription. That satisfies JUN-334's progress requirement but did not reduce
+Generating notes indicator and renders persisted Source Turns during note transcription.
+That satisfies JUN-334's progress requirement but did not reduce
 latency. This change preserves and verifies that behavior rather than replacing
 the UI again.
 
 The requester narrowed the implementation target to Done-to-first-saved-turn
-and Done-to-transcription-complete. The PR still characterizes the final-note
+and Done to note transcription completion. The PR still characterizes the final Note
 stage boundary for JUN-334, but optimizing note generation remains out of
 scope.
 
 ## Problem
 
-The microphone-plus-system meeting path has a local preparation wall between
-turn detection and the first transcription request. In
+The Microphone-plus-System recording path has a local preparation wall between
+Turn detection and the first note transcription request. In
 `process_saved_source_audio`, June currently:
 
 1. detects and coalesces every turn;
 2. normalizes each complete source recording for a recovery fallback;
 3. extracts and normalizes every ordinary turn; and only then
-4. starts the bounded transcription scheduler.
+4. starts the bounded note transcription scheduler.
 
 The complete-source normalized copy is used only when every ordinary turn for
-that source fails. Preparing it for every successful meeting performs a full
+that source fails. Preparing it for every successful recording session performs a full
 decode, downmix, peak scan, resample, and rewrite of each source before the
 first provider request. Preparing all ordinary turns before scheduling also
-prevents local audio work from overlapping network transcription.
+prevents local audio work from overlapping network note transcription.
 
 This is the remainder of an earlier performance fix in commit `4ec3ef5a`.
 That change reduced complete-source normalization from once per turn to once
@@ -82,7 +85,7 @@ below:
    `process_saved_audio` path.
 4. The dual-source path filters silent sources, performs CPU-bound turn
    detection and echo rejection, prepares turn WAVs, then starts at most two
-   transcription jobs. The microphone-only path normalizes the complete source
+   note transcription jobs. The Microphone-only path normalizes the complete Source
    and transcribes provider-safe chunks serially.
 5. Each service-managed request uploads buffered audio to June API, which
    authorizes OS Accounts metering, calls the speech provider, settles the
@@ -102,11 +105,11 @@ therefore required before describing local preparation as dominant.
 
 ## Success criteria
 
-For a microphone-plus-system meeting with at least one successfully
+For a Microphone-plus-System recording session with at least one successfully
 transcribed ordinary turn:
 
 - production checkpoints report Done-to-first-provider-request,
-  Done-to-first-persisted-turn, and Done-to-transcription-complete;
+  Done-to-first-persisted-turn, and Done to note transcription completion;
 - the synthetic benchmark reports the corresponding post-finalization handoff
   intervals without presenting them as actual capture-finalization timings;
 - the first provider request can begin before all later turns are prepared;
@@ -114,7 +117,7 @@ transcribed ordinary turn:
   finishes;
 - no complete-source fallback normalization runs for a source that already has
   a valid ordinary or cached turn;
-- provider transcription concurrency remains bounded at two;
+- provider note transcription concurrency remains bounded at two;
 - transcript order, source attribution, context, retries, persistence, billing,
   and generation inputs retain their current behavior; and
 - the change requires no June API deployment.
@@ -133,10 +136,10 @@ before the fallback request.
 
 The implementation must preserve these existing decisions and safeguards:
 
-- Final transcription uses finalized, validated saved audio. Live preview text
+- Final note transcription uses finalized, validated saved audio. Live preview text
   remains ephemeral and is never promoted to the final transcript.
 - Microphone and system sources remain separate.
-- The transcription provider limit stays at two. Commit `bf4e5022` deliberately
+- The note transcription provider limit stays at two. Commit `bf4e5022` deliberately
   reduced it from four while adding retry resilience.
 - A source touched by echo trimming must never fall back to its raw complete
   source, because that would restore remote speech that was deliberately
@@ -150,8 +153,9 @@ The implementation must preserve these existing decisions and safeguards:
   not change.
 - Per-note processing remains serialized so generation sees the previous
   recording's completed note content.
-- Temporary audio stays inside the session-scoped directory and is removed only
-  after preparation, transcription, and any fallback work have ended.
+- Temporary audio stays inside the recording-session-scoped directory and is
+  removed only after preparation, note transcription, and any fallback work
+  have ended.
 
 ## Options considered
 
@@ -169,7 +173,7 @@ first-saved-turn target.
 
 Represent ordinary turns as inexpensive preparation descriptors, prepare them
 in order on one blocking producer, and feed completed jobs into the existing
-bounded transcription scheduler. Start transcription when the first prepared
+bounded note transcription scheduler. Start note transcription when the first prepared
 job is available while later turns continue preparing. Normalize
 complete-source audio only if fallback is selected.
 
@@ -177,7 +181,7 @@ This is the selected approach, subject to the pre-change measurement gate. It
 can improve both targeted intervals without raising provider concurrency or
 changing a server contract.
 
-### 3. New batch transcription API
+### 3. New batch note transcription API
 
 Add an additive `/v1/notes/transcribe-batch` endpoint to collapse repeated OS
 Accounts authorize and settlement round trips.
@@ -210,12 +214,12 @@ to request-arrival time: that interval also includes unrelated checkpoint I/O,
 request setup, authentication, and socket work. If the primary preparation
 wall misses the threshold, stop and revise the design around the measured
 bottleneck. If the microphone-only control is slower, report it explicitly and
-create a scoped follow-up rather than implying this PR improves every meeting
+create a scoped follow-up rather than implying this PR improves every recording
 mode.
 
 After implementation, the five-minute median handoff-to-first-committed-turn
 must improve by at least 20 percent and median
-handoff-to-transcription-complete must improve by at least 10 percent. The
+handoff to note transcription completion must improve by at least 10 percent. The
 microphone-only control must not regress by more than 5 percent. First-request
 latency remains a reported diagnostic rather than a substitute for either user
 outcome. Exact structural tests must also show zero complete-source fallback
@@ -241,21 +245,21 @@ Per-source fallback metadata is derived from the complete descriptor list
 before streaming begins. It must not depend on collecting only the prepared
 jobs that happen to arrive through the channel.
 
-### Bounded preparation and transcription
+### Bounded preparation and note transcription
 
 Run one ordered audio-preparation producer with `tokio::task::spawn_blocking` so
 extraction and normalization do not occupy the async executor's core workers.
 
 Preparation must preserve descriptor order and use bounded backpressure. The
-prepared-job channel has capacity two, matching the existing transcription
-concurrency. The transcription consumer starts as soon as the first job is
+prepared-job channel has capacity two, matching the existing note transcription
+concurrency. The note transcription consumer starts as soon as the first job is
 prepared and continues to enforce no more than two active provider requests.
 
 The single producer continues preparing later turns while earlier provider
 calls are in flight. It must close its output when all descriptors are prepared
 or send a terminal preparation error. The consumer must not treat channel
 closure as successful completion until it has joined all in-flight
-transcription work.
+note transcription work.
 
 The existing scheduler currently derives request context at job-spawn time from
 completed inputs. This design preserves that behavior. Correcting the separate
@@ -267,13 +271,13 @@ to attribute.
 
 Each completed turn still goes through the existing result sink before the
 scheduler admits replacement work. A successful turn therefore remains saved
-as soon as its transcription and cleanup complete.
+as soon as its note transcription and cleanup complete.
 
 Completion order may differ from chronological order, as it already can. The
 final outcome continues to sort candidates and failures by turn index and start
 time before coverage calculation and note generation.
 
-No generated note content is produced until the complete transcription outcome
+No generated Note content is produced until the complete note transcription outcome
 passes the existing coverage and visible-failure checks.
 
 ### Lazy complete-source fallback
@@ -290,7 +294,7 @@ If no valid candidate exists:
 2. reject fallback when all jobs already cover the complete source;
 3. reject fallback when any job for the source was echo-trimmed;
 4. normalize the raw complete-source WAV once on a blocking worker; and
-5. submit the resulting job through the existing transcription and persistence
+5. submit the resulting job through the existing note transcription and persistence
    path with the existing source-level operation ID.
 
 Fallbacks remain rare recovery work. They continue to run after the ordinary
@@ -320,7 +324,7 @@ A fallback normalization error follows the current full-source preparation
 failure behavior: processing fails rather than silently discarding a source.
 
 No detached producer, blocking task, channel sender, or provider job may
-outlive the session temp directory. Cleanup runs only after all owned work is
+outlive the recording-session temp directory. Cleanup runs only after all owned work is
 joined, including error paths.
 
 ### Observability
@@ -342,7 +346,7 @@ Add or extend structured checkpoints for:
 - the first actual transcriber invocation, recorded immediately before calling
   the `TurnTranscriber`, not when a scheduler slot is assigned;
 - the first successful transcript-row persistence;
-- `transcription_complete`, after ordinary jobs, permitted fallbacks, failure
+- `note_transcription_complete`, after ordinary jobs, permitted fallbacks, failure
   persistence, and coverage decisions, but before the note enters Generating;
   and
 - existing generation/processing completion, with Done-relative duration for
@@ -363,7 +367,7 @@ Do not compare backpressured producer wall time with the baseline's synchronous
 All new latency checkpoints are diagnostic and best-effort. Their write
 failures are logged and never fail processing. The microphone-only path records
 its own one-row success/failure counts and explicitly flushes first-event,
-transcription-complete, generation, and processing-complete telemetry on each
+note transcription completion, generation, and processing-complete telemetry on each
 terminal path rather than borrowing dual-source-only variables.
 
 Apply the corresponding Done-origin metrics to the microphone-only control so
@@ -412,7 +416,7 @@ real microphone, external provider, OS Accounts, credits, or internet access.
 
 6. **Echo-trimmed source never prepares fallback**
    - All remaining turns fail after microphone echo trimming.
-   - Complete-source preparation and fallback transcription both remain zero.
+   - Complete-source preparation and fallback note transcription both remain zero.
 
 7. **Cached success suppresses fallback**
    - Fresh ordinary jobs fail, but a bounds-matched cached candidate is valid.
@@ -429,7 +433,7 @@ real microphone, external provider, OS Accounts, credits, or internet access.
      failures, coverage input, and generated transcript input remain
      chronological and source-correct.
 
-10. **Ordinary transcription quality inputs are invariant**
+10. **Ordinary note transcription quality inputs are invariant**
     - Baseline and pipelined preparation use the same turn bounds,
       `write_turn_wav`, and `normalize_wav_for_transcription` path.
     - Normalized sample streams or their deterministic hashes, operation IDs,
@@ -439,7 +443,7 @@ real microphone, external provider, OS Accounts, credits, or internet access.
 11. **Done-origin checkpoints are monotonic and single-shot**
     - Two racing first requests or persistence events create one first-event
       checkpoint each.
-    - Validation, dequeue, first request, first persistence, transcription
+    - Validation, dequeue, first request, first persistence, note transcription
       completion, and processing completion durations are nondecreasing from
       the same Done origin.
 
@@ -470,22 +474,29 @@ shutdown and WAV finalization. Label its results accordingly. The new
 production checkpoints begin at actual `finish_recording` command entry and
 cover those earlier stages; do not merge the two origins in PR evidence.
 
-Run a loopback fake June API with a fixed 100 ms transcription delay, 25 ms
+Run a loopback fake June API with a fixed 100 ms note transcription delay, 25 ms
 cleanup delay, and immediate generation response for
 `/v1/notes/transcribe`, `/v1/dictate/cleanup`, and `/v1/notes/generate`. Only
 the remote service is fake; WAV work and persistence are real. The fake server
-records when the first transcription request arrives. A concurrent SQLite
+records when the first note transcription request arrives. A concurrent SQLite
 observer records the monotonic instant when a successful transcript row first
 becomes queryable after commit; the row's `created_at` is not used because it
 is assigned before the upsert completes. A baseline-compatible test-only hook
 records acquisition of the processing ticket. The first generate request is
-the unambiguous boundary that transcription has completed.
+the unambiguous boundary that note transcription has completed.
 
 Apply the benchmark-only harness unchanged to a temporary worktree at baseline
 commit `06f4925e`. Run one warm-up and five measured release iterations with
 one test thread, then run the same harness on the feature branch. Use generated
 1-, 5-, and 10-minute cases for microphone-plus-system and a five-minute
 microphone-only control. Report medians for:
+
+The measured overlay commit `68642f61` used historical unqualified benchmark
+path, module, target, test, and serialized-field names. A later
+glossary-compliance rename produced the current note transcription terminology.
+That rename changes names only, not executable fixture generation, timing
+origins, observation behavior, sample selection, or median calculations; raw
+evidence retains the historical serialized field name.
 
 - post-finalization handoff to validation completion and processing-ticket
   acquisition;
@@ -494,7 +505,7 @@ microphone-only control. Report medians for:
   refactor, reported with their distinct semantics;
 - handoff to first fake-provider request arrival;
 - handoff to first successful transcript persistence;
-- handoff to transcription completion;
+- handoff to note transcription completion;
 - handoff to ready under the fixed fake generation response, clearly labeled
   as orchestration characterization rather than production model latency; and
 - microphone-only control timings.
@@ -527,9 +538,9 @@ architecture without selecting a new long-lived boundary or wire contract.
 - Optimizing note generation latency or progressive generated content. The PR
   still characterizes the final-note stage boundary for JUN-334.
 - Promoting live-preview text to final transcript data.
-- Raising transcription concurrency above two.
+- Raising note transcription concurrency above two.
 - Changing per-turn transcript cleanup or model selection.
-- Adding a batch transcription API or changing metering settlement.
+- Adding a batch note transcription API or changing metering settlement.
 - Fixing same-source sequential-lane scheduling and context semantics.
 - Reworking microphone-only recordings to persist one row per 30-second chunk;
   that path remains a measured control and possible follow-up.
