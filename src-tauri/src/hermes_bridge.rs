@@ -63,7 +63,16 @@ const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 // larger buffer is minimal. A body over this cap is genuinely beyond any model
 // window and degrades to the context-overflow notice (recognizable wording in
 // `read_http_request`).
+// Cross-workspace invariant (JUN-336): this MUST equal june-api's dedicated
+// `/v1/chat/completions` extractor cap (`DEFAULT_MAX_AGENT_CHAT_BYTES` in
+// june-api/crates/config/src/lib.rs). june-api is a separate cargo workspace
+// and cannot be imported here, so the two 3 MiB values are kept in sync by a
+// pinned-value assert on each side; change BOTH or an in-window agent chat
+// request is rejected by the stricter gate again.
 const JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES: usize = 3 * 1024 * 1024;
+// Compile-time half of that cross-workspace invariant: the june-api side mirrors
+// it against `DEFAULT_MAX_AGENT_CHAT_BYTES`.
+const _: () = assert!(JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES == 3 * 1024 * 1024);
 // Image edit forwarding expands a source ref into base64 JSON before June API
 // sees it. Keep the loopback image cap derived from the same 50 MiB source
 // maximum enforced by imports and the proxy validator.
