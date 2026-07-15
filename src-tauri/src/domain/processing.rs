@@ -14,7 +14,7 @@ use crate::{
     },
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
@@ -642,6 +642,7 @@ pub async fn process_saved_source_audio(
     let mut transcription_outcome = TranscriptionOutcome {
         candidates: cached_candidates,
         failures: Vec::new(),
+        replaced_sources: HashSet::new(),
     };
     if !transcription_jobs.is_empty() {
         let mut fresh_outcome = transcribe_turn_jobs_bounded(
@@ -655,12 +656,23 @@ pub async fn process_saved_source_audio(
             DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY,
         )
         .await?;
+        for source in &fresh_outcome.replaced_sources {
+            transcription_outcome
+                .candidates
+                .retain(|candidate| candidate.input.source != *source);
+            transcription_outcome
+                .failures
+                .retain(|failure| failure.input.source != *source);
+        }
         transcription_outcome
             .candidates
             .append(&mut fresh_outcome.candidates);
         transcription_outcome
             .failures
             .append(&mut fresh_outcome.failures);
+        transcription_outcome
+            .replaced_sources
+            .extend(fresh_outcome.replaced_sources);
     }
     let _ = std::fs::remove_dir_all(&segment_dir);
 
@@ -1132,12 +1144,14 @@ struct FailedTranscriptCandidate {
 struct TranscriptionOutcome {
     candidates: Vec<TranscriptCandidate>,
     failures: Vec<FailedTranscriptCandidate>,
+    replaced_sources: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
 struct CompletedTurnTranscription {
     result: TurnTranscriptionResult,
     duration_ms: i64,
+    replaces_source: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1533,16 +1547,11 @@ async fn transcribe_turn_jobs_bounded(
     }
 
     for (_source, lane_jobs) in source_jobs {
-        let has_candidate = outcome
-            .candidates
-            .iter()
-            .chain(cached_candidates.iter())
-            .any(|candidate| {
-                candidate.input.source == lane_jobs[0].source
-                    && candidate.input.valid
-                    && !candidate.input.text.trim().is_empty()
-            });
-        if has_candidate {
+        if !source_lane_needs_full_source_fallback(
+            &lane_jobs,
+            &outcome.candidates,
+            cached_candidates,
+        ) {
             continue;
         }
         let Some(job) = full_source_fallback_job(&lane_jobs) else {
@@ -1560,9 +1569,14 @@ async fn transcribe_turn_jobs_bounded(
         )
         .await?;
         if let TurnTranscriptionResult::Candidate(candidate) = &event.result {
+            let source = candidate.input.source.clone();
+            outcome
+                .candidates
+                .retain(|existing| existing.input.source != source);
             outcome
                 .failures
-                .retain(|failure| failure.input.source != candidate.input.source);
+                .retain(|failure| failure.input.source != source);
+            outcome.replaced_sources.insert(source);
         }
         if let Some(sink) = result_sink.as_ref() {
             sink(event.clone()).await?;
@@ -1639,6 +1653,7 @@ async fn transcribe_one_turn_job(
     transcriber: TurnTranscriber,
 ) -> Result<CompletedTurnTranscription, AppError> {
     let started = Instant::now();
+    let replaces_source = job.source_fallback;
     let operation_id = if job.source_fallback {
         source_fallback_operation_id(&job)
     } else {
@@ -1686,6 +1701,7 @@ async fn transcribe_one_turn_job(
                     input,
                 }),
                 duration_ms: elapsed_ms(started),
+                replaces_source,
             });
         }
     };
@@ -1710,6 +1726,7 @@ async fn transcribe_one_turn_job(
             input,
         }),
         duration_ms: elapsed_ms(started),
+        replaces_source,
     })
 }
 
@@ -1720,6 +1737,7 @@ async fn persist_turn_transcription_event(
     source_mode: RecordingSourceMode,
     event: CompletedTurnTranscription,
 ) -> Result<(), AppError> {
+    let replaces_source = event.replaces_source;
     let (artifact_id, source, start_ms, end_ms, turn_index, status) = match &event.result {
         TurnTranscriptionResult::Candidate(candidate) => (
             candidate.artifact_id.as_str(),
@@ -1760,6 +1778,12 @@ async fn persist_turn_transcription_event(
     let TurnTranscriptionResult::Candidate(candidate) = event.result else {
         return Ok(());
     };
+
+    if replaces_source {
+        repos
+            .delete_source_turn_transcripts_for_session(session_id, &candidate.input.source)
+            .await?;
+    }
 
     let persistence_started = Instant::now();
     let row = repos
@@ -1829,6 +1853,52 @@ fn full_source_fallback_job(jobs: &[TurnTranscriptionJob]) -> Option<TurnTranscr
         end_ms: jobs.iter().map(|job| job.end_ms).max().unwrap_or(0),
         turn_index: first.turn_index,
     })
+}
+
+fn source_lane_needs_full_source_fallback(
+    jobs: &[TurnTranscriptionJob],
+    candidates: &[TranscriptCandidate],
+    cached_candidates: &[TranscriptCandidate],
+) -> bool {
+    let Some(first) = jobs.first() else {
+        return false;
+    };
+    let source = first.source.as_str();
+    let successful = candidates
+        .iter()
+        .chain(cached_candidates.iter())
+        .filter(|candidate| {
+            candidate.input.source == source
+                && candidate.input.valid
+                && !candidate.input.text.trim().is_empty()
+        })
+        .collect::<Vec<_>>();
+    if successful.is_empty() {
+        return true;
+    }
+
+    let fresh_detected_ms = jobs.iter().fold(0_i64, |total, job| {
+        total.saturating_add(span_ms(job.start_ms, job.end_ms))
+    });
+    let cached_detected_ms = cached_candidates
+        .iter()
+        .filter(|candidate| candidate.input.source == source)
+        .fold(0_i64, |total, candidate| {
+            total.saturating_add(span_ms(
+                candidate.input.start_ms.unwrap_or_default(),
+                candidate.input.end_ms.unwrap_or_default(),
+            ))
+        });
+    let transcribed_ms = successful.iter().fold(0_i64, |total, candidate| {
+        total.saturating_add(span_ms(
+            candidate.input.start_ms.unwrap_or_default(),
+            candidate.input.end_ms.unwrap_or_default(),
+        ))
+    });
+    transcript_coverage_warning(
+        fresh_detected_ms.saturating_add(cached_detected_ms),
+        transcribed_ms,
+    )
 }
 
 fn turn_operation_id(job: &TurnTranscriptionJob) -> String {
@@ -2918,6 +2988,72 @@ mod tests {
             seen_paths.lock().unwrap().as_slice(),
             ["microphone-segment", "full-microphone"]
         );
+    }
+
+    #[tokio::test]
+    async fn severely_incomplete_lane_retries_and_replaces_partial_turns() {
+        let seen_paths = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = {
+            let seen_paths = Arc::clone(&seen_paths);
+            Arc::new(move |request: TranscriptionRequest| {
+                let seen_paths = Arc::clone(&seen_paths);
+                Box::pin(async move {
+                    let path = request.audio_path.to_string_lossy().to_string();
+                    seen_paths.lock().unwrap().push(path.clone());
+                    match path.as_str() {
+                        "short-success" => Ok(TranscriptionProviderResult {
+                            text: "partial transcript".to_string(),
+                            language: None,
+                            provider: "test".to_string(),
+                        }),
+                        "full-system" => Ok(TranscriptionProviderResult {
+                            text: "complete source transcript".to_string(),
+                            language: None,
+                            provider: "test".to_string(),
+                        }),
+                        _ => Err(AppError::new(
+                            "june_request_failed",
+                            "upstream_provider_failed",
+                        )),
+                    }
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let mut short = segmented_test_job("short-success", "full-system", "system", 0);
+        short.start_ms = 0;
+        short.end_ms = 10_000;
+        let mut failed_one = segmented_test_job("failed-one", "full-system", "system", 1);
+        failed_one.start_ms = 10_000;
+        failed_one.end_ms = 100_000;
+        let mut failed_two = segmented_test_job("failed-two", "full-system", "system", 2);
+        failed_two.start_ms = 100_000;
+        failed_two.end_ms = 190_000;
+
+        let outcome = transcribe_turn_jobs_by_source_lane(
+            vec![short, failed_one, failed_two],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            transcriber,
+        )
+        .await
+        .expect("severely incomplete source lane should use saved-source fallback");
+
+        assert_eq!(outcome.failures.len(), 0);
+        assert_eq!(outcome.candidates.len(), 1);
+        assert_eq!(
+            outcome.candidates[0].input.text,
+            "complete source transcript"
+        );
+        assert_eq!(
+            outcome.replaced_sources,
+            HashSet::from(["system".to_string()])
+        );
+        assert!(seen_paths
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|path| path == "full-system"));
     }
 
     #[test]

@@ -4560,14 +4560,11 @@ function isDeniedPermission(state?: string) {
   return state === "denied" || state === "restricted";
 }
 
-// TCC grants are bundle-scoped, so the two microphone signals cover different
-// bundles: the dictation helper reports its own grant, while the Rust
-// readiness probe (AVCaptureDevice in recording_source_readiness) reads the
-// main app's — the one recording actually uses. Either reporting a denial
-// means Record would start a take with no audio, so either flips the
-// actionable mic-blocked notice before a doomed recording can start (JUN-319).
-// `not_determined` stays startable: the start path fires the main app's own
-// TCC prompt.
+// TCC grants are bundle-scoped. The readiness probe reads the main app's
+// authorization, which is the only grant relevant to note recording. Once
+// that probe has reported, never let the dictation helper's separate grant
+// override it. The helper remains a launch-time fallback before readiness is
+// available. `not_determined` stays startable so the main app can prompt.
 export function isMicrophoneRecordingBlocked(
   helperStatus: string | undefined,
   readiness: RecordingSourceReadinessDto | undefined,
@@ -4575,7 +4572,9 @@ export function isMicrophoneRecordingBlocked(
   const readinessState = readiness?.sources.find(
     (source) => source.source === "microphone",
   )?.permissionState;
-  return isDeniedPermission(helperStatus) || isDeniedPermission(readinessState);
+  return readinessState === undefined
+    ? isDeniedPermission(helperStatus)
+    : isDeniedPermission(readinessState);
 }
 
 // Accessibility is a plain bool from the helper (AXIsProcessTrusted),
