@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::query::query;
 use sqlx::row::Row;
 use sqlx_sqlite::SqlitePool;
-use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
@@ -58,10 +58,21 @@ use std::{
 use tauri::AppHandle;
 use tokio::{sync::OnceCell, time::sleep};
 
+// React StrictMode and renderer reloads may call `bootstrap_app` more than once
+// while native processing tasks keep running. Startup repair must run exactly
+// once per native process or a second bootstrap could reset a genuinely live
+// job from running back to pending.
+static TRANSCRIPTION_STARTUP_REPAIR: OnceCell<()> = OnceCell::const_new();
+
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
     let repos = repositories(&app).await?;
-    repos.release_interrupted_note_transcription_jobs().await?;
+    TRANSCRIPTION_STARTUP_REPAIR
+        .get_or_try_init(|| async {
+            repos.release_interrupted_note_transcription_jobs().await?;
+            Ok::<(), sqlx::Error>(())
+        })
+        .await?;
     // Complete stale tasks that already received their assistant reply
     // before pausing the rest: the repair only considers queued/running
     // tasks, so it must run before they are flipped to paused.
@@ -1884,15 +1895,18 @@ async fn retry_audio_sources(
         }
         None => repos.latest_valid_audio_artifact_paths(note_id).await?,
     };
-    let sources = source_rows
-        .into_iter()
-        .filter_map(|(id, source, path, session_id, recorded_silence)| {
-            paths
-                .contained_recording_file(path)
-                .ok()
-                .map(|path| (id, source, path, session_id, recorded_silence))
-        })
-        .collect::<Vec<_>>();
+    let mut sources = Vec::with_capacity(source_rows.len());
+    for (id, source, path, session_id, recorded_silence) in source_rows {
+        let path = paths.contained_recording_file(path).map_err(|_| {
+            AppError::new(
+                "audio_artifact_missing",
+                format!(
+                    "The saved {source} audio for this recording is unavailable. No transcript was changed."
+                ),
+            )
+        })?;
+        sources.push((id, source, path, session_id, recorded_silence));
+    }
     if sources.is_empty() {
         return Err(AppError::new(
             "audio_artifact_missing",
@@ -2444,7 +2458,11 @@ pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppErr
                 paths.database_path.display()
             ))
             .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?
-            .create_if_missing(true);
+            .create_if_missing(true)
+            // Recording finalization, transcript persistence, and UI polling
+            // legitimately overlap. WAL lets readers observe progress without
+            // blocking the durable job transaction (or vice versa).
+            .journal_mode(SqliteJournalMode::Wal);
             let pool = SqlitePoolOptions::new()
                 .max_connections(5)
                 .connect_with(options)
@@ -2468,6 +2486,87 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
 
 #[cfg(test)]
 mod note_transcription_benchmark;
+
+#[cfg(test)]
+mod retry_audio_source_tests {
+    use super::retry_audio_sources;
+    use crate::{
+        app_paths::AppPaths,
+        db::{migrations::run_migrations, repositories::Repositories},
+        domain::types::RecordingSourceMode,
+    };
+
+    #[tokio::test]
+    async fn retry_aborts_when_any_selected_valid_source_file_is_missing() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(temp.path().join("data")).expect("app paths");
+        let note = repos.create_note(None).await.expect("note");
+        let session_id = "retry-missing-source";
+        let session_dir = paths
+            .recording_session_dir(&note.id, session_id)
+            .expect("session path");
+        std::fs::create_dir_all(&session_dir).expect("session directory");
+        let microphone_path = session_dir.join("microphone.wav");
+        let system_path = session_dir.join("system.wav");
+        std::fs::write(&microphone_path, b"saved microphone bytes").expect("microphone file");
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophonePlusSystem,
+                &session_dir.join("microphone.partial.wav").to_string_lossy(),
+                &microphone_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("recording session");
+        for (source, path) in [
+            ("microphone", microphone_path.as_path()),
+            ("system", system_path.as_path()),
+        ] {
+            let artifact = repos
+                .create_pending_source_artifact(
+                    &note.id,
+                    session_id,
+                    source,
+                    &session_dir
+                        .join(format!("{source}.partial.wav"))
+                        .to_string_lossy(),
+                    &path.to_string_lossy(),
+                )
+                .await
+                .expect("source artifact");
+            repos
+                .finalize_source_artifact(
+                    &artifact.id,
+                    &path.to_string_lossy(),
+                    "valid",
+                    30_000,
+                    1,
+                    &format!("{source}-checksum"),
+                    30_000,
+                    None,
+                    None,
+                )
+                .await
+                .expect("finalize source");
+        }
+
+        let error = retry_audio_sources(&repos, &paths, &note.id, Some(session_id))
+            .await
+            .expect_err("missing System WAV must abort the whole retry");
+        assert_eq!(error.code, "audio_artifact_missing");
+        assert!(error.message.contains("system"));
+        assert!(error.message.contains("No transcript was changed"));
+    }
+}
 
 #[cfg(test)]
 mod note_transcription_timing_tests;

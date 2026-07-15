@@ -177,14 +177,31 @@ describe("live transcript preview", () => {
     expect(reconcileLiveTranscriptEvents([liveEvent()], [legacy])).toHaveLength(1);
   });
 
-  it("clears terminal leftovers but preserves the note's active recording session", () => {
+  it("never lets a failed or empty saved-audio row erase a preview", () => {
+    const failed = persistedTurn({ status: "failed", text: "" });
+    const empty = persistedTurn({ text: "   " });
+
+    expect(reconcileLiveTranscriptEvents([liveEvent()], [failed])).toHaveLength(1);
+    expect(reconcileLiveTranscriptEvents([liveEvent()], [empty])).toHaveLength(1);
+  });
+
+  it("clears only replaced terminal previews and preserves unmatched or active spans", () => {
     const inactive = liveEvent({ sessionId: "session-a" });
     const active = liveEvent({ sessionId: "session-b", segmentId: "microphone-b" });
     const otherNote = liveEvent({ noteId: "note-2", sessionId: "session-c" });
+    const replaced = persistedTurn({ recordingSessionId: "session-a" });
 
     expect(
-      clearTerminalLiveTranscriptEvents([inactive, active, otherNote], "note-1", ["session-b"]),
+      clearTerminalLiveTranscriptEvents(
+        [inactive, active, otherNote],
+        "note-1",
+        [replaced],
+        ["session-b"],
+      ),
     ).toEqual([active, otherNote]);
-    expect(clearTerminalLiveTranscriptEvents([inactive, otherNote], "note-1")).toEqual([otherNote]);
+    expect(clearTerminalLiveTranscriptEvents([inactive, otherNote], "note-1", [])).toEqual([
+      inactive,
+      otherNote,
+    ]);
   });
 });

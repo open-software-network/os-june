@@ -2431,9 +2431,17 @@ impl Repositories {
              LEFT JOIN note_generation_blocks ngb
                ON ngb.note_id = aa.note_id
               AND ngb.recording_session_id = aa.recording_session_id
+             LEFT JOIN note_transcription_jobs ntj
+               ON ntj.note_id = aa.note_id
+              AND ntj.recording_session_id = aa.recording_session_id
              WHERE aa.note_id = ? AND aa.status = 'valid'
              GROUP BY aa.recording_session_id
              ORDER BY
+               CASE WHEN MAX(
+                 CASE WHEN ntj.status IN ('pending', 'running', 'failed') THEN 1 ELSE 0 END
+               ) = 1 THEN 0 ELSE 1 END,
+               CASE WHEN MAX(ntj.id) IS NULL THEN 1 ELSE 0 END,
+               MAX(ntj.updated_at) DESC,
                CASE WHEN MAX(ngb.id) IS NULL THEN 0 ELSE 1 END,
                MAX(aa.duration_ms) DESC,
                MAX(aa.created_at) DESC
@@ -2698,9 +2706,61 @@ impl Repositories {
             .collect())
     }
 
+    /// Current authoritative saved-audio rows only. Last-known-good backup
+    /// rows deliberately stay visible during a failed replacement, but must
+    /// never be reused as transcription cache or note-generation input.
+    pub async fn certified_source_turn_transcripts_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<TranscriptDto>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT transcript.id, transcript.recording_session_id, transcript.span_id,
+                    transcript.text, transcript.source_mode, transcript.source,
+                    transcript.start_ms, transcript.end_ms, transcript.turn_index,
+                    transcript.language, transcript.status, transcript.last_error
+             FROM transcripts transcript
+             INNER JOIN note_transcription_jobs job
+               ON job.id = transcript.span_id
+              AND job.transcript_id = transcript.id
+              AND job.recording_session_id = transcript.recording_session_id
+             WHERE transcript.recording_session_id = ?
+               AND transcript.turn_index IS NOT NULL
+               AND transcript.status = 'succeeded'
+               AND job.status = 'succeeded'
+               AND TRIM(transcript.text) != ''
+             ORDER BY COALESCE(transcript.turn_index, 999999),
+                      COALESCE(transcript.start_ms, 999999999),
+                      transcript.created_at ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| TranscriptDto {
+                id: row.get("id"),
+                recording_session_id: row.get("recording_session_id"),
+                span_id: row.get("span_id"),
+                text: row.get("text"),
+                source_mode: Some(RecordingSourceMode::from(
+                    row.get::<String, _>("source_mode").as_str(),
+                )),
+                source: row.get("source"),
+                start_ms: row.get("start_ms"),
+                end_ms: row.get("end_ms"),
+                turn_index: row.get("turn_index"),
+                language: row.get("language"),
+                status: row.get("status"),
+                last_error: row.get("last_error"),
+                recorded_silence: false,
+            })
+            .collect())
+    }
+
     /// Reconcile the complete authoritative saved-audio plan for one recording
-    /// session. Transcript rows are only retained when they are certified by an
-    /// exact succeeded job (or are an exact legacy success certified here).
+    /// session. Exact succeeded jobs are reusable; older ledger-certified rows
+    /// may remain visible only as last-known-good output until their replacement
+    /// Source plan commits. Pre-ledger rows are never certified here.
     pub async fn reconcile_note_transcription_jobs(
         &self,
         note_id: &str,
@@ -2708,7 +2768,10 @@ impl Repositories {
         source_mode: RecordingSourceMode,
         plans: &[NoteTranscriptionJobPlan],
     ) -> Result<Vec<NoteTranscriptionJobRecord>, sqlx::error::Error> {
-        let mut tx = self.pool.begin().await?;
+        // Reserve the SQLite writer before reading the current ledger. A
+        // deferred read transaction can otherwise lose its snapshot upgrade
+        // when another note commits concurrently (SQLITE_BUSY_SNAPSHOT).
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let session_exists = query("SELECT 1 FROM recording_sessions WHERE id = ? AND note_id = ?")
             .bind(session_id)
             .bind(note_id)
@@ -2945,8 +3008,39 @@ impl Repositories {
             }
         }
 
-        // Move all presentation indexes out of the unique-index range before
-        // applying the new plan. This makes shifted indexes safe in one pass.
+        let complete_turn_sources = query(
+            "SELECT source
+             FROM note_transcription_jobs
+             WHERE recording_session_id = ? AND job_kind = 'turn'
+               AND status != 'superseded'
+             GROUP BY source
+             HAVING COUNT(*) > 0
+                AND SUM(CASE WHEN status = 'succeeded' THEN 0 ELSE 1 END) = 0",
+        )
+        .bind(session_id)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|row| row.get::<String, _>("source"))
+        .collect::<Vec<_>>();
+        let current_sources = plans
+            .iter()
+            .map(|plan| plan.source.as_str())
+            .collect::<Vec<_>>();
+        let transcript_rows = query(
+            "SELECT id, span_id, source, turn_index
+             FROM transcripts
+             WHERE recording_session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        // Move presentation indexes out of the unique-index range before
+        // applying a shifted plan. Exact successes are projected first. A
+        // ledger-certified older row is restored as a last-known-good backup
+        // only while its Source replacement is incomplete; legacy rows without
+        // span identity are deliberately not trusted.
         query(
             "UPDATE transcripts
              SET turn_index = -rowid - 1
@@ -2955,11 +3049,7 @@ impl Repositories {
         .bind(session_id)
         .execute(&mut *tx)
         .await?;
-        let transcript_rows = query("SELECT id FROM transcripts WHERE recording_session_id = ?")
-            .bind(session_id)
-            .fetch_all(&mut *tx)
-            .await?;
-        for transcript in transcript_rows {
+        for transcript in &transcript_rows {
             let transcript_id: String = transcript.get("id");
             if let Some((_, plan)) = preserved_transcripts
                 .iter()
@@ -2983,12 +3073,57 @@ impl Repositories {
                 .bind(&transcript_id)
                 .execute(&mut *tx)
                 .await?;
-            } else {
-                query("DELETE FROM transcripts WHERE id = ?")
-                    .bind(&transcript_id)
-                    .execute(&mut *tx)
-                    .await?;
             }
+        }
+        for transcript in transcript_rows {
+            let transcript_id: String = transcript.get("id");
+            if preserved_transcripts
+                .iter()
+                .any(|(preserved_id, _)| preserved_id == &transcript_id)
+            {
+                continue;
+            }
+            let span_id = transcript.get::<Option<String>, _>("span_id");
+            let source = transcript.get::<Option<String>, _>("source");
+            let turn_index = transcript.get::<Option<i64>, _>("turn_index");
+            let source_is_current = source
+                .as_deref()
+                .is_some_and(|source| current_sources.contains(&source));
+            let source_is_replaced = source.as_deref().is_some_and(|source| {
+                succeeded_fallback_sources.iter().any(|item| item == source)
+                    || complete_turn_sources.iter().any(|item| item == source)
+            });
+            let keep_last_known_good =
+                span_id.is_some() && source_is_current && !source_is_replaced;
+            if keep_last_known_good {
+                let collision = match (source.as_deref(), turn_index) {
+                    (Some(source), Some(turn_index)) => query(
+                        "SELECT 1 FROM transcripts
+                         WHERE recording_session_id = ? AND source = ? AND turn_index = ?
+                           AND id != ?",
+                    )
+                    .bind(session_id)
+                    .bind(source)
+                    .bind(turn_index)
+                    .bind(&transcript_id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .is_some(),
+                    _ => true,
+                };
+                if !collision {
+                    query("UPDATE transcripts SET turn_index = ? WHERE id = ?")
+                        .bind(turn_index)
+                        .bind(&transcript_id)
+                        .execute(&mut *tx)
+                        .await?;
+                    continue;
+                }
+            }
+            query("DELETE FROM transcripts WHERE id = ?")
+                .bind(&transcript_id)
+                .execute(&mut *tx)
+                .await?;
         }
 
         let mut records = Vec::with_capacity(current.len());
@@ -3031,7 +3166,10 @@ impl Repositories {
         text: &str,
         language: Option<String>,
     ) -> Result<TranscriptDto, sqlx::error::Error> {
-        let mut tx = self.pool.begin().await?;
+        // Microphone and System provider calls may finish together. Serialize
+        // their small commits before either reads a snapshot so one Source
+        // cannot fail while upgrading a stale WAL reader into a writer.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let row = query(
             "SELECT id, note_id, recording_session_id, audio_artifact_id, source, source_mode,
                     job_kind, start_ms, end_ms, turn_index, input_fingerprint,
@@ -3072,6 +3210,14 @@ impl Repositories {
             .execute(&mut *tx)
             .await?;
         }
+        // A changed fingerprint may leave the previous certified projection in
+        // place as a last-known-good backup. Remove the same span inside this
+        // success transaction so either the replacement fully commits or the
+        // old text is restored by rollback.
+        query("DELETE FROM transcripts WHERE span_id = ?")
+            .bind(&job.id)
+            .execute(&mut *tx)
+            .await?;
 
         let transcript_id = Uuid::new_v4().to_string();
         let transcript = query(
@@ -3134,6 +3280,50 @@ impl Repositories {
                 "note transcription job changed while completing: {id}"
             )));
         }
+        if job.job_kind == NoteTranscriptionJobKind::Turn {
+            let incomplete_turn_count: i64 = query(
+                "SELECT COUNT(*) AS count
+                 FROM note_transcription_jobs
+                 WHERE recording_session_id = ? AND source = ? AND job_kind = 'turn'
+                   AND status NOT IN ('succeeded', 'superseded')",
+            )
+            .bind(&job.recording_session_id)
+            .bind(&job.source)
+            .fetch_one(&mut *tx)
+            .await?
+            .get("count");
+            let succeeded_turn_count: i64 = query(
+                "SELECT COUNT(*) AS count
+                 FROM note_transcription_jobs
+                 WHERE recording_session_id = ? AND source = ? AND job_kind = 'turn'
+                   AND status = 'succeeded'",
+            )
+            .bind(&job.recording_session_id)
+            .bind(&job.source)
+            .fetch_one(&mut *tx)
+            .await?
+            .get("count");
+            if incomplete_turn_count == 0 && succeeded_turn_count > 0 {
+                query(
+                    "DELETE FROM transcripts
+                     WHERE recording_session_id = ? AND source = ?
+                       AND NOT EXISTS (
+                         SELECT 1 FROM note_transcription_jobs job
+                         WHERE job.id = transcripts.span_id
+                           AND job.recording_session_id = ?
+                           AND job.source = ?
+                           AND job.job_kind = 'turn'
+                           AND job.status = 'succeeded'
+                       )",
+                )
+                .bind(&job.recording_session_id)
+                .bind(&job.source)
+                .bind(&job.recording_session_id)
+                .bind(&job.source)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
         tx.commit().await?;
 
         Ok(TranscriptDto {
@@ -3177,15 +3367,32 @@ impl Repositories {
         &self,
     ) -> Result<u64, sqlx::error::Error> {
         let now = timestamp();
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        query(
+            "UPDATE notes
+             SET processing_status = 'failed',
+                 last_error = 'Transcription was interrupted when June closed. Your recording is saved locally, so you can retry.',
+                 updated_at = ?
+             WHERE processing_status IN ('transcribing', 'generating')
+               AND EXISTS (
+                 SELECT 1 FROM audio_artifacts artifact
+                 WHERE artifact.note_id = notes.id AND artifact.status = 'valid'
+               )",
+        )
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
         let result = query(
             "UPDATE note_transcription_jobs
              SET status = 'pending', last_error = NULL, updated_at = ?, completed_at = NULL
              WHERE status = 'running'",
         )
-        .bind(now)
-        .execute(&self.pool)
+        .bind(&now)
+        .execute(&mut *tx)
         .await?;
-        Ok(result.rows_affected())
+        let released = result.rows_affected();
+        tx.commit().await?;
+        Ok(released)
     }
 
     pub async fn create_transcript(
@@ -4178,7 +4385,7 @@ mod tests {
     use super::Repositories;
     use crate::domain::types::{
         NoteTranscriptionJobKind, NoteTranscriptionJobPlan, NoteTranscriptionJobStatus,
-        RecordingSourceMode,
+        ProcessingStatus, RecordingSourceMode,
     };
     use sqlx::query::query;
     use sqlx::row::Row;
@@ -4415,7 +4622,29 @@ mod tests {
             checksum_changed[0].input_fingerprint,
             first[0].input_fingerprint
         );
-        assert_eq!(transcript_count(&repos, "session-invalidate").await, 0);
+        assert_eq!(transcript_count(&repos, "session-invalidate").await, 1);
+        assert!(repos
+            .claim_note_transcription_job(&base.span_id)
+            .await
+            .expect("claim replacement"));
+        repos
+            .complete_note_transcription_job_failure(&base.span_id, "provider unavailable")
+            .await
+            .expect("fail replacement");
+        let last_known_good: String = query(
+            "SELECT text FROM transcripts
+             WHERE recording_session_id = 'session-invalidate'",
+        )
+        .fetch_one(&repos.pool)
+        .await
+        .expect("last-known-good transcript")
+        .get("text");
+        assert_eq!(last_known_good, "Old text");
+        assert!(repos
+            .certified_source_turn_transcripts_for_session("session-invalidate")
+            .await
+            .expect("current certified projection")
+            .is_empty());
 
         let mut fingerprints = vec![checksum_changed[0].input_fingerprint.clone()];
         let variants = [
@@ -4559,6 +4788,10 @@ mod tests {
             .claim_note_transcription_job(&plan.span_id)
             .await
             .expect("claim");
+        repos
+            .set_note_status(&note_id, ProcessingStatus::Transcribing, None)
+            .await
+            .expect("mark processing");
         query(
             "CREATE TRIGGER force_job_completion_failure
              BEFORE UPDATE OF status ON note_transcription_jobs
@@ -4698,14 +4931,29 @@ mod tests {
                 &note_id,
                 "session-fallback",
                 RecordingSourceMode::MicrophonePlusSystem,
-                &[first, second],
+                &[first.clone(), second.clone()],
             )
             .await
             .expect("remove obsolete fallback from plan");
         assert!(turn_only
             .iter()
             .all(|job| job.status == NoteTranscriptionJobStatus::Pending));
-        assert_eq!(transcript_count(&repos, "session-fallback").await, 0);
+        assert_eq!(transcript_count(&repos, "session-fallback").await, 1);
+        for plan in [&first, &second] {
+            assert!(repos
+                .claim_note_transcription_job(&plan.span_id)
+                .await
+                .expect("claim replacement turn"));
+            repos
+                .complete_note_transcription_job_success(
+                    &plan.span_id,
+                    &format!("replacement {}", plan.span_id),
+                    None,
+                )
+                .await
+                .expect("complete replacement turn");
+        }
+        assert_eq!(transcript_count(&repos, "session-fallback").await, 2);
     }
 
     #[tokio::test]
@@ -4727,6 +4975,10 @@ mod tests {
             .claim_note_transcription_job(&plan.span_id)
             .await
             .expect("claim");
+        repos
+            .set_note_status(&note_id, ProcessingStatus::Transcribing, None)
+            .await
+            .expect("mark interrupted transcription");
 
         assert_eq!(
             repos
@@ -4747,6 +4999,59 @@ mod tests {
                 .expect("job")
                 .get("attempt_count");
         assert_eq!(attempt_count, 2);
+        let interrupted = repos.get_note(&note_id).await.expect("interrupted note");
+        assert_eq!(interrupted.processing_status, ProcessingStatus::Failed);
+        assert!(interrupted
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("recording is saved locally")));
+        assert_eq!(
+            interrupted.retry_recording_session_id.as_deref(),
+            Some("session-release")
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_generation_without_a_running_job_is_retryable() {
+        let repos = test_repositories().await;
+        let (note_id, artifact_id) =
+            recording_fixture(&repos, "session-generation", "microphone", "checksum-a").await;
+        let plan = transcription_plan("span-generation", &artifact_id, "microphone", 0, 1_000, 0);
+        repos
+            .reconcile_note_transcription_jobs(
+                &note_id,
+                "session-generation",
+                RecordingSourceMode::MicrophoneOnly,
+                std::slice::from_ref(&plan),
+            )
+            .await
+            .expect("reconcile");
+        assert!(repos
+            .claim_note_transcription_job(&plan.span_id)
+            .await
+            .expect("claim"));
+        repos
+            .complete_note_transcription_job_success(&plan.span_id, "Recovered text", None)
+            .await
+            .expect("complete transcription");
+        repos
+            .set_note_status(&note_id, ProcessingStatus::Generating, None)
+            .await
+            .expect("mark generation");
+
+        assert_eq!(
+            repos
+                .release_interrupted_note_transcription_jobs()
+                .await
+                .expect("startup repair"),
+            0
+        );
+        let interrupted = repos.get_note(&note_id).await.expect("interrupted note");
+        assert_eq!(interrupted.processing_status, ProcessingStatus::Failed);
+        assert_eq!(
+            interrupted.retry_recording_session_id.as_deref(),
+            Some("session-generation")
+        );
     }
 
     #[tokio::test]

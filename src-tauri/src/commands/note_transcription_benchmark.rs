@@ -9,7 +9,7 @@ use crate::{
 };
 use serde::Serialize;
 use sqlx::row::Row;
-use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -188,7 +188,8 @@ pub(super) async fn benchmark_repositories(dir: &tempfile::TempDir) -> Repositor
     let database_path = dir.path().join("june-benchmark.sqlite3");
     let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", database_path.display()))
         .expect("SQLite options")
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal);
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(options)
@@ -384,11 +385,12 @@ async fn observe_database(
         .fetch_one(&mut *transaction)
         .await
         .expect("observer transcript");
-        let note_row = sqlx::query::query("SELECT processing_status FROM notes WHERE id = ?")
-            .bind(&note_id)
-            .fetch_one(&mut *transaction)
-            .await
-            .expect("observer note");
+        let note_row =
+            sqlx::query::query("SELECT processing_status, last_error FROM notes WHERE id = ?")
+                .bind(&note_id)
+                .fetch_one(&mut *transaction)
+                .await
+                .expect("observer note");
         transaction
             .commit()
             .await
@@ -423,7 +425,11 @@ async fn observe_database(
         }
         let status: String = note_row.try_get("processing_status").expect("note status");
         if status == ProcessingStatus::Failed.as_db() {
-            panic!("benchmark processing reached status failed");
+            let last_error: Option<String> = note_row.try_get("last_error").expect("note error");
+            panic!(
+                "benchmark processing reached status failed: {}",
+                last_error.as_deref().unwrap_or("unknown error")
+            );
         }
         if status == ProcessingStatus::Ready.as_db() {
             observation.handoff_to_ready_ms.get_or_insert(observed_ms);

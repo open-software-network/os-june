@@ -57,8 +57,12 @@ The first explicit retry prunes and rebuilds those rows from the saved WAV.
 
 At the start of every processing pass, June transactionally reconciles the
 complete planned Turn set with the ledger. Obsolete jobs are superseded and
-obsolete transcript rows are removed from the current projection. A retry that
-detects fewer or shifted Turns therefore cannot leak text from an older plan.
+obsolete transcript rows are removed once the replacement Source plan is
+complete. Until then, a ledger-certified prior row remains visible as
+last-known-good text but is never reused as cache input or for note generation.
+Pre-ledger rows are still pruned immediately. A failed provider replacement
+therefore cannot destroy usable text, while a successful retry cannot leak text
+from an older plan.
 
 Workers claim pending jobs atomically. Job success and transcript upsert commit
 in one SQLite transaction. A successful full-Source fallback replaces that
@@ -77,15 +81,25 @@ producer, but it cannot create same-Source provider overlap.
 
 On process restart, jobs left `running` return to `pending`. June continues to
 use its explicit recording-recovery surface rather than silently spending
-credits at application launch; retry resumes the reconciled jobs from saved
-audio. Retry requests carry the selected recording session explicitly; the
-legacy note-only request remains supported and selects the strongest
-unprocessed saved recording rather than merely the newest artifact.
+credits at application launch; the affected note is atomically marked failed
+with its exact saved recording exposed for Retry. Startup repair runs once per
+native process so a renderer remount cannot reset a genuinely active worker.
+Retry resumes the reconciled jobs from saved audio. Retry requests carry the
+selected recording session explicitly; the legacy note-only request remains
+supported and selects the strongest unprocessed saved recording rather than
+merely the newest artifact. If any valid Source artifact selected for retry is
+unavailable, Retry aborts before reconciliation changes the projection.
+
+The app database uses WAL, and durable read-then-write transactions begin
+`IMMEDIATE`. This permits concurrent UI readers while serializing microphone
+and System persistence before they take snapshots, avoiding SQLite
+`BUSY_SNAPSHOT` failures under dual-Source completion.
 
 Live preview may share Source/time coordinates with authoritative Turns, but
 its text is never written to `transcripts` or used for note generation. The UI
-may retain provisional preview text after Stop until overlapping authoritative
-rows arrive, then replaces it by recording session, Source, and time overlap.
+retains provisional preview text after Stop or batch failure until overlapping
+authoritative rows arrive, then replaces it by recording session, Source, and
+time overlap.
 
 ## Consequences
 

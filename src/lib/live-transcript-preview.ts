@@ -44,26 +44,37 @@ export function reconcileLiveTranscriptEvents(
   events: LiveTranscriptEventDto[],
   persisted: TranscriptDto[],
 ) {
-  return events.filter(
-    (event) =>
-      !persisted.some(
-        (turn) =>
-          turn.recordingSessionId === event.sessionId &&
-          turn.source === event.source &&
-          rangesOverlap(event.startMs, event.endMs, turn.startMs, turn.endMs),
-      ),
-  );
+  return events.filter((event) => !hasAuthoritativeOverlap(event, persisted));
 }
 
-/** Clear completed-session previews while preserving a currently active take. */
+/**
+ * Drop only previews that authoritative saved-audio rows replaced. A terminal
+ * batch failure must not erase an unmatched live span: it may be the only text
+ * the user can still see while the saved WAV remains retryable.
+ */
 export function clearTerminalLiveTranscriptEvents(
   events: LiveTranscriptEventDto[],
   noteId: string,
+  persisted: TranscriptDto[],
   protectedSessionIds: readonly string[] = [],
 ) {
   const protectedSessions = new Set(protectedSessionIds);
   return events.filter(
-    (event) => event.noteId !== noteId || protectedSessions.has(event.sessionId),
+    (event) =>
+      event.noteId !== noteId ||
+      protectedSessions.has(event.sessionId) ||
+      !hasAuthoritativeOverlap(event, persisted),
+  );
+}
+
+function hasAuthoritativeOverlap(event: LiveTranscriptEventDto, persisted: TranscriptDto[]) {
+  return persisted.some(
+    (turn) =>
+      turn.status === "succeeded" &&
+      turn.text.trim().length > 0 &&
+      turn.recordingSessionId === event.sessionId &&
+      turn.source === event.source &&
+      rangesOverlap(event.startMs, event.endMs, turn.startMs, turn.endMs),
   );
 }
 

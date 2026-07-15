@@ -1197,7 +1197,7 @@ pub(crate) async fn process_saved_source_audio(
             .map(|job| (job.id.clone(), job))
             .collect::<HashMap<_, _>>();
         let existing_by_span = repos
-            .successful_source_turn_transcripts_for_session(session_id)
+            .certified_source_turn_transcripts_for_session(session_id)
             .await?
             .into_iter()
             .filter_map(|transcript| Some((transcript.span_id.clone()?, transcript)))
@@ -1422,56 +1422,13 @@ pub(crate) async fn process_saved_source_audio(
     let visible_failures =
         visible_transcription_failures(&transcription_outcome.failures, has_valid_transcript);
     // `visible_failures` is already filtered by `should_record_source_failure`,
-    // so every entry here is one we persist.
+    // so every entry here is one we record diagnostically.
     for failure in &visible_failures {
-        // A fallback uses the Source's first presentation index. Projecting its
-        // failure as a transcript row would overwrite a usable ordinary turn at
-        // that index. The durable failed job and note-level error retain the
-        // failure without destroying previously committed text.
-        if failure.source_fallback {
-            continue;
-        }
-        let warning = failure
-            .input
-            .warning
-            .as_deref()
-            .unwrap_or("Source did not produce a usable transcript.");
+        // The durable job already stores this failure. Do not project an empty
+        // failed transcript at the same presentation index: that conflict
+        // would overwrite a ledger-certified last-known-good row before a
+        // replacement succeeds.
         let persistence_started = Instant::now();
-        if let Err(error) = repos
-            .upsert_failed_source_turn_transcript(
-                note_id,
-                session_id,
-                failure.artifact_id.as_str(),
-                source_mode,
-                failure.input.source.as_str(),
-                &transcription_provider,
-                warning,
-                failure.input.start_ms.unwrap_or_default(),
-                failure.input.end_ms.unwrap_or_default(),
-                failure.input.turn_index.unwrap_or_default(),
-            )
-            .await
-        {
-            let error = AppError::from(error);
-            timeline.flush(repos, session_id).await;
-            add_infrastructure_note_transcription_failure_checkpoint(
-                repos,
-                session_id,
-                timing,
-                note_transcription_started,
-                &error.code,
-            )
-            .await;
-            add_processing_complete_checkpoint(
-                repos,
-                session_id,
-                timing,
-                processing_started,
-                "failed",
-            )
-            .await;
-            return Err(error);
-        }
         if let Err(error) = repos
             .add_source_checkpoint(
                 session_id,
@@ -1498,7 +1455,7 @@ pub(crate) async fn process_saved_source_audio(
     }
 
     let persisted_transcripts = match repos
-        .successful_source_turn_transcripts_for_session(session_id)
+        .certified_source_turn_transcripts_for_session(session_id)
         .await
     {
         Ok(transcripts) => transcripts,
@@ -1994,7 +1951,6 @@ struct TranscriptCandidate {
 struct FailedTranscriptCandidate {
     artifact_id: String,
     input: SourceTranscriptInput,
-    source_fallback: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3258,7 +3214,6 @@ async fn transcribe_one_turn_job(
                 result: TurnTranscriptionResult::Failure(FailedTranscriptCandidate {
                     artifact_id: job.artifact_id,
                     input,
-                    source_fallback: job.source_fallback,
                 }),
                 duration_ms: elapsed_ms(started),
                 replaces_source,
@@ -5596,7 +5551,6 @@ mod tests {
         let summary = source_failure_summary(&[
             FailedTranscriptCandidate {
                 artifact_id: "mic".to_string(),
-                source_fallback: false,
                 input: SourceTranscriptInput {
                     source: "microphone".to_string(),
                     text: String::new(),
@@ -5612,7 +5566,6 @@ mod tests {
             },
             FailedTranscriptCandidate {
                 artifact_id: "system".to_string(),
-                source_fallback: false,
                 input: SourceTranscriptInput {
                     source: "system".to_string(),
                     text: String::new(),
@@ -5701,7 +5654,6 @@ mod tests {
     fn validated_silent_microphone_does_not_block_successful_system_transcript() {
         let visible = vec![FailedTranscriptCandidate {
             artifact_id: "mic".to_string(),
-            source_fallback: false,
             input: SourceTranscriptInput {
                 source: "microphone".to_string(),
                 text: String::new(),
@@ -8483,7 +8435,6 @@ mod tests {
     fn failed_candidate(source: &str, warning: &str, turn_index: i64) -> FailedTranscriptCandidate {
         FailedTranscriptCandidate {
             artifact_id: format!("{source}-artifact"),
-            source_fallback: false,
             input: SourceTranscriptInput {
                 source: source.to_string(),
                 text: String::new(),

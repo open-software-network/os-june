@@ -2378,13 +2378,19 @@ export function App() {
       protectedSessionIds.push(state.recordingStatus.sessionId);
     }
     setLiveTranscriptEvents((current) =>
-      clearTerminalLiveTranscriptEvents(current, selectedNote.id, protectedSessionIds),
+      clearTerminalLiveTranscriptEvents(
+        current,
+        selectedNote.id,
+        selectedNote.sourceTranscripts ?? [],
+        protectedSessionIds,
+      ),
     );
   }, [
     recordingNoteId,
     selectedNote?.id,
     selectedNote?.processingStatus,
     selectedNote?.queuedRecordings,
+    selectedNote?.sourceTranscripts,
     state.recordingStatus?.sessionId,
   ]);
 
