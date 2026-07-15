@@ -851,6 +851,58 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument());
   });
 
+  it("polls newly persisted turns while transcription remains active", async () => {
+    const selectedNote = note({
+      processingStatus: "transcribing",
+      activeTab: "transcription",
+      sourceTranscripts: [],
+    });
+    let pollResponse = selectedNote;
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [selectedNote],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async () => pollResponse);
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+    await waitFor(() => expect(screen.getByText("Transcribing audio")).toBeInTheDocument());
+
+    expect(screen.queryByText("The first saved turn is visible.")).not.toBeInTheDocument();
+    mocks.getNote.mockClear();
+    pollResponse = {
+      ...selectedNote,
+      processingStatus: "transcribing",
+      sourceTranscripts: [
+        {
+          id: "turn-1",
+          text: "The first saved turn is visible.",
+          source: "microphone",
+          sourceMode: "microphonePlusSystem",
+          startMs: 0,
+          endMs: 4_000,
+          turnIndex: 0,
+          language: "en",
+          status: "succeeded",
+          recordedSilence: false,
+        },
+      ],
+    };
+
+    await waitFor(
+      () => {
+        expect(mocks.getNote).toHaveBeenCalledWith(selectedNote.id);
+        expect(screen.getByText("The first saved turn is visible.")).toBeInTheDocument();
+      },
+      { timeout: 3_000 },
+    );
+    const transcribingStatus = screen.getByText("Transcribing audio");
+    expect(transcribingStatus.closest('[role="status"]')).not.toBeNull();
+  });
+
   it("keeps retry failures scoped to the failed note", async () => {
     mocks.getNote.mockImplementation(async (noteId: string) =>
       noteId === "note-2"
