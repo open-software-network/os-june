@@ -2118,7 +2118,44 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
     paths
 }
 
+/// The dictation helper binary's basename, shared by the bundled-binary lookup
+/// and the orphan reap below.
+#[cfg(target_os = "macos")]
+const DICTATION_HELPER_NAME: &str = "june-dictation-helper";
+
+/// Kills any dictation helper orphaned by a prior app instance before a fresh
+/// one is spawned. A stale helper — most often left by an in-app update relaunch
+/// that skipped teardown (JUN-338) — keeps the global CGEventTap and its stdio,
+/// so a newly spawned helper collides with it and never delivers a clean
+/// permission status. Best-effort and macOS-only. Safe to call here because
+/// `spawn_helper` only ever runs with no live helper of ours: first `setup`, or
+/// a supervised respawn after the previous helper already exited.
+#[cfg(target_os = "macos")]
+fn reap_orphaned_helpers() {
+    let _ = reap_orphaned_helpers_command()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn reap_orphaned_helpers() {}
+
+/// Pure command construction so a test can assert the reap targets the helper by
+/// name. Matches on the full command line (`pkill -f`): the absolute spawn path
+/// always contains the binary name, so a truncated accounting name cannot hide
+/// the orphan, and no other process on the system carries this string.
+#[cfg(target_os = "macos")]
+fn reap_orphaned_helpers_command() -> Command {
+    let mut cmd = Command::new("/usr/bin/pkill");
+    cmd.arg("-f").arg(DICTATION_HELPER_NAME);
+    cmd
+}
+
 fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
+    reap_orphaned_helpers();
+
     let helper_path = helper_candidates(app)
         .into_iter()
         .find(|path| path.exists())
@@ -4428,6 +4465,21 @@ pub fn key_code_for_code(code: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reap_orphaned_helpers_targets_helper_by_name() {
+        let cmd = reap_orphaned_helpers_command();
+        assert_eq!(cmd.get_program(), std::ffi::OsStr::new("/usr/bin/pkill"));
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        // `-f` matches the full command line so the absolute spawn path (which
+        // always contains the binary name) is caught even when the accounting
+        // name is truncated.
+        assert_eq!(args, ["-f", DICTATION_HELPER_NAME]);
+    }
 
     #[test]
     fn mic_duck_starts_on_listening_and_holds_through_levels() {

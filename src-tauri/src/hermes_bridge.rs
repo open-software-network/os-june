@@ -1199,6 +1199,17 @@ async fn start_hermes_bridge_inner(
     );
     cmd.current_dir(&cwd);
 
+    // Put the runtime in its own process group so teardown can reap the whole
+    // tree, not just the tracked child. The dashboard (and, unsandboxed, the
+    // Python runtime it becomes) can fork worker subprocesses; a bare
+    // `child.kill()` would leave those orphaned when the app quits or relaunches
+    // for an update (JUN-338). See `shutdown_hermes_process`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+    }
+
     let mut child = cmd.spawn().map_err(|error| {
         AppError::new(
             "hermes_bridge_start_failed",
@@ -5789,9 +5800,31 @@ fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Resu
 
 fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
     if let Some(process) = process.as_mut() {
+        // Sweep the runtime's process group first so any worker subprocess it
+        // forked dies with it rather than detaching and outliving the app (the
+        // child spawns into its own group; see the spawn site). Then kill and
+        // reap the tracked child itself.
+        #[cfg(unix)]
+        kill_process_group(process.child.id());
         let _ = process.child.kill();
         let _ = process.child.wait();
     }
+}
+
+/// Best-effort SIGKILL to a whole process group, addressed by the leader's pid
+/// (a negative target is a process group). Shells out to `/bin/kill` to stay
+/// dependency-free, matching the module's other system-utility spawns. Only
+/// meaningful for a child spawned with `process_group(0)`, whose pid is its
+/// group id.
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    let _ = Command::new("/bin/kill")
+        .arg("-KILL")
+        .arg(format!("-{pid}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 async fn resolve_hermes_command(
@@ -10893,6 +10926,45 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_group_reaps_a_forked_child() {
+        use std::os::unix::process::CommandExt as _;
+
+        // A parent in its own process group that forks a long-lived grandchild.
+        // A bare kill of the parent would leave the `sleep` orphaned; the
+        // group-addressed kill must take both down.
+        let mut parent = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("/bin/sleep 300 & sleep 300")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn test process group");
+        let pid = parent.id();
+
+        kill_process_group(pid);
+
+        // The parent must be gone promptly; if the group kill missed it, this
+        // wait would hang for the full 300s sleep.
+        let start = Instant::now();
+        loop {
+            match parent.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if start.elapsed() < Duration::from_secs(5) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => {
+                    let _ = parent.kill();
+                    panic!("process group was not killed");
+                }
+                Err(error) => panic!("wait failed: {error}"),
+            }
+        }
+    }
 
     #[test]
     fn ensure_video_defaults_injects_missing_knobs_under_the_keys_june_api_reads() {

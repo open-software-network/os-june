@@ -5,6 +5,7 @@ import {
   checkJuneUpdate,
   getReleaseChannel,
   reconcileToStable,
+  relaunchJune,
   setReleaseChannel,
 } from "../lib/updater";
 
@@ -110,5 +111,18 @@ describe("release channel setting", () => {
     expect(invokeMock).toHaveBeenCalledWith("set_release_channel", {
       channel: "rc",
     });
+  });
+});
+
+describe("relaunchJune", () => {
+  it("routes through the Rust command that tears down children first", async () => {
+    invokeMock.mockResolvedValueOnce(undefined);
+
+    await relaunchJune();
+
+    // Not the plugin `relaunch()`: the command runs the dictation-helper and
+    // Hermes teardown before restarting so the relaunched instance is not
+    // blocked by an orphaned helper (JUN-338).
+    expect(invokeMock).toHaveBeenCalledWith("relaunch_for_update");
   });
 });
