@@ -4062,6 +4062,16 @@ fn is_generic_here_instruction_preamble(preamble: &str) -> bool {
     ) {
         return true;
     }
+    if [
+        "here it is with ",
+        "here you go with ",
+        "here you are with ",
+    ]
+    .iter()
+    .any(|prefix| preamble.starts_with(prefix))
+    {
+        return true;
+    }
     preamble.starts_with("here, i")
         && preamble
             .split(|character: char| !character.is_ascii_alphanumeric())
@@ -7122,6 +7132,9 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here is a summary: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here it is with punctuation: Send it today."
         ));
         assert!(looks_like_instruction_response(
             "Here's your corrected transcript. Send it today."
