@@ -556,7 +556,14 @@ pub async fn process_saved_source_audio(
             }) && existing
                 .end_ms
                 .is_some_and(|end| (end - turn.end_ms).abs() <= CACHED_TURN_BOUNDS_TOLERANCE_MS);
-            if bounds_match {
+            // Full-source sentinels are created when VAD could not find a
+            // reliable turn. Short sentinels now use preview-sized chunks, so
+            // a pre-fix cached row (for example a lone stray word from one
+            // 30-second request) must be recomputed on Retry. Long source
+            // transcripts remain reusable to avoid replaying a whole meeting.
+            let refresh_short_full_source =
+                is_short_full_source(&turn.source_path, turn.start_ms, turn.end_ms);
+            if bounds_match && !refresh_short_full_source {
                 cached_candidates.push(TranscriptCandidate {
                     artifact_id: turn.artifact_id,
                     language: existing.language.clone(),
@@ -1756,8 +1763,13 @@ fn short_full_source_chunk_ms(job: &TurnTranscriptionJob) -> Option<i64> {
     if !job.covers_full_source || job.source_fallback {
         return None;
     }
-    let duration_ms = source_wav_duration_ms(&job.audio_path)?;
-    (duration_ms <= SHORT_FULL_SOURCE_RECOVERY_MAX_MS).then_some(PREVIEW_CHUNK_MS)
+    is_short_full_source(&job.audio_path, job.start_ms, job.end_ms).then_some(PREVIEW_CHUNK_MS)
+}
+
+fn is_short_full_source(audio_path: &Path, start_ms: i64, end_ms: i64) -> bool {
+    covers_full_source(start_ms, end_ms)
+        && source_wav_duration_ms(audio_path)
+            .is_some_and(|duration_ms| duration_ms <= SHORT_FULL_SOURCE_RECOVERY_MAX_MS)
 }
 
 async fn persist_turn_transcription_event(
@@ -3071,6 +3083,8 @@ mod tests {
             turn_index: 0,
         };
 
+        assert!(is_short_full_source(&job.audio_path, 0, 0));
+        assert!(!is_short_full_source(&job.audio_path, 0, 31_000));
         assert_eq!(short_full_source_chunk_ms(&job), Some(PREVIEW_CHUNK_MS));
         let event = transcribe_one_turn_job(
             job,
