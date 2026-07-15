@@ -1279,9 +1279,18 @@ async fn start_hermes_bridge_inner(
 
     let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
     {
-        let mut guard = bridge.processes.lock().map_err(|_| {
-            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
-        })?;
+        // A poisoned lock must not drop `child` and detach it: reap the process
+        // group first (JUN-338).
+        let mut guard = match bridge.processes.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                reap_unregistered_child(&mut child);
+                return Err(AppError::new(
+                    "hermes_bridge_unavailable",
+                    "Hermes bridge lock failed.",
+                ));
+            }
+        };
         // The start guard serializes starts, so no concurrent start can have
         // populated this mode's slot since the live-connections check above.
         // Keep a defensive check anyway: if a live process is somehow present
@@ -1289,8 +1298,7 @@ async fn start_hermes_bridge_inner(
         // of leaking it.
         if let Some(existing) = guard.get_mut(&full_mode) {
             if matches!(existing.child.try_wait(), Ok(None)) {
-                let _ = child.kill();
-                let _ = child.wait();
+                reap_unregistered_child(&mut child);
                 drop(guard);
                 return Ok(status_for(live_connections(bridge)?, Some(full_mode)));
             }
@@ -1302,10 +1310,7 @@ async fn start_hermes_bridge_inner(
         // spawned instead of registering it.
         if bridge.shutting_down.load(Ordering::SeqCst) {
             drop(guard);
-            #[cfg(unix)]
-            kill_process_group(child.id());
-            let _ = child.kill();
-            let _ = child.wait();
+            reap_unregistered_child(&mut child);
             return Err(AppError::new(
                 "hermes_bridge_shutting_down",
                 "June is shutting down; Hermes runtime start skipped.",
@@ -5905,6 +5910,18 @@ fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
         let _ = process.child.kill();
         let _ = process.child.wait();
     }
+}
+
+/// Reaps a runtime child that was spawned but never registered into
+/// `processes`, so no post-spawn error path (poisoned lock, a redundant-launch
+/// short-circuit, a teardown handshake) can drop the `Child` and detach it. The
+/// child spawns into its own process group, so this also reaps any worker it
+/// forked (JUN-338).
+fn reap_unregistered_child(child: &mut Child) {
+    #[cfg(unix)]
+    kill_process_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Best-effort SIGKILL to a whole process group, addressed by the leader's pid
@@ -11115,6 +11132,30 @@ mod tests {
                 Err(error) => panic!("wait failed: {error}"),
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reap_unregistered_child_group_kills_on_post_spawn_error() {
+        use std::os::unix::process::CommandExt as _;
+
+        // Mirrors a runtime spawned but not yet registered when an error path
+        // (poisoned lock, teardown handshake) fires: the child and any worker it
+        // forked must both die rather than orphan.
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("/bin/sleep 300 & sleep 300")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn unregistered child");
+
+        reap_unregistered_child(&mut child);
+
+        // Already reaped by the helper; a second wait resolves immediately.
+        assert!(matches!(child.try_wait(), Ok(Some(_)) | Err(_)));
     }
 
     #[test]
