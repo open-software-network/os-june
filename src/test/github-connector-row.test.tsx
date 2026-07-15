@@ -347,6 +347,108 @@ describe("GitHubConnectorRow", () => {
     expect(mocks.githubInstallationOpen).toHaveBeenNthCalledWith(2, "installation-octo-org");
   });
 
+  it("automatically refreshes once when June regains focus after installation", async () => {
+    const installed = connection({
+      status: "connected",
+      installations: [installation({ repositories: [repository("test-repo")] })],
+    });
+    mocks.githubInstallationsRefresh.mockResolvedValue(installed);
+    render(<StatefulRow initial={connection({ status: "setup_incomplete", installations: [] })} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Install GitHub App" }));
+    expect(mocks.githubInstallationOpen).toHaveBeenCalledTimes(1);
+    expect(mocks.githubInstallationOpen).toHaveBeenCalledWith();
+    expect(mocks.githubInstallationsRefresh).not.toHaveBeenCalled();
+
+    await act(async () => window.dispatchEvent(new Event("focus")));
+
+    expect(await screen.findByText("octocat · 1 repository")).toBeInTheDocument();
+    expect(mocks.githubInstallationsRefresh).toHaveBeenCalledTimes(1);
+
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(mocks.githubInstallationsRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("automatically refreshes after managing one stable installation id", async () => {
+    const setupIncomplete = connection({
+      status: "setup_incomplete",
+      installations: [installation({ repositories: [] })],
+    });
+    mocks.githubInstallationsRefresh.mockResolvedValue(
+      connection({
+        installations: [installation({ repositories: [repository("test-repo")] })],
+      }),
+    );
+    render(<StatefulRow initial={setupIncomplete} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Manage repositories for octo-org" }));
+    expect(mocks.githubInstallationOpen).toHaveBeenCalledWith("installation-octo-org");
+
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(await screen.findByText("octocat · 1 repository")).toBeInTheDocument();
+    expect(mocks.githubInstallationsRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not arm return refresh when installation settings fail to open", async () => {
+    mocks.githubInstallationOpen.mockRejectedValue({
+      code: "github_request_failed",
+      message: "raw shell failure",
+    });
+    render(
+      <GitHubConnectorRow
+        connection={connection({ status: "setup_incomplete", installations: [] })}
+        loading={false}
+        onConnectionChanged={vi.fn()}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Install GitHub App" }));
+    expect(
+      await screen.findByText("GitHub could not complete the connection. Try again."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/raw shell failure/)).toBeNull();
+
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(mocks.githubInstallationsRefresh).not.toHaveBeenCalled();
+  });
+
+  it("disarms installation return refresh before disconnect", async () => {
+    render(<StatefulRow initial={connection({ status: "setup_incomplete" })} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "Install GitHub App" }));
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect GitHub" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog", { name: "Disconnect GitHub?" })).getByRole("button", {
+        name: "Disconnect",
+      }),
+    );
+    expect(await screen.findByRole("button", { name: "Connect GitHub" })).toBeEnabled();
+
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(mocks.githubInstallationsRefresh).not.toHaveBeenCalled();
+  });
+
+  it("ignores a late installation return refresh after unmount", async () => {
+    const pendingRefresh = deferred<GitHubConnection>();
+    const onConnectionChanged = vi.fn();
+    mocks.githubInstallationsRefresh.mockReturnValue(pendingRefresh.promise);
+    const { unmount } = render(
+      <GitHubConnectorRow
+        connection={connection({ status: "setup_incomplete" })}
+        loading={false}
+        onConnectionChanged={onConnectionChanged}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Install GitHub App" }));
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(mocks.githubInstallationsRefresh).toHaveBeenCalledTimes(1);
+
+    unmount();
+    await act(async () => pendingRefresh.resolve(connection()));
+    expect(onConnectionChanged).not.toHaveBeenCalled();
+  });
+
   it("shows connected DTO details, labels, suspended state, and row actions", async () => {
     render(
       <GitHubConnectorRow

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { githubConnectionSubtitle, githubStatusLabel } from "../../lib/github-connectors";
 import type { GitHubConnection, GitHubDevicePrompt } from "../../lib/tauri";
 import {
@@ -87,10 +87,18 @@ export function GitHubConnectorRow({
   const flowGeneration = useRef(0);
   const flowPending = useRef(false);
   const lifecycleGeneration = useRef(0);
+  const onConnectionChangedRef = useRef(onConnectionChanged);
+  const refreshingRef = useRef(false);
+  const installationReturnRefreshArmed = useRef(false);
+
+  useEffect(() => {
+    onConnectionChangedRef.current = onConnectionChanged;
+  }, [onConnectionChanged]);
 
   useEffect(
     () => () => {
       flowGeneration.current += 1;
+      installationReturnRefreshArmed.current = false;
       lifecycleGeneration.current += 1;
       if (!flowPending.current) return;
       flowPending.current = false;
@@ -163,34 +171,56 @@ export function GitHubConnectorRow({
     }
   }
 
-  async function refreshInstallations() {
-    if (refreshing) return;
+  const refreshInstallations = useCallback(async () => {
+    if (refreshingRef.current) return;
     const generation = lifecycleGeneration.current;
+    refreshingRef.current = true;
     setRefreshing(true);
     setError(null);
     try {
       const nextConnection = await githubInstallationsRefresh();
       if (generation !== lifecycleGeneration.current) return;
-      onConnectionChanged(nextConnection);
+      onConnectionChangedRef.current(nextConnection);
     } catch (cause) {
       if (generation !== lifecycleGeneration.current) return;
       setError(githubErrorMessage(cause));
     } finally {
-      if (generation === lifecycleGeneration.current) setRefreshing(false);
+      if (generation === lifecycleGeneration.current) {
+        refreshingRef.current = false;
+        setRefreshing(false);
+      }
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    function refreshAfterInstallationReturn() {
+      if (!installationReturnRefreshArmed.current) return;
+      installationReturnRefreshArmed.current = false;
+      void refreshInstallations();
+    }
+
+    window.addEventListener("focus", refreshAfterInstallationReturn);
+    return () => {
+      installationReturnRefreshArmed.current = false;
+      window.removeEventListener("focus", refreshAfterInstallationReturn);
+    };
+  }, [refreshInstallations]);
 
   async function openInstallation(installationId?: string) {
     setError(null);
     try {
       if (installationId) await githubInstallationOpen(installationId);
       else await githubInstallationOpen();
+      installationReturnRefreshArmed.current = true;
     } catch (cause) {
+      installationReturnRefreshArmed.current = false;
       setError(githubErrorMessage(cause));
     }
   }
 
   async function disconnect() {
+    installationReturnRefreshArmed.current = false;
+    refreshingRef.current = false;
     const generation = ++lifecycleGeneration.current;
     setRefreshing(false);
     setDetailsOpen(false);
