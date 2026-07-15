@@ -1761,6 +1761,48 @@ pub async fn list_project_updates(
     Ok((team_ids, updates))
 }
 
+// The teams gate a grant check on the WRITE path (an issue write may not
+// attach to a project outside the selected teams), so - like
+// [`LIST_PROJECT_UPDATES_QUERY`] - this cap is a grant boundary, not a
+// display limit: 50 must be high enough that a granted team never sits past
+// it and gets the project wrongly DENIED. Fail-closed direction, so the only
+// residual risk is a wrongly-denied write of a project spanning 50+ teams,
+// never a cross-team leak.
+const PROJECT_TEAM_IDS_QUERY: &str = "query ProjectTeamIds($id: String!) \
+     { project(id: $id) { teams(first: 50) { nodes { id } } } }";
+
+#[derive(Deserialize)]
+struct ProjectTeamIdsDataWire {
+    #[serde(default)]
+    project: Option<ProjectTeamIdsProjectWire>,
+}
+
+#[derive(Deserialize)]
+struct ProjectTeamIdsProjectWire {
+    #[serde(default)]
+    teams: Option<IdListPageWire>,
+}
+
+/// The team ids a project is linked to. Callers grant-check these with
+/// [`crate::connectors::linear_require_any_team_granted`] before letting an
+/// issue write attach to the project. A missing project (or any transport /
+/// API failure) surfaces as the usual error and is NOT special-cased here:
+/// the callers treat any error as "cannot verify the boundary" and refuse
+/// the write, so an unverifiable project can never slip through.
+pub async fn get_project_team_ids(
+    access_token: &str,
+    project_id: &str,
+) -> Result<Vec<String>, LinearApiError> {
+    let data: ProjectTeamIdsDataWire = graphql(
+        access_token,
+        PROJECT_TEAM_IDS_QUERY,
+        serde_json::json!({ "id": project_id }),
+    )
+    .await?;
+    let project = data.project.ok_or_else(project_not_found)?;
+    Ok(ids_from_page(project.teams))
+}
+
 // --- Slice 3: write operations ---------------------------------------------------
 //
 // Four fixed mutation documents - issue create/update, comment create,
@@ -3083,6 +3125,30 @@ mod tests {
     #[test]
     fn project_updates_fixture_missing_project_parses_as_none() {
         let data: ProjectUpdatesDataWire = serde_json::from_str(r#"{}"#).expect("fixture");
+        assert!(data.project.is_none());
+    }
+
+    #[test]
+    fn project_team_ids_wire_parses_present_empty_and_missing() {
+        // Present teams: the ids come back for the grant check.
+        let data: ProjectTeamIdsDataWire = serde_json::from_str(
+            r#"{ "project": { "teams": { "nodes": [ { "id": "team-1" }, { "id": "team-2" } ] } } }"#,
+        )
+        .expect("fixture");
+        let team_ids = ids_from_page(data.project.expect("project present").teams);
+        assert_eq!(team_ids, vec!["team-1", "team-2"]);
+
+        // A project linked to no teams yields an empty list, which the
+        // caller's `linear_require_any_team_granted` then rejects (fail
+        // closed: no team means no granted team).
+        let data: ProjectTeamIdsDataWire =
+            serde_json::from_str(r#"{ "project": { "teams": { "nodes": [] } } }"#)
+                .expect("fixture");
+        assert!(ids_from_page(data.project.expect("project present").teams).is_empty());
+
+        // A missing project parses to None so the caller errors out (cannot
+        // verify the boundary -> refuse the write).
+        let data: ProjectTeamIdsDataWire = serde_json::from_str(r#"{}"#).expect("fixture");
         assert!(data.project.is_none());
     }
 

@@ -9032,6 +9032,47 @@ fn linear_update_field_diff(
     segments.join(" | ")
 }
 
+/// The project an issue write would attach to, when the request carries a
+/// non-empty `project_id`. `None` means no project association, so no
+/// project grant check applies. (`body_str` already trims and drops empty.)
+fn linear_write_project_id(body: &serde_json::Value) -> Option<String> {
+    body_str(body, "project_id")
+}
+
+/// Enforce the selected-team boundary on an issue write's optional
+/// `project_id`. `create_issue`/`update_issue` accept a `project_id`, and a
+/// project can belong to teams outside the selection, so an approved issue
+/// write could otherwise attach the issue to an out-of-grant project. When
+/// the request names a project, fetch that project's team ids and require at
+/// least one is granted BEFORE the write is accepted; an absent/empty
+/// project_id skips the check. Any lookup failure PROPAGATES (an
+/// unverifiable project is refused, never silently attached), mirroring how
+/// `create_project_update` already treats its project team fetch. Runs in
+/// BOTH the pre-park preview and the post-approval dispatch (TOCTOU: the
+/// approval window is minutes long).
+///
+/// state_id and cycle_id are deliberately NOT checked here: a
+/// `WorkflowState` and a `Cycle` each carry `team: Team!` in the schema, so
+/// they belong to exactly one team and Linear rejects a state/cycle from a
+/// different team than the issue's own (granted) team server-side.
+/// assignee_id is a user, not team-scoped. Only project_id can cross teams.
+async fn enforce_linear_project_grant(
+    app: &AppHandle,
+    account_id: &str,
+    body: &serde_json::Value,
+    granted: &[String],
+) -> Result<(), AppError> {
+    let Some(project_id) = linear_write_project_id(body) else {
+        return Ok(());
+    };
+    let team_ids = connector_linear_call(app, account_id, |token| {
+        let project_id = project_id.clone();
+        async move { crate::connectors::linear::get_project_team_ids(&token, &project_id).await }
+    })
+    .await?;
+    crate::connectors::linear_require_any_team_granted(&team_ids, granted)
+}
+
 /// Summary + args preview for one Linear write's approval card. This runs
 /// BEFORE the action parks, so it doubles as the pre-park gate: the grant
 /// check (and for update_issue the `expected_updated_at` conflict check)
@@ -9052,8 +9093,11 @@ async fn describe_linear_action(
             let title = require_body_str(body, "title")?;
             // Grant-checked against the STORED selected teams before the card
             // is ever shown: an ungrantable write must fail here, not after
-            // the user approves it.
+            // the user approves it. If the issue is being attached to a
+            // project, that project must also touch a granted team, or the
+            // approval card is never shown (and the project is not previewed).
             crate::connectors::linear_require_team_granted(&team_id, &granted)?;
+            enforce_linear_project_grant(app, account_id, body, &granted).await?;
             let repos = crate::commands::repositories(app).await?;
             let team_label = repos
                 .list_selected_teams(account_id)
@@ -9102,6 +9146,10 @@ async fn describe_linear_action(
             if detail.updated_at != expected_updated_at {
                 return Err(crate::connectors::linear_issue_conflict_error());
             }
+            // A move to a new project must land inside the grant too, or the
+            // card is never shown (and the project is not previewed in the
+            // diff).
+            enforce_linear_project_grant(app, account_id, body, &granted).await?;
             let diff = linear_update_field_diff(&detail, body);
             Ok((
                 format!(
@@ -9728,6 +9776,10 @@ async fn dispatch_connector_route(
             let title = require_body_str(body, "title")?;
             let granted = crate::connectors::linear_granted_team_ids(app, account_id).await?;
             crate::connectors::linear_require_team_granted(&team_id, &granted)?;
+            // Re-verify the project boundary AFTER approval and BEFORE minting
+            // or journaling anything: a rejected project must never write and
+            // never leave a pending journal row.
+            enforce_linear_project_grant(app, account_id, body, &granted).await?;
             let action_id = crate::connectors::mint_action_id();
             let input = crate::connectors::linear::LinearIssueCreate {
                 id: action_id.clone(),
@@ -9812,6 +9864,10 @@ async fn dispatch_connector_route(
             if detail.updated_at != expected_updated_at {
                 return Err(crate::connectors::linear_issue_conflict_error());
             }
+            // Re-verify the project boundary AFTER approval and BEFORE minting
+            // or journaling: a move to an out-of-grant project must never
+            // write and never journal a pending row.
+            enforce_linear_project_grant(app, account_id, body, &granted).await?;
             let input = crate::connectors::linear::LinearIssueUpdate {
                 title: body_str(body, "title"),
                 description: body_str(body, "description"),
@@ -14744,6 +14800,56 @@ mcp_servers:
         let diff = linear_update_field_diff(&detail, &serde_json::json!({ "title": long_title }));
         assert!(diff.chars().count() < 700);
         assert!(diff.contains("..."));
+    }
+
+    #[test]
+    fn linear_write_project_id_gates_only_on_a_real_project_id() {
+        // A non-empty project_id triggers the boundary check.
+        assert_eq!(
+            linear_write_project_id(&serde_json::json!({ "project_id": "proj-1" })).as_deref(),
+            Some("proj-1")
+        );
+        // Absent, empty, or whitespace-only: no project association, so the
+        // project grant check is skipped entirely.
+        assert_eq!(linear_write_project_id(&serde_json::json!({})), None);
+        assert_eq!(
+            linear_write_project_id(&serde_json::json!({ "project_id": "" })),
+            None
+        );
+        assert_eq!(
+            linear_write_project_id(&serde_json::json!({ "project_id": "   " })),
+            None
+        );
+    }
+
+    #[test]
+    fn project_boundary_decision_reuses_the_shared_grant_predicate() {
+        // The accept/reject decision for a fetched project's teams is exactly
+        // linear_require_any_team_granted (also unit-tested in
+        // connectors::mod): at least one of the project's teams must be
+        // granted. This pins the wiring the enforce helper depends on.
+        let granted = vec!["team-1".to_string(), "team-2".to_string()];
+        // A project on a granted team is accepted.
+        assert!(crate::connectors::linear_require_any_team_granted(
+            &["team-2".to_string()],
+            &granted
+        )
+        .is_ok());
+        // A project entirely on ungranted teams is rejected.
+        assert_eq!(
+            crate::connectors::linear_require_any_team_granted(&["team-9".to_string()], &granted)
+                .unwrap_err()
+                .code,
+            "linear_team_not_granted"
+        );
+        // A project linked to NO teams (empty fetched list) is rejected: no
+        // team means no granted team, so the write is refused fail-closed.
+        assert_eq!(
+            crate::connectors::linear_require_any_team_granted(&[], &granted)
+                .unwrap_err()
+                .code,
+            "linear_team_not_granted"
+        );
     }
 
     #[test]
