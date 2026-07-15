@@ -13,6 +13,13 @@ export type PreparedProjectPrompt = {
 const CONTEXT_OPEN_MARKER = "[June project context]";
 const CONTEXT_CLOSE_MARKER = "[/June project context]";
 
+/** Recorded after a session is compacted while filed in a project. It never
+ * equals a real project signature (those are JSON arrays), so a still-filed
+ * session reinjects on its next prompt; and it is not `undefined`/`null`, so
+ * if the session is unfiled before that prompt the clearing block still
+ * fires. */
+export const COMPACTED_CONTEXT_SIGNATURE = "compacted";
+
 // The block is injected into user-role prompt text (Hermes has no separate
 // structured-context channel on prompt.submit), so the markers are forgeable
 // by construction. Two mitigations keep display honest: marker lines are

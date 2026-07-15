@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  COMPACTED_CONTEXT_SIGNATURE,
   prepareProjectPrompt,
   ProjectContextSignatureStore,
   stripProjectContext,
@@ -177,6 +178,24 @@ describe("agent project context", () => {
     // Ordinary previews pass through untouched.
     expect(stripProjectContextFromPreview("Plain preview")).toBe("Plain preview");
     expect(stripProjectContextFromPreview(undefined)).toBeUndefined();
+  });
+
+  it("after compaction, a still-filed session reinjects and an unfiled one clears", () => {
+    // Compaction records the sentinel (see AgentWorkspace compressSession).
+    const sentinel = COMPACTED_CONTEXT_SIGNATURE;
+
+    // Still filed on the next prompt: the block reinjects (summary may have
+    // dropped it).
+    const reinjected = prepareProjectPrompt("After compaction", project, sentinel);
+    expect(reinjected.injected).toBe(true);
+    expect(reinjected.text).toContain("project_id: project-1");
+
+    // Unfiled before the next prompt: the clearing block still fires, because
+    // the sentinel is not "no block ever". (The bug was deleting the entry,
+    // which sent nothing while the summary still held old instructions.)
+    const cleared = prepareProjectPrompt("Now global", undefined, sentinel);
+    expect(cleared.injected).toBe(true);
+    expect(cleared.text).toContain("no longer filed in a project");
   });
 
   it("keeps multi-line instructions intact through strip", () => {

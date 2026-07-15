@@ -366,6 +366,7 @@ import {
 } from "../../lib/agent-chat-runtime";
 import { toolActivitySentence } from "../../lib/agent-tool-labels";
 import {
+  COMPACTED_CONTEXT_SIGNATURE,
   prepareProjectPrompt,
   ProjectContextSignatureStore,
   stripProjectContext,
@@ -7496,10 +7497,14 @@ export function AgentWorkspace({
         sessionId,
       });
       const result = parseCompressSessionResult(sessionId, raw);
-      // Compaction replaces the working context with a summary that may not
-      // preserve the injected project block; forget the signature so the next
-      // prompt reinjects it.
-      projectContextSignaturesBySessionId.delete(sessionId);
+      // Compaction replaces the working context with a summary that may still
+      // contain the old project block. Mark the session compacted rather than
+      // deleting the entry: the sentinel differs from every real project
+      // signature (so a still-filed session reinjects on its next prompt) yet
+      // is not "no block ever" (so if the user then removes the session from
+      // its project, prepareProjectPrompt still emits the clearing block
+      // instead of silently leaving stale instructions in the summary).
+      projectContextSignaturesBySessionId.set(sessionId, COMPACTED_CONTEXT_SIGNATURE);
       return result;
     },
     // Same stable-closure rationale as fetchSessionUsage above.
