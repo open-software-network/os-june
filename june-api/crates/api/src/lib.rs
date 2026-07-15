@@ -203,14 +203,39 @@ async fn authenticate_and_admit(
     // Byte-weighted global + per-user admission BEFORE body extraction, so
     // concurrent authenticated large bodies cannot exhaust the shared TEE
     // (JUN-336 review). Held through body extraction + handler, released after.
-    let content_length = request
+    //
+    // Weight by what Axum will ACTUALLY buffer — the route's body cap — not the
+    // client's `Content-Length`. That header is untrusted: a missing/chunked
+    // length would otherwise reserve only the 1 KiB minimum while the body still
+    // buffers up to the cap, and an exaggerated length would reserve the whole
+    // global budget. An honest length under the cap is charged as-is.
+    let limits = state.limits();
+    let route_cap = agent_route_body_cap(request.uri().path(), &limits);
+    let declared = request
         .headers()
         .get(axum::http::header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
-    let _admission = state.admit_agent_request(&user_id, content_length)?;
+    let charge_bytes = if declared == 0 || declared > route_cap {
+        route_cap
+    } else {
+        declared
+    };
+    let _admission = state.admit_agent_request(&user_id, charge_bytes)?;
     Ok(next.run(request).await)
+}
+
+/// The body cap Axum enforces for a large-body route — the true upper bound on
+/// bytes it will buffer, used to weight admission independently of the untrusted
+/// `Content-Length` (JUN-336). Unknown paths fall back to the largest cap so the
+/// charge is never an underestimate.
+fn agent_route_body_cap(path: &str, limits: &ApiLimits) -> usize {
+    match path {
+        "/v1/chat/completions" => limits.max_agent_chat_bytes,
+        "/v1/notes/transcribe" | "/v1/dictate" => limits.max_audio_bytes,
+        _ => limits.max_image_edit_bytes,
+    }
 }
 
 async fn issue_report_permit_middleware(
@@ -245,4 +270,35 @@ fn hold_issue_report_permit_through_body(
         chunk
     });
     Response::from_parts(parts, Body::from_stream(stream))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_route_body_cap;
+    use crate::state::ApiLimits;
+
+    fn limits() -> ApiLimits {
+        ApiLimits {
+            max_audio_bytes: 25,
+            max_json_bytes: 1,
+            max_issue_report_bytes: 2,
+            max_image_edit_bytes: 66,
+            max_agent_chat_bytes: 12,
+            max_agent_inflight_body_bytes: 100,
+            max_agent_concurrent_requests_per_user: 8,
+            request_timeout_secs: 1,
+        }
+    }
+
+    #[test]
+    fn route_body_cap_maps_each_large_body_route_to_its_real_cap() {
+        let l = limits();
+        assert_eq!(agent_route_body_cap("/v1/chat/completions", &l), 12);
+        assert_eq!(agent_route_body_cap("/v1/notes/transcribe", &l), 25);
+        assert_eq!(agent_route_body_cap("/v1/dictate", &l), 25);
+        assert_eq!(agent_route_body_cap("/v1/image/edit", &l), 66);
+        assert_eq!(agent_route_body_cap("/v1/video/animate", &l), 66);
+        // Unknown path falls back to the largest cap (never an underestimate).
+        assert_eq!(agent_route_body_cap("/v1/other", &l), 66);
+    }
 }
