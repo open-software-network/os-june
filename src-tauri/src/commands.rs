@@ -1578,6 +1578,8 @@ async fn finish_recording_session(
     tokio::spawn(async move {
         let queue_lock = ticket.lock();
         let _guard = queue_lock.lock().await;
+        #[cfg(test)]
+        transcription_benchmark::record_processing_dequeued(&task_session_id);
         // Now that earlier jobs on this note are done, read the latest note so
         // generation has the freshest existing content as context.
         let note = match task_repos.get_note(&task_note_id).await {
@@ -2429,6 +2431,9 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
     AppPaths::from_data_dir(data_dir)
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))
 }
+
+#[cfg(test)]
+mod transcription_benchmark;
 
 #[cfg(test)]
 mod tests {
