@@ -29,7 +29,7 @@ the agent is the expansion story after a person understands the first job.
 | Campaign tier | Evidence | Duration | Media cap | Setup, creative, and analysis cap | All-in cap | Decision |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | Lean | Planning assumption | 6 weeks | $4,000 | $1,000 | $5,000 | Launch after Phase 0 |
-| Growth | Planning assumption | 8 weeks | $17,000 | $3,000 | $20,000 | Hold until Lean gates pass |
+| Growth | Planning assumption | 8 weeks | $17,000 | $3,000 | $20,000 | Hold until matured Lean economics pass |
 | Scale | Planning assumption | 12 weeks | $54,000 | $6,000 | $60,000 | Hold until matured economics pass |
 
 These are caps, not spending commitments. Reserved media never releases
@@ -51,8 +51,9 @@ and a [local AI agent](https://www.opensoftware.co/june/local-ai-agent). They
 are useful starting assets, but their organic purpose should not substitute
 for campaign-matched paid landing-page variants.
 
-**External benchmark:** Adjacent products demonstrate active demand at several
-price points, but none proves June's conversion or willingness to pay.
+**External benchmark:** Adjacent products provide price context at several
+levels, but their pricing does not establish demand for June or prove June's
+conversion or willingness to pay.
 Wispr Flow lists Free and $15-per-user monthly Pro plans, Granola lists Free
 and $14-per-user monthly Business plans, and Superwhisper lists a free product
 plus Pro at $8.49 per month. See [Wispr Flow business
@@ -71,12 +72,12 @@ confidential prosumers on Mac**. Acquire on one of three concrete jobs:
 
 1. Write by speaking with dictation.
 2. Capture meeting notes without a bot in the call.
-3. Put a local, private agent to work across files and recurring tasks.
+3. Turn selected files into a finished brief with the local agent.
 
 Dictation is the fastest first-value wedge. Bot-free meeting notes make a
-clear trust and workflow claim. Local and private agent work shows June's
-long-term breadth, but should not lead a cold ad with an abstract list of
-features.
+clear trust and workflow claim. A concrete file-to-brief job leads the agent
+wedge. Broader research, file, and routine work belongs in the landing-page
+expansion story, not the cold-ad headline.
 
 ## Target customer and exclusions
 
@@ -217,6 +218,10 @@ paid CAC from a handful of conversions.
 Canada, 10% UK, and 10% Australia unless live performance justifies a
 documented reallocation.
 
+Growth is a controlled paid-economics validation tier, not permission to scale
+automatically. It tests whether the matured Lean signal survives more spend,
+more geography, and one additional channel while reserve remains gated.
+
 | Allocation | Evidence | Amount | Share of media | Purpose |
 | --- | --- | ---: | ---: | --- |
 | Google Search | Planning assumption | $9,350 | 55% | Expand winning query and wedge cells |
@@ -296,9 +301,9 @@ first job is clear.
 
 | Wedge | Primary audience | Proposed headline | Proposed proof line | Proposed CTA | Starting asset and required variant |
 | --- | --- | --- | --- | --- | --- |
-| Dictation | Founders, operators, independent professionals | "Write in any Mac app by speaking" | "Polished dictation in a private workspace on your Mac" | "Start Free" | Start from [private dictation for Mac](https://www.opensoftware.co/june/private-dictation-for-mac); add query-matched examples, Mac requirements, Free limits, and pricing |
+| Dictation | Founders, operators, independent professionals | "Write in any Mac app by speaking" | "Polished dictation in a private workspace on your Mac" | "Start free" | Start from [private dictation for Mac](https://www.opensoftware.co/june/private-dictation-for-mac); add query-matched examples, Mac requirements, Free limits, and pricing |
 | Bot-free meeting notes | Consultants, advisors, product and design leads | "Meeting notes without a bot in the call" | "Capture the conversation while notes and transcripts stay local by default" | "Download for Mac" | Start from [AI meeting notes without a bot](https://www.opensoftware.co/june/ai-meeting-notes-without-a-bot); add workflow demo, consent copy, Free limits, and pricing |
-| Local and private agent | Founders, operators, product and engineering leads | "Put a private AI workspace to work on your Mac" | "Chat, files, research, and routines with a local agent and private routing" | "Start Free" | Start from [local AI agent](https://www.opensoftware.co/june/local-ai-agent); add one task demo, sandbox and approval proof, Free limits, and Max use case |
+| Local and private agent | Founders, operators, product and engineering leads | "Turn a folder of files into a finished brief" | "A local agent works across the files you choose, with private routing and approval for changes" | "Start free" | Start from [local AI agent](https://www.opensoftware.co/june/local-ai-agent); lead with one folder-to-brief demo, then expand to research, files, and routines lower on the page |
 
 ### Format matrix
 
@@ -332,7 +337,7 @@ retention, access, aggregation thresholds, consent, vendor configuration, and
 deletion. It must preserve June P3A's hard line and must not quietly add ad
 fields to product telemetry.
 
-Until that design exists, Lean may use only:
+An approved Phase 0 design may authorize only these Lean measurement methods:
 
 - First-party aggregate counts for wedge landing visits and downloads.
 - Coarse campaign cohorts or clearly disclosed promo codes, reported only in
@@ -375,15 +380,15 @@ analytics](https://business.linkedin.com/en-us/marketing-solutions/reporting-ana
 
 ### Operating scorecard
 
-| Metric | Evidence | Use before Phase 0 is mature | Use after privacy review |
+| Metric | Evidence | Approved Phase 0 use | Use after matured measurement |
 | --- | --- | --- | --- |
-| Spend, clicks, and blended CPC | Observed platform output | Yes | Yes |
-| Click to completed Free | Planning assumption, aggregate estimate | Directional only | Cohort aggregate if approved |
-| Cost per completed Free | Planning assumption, aggregate estimate | Directional only | Cohort aggregate if approved |
-| First-value activation | Planning definition | Cannot join to paid clicks | Coarse cohort aggregate if approved |
-| Paid within 60 days | Business outcome | Cannot join to paid clicks | Matured cohort aggregate if approved |
-| All-in CAC | Calculated forecast until design exists | Do not claim as observed | Calculate only from approved aggregate cohorts |
-| Gross-margin payback | Finance-dependent output | Unavailable | Calculate after margin and retention inputs exist |
+| Spend, clicks, and blended CPC | Observed fact | Platform aggregate | Platform aggregate |
+| Click to completed Free | Planning assumption | Directional aggregate only | Cohort aggregate if approved |
+| Cost per completed Free | Planning assumption | Directional aggregate only | Cohort aggregate if approved |
+| First-value activation | Planning assumption | Coarse cohort aggregate only if authorized | Coarse cohort aggregate if approved |
+| Paid within 60 days | Planning assumption | Matured aggregate only if authorized | Matured cohort aggregate if approved |
+| All-in CAC | Calculated output | Forecast only; do not claim as observed | Calculate only from approved aggregate cohorts |
+| Gross-margin payback | Calculated output | Unavailable | Calculate after margin and retention inputs exist |
 
 **Observed fact:** June ships a "Give a month, get a month" referral loop with
 nudges after completed-value moments. Referral can lift total acquisition, but
@@ -413,6 +418,19 @@ Move from Lean to Growth only when all of these are true:
   support a directional comparison. Use 300 qualified clicks per wedge as the
   minimum operating sample, not as a claim of statistical significance.
 - **Planning assumption:** No unresolved privacy, policy, or brand issue exists.
+- **Planning assumption:** At least 10 paid conversions have matured through
+  the 60-day window. This is an operating minimum, not statistical proof.
+- **Planning assumption:** Matured 60-day Free-to-paid conversion is at least
+  8%.
+- **Planning assumption:** The privacy-reviewed aggregate design produces a
+  coarse all-in CAC estimate of no more than $600, twice the Scale ceiling.
+  This is a spending-containment gate for controlled Growth validation, not a
+  claim of precise paid CAC.
+
+**Calculated output:** The Lean base scenario projects 4 paid subscribers, 5%
+60-day Free-to-paid, $1,250 all-in CAC, and 44.6 months gross-revenue payback.
+It therefore cannot unlock Growth even if its 6% click-to-Free and $50 cost per
+completed Free meet the leading diagnostic gates.
 
 Move from Growth to Scale only when all of these are true:
 
@@ -447,14 +465,14 @@ approved aggregate design.
 
 | Item | Evidence | Risk or dependency | Required response |
 | --- | --- | --- | --- |
-| Attribution design | Observed gap | Current June P3A cannot measure the paid funnel | Complete separate Phase 0 privacy review before launch |
-| Finance inputs | Observed gap | Gross margin and retention are missing | Finance supplies plan-level margin, retention, refunds, and contribution definition |
+| Attribution design | Observed fact | Current June P3A cannot measure the paid funnel | Complete separate Phase 0 privacy review before launch |
+| Finance inputs | Observed fact | Gross margin and retention are missing | Finance supplies plan-level margin, retention, refunds, and contribution definition |
 | Sixty-day lag | Planning assumption | Early optimization can reward cheap accounts that never pay | Use leading diagnostics, but mature cohorts before CAC gates |
 | Landing variants | Planning assumption | Organic guides may not match paid queries or disclose the right pricing context | Build one campaign-matched variant per wedge and preserve the source guides |
 | Creative production | Planning assumption | Agent breadth is difficult to explain in a cold static ad | Lead with one completed job and reserve breadth for the landing page or longer video |
 | Referral loop | Observed fact | Referral lift can contaminate acquisition credit | Report referral separately and exclude it from paid CAC |
 | Small geographic cells | Planning assumption | Canada, UK, and Australia can be noisy | Keep Growth and Scale splits coarse and reallocate only on passing evidence |
-| Platform optimization | Observed capability | Conversion products can pressure the team toward user-level tracking | Keep conversion optimization off until Phase 0 explicitly approves a design |
+| Platform optimization | Observed fact | Conversion products can pressure the team toward user-level tracking | Keep conversion optimization off until Phase 0 explicitly approves a design |
 | Product readiness | Planning assumption | Paid traffic magnifies onboarding, permission, and first-value friction | Treat activation as a required leading diagnostic, not a marketing afterthought |
 
 Out of scope:
