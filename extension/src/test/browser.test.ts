@@ -24,11 +24,12 @@ function chromeHarness() {
   const attach = vi.fn().mockResolvedValue(undefined);
   const detach = vi.fn().mockResolvedValue(undefined);
   const remove = vi.fn().mockResolvedValue(undefined);
+  const sendCommand = vi.fn().mockResolvedValue({});
   vi.stubGlobal("chrome", {
     debugger: {
       attach,
       detach,
-      sendCommand: vi.fn().mockResolvedValue({}),
+      sendCommand,
       onEvent: { addListener: vi.fn() },
       onDetach: { addListener: vi.fn() },
     },
@@ -44,7 +45,7 @@ function chromeHarness() {
     },
     tabGroups: { onUpdated: { addListener: vi.fn() } },
   });
-  return { attach, detach, remove };
+  return { attach, detach, remove, sendCommand };
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -197,6 +198,140 @@ describe("native payload chunking", () => {
       ...Uint8Array.from(atob(chunk), (value) => value.charCodeAt(0)),
     ]);
     expect(Uint8Array.from(output)).toEqual(input);
+  });
+});
+
+describe("attended reference actions", () => {
+  const element = {
+    tag: "button",
+    inputType: "button",
+    role: "",
+    name: "checkout",
+    id: "buy",
+    label: "Purchase now",
+    autocomplete: "",
+    inForm: true,
+    contentEditable: false,
+  };
+
+  function interactionController() {
+    const harness = chromeHarness();
+    const controller = new BrowserController();
+    controller.registry.start("task");
+    controller.registry.addShared("task", 10);
+    controller.registry.setRefs("task", 10, 0, ["e0:n20"]);
+    return { controller, ...harness };
+  }
+
+  it("handles broker inspect and act messages with expected facts", async () => {
+    const { controller, sendCommand } = interactionController();
+    sendCommand.mockImplementation(
+      async (_target: unknown, method: string, params?: Record<string, unknown>) => {
+        if (method === "DOM.resolveNode") return { object: { objectId: "node-20" } };
+        if (method === "Runtime.callFunctionOn") {
+          const declaration = String(params?.functionDeclaration ?? "");
+          return declaration.includes("operation, value, expected")
+            ? { result: { value: { status: "ok" } } }
+            : { result: { value: { element, url: "https://example.com/checkout" } } };
+        }
+        if (method === "Accessibility.getFullAXTree") return { nodes: [] };
+        if (method === "Runtime.evaluate") return { result: { value: "complete" } };
+        return {};
+      },
+    );
+
+    await expect(
+      controller.execute(
+        browserRequest(20, "inspect_reference", {
+          session_id: "task",
+          tab_id: 10,
+          ref: "e0:n20",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      response: { success: true, data: { element, url: "https://example.com/checkout" } },
+    });
+    await expect(
+      controller.execute(
+        browserRequest(21, "click", {
+          session_id: "task",
+          tab_id: 10,
+          ref: "e0:n20",
+          expected: element,
+        }),
+      ),
+    ).resolves.toMatchObject({ response: { success: true, data: { epoch: 1 } } });
+    expect(
+      sendCommand.mock.calls.some(
+        (call) =>
+          call[1] === "Runtime.callFunctionOn" &&
+          String(call[2]?.functionDeclaration).includes("expected"),
+      ),
+    ).toBe(true);
+  });
+
+  it("aborts the act message when element facts no longer match", async () => {
+    const { controller, sendCommand } = interactionController();
+    sendCommand.mockImplementation(async (_target: unknown, method: string) => {
+      if (method === "DOM.resolveNode") return { object: { objectId: "node-20" } };
+      if (method === "Runtime.callFunctionOn") return { result: { value: { status: "changed" } } };
+      return {};
+    });
+
+    await expect(
+      controller.execute(
+        browserRequest(22, "click", {
+          session_id: "task",
+          tab_id: 10,
+          ref: "e0:n20",
+          expected: element,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      response: { success: false, errorCode: "browser_stale_reference" },
+    });
+    expect(controller.registry.acceptsRef("task", 10, "e0:n20")).toBe(true);
+  });
+
+  it("dispatches click, fill, and press only with broker-supplied expected facts", async () => {
+    for (const [tool, extra] of [
+      ["click", {}],
+      ["fill", { text: "" }],
+      ["press", { key: "Enter" }],
+    ] as const) {
+      const { controller, sendCommand } = interactionController();
+      sendCommand.mockImplementation(async (_target: unknown, method: string) => {
+        if (method === "DOM.resolveNode") return { object: { objectId: "node-20" } };
+        if (method === "Runtime.callFunctionOn") return { result: { value: { status: "ok" } } };
+        if (method === "Accessibility.getFullAXTree") return { nodes: [] };
+        if (method === "Runtime.evaluate") return { result: { value: "complete" } };
+        return {};
+      });
+
+      const result = await controller.execute(
+        browserRequest(30, tool, {
+          session_id: "task",
+          tab_id: 10,
+          ref: "e0:n20",
+          expected: element,
+          ...extra,
+        }),
+      );
+      expect(result.response.success, `${tool} should execute`).toBe(true);
+      expect(
+        sendCommand.mock.calls.some(
+          (call) =>
+            call[1] === "Runtime.callFunctionOn" &&
+            (call[2]?.arguments as Array<{ value?: unknown }> | undefined)?.[2]?.value === element,
+        ),
+        `${tool} must receive expected facts`,
+      ).toBe(true);
+      if (tool === "press") {
+        expect(
+          sendCommand.mock.calls.filter((call) => call[1] === "Input.dispatchKeyEvent"),
+        ).toHaveLength(2);
+      }
+    }
   });
 });
 

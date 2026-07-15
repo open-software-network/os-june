@@ -100,7 +100,7 @@ pub fn classify_managed_action(
     }
 }
 
-fn is_sensitive_field(element: &InteractiveElement) -> bool {
+pub fn is_sensitive_field(element: &InteractiveElement) -> bool {
     if element.input_type.eq_ignore_ascii_case("password") {
         return true;
     }
@@ -1015,19 +1015,65 @@ mod tests {
             classify_managed_action(ManagedAction::Press("Escape"), &submit),
             ActionClass::Routine
         );
+        let form_input = InteractiveElement {
+            tag: "input".into(),
+            in_form: true,
+            label: "Email address".into(),
+            ..InteractiveElement::default()
+        };
+        assert_eq!(
+            classify_managed_action(ManagedAction::Press("Enter"), &form_input),
+            ActionClass::Consequential
+        );
+    }
+
+    #[test]
+    fn managed_action_classification_covers_every_consequential_term_class() {
+        for label in [
+            "Submit application",
+            "Send message",
+            "Publish post",
+            "Purchase now",
+            "Delete account",
+        ] {
+            let element = InteractiveElement {
+                tag: "button".into(),
+                input_type: "button".into(),
+                label: label.into(),
+                ..InteractiveElement::default()
+            };
+            assert_eq!(
+                classify_managed_action(ManagedAction::Click, &element),
+                ActionClass::Consequential,
+                "{label} must be consequential"
+            );
+        }
     }
 
     #[test]
     fn managed_fill_classification_blocks_sensitive_fields_only() {
-        let password = InteractiveElement {
-            tag: "input".into(),
-            input_type: "password".into(),
-            ..InteractiveElement::default()
-        };
-        assert_eq!(
-            classify_managed_action(ManagedAction::Fill, &password),
-            ActionClass::SensitiveField
-        );
+        for sensitive in [
+            InteractiveElement {
+                tag: "input".into(),
+                input_type: "password".into(),
+                ..InteractiveElement::default()
+            },
+            InteractiveElement {
+                tag: "input".into(),
+                autocomplete: "one-time-code".into(),
+                ..InteractiveElement::default()
+            },
+            InteractiveElement {
+                tag: "input".into(),
+                autocomplete: "cc-number".into(),
+                ..InteractiveElement::default()
+            },
+        ] {
+            assert_eq!(
+                classify_managed_action(ManagedAction::Fill, &sensitive),
+                ActionClass::SensitiveField
+            );
+        }
         let ordinary = InteractiveElement {
             tag: "input".into(),
             label: "City".into(),

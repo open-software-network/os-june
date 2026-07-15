@@ -149,6 +149,9 @@ import {
   type LocalGenerationSettingsDto,
   type ProviderModelSettingsDto,
   type VeniceModelDto,
+  type PendingBrowserApproval,
+  browserApprovalRespond,
+  browserApprovalsPending,
 } from "../../lib/tauri";
 import {
   deleteHermesSession,
@@ -372,6 +375,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 
+const BROWSER_APPROVALS_CHANGED_EVENT = "june://browser-approvals-changed";
 const POLLED_STATUSES = new Set<AgentTaskStatus>(["queued", "running", "waitingForUser"]);
 const AGENT_TITLE_TIMEOUT_MS = 2500;
 const AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000];
@@ -2368,6 +2372,8 @@ export function AgentWorkspace({
   );
   const [imageSafeModeConsentRequest, setImageSafeModeConsentRequest] =
     useState<ImageSafeModeConsentRequest | null>(null);
+  const [browserApprovals, setBrowserApprovals] = useState<PendingBrowserApproval[]>([]);
+  const [browserApprovalSubmitting, setBrowserApprovalSubmitting] = useState<string>();
   const imageSafeModeConsentRequestRef = useRef<ImageSafeModeConsentRequest | null>(null);
   const composerSizeProceedSignatureRef = useRef<string | null>(null);
   const composerSizeProceedInputSignatureRef = useRef<string | null>(null);
@@ -2450,6 +2456,48 @@ export function AgentWorkspace({
       setErrorState(nextError);
     },
     [],
+  );
+
+  const refreshBrowserApprovals = useCallback(async () => {
+    try {
+      setBrowserApprovals(await browserApprovalsPending());
+    } catch {
+      // The broker may not be configured until a runtime starts. Its change
+      // event will retry once an attended action parks.
+    }
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void refreshBrowserApprovals();
+    const interval = window.setInterval(() => void refreshBrowserApprovals(), 5_000);
+    void listen(BROWSER_APPROVALS_CHANGED_EVENT, () => void refreshBrowserApprovals()).then(
+      (cleanup) => {
+        if (disposed) cleanup();
+        else unlisten = cleanup;
+      },
+    );
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      unlisten?.();
+    };
+  }, [refreshBrowserApprovals]);
+
+  const respondToBrowserApproval = useCallback(
+    async (approvalId: string, approve: boolean, allowSite = false) => {
+      setBrowserApprovalSubmitting(approvalId);
+      try {
+        await browserApprovalRespond({ approvalId, approve, allowSite });
+      } catch (error) {
+        setError(messageFromError(error));
+      } finally {
+        setBrowserApprovalSubmitting(undefined);
+        void refreshBrowserApprovals();
+      }
+    },
+    [refreshBrowserApprovals, setError],
   );
   const handleTopUp = useCallback(() => {
     const result = onTopUp ? onTopUp() : osAccountsUpgrade();
@@ -10668,6 +10716,17 @@ export function AgentWorkspace({
       </form>
     ) : null;
 
+  const browserApprovalCards = browserApprovals.map((approval) => (
+    <BrowserApprovalCard
+      key={approval.approvalId}
+      approval={approval}
+      submitting={browserApprovalSubmitting === approval.approvalId}
+      onRespond={(approve, allowSite) =>
+        void respondToBrowserApproval(approval.approvalId, approve, allowSite)
+      }
+    />
+  ));
+
   const detailContent = gallerySections ? (
     <AgentResponseGallery
       sections={gallerySections}
@@ -10792,6 +10851,7 @@ export function AgentWorkspace({
           branchingMessageId={branchingMessageId}
         />
       ))}
+      {browserApprovalCards}
       <AgentThinking
         visible={
           workingSessionIds.has(selectedHermesSessionId) && hermesTurns.at(-1)?.role === "user"
@@ -10904,6 +10964,7 @@ export function AgentWorkspace({
             }}
           />
         ))}
+        {browserApprovalCards}
         <AgentThinking
           visible={workingTaskIds.has(selectedTask.id) && taskTurns.at(-1)?.role === "user"}
         />
@@ -14403,6 +14464,58 @@ type AgentBrowserAccessCardProps = {
   submitting: boolean;
   onEnable: () => void;
 };
+
+export function BrowserApprovalCard({
+  approval,
+  submitting,
+  onRespond,
+}: {
+  approval: PendingBrowserApproval;
+  submitting: boolean;
+  onRespond: (approve: boolean, allowSite: boolean) => void;
+}) {
+  const action = approval.action.charAt(0).toUpperCase() + approval.action.slice(1);
+  return (
+    <article className="agent-approval-card" data-status="pending">
+      <div className="agent-tool-title">
+        <span>Browser approval required</span>
+      </div>
+      <p>
+        Site: {approval.site}
+        {"\n"}
+        Action: {action}
+        {"\n"}
+        Element: {approval.elementLabel}
+      </p>
+      <div className="agent-approval-actions">
+        <button
+          type="button"
+          className="btn btn-secondary"
+          disabled={submitting}
+          onClick={() => onRespond(true, false)}
+        >
+          Approve
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          disabled={submitting}
+          onClick={() => onRespond(true, true)}
+        >
+          Approve all on this site for this task
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost agent-approval-deny"
+          disabled={submitting}
+          onClick={() => onRespond(false, false)}
+        >
+          Decline
+        </button>
+      </div>
+    </article>
+  );
+}
 
 /** June asked to enable Browser use via the literal token its soul teaches
  * ([REQUEST:BROWSER_ACCESS]). The agent can never flip the setting itself —

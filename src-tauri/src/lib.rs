@@ -311,6 +311,8 @@ pub fn run() {
             connectors::approvals::connector_approvals_pending,
             connectors::approvals::connector_approval_respond,
             connectors::approvals::connector_approvals_respond_all,
+            hermes_bridge::browser_approvals_pending,
+            hermes_bridge::browser_approval_respond,
             hermes_bridge::connectors_apply_runtime,
             updates::get_release_channel,
             updates::set_release_channel,

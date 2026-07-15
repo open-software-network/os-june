@@ -8,6 +8,7 @@ import {
   AGENT_SESSION_RENAMED_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
   AgentWorkspace,
+  BrowserApprovalCard,
   HERO_GREETINGS,
   SkillsToolsPanel,
   composerInSteerStateFor,
@@ -399,6 +400,39 @@ async function settleUnderFakeTimers(
   }
   assertion();
 }
+
+describe("BrowserApprovalCard", () => {
+  it("shows the informed-consent facts and all three broker decisions", async () => {
+    const onRespond = vi.fn();
+    render(
+      <BrowserApprovalCard
+        approval={{
+          approvalId: "browser-approval-1",
+          site: "https://shop.example",
+          action: "click",
+          elementLabel: "Purchase now",
+          requestedAtMs: 1,
+        }}
+        submitting={false}
+        onRespond={onRespond}
+      />,
+    );
+
+    expect(screen.getByText("Browser approval required")).toBeInTheDocument();
+    expect(screen.getByText(/Site: https:\/\/shop\.example/)).toBeInTheDocument();
+    expect(screen.getByText(/Action: Click/)).toBeInTheDocument();
+    expect(screen.getByText(/Element: Purchase now/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(onRespond).toHaveBeenLastCalledWith(true, false);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Approve all on this site for this task" }),
+    );
+    expect(onRespond).toHaveBeenLastCalledWith(true, true);
+    await userEvent.click(screen.getByRole("button", { name: "Decline" }));
+    expect(onRespond).toHaveBeenLastCalledWith(false, false);
+  });
+});
 
 describe("AgentWorkspace", () => {
   it("accepts concise topic titles without treating their first word as dialogue", () => {

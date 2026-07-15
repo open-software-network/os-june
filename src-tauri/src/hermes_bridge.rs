@@ -1,7 +1,10 @@
 use crate::domain::types::AppError;
 use crate::{
     browser::managed::ManagedBrowserTransport,
-    browser_broker::{BrowserBroker, BrowserTransportKind, ExtensionBrowserTransport},
+    browser_broker::{
+        BrowserBroker, BrowserTransportKind, ExtensionBrowserTransport, PendingBrowserApproval,
+        BROWSER_APPROVALS_CHANGED_EVENT,
+    },
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rand::{distributions::Alphanumeric, Rng, RngCore};
@@ -1388,6 +1391,12 @@ async fn ensure_provider_proxy(
     bridge
         .browser_broker
         .set_access_flag_path(app_data_dir.join(BROWSER_ACCESS_FLAG_FILE));
+    let approvals_app = app.clone();
+    bridge
+        .browser_broker
+        .set_approvals_changed_notifier(Arc::new(move || {
+            let _ = approvals_app.emit(BROWSER_APPROVALS_CHANGED_EVENT, ());
+        }));
     bridge.browser_broker.configure_transport(
         BrowserTransportKind::Attended,
         Arc::new(ExtensionBrowserTransport::new(
@@ -2650,6 +2659,24 @@ pub async fn set_hermes_browser_access(
     Ok(BrowserAccessStatus {
         enabled: bridge.browser_broker.is_enabled(),
     })
+}
+
+#[tauri::command]
+pub fn browser_approvals_pending(bridge: State<'_, HermesBridge>) -> Vec<PendingBrowserApproval> {
+    bridge.browser_broker.pending_approvals()
+}
+
+#[tauri::command]
+pub async fn browser_approval_respond(
+    bridge: State<'_, HermesBridge>,
+    approval_id: String,
+    approve: bool,
+    allow_site: bool,
+) -> Result<(), AppError> {
+    bridge
+        .browser_broker
+        .respond_to_approval(&approval_id, approve, allow_site)
+        .await
 }
 
 fn persist_browser_access(path: &Path, enabled: bool) -> Result<(), AppError> {
@@ -10002,7 +10029,11 @@ async fn handle_browser_execute(
                 | "browser_stale_reference"
                 | "browser_action_unsupported"
                 | "browser_consequential_action_blocked"
-                | "browser_sensitive_field_blocked" => 400,
+                | "browser_sensitive_field_blocked"
+                | "browser_human_takeover_required"
+                | "browser_action_declined"
+                | "browser_action_not_executed"
+                | "browser_approval_expired" => 400,
                 "extension_not_paired" | "browser_transport_unavailable" | "browser_not_found" => {
                     503
                 }

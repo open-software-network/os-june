@@ -5,7 +5,7 @@
 // shape and validation only.
 
 /** Bump when the message contract changes incompatibly. */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** Must match NATIVE_HOST_NAME in src-tauri/src/extension_host.rs. */
 export const NATIVE_HOST_NAME = "co.opensoftware.june.extension";
@@ -32,6 +32,10 @@ export type BrowserToolName =
   | "open_tab"
   | "switch_tab"
   | "close_tab"
+  | "inspect_reference"
+  | "click"
+  | "fill"
+  | "press"
   | "accept_shared_tab";
 
 const BROWSER_TOOL_NAMES = new Set<BrowserToolName>([
@@ -44,6 +48,10 @@ const BROWSER_TOOL_NAMES = new Set<BrowserToolName>([
   "open_tab",
   "switch_tab",
   "close_tab",
+  "inspect_reference",
+  "click",
+  "fill",
+  "press",
   "accept_shared_tab",
 ]);
 

@@ -2054,6 +2054,16 @@ export type PendingConnectorApproval = {
   requestedAtMs: number;
 };
 
+/** One attended Browser use action parked in the Rust broker. Page content is
+ * limited to the exact origin and element label needed for informed consent. */
+export type PendingBrowserApproval = {
+  approvalId: string;
+  site: string;
+  action: "click" | "fill" | "press";
+  elementLabel: string;
+  requestedAtMs: number;
+};
+
 /** Tauri event: the connected-accounts list changed (connect, disconnect, or
  * a reconnect_required transition). Payload carries no account data; listeners
  * re-fetch via connectorsList(). */
@@ -2180,5 +2190,21 @@ export async function connectorApprovalsRespondAll(input: {
   return invoke<void>("connector_approvals_respond_all", {
     approve: input.approve,
     approvalIds: input.approvalIds,
+  });
+}
+
+export async function browserApprovalsPending() {
+  return invoke<PendingBrowserApproval[]>("browser_approvals_pending");
+}
+
+export async function browserApprovalRespond(input: {
+  approvalId: string;
+  approve: boolean;
+  allowSite?: boolean;
+}) {
+  return invoke<void>("browser_approval_respond", {
+    approvalId: input.approvalId,
+    approve: input.approve,
+    allowSite: input.allowSite ?? false,
   });
 }

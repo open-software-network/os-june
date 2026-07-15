@@ -72,4 +72,18 @@ describe("parseHostMessage", () => {
       }),
     ).toBeNull();
   });
+
+  it("accepts every attended inspect and interaction tool", () => {
+    for (const tool of ["inspect_reference", "click", "fill", "press"] as const) {
+      expect(
+        parseBrowserRequest({
+          v: PROTOCOL_VERSION,
+          type: "request",
+          id: 10,
+          tool,
+          arguments: { session_id: "s", tab_id: 7, ref: "e0:n1" },
+        }),
+      ).toMatchObject({ tool });
+    }
+  });
 });

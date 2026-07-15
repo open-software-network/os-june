@@ -96,7 +96,11 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "click",
-        "description": "Click a current snapshot reference and return a fresh snapshot.",
+        "description": (
+            "Click a current snapshot reference and return a fresh snapshot. "
+            "In attended sessions a consequential click returns parked=true; "
+            "tell the user it is waiting for approval in June."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -109,7 +113,11 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "press",
-        "description": "Press a key on a current snapshot reference and return a fresh snapshot.",
+        "description": (
+            "Press a key on a current snapshot reference and return a fresh "
+            "snapshot. In attended sessions a consequential press returns "
+            "parked=true; tell the user it is waiting for approval in June."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -123,7 +131,11 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "fill",
-        "description": "Fill a current snapshot reference and return a fresh snapshot.",
+        "description": (
+            "Fill a current snapshot reference and return a fresh snapshot. "
+            "Password, one-time code, and payment fields are refused; ask the "
+            "user to take over in the browser tab."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -206,6 +206,12 @@ function stringArg(args: Record<string, unknown>, name: string): string {
   return value;
 }
 
+function textArg(args: Record<string, unknown>, name: string): string {
+  const value = args[name];
+  if (typeof value !== "string") throw toolError("invalid_arguments", `${name} is required.`);
+  return value;
+}
+
 function tabArg(args: Record<string, unknown>): number {
   const value = args.tab_id;
   if (!Number.isInteger(value)) throw toolError("invalid_arguments", "tab_id is required.");
@@ -331,6 +337,117 @@ function snapshotFromAx(raw: unknown, epoch: number) {
     );
   }
   return { epoch, text: lines.join("\n"), refs };
+}
+
+type InteractiveElementFacts = {
+  tag: string;
+  inputType: string;
+  role: string;
+  name: string;
+  id: string;
+  label: string;
+  autocomplete: string;
+  inForm: boolean;
+  contentEditable: boolean;
+};
+
+type ReferenceInspection = { element: InteractiveElementFacts; url: string };
+
+const ELEMENT_FACTS_FUNCTION = `function() {
+  const labelText = (root) => {
+    const parts = [];
+    const walk = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        parts.push(node.nodeValue || "");
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const tag = node.tagName.toLowerCase();
+      const role = (node.getAttribute("role") || "").toLowerCase();
+      if (["input", "textarea", "select"].includes(tag) || node.isContentEditable || ["textbox", "combobox", "searchbox"].includes(role)) return;
+      for (const child of node.childNodes) walk(child);
+    };
+    walk(root);
+    return parts.join(" ").trim().replace(/\\s+/g, " ");
+  };
+  const labelledBy = (this.getAttribute("aria-labelledby") || "")
+    .split(/\\s+/).filter(Boolean)
+    .map((id) => { const label = document.getElementById(id); return label ? labelText(label) : ""; })
+    .join(" ");
+  const labels = this.labels ? Array.from(this.labels).map((label) => labelText(label)).join(" ") : "";
+  const accessibleLabel = (
+    this.getAttribute("aria-label") || labelledBy || labels ||
+    this.getAttribute("placeholder") || this.getAttribute("name") || ""
+  ).trim().replace(/\\s+/g, " ").slice(0, 120);
+  return {
+    element: {
+      tag: this.tagName.toLowerCase(),
+      inputType: (this.getAttribute("type") || "").toLowerCase(),
+      role: (this.getAttribute("role") || "").toLowerCase(),
+      name: this.getAttribute("name") || "",
+      id: this.id || "",
+      label: accessibleLabel || (this.textContent || "").trim().replace(/\\s+/g, " ").slice(0, 120),
+      autocomplete: this.getAttribute("autocomplete") || "",
+      inForm: Boolean(this.closest("form")),
+      contentEditable: Boolean(this.isContentEditable),
+    },
+    url: location.href,
+  };
+}`;
+
+const ACT_ON_REFERENCE_FUNCTION = `function(operation, value, expected) {
+  const inspected = (${ELEMENT_FACTS_FUNCTION}).call(this);
+  if (Object.keys(inspected.element).some((key) => inspected.element[key] !== expected[key])) {
+    return {status: "changed"};
+  }
+  if (operation === "click") {
+    this.click();
+  } else if (operation === "fill") {
+    if (!("value" in this) && !this.isContentEditable) return {status: "unsupported"};
+    this.focus();
+    if (this.isContentEditable) this.textContent = value;
+    else this.value = value;
+    this.dispatchEvent(new Event("input", {bubbles: true}));
+    this.dispatchEvent(new Event("change", {bubbles: true}));
+  } else if (operation === "press") {
+    this.focus();
+  } else {
+    return {status: "unsupported"};
+  }
+  return {status: "ok"};
+}`;
+
+function referenceBackendNodeId(reference: string): number | undefined {
+  const match = /^e\d+:n(\d+)$/.exec(reference);
+  if (!match) return undefined;
+  const backendNodeId = Number(match[1]);
+  return Number.isSafeInteger(backendNodeId) ? backendNodeId : undefined;
+}
+
+async function callOnReference<T>(
+  tabId: number,
+  reference: string,
+  functionDeclaration: string,
+  args: unknown[] = [],
+): Promise<T> {
+  const backendNodeId = referenceBackendNodeId(reference);
+  if (backendNodeId === undefined)
+    throw toolError("browser_reference_invalid", "The browser reference is invalid.");
+  const resolved = (await cdp(tabId, "DOM.resolveNode", { backendNodeId })) as {
+    object?: { objectId?: unknown };
+  };
+  const objectId = resolved.object?.objectId;
+  if (typeof objectId !== "string")
+    throw toolError("browser_stale_reference", "The browser reference is stale.");
+  const response = (await cdp(tabId, "Runtime.callFunctionOn", {
+    objectId,
+    functionDeclaration,
+    arguments: args.map((value) => ({ value })),
+    returnByValue: true,
+  })) as { result?: { value?: unknown } };
+  if (response.result?.value === undefined)
+    throw toolError("browser_stale_reference", "The browser reference is stale.");
+  return response.result.value as T;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -515,6 +632,76 @@ export class BrowserController {
     }
   }
 
+  private async inspectReference(
+    sessionId: string,
+    tabId: number,
+    reference: string,
+  ): Promise<ReferenceInspection> {
+    if (!this.registry.acceptsRef(sessionId, tabId, reference)) {
+      throw toolError("browser_stale_reference", "The browser reference is stale.");
+    }
+    return callOnReference<ReferenceInspection>(tabId, reference, ELEMENT_FACTS_FUNCTION);
+  }
+
+  private async snapshot(sessionId: string, tabId: number, taskTab: TaskTab) {
+    const raw = await cdp(tabId, "Accessibility.getFullAXTree");
+    const snapshot = snapshotFromAx(raw, taskTab.epoch);
+    if (!this.registry.setRefs(sessionId, tabId, snapshot.epoch, snapshot.refs)) {
+      throw toolError(
+        "snapshot_invalidated",
+        "The page changed while June was taking the snapshot. Take another snapshot.",
+      );
+    }
+    const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
+    if (bytes.length > INLINE_SNAPSHOT_BYTES) {
+      return { artifact: artifactMessages(0, bytes, "snapshot", "application/json") };
+    }
+    return snapshot;
+  }
+
+  private async actOnReference(
+    sessionId: string,
+    tabId: number,
+    operation: "click" | "fill" | "press",
+    args: Record<string, unknown>,
+  ) {
+    const reference = stringArg(args, "ref");
+    if (!this.registry.acceptsRef(sessionId, tabId, reference)) {
+      throw toolError("browser_stale_reference", "The browser reference is stale.");
+    }
+    const expected = args.expected;
+    if (typeof expected !== "object" || expected === null) {
+      throw toolError("invalid_arguments", "expected is required.");
+    }
+    const value =
+      operation === "fill"
+        ? textArg(args, "text")
+        : operation === "press"
+          ? stringArg(args, "key")
+          : "";
+    const result = await callOnReference<{ status?: unknown }>(
+      tabId,
+      reference,
+      ACT_ON_REFERENCE_FUNCTION,
+      [operation, value, expected],
+    );
+    if (result.status === "changed") {
+      throw toolError("browser_stale_reference", "The browser element changed.");
+    }
+    if (result.status !== "ok") {
+      throw toolError("browser_action_unsupported", "The browser action is unsupported.");
+    }
+    if (operation === "press") {
+      const text = [...value].length === 1 ? value : "";
+      for (const type of ["keyDown", "keyUp"]) {
+        await cdp(tabId, "Input.dispatchKeyEvent", { type, key: value, text });
+      }
+    }
+    this.registry.invalidate(sessionId, tabId);
+    await waitUntilReady(tabId);
+    return this.snapshot(sessionId, tabId, this.registry.tab(sessionId, tabId));
+  }
+
   private async executeTool(
     tool: BrowserRequestMessage["tool"],
     args: Record<string, unknown>,
@@ -601,20 +788,12 @@ export class BrowserController {
       await waitUntilReady(tabId);
       return { tabId, url };
     }
-    if (tool === "snapshot") {
-      const raw = await cdp(tabId, "Accessibility.getFullAXTree");
-      const snapshot = snapshotFromAx(raw, taskTab.epoch);
-      if (!this.registry.setRefs(sessionId, tabId, snapshot.epoch, snapshot.refs)) {
-        throw toolError(
-          "snapshot_invalidated",
-          "The page changed while June was taking the snapshot. Take another snapshot.",
-        );
-      }
-      const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
-      if (bytes.length > INLINE_SNAPSHOT_BYTES) {
-        return { artifact: artifactMessages(0, bytes, "snapshot", "application/json") };
-      }
-      return snapshot;
+    if (tool === "snapshot") return this.snapshot(sessionId, tabId, taskTab);
+    if (tool === "inspect_reference") {
+      return this.inspectReference(sessionId, tabId, stringArg(args, "ref"));
+    }
+    if (tool === "click" || tool === "fill" || tool === "press") {
+      return this.actOnReference(sessionId, tabId, tool, args);
     }
     if (tool === "screenshot") {
       const result = (await cdp(tabId, "Page.captureScreenshot", {

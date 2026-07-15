@@ -35,7 +35,7 @@ use crate::domain::types::AppError;
 /// Bump when the message contract changes incompatibly. The extension pins
 /// its own copy in `extension/src/protocol.ts`; `hello` negotiation compares
 /// the two.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The extension id pinned by the `key` field in `extension/manifest.json`.
 /// Regenerate both together with `node extension/scripts/generate-key.mjs`.
