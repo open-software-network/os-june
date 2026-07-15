@@ -877,6 +877,8 @@ async fn viewer_shell_is_static_noindex_and_identical_for_any_id() {
     }
     // Same bytes for every id: the shell reveals nothing about existence.
     assert_eq!(pages[0], pages[1]);
+    let shell = std::str::from_utf8(&pages[0]).expect("viewer shell is utf-8");
+    assert!(shell.contains("[hidden] { display: none !important; }"));
 }
 
 #[tokio::test]
