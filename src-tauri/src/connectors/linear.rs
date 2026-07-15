@@ -3174,6 +3174,12 @@ mod tests {
         )));
         assert!(!is_not_found_api_error(&LinearApiError::RateLimited));
         assert!(!is_not_found_api_error(&LinearApiError::Unauthorized));
+        // A mangled body says nothing about existence: reading it as
+        // "confirmed absent" would flip an ambiguous outcome into a false
+        // not-found during reconciliation.
+        assert!(!is_not_found_api_error(&LinearApiError::UnusableResponse {
+            status: 200
+        }));
     }
 
     #[test]
