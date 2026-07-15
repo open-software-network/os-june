@@ -349,16 +349,20 @@ impl From<LinearApiError> for AppError {
                 "linear_rate_limited",
                 "Linear is rate limiting requests. Try again in a few minutes.",
             ),
-            // A received 5xx says nothing reliable about whether a mutation
-            // applied (a gateway can fail the response after the backend
-            // committed), so it gets its own code: the action dispatch
-            // treats it as an AMBIGUOUS outcome and reconciles by object
-            // UUID instead of reporting a definitive failure that would
-            // invite a duplicate-creating retry.
-            LinearApiError::Api { status, message } if status >= 500 => AppError::new(
-                "linear_upstream_error",
-                format!("Linear had a server error ({status}): {message}"),
-            ),
+            // Only a 4xx is a definitive "the request never applied". A 5xx
+            // can arrive after the backend committed (gateway failure), and
+            // a 2xx whose body would not parse most likely DID apply - both
+            // say nothing reliable about the mutation's fate, so they map to
+            // their own code: the action dispatch treats it as an AMBIGUOUS
+            // outcome and reconciles by object UUID instead of reporting a
+            // definitive failure that would invite a duplicate-creating
+            // retry.
+            LinearApiError::Api { status, message } if !(400..500).contains(&status) => {
+                AppError::new(
+                    "linear_upstream_error",
+                    format!("Linear returned an unusable response ({status}): {message}"),
+                )
+            }
             LinearApiError::Api { status, message } => AppError::new(
                 "linear_api_error",
                 format!("Linear API request failed ({status}): {message}"),
@@ -2425,17 +2429,30 @@ mod tests {
             .code,
             "linear_api_error"
         );
-        // 5xx maps to its own code so the action dispatch can treat it as an
-        // ambiguous (possibly-applied) outcome and reconcile by UUID.
-        for status in [500, 502, 503, 504] {
+        // Everything outside 4xx maps to its own code so the action dispatch
+        // can treat it as an ambiguous (possibly-applied) outcome and
+        // reconcile by UUID: 5xx gateways can fail after the backend
+        // committed, and a 2xx with an unusable body most likely applied.
+        for status in [200, 204, 302, 500, 502, 503, 504] {
             assert_eq!(
                 AppError::from(LinearApiError::Api {
                     status,
-                    message: "gateway".to_string()
+                    message: "unusable".to_string()
                 })
                 .code,
                 "linear_upstream_error",
                 "status {status} must classify as upstream error"
+            );
+        }
+        for status in [400, 404, 422, 499] {
+            assert_eq!(
+                AppError::from(LinearApiError::Api {
+                    status,
+                    message: "rejected".to_string()
+                })
+                .code,
+                "linear_api_error",
+                "status {status} must stay definitive"
             );
         }
         assert_eq!(
