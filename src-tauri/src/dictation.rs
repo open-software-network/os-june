@@ -3968,7 +3968,9 @@ fn is_here_instruction_preamble(preamble: &str) -> bool {
     };
     subject
         .split(|character: char| !character.is_ascii_alphanumeric())
-        .any(is_here_instruction_subject_marker)
+        .any(|word| {
+            is_here_instruction_subject_marker(word) || is_here_instruction_cleanup_modifier(word)
+        })
 }
 
 fn is_terminal_here_instruction_preamble(normalized: &str) -> bool {
@@ -3986,25 +3988,13 @@ fn is_terminal_here_instruction_preamble(normalized: &str) -> bool {
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|word| !word.is_empty())
         .collect();
-    words
-        .iter()
-        .copied()
-        .any(is_here_instruction_subject_marker)
-        && words.iter().all(|word| {
-            is_here_instruction_subject_marker(word)
-                || matches!(
-                    *word,
-                    "a" | "an"
-                        | "the"
-                        | "clean"
-                        | "cleaned"
-                        | "corrected"
-                        | "normalized"
-                        | "punctuated"
-                        | "rewritten"
-                        | "up"
-                )
-        })
+    words.iter().copied().any(|word| {
+        is_here_instruction_subject_marker(word) || is_here_instruction_cleanup_modifier(word)
+    }) && words.iter().all(|word| {
+        is_here_instruction_subject_marker(word)
+            || is_here_instruction_cleanup_modifier(word)
+            || matches!(*word, "a" | "an" | "the" | "up")
+    })
 }
 
 fn is_here_instruction_subject_marker(word: &str) -> bool {
@@ -4021,6 +4011,17 @@ fn is_here_instruction_subject_marker(word: &str) -> bool {
             | "message"
             | "email"
             | "response"
+            | "copy"
+            | "draft"
+            | "improvements"
+            | "rewrite"
+    )
+}
+
+fn is_here_instruction_cleanup_modifier(word: &str) -> bool {
+    matches!(
+        word,
+        "clean" | "cleaned" | "corrected" | "normalized" | "punctuated" | "rewritten"
     )
 }
 
@@ -7071,6 +7072,15 @@ mod tests {
         ));
         assert!(!looks_like_instruction_response(
             "Here, I think we should send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's a cleaned-up copy: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the rewritten draft: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here are the improvements: Send it today."
         ));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
