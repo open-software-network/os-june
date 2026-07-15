@@ -106,10 +106,10 @@
   animation-name: june-sweep-lg, june-scale-lg;
 }
 
-/* sm/md: 1.12s cycle. Each dot brightens from rest to its peak over 150ms, holds
- * bright for 200ms, and fades back over 150ms, then rests until the next pass —
- * the staggered delays turn that into a bright band gliding across the grid. The
- * 100ms all-rest tail is the settle before the sweep begins again. */
+/* sm/md: 1.12s cycle. Each dot eases from rest up to its peak at the midpoint of
+ * the 500ms window and straight back — a single smooth bell, never a plateau, so
+ * the dot is always in motion and the staggered crest glides instead of stepping.
+ * The 100ms all-rest tail is the settle before the sweep begins again. */
 @keyframes june-sweep-sm {
   0%,
   44.643%,
@@ -117,13 +117,12 @@
     opacity: var(--june-cell-opacity);
   }
 
-  13.393%,
-  31.25% {
+  22.321% {
     opacity: var(--june-cell-peak-opacity);
   }
 }
 
-/* lg: the same 500ms brightening inside a 1.24s cycle, with closer diagonals. */
+/* lg: the same 500ms bell inside a 1.24s cycle, with closer diagonals. */
 @keyframes june-sweep-lg {
   0%,
   40.323%,
@@ -131,15 +130,14 @@
     opacity: var(--june-cell-opacity);
   }
 
-  12.097%,
-  28.226% {
+  20.161% {
     opacity: var(--june-cell-peak-opacity);
   }
 }
 
-/* The light swell that rides with the brightness: rest at full size, pop to the
- * cell's peak scale across the same window, then settle. The grid holds steady
- * between passes because rest is always scale 1. */
+/* The light swell rides the same bell: rest at full size, ease to the cell's
+ * peak scale at the midpoint, and ease back. The grid holds steady between
+ * passes because rest is always scale 1. */
 @keyframes june-scale-sm {
   0%,
   44.643%,
@@ -147,8 +145,7 @@
     transform: scale(1);
   }
 
-  13.393%,
-  31.25% {
+  22.321% {
     transform: scale(var(--june-cell-swell));
   }
 }
@@ -160,8 +157,7 @@
     transform: scale(1);
   }
 
-  12.097%,
-  28.226% {
+  20.161% {
     transform: scale(var(--june-cell-swell));
   }
 }

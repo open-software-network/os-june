@@ -83,24 +83,17 @@ describe("June spinner grid", () => {
     // The mark must always outrank the field: field peak stays below mark rest.
     expect(spinnerCss).toContain("--june-off: 0.44;");
     expect(spinnerCss).toContain("--june-field-peak: 0.26;");
-    // The brightness envelope rests at the loop boundary and holds a broad peak.
+    // The brightness envelope rests at the loop boundary and peaks once at the
+    // midpoint — a smooth bell, not a plateau, so the crest glides.
     expect(smSweep).toMatch(/0%,\s*44\.643%,\s*100%\s*{[^}]*opacity: var\(--june-cell-opacity\)/s);
-    expect(smSweep).toMatch(
-      /13\.393%,\s*31\.25%\s*{[^}]*opacity: var\(--june-cell-peak-opacity\)/s,
-    );
+    expect(smSweep).toMatch(/22\.321%\s*{[^}]*opacity: var\(--june-cell-peak-opacity\)/s);
     expect(lgSweep).toMatch(/0%,\s*40\.323%,\s*100%\s*{[^}]*opacity: var\(--june-cell-opacity\)/s);
-    expect(lgSweep).toMatch(
-      /12\.097%,\s*28\.226%\s*{[^}]*opacity: var\(--june-cell-peak-opacity\)/s,
-    );
-    // The swell rides the same window and returns to a steady scale 1 at rest.
+    expect(lgSweep).toMatch(/20\.161%\s*{[^}]*opacity: var\(--june-cell-peak-opacity\)/s);
+    // The swell rides the same bell and returns to a steady scale 1 at rest.
     expect(smScale).toMatch(/0%,\s*44\.643%,\s*100%\s*{[^}]*transform: scale\(1\)/s);
-    expect(smScale).toMatch(
-      /13\.393%,\s*31\.25%\s*{[^}]*transform: scale\(var\(--june-cell-swell\)\)/s,
-    );
+    expect(smScale).toMatch(/22\.321%\s*{[^}]*transform: scale\(var\(--june-cell-swell\)\)/s);
     expect(lgScale).toMatch(/0%,\s*40\.323%,\s*100%\s*{[^}]*transform: scale\(1\)/s);
-    expect(lgScale).toMatch(
-      /12\.097%,\s*28\.226%\s*{[^}]*transform: scale\(var\(--june-cell-swell\)\)/s,
-    );
+    expect(lgScale).toMatch(/20\.161%\s*{[^}]*transform: scale\(var\(--june-cell-swell\)\)/s);
     expect(spinnerCss).toContain("animation-name: june-sweep-lg, june-scale-lg;");
     expect(spinnerCss).toContain("var(--june-order) * var(--june-frame)");
     expect(spinnerCss).toContain('.dot-spinner[data-size="md"]');
