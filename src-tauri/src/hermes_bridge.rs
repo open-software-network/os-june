@@ -7010,6 +7010,19 @@ fn linear_read_server_account(account: &crate::connectors::ConnectorAccount) -> 
         && !account.selected_teams.is_empty()
 }
 
+/// True when this account should back the `june_linear_actions` write server:
+/// a read-eligible workspace that ALSO holds the `write` scope. A read-only
+/// connect (the default bundle) must not register the write tools, or the
+/// user would be asked to approve mutations Linear is guaranteed to reject.
+/// They add write access through the settings "add access" flow.
+fn linear_actions_server_account(account: &crate::connectors::ConnectorAccount) -> bool {
+    linear_read_server_account(account)
+        && account
+            .scopes
+            .iter()
+            .any(|scope| scope == crate::connectors::scopes::LINEAR_WRITE)
+}
+
 /// Writes the connector MCP scripts and returns their configs: the four
 /// Gmail/Calendar servers when a Google account is connected, and the
 /// `june_linear` read server when a Linear workspace is connected with at
@@ -7050,6 +7063,13 @@ async fn sync_june_connector_mcps(
     let linear_workspace_id = accounts
         .iter()
         .find(|account| linear_read_server_account(account))
+        .map(|account| account.account_id.clone());
+    // The write server has a stricter gate than the read server: it also
+    // requires the `write` scope, so a read-only connect never offers write
+    // tools that would fail upstream.
+    let linear_actions_workspace_id = accounts
+        .iter()
+        .find(|account| linear_actions_server_account(account))
         .map(|account| account.account_id.clone());
 
     // Earned-autonomy grants: one auto MCP server per row. Re-queried on every
@@ -7126,9 +7146,9 @@ async fn sync_june_connector_mcps(
             linear: linear_workspace_id
                 .as_deref()
                 .map(|workspace_id| connector_config(&linear_read_path, workspace_id)),
-            // Same gate as the read server: writes are only offered where
-            // there is a selected-team grant to write within.
-            linear_actions: linear_workspace_id
+            // Stricter gate than the read server: the write scope is also
+            // required, so a read-only workspace never offers write tools.
+            linear_actions: linear_actions_workspace_id
                 .as_deref()
                 .map(|workspace_id| connector_config(&linear_actions_path, workspace_id)),
         })
@@ -14774,6 +14794,35 @@ mcp_servers:
             crate::connectors::ConnectorAccountStatus::Connected,
             vec![team],
         )));
+    }
+
+    #[test]
+    fn linear_actions_server_additionally_requires_the_write_scope() {
+        let account = |scopes: Vec<String>| -> crate::connectors::ConnectorAccount {
+            crate::connectors::ConnectorAccount {
+                account_id: "linear-workspace-1".to_string(),
+                provider: crate::connectors::ConnectorProvider::Linear,
+                email: String::new(),
+                scopes,
+                status: crate::connectors::ConnectorAccountStatus::Connected,
+                workspace_name: Some("Acme".to_string()),
+                workspace_url_key: Some("acme".to_string()),
+                selected_teams: vec![crate::connectors::SelectedTeamDto {
+                    id: "team-1".to_string(),
+                    key: "ENG".to_string(),
+                    name: "Engineering".to_string(),
+                }],
+            }
+        };
+        // Read-only connect: the read server registers but the write server
+        // does not, so the user is never asked to approve a doomed mutation.
+        let read_only = account(vec!["read".to_string()]);
+        assert!(linear_read_server_account(&read_only));
+        assert!(!linear_actions_server_account(&read_only));
+        // Read + write: both servers register.
+        let read_write = account(vec!["read".to_string(), "write".to_string()]);
+        assert!(linear_read_server_account(&read_write));
+        assert!(linear_actions_server_account(&read_write));
     }
 
     #[test]

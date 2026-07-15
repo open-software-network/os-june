@@ -1597,8 +1597,13 @@ pub struct LinearProjectUpdate {
     pub url: String,
 }
 
+// The project's teams gate the post-fetch grant check, so this cap is a
+// grant boundary, not a display limit: it must be high enough that a granted
+// team never sits past it and gets a project wrongly DENIED. 50 covers any
+// realistic project (fail-closed direction, so the residual risk is only a
+// wrongly-denied read of a project spanning 50+ teams, never a leak).
 const LIST_PROJECT_UPDATES_QUERY: &str = "query ProjectUpdates($id: String!, $first: Int!) \
-     { project(id: $id) { teams(first: 10) { nodes { id } } \
+     { project(id: $id) { teams(first: 50) { nodes { id } } \
      projectUpdates(first: $first) { nodes { id user { name } body health createdAt url } } } }";
 
 #[derive(Deserialize)]
