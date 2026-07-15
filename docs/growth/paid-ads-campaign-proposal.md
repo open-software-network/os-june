@@ -421,6 +421,7 @@ must freeze every item below before launch:
 | Aggregation threshold | Planning assumption | Freeze the minimum reportable cohort size and suppression rule for every output; no gate may rely on a suppressed or under-threshold cell |
 | Paid Plan treatment | Planning assumption | Define how Plan starts, upgrades, refunds, cancellations, and promotional periods become net matured incremental paid Plan starts |
 | Contribution recovery model | Planning assumption | Freeze the monthly retention curve, expected lifetime, cancellation and refund treatment, promotion and credit treatment, contribution margin, and conservative recovery bound |
+| Shared-cost allocation | Planning assumption | Before results are visible, pre-register how shared external campaign cash and fully loaded internal costs are allocated to campaign tiers, tranches, cells, and increments; cell CAC and payback must be executable and no cost may move post hoc |
 | Referral treatment | Planning assumption | Identify referrals in aggregate, report them separately, and exclude them from every paid-media numerator and acquisition-cost result |
 | Retention and deletion | Planning assumption | Set purpose-limited retention through the last maturity window and a verified deletion schedule for cohort keys and vendor data |
 | Access | Planning assumption | Name the privacy reviewer who controls aggregate production and limit Growth and Finance to thresholded scorecard outputs, never person rows |
@@ -671,14 +672,46 @@ cash caps do not change.
 The first $500 is the pre-defined seed. The second $500 may release only when
 measurement is computable, no stop, privacy, policy, or brand issue exists, the
 first seed did not reach the frozen sample, and Growth, Finance, and the privacy
-reviewer approve. Any release beyond the cumulative $1,000 seed requires named
-approval from Growth, Finance, and the privacy reviewer, alongside evidence that
-the cell reached the fixed Phase 0 sample and passed cost per completed Free,
-seven-day activation, matured campaign cash economics, and retention-aware fully
-loaded contribution economics under the pre-registered uncertainty rule. After
-$1,000, no additional funds release until every cell gate and named approval
-passes. Creative variants stay nested within the cell; otherwise, its funds
-remain reserved.
+reviewer approve.
+
+### Post-seed new-cell release increments
+
+After the two $500 seed releases reach their cumulative $1,000 maximum, every
+post-seed new-cell media release is a maximum $1,000 increment drawn from the
+current tranche's existing reserve. It is not added to a campaign, tranche,
+reserve, cell, or geographic cap. Treat the completed $1,000 seed as the prior
+increment when evaluating the first post-seed release.
+
+Before releasing the next increment, every condition below must pass:
+
+- **Planning assumption:** At least 80% of the prior increment received valid
+  exposure under the approved measurement contract.
+- **Planning assumption:** The prior increment's cohort matured through its
+  60-day and approved refund/cancellation windows.
+- **Planning assumption:** Both the prior increment independently and the
+  cumulative cell pass every frozen cell gate under the pre-registered
+  conservative uncertainty rule.
+- **Planning assumption:** Fixed cell and cohort samples are met. The lower
+  bound for click-to-completed-Free is at least 6%, the upper bound for cost per
+  completed Free is no more than $50, and every compared wedge has at least 300
+  paid clicks.
+- **Planning assumption:** The lower bound for seven-day first-value activation
+  is at least 25% after at least 20 completed Free accounts mature for seven
+  days, and the lower bound for 60-day Free-to-paid conversion is at least 8%.
+- **Planning assumption:** The upper bound for campaign cash CAC meets the
+  applicable campaign-tier ceiling: $400 in Growth or $300 in Scale.
+- **Planning assumption:** The conservative bound reaches retention-aware
+  cumulative expected contribution recovery by the applicable deadline: month
+  18 in Growth or month 12 in Scale. Any applicable Plan-mix gate also passes.
+- **Planning assumption:** Every required measurement is computable and no
+  unresolved privacy, policy, misleading-copy, or brand issue exists.
+- **Planning assumption:** Growth, Finance, and the privacy reviewer each
+  re-approve this single increment.
+
+A stopped, underexposed, suppressed, contaminated, or unmeasurable prior
+increment or cumulative cell scope fails and cannot release more media. No
+single approval releases multiple increments or the remaining reserve. Creative
+variants stay nested within the cell; otherwise, its funds remain reserved.
 
 ### Stop and pause rules
 
