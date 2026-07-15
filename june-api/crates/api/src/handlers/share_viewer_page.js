@@ -17,7 +17,6 @@
     statusEl.hidden = false;
     statusEl.textContent = text;
     statusEl.className = isError ? "error" : "";
-    document.getElementById("prompt").hidden = true;
     document.getElementById("passcode").hidden = true;
     document.getElementById("content").hidden = true;
   }
@@ -243,27 +242,8 @@
     content.hidden = false;
   }
 
-  function maybeShowPrompt(shareId, payload, done) {
-    var seenKey = "june_share_seen_" + shareId;
-    var seen = false;
-    try { seen = localStorage.getItem(seenKey) === "1"; } catch (error) { seen = false; }
-    if (seen) { done(); return; }
-    var prompt = document.getElementById("prompt");
-    statusEl.hidden = true;
-    var kindLabel = payload.kind === "session" ? "session" : "meeting note";
-    var owner = payload.owner_name || "Someone";
-    document.getElementById("prompt-title").textContent =
-      owner + " shared this " + kindLabel + " with you";
-    prompt.hidden = false;
-    document.getElementById("prompt-later").addEventListener("click", function () {
-      try { localStorage.setItem(seenKey, "1"); } catch (error) { /* private mode */ }
-      prompt.hidden = true;
-      done();
-    });
-  }
-
   // ── Main flow ─────────────────────────────────────────────────────────────
-  async function decryptLinkData(shareId, data, linkKey) {
+  async function decryptLinkData(data, linkKey) {
     var contentKey = await aesGcmDecrypt(
       linkKey,
       b64Decode(data.envelopeIvB64),
@@ -276,7 +256,7 @@
     );
     var payload = JSON.parse(new TextDecoder().decode(plaintext));
     document.getElementById("passcode").hidden = true;
-    maybeShowPrompt(shareId, payload, function () { showContent(payload); });
+    showContent(payload);
   }
 
   async function viewLinkShare(shareId, fragment) {
@@ -310,7 +290,7 @@
     if (parts[2] === "key") {
       if (material.length !== 32) throw new Error("invalid link key");
       try {
-        await decryptLinkData(shareId, data, material);
+        await decryptLinkData(data, material);
       } catch (error) {
         showStatus("This link's key doesn't match its content.", true);
       }
@@ -329,7 +309,7 @@
       errorEl.hidden = true;
       try {
         var linkKey = await derivePasscodeKey(input.value, material);
-        await decryptLinkData(shareId, data, linkKey);
+        await decryptLinkData(data, linkKey);
       } catch (error) {
         errorEl.textContent = "That passcode didn't work.";
         errorEl.hidden = false;
@@ -403,7 +383,7 @@
       );
       return;
     }
-    maybeShowPrompt(shareId, payload, function () { showContent(payload); });
+    showContent(payload);
   }
 
   function main() {

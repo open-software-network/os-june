@@ -9,27 +9,21 @@
 </head>
 <body data-accounts-url="__ACCOUNTS_URL__" data-client-id="__CLIENT_ID__">
 <header id="topbar" hidden>
-  <span id="topbar-title">Shared with June</span>
-  <a id="download-cta" href="https://june.opensoftware.co" rel="noreferrer">Download June</a>
+  <span id="topbar-title">June</span>
+  <a id="download-cta" href="https://june.opensoftware.co" rel="noreferrer">Get June</a>
 </header>
 <main id="main">
   <section id="status" role="status">Loading&hellip;</section>
   <section id="passcode" hidden>
-    <h1>Enter passcode</h1>
-    <p>This encrypted link requires the passcode shared with you.</p>
+    <p class="eyebrow">Private share</p>
+    <h1>Passcode required</h1>
+    <p class="passcode-copy">Enter the passcode the sender shared with you.</p>
     <form id="passcode-form">
-      <input id="passcode-input" type="password" autocomplete="current-password" required>
-      <button type="submit">View shared item</button>
+      <label for="passcode-input">Passcode</label>
+      <input id="passcode-input" type="password" autocomplete="current-password" autofocus required>
+      <button type="submit">Continue</button>
     </form>
     <p id="passcode-error" role="alert" hidden></p>
-  </section>
-  <section id="prompt" hidden>
-    <h1 id="prompt-title">Someone shared this with you</h1>
-    <p id="prompt-sub">View it here, or open it in June for the full experience.</p>
-    <div id="prompt-actions">
-      <a id="prompt-download" href="https://june.opensoftware.co" rel="noreferrer">Download June</a>
-      <button id="prompt-later" type="button">Maybe later</button>
-    </div>
   </section>
   <article id="content" hidden>
     <h1 id="content-title"></h1>
