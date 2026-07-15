@@ -9593,16 +9593,16 @@ async fn dispatch_connector_route(
             Ok(serde_json::json!({ "teams": teams }))
         }
         "/v1/linear/list_users" => {
-            // Workspace-level directory data (spec decision 3): the listing
-            // is not scoped by the selected-teams grant, and the summaries
-            // carry no emails (decision 4). The grant is still loaded first
-            // so an empty selection fails closed like every other route -
-            // the registration gate makes that unreachable in practice, but
-            // "no teams selected means no reads" holds without exception.
-            let _granted = crate::connectors::linear_granted_team_ids(app, account_id).await?;
+            // Scoped to the selected-team boundary: the members of the
+            // account's selected teams, deduped, with no emails. The grant is
+            // loaded fail-closed (empty selection errors like every other
+            // route) and passed through so the listing never reaches beyond
+            // the boundary into the workspace directory.
+            let granted = crate::connectors::linear_granted_team_ids(app, account_id).await?;
             let first = body_u32(body, "first");
-            let users = connector_linear_call(app, account_id, |token| async move {
-                crate::connectors::linear::list_users(&token, first).await
+            let users = connector_linear_call(app, account_id, |token| {
+                let granted = granted.clone();
+                async move { crate::connectors::linear::list_users(&token, &granted, first).await }
             })
             .await?;
             Ok(serde_json::json!({ "users": connector_json(users)? }))

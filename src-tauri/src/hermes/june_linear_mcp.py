@@ -80,9 +80,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_users",
         "description": (
-            "List the Linear workspace's members as a directory (names "
-            "only, no emails). Returns id, name, display name, and active "
-            "status. " + INJECTION_WARNING
+            "List the members of your selected teams (names only, no "
+            "emails). Returns id, name, display name, and active status. "
+            "A user on more than one selected team appears once. "
+            + INJECTION_WARNING
         ),
         "inputSchema": {
             "type": "object",
@@ -92,7 +93,7 @@ TOOLS: list[dict[str, Any]] = [
                     "minimum": 1,
                     "maximum": USERS_MAX,
                     "default": USERS_DEFAULT,
-                    "description": "How many members to return.",
+                    "description": "How many members to return per selected team.",
                 },
             },
             "required": [],
@@ -135,9 +136,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_initiatives",
         "description": (
-            "List workspace initiatives, each with the projects under it "
-            "that belong to the user's selected teams. Initiatives "
-            "themselves are workspace-level directory data. "
+            "List initiatives that include at least one of your selected "
+            "teams' projects, each with only those in-scope projects. "
+            "Initiatives with no project on a selected team are omitted. "
             + INJECTION_WARNING
         ),
         "inputSchema": {

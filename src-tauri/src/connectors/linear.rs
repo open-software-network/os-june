@@ -710,8 +710,11 @@ pub async fn list_teams(access_token: &str) -> Result<LinearTeamsListing, Linear
 // rather than routed through a named constant + GraphQL variable the way
 // [`TEAMS_PAGE_SIZE`] is above: each such literal appears in exactly one
 // query string, so there is nothing for it to drift from.
-const USERS_PAGE_DEFAULT: u32 = 50;
-const USERS_PAGE_MAX: u32 = 100;
+/// Per-team member page cap for [`list_users`]. Applied to EACH selected
+/// team's `members` connection, then the unioned set is deduped by id, so a
+/// larger workspace is bounded per team rather than globally.
+const USERS_PAGE_DEFAULT: u32 = 100;
+const USERS_PAGE_MAX: u32 = 250;
 /// A single bounded page, server-filtered to the granted teams (see
 /// [`list_projects`]). Not caller-configurable - directory data stays a
 /// fixed shape, matching [`list_teams`].
@@ -806,9 +809,10 @@ fn ids_from_page(page: Option<IdListPageWire>) -> Vec<String> {
 
 // --- Users -------------------------------------------------------------------------
 
-/// One workspace member as surfaced to the agent. Directory data (spec
-/// decision 3-4): no team scoping, and deliberately NO email field - the
-/// agent has no need for teammate emails and they are personal data.
+/// One member of the account's selected teams, as surfaced to the agent.
+/// Scoped to the selected-team boundary (not the workspace directory), and
+/// deliberately carries NO email field - the agent has no need for teammate
+/// emails and they are personal data.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinearUser {
@@ -818,12 +822,30 @@ pub struct LinearUser {
     pub active: bool,
 }
 
-const LIST_USERS_QUERY: &str = "query Users($first: Int!) \
-     { users(first: $first) { nodes { id name displayName active } } }";
+// `UserFilter` has no team-membership field, so users are scoped by walking
+// the selected teams' `members` connections instead of filtering the
+// workspace-wide `users` root query. `Query.teams(filter: { id: { in } })`
+// selects exactly the granted teams; each `Team.members(first:)` yields that
+// team's members; the results are unioned and deduped by id.
+const LIST_USERS_QUERY: &str = "query TeamMembers($teamIds: [ID!]!, $first: Int!) \
+     { teams(filter: { id: { in: $teamIds } }) \
+     { nodes { members(first: $first) { nodes { id name displayName active } } } } }";
 
 #[derive(Deserialize)]
-struct UsersDataWire {
-    users: UsersPageWire,
+struct TeamMembersDataWire {
+    teams: TeamMembersTeamsWire,
+}
+
+#[derive(Deserialize)]
+struct TeamMembersTeamsWire {
+    #[serde(default)]
+    nodes: Vec<TeamMembersNodeWire>,
+}
+
+#[derive(Deserialize)]
+struct TeamMembersNodeWire {
+    #[serde(default)]
+    members: Option<UsersPageWire>,
 }
 
 #[derive(Deserialize)]
@@ -845,31 +867,54 @@ struct UserWire {
     active: bool,
 }
 
-/// All users in the workspace, one bounded page (no pagination loop - this
-/// is directory data, not a completeness-critical read; a workspace with
-/// more than [`USERS_PAGE_MAX`] members can raise the cap later).
+/// Union the members across the selected teams, deduping by id (a user on
+/// two selected teams appears once) and sorting by name case-insensitively.
+/// The pure fold behind [`list_users`], so the union/dedupe/sort is testable
+/// without HTTP.
+fn union_team_members(teams: Vec<TeamMembersNodeWire>) -> Vec<LinearUser> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut users: Vec<LinearUser> = Vec::new();
+    for team in teams {
+        let Some(members) = team.members else {
+            continue;
+        };
+        for user in members.nodes {
+            if seen.insert(user.id.clone()) {
+                users.push(LinearUser {
+                    id: user.id,
+                    name: user.name,
+                    display_name: user.display_name,
+                    active: user.active,
+                });
+            }
+        }
+    }
+    users.sort_by_key(|user| user.name.to_lowercase());
+    users
+}
+
+/// Members of the account's SELECTED teams (not the workspace directory):
+/// one bounded page of members per granted team, unioned and deduped by id.
+/// `first` caps each team's member page (1..=[`USERS_PAGE_MAX`], default
+/// [`USERS_PAGE_DEFAULT`]). An empty grant returns an empty list without a
+/// request - the same defensive empty-in-list guard as [`list_projects`],
+/// since `id: { in: [] }` could otherwise be read as "no constraint".
 pub async fn list_users(
     access_token: &str,
+    granted_team_ids: &[String],
     first: Option<u32>,
 ) -> Result<Vec<LinearUser>, LinearApiError> {
+    if granted_team_ids.is_empty() {
+        return Ok(Vec::new());
+    }
     let limit = clamp_first(first, USERS_PAGE_DEFAULT, 1, USERS_PAGE_MAX);
-    let data: UsersDataWire = graphql(
+    let data: TeamMembersDataWire = graphql(
         access_token,
         LIST_USERS_QUERY,
-        serde_json::json!({ "first": limit }),
+        serde_json::json!({ "teamIds": granted_team_ids, "first": limit }),
     )
     .await?;
-    Ok(data
-        .users
-        .nodes
-        .into_iter()
-        .map(|user| LinearUser {
-            id: user.id,
-            name: user.name,
-            display_name: user.display_name,
-            active: user.active,
-        })
-        .collect())
+    Ok(union_team_members(data.teams.nodes))
 }
 
 // --- Projects ------------------------------------------------------------------------
@@ -1068,10 +1113,11 @@ pub struct InitiativeProjectRef {
     pub name: String,
 }
 
-/// Workspace-level directory data (spec decision 3): initiatives themselves
-/// carry no team, so every initiative is always returned; only each
-/// initiative's PROJECT list is narrowed to the grant, client side, and an
-/// initiative is kept even when that narrowed list comes back empty.
+/// An initiative that touches the selected-team boundary. Each initiative's
+/// PROJECT list is narrowed to the grant client side, and an initiative
+/// whose narrowed list is empty (no project on any selected team) is dropped
+/// entirely: it lies wholly outside the boundary. Reverses the earlier
+/// workspace-level-directory treatment (slice-2 decisions 3-4).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinearInitiative {
@@ -1128,8 +1174,14 @@ struct InitiativeProjectWire {
     teams: Option<IdListPageWire>,
 }
 
-fn initiative_from_wire(wire: InitiativeWire, granted_team_ids: &[String]) -> LinearInitiative {
-    let projects = wire
+/// Narrow one initiative's project list to the grant, returning `None` when
+/// nothing survives - an initiative with no project on any selected team is
+/// wholly outside the boundary and is dropped, not returned empty.
+fn initiative_from_wire(
+    wire: InitiativeWire,
+    granted_team_ids: &[String],
+) -> Option<LinearInitiative> {
+    let projects: Vec<InitiativeProjectRef> = wire
         .projects
         .map(|page| page.nodes)
         .unwrap_or_default()
@@ -1142,19 +1194,23 @@ fn initiative_from_wire(wire: InitiativeWire, granted_team_ids: &[String]) -> Li
             })
         })
         .collect();
-    LinearInitiative {
+    if projects.is_empty() {
+        return None;
+    }
+    Some(LinearInitiative {
         id: wire.id,
         name: wire.name,
         target_date: wire.target_date,
         status: wire.status,
         projects,
-    }
+    })
 }
 
-/// All workspace initiatives, one bounded page, with each initiative's
-/// project list narrowed to `granted_team_ids` client side (spec decision 3:
-/// initiatives are workspace-level directory data and always returned, but
-/// the projects they link to obey the same grant as everywhere else).
+/// Initiatives that touch the selected-team boundary, one bounded page. Each
+/// initiative's project list is narrowed to `granted_team_ids` client side,
+/// and an initiative with no granted project is dropped entirely - only
+/// initiatives that retain at least one granted project are returned, still
+/// showing just those projects (reverses slice-2 decision 3).
 pub async fn list_initiatives(
     access_token: &str,
     granted_team_ids: &[String],
@@ -1169,7 +1225,7 @@ pub async fn list_initiatives(
         .initiatives
         .nodes
         .into_iter()
-        .map(|initiative| initiative_from_wire(initiative, granted_team_ids))
+        .filter_map(|initiative| initiative_from_wire(initiative, granted_team_ids))
         .collect())
 }
 
@@ -2552,24 +2608,80 @@ mod tests {
         assert_eq!(ids_from_page(Some(page)), vec!["a", "b"]);
     }
 
-    // --- Slice 2: users --------------------------------------------------------------
+    // --- Slice 2 (+ team-boundary revision): users -----------------------------------
 
     #[test]
-    fn list_users_fixture_parses_active_and_inactive_members() {
-        let data: UsersDataWire = serde_json::from_str(
+    fn team_members_fixture_parses_active_and_inactive_members() {
+        let data: TeamMembersDataWire = serde_json::from_str(
             r#"{
-                "users": { "nodes": [
-                    { "id": "u1", "name": "Ada Lovelace", "displayName": "ada", "active": true },
-                    { "id": "u2", "name": "Bea", "displayName": "bea", "active": false }
+                "teams": { "nodes": [
+                    { "members": { "nodes": [
+                        { "id": "u1", "name": "Ada Lovelace", "displayName": "ada", "active": true },
+                        { "id": "u2", "name": "Bea", "displayName": "bea", "active": false }
+                    ] } }
                 ] }
             }"#,
         )
         .expect("fixture");
-        assert_eq!(data.users.nodes.len(), 2);
-        assert_eq!(data.users.nodes[0].id, "u1");
-        assert_eq!(data.users.nodes[0].display_name, "ada");
-        assert!(data.users.nodes[0].active);
-        assert!(!data.users.nodes[1].active);
+        let users = union_team_members(data.teams.nodes);
+        assert_eq!(users.len(), 2);
+        // Sorted by name case-insensitively: "Ada Lovelace" before "Bea".
+        assert_eq!(users[0].id, "u1");
+        assert_eq!(users[0].display_name, "ada");
+        assert!(users[0].active);
+        assert!(!users[1].active);
+    }
+
+    #[test]
+    fn union_team_members_dedupes_across_teams_and_sorts_by_name() {
+        // A member on two selected teams (u-shared) must appear exactly once,
+        // and the union is sorted by name case-insensitively regardless of
+        // which team it arrived from.
+        let data: TeamMembersDataWire = serde_json::from_str(
+            r#"{
+                "teams": { "nodes": [
+                    { "members": { "nodes": [
+                        { "id": "u-shared", "name": "carol", "displayName": "carol", "active": true },
+                        { "id": "u-zeta", "name": "Zeta", "displayName": "zeta", "active": true }
+                    ] } },
+                    { "members": { "nodes": [
+                        { "id": "u-shared", "name": "carol", "displayName": "carol", "active": true },
+                        { "id": "u-alpha", "name": "Alpha", "displayName": "alpha", "active": true }
+                    ] } }
+                ] }
+            }"#,
+        )
+        .expect("fixture");
+        let users = union_team_members(data.teams.nodes);
+        let ids: Vec<&str> = users.iter().map(|u| u.id.as_str()).collect();
+        // Deduped (u-shared once) and sorted: Alpha, carol, Zeta.
+        assert_eq!(ids, vec!["u-alpha", "u-shared", "u-zeta"]);
+    }
+
+    #[test]
+    fn union_team_members_tolerates_a_team_with_no_members_block() {
+        // A team whose `members` came back null contributes nothing rather
+        // than panicking.
+        let data: TeamMembersDataWire = serde_json::from_str(
+            r#"{ "teams": { "nodes": [ { "members": null }, { "members": { "nodes": [
+                { "id": "u1", "name": "Ada", "displayName": "ada", "active": true }
+            ] } } ] } }"#,
+        )
+        .expect("fixture");
+        let users = union_team_members(data.teams.nodes);
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].id, "u1");
+    }
+
+    #[tokio::test]
+    async fn list_users_empty_grant_returns_empty_without_a_request() {
+        // The empty-in-list guard: an empty grant returns Ok(vec![]) before
+        // any network call, so `id: { in: [] }` never reaches Linear. The
+        // dummy token is never used because the guard short-circuits first.
+        let users = list_users("unused-token", &[], None)
+            .await
+            .expect("empty grant is not an error");
+        assert!(users.is_empty());
     }
 
     // --- Slice 2: projects -------------------------------------------------------------
@@ -2633,10 +2745,10 @@ mod tests {
         assert!(data.team.is_none());
     }
 
-    // --- Slice 2: initiatives ------------------------------------------------------
+    // --- Slice 2 (+ team-boundary revision): initiatives -----------------------------
 
     #[test]
-    fn initiative_from_wire_filters_projects_to_the_grant_but_keeps_the_initiative() {
+    fn initiative_from_wire_narrows_projects_and_keeps_a_partially_granted_initiative() {
         let wire: InitiativeWire = serde_json::from_str(
             r#"{
                 "id": "i1",
@@ -2651,13 +2763,19 @@ mod tests {
         )
         .expect("fixture");
         let granted = vec!["team-1".to_string()];
-        let initiative = initiative_from_wire(wire, &granted);
+        let initiative =
+            initiative_from_wire(wire, &granted).expect("partially-granted initiative kept");
         assert_eq!(initiative.id, "i1");
+        // Only the granted project survives the narrowing.
         assert_eq!(initiative.projects.len(), 1);
         assert_eq!(initiative.projects[0].id, "p1");
+    }
 
-        // An empty grant zeroes out the project list but the initiative itself
-        // (workspace-level directory data) is still returned.
+    #[test]
+    fn initiative_from_wire_drops_a_fully_out_of_grant_initiative() {
+        // An initiative whose every project is outside the grant is entirely
+        // outside the boundary and is dropped (reverses the earlier
+        // keep-even-when-empty behavior).
         let wire: InitiativeWire = serde_json::from_str(
             r#"{
                 "id": "i2",
@@ -2668,9 +2786,20 @@ mod tests {
             }"#,
         )
         .expect("fixture");
-        let initiative = initiative_from_wire(wire, &[]);
-        assert_eq!(initiative.id, "i2");
-        assert!(initiative.projects.is_empty());
+        assert!(initiative_from_wire(wire, &["team-1".to_string()]).is_none());
+
+        // An empty grant drops every initiative.
+        let wire: InitiativeWire = serde_json::from_str(
+            r#"{
+                "id": "i3",
+                "name": "Anything",
+                "projects": { "nodes": [
+                    { "id": "p4", "name": "P", "teams": { "nodes": [ { "id": "team-1" } ] } }
+                ] }
+            }"#,
+        )
+        .expect("fixture");
+        assert!(initiative_from_wire(wire, &[]).is_none());
     }
 
     // --- Slice 2: issue search -------------------------------------------------------
