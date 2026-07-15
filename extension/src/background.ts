@@ -9,13 +9,15 @@ import {
   type PairingEvent,
   type PairingState,
 } from "./pairing";
-import { NATIVE_HOST_NAME } from "./protocol";
-import { parseBrowserRequest } from "./protocol";
+import { NATIVE_HOST_NAME, parseBrowserRequest, PROTOCOL_VERSION } from "./protocol";
 import { BrowserController, withRequestId } from "./browser";
 
 let port: chrome.runtime.Port | null = null;
 let state: PairingState = initialPairingState;
-const browser = new BrowserController();
+const browser = new BrowserController((tabId) => {
+  if (state.status !== "paired" || !port) return;
+  port.postMessage({ v: PROTOCOL_VERSION, type: "tab_share_revoked", tabId });
+});
 
 function extensionVersion(): string {
   return chrome.runtime.getManifest().version;
@@ -85,6 +87,49 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "reconnect") {
     connect();
     sendResponse(state);
+    return;
+  }
+  if (message?.type === "getTabShareState") {
+    const tabId = message.tabId;
+    sendResponse(
+      typeof tabId === "number"
+        ? {
+            success: true,
+            state: browser.shareState(tabId),
+            shareId: browser.pendingShareId(tabId),
+          }
+        : { success: false, message: "No active browser tab was found." },
+    );
+    return;
+  }
+  if (message?.type === "shareTab") {
+    const tabId = message.tabId;
+    if (state.status !== "paired") {
+      sendResponse({ success: false, message: "Connect the June app before sharing a tab." });
+      return;
+    }
+    try {
+      if (typeof tabId !== "number") throw new Error("No active browser tab was found.");
+      const shareId = browser.offerTab(tabId);
+      sendResponse({ success: true, shareId });
+    } catch (error) {
+      sendResponse({
+        success: false,
+        message: error instanceof Error ? error.message : "The tab could not be shared.",
+      });
+    }
+    return;
+  }
+  if (message?.type === "revokeTabShare") {
+    const tabId = message.tabId;
+    if (typeof tabId !== "number") {
+      sendResponse({ success: false, message: "No active browser tab was found." });
+      return;
+    }
+    void browser.revokeSharedTab(tabId).then((revoked) => {
+      sendResponse({ success: revoked, state: browser.shareState(tabId) });
+    });
+    return true;
   }
 });
 

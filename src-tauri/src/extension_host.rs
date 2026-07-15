@@ -35,7 +35,7 @@ use crate::domain::types::AppError;
 /// Bump when the message contract changes incompatibly. The extension pins
 /// its own copy in `extension/src/protocol.ts`; `hello` negotiation compares
 /// the two.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The extension id pinned by the `key` field in `extension/manifest.json`.
 /// Regenerate both together with `node extension/scripts/generate-key.mjs`.
@@ -339,6 +339,14 @@ impl ExtensionHost {
         }
     }
 
+    fn is_paired_connection(&self, connection_id: u64) -> bool {
+        self.shared
+            .lock()
+            .expect("extension host state poisoned")
+            .paired_connection
+            == Some(connection_id)
+    }
+
     pub(crate) async fn request(
         &self,
         tool: &str,
@@ -599,6 +607,14 @@ async fn handle_connection(
             }
         };
         if host.handle_extension_frame(connection_id, &frame) {
+            continue;
+        }
+        if message_type(&frame) == Some("tab_share_revoked")
+            && host.is_paired_connection(connection_id)
+        {
+            if let Some(tab_id) = frame.get("tabId").and_then(Value::as_i64) {
+                crate::hermes_bridge::release_shared_browser_tab(&app, tab_id);
+            }
             continue;
         }
         let reply = match message_type(&frame) {

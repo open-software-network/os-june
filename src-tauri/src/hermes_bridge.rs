@@ -3655,6 +3655,11 @@ pub fn shutdown(app: &tauri::AppHandle) {
     }
 }
 
+pub(crate) fn release_shared_browser_tab(app: &tauri::AppHandle, tab_id: i64) {
+    let bridge = app.state::<HermesBridge>();
+    bridge.browser_broker.release_tab(tab_id);
+}
+
 /// Sends a dashboard API request to any live runtime process, sandboxed
 /// first. Sessions, skills, and platform state all live in the shared
 /// Hermes home, so either process answers these identically.
@@ -9984,7 +9989,8 @@ async fn handle_browser_execute(
         Err(error) => {
             let status = match error.code.as_str() {
                 "browser_access_disabled" | "browser_context_unknown" => 403,
-                "browser_session_not_found" | "tab_not_owned" => 404,
+                "browser_session_not_found" | "tab_not_owned" | "share_not_found" => 404,
+                "tab_already_owned" => 409,
                 "not_implemented" | "browser_tool_unavailable" => 501,
                 "browser_session_limit" => 429,
                 "invalid_arguments"

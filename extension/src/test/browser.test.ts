@@ -1,11 +1,59 @@
-import { describe, expect, it } from "vitest";
-import { browserFailureResponse, chunkBytes, TaskTabRegistry } from "../browser";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  BrowserController,
+  browserFailureResponse,
+  chunkBytes,
+  PendingShareRegistry,
+  TaskTabRegistry,
+} from "../browser";
+import { type BrowserRequestMessage, PROTOCOL_VERSION } from "../protocol";
+
+function browserRequest(
+  id: number,
+  tool: BrowserRequestMessage["tool"],
+  arguments_: Record<string, unknown>,
+): BrowserRequestMessage {
+  return { v: PROTOCOL_VERSION, type: "request", id, tool, arguments: arguments_ };
+}
+
+function chromeHarness() {
+  const tabs = new Map<number, { id: number; title: string; url: string }>([
+    [10, { id: 10, title: "User tab", url: "https://example.com" }],
+    [11, { id: 11, title: "Other tab", url: "https://private.example" }],
+  ]);
+  const attach = vi.fn().mockResolvedValue(undefined);
+  const detach = vi.fn().mockResolvedValue(undefined);
+  const remove = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("chrome", {
+    debugger: {
+      attach,
+      detach,
+      sendCommand: vi.fn().mockResolvedValue({}),
+      onEvent: { addListener: vi.fn() },
+      onDetach: { addListener: vi.fn() },
+    },
+    tabs: {
+      get: vi.fn(async (tabId: number) => {
+        const tab = tabs.get(tabId);
+        if (!tab) throw new Error("missing tab");
+        return tab;
+      }),
+      remove,
+      onRemoved: { addListener: vi.fn() },
+      onUpdated: { addListener: vi.fn() },
+    },
+    tabGroups: { onUpdated: { addListener: vi.fn() } },
+  });
+  return { attach, detach, remove };
+}
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("task tab registry", () => {
   it("refuses tabs outside the broker session", () => {
     const registry = new TaskTabRegistry();
     registry.start("session-a");
-    registry.add("session-a", 10);
+    registry.addCreated("session-a", 10);
     expect(() => registry.tab("session-a", 11)).toThrow(/not owned/);
     expect(() => registry.tab("session-b", 10)).toThrow(/not found/);
   });
@@ -13,7 +61,7 @@ describe("task tab registry", () => {
   it("expires snapshot refs on navigation or mutation", () => {
     const registry = new TaskTabRegistry();
     registry.start("session-a");
-    registry.add("session-a", 10);
+    registry.addCreated("session-a", 10);
     expect(registry.setRefs("session-a", 10, 0, ["e0:n20"])).toBe(true);
     expect(registry.acceptsRef("session-a", 10, "e0:n20")).toBe(true);
     expect(registry.invalidate("session-a", 10)).toBe(1);
@@ -25,18 +73,117 @@ describe("task tab registry", () => {
     const registry = new TaskTabRegistry();
     registry.start("one");
     registry.start("two");
-    registry.add("one", 1);
-    registry.add("two", 2);
+    registry.addCreated("one", 1);
+    registry.addShared("two", 2);
     expect(registry.cleanupPlan().sort()).toEqual([1, 2]);
   });
 
   it("forgets an empty tab group so a later task tab can create a new one", () => {
     const registry = new TaskTabRegistry();
     registry.start("session-a");
-    registry.add("session-a", 10);
+    registry.addCreated("session-a", 10);
     registry.session("session-a").groupId = 42;
     registry.removeTab("session-a", 10);
     expect(registry.session("session-a").groupId).toBeUndefined();
+  });
+
+  it("keeps shared tabs out of the close plan at task end", () => {
+    const registry = new TaskTabRegistry();
+    registry.start("session-a");
+    registry.addCreated("session-a", 10);
+    registry.addShared("session-a", 11);
+    expect(registry.removeSession("session-a")).toEqual({ created: [10], shared: [11] });
+  });
+
+  it("does not let the same tab belong to two tasks", () => {
+    const registry = new TaskTabRegistry();
+    registry.start("session-a");
+    registry.start("session-b");
+    registry.addShared("session-a", 10);
+    expect(() => registry.addShared("session-b", 10)).toThrow(/already belongs/);
+  });
+});
+
+describe("explicit tab shares", () => {
+  it("mints a one-use offer for only the selected tab", () => {
+    const shares = new PendingShareRegistry();
+    expect(shares.offer(10, "share-a")).toBe("share-a");
+    expect(shares.hasTab(10)).toBe(true);
+    expect(shares.hasTab(11)).toBe(false);
+    expect(shares.consume("share-a")).toBe(10);
+    expect(() => shares.consume("share-a")).toThrow(/not found or has expired/);
+  });
+
+  it("revokes pending offers by tab", () => {
+    const shares = new PendingShareRegistry();
+    shares.offer(10, "share-a");
+    expect(shares.revokeTab(10)).toBe(true);
+    expect(() => shares.consume("share-a")).toThrow(/not found or has expired/);
+  });
+
+  it("attaches only the offered tab and returns it untouched at task end", async () => {
+    const { attach, detach, remove } = chromeHarness();
+    const controller = new BrowserController();
+    const shareId = controller.offerTab(10);
+
+    await expect(
+      controller.execute(browserRequest(1, "start_session", { session_id: "task" })),
+    ).resolves.toMatchObject({ response: { success: true } });
+    await expect(
+      controller.execute(
+        browserRequest(2, "accept_shared_tab", { session_id: "task", share_id: shareId }),
+      ),
+    ).resolves.toMatchObject({ response: { success: true, data: { tabId: 10, shared: true } } });
+    expect(attach).toHaveBeenCalledWith({ tabId: 10 }, "1.3");
+    expect(controller.registry.find(11)).toBeNull();
+
+    await controller.execute(browserRequest(3, "close_session", { session_id: "task" }));
+    expect(detach).toHaveBeenCalledWith({ tabId: 10 });
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("revokes an accepted share without closing the user's tab", async () => {
+    const { detach, remove } = chromeHarness();
+    const released = vi.fn();
+    const controller = new BrowserController(released);
+    const shareId = controller.offerTab(10);
+    await controller.execute(browserRequest(1, "start_session", { session_id: "task" }));
+    await controller.execute(
+      browserRequest(2, "accept_shared_tab", { session_id: "task", share_id: shareId }),
+    );
+
+    await expect(controller.revokeSharedTab(10)).resolves.toBe(true);
+    expect(controller.registry.find(10)).toBeNull();
+    expect(detach).toHaveBeenCalledWith({ tabId: 10 });
+    expect(remove).not.toHaveBeenCalled();
+    expect(released).toHaveBeenCalledWith(10);
+  });
+
+  it("keeps revoke authoritative while debugger attachment is in flight", async () => {
+    const { attach, remove } = chromeHarness();
+    let finishAttach: (() => void) | undefined;
+    attach.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishAttach = resolve;
+        }),
+    );
+    const controller = new BrowserController();
+    const shareId = controller.offerTab(10);
+    await controller.execute(browserRequest(1, "start_session", { session_id: "task" }));
+    const accepting = controller.execute(
+      browserRequest(2, "accept_shared_tab", { session_id: "task", share_id: shareId }),
+    );
+    await vi.waitFor(() => expect(controller.registry.find(10)).not.toBeNull());
+
+    await controller.revokeSharedTab(10);
+    finishAttach?.();
+
+    await expect(accepting).resolves.toMatchObject({
+      response: { success: false, errorCode: "share_revoked" },
+    });
+    expect(controller.registry.find(10)).toBeNull();
+    expect(remove).not.toHaveBeenCalled();
   });
 });
 

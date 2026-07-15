@@ -279,6 +279,14 @@ impl BrowserBroker {
         self.lock().sessions.len()
     }
 
+    pub(crate) fn release_tab(&self, tab_id: i64) -> bool {
+        let mut released = false;
+        for session in self.lock().sessions.values_mut() {
+            released |= session.tabs.remove(&tab_id);
+        }
+        released
+    }
+
     fn require_enabled(&self) -> Result<(), AppError> {
         if self.is_enabled() {
             Ok(())
@@ -330,10 +338,7 @@ impl BrowserBroker {
         }
         match kind {
             BrowserTransportKind::Attended
-                if matches!(
-                    tool,
-                    "click" | "fill" | "press" | "back" | "accept_shared_tab"
-                ) =>
+                if matches!(tool, "click" | "fill" | "press" | "back") =>
             {
                 return Err(AppError::new(
                     "not_implemented",
@@ -443,6 +448,9 @@ impl BrowserBroker {
         if tool == "navigate" && kind == BrowserTransportKind::Attended {
             validate_attended_url(required_string(&arguments, "url")?)?;
         }
+        if tool == "accept_shared_tab" {
+            required_string(&arguments, "share_id")?;
+        }
 
         // Managed sessions have one page and no task-tab surface. Their
         // navigate path deliberately bypasses the attended URL check: the
@@ -451,7 +459,7 @@ impl BrowserBroker {
             return self.finish_response(transport.execute(tool, arguments).await?);
         }
 
-        if tool == "open_tab" {
+        if matches!(tool, "open_tab" | "accept_shared_tab") {
             let response = transport.execute(tool, arguments.clone()).await?;
             let tab_id = response
                 .data
@@ -487,7 +495,7 @@ impl BrowserBroker {
                     .await;
                 return Err(AppError::new(
                     "extension_tab_collision",
-                    "The extension returned a tab id that cannot be owned by this session.",
+                    "The extension returned a tab id that cannot belong to this session.",
                 ));
             }
             return Ok(response.data);
@@ -648,6 +656,8 @@ fn extension_request_error(message: String, response: &Value) -> AppError {
                     | "snapshot_invalidated"
                     | "screenshot_failed"
                     | "not_implemented"
+                    | "share_not_found"
+                    | "tab_already_owned"
             )
         })
         .unwrap_or("extension_request_failed");
@@ -951,6 +961,33 @@ mod tests {
             .await
             .expect("open");
         assert_eq!(opened["tabId"], 7);
+        let shared = broker
+            .execute(
+                BrowserTransportKind::Attended,
+                "accept_shared_tab",
+                json!({ "session_id": session_id, "share_id": "one-use-share" }),
+            )
+            .await
+            .expect("accept explicitly shared tab");
+        assert_eq!(shared["tabId"], 8);
+        assert!(broker.release_tab(8));
+        let revoked = broker
+            .execute(
+                BrowserTransportKind::Attended,
+                "snapshot",
+                json!({ "session_id": session_id, "tab_id": 8 }),
+            )
+            .await
+            .expect_err("a user-revoked shared tab stops being actionable");
+        assert_eq!(revoked.code, "tab_not_owned");
+        broker
+            .execute(
+                BrowserTransportKind::Attended,
+                "accept_shared_tab",
+                json!({ "session_id": session_id, "share_id": "replacement-share" }),
+            )
+            .await
+            .expect("the user can explicitly share the tab again");
 
         let listed = broker
             .execute(
@@ -960,7 +997,7 @@ mod tests {
             )
             .await
             .expect("list");
-        assert_eq!(listed["tabs"].as_array().expect("tabs").len(), 1);
+        assert_eq!(listed["tabs"].as_array().expect("tabs").len(), 2);
         assert_eq!(listed["tabs"][0]["tabId"], 7);
         assert!(listed.get("activeTabId").is_none());
 
@@ -1111,9 +1148,11 @@ mod tests {
             Box::pin(async move {
                 let data = match tool {
                     "open_tab" => json!({ "tabId": 7, "url": "about:blank" }),
+                    "accept_shared_tab" => json!({ "tabId": 8, "shared": true }),
                     "list_tabs" => json!({
                         "tabs": [
                             { "tabId": 7, "title": "Owned", "url": "about:blank" },
+                            { "tabId": 8, "title": "Shared", "url": "https://example.com" },
                             { "tabId": 999, "title": "Foreign", "url": "https://private.example" },
                         ],
                         "activeTabId": 999,

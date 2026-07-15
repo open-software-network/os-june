@@ -21,6 +21,9 @@ interface ChromeDebuggerApi {
       ) => void,
     ): void;
   };
+  onDetach: {
+    addListener(callback: (source: { tabId?: number }, reason: string) => void): void;
+  };
 }
 
 declare namespace chrome {
@@ -49,10 +52,10 @@ declare namespace chrome {
     const onMessage: {
       addListener(
         callback: (
-          message: { type?: string } | undefined,
+          message: { type?: string; tabId?: number } | undefined,
           sender: unknown,
           sendResponse: (response?: unknown) => void,
-        ) => void,
+        ) => boolean | undefined,
       ): void;
     };
   }
@@ -72,6 +75,7 @@ declare namespace chrome {
     function create(details: { url: string; active?: boolean }): Promise<Tab>;
     function get(tabId: number): Promise<Tab>;
     function update(tabId: number, details: { active?: boolean }): Promise<Tab>;
+    function query(queryInfo: { active?: boolean; currentWindow?: boolean }): Promise<Tab[]>;
     function remove(tabIds: number | number[]): Promise<void>;
     function group(details: { tabIds: number[]; groupId?: number }): Promise<number>;
     function ungroup(tabIds: number[]): Promise<void>;
