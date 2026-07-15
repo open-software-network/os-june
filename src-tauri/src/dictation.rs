@@ -4006,7 +4006,7 @@ fn is_terminal_here_instruction_preamble(normalized: &str) -> bool {
             || is_here_instruction_cleanup_modifier(word)
             || matches!(
                 *word,
-                "a" | "an" | "as" | "requested" | "the" | "up" | "your"
+                "a" | "an" | "as" | "for" | "per" | "request" | "requested" | "the" | "up" | "your"
             )
     })
 }
@@ -7144,6 +7144,9 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here is the corrected transcript as requested."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript for your request. Send it today."
         ));
         assert!(looks_like_instruction_response(
             "Here is the transcription: Send it today."
