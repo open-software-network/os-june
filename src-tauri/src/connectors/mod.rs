@@ -467,7 +467,21 @@ async fn refresh_linear_access_token_with_freshness_gate(
                     stored.refresh_token = rotated.to_string();
                 }
                 stored.expires_at_unix = now_unix() + fresh.expires_in.max(0);
-                store::store_tokens(ConnectorProvider::Linear, account_id, &stored).await?;
+                // Linear already rotated server-side, so a failed persist
+                // here strands the NEW refresh token. Recovery rides on
+                // Linear's 30-minute grace window for the consumed (old)
+                // token still in custody (spike doc): the next refresh
+                // within that window rotates again. Log distinctly so a
+                // later forced reconnect is diagnosable to this write.
+                if let Err(error) =
+                    store::store_tokens(ConnectorProvider::Linear, account_id, &stored).await
+                {
+                    tracing::error!(
+                        error_code = %error.code,
+                        "persisting rotated linear refresh token failed; grant recovers only within linear's consumption grace window"
+                    );
+                    return Err(error);
+                }
                 return Ok(stored.access_token.clone());
             }
             linear::LinearRefreshOutcome::InvalidGrant => {
@@ -543,16 +557,27 @@ async fn account_dto(
     // info" rather than failing the whole account list.
     let metadata: ConnectorAccountMetadata =
         serde_json::from_str(&record.metadata).unwrap_or_default();
-    let selected_teams = repos
-        .list_selected_teams(&record.account_id)
-        .await?
-        .into_iter()
-        .map(|team| SelectedTeamDto {
-            id: team.team_id,
-            key: team.team_key,
-            name: team.team_name,
-        })
-        .collect();
+    // Same best-effort stance for the team rows: account enumeration was
+    // infallible before selected teams existed, and callers treat an Err as
+    // "no accounts" (blanking the settings page and routine gates), so one
+    // transient DB hiccup on one row must not fail the whole list.
+    let selected_teams = match repos.list_selected_teams(&record.account_id).await {
+        Ok(teams) => teams
+            .into_iter()
+            .map(|team| SelectedTeamDto {
+                id: team.team_id,
+                key: team.team_key,
+                name: team.team_name,
+            })
+            .collect(),
+        Err(error) => {
+            tracing::warn!(
+                error_code = %AppError::from(error).code,
+                "listing selected teams failed; account enumerates with an empty team set"
+            );
+            Vec::new()
+        }
+    };
     Ok(ConnectorAccount {
         account_id: record.account_id,
         provider: ConnectorProvider::from_db(&record.provider),
