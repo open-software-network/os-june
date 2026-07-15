@@ -156,6 +156,13 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
+    ensure_column(_pool, "transcripts", "span_id", "TEXT").await?;
+    for statement in include_str!("../../migrations/014_note_transcription_jobs.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
     // Marks when a routine most recently entered approval mode; approval-run
     // crediting only counts runs that finished at or after this instant, so
     // earlier read-only runs never retroactively unlock autonomy.
