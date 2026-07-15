@@ -149,9 +149,13 @@ fn build_auth_url(
     // spaces). `actor=user` is the default but stated explicitly: v1
     // deliberately authorizes as the user, never the app actor (see the
     // spike doc - app actor needs a secret and sees every public team).
+    // `prompt=consent` forces the workspace picker on every connect: after
+    // a non-revoking disconnect the old grant still exists at Linear, and
+    // without the prompt a fresh connect would silently re-authorize the
+    // previous workspace with no way to pick a different one.
     format!(
         "{AUTH_ENDPOINT}?client_id={}&redirect_uri={}&response_type=code&scope={}\
-         &state={}&code_challenge={}&code_challenge_method=S256&actor=user",
+         &state={}&code_challenge={}&code_challenge_method=S256&actor=user&prompt=consent",
         urlencoding::encode(client_id),
         urlencoding::encode(redirect_uri),
         urlencoding::encode(&scopes.join(",")),
@@ -675,6 +679,9 @@ mod tests {
         assert!(url.contains("code_challenge=challenge"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("actor=user"));
+        // Forces the workspace picker so a lingering grant after a
+        // non-revoking disconnect cannot silently re-authorize.
+        assert!(url.contains("prompt=consent"));
         // Public client: no secret in the authorization request.
         assert!(!url.contains("client_secret"));
     }
