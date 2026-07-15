@@ -138,8 +138,10 @@ const refreshInstallations = useCallback(async () => {
     if (generation !== lifecycleGeneration.current) return;
     setError(githubErrorMessage(cause));
   } finally {
-    refreshingRef.current = false;
-    if (generation === lifecycleGeneration.current) setRefreshing(false);
+    if (generation === lifecycleGeneration.current) {
+      refreshingRef.current = false;
+      setRefreshing(false);
+    }
   }
 }, []);
 ```
