@@ -13439,20 +13439,21 @@ const GENERATED_MEDIA_FIELD = {
   rippleGlow: 0.4,
   ripplePaintMix: 0.95,
   /* Mark sparkle: each logo dot glints on its own deterministic cadence - a
-   * brief flash of brightness with a whisper of the theme accent, never size.
-   * The glint is luminance-led on purpose: `--brand` is a mid-tone, so mixing
-   * a dot fully to it (as an earlier, higher sparkMix did) *darkens* the
-   * near-white mark in dark mode - a glint that dims instead of catching light
-   * - and muddies it to salmon in light mode. Keeping the mix low leaves the
-   * glint reading as light on the dot with only a warm cast; the ripple keeps
-   * the bold, fully-accent burst (ripplePaintMix) for a deliberate press. The
-   * exponent keeps each glint a short flash out of a slow cycle, so only a few
-   * dots shine at any moment. */
-  sparkMinRadPerSec: 0.5,
-  sparkSpanRadPerSec: 0.7,
-  sparkExponent: 10,
-  sparkMix: 0.3,
-  sparkAlphaBoost: 0.32,
+   * brief flash of clay brightness, never size. The glint is clay-tinted
+   * (sparkMix) rather than gray so the mark reads as warm, but the tint only
+   * lands clean because --brand-bright is a *luminous* clay (fixed high
+   * lightness + healthy chroma); a duller white-mixed clay turns to mud over
+   * the light dot field. The pulse uses a near-instant attack and a longer
+   * release, matching the clean snap of a light catching an edge instead of a
+   * soft sine-wave throb. The staggered cadence keeps the mark alive without
+   * making every dot pulse at once; the press ripple keeps the fuller accent
+   * burst (ripplePaintMix) for a deliberate tap. */
+  sparkMinRadPerSec: 1.6,
+  sparkSpanRadPerSec: 1.2,
+  sparkAttackRatio: 0.025,
+  sparkDecayRatio: 0.1,
+  sparkMix: 0.72,
+  sparkAlphaBoost: 0.52,
   /* The dot field thins out over this many px at the canvas bottom, into the
    * card-surface gradient the CSS background lands on. */
   bottomFadePx: 56,
@@ -13602,11 +13603,20 @@ function GeneratedMediaDotField() {
           dx += (rx / dist) * F.ripplePush * band;
           dy += (ry / dist) * F.ripplePush * band;
         }
-        // The glint: a brief accent flash out of each logo dot's slow cycle.
+        // The glint: a quick accent strike with a slightly longer fade, out of
+        // each logo dot's staggered cycle.
         let spark = 0;
         if (animated && dot.mark > 0) {
-          const wave = 0.5 + 0.5 * Math.sin(seconds * dot.sparkOmega + dot.sparkPhase);
-          spark = wave ** F.sparkExponent * dot.mark;
+          const cycle =
+            ((seconds * dot.sparkOmega + dot.sparkPhase) % (Math.PI * 2)) / (Math.PI * 2);
+          if (cycle < F.sparkAttackRatio) {
+            const progress = cycle / F.sparkAttackRatio;
+            spark = progress * progress * (3 - 2 * progress);
+          } else if (cycle < F.sparkAttackRatio + F.sparkDecayRatio) {
+            const progress = (cycle - F.sparkAttackRatio) / F.sparkDecayRatio;
+            spark = 1 - progress * progress * (3 - 2 * progress);
+          }
+          spark *= dot.mark;
         }
         // Partial glyph coverage blends the dot between field and mark, so
         // the mark's rounded corners and bevels stay soft on the lattice.
