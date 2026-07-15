@@ -2123,9 +2123,21 @@ fn helper_candidates(app: &AppHandle) -> Vec<PathBuf> {
 #[cfg(target_os = "macos")]
 const DICTATION_HELPER_NAME: &str = "june-dictation-helper";
 
-/// Records which app instance owns the currently-spawned helper. Persisted next
-/// to a spawn so a *later* instance can tell an orphan (owner gone) from a
-/// helper a still-running instance owns, and reap only the former.
+/// Filename prefix for the per-instance ownership records. One record per owning
+/// app pid (never a single shared file), so concurrent instances — allowed in
+/// debug builds — cannot clobber each other's pointer to their helper.
+#[cfg(target_os = "macos")]
+const HELPER_OWNER_RECORD_PREFIX: &str = "dictation-helper-owner-";
+
+/// How long the reap waits for a killed orphan to actually exit before giving
+/// up. `kill` only submits the signal; the old helper can still hold its global
+/// CGEventTap for a moment, which would collide with the replacement helper.
+#[cfg(target_os = "macos")]
+const HELPER_ORPHAN_EXIT_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Records which app instance owns the currently-spawned helper. Persisted so a
+/// *later* instance can tell an orphan (owner gone) from a helper a still-running
+/// instance owns, and reap only the former.
 #[cfg(target_os = "macos")]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct HelperOwnershipRecord {
@@ -2136,16 +2148,28 @@ struct HelperOwnershipRecord {
 }
 
 #[cfg(target_os = "macos")]
+fn helper_ownership_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok()
+}
+
+/// This instance's own record path, keyed by our app pid so we never overwrite
+/// another live instance's record.
+#[cfg(target_os = "macos")]
 fn helper_ownership_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_config_dir()
-        .ok()
-        .map(|directory| directory.join("dictation-helper-owner.json"))
+    helper_ownership_dir(app).map(|directory| {
+        directory.join(format!(
+            "{HELPER_OWNER_RECORD_PREFIX}{}.json",
+            std::process::id()
+        ))
+    })
 }
 
 /// Records the just-spawned helper's pid alongside our own app pid, so the next
-/// instance's [`reap_orphaned_helper`] can establish ownership. Best-effort:
-/// a failure only means a future instance cannot reap this helper by record.
+/// instance's [`reap_orphaned_helpers`] can establish ownership. Written
+/// atomically (temp file + rename) so a crash or partial write never leaves an
+/// unparseable record; a failure leaves any prior record intact rather than
+/// destroying the only pointer to an earlier orphan. Best-effort: a failure only
+/// impairs a future instance's ability to reap *this* helper.
 #[cfg(target_os = "macos")]
 fn record_helper_ownership(app: &AppHandle, helper_pid: u32) {
     let Some(path) = helper_ownership_path(app) else {
@@ -2155,57 +2179,96 @@ fn record_helper_ownership(app: &AppHandle, helper_pid: u32) {
         app_pid: std::process::id(),
         helper_pid,
     };
-    if let Ok(serialized) = serde_json::to_string(&record) {
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::write(&path, serialized);
+    let Ok(serialized) = serde_json::to_string(&record) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("json.tmp");
+    let write = (|| -> std::io::Result<()> {
+        let mut file = fs::File::create(&tmp)?;
+        file.write_all(serialized.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&tmp, &path)
+    })();
+    if write.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 fn record_helper_ownership(_app: &AppHandle, _helper_pid: u32) {}
 
-/// Reaps a dictation helper orphaned by a *prior* app instance before a fresh
+/// Reaps any dictation helper orphaned by a *prior* app instance before a fresh
 /// one is spawned. A stale helper — most often left by an in-app update relaunch
 /// that skipped teardown (JUN-338) — keeps the global CGEventTap and its stdio,
 /// so a newly spawned helper collides with it and never delivers a clean
 /// permission status.
 ///
-/// Ownership-aware, never a name-wide sweep: it kills only the exact pid the
-/// last spawn recorded, and only when that helper's owning app is gone *and* the
-/// pid is still a dictation helper (guarding against pid reuse). A helper a
-/// concurrently-running instance owns has a live owner, so it is never touched —
-/// which matters because debug builds allow multiple instances. If ownership
-/// cannot be established, nothing is killed. macOS-only, best-effort.
+/// Ownership-aware, never a name-wide sweep: it kills only pids recorded by a
+/// prior instance, and only when that instance is gone *and* the pid is still a
+/// dictation helper (guarding pid reuse). A helper a concurrently-running
+/// instance owns has a live owner, so it is never touched — which matters
+/// because debug builds allow multiple instances.
+///
+/// Returns an error (aborting the replacement spawn) if a confirmed orphan will
+/// not die within the timeout: spawning a new helper while the old one still
+/// holds the tap would reproduce the collision. The record is left in place so
+/// the next attempt can retry. macOS-only.
 #[cfg(target_os = "macos")]
-fn reap_orphaned_helper(app: &AppHandle) {
-    let Some(path) = helper_ownership_path(app) else {
-        return;
+fn reap_orphaned_helpers(app: &AppHandle) -> Result<(), AppError> {
+    let Some(dir) = helper_ownership_dir(app) else {
+        return Ok(());
     };
-    let Some(record) = fs::read_to_string(&path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<HelperOwnershipRecord>(&raw).ok())
-    else {
-        return;
+    let my_pid = std::process::id();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Ok(());
     };
-    if !should_reap_recorded_helper(
-        process_alive(record.app_pid),
-        is_dictation_helper_process(record.helper_pid),
-    ) {
-        return;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_record = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.starts_with(HELPER_OWNER_RECORD_PREFIX) && name.ends_with(".json")
+            });
+        if !is_record {
+            continue;
+        }
+        let Some(record) = fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<HelperOwnershipRecord>(&raw).ok())
+        else {
+            // Unparseable/partial record: nothing actionable, clean it up.
+            let _ = fs::remove_file(&path);
+            continue;
+        };
+        // Our own record (shouldn't exist yet on first spawn) or an owner still
+        // running: leave it be.
+        if record.app_pid == my_pid || process_alive(record.app_pid) {
+            continue;
+        }
+        if should_reap_recorded_helper(false, is_dictation_helper_process(record.helper_pid)) {
+            kill_pid(record.helper_pid);
+            if !wait_for_pid_exit(record.helper_pid, HELPER_ORPHAN_EXIT_TIMEOUT) {
+                return Err(AppError::new(
+                    "dictation_helper_orphan_stuck",
+                    "An orphaned dictation helper would not exit; retrying.",
+                ));
+            }
+        }
+        // Owner gone and helper reaped (or the pid was already gone/reused): the
+        // record is stale, drop it.
+        let _ = fs::remove_file(&path);
     }
-    let _ = Command::new("/bin/kill")
-        .arg("-KILL")
-        .arg(record.helper_pid.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn reap_orphaned_helper(_app: &AppHandle) {}
+fn reap_orphaned_helpers(_app: &AppHandle) -> Result<(), AppError> {
+    Ok(())
+}
 
 /// The kill decision, factored out so it is unit-testable without real
 /// processes: reap only an orphan (owner no longer alive) that is still a
@@ -2213,6 +2276,35 @@ fn reap_orphaned_helper(_app: &AppHandle) {}
 #[cfg(target_os = "macos")]
 fn should_reap_recorded_helper(owner_alive: bool, helper_is_dictation: bool) -> bool {
     !owner_alive && helper_is_dictation
+}
+
+/// Submits SIGKILL to a single pid (best-effort; the caller confirms exit).
+#[cfg(target_os = "macos")]
+fn kill_pid(pid: u32) {
+    let _ = Command::new("/bin/kill")
+        .arg("-KILL")
+        .arg(pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Polls until `pid` is no longer alive, or the timeout elapses. Returns whether
+/// it exited, so the caller can refuse to spawn a replacement while an orphan
+/// still holds the global CGEventTap.
+#[cfg(target_os = "macos")]
+fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !process_alive(pid) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Whether a pid is live and signalable by us (`kill -0`). Same-user only, which
@@ -2257,7 +2349,9 @@ fn is_dictation_helper_process(pid: u32) -> bool {
 }
 
 fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
-    reap_orphaned_helper(app);
+    // Abort the spawn if a prior instance's orphaned helper is still holding the
+    // global CGEventTap; racing it would reproduce the permission collision.
+    reap_orphaned_helpers(app)?;
 
     let helper_path = helper_candidates(app)
         .into_iter()
@@ -4585,6 +4679,42 @@ mod tests {
         // Owner gone but the pid was reused for something else -> leave it.
         assert!(!should_reap_recorded_helper(false, false));
         assert!(!should_reap_recorded_helper(true, false));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn wait_for_pid_exit_confirms_a_kill_and_bounds_a_survivor() {
+        // A dead pid is observed as exited. Reap the child first so it is not a
+        // zombie: `kill -0` still reports a zombie as alive, but a real orphan
+        // (whose parent is the dead prior app) is reparented to launchd and
+        // reaped, so in production the pid genuinely disappears.
+        let mut victim = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn victim");
+        let victim_pid = victim.id();
+        kill_pid(victim_pid);
+        let _ = victim.wait();
+        assert!(wait_for_pid_exit(victim_pid, Duration::from_secs(2)));
+
+        // ...and a live process is NOT declared exited, so the reap aborts the
+        // replacement spawn rather than racing a helper that still holds the tap.
+        let mut survivor = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn survivor");
+        assert!(!wait_for_pid_exit(
+            survivor.id(),
+            Duration::from_millis(100)
+        ));
+        let _ = survivor.kill();
+        let _ = survivor.wait();
     }
 
     #[test]

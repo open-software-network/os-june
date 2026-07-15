@@ -11,7 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -442,6 +442,28 @@ pub struct HermesBridge {
     /// it (JUN-338). Set *before* the drain; checked under the `processes` lock
     /// at registration, so the flag and the drain observe a single ordering.
     shutting_down: AtomicBool,
+    /// Number of starts currently between spawning a runtime child and either
+    /// registering it into `processes` or reaping it. `shutdown` waits for this
+    /// to reach zero before draining, so a child spawned but not-yet-registered
+    /// can never be orphaned by the drain-then-restart (JUN-338).
+    starts_in_progress: AtomicUsize,
+}
+
+/// RAII counter for [`HermesBridge::starts_in_progress`], so every exit path of
+/// a start (including `?` early returns) decrements exactly once.
+struct StartInProgressGuard<'a>(&'a AtomicUsize);
+
+impl<'a> StartInProgressGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for StartInProgressGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 struct HermesProcess {
@@ -1046,6 +1068,13 @@ async fn start_hermes_bridge_inner(
     // sees the winner's running process.
     let _start_guard = bridge.start_lock.lock().await;
 
+    // Count this start as in-progress for the whole spawn->register window so a
+    // concurrent `shutdown` waits for it (below) before draining, and a child we
+    // spawn can never be orphaned by a drain-then-restart (JUN-338). Dropped
+    // explicitly once the child is registered or reaped, before the readiness
+    // wait, so teardown never blocks on the (up to 45s) readiness timeout.
+    let start_progress = StartInProgressGuard::new(&bridge.starts_in_progress);
+
     // Bail fast if the app is tearing down: no point building a runtime the
     // teardown is about to reap, and a late spawn could re-orphan the tree. The
     // authoritative, race-free check is the one at registration below; this is
@@ -1291,6 +1320,11 @@ async fn start_hermes_bridge_inner(
             },
         );
     }
+
+    // Registered: the drain can now see and reap this process, so teardown no
+    // longer needs to wait on this start. Release before the readiness wait so
+    // shutdown is not blocked for the readiness timeout.
+    drop(start_progress);
 
     if let Err(error) = wait_for_hermes(&base_url, &token).await {
         // Only tear down the exact process this start spawned. If a stop (or
@@ -3418,6 +3452,11 @@ pub fn shutdown(app: &tauri::AppHandle) {
     // about to reap (JUN-338). The flag is permanent: nothing restarts the
     // bridge after shutdown. See the registration handshake in that function.
     bridge.shutting_down.store(true, Ordering::SeqCst);
+    // Then wait for any start that already spawned a child to finish registering
+    // it (so the drain reaps it) or reaping it itself. Without this, a child
+    // spawned but not-yet-registered would be missed by the drain and orphaned
+    // when `relaunch_for_update` restarts the app moments later.
+    await_starts_quiesced(&bridge, SHUTDOWN_START_QUIESCE_TIMEOUT);
     let _ = stop_hermes_bridge_inner(&bridge);
     let proxy = bridge
         .provider_proxy
@@ -3428,6 +3467,25 @@ pub fn shutdown(app: &tauri::AppHandle) {
         if let Some(shutdown) = proxy.shutdown.take() {
             let _ = shutdown.send(());
         }
+    }
+}
+
+/// How long `shutdown` waits for in-flight starts to register/reap their spawned
+/// child before draining. The window it guards (spawn -> register) is short, so
+/// this is only a safety bound; teardown proceeds regardless once it elapses.
+const SHUTDOWN_START_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Blocks until no start is between spawning a child and registering/reaping it,
+/// or the timeout elapses. Sync (called from the sync teardown path) and cheap:
+/// the guarded window is milliseconds and at most one start runs at a time (the
+/// `start_lock` serializes them).
+fn await_starts_quiesced(bridge: &HermesBridge, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while bridge.starts_in_progress.load(Ordering::SeqCst) > 0 {
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -10964,6 +11022,61 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shutdown_waits_for_in_flight_start_to_register() {
+        // Simulate a start that has spawned a child but not yet registered it:
+        // the in-progress counter is held, then released 100ms later (as the
+        // real start would after inserting into `processes`). `shutdown`'s
+        // quiesce wait must not return before that release, or the drain would
+        // run while a child is unregistered and orphan it (JUN-338).
+        let bridge = Arc::new(HermesBridge::default());
+        bridge.starts_in_progress.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 1);
+
+        let released = Arc::new(AtomicBool::new(false));
+        let releaser = {
+            let bridge = bridge.clone();
+            let released = released.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                released.store(true, Ordering::SeqCst);
+                bridge.starts_in_progress.fetch_sub(1, Ordering::SeqCst);
+            })
+        };
+
+        let start = Instant::now();
+        await_starts_quiesced(&bridge, Duration::from_secs(2));
+
+        // Returned only after the in-flight start released — proving teardown
+        // blocked on it rather than racing ahead to the drain.
+        assert!(released.load(Ordering::SeqCst));
+        assert!(start.elapsed() >= Duration::from_millis(90));
+        assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 0);
+        releaser.join().unwrap();
+    }
+
+    #[test]
+    fn start_in_progress_guard_counts_up_then_down_on_drop() {
+        let bridge = HermesBridge::default();
+        {
+            let _guard = StartInProgressGuard::new(&bridge.starts_in_progress);
+            assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn await_starts_quiesced_bounds_the_wait_when_a_start_never_finishes() {
+        // A start that never completes must not hang teardown forever: the wait
+        // returns at the timeout even with the counter still held.
+        let bridge = HermesBridge::default();
+        let _guard = StartInProgressGuard::new(&bridge.starts_in_progress);
+        let start = Instant::now();
+        await_starts_quiesced(&bridge, Duration::from_millis(50));
+        assert!(start.elapsed() >= Duration::from_millis(45));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
 
     #[cfg(unix)]
     #[test]
