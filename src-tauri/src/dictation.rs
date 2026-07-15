@@ -3993,6 +3993,7 @@ fn is_terminal_here_instruction_preamble(normalized: &str) -> bool {
                 "a" | "an"
                     | "and"
                     | "as"
+                    | "below"
                     | "for"
                     | "per"
                     | "request"
@@ -4054,6 +4055,8 @@ fn is_generic_here_instruction_preamble(preamble: &str) -> bool {
             | "here's what i heard"
             | "here is what i got"
             | "here's what i got"
+            | "here is what i have"
+            | "here's what i have"
             | "here is what you said"
             | "here's what you said"
             | "here is what you asked for"
@@ -7139,6 +7142,12 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here is what I heard: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned transcript below:\nSend it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is what I have:\nSend it today."
         ));
         assert!(looks_like_instruction_response(
             "Here's what I got: Send it today."
