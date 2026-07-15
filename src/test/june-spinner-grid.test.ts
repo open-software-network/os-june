@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "../lib/june-spinner-grid";
+import appCss from "../styles/app.css?raw";
 import spinnerCss from "../styles/dot-spinner.css?raw";
 
 describe("June spinner grid", () => {
@@ -19,14 +20,27 @@ describe("June spinner grid", () => {
     // Top-right corner, the whole middle row, and the bottom-left corner.
     expect(sm).toEqual([false, false, true, true, true, true, true, false, false]);
     expect(juneSpinnerGrid("md").map((c) => c.mark)).toEqual(sm);
-    // The 5×5 keeps two ascending strokes.
-    expect(juneSpinnerGrid("lg").filter((c) => c.mark)).toHaveLength(10);
+    // The 5×5 keeps the exact two ascending strokes, not only the same dot
+    // count with a different silhouette.
+    const lg = juneSpinnerGrid("lg").map((c) => c.mark);
+    // biome-ignore format: the grid layout is the assertion.
+    expect(lg.map(Number)).toEqual([
+      0, 0, 0, 0, 1,
+      0, 1, 1, 1, 0,
+      1, 0, 0, 0, 1,
+      0, 1, 1, 1, 0,
+      1, 0, 0, 0, 0,
+    ]);
+    expect(lg.filter(Boolean)).toHaveLength(10);
   });
 
   it("orders each cell by its diagonal from the bottom-left so the swell climbs", () => {
     // Diagonal distance from the bottom-left corner (row 2): bottom-left is 0,
     // top-right is 4, tracing the stroke's path up the grid.
     expect(juneSpinnerGrid("sm").map((c) => c.order)).toEqual([2, 3, 4, 1, 2, 3, 0, 1, 2]);
+    expect(juneSpinnerGrid("lg").map((c) => c.order)).toEqual([
+      4, 5, 6, 7, 8, 3, 4, 5, 6, 7, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4,
+    ]);
   });
 
   it("sweeps brightness across fixed-size dots with a settled reset for each pass", () => {
@@ -39,6 +53,10 @@ describe("June spinner grid", () => {
     const spanRule = spinnerCss.slice(
       spinnerCss.indexOf(".dot-spinner > span {"),
       spinnerCss.indexOf(".dot-spinner > span[data-mark]"),
+    );
+    const markRule = spinnerCss.slice(
+      spinnerCss.indexOf(".dot-spinner > span[data-mark]"),
+      spinnerCss.indexOf('.dot-spinner[data-size="lg"] > span'),
     );
     const smSweep = spinnerCss.slice(
       spinnerCss.indexOf("@keyframes june-sweep-sm"),
@@ -76,10 +94,15 @@ describe("June spinner grid", () => {
     // The grid rests at full size (scale 1) and only swells lightly with the
     // sweep — a large scale excursion shimmers at this dot size.
     expect(spanRule).toContain("transform: scale(1);");
-    expect(spanRule).toContain("june-sweep-sm var(--june-dur) var(--ease-in-out) infinite,");
-    expect(spanRule).toContain("june-scale-sm var(--june-dur) var(--ease-in-out) infinite;");
+    expect(spanRule).toContain(
+      "animation: june-sweep-sm var(--june-dur) var(--ease-in-out) infinite;",
+    );
+    expect(spanRule).not.toContain("june-scale-sm");
+    expect(spanRule).toContain("will-change: opacity;");
+    expect(markRule).toContain("animation-name: june-sweep-sm, june-scale-sm;");
+    expect(markRule).toContain("will-change: opacity, transform;");
     expect(spinnerCss).toContain("--june-swell: 1.16;");
-    expect(spinnerCss).toContain("--june-field-swell: 1;");
+    expect(spinnerCss).not.toContain("--june-field-swell");
     // The mark must always outrank the field: field peak stays below mark rest.
     expect(spinnerCss).toContain("--june-off: 0.44;");
     expect(spinnerCss).toContain("--june-field-peak: 0.26;");
@@ -94,10 +117,12 @@ describe("June spinner grid", () => {
     expect(smScale).toMatch(/22\.321%\s*{[^}]*transform: scale\(var\(--june-cell-swell\)\)/s);
     expect(lgScale).toMatch(/0%,\s*40\.323%,\s*100%\s*{[^}]*transform: scale\(1\)/s);
     expect(lgScale).toMatch(/20\.161%\s*{[^}]*transform: scale\(var\(--june-cell-swell\)\)/s);
+    expect(spinnerCss).toContain("animation-name: june-sweep-lg;");
     expect(spinnerCss).toContain("animation-name: june-sweep-lg, june-scale-lg;");
     expect(spinnerCss).toContain("var(--june-order) * var(--june-frame)");
     expect(spinnerCss).toContain('.dot-spinner[data-size="md"]');
     expect(spinnerCss).toContain("--june-dot: 3px;");
     expect(spinnerCss).toContain("color: var(--muted-foreground);");
+    expect(appCss).toContain(".agent-tool-spinner .dot-spinner");
   });
 });

@@ -1,13 +1,13 @@
 /* The dot spinner: a full square grid of circles with a brightness highlight
  * that sweeps diagonally from the bottom-left. The grid rests stable at full
- * size; as the highlight passes, each dot brightens and gives a small swell —
- * the mark dots pop a touch more than the field — then settles back. Motion is
- * mostly tone (a big scale excursion shimmers at 2–3px), with only a light
- * synchronized swell for life. A bright band glides along June's stepped mark;
- * field dots ripple faintly. The grid and each cell's sweep order live in
+ * size; as the highlight passes, every dot brightens while mark dots also give
+ * a small synchronized swell, then settle back. Motion is mostly tone (a big
+ * scale excursion shimmers at 2–3px). A bright band glides along June's stepped
+ * mark; field dots ripple faintly without changing size. The grid and each
+ * cell's sweep order live in
  * lib/june-spinner-grid (shared with the agent HUD page entry, which has no
- * React tree). The default is a neutral gray; contextual wrappers can still
- * override it through currentColor.
+ * React tree). The default is a neutral gray. Contexts that require their own
+ * contrast color opt back into inherited currentColor in app.css.
  *
  * Three optical variants: "sm" (3×3) for compact inline use, "md" (3×3) for a
  * slightly larger inline mark, and "lg" (5×5) for standalone loading moments.
@@ -27,7 +27,6 @@
    * steady. Only the mark swells so the motion stays on June's strokes; keep the
    * excursion small — a big swell shimmers at this dot size. */
   --june-swell: 1.16;
-  --june-field-swell: 1;
   /* Every dot gets the same 500ms brightening and each completed pass gets a
    * 100ms reset. The compact grid takes a deliberate 130ms diagonal step; the
    * denser large grid overrides that with an 80ms step so its crest stays
@@ -73,14 +72,12 @@
   --june-gap: 3px;
 }
 
-/* Each cell rests at full size and full-rest tone; the opacity and a light
- * synchronized swell animate together, shifted by the cell's diagonal order, so
- * a bright band sweeps across the otherwise stable grid. Cell variables keep the
- * field and mark tones and swells on the same envelope. */
+/* Every cell runs the brightness envelope, shifted by its diagonal order. Mark
+ * cells add the synchronized swell; field cells stay at scale 1, so they do not
+ * pay for a no-op transform animation or compositor hint. */
 .dot-spinner > span {
   --june-cell-opacity: var(--june-field-off);
   --june-cell-peak-opacity: var(--june-field-peak);
-  --june-cell-swell: var(--june-field-swell);
 
   width: var(--june-dot);
   height: var(--june-dot);
@@ -88,21 +85,26 @@
   background: currentColor;
   opacity: var(--june-cell-opacity);
   transform: scale(1);
-  animation:
-    june-sweep-sm var(--june-dur) var(--ease-in-out) infinite,
-    june-scale-sm var(--june-dur) var(--ease-in-out) infinite;
+  animation: june-sweep-sm var(--june-dur) var(--ease-in-out) infinite;
   animation-delay: calc(var(--june-order) * var(--june-frame) - var(--june-dur));
-  /* GPU-composite the fade and swell so the sweep stays smooth. */
-  will-change: opacity, transform;
+  will-change: opacity;
 }
 
 .dot-spinner > span[data-mark] {
   --june-cell-opacity: var(--june-off);
   --june-cell-peak-opacity: 1;
   --june-cell-swell: var(--june-swell);
+
+  animation-name: june-sweep-sm, june-scale-sm;
+  /* GPU-composite the visible swell as well as the fade. */
+  will-change: opacity, transform;
 }
 
 .dot-spinner[data-size="lg"] > span {
+  animation-name: june-sweep-lg;
+}
+
+.dot-spinner[data-size="lg"] > span[data-mark] {
   animation-name: june-sweep-lg, june-scale-lg;
 }
 

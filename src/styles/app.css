@@ -2899,8 +2899,7 @@ input:focus-visible,
   opacity: 0;
 }
 
-/* Running rows trade the status word for the rolling dot spinner (fixed-size
- * mark; wrappers only set color). */
+/* Running rows trade the status word for the fixed-size June mark spinner. */
 .agent-tool-spinner {
   display: inline-flex;
   flex: 0 0 auto;
@@ -5004,7 +5003,7 @@ input:focus-visible,
 /* Why a rejected send didn't go through — sits on the composer because that's
  * where the user just acted, and clears itself when the turn finishes. A
  * content-sized pill (not another full-width box, which read as a second
- * composer) with the rolling dot spinner tying it to the working state. Same
+ * composer) with the dot-grid spinner tying it to the working state. Same
  * surface recipe as the "Generating notes…" pill so the app's progress
  * statuses read as one family. (The recording-consent note left this family
  * for the funding-notice card chrome — it asks, it doesn't report progress.) */
@@ -10936,8 +10935,8 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-/* The rolling dot spinner (drawn, colored via currentColor) — the same working
- * indicator as the agent chat, sidebar, and composer notice. */
+/* The dot-grid spinner — the same working indicator as the agent chat, sidebar,
+ * and composer notice. */
 .note-processing-progress-spinner {
   flex: none;
   color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
@@ -17087,10 +17086,11 @@ input:focus-visible,
 /* The dot spinner itself lives in dot-spinner.css (shared with the agent
  * HUD page entry). */
 
-/* Solid controls need their own contrast foreground instead of the spinner's
- * default gray. */
+/* Contrasting contexts opt back into their inherited foreground instead of the
+ * spinner's neutral-gray default. */
 .agent-composer-send .dot-spinner,
-.primary-action.primary-solid .dot-spinner {
+.primary-action.primary-solid .dot-spinner,
+.agent-tool-spinner .dot-spinner {
   color: currentColor;
 }
 
