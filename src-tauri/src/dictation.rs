@@ -3939,15 +3939,20 @@ fn looks_like_instruction_response(value: &str) -> bool {
 }
 
 fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
-    let Some(preamble_end) = [":", ". ", "\n", " - ", " — ", " – ", "—", "–"]
+    let strong_preamble_end = [":", ". ", "\n", " - ", " — ", " – ", "—", "–"]
         .iter()
         .filter_map(|separator| normalized.find(separator))
-        .min()
-        .or_else(|| normalized.find(", "))
-    else {
-        return false;
-    };
-    let preamble = normalized[..preamble_end].trim_end_matches('.').trim_end();
+        .min();
+    if strong_preamble_end.is_some_and(|end| is_here_instruction_preamble(&normalized[..end])) {
+        return true;
+    }
+    normalized
+        .find(", ")
+        .is_some_and(|end| is_here_instruction_preamble(&normalized[..end]))
+}
+
+fn is_here_instruction_preamble(preamble: &str) -> bool {
+    let preamble = preamble.trim_end_matches('.').trim_end();
     if ["here you go", "here it is", "here you are"].contains(&preamble) {
         return true;
     }
@@ -6938,6 +6943,9 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here is the corrected, punctuated transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here you go, Hello. World."
         ));
         assert!(looks_like_instruction_response(
             "Here's the cleaned-up version—Hello."
