@@ -136,6 +136,25 @@ Tables: `shares` (id, owner_user_id, kind, ciphertext, iv, created_at,
 deleted_at) and `share_invites` (id, share_id, email, envelope, envelope_iv,
 recipient_user_id, accepted_at, revoked_at, last_access_at, created_at).
 
+### Local key store scope (desktop)
+
+The desktop keeps E2E key material only locally, in a per-profile SQLite store
+(`share_keys`: at most one row per item; `share_invite_keys`: one row per
+invite). It is not scoped by OS Accounts identity, matching the rest of the
+local store: `notes` and `recording_sessions` are per-profile too, with no
+account column. The supported model is one signed-in identity per local
+profile, and two identities sharing one profile already share note/session
+*plaintext*, so account-scoping the keys alone would add no real protection.
+
+Given that: opening a shared item while signed in as a second identity never
+deletes the first identity's keys. The API returns the same `share_not_found`
+for a deleted share and for one owned by another account, so the dialog treats
+it as "reset to unshared", not "purge". A deliberate re-share of the same item
+by a second identity replaces the profile's single mapping for that item
+(`save_share_key` upserts on `(item_kind, item_id)`), consistent with the
+profile-scoped store. Full per-identity local storage is out of scope for
+JUN-308.
+
 ## Recipient viewer
 
 Served by june-api (precedent: `/verify` already serves HTML). Static shell
