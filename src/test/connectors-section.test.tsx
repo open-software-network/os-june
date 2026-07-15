@@ -69,7 +69,10 @@ beforeEach(() => {
   mocks.connectorsConnect.mockResolvedValue(account());
   mocks.connectorsDisconnect.mockResolvedValue(undefined);
   mocks.connectorsApplyRuntime.mockResolvedValue(undefined);
-  mocks.connectorsLinearTeams.mockResolvedValue([TEAM_ENG, TEAM_DESIGN]);
+  mocks.connectorsLinearTeams.mockResolvedValue({
+    teams: [TEAM_ENG, TEAM_DESIGN],
+    truncated: false,
+  });
   mocks.connectorsSetSelectedTeams.mockResolvedValue(linearAccount({ selectedTeams: [TEAM_ENG] }));
   mocks.listen.mockResolvedValue(() => {});
 });
@@ -316,10 +319,55 @@ describe("ConnectorsSection — Linear", () => {
     const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
 
     expect(await within(dialog).findByText("Linear is unreachable")).toBeInTheDocument();
-    mocks.connectorsLinearTeams.mockResolvedValueOnce([TEAM_ENG, TEAM_DESIGN]);
+    mocks.connectorsLinearTeams.mockResolvedValueOnce({
+      teams: [TEAM_ENG, TEAM_DESIGN],
+      truncated: false,
+    });
     await userEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
 
     expect(await within(dialog).findByRole("checkbox", { name: /engineering/i })).toBeChecked();
+  });
+
+  it("keeps a selected team the live listing no longer returns", async () => {
+    // TEAM_ENG is persisted as selected but absent from the live fetch
+    // (archived, hidden, or beyond the pagination cap). It must stay
+    // visible, stay checked, and survive an unrelated save untouched.
+    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [TEAM_ENG] })]);
+    mocks.connectorsLinearTeams.mockResolvedValue({ teams: [TEAM_DESIGN], truncated: false });
+    render(<ConnectorsSection />);
+    await screen.findByText(/1 team selected/i);
+
+    await userEvent.click(screen.getByRole("button", { name: "Manage teams" }));
+    const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
+
+    const stale = await within(dialog).findByRole("checkbox", { name: /engineering/i });
+    expect(stale).toBeChecked();
+    expect(within(dialog).getByText(/not visible in Linear right now/i)).toBeInTheDocument();
+
+    await userEvent.click(within(dialog).getByRole("checkbox", { name: /design/i }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save teams" }));
+
+    await waitFor(() =>
+      expect(mocks.connectorsSetSelectedTeams).toHaveBeenCalledWith({
+        accountId: "linear-acc-1",
+        teams: [TEAM_DESIGN, TEAM_ENG],
+      }),
+    );
+  });
+
+  it("flags a truncated team listing instead of presenting it as complete", async () => {
+    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [TEAM_ENG] })]);
+    mocks.connectorsLinearTeams.mockResolvedValue({
+      teams: [TEAM_ENG, TEAM_DESIGN],
+      truncated: true,
+    });
+    render(<ConnectorsSection />);
+    await screen.findByText(/1 team selected/i);
+
+    await userEvent.click(screen.getByRole("button", { name: "Manage teams" }));
+    const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
+
+    expect(await within(dialog).findByText(/only the first 500 teams/i)).toBeInTheDocument();
   });
 
   it("reconnects a workspace using the account id as the login hint", async () => {

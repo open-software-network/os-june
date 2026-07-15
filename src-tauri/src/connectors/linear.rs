@@ -611,10 +611,18 @@ impl TeamsPager {
     }
 }
 
+/// A teams listing plus whether the pagination cap cut it short. The flag
+/// travels to the UI: a silently incomplete list would present itself as
+/// the complete team inventory in a very large workspace.
+pub struct LinearTeamsListing {
+    pub teams: Vec<LinearTeam>,
+    pub truncated: bool,
+}
+
 /// List the workspace's teams for the selection UI: pages of 100, hard cap
-/// [`TEAMS_MAX_PAGES`] pages (a warn is logged if the cap truncates), sorted
-/// by name case-insensitively.
-pub async fn list_teams(access_token: &str) -> Result<Vec<LinearTeam>, LinearApiError> {
+/// [`TEAMS_MAX_PAGES`] pages (a warn is logged and the listing is flagged if
+/// the cap truncates), sorted by name case-insensitively.
+pub async fn list_teams(access_token: &str) -> Result<LinearTeamsListing, LinearApiError> {
     let mut pager = TeamsPager::new();
     let mut after: Option<String> = None;
     loop {
@@ -637,7 +645,7 @@ pub async fn list_teams(access_token: &str) -> Result<Vec<LinearTeam>, LinearApi
             "linear teams listing truncated at the pagination cap"
         );
     }
-    Ok(teams)
+    Ok(LinearTeamsListing { teams, truncated })
 }
 
 #[cfg(test)]

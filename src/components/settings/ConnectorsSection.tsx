@@ -164,8 +164,28 @@ export function ConnectorsSection() {
   const [teamsLoading, setTeamsLoading] = useState(false);
   const [teamsError, setTeamsError] = useState<string | null>(null);
   const [availableTeams, setAvailableTeams] = useState<LinearTeam[]>([]);
+  const [teamsTruncated, setTeamsTruncated] = useState(false);
   const [selectedTeamIds, setSelectedTeamIds] = useState<ReadonlySet<string>>(new Set());
   const [savingTeams, setSavingTeams] = useState(false);
+
+  // Previously selected teams the live listing no longer returns (archived,
+  // visibility lost, or beyond the truncation cap). They must stay visible
+  // and count toward the save payload, or an unrelated "Manage teams" save
+  // would silently narrow the stored selection - the selection is June's
+  // authorization boundary once Linear reads land.
+  const teamsAccount = teamsAccountId
+    ? ((accounts ?? []).find((account) => account.accountId === teamsAccountId) ?? null)
+    : null;
+  const missingSelectedTeams = (teamsAccount?.selectedTeams ?? []).filter(
+    (team) => !availableTeams.some((live) => live.id === team.id),
+  );
+  // The exact set a save would persist: checked teams, with metadata from
+  // the live listing when present and from the persisted selection
+  // otherwise. The save button gates on THIS length, not on
+  // selectedTeamIds.size, so the two can never disagree.
+  const teamsPayload = [...availableTeams, ...missingSelectedTeams].filter((team) =>
+    selectedTeamIds.has(team.id),
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -198,8 +218,9 @@ export function ConnectorsSection() {
     setTeamsLoading(true);
     setTeamsError(null);
     try {
-      const teams = await connectorsLinearTeams({ accountId });
-      setAvailableTeams(teams);
+      const listing = await connectorsLinearTeams({ accountId });
+      setAvailableTeams(listing.teams);
+      setTeamsTruncated(listing.truncated);
     } catch (err) {
       setTeamsError(messageFromError(err));
     } finally {
@@ -360,11 +381,10 @@ export function ConnectorsSection() {
   }
 
   async function saveTeams() {
-    if (!teamsAccountId || selectedTeamIds.size === 0 || savingTeams) return;
+    if (!teamsAccountId || teamsPayload.length === 0 || savingTeams) return;
     setSavingTeams(true);
     try {
-      const teams = availableTeams.filter((team) => selectedTeamIds.has(team.id));
-      await connectorsSetSelectedTeams({ accountId: teamsAccountId, teams });
+      await connectorsSetSelectedTeams({ accountId: teamsAccountId, teams: teamsPayload });
       await refresh();
       setTeamsAccountId(null);
       toast.success("Linear teams updated");
@@ -622,7 +642,7 @@ export function ConnectorsSection() {
               type="button"
               className="primary-action primary-solid"
               disabled={
-                selectedTeamIds.size === 0 || savingTeams || teamsLoading || teamsError !== null
+                teamsPayload.length === 0 || savingTeams || teamsLoading || teamsError !== null
               }
               aria-busy={savingTeams || undefined}
               onClick={() => void saveTeams()}
@@ -651,26 +671,55 @@ export function ConnectorsSection() {
             }
           />
         ) : (
-          <div className="connectors-bundle-list">
-            {availableTeams.map((team) => (
-              <label
-                key={team.id}
-                className="connectors-bundle-option"
-                htmlFor={`connectors-team-${team.id}`}
-              >
-                <Checkbox
-                  id={`connectors-team-${team.id}`}
-                  checked={selectedTeamIds.has(team.id)}
-                  disabled={savingTeams}
-                  onChange={(event) => toggleTeam(team.id, event.currentTarget.checked)}
-                />
-                <span className="connectors-bundle-copy">
-                  <span className="connectors-bundle-label">{team.name}</span>
-                  <span className="connectors-bundle-description">{team.key}</span>
-                </span>
-              </label>
-            ))}
-          </div>
+          <>
+            {teamsTruncated ? (
+              <InlineNotice
+                tone="info"
+                body="Linear returned only the first 500 teams, so this list is incomplete."
+                aria-label="Team list truncated"
+              />
+            ) : null}
+            <div className="connectors-bundle-list">
+              {availableTeams.map((team) => (
+                <label
+                  key={team.id}
+                  className="connectors-bundle-option"
+                  htmlFor={`connectors-team-${team.id}`}
+                >
+                  <Checkbox
+                    id={`connectors-team-${team.id}`}
+                    checked={selectedTeamIds.has(team.id)}
+                    disabled={savingTeams}
+                    onChange={(event) => toggleTeam(team.id, event.currentTarget.checked)}
+                  />
+                  <span className="connectors-bundle-copy">
+                    <span className="connectors-bundle-label">{team.name}</span>
+                    <span className="connectors-bundle-description">{team.key}</span>
+                  </span>
+                </label>
+              ))}
+              {missingSelectedTeams.map((team) => (
+                <label
+                  key={team.id}
+                  className="connectors-bundle-option"
+                  htmlFor={`connectors-team-${team.id}`}
+                >
+                  <Checkbox
+                    id={`connectors-team-${team.id}`}
+                    checked={selectedTeamIds.has(team.id)}
+                    disabled={savingTeams}
+                    onChange={(event) => toggleTeam(team.id, event.currentTarget.checked)}
+                  />
+                  <span className="connectors-bundle-copy">
+                    <span className="connectors-bundle-label">{team.name}</span>
+                    <span className="connectors-bundle-description">
+                      {team.key} · not visible in Linear right now
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </>
         )}
       </Dialog>
     </section>
