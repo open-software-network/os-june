@@ -285,18 +285,16 @@ Scale has four sequential $15,000 campaign cash release tranches:
 | Scale tranche | Evidence | Media | External cash work | Campaign cash cap | Active media | Release authority |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | 1 | Planning assumption | $13,500 | $1,500 | $15,000 | 3 weeks | The Growth-to-Scale gate may authorize only this tranche |
-| 2 | Planning assumption | $13,500 | $1,500 | $15,000 | 3 weeks | Release only after tranche 1's cohort matures and both tranche 1 independently and cumulative Scale pass every applicable Scale gate |
-| 3 | Planning assumption | $13,500 | $1,500 | $15,000 | 3 weeks | Release only after tranche 2's cohort matures and both tranche 2 independently and cumulative Scale pass every applicable Scale gate |
-| 4 | Planning assumption | $13,500 | $1,500 | $15,000 | 3 weeks | Release only after tranche 3's cohort matures and both tranche 3 independently and cumulative Scale pass every applicable Scale gate |
+| 2 | Planning assumption | $13,500 | $1,500 | $15,000 | 3 weeks | Intra-Scale release gate |
+| 3 | Planning assumption | $13,500 | $1,500 | $15,000 | 3 weeks | Intra-Scale release gate |
+| 4 | Planning assumption | $13,500 | $1,500 | $15,000 | 3 weeks | Intra-Scale release gate |
 | Total | Calculated output | $54,000 | $6,000 | $60,000 | 12 weeks | Full Scale cap; never committed at entry |
 
 **Planning assumption:** A Scale tranche cohort is mature only after its
-60-day and approved refund/cancellation windows close. Applicable Scale gates
-use the pre-registered uncertainty rule, cell and cohort samples, campaign cash
-CAC, Plan mix, and retention-aware fully loaded contribution payback. A stopped
-or underexposed Scale tranche cannot authorize the next tranche. Each released
-Scale tranche must deliver at least 80% of its $13,500 media cap, or $10,800,
-unless a stop rule ends it.
+60-day and approved refund/cancellation windows close. Tranches 2 to 4 use the
+named Intra-Scale release gate below. Each released Scale tranche must deliver
+at least 80% of its $13,500 media cap, or $10,800, unless a stop rule ends it.
+A stopped or underexposed Scale tranche cannot authorize the next tranche.
 
 No reallocation can bypass a paid acquisition channel pause, a wedge stop, the
 measurement guardrail, or the reserve-release gate.
@@ -414,6 +412,7 @@ must freeze every item below before launch:
 | --- | --- | --- |
 | Assignment unit | Planning assumption | Define the pre-registered paid acquisition cell and coarse cohort window, plus geo or time holdout assignment; creative variants remain nested inside a cell |
 | Data flow and consent | Planning assumption | Document each source, destination, vendor, consent surface, and vendor configuration while keeping June P3A separate |
+| Measurement health | Planning assumption | Define continuous source-to-scorecard health checks, alert ownership, the fail-closed latch, and a privacy-reviewed reconciliation procedure for every affected cohort and window |
 | Gate definitions | Planning assumption | Fix the numerator, denominator, minimum sample, maturity window, exclusions, and source system for every rate, cost, Plan-mix, and payback gate |
 | Tranche exposure | Planning assumption | Require at least 80% of each released media cap unless a stop rule ends the tranche; a stopped or underexposed tranche cannot authorize the next campaign tier or tranche |
 | Cohort persistence | Planning assumption | Keep only a thresholded aggregate cohort key stable through its activation, 60-day paid, refund, and cancellation windows; never persist a person-level campaign join |
@@ -503,6 +502,7 @@ use them as evidence that paid acquisition economics passed.
 | Period | Evidence | Required work |
 | --- | --- | --- |
 | Before week 1 | Planning assumption | Approve Phase 0, establish holdouts, freeze definitions, pass the full dry run, and quality-check pages |
+| Every active media day and before any release | Planning assumption | Verify every approved measurement source, cohort window, estimator, and scorecard output is healthy; latch the fail-closed pause on any loss |
 | Lean weeks 1 to 2 | Planning assumption | Launch all three wedges at controlled bids, review search terms and placements twice weekly, and resolve brand or privacy issues immediately |
 | Lean weeks 3 to 4 | Planning assumption | Stop failed cells, refresh one variable at a time, and compare wedge-level click-to-Free only where traffic is sufficient |
 | Lean weeks 5 to 6 | Planning assumption | Hold winning cells stable, do not force the cap to spend, and prepare the initial readout |
@@ -576,6 +576,43 @@ Move from Growth to Scale only when all of these are true:
   is at least 10% of paid Plan starts, or Pro Plan economics pass independently
   without relying on Max Plan mix.
 
+### Intra-Scale release gate
+
+Before releasing Scale tranches 2, 3, or 4, every condition below must pass:
+
+- **Planning assumption:** The prior Scale tranche completed all three active
+  media weeks.
+- **Planning assumption:** At least 80% of the prior tranche's $13,500 media
+  cap, or $10,800, received valid exposure under the approved measurement
+  contract.
+- **Planning assumption:** The prior tranche cohort and all cumulative Scale
+  cohorts matured through their 60-day and approved refund/cancellation
+  windows.
+- **Planning assumption:** The latest tranche has at least 30 net incremental
+  paid Plan starts, and cumulative Scale has at least `30 x number of completed
+  Scale tranches` net incremental paid Plan starts.
+- **Planning assumption:** For both the latest tranche independently and
+  cumulative Scale, the lower bound for 60-day Free-to-paid conversion is at
+  least 8%.
+- **Planning assumption:** For both scopes, the upper bound for campaign cash
+  CAC is no more than $300.
+- **Planning assumption:** For both scopes, the conservative bound reaches
+  retention-aware cumulative expected contribution recovery no later than
+  month 12. If expected lifetime contribution never recovers fully loaded
+  contribution CAC, the gate fails.
+- **Planning assumption:** For both scopes, the lower bound for Max Plan share
+  is at least 10%, or Pro Plan economics pass independently without relying on
+  Max Plan mix.
+- **Planning assumption:** Fixed cell and cohort samples are met and every
+  required measurement is computable for both scopes.
+- **Planning assumption:** No unresolved privacy, policy, misleading-copy, or
+  brand issue exists.
+
+All conditions use the pre-registered conservative uncertainty rule. A stopped,
+underexposed, suppressed, or unmeasurable latest or cumulative scope fails the
+Intra-Scale release gate and cannot release the next tranche. No release may
+change a campaign, tranche, reserve, cell, or geographic cap.
+
 No reserved funds release automatically. Campaign-wide success never
 authorizes a new cell. Every new Growth paid acquisition channel or geography
 and every new Scale paid acquisition channel remains inside its explicit test
@@ -609,8 +646,20 @@ stay nested within the cell; otherwise, its funds remain reserved.
 - **Planning assumption:** Separately pause a paid acquisition cell when fewer
   than 25% of at least 20 completed Free accounts complete the wedge's
   first-value job after each account has matured for seven days.
-- **Planning assumption:** Stop all scaling if measurement cannot distinguish
-  paid cohorts from organic at the approved aggregate level.
+- **Planning assumption:** Any loss of an approved measurement source, cohort
+  window, estimator, or required scorecard output immediately latches a pause
+  on all active and scheduled media and all external campaign cash commitments
+  across Lean, Growth, and Scale.
+- **Planning assumption:** The latch remains until the privacy reviewer verifies
+  measurement is restored and every affected cohort and window is reconciled.
+- **Planning assumption:** Blind time does not count toward active media weeks
+  or valid exposure. Blind media spend remains in the media CAC numerator.
+  Blind media and external campaign cash spend remain in the campaign cash CAC
+  numerator, and all blind spend remains in the applicable media and campaign
+  cash caps.
+- **Planning assumption:** If any affected cohort or window cannot be
+  reconciled, the current tranche or campaign fails and cannot authorize a
+  later tranche or campaign tier.
 - **Planning assumption:** Pause immediately for a privacy, policy,
   misleading-copy, or brand issue. Diagnosis and review are required before
   restart.
