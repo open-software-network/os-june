@@ -714,203 +714,240 @@ pub(crate) async fn process_saved_source_audio(
     let dictionary_context = build_dictionary_context(&dictionary_entries);
     let processing_started = Instant::now();
     let transcription_started = Instant::now();
-    let detection_started = Instant::now();
-    let SilentSystemDropOutcome {
-        kept: sources,
-        dropped,
-    } = partition_silent_system_sources(sources);
-    for drop in &dropped {
-        repos
-            .add_source_checkpoint(
-                session_id,
-                Some(drop.artifact_id.as_str()),
-                Some(drop.source.as_str()),
-                "silent_source_dropped",
-                Some(
-                    serde_json::json!({
-                        "source": drop.source,
-                        "maxRms": drop.max_rms,
-                    })
-                    .to_string(),
-                ),
+    let eager_preparation = async {
+        let detection_started = Instant::now();
+        let SilentSystemDropOutcome {
+            kept: sources,
+            dropped,
+        } = partition_silent_system_sources(sources);
+        for drop in &dropped {
+            repos
+                .add_source_checkpoint(
+                    session_id,
+                    Some(drop.artifact_id.as_str()),
+                    Some(drop.source.as_str()),
+                    "silent_source_dropped",
+                    Some(
+                        serde_json::json!({
+                            "source": drop.source,
+                            "maxRms": drop.max_rms,
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await?;
+        }
+        let detection_sources = sources
+            .iter()
+            .map(
+                |(artifact_id, source, audio_path, _recorded_silence)| DetectionSource {
+                    artifact_id: artifact_id.clone(),
+                    source: source.clone(),
+                    path: audio_path.clone(),
+                },
             )
-            .await?;
-    }
-    let detection_sources = sources
-        .iter()
-        .map(
-            |(artifact_id, source, audio_path, _recorded_silence)| DetectionSource {
-                artifact_id: artifact_id.clone(),
-                source: source.clone(),
-                path: audio_path.clone(),
-            },
-        )
-        .collect::<Vec<_>>();
-    // Detection now carries real DSP (GCC-PHAT probes, adaptive
-    // cancellation passes over full recordings) — CPU-bound for minutes on
-    // long meetings, so it must not pin an async runtime worker.
-    let (turns, echo_rejection) =
-        tokio::task::spawn_blocking(move || detect_turns_with_report(&detection_sources))
-            .await
-            .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))??;
-    // Echo rejection silently rewrites the microphone timeline; leave a
-    // trace (which lag, how much trimmed) so missing-speech reports can be
-    // diagnosed, mirroring the silent_source_dropped checkpoint.
-    if echo_rejection.attempted() {
+            .collect::<Vec<_>>();
+        // Detection now carries real DSP (GCC-PHAT probes, adaptive
+        // cancellation passes over full recordings) — CPU-bound for minutes on
+        // long meetings, so it must not pin an async runtime worker.
+        let (turns, echo_rejection) =
+            tokio::task::spawn_blocking(move || detect_turns_with_report(&detection_sources))
+                .await
+                .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))??;
+        // Echo rejection silently rewrites the microphone timeline; leave a
+        // trace (which lag, how much trimmed) so missing-speech reports can be
+        // diagnosed, mirroring the silent_source_dropped checkpoint.
+        if echo_rejection.attempted() {
+            repos
+                .add_checkpoint(
+                    session_id,
+                    "echo_rejection",
+                    Some(
+                        serde_json::json!({
+                            "pairLagsMs": echo_rejection.pair_lags_ms,
+                            "trimmedTurnCount": echo_rejection.trimmed_turn_count,
+                            "trimmedMs": echo_rejection.trimmed_ms,
+                            "droppedTurnCount": echo_rejection.dropped_turn_count,
+                            "durationMs": elapsed_ms(detection_started),
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await?;
+        }
+        let turns = add_full_source_turns_for_missing_sources(&sources, turns, &echo_rejection);
+        let turns = coalesce_turns_for_transcription_avoiding_echo(
+            turns,
+            &echo_rejection.microphone_echo_spans,
+        );
+        // Coverage is measured against the post-trim turn list on purpose:
+        // speaker bleed removed by echo rejection is not lost speech.
+        let coverage_turns = turns.clone();
         repos
             .add_checkpoint(
                 session_id,
-                "echo_rejection",
+                "turn_detection",
                 Some(
                     serde_json::json!({
-                        "pairLagsMs": echo_rejection.pair_lags_ms,
-                        "trimmedTurnCount": echo_rejection.trimmed_turn_count,
-                        "trimmedMs": echo_rejection.trimmed_ms,
-                        "droppedTurnCount": echo_rejection.dropped_turn_count,
                         "durationMs": elapsed_ms(detection_started),
+                        "sourceCount": sources.len(),
+                        "turnCount": turns.len(),
                     })
                     .to_string(),
                 ),
             )
             .await?;
-    }
-    let turns = add_full_source_turns_for_missing_sources(&sources, turns, &echo_rejection);
-    let turns = coalesce_turns_for_transcription_avoiding_echo(
-        turns,
-        &echo_rejection.microphone_echo_spans,
-    );
-    // Coverage is measured against the post-trim turn list on purpose:
-    // speaker bleed removed by echo rejection is not lost speech.
-    let coverage_turns = turns.clone();
-    repos
-        .add_checkpoint(
-            session_id,
-            "turn_detection",
-            Some(
-                serde_json::json!({
-                    "durationMs": elapsed_ms(detection_started),
-                    "sourceCount": sources.len(),
-                    "turnCount": turns.len(),
-                })
-                .to_string(),
-            ),
-        )
-        .await?;
 
-    let segment_dir = session_temp_dir("os-june-turns", session_id);
-    let _ = std::fs::remove_dir_all(&segment_dir);
-    std::fs::create_dir_all(&segment_dir)
-        .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+        let segment_dir = session_temp_dir("os-june-turns", session_id);
+        let _ = std::fs::remove_dir_all(&segment_dir);
+        std::fs::create_dir_all(&segment_dir)
+            .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
 
-    let extraction_started = Instant::now();
-    let existing_transcripts = repos
-        .successful_source_turn_transcripts_for_session(session_id)
-        .await?;
-    let existing_by_turn = existing_transcripts
-        .into_iter()
-        .filter_map(|transcript| {
-            Some((
-                turn_cache_key(transcript.source.as_deref()?, transcript.turn_index?),
-                transcript,
-            ))
-        })
-        .collect::<HashMap<_, _>>();
-    let mut transcription_jobs = Vec::new();
-    let mut cached_candidates = Vec::new();
-    let mut normalized_sources: HashMap<PathBuf, PathBuf> = HashMap::new();
-    for turn in turns {
-        if let Some(existing) = existing_by_turn.get(&turn_cache_key(&turn.source, turn.turn_index))
-        {
-            // The cache key is positional; turn detection changes across app
-            // versions (echo rejection trims and splits microphone turns), so
-            // an index alone can point at a different stretch of audio than
-            // the transcript was made from. Reuse only when the cached bounds
-            // confirm it is the same turn — otherwise fall through and
-            // re-transcribe rather than replay text from the wrong span.
-            let bounds_match = existing.start_ms.is_some_and(|start| {
-                (start - turn.start_ms).abs() <= CACHED_TURN_BOUNDS_TOLERANCE_MS
-            }) && existing
-                .end_ms
-                .is_some_and(|end| (end - turn.end_ms).abs() <= CACHED_TURN_BOUNDS_TOLERANCE_MS);
-            if bounds_match {
-                cached_candidates.push(TranscriptCandidate {
-                    artifact_id: turn.artifact_id,
-                    language: existing.language.clone(),
-                    provider: transcription_provider.clone(),
-                    input: SourceTranscriptInput {
-                        source: existing
-                            .source
-                            .clone()
-                            .unwrap_or_else(|| turn.source.clone()),
-                        text: existing.text.clone(),
-                        valid: existing.status == "succeeded" && !existing.text.trim().is_empty(),
-                        warning: None,
-                        recorded_silence: existing.recorded_silence,
-                        start_ms: existing.start_ms.or(Some(turn.start_ms)),
-                        end_ms: existing.end_ms.or(Some(turn.end_ms)),
-                        turn_index: existing.turn_index.or(Some(turn.turn_index)),
-                    },
+        let extraction_started = Instant::now();
+        let existing_transcripts = repos
+            .successful_source_turn_transcripts_for_session(session_id)
+            .await?;
+        let existing_by_turn = existing_transcripts
+            .into_iter()
+            .filter_map(|transcript| {
+                Some((
+                    turn_cache_key(transcript.source.as_deref()?, transcript.turn_index?),
+                    transcript,
+                ))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut transcription_jobs = Vec::new();
+        let mut cached_candidates = Vec::new();
+        let mut normalized_sources: HashMap<PathBuf, PathBuf> = HashMap::new();
+        for turn in turns {
+            if let Some(existing) =
+                existing_by_turn.get(&turn_cache_key(&turn.source, turn.turn_index))
+            {
+                // The cache key is positional; turn detection changes across app
+                // versions (echo rejection trims and splits microphone turns), so
+                // an index alone can point at a different stretch of audio than
+                // the transcript was made from. Reuse only when the cached bounds
+                // confirm it is the same turn — otherwise fall through and
+                // re-transcribe rather than replay text from the wrong span.
+                let bounds_match = existing.start_ms.is_some_and(|start| {
+                    (start - turn.start_ms).abs() <= CACHED_TURN_BOUNDS_TOLERANCE_MS
+                }) && existing.end_ms.is_some_and(|end| {
+                    (end - turn.end_ms).abs() <= CACHED_TURN_BOUNDS_TOLERANCE_MS
                 });
-                continue;
+                if bounds_match {
+                    cached_candidates.push(TranscriptCandidate {
+                        artifact_id: turn.artifact_id,
+                        language: existing.language.clone(),
+                        provider: transcription_provider.clone(),
+                        input: SourceTranscriptInput {
+                            source: existing
+                                .source
+                                .clone()
+                                .unwrap_or_else(|| turn.source.clone()),
+                            text: existing.text.clone(),
+                            valid: existing.status == "succeeded"
+                                && !existing.text.trim().is_empty(),
+                            warning: None,
+                            recorded_silence: existing.recorded_silence,
+                            start_ms: existing.start_ms.or(Some(turn.start_ms)),
+                            end_ms: existing.end_ms.or(Some(turn.end_ms)),
+                            turn_index: existing.turn_index.or(Some(turn.turn_index)),
+                        },
+                    });
+                    continue;
+                }
             }
-        }
 
-        let segment_path = segment_dir.join(format!(
-            "{:04}-{}-{}-{}.wav",
-            turn.turn_index, turn.source, turn.start_ms, turn.end_ms
-        ));
-        let source_audio_path = normalized_full_source(
-            &mut normalized_sources,
-            &segment_dir,
-            &turn.source,
-            &turn.source_path,
-        )?;
-        let covers_full_source = turn.end_ms <= turn.start_ms;
-        let raw_audio_path = if covers_full_source {
-            turn.source_path.clone()
-        } else {
-            write_turn_wav(&turn, &segment_path)?;
-            segment_path.clone()
-        };
-        let audio_path = normalize_wav_for_transcription(
-            &raw_audio_path,
-            &segment_dir.join(format!(
-                "{:04}-{}-{}-{}-normalized.wav",
+            let segment_path = segment_dir.join(format!(
+                "{:04}-{}-{}-{}.wav",
                 turn.turn_index, turn.source, turn.start_ms, turn.end_ms
-            )),
-        )?;
-        let recorded_silence = source_recorded_silence(&sources, &turn.artifact_id);
-        transcription_jobs.push(TurnTranscriptionJob {
-            echo_trimmed: echo_rejection
-                .trimmed_artifact_ids
-                .contains(&turn.artifact_id),
-            artifact_id: turn.artifact_id,
-            source: turn.source,
-            audio_path,
-            temp_dir: segment_dir.clone(),
-            source_path: source_audio_path,
-            recorded_silence,
-            covers_full_source,
-            source_fallback: false,
-            start_ms: turn.start_ms,
-            end_ms: turn.end_ms,
-            turn_index: turn.turn_index,
-        });
+            ));
+            let source_audio_path = normalized_full_source(
+                &mut normalized_sources,
+                &segment_dir,
+                &turn.source,
+                &turn.source_path,
+            )?;
+            let covers_full_source = turn.end_ms <= turn.start_ms;
+            let raw_audio_path = if covers_full_source {
+                turn.source_path.clone()
+            } else {
+                write_turn_wav(&turn, &segment_path)?;
+                segment_path.clone()
+            };
+            let audio_path = normalize_wav_for_transcription(
+                &raw_audio_path,
+                &segment_dir.join(format!(
+                    "{:04}-{}-{}-{}-normalized.wav",
+                    turn.turn_index, turn.source, turn.start_ms, turn.end_ms
+                )),
+            )?;
+            let recorded_silence = source_recorded_silence(&sources, &turn.artifact_id);
+            transcription_jobs.push(TurnTranscriptionJob {
+                echo_trimmed: echo_rejection
+                    .trimmed_artifact_ids
+                    .contains(&turn.artifact_id),
+                artifact_id: turn.artifact_id,
+                source: turn.source,
+                audio_path,
+                temp_dir: segment_dir.clone(),
+                source_path: source_audio_path,
+                recorded_silence,
+                covers_full_source,
+                source_fallback: false,
+                start_ms: turn.start_ms,
+                end_ms: turn.end_ms,
+                turn_index: turn.turn_index,
+            });
+        }
+        repos
+            .add_checkpoint(
+                session_id,
+                "turn_wav_extraction",
+                Some(
+                    serde_json::json!({
+                        "durationMs": elapsed_ms(extraction_started),
+                        "jobCount": transcription_jobs.len(),
+                        "reusedTranscriptCount": cached_candidates.len(),
+                    })
+                    .to_string(),
+                ),
+            )
+            .await?;
+
+        Ok::<_, AppError>((
+            sources,
+            coverage_turns,
+            segment_dir,
+            transcription_jobs,
+            cached_candidates,
+        ))
     }
-    repos
-        .add_checkpoint(
-            session_id,
-            "turn_wav_extraction",
-            Some(
-                serde_json::json!({
-                    "durationMs": elapsed_ms(extraction_started),
-                    "jobCount": transcription_jobs.len(),
-                    "reusedTranscriptCount": cached_candidates.len(),
-                })
-                .to_string(),
-            ),
-        )
-        .await?;
+    .await;
+    let (sources, coverage_turns, segment_dir, transcription_jobs, cached_candidates) =
+        match eager_preparation {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                timeline.flush(repos, session_id).await;
+                add_infrastructure_transcription_failure_checkpoint(
+                    repos,
+                    session_id,
+                    timing,
+                    transcription_started,
+                    &error.code,
+                )
+                .await;
+                add_processing_complete_checkpoint(
+                    repos,
+                    session_id,
+                    timing,
+                    processing_started,
+                    "failed",
+                )
+                .await;
+                return Err(error);
+            }
+        };
 
     let persist_repos = repos.clone();
     let persist_note_id = note_id.to_string();
@@ -2759,6 +2796,142 @@ mod tests {
             assert_eq!(object.len(), 1);
             assert!(object["doneToDurationMs"].as_i64().is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn eager_preparation_failure_persists_terminal_checkpoints_without_counts() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note(None).await.expect("note");
+        let session_id = format!("session-{}", uuid::Uuid::new_v4());
+        repos
+            .create_recording_session(
+                &note.id,
+                &session_id,
+                RecordingSourceMode::MicrophonePlusSystem,
+                "microphone.partial.wav",
+                "microphone.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+
+        let source_dir = tempfile::tempdir().expect("source temp dir");
+        let source_path = source_dir.path().join("microphone.wav");
+        write_loud_wav(&source_path, 48_000, 48_000);
+
+        let segment_dir = session_temp_dir("os-june-turns", &session_id);
+        let _ = std::fs::remove_dir_all(&segment_dir);
+        let _ = std::fs::remove_file(&segment_dir);
+        std::fs::write(&segment_dir, b"block turn directory creation")
+            .expect("blocking segment file");
+        let expected_message = std::fs::create_dir_all(&segment_dir)
+            .expect_err("regular file must block directory creation")
+            .to_string();
+
+        let result = process_saved_source_audio(
+            &repos,
+            &note.id,
+            &session_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            vec![(
+                "microphone-artifact".to_string(),
+                "microphone".to_string(),
+                source_path,
+                false,
+            )],
+            "Preparation failure".to_string(),
+            None,
+            None,
+            ProcessingTiming::from_done(Instant::now()),
+        )
+        .await;
+        std::fs::remove_file(&segment_dir).expect("remove blocking segment file");
+
+        let error = result.expect_err("eager preparation must fail");
+        assert_eq!(error.code, "audio_turn_failed");
+        assert_eq!(error.message, expected_message);
+        assert!(error.details.is_none());
+
+        let rows = sqlx::query::query(
+            "SELECT kind, details
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('transcription_complete', 'processing_complete')
+             ORDER BY rowid ASC",
+        )
+        .bind(&session_id)
+        .fetch_all(&repos.pool)
+        .await
+        .expect("terminal checkpoints");
+        assert_eq!(rows.len(), 2, "one checkpoint for each terminal kind");
+
+        let transcription_rows = rows
+            .iter()
+            .filter(|row| row.get::<String, _>("kind") == "transcription_complete")
+            .collect::<Vec<_>>();
+        assert_eq!(transcription_rows.len(), 1);
+        let transcription_details = transcription_rows[0]
+            .get::<Option<String>, _>("details")
+            .expect("transcription checkpoint details");
+        let transcription_details: serde_json::Value =
+            serde_json::from_str(&transcription_details).expect("transcription details JSON");
+        let transcription_details = transcription_details
+            .as_object()
+            .expect("transcription details object");
+        assert_eq!(transcription_details["status"], "failed");
+        assert_eq!(transcription_details["error"], "audio_turn_failed");
+        assert!(transcription_details["durationMs"].as_i64().is_some());
+        assert!(transcription_details["doneToDurationMs"].as_i64().is_some());
+        assert!(!transcription_details.contains_key("successfulTurnCount"));
+        assert!(!transcription_details.contains_key("failedTurnCount"));
+
+        let processing_rows = rows
+            .iter()
+            .filter(|row| row.get::<String, _>("kind") == "processing_complete")
+            .collect::<Vec<_>>();
+        assert_eq!(processing_rows.len(), 1);
+        let processing_details = processing_rows[0]
+            .get::<Option<String>, _>("details")
+            .expect("processing checkpoint details");
+        let processing_details: serde_json::Value =
+            serde_json::from_str(&processing_details).expect("processing details JSON");
+        assert_eq!(processing_details["status"], "failed");
+        assert!(processing_details["durationMs"].as_i64().is_some());
+        assert!(processing_details["doneToDurationMs"].as_i64().is_some());
+
+        let turn_detection_count: i64 = sqlx::query_scalar::query_scalar(
+            "SELECT COUNT(*)
+             FROM recording_checkpoints
+             WHERE recording_session_id = ? AND kind = 'turn_detection'",
+        )
+        .bind(&session_id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("turn-detection checkpoint count");
+        assert_eq!(
+            turn_detection_count, 1,
+            "detection completed before failure"
+        );
+
+        let first_event_count: i64 = sqlx::query_scalar::query_scalar(
+            "SELECT COUNT(*)
+             FROM recording_checkpoints
+             WHERE recording_session_id = ?
+               AND kind IN ('first_transcription_request', 'first_transcript_persisted')",
+        )
+        .bind(&session_id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("first-event checkpoint count");
+        assert_eq!(first_event_count, 0, "provider work never started");
     }
 
     #[test]
