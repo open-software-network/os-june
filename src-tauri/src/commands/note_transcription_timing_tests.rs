@@ -16,39 +16,26 @@ use crate::{
 };
 use sqlx::row::Row;
 use std::{
-    ffi::OsString,
     path::{Path, PathBuf},
+    process::Command,
     time::{Duration, Instant},
 };
 
-struct EnvGuard {
-    previous: Vec<(&'static str, Option<OsString>)>,
-}
+const TIMING_TEST_CHILD_ENV: &str = "JUNE_NOTE_TRANSCRIPTION_TIMING_TEST_CHILD";
+const TIMING_TEST_NAME: &str = "commands::note_transcription_timing_tests::done_origin_checkpoints_are_monotonic_and_single_shot";
+const TIMING_TEST_COMPLETED_SENTINEL: &str = "JUNE_NOTE_TRANSCRIPTION_TIMING_TEST_COMPLETED";
 
-impl EnvGuard {
-    fn set(values: [(&'static str, String); 3]) -> Self {
-        crate::os_accounts::load_local_env();
-        let previous = values
-            .iter()
-            .map(|(name, _)| (*name, std::env::var_os(name)))
-            .collect();
-        for (name, value) in values {
-            std::env::set_var(name, value);
-        }
-        Self { previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        for (name, value) in self.previous.drain(..) {
-            if let Some(value) = value {
-                std::env::set_var(name, value);
-            } else {
-                std::env::remove_var(name);
-            }
-        }
-    }
+fn assert_timing_test_child_succeeded(success: bool, stdout: &[u8], stderr: &[u8]) {
+    let stdout = String::from_utf8_lossy(stdout);
+    let stderr = String::from_utf8_lossy(stderr);
+    assert!(
+        success,
+        "isolated timing test failed: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stdout.contains(TIMING_TEST_COMPLETED_SENTINEL),
+        "isolated timing test did not report completion: stdout={stdout} stderr={stderr}"
+    );
 }
 
 fn write_one_second_timing_wav(path: &Path) {
@@ -102,8 +89,7 @@ fn timing_finished_recording(
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
+async fn assert_done_origin_checkpoints_are_monotonic_and_single_shot() {
     let dir = tempfile::tempdir().expect("timing tempdir");
     let repos = benchmark_repositories(&dir).await;
     let note = repos.create_note(None).await.expect("timing note");
@@ -132,19 +118,6 @@ async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
         )
         .await
         .expect("timing microphone artifact");
-
-    let clock = BenchmarkClock::default();
-    clock.start();
-    let events = RequestEvents::new(clock);
-    let (address, api_handle) = spawn_fake_june_api(events).await;
-    let _env = EnvGuard::set([
-        ("JUNE_API_URL", format!("http://{address}")),
-        ("OS_JUNE_LOCAL_DEV", "1".to_string()),
-        (
-            "OS_JUNE_LOCAL_DEV_BEARER_TOKEN",
-            "timing-test-token".to_string(),
-        ),
-    ]);
 
     let timing = ProcessingTiming::from_done(Instant::now());
     let response = finish_recording_session_with_timing(
@@ -253,7 +226,46 @@ async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
         durations.windows(2).all(|pair| pair[0] <= pair[1]),
         "Done-relative checkpoints must be monotonic: {durations:?}",
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
+    if std::env::var_os(TIMING_TEST_CHILD_ENV).is_some() {
+        assert_done_origin_checkpoints_are_monotonic_and_single_shot().await;
+        println!("{TIMING_TEST_COMPLETED_SENTINEL}");
+        return;
+    }
+
+    let clock = BenchmarkClock::default();
+    clock.start();
+    let events = RequestEvents::new(clock);
+    let (address, api_handle) = spawn_fake_june_api(events).await;
+    let executable = std::env::current_exe().expect("timing test executable");
+    let output = tokio::task::spawn_blocking(move || {
+        Command::new(executable)
+            .args([
+                "--exact",
+                TIMING_TEST_NAME,
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(TIMING_TEST_CHILD_ENV, "1")
+            .env("JUNE_API_URL", format!("http://{address}"))
+            .env("OS_JUNE_LOCAL_DEV", "1")
+            .env("OS_JUNE_LOCAL_DEV_BEARER_TOKEN", "timing-test-token")
+            .output()
+            .expect("run isolated timing test child")
+    })
+    .await
+    .expect("join isolated timing test child");
 
     api_handle.abort();
     let _ = api_handle.await;
+    assert_timing_test_child_succeeded(output.status.success(), &output.stdout, &output.stderr);
+}
+
+#[test]
+#[should_panic(expected = "isolated timing test did not report completion")]
+fn isolated_timing_test_rejects_a_zero_test_child() {
+    assert_timing_test_child_succeeded(true, b"running 0 tests", b"");
 }
