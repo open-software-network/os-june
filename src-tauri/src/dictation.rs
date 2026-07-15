@@ -2258,6 +2258,27 @@ fn probe_start_time(pid: u32) -> StartTimeProbe {
     }
 }
 
+/// Whether a `ps -o comm=` line names the dictation helper. Pure and
+/// truncation-tolerant: `comm=` may return the kernel `p_comm`, truncated to 15
+/// printable chars (`june-dictation-`) instead of the full 21-char name, so a
+/// basename that is a non-empty prefix of length ≥ 15 (the truncation length)
+/// counts as a match. No other expected process shares a 15-char prefix of
+/// `june-dictation-helper`, so this cannot false-positive. Handles both a bare
+/// `comm` and a full path (`rsplit('/')`).
+#[cfg(target_os = "macos")]
+fn comm_line_is_dictation_helper(comm_line: &str) -> bool {
+    let Some(basename) = comm_line
+        .trim()
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+    else {
+        return false;
+    };
+    basename == DICTATION_HELPER_NAME
+        || (basename.len() >= 15 && DICTATION_HELPER_NAME.starts_with(basename))
+}
+
 /// Tri-state executable-identity check via `ps -o comm=`. `Unknown` when `ps`
 /// could not run; `NotHelper` when the pid is gone or is a different program.
 #[cfg(target_os = "macos")]
@@ -2273,13 +2294,7 @@ fn inspect_helper_identity(pid: u32) -> HelperIdentity {
         Err(_) => HelperIdentity::Unknown,
         Ok(output) if !output.status.success() => HelperIdentity::NotHelper,
         Ok(output) => {
-            let is_helper = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .rsplit('/')
-                .next()
-                .map(|basename| basename == DICTATION_HELPER_NAME)
-                .unwrap_or(false);
-            if is_helper {
+            if comm_line_is_dictation_helper(&String::from_utf8_lossy(&output.stdout)) {
                 HelperIdentity::IsHelper
             } else {
                 HelperIdentity::NotHelper
@@ -2326,7 +2341,13 @@ fn helper_match(
                 match identity {
                     HelperIdentity::Unknown => HelperMatch::Unknown,
                     HelperIdentity::IsHelper => HelperMatch::MatchesRecord,
-                    HelperIdentity::NotHelper => HelperMatch::GoneOrReused,
+                    // Exact recorded (pid, start_time) but the executable does
+                    // not read as the helper. With the truncation-tolerant
+                    // identity check above, a real helper reads IsHelper, so this
+                    // is only a genuine same-second pid reuse by a non-helper —
+                    // rare. Fail closed (abort + retry) rather than delete the
+                    // record and risk racing an orphan.
+                    HelperIdentity::NotHelper => HelperMatch::Unknown,
                 }
             }
         }
@@ -4908,6 +4929,29 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn comm_line_identity_is_truncation_tolerant() {
+        // Full path (comm= returned the executable path).
+        assert!(comm_line_is_dictation_helper(
+            "/Applications/June Dictation Helper.app/Contents/MacOS/june-dictation-helper"
+        ));
+        // Bare full name.
+        assert!(comm_line_is_dictation_helper("june-dictation-helper"));
+        // Kernel p_comm truncated to 15 chars: the real orphan MUST still read
+        // as the helper, or it is deleted-not-killed and JUN-338 reopens.
+        assert!(comm_line_is_dictation_helper("june-dictation-"));
+        // Trailing whitespace/newline from ps is tolerated.
+        assert!(comm_line_is_dictation_helper("june-dictation-helper\n"));
+        // A shorter prefix (< 15) is ambiguous and must NOT match.
+        assert!(!comm_line_is_dictation_helper("june-dictation"));
+        // Unrelated process and empty output never match.
+        assert!(!comm_line_is_dictation_helper("/usr/bin/login"));
+        assert!(!comm_line_is_dictation_helper("bash"));
+        assert!(!comm_line_is_dictation_helper(""));
+        assert!(!comm_line_is_dictation_helper("   "));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn owner_liveness_uses_start_time_to_defeat_pid_reuse() {
         // Same pid, same start time -> the owner is genuinely still alive.
         assert_eq!(
@@ -4955,15 +4999,20 @@ mod tests {
             ),
             HelperMatch::GoneOrReused
         );
-        // Matching pid+start but the executable is not a helper -> not ours.
+        // Matching pid+start but the executable does not read as a helper. With
+        // the truncation-tolerant identity check this is only a genuine
+        // same-second pid reuse by a non-helper -> fail closed (abort), never
+        // delete-and-race.
         assert_eq!(
             helper_match(
                 &StartTimeProbe::StartedAt("t0".into()),
                 "t0",
                 &HelperIdentity::NotHelper
             ),
-            HelperMatch::GoneOrReused
+            HelperMatch::Unknown
         );
+        // Gone/reused pid (start-time mismatch or dead) with a non-helper -> the
+        // record names no live orphan, so it is safe to treat as stale.
         assert_eq!(
             helper_match(&StartTimeProbe::Gone, "t0", &HelperIdentity::NotHelper),
             HelperMatch::GoneOrReused
