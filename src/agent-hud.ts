@@ -22,7 +22,7 @@ import {
   type AgentHudVisibilityChangedDetail,
 } from "./lib/agent-hud-settings";
 import { isAgentSessionTitleCandidate, sessionSettledTitleKind } from "./lib/agent-session-titles";
-import { JUNE_SPINNER_ORDER } from "./lib/june-spinner-grid";
+import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "./lib/june-spinner-grid";
 import { titleFromPrompt } from "./lib/hermes-adapter";
 import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
@@ -897,18 +897,19 @@ function appendStatusIcon(parent: HTMLElement, status: HudSessionStatus) {
 
 // The app-wide dot spinner that draws June's mark (see components/DotSpinner.tsx
 // and lib/june-spinner-grid); this page has no React tree, so the same markup is
-// built by hand against the shared dot-spinner.css. Uses the sm (5×5) variant,
+// built by hand against the shared dot-spinner.css. Uses the sm (3×3) variant,
 // matching every inline usage.
 function appendDotSpinner(parent: HTMLElement) {
   const spinner = document.createElement("span");
   spinner.className = "dot-spinner";
   spinner.dataset.size = "sm";
   spinner.setAttribute("aria-hidden", "true");
-  for (const step of JUNE_SPINNER_ORDER.sm) {
+  spinner.style.setProperty("--june-cols", String(JUNE_SPINNER_COLS.sm));
+  for (const cell of juneSpinnerGrid("sm")) {
     const dot = document.createElement("span");
-    if (step !== null) {
-      dot.dataset.lit = "";
-      dot.style.setProperty("--june-order", String(step));
+    dot.style.setProperty("--june-order", String(cell.order));
+    if (cell.mark) {
+      dot.dataset.mark = "";
     }
     spinner.appendChild(dot);
   }

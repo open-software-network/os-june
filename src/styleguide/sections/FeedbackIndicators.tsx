@@ -38,9 +38,10 @@ export function FeedbackIndicators() {
 
       <h2 className="sg-subheading">Spinner</h2>
       <p className="sg-section-intro">
-        A dot matrix that draws June's mark stroke by stroke and redraws. The default sm (5×5)
-        variant is for inline and small loaders; size="lg" (7×7) is for larger standalone loading
-        moments.
+        A full dot grid with a smooth highlight that sweeps left to right across it; the dots on
+        June's mark swell brighter as the wave passes, so the matrix reads as June. The default sm
+        (3×3) variant is for inline and small loaders; size="lg" (5×5) is for larger standalone
+        loading moments.
       </p>
       <div className="sg-row">
         <div className="sg-card">

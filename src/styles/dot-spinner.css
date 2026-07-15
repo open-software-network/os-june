@@ -1,78 +1,107 @@
-/* The dot spinner: a matrix of tiny real circles that holds June's sparkle
- * mark while a soft highlight traces along it, over and over — a flip-dot board
- * lit with the brand mark, gently scanned. Drawn, not typeset, so the dots stay
- * crisp. Which dots light, and the order the highlight travels through them,
- * live in lib/june-spinner-grid (shared with the agent HUD page entry, which
- * has no React tree). Wrappers set only color (currentColor). Dot and gap MUST
- * stay integer px: fractional sizes put later columns on a different subpixel
- * phase and their circles rasterize ovular.
+/* The dot spinner: a full square grid of tiny real circles with a smooth
+ * highlight that climbs diagonally from the bottom-left. Every cell is a dot;
+ * the dots on June's mark — a stepped stroke from the squircle logo — swell
+ * bright and large as the wave traces up it, while the rest of the grid ripples
+ * faintly, so the matrix reads as June's ascending stroke travelling through it. Drawn,
+ * not typeset, so the dots stay crisp. The grid and each cell's sweep order live
+ * in lib/june-spinner-grid (shared with the agent HUD page entry, which has no
+ * React tree). Wrappers set only color (currentColor).
  *
- * Two variants: "sm" (5×5) for inline and small loaders — the default — and
- * "lg" (7×7) for larger standalone loading moments. */
+ * Two variants: "sm" (3×3) for inline and small loaders — the default — and
+ * "lg" (5×5) for larger standalone loading moments. The column count comes from
+ * --june-cols, set per instance. */
 .dot-spinner {
-  /* Dim of the resting matrix, the brightness the lit mark holds at between
-   * passes of the highlight, and the number of draw steps the highlight walks
-   * (0..9 — set per dot as --june-order in the markup). */
-  --june-off: 0.12;
-  --june-rest: 0.36;
-  --june-steps: 10;
-  /* One full pass of the highlight around the mark. Sine-eased, so it reads as
-   * a smooth glide rather than a march. */
-  --june-dur: 2200ms;
-  /* sm (5×5) is the default. Integer px so every column shares one subpixel
-   * phase. */
-  --june-dot: 1px;
+  /* Mark dots swell from --june-rest / --june-off up to full size and opacity;
+   * field dots swell only faintly (--june-field-*). Tune these to trade off how
+   * strongly the mark reads against the background grid. */
+  --june-off: 0.35;
+  --june-rest: 0.5;
+  --june-field-off: 0.1;
+  --june-field-rest: 0.42;
+  --june-field-peak: 0.28;
+  --june-field-scale: 0.62;
+  /* One diagonal step of the wave is --june-frame; --june-frames sets the loop
+   * length (the grid's diagonals plus a little trailing breath). */
+  --june-frames: 6;
+  --june-frame: 0.13s;
+  --june-dur: calc(var(--june-frame) * var(--june-frames));
+  /* Integer px so every column shares one subpixel phase. */
+  --june-dot: 2px;
   --june-gap: 1px;
+  --june-cols: 3;
 
   display: inline-grid;
-  grid-template-columns: repeat(5, var(--june-dot));
+  grid-template-columns: repeat(var(--june-cols), var(--june-dot));
   gap: var(--june-gap);
   line-height: 1;
 }
 
 .dot-spinner[data-size="lg"] {
+  --june-field-off: 0.08;
+  --june-frames: 10;
+  --june-frame: 0.1s;
   --june-dot: 3px;
   --june-gap: 2px;
-  grid-template-columns: repeat(7, var(--june-dot));
 }
 
+/* Every cell is a dot and rides the swell, phase-shifted by its diagonal order
+ * so the crest climbs from bottom-left to top-right. Field dots ripple faintly;
+ * mark dots swell to full. ease-in-out keeps the grow and shrink soft. */
 .dot-spinner > span {
   width: var(--june-dot);
   height: var(--june-dot);
   border-radius: 50%;
   background: currentColor;
+  opacity: var(--june-field-off);
+  transform: scale(var(--june-field-rest));
+  animation: june-field-sweep var(--june-dur) ease-in-out infinite;
+  animation-delay: calc(var(--june-order) * var(--june-frame) - var(--june-dur));
+  /* GPU-composite the swell so scaled circles stay smooth. */
+  will-change: transform, opacity;
+}
+
+.dot-spinner > span[data-mark] {
   opacity: var(--june-off);
+  transform: scale(var(--june-rest));
+  animation-name: june-mark-sweep;
 }
 
-/* A lit dot rests at --june-rest and swells to full brightness once per loop.
- * Each dot's swell is offset by its place in the draw order (--june-order), and
- * the offsets span the whole loop, so a single soft peak glides along the mark
- * in draw order and wraps back seamlessly. The negative delay starts every dot
- * already inside its cycle, so the highlight is mid-glide on first paint. */
-.dot-spinner > span[data-lit] {
-  opacity: var(--june-rest);
-  animation: june-dot-trace var(--june-dur) ease-in-out infinite;
-  animation-delay: calc(var(--june-order) / var(--june-steps) * var(--june-dur) * -1);
-}
-
-@keyframes june-dot-trace {
+@keyframes june-field-sweep {
   0%,
   100% {
-    opacity: var(--june-rest);
+    opacity: var(--june-field-off);
+    transform: scale(var(--june-field-rest));
   }
 
-  50% {
+  40% {
+    opacity: var(--june-field-peak);
+    transform: scale(var(--june-field-scale));
+  }
+}
+
+@keyframes june-mark-sweep {
+  0%,
+  100% {
+    opacity: var(--june-off);
+    transform: scale(var(--june-rest));
+  }
+
+  40% {
     opacity: 1;
+    transform: scale(1);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* The spinner rests as the finished mark: lit dots up, the matrix dim. */
+  /* The spinner rests as the mark: both strokes up and bright, the field dim. */
   .dot-spinner > span {
     animation: none;
+    opacity: var(--june-field-off);
+    transform: scale(var(--june-field-rest));
   }
 
-  .dot-spinner > span[data-lit] {
-    opacity: 0.85;
+  .dot-spinner > span[data-mark] {
+    opacity: 1;
+    transform: scale(1);
   }
 }
