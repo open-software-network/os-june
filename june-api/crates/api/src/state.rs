@@ -70,6 +70,7 @@ pub struct ApiLimits {
     pub max_json_bytes: usize,
     pub max_issue_report_bytes: usize,
     pub max_image_edit_bytes: usize,
+    pub max_agent_chat_bytes: usize,
     pub request_timeout_secs: u64,
 }
 

@@ -334,6 +334,7 @@ fn build_router(
             max_json_bytes: config.server.max_json_bytes,
             max_issue_report_bytes: config.server.max_issue_report_bytes,
             max_image_edit_bytes: config.server.max_image_edit_bytes,
+            max_agent_chat_bytes: config.server.max_agent_chat_bytes,
             request_timeout_secs: config.server.request_timeout_secs,
         },
         attestation: AttestationInfo {

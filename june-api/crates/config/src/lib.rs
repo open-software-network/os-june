@@ -74,6 +74,16 @@ const _: () = assert!(DEFAULT_IMAGE_HOLD_TTL_SECS <= OS_ACCOUNTS_MAX_HOLD_TTL_SE
 const IMAGE_EDIT_JSON_OVERHEAD_BYTES: usize = 16 * 1024;
 pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
     base64_encoded_len(IMAGE_EDIT_SOURCE_MAX_BYTES) + IMAGE_EDIT_JSON_OVERHEAD_BYTES;
+/// Dedicated request-body cap for `/v1/chat/completions`. Sized to the
+/// desktop provider proxy's chat body cap
+/// (`JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES`, 3 MiB, in
+/// `src-tauri/src/hermes_bridge.rs`) so an in-window agent chat request the
+/// proxy forwards is never rejected here by a stricter outer gate before
+/// `validate_agent_chat_body` can size-check it (JUN-336). This is only an
+/// abuse ceiling above every valid agent chat request; semantic size rejection
+/// stays in `validate_agent_chat_body`. Keep this in sync with the proxy
+/// constant across the src-tauri / june-api workspace boundary.
+pub const DEFAULT_MAX_AGENT_CHAT_BYTES: usize = 3 * 1024 * 1024;
 
 // --- Video generation (ADR 0015) ---------------------------------------------
 //
@@ -398,6 +408,10 @@ pub struct ServerConfig {
     /// JSON body cap for `/v1/image/edit`. It is sized for a 50 MiB source
     /// image after base64 expansion plus fixed request overhead.
     pub max_image_edit_bytes: usize,
+    /// JSON body cap for `/v1/chat/completions`, sized to the desktop proxy's
+    /// 3 MiB chat body cap so an in-window agent chat request is not rejected by
+    /// a stricter outer gate before semantic validation (JUN-336).
+    pub max_agent_chat_bytes: usize,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -939,6 +953,7 @@ impl Default for AppConfig {
                 max_json_bytes: 524_288,
                 max_issue_report_bytes: DEFAULT_MAX_ISSUE_REPORT_BYTES,
                 max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
+                max_agent_chat_bytes: DEFAULT_MAX_AGENT_CHAT_BYTES,
             },
             local_dev: LocalDevConfig::default(),
             os_accounts: OsAccountsConfig {
@@ -1236,6 +1251,23 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
         config.server.max_image_edit_bytes,
     )?;
     validate_positive_usize_config(
+        "server.max_agent_chat_bytes",
+        config.server.max_agent_chat_bytes,
+    )?;
+    // The extractor cap must never sit BELOW the desktop provider proxy's fixed
+    // 3 MiB chat body cap (mirrored here as `DEFAULT_MAX_AGENT_CHAT_BYTES`), or a
+    // configured override silently reintroduces the JUN-336 regression: the proxy
+    // still forwards a 1-3 MiB agent chat request, but this route 413s it before
+    // `validate_agent_chat_body` runs. `max_json_bytes` is NOT the right floor —
+    // an override of e.g. 1 MiB clears it yet is still stricter than the proxy.
+    // The compile-time asserts only pin the default; this guards overrides.
+    if config.server.max_agent_chat_bytes < DEFAULT_MAX_AGENT_CHAT_BYTES {
+        return Err(ConfigError::InvalidRequired {
+            field: "server.max_agent_chat_bytes",
+            reason: "must be >= the 3 MiB desktop proxy chat body cap",
+        });
+    }
+    validate_positive_usize_config(
         "server.max_issue_report_bytes",
         config.server.max_issue_report_bytes,
     )?;
@@ -1486,14 +1518,15 @@ fn validate_positive_rate(
 mod tests {
     use super::{
         AppConfig, ConfigError, DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS, DEFAULT_IMAGE_HOLD_TTL_SECS,
-        DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_MAX_ISSUE_REPORT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS,
-        DEFAULT_VIDEO_HOLD_TTL_SECS, DEFAULT_VIDEO_JOB_MAX_SECS, DEFAULT_VIDEO_MAX_RESPONSE_BYTES,
-        IMAGE_EDIT_SOURCE_MAX_BYTES, IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS,
-        ISSUE_REPORT_ATTACHMENT_MAX_BYTES, ModelPriceConfig, ModelProvider, ModelType,
-        OPENAI_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
-        OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS, OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit,
-        VENICE_API_KEY_PLACEHOLDERS, VIDEO_CLIENT_POLL_WINDOW_SECS,
-        VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS, image_client_timeout_secs, validate,
+        DEFAULT_MAX_AGENT_CHAT_BYTES, DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_MAX_ISSUE_REPORT_BYTES,
+        DEFAULT_REQUEST_TIMEOUT_SECS, DEFAULT_VIDEO_HOLD_TTL_SECS, DEFAULT_VIDEO_JOB_MAX_SECS,
+        DEFAULT_VIDEO_MAX_RESPONSE_BYTES, IMAGE_EDIT_SOURCE_MAX_BYTES,
+        IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS, ISSUE_REPORT_ATTACHMENT_MAX_BYTES, ModelPriceConfig,
+        ModelProvider, ModelType, OPENAI_API_KEY_PLACEHOLDERS,
+        OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS,
+        OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit, VENICE_API_KEY_PLACEHOLDERS,
+        VIDEO_CLIENT_POLL_WINDOW_SECS, VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS,
+        image_client_timeout_secs, validate, validate_request_limits,
     };
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
@@ -1833,6 +1866,39 @@ mod tests {
             AppConfig::default().server.max_image_edit_bytes,
             DEFAULT_MAX_IMAGE_EDIT_BYTES
         );
+    }
+
+    #[test]
+    fn default_agent_chat_body_limit_is_the_dedicated_3_mib_cap() {
+        assert_eq!(DEFAULT_MAX_AGENT_CHAT_BYTES, 3 * 1024 * 1024);
+        assert_eq!(
+            AppConfig::default().server.max_agent_chat_bytes,
+            DEFAULT_MAX_AGENT_CHAT_BYTES
+        );
+        // The dedicated agent chat cap must never be stricter than the shared
+        // small-JSON cap, or JUN-336 reopens.
+        assert!(
+            AppConfig::default().server.max_agent_chat_bytes
+                >= AppConfig::default().server.max_json_bytes
+        );
+    }
+
+    #[test]
+    fn agent_chat_body_limit_below_proxy_cap_is_rejected() {
+        // An override BELOW the 3 MiB desktop proxy cap must fail loudly at load,
+        // even when it clears the shared small-JSON cap — otherwise the proxy
+        // forwards a 1-3 MiB agent chat request that this route then 413s,
+        // reopening JUN-336 (Codex review on PR #776).
+        let mut config = AppConfig::default();
+        config.server.max_agent_chat_bytes = DEFAULT_MAX_AGENT_CHAT_BYTES - 1;
+        assert!(config.server.max_agent_chat_bytes > config.server.max_json_bytes);
+        assert!(matches!(
+            validate_request_limits(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "server.max_agent_chat_bytes",
+                ..
+            })
+        ));
     }
 
     #[test]

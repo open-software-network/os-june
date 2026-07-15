@@ -74,7 +74,7 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/chat/completions",
             post(handlers::agent::chat_completions)
-                .layer(DefaultBodyLimit::max(limits.max_json_bytes)),
+                .layer(DefaultBodyLimit::max(limits.max_agent_chat_bytes)),
         )
         .route(
             "/v1/image/generate",

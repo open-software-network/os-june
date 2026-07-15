@@ -33,6 +33,19 @@ pub(crate) const MAX_ISSUE_ATTACHMENT_BYTES: usize = june_config::ISSUE_REPORT_A
 // Tune with cost/abuse in mind — a larger cap allows larger (costlier) requests.
 pub(crate) const MAX_AGENT_STRING_CHARS: usize = 1_500_000;
 pub(crate) const MAX_AGENT_TOTAL_STRING_CHARS: usize = 1_500_000;
+// Compile-time drift guard (JUN-336): the dedicated `/v1/chat/completions`
+// extractor cap must be pinned to the desktop proxy's 3 MiB chat cap
+// (`JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES` in src-tauri) and sit at/above the
+// semantic aggregate string allowance treated as a BYTE floor. If it drops
+// below, the outer Axum extractor rejects an in-window agent chat request with a
+// raw 413 before `validate_agent_chat_body` runs — the exact regression this
+// fixes. The char cap is a byte floor only for ≤2-byte UTF-8: a semantically
+// valid 1.5M-char body of 3–4-byte code points can exceed 3 MiB and is rejected
+// by the extractor first — but that is by design and consistent, because the
+// desktop proxy already caps the same request at the same 3 MiB before it ever
+// reaches june-api, degrading it to the context-overflow notice.
+const _: () = assert!(june_config::DEFAULT_MAX_AGENT_CHAT_BYTES == 3 * 1024 * 1024);
+const _: () = assert!(june_config::DEFAULT_MAX_AGENT_CHAT_BYTES >= MAX_AGENT_TOTAL_STRING_CHARS);
 pub(crate) const MAX_AGENT_JSON_DEPTH: usize = 16;
 pub(crate) const MAX_AGENT_OUTPUT_TOKENS: u64 = 32_768;
 pub(crate) const MAX_PROVIDER_API_KEY_CHARS: usize = 4_096;
