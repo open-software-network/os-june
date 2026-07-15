@@ -2115,11 +2115,19 @@ export async function connectorsDisconnect(input: { accountId: string; revoke: b
   });
 }
 
+/** The live team listing for the selection dialog. `truncated` means the
+ * Rust side's pagination cap cut the listing short, so the UI must not
+ * present it as the complete team inventory. */
+export type LinearTeamsResult = {
+  teams: LinearTeam[];
+  truncated: boolean;
+};
+
 /** Lists the Linear teams the connected workspace's user can see, for the
  * team-selection dialog. A live call, not cached client-side: a workspace's
  * teams can change between visits. */
 export async function connectorsLinearTeams(input: { accountId: string }) {
-  return invoke<LinearTeam[]>("connectors_linear_teams", {
+  return invoke<LinearTeamsResult>("connectors_linear_teams", {
     request: { accountId: input.accountId },
   });
 }

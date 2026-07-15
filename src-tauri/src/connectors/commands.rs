@@ -139,26 +139,40 @@ pub struct ConnectorsLinearTeamsRequest {
 pub async fn connectors_linear_teams(
     app: tauri::AppHandle,
     request: ConnectorsLinearTeamsRequest,
-) -> Result<Vec<SelectedTeamDto>, AppError> {
+) -> Result<LinearTeamsDto, AppError> {
     let repos = crate::commands::repositories(&app).await?;
     require_linear_account(&repos, &request.account_id).await?;
     let token = super::linear_access_token(&app, &request.account_id).await?;
-    let teams = match linear::list_teams(&token).await {
-        Ok(teams) => teams,
+    let listing = match linear::list_teams(&token).await {
+        Ok(listing) => listing,
         Err(linear::LinearApiError::Unauthorized) => {
             let token = super::force_refresh_linear_access_token(&app, &request.account_id).await?;
             linear::list_teams(&token).await.map_err(AppError::from)?
         }
         Err(error) => return Err(error.into()),
     };
-    Ok(teams
-        .into_iter()
-        .map(|team| SelectedTeamDto {
-            id: team.id,
-            key: team.key,
-            name: team.name,
-        })
-        .collect())
+    Ok(LinearTeamsDto {
+        teams: listing
+            .teams
+            .into_iter()
+            .map(|team| SelectedTeamDto {
+                id: team.id,
+                key: team.key,
+                name: team.name,
+            })
+            .collect(),
+        truncated: listing.truncated,
+    })
+}
+
+/// The live team listing for the selection dialog. `truncated` means the
+/// pagination cap cut the listing short, so the UI must not present it as
+/// the complete team inventory.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearTeamsDto {
+    pub teams: Vec<SelectedTeamDto>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Deserialize)]
