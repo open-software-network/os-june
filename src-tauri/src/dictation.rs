@@ -3941,7 +3941,7 @@ fn looks_like_instruction_response(value: &str) -> bool {
 fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
     let normalized = normalized.replace('’', "'");
     let normalized = normalized.as_str();
-    let strong_preamble_end = [":", ". ", "\n", " - ", " — ", " – ", "—", "–"]
+    let strong_preamble_end = [":", ". ", "! ", "? ", "\n", " - ", " — ", " – ", "—", "–"]
         .iter()
         .filter_map(|separator| normalized.find(separator))
         .min();
@@ -7087,6 +7087,12 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here is the transcription: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here you go! Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the transcript? Send it today."
         ));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
