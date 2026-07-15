@@ -131,7 +131,9 @@ non-owned/unknown/revoked share returns the same 404 envelope
 chars of base64url randomness (`shr_` + 20 random bytes); invite ids
 likewise (`shi_` prefix). Invite, view, and create endpoints are
 rate-limited per user and per IP (in-memory token bucket; single-instance
-CVM makes this sufficient for MVP).
+CVM makes this sufficient for MVP). The multi-MiB create and add-invite JSON
+bodies also pass header authentication and byte-weighted admission before
+Axum buffers or parses them.
 
 ## Storage
 

@@ -422,6 +422,36 @@ async fn integration_agent_chat_authenticates_before_buffering_the_body()
 }
 
 #[tokio::test]
+async fn integration_share_uploads_authenticate_before_buffering_the_body()
+-> Result<(), Box<dyn Error>> {
+    for path in ["/v1/shares", "/v1/shares/shr_test/invites"] {
+        let unauthenticated = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{ not valid json"))?;
+        let response = match router(test_state()).oneshot(unauthenticated).await {
+            Ok(response) => response,
+            Err(error) => match error {},
+        };
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+
+        let authenticated = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, AUTHORIZATION)
+            .body(Body::from("{ not valid json"))?;
+        let response = match router(test_state()).oneshot(authenticated).await {
+            Ok(response) => response,
+            Err(error) => match error {},
+        };
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_agent_chat_routes_stale_model_through_auto() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/chat/completions",
