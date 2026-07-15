@@ -1522,7 +1522,7 @@ git commit -m "perf: stream prepared meeting turns"
 
 Place the test next to the existing active-note polling tests. Create `selectedNote` with `processingStatus: "transcribing"`, `activeTab: "transcription"`, and an empty `sourceTranscripts` array. Override `bootstrapApp` to return that note, make `mocks.getNote` return a mutable `pollResponse`, render `App`, open Meeting notes, select First note, and wait for the initial Transcribing status. Clear `mocks.getNote` while the existing real one-second interval remains installed.
 
-Inside `try`, update `pollResponse` to:
+Assert the turn text is initially absent, then update `pollResponse` to:
 
 ```ts
 {
@@ -1550,15 +1550,16 @@ Wait for the next real poll and its render:
 ```ts
 await waitFor(
   () => {
-  expect(mocks.getNote).toHaveBeenCalledWith(selectedNote.id);
-  expect(screen.getByText("The first saved turn is visible.")).toBeInTheDocument();
+    expect(mocks.getNote).toHaveBeenCalledWith(selectedNote.id);
+    expect(screen.getByText("The first saved turn is visible.")).toBeInTheDocument();
   },
-  { timeout: 2_000 },
+  { timeout: 3_000 },
 );
-expect(screen.getByRole("status")).toHaveTextContent("Transcribing audio");
+const transcribingStatus = screen.getByText("Transcribing audio");
+expect(transcribingStatus.closest('[role="status"]')).not.toBeNull();
 ```
 
-Do not return a Ready response in this test; it proves the partial turn appears while work remains active. Real timers are deliberate: the interval was created by the mounted effect, and installing fake timers afterward would not take ownership of it.
+Do not return a Ready response in this test; it proves the partial turn appears while work remains active. Real timers are deliberate: the interval was created by the mounted effect, and installing fake timers afterward would not take ownership of it. Do not add a timer-mode `try`/`finally` block when the test never switches timer mode.
 
 - [ ] **Step 2: Run the test and confirm the existing production path passes**
 
