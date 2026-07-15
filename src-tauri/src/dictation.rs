@@ -3911,7 +3911,7 @@ fn emit_dictation_cleanup_skipped(
 }
 
 fn looks_like_instruction_response(value: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase().replace('’', "'");
+    let normalized = value.trim().to_ascii_lowercase();
     looks_like_report_summary_response(&normalized)
         || normalized.starts_with("sure")
         || looks_like_here_prefaced_instruction_response(&normalized)
@@ -3939,6 +3939,8 @@ fn looks_like_instruction_response(value: &str) -> bool {
 }
 
 fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
+    let normalized = normalized.replace('’', "'");
+    let normalized = normalized.as_str();
     let strong_preamble_end = [":", ". ", "\n", " - ", " — ", " – ", "—", "–"]
         .iter()
         .filter_map(|separator| normalized.find(separator))
@@ -4001,6 +4003,7 @@ fn is_here_instruction_subject_marker(word: &str) -> bool {
     matches!(
         word,
         "transcript"
+            | "transcription"
             | "dictation"
             | "text"
             | "notes"
@@ -7083,6 +7086,9 @@ mod tests {
             "Here are the improvements: Send it today."
         ));
         assert!(looks_like_instruction_response(
+            "Here is the transcription: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
         ));
         assert!(looks_like_instruction_response(
@@ -7104,6 +7110,7 @@ mod tests {
         assert!(!looks_like_instruction_response(
             "Here’s the API key to Poncho."
         ));
+        assert!(!looks_like_instruction_response("I’ll send the agenda."));
     }
 
     #[test]
