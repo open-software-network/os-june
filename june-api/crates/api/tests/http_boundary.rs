@@ -363,6 +363,41 @@ async fn integration_agent_chat_rejects_body_over_agent_cap() -> Result<(), Box<
 }
 
 #[tokio::test]
+async fn integration_agent_chat_authenticates_before_buffering_the_body()
+-> Result<(), Box<dyn Error>> {
+    // Unauthenticated + malformed body → 401: auth runs on headers first, so the
+    // body is never buffered or parsed. If auth ran after extraction this would
+    // be the 400 a JSON parse failure gives. This closes the unauthenticated
+    // resource-exhaustion path that the JUN-336 cap increase widened (an
+    // unauthenticated client could otherwise force up to 12 MiB of buffering).
+    let unauthenticated = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/chat/completions")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{ not valid json"))?;
+    let response = match router(test_state()).oneshot(unauthenticated).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Authenticated + malformed body → 400: auth passes, so parsing proceeds and
+    // fails normally. The gate adds auth without changing handler behaviour.
+    let authenticated = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/chat/completions")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .body(Body::from("{ not valid json"))?;
+    let response = match router(test_state()).oneshot(authenticated).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_agent_chat_routes_stale_model_through_auto() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/chat/completions",

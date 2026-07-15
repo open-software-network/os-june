@@ -64,47 +64,20 @@ pub fn router(state: ApiState) -> Router {
         .route("/verify", get(handlers::verify::verify))
         .route("/v1/models", get(handlers::models::list_models))
         .route(
-            "/v1/notes/transcribe",
-            post(handlers::notes::transcribe).layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
-        )
-        .route(
             "/v1/notes/generate",
             post(handlers::notes::generate).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
-        )
-        .route(
-            "/v1/chat/completions",
-            post(handlers::agent::chat_completions)
-                .layer(DefaultBodyLimit::max(limits.max_agent_chat_bytes)),
         )
         .route(
             "/v1/image/generate",
             post(handlers::image::generate).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .route(
-            // Edits carry a base64 source image, so use the explicit image-edit
-            // budget rather than the small JSON budget or unrelated audio cap.
-            "/v1/image/edit",
-            post(handlers::image::edit).layer(DefaultBodyLimit::max(limits.max_image_edit_bytes)),
-        )
-        .route(
             "/v1/video/generate",
             post(handlers::video::generate).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
         .route(
-            // Animate carries a base64 source image, so it uses the image-edit
-            // body budget rather than the small JSON budget.
-            "/v1/video/animate",
-            post(handlers::video::animate)
-                .layer(DefaultBodyLimit::max(limits.max_image_edit_bytes)),
-        )
-        .route(
             "/v1/video/status/{job_id}",
             get(handlers::video::status).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
-        )
-        .route(
-            "/v1/dictate",
-            post(handlers::dictate::transcribe)
-                .layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
         )
         .route(
             "/v1/dictate/cleanup",
@@ -139,6 +112,7 @@ pub fn router(state: ApiState) -> Router {
             "/v1/p3a/reports",
             post(handlers::p3a::submit).layer(DefaultBodyLimit::max(limits.max_json_bytes)),
         )
+        .merge(authenticated_body_routes(&state, limits))
         .layer(timeout)
         .layer(
             // The request span carries the calling app version so a deploy
@@ -163,11 +137,69 @@ pub fn router(state: ApiState) -> Router {
         .with_state(state)
 }
 
+/// The large-body routes — those whose cap is well above the shared 512 KiB
+/// small-JSON cap — grouped so `require_authenticated_bearer` runs, as the
+/// outermost layer, before any of their body-limit layers buffer a request.
+/// Grouping keeps the unauthenticated resource-exhaustion surface closed for
+/// every multi-MiB route at once instead of route by route (JUN-336 review).
+fn authenticated_body_routes(state: &ApiState, limits: ApiLimits) -> Router<ApiState> {
+    Router::new()
+        .route(
+            "/v1/chat/completions",
+            post(handlers::agent::chat_completions)
+                .layer(DefaultBodyLimit::max(limits.max_agent_chat_bytes)),
+        )
+        .route(
+            // Edits carry a base64 source image, so use the explicit image-edit
+            // budget rather than the small JSON budget or unrelated audio cap.
+            "/v1/image/edit",
+            post(handlers::image::edit).layer(DefaultBodyLimit::max(limits.max_image_edit_bytes)),
+        )
+        .route(
+            // Animate carries a base64 source image, so it uses the image-edit
+            // body budget rather than the small JSON budget.
+            "/v1/video/animate",
+            post(handlers::video::animate)
+                .layer(DefaultBodyLimit::max(limits.max_image_edit_bytes)),
+        )
+        .route(
+            "/v1/notes/transcribe",
+            post(handlers::notes::transcribe).layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
+        )
+        .route(
+            "/v1/dictate",
+            post(handlers::dictate::transcribe)
+                .layer(DefaultBodyLimit::max(limits.max_audio_bytes)),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_authenticated_bearer,
+        ))
+}
+
 async fn handle_timeout_error(error: BoxError) -> axum::response::Response {
     if error.is::<tower::timeout::error::Elapsed>() {
         return envelope::timeout_response();
     }
     error::ApiError::Internal.into_response()
+}
+
+/// Header-only bearer authentication run BEFORE the body extractor on the
+/// large-body routes (those whose cap exceeds the shared 512 KiB small-JSON
+/// cap). Without it, an unauthenticated client could force June API to buffer
+/// and JSON-parse a multi-MiB body — up to `max_agent_chat_bytes` (12 MiB),
+/// `max_image_edit_bytes` (~66 MiB) or `max_audio_bytes` (25 MiB) — before the
+/// handler's own `authenticated_user` check ran, an unauthenticated
+/// resource-exhaustion path that widened with the JUN-336 cap increase. The
+/// verify is a cached-JWKS signature check, so re-checking in the handler is
+/// cheap; keeping the handler check makes each handler correct on its own.
+async fn require_authenticated_bearer(
+    State(state): State<ApiState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    auth::authenticated_user(&state, request.headers()).await?;
+    Ok(next.run(request).await)
 }
 
 async fn issue_report_permit_middleware(
