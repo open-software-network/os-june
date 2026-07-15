@@ -3914,6 +3914,17 @@ fn looks_like_instruction_response(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase();
     looks_like_report_summary_response(&normalized)
         || normalized.starts_with("sure")
+        || [
+            "here is the corrected transcript:",
+            "here's the corrected transcript:",
+            "here is the cleaned-up text:",
+            "here's the cleaned-up text:",
+            "here is the cleaned up text:",
+            "here's the cleaned up text:",
+            "here you go:",
+        ]
+        .iter()
+        .any(|prefix| normalized.starts_with(prefix))
         || normalized.starts_with("summary:")
         || normalized.starts_with("the transcript ")
         || normalized.starts_with("the user expresses")
@@ -6883,6 +6894,10 @@ mod tests {
         assert!(looks_like_instruction_response(
             "Here is the normalized transcript: Hello."
         ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response("Here you go: Hello."));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
         ));
