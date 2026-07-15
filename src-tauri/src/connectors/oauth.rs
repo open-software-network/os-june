@@ -11,8 +11,8 @@
 //! mechanics. [`loopback_authorize`] owns the PKCE/CSRF minting, the
 //! listener, and the browser handoff; [`authorize`] is Google's thin wrapper
 //! around it and owns Google's own auth-URL shape, token exchange, and email
-//! resolution. A later Linear chunk adds its own thin wrapper the same way,
-//! never touching the shared listener code.
+//! resolution. `linear::authorize` is the same kind of thin wrapper; neither
+//! touches the shared listener code.
 //!
 //! NEVER log, print, or serialize tokens (or authorization codes) into
 //! errors. Error messages carry stable codes and short human text only.
@@ -118,36 +118,74 @@ pub enum RefreshOutcome {
 /// authorization code, its PKCE verifier, and the exact `redirect_uri` the
 /// code was issued for (the token endpoint requires it echoed back
 /// byte-identical). The caller still owns the token exchange and identity
-/// resolution, which differ per provider (Google's OIDC id_token/userinfo
-/// today; Linear's own token + viewer query in a later chunk).
+/// resolution, which differ per provider (Google's OIDC id_token/userinfo;
+/// Linear's own token endpoint + viewer query).
 pub(crate) struct LoopbackAuthorization {
     pub code: String,
     pub verifier: String,
     pub redirect_uri: String,
 }
 
+/// How the loopback listener picks its port. Google ignores the loopback
+/// port when matching redirect URIs (RFC 8252 native-app behavior), so an
+/// OS-assigned ephemeral port works. Linear matches the registered callback
+/// URL exactly, port included, so its listener must bind one of the fixed
+/// ports whose callback URLs are registered on the OAuth application.
+pub(crate) enum LoopbackPort {
+    Ephemeral,
+    Candidates(Vec<u16>),
+}
+
+/// Bind the loopback listener per the port strategy. For candidates, the
+/// first free port wins; every candidate being taken is reported with the
+/// full list so the user can see which local ports the connect needs.
+async fn bind_loopback(port: &LoopbackPort) -> Result<TcpListener, AppError> {
+    let bind_failed = |detail: String| {
+        AppError::new(
+            "connector_loopback_bind_failed",
+            format!("Could not start the local connect listener: {detail}"),
+        )
+    };
+    match port {
+        LoopbackPort::Ephemeral => TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .map_err(|e| bind_failed(e.to_string())),
+        LoopbackPort::Candidates(ports) => {
+            for &candidate in ports {
+                if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)).await {
+                    return Ok(listener);
+                }
+            }
+            let list = ports
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(bind_failed(format!(
+                "ports {list} are all in use on this Mac"
+            )))
+        }
+    }
+}
+
 /// Provider-neutral half of a native-app OAuth connect: mint PKCE + CSRF
-/// state, bind an ephemeral 127.0.0.1 listener, ask `build_auth_url` to
-/// assemble the provider's consent URL from the resulting
-/// `(redirect_uri, code_challenge, state)`, open it in the system browser,
-/// and race the loopback callback against the connect timeout and the
-/// flow's cancel signal. `provider_label` names the provider in the
+/// state, bind a 127.0.0.1 listener per the port strategy, ask
+/// `build_auth_url` to assemble the provider's consent URL from the
+/// resulting `(redirect_uri, code_challenge, state)`, open it in the system
+/// browser, and race the loopback callback against the connect timeout and
+/// the flow's cancel signal. `provider_label` names the provider in the
 /// timeout/cancel/denial copy shown to the user (e.g. "Google"), so each
 /// provider's wrapper keeps producing its own exact error text.
 pub(crate) async fn loopback_authorize(
     flow: &ConnectFlow,
     provider_label: &str,
+    port: LoopbackPort,
     build_auth_url: impl FnOnce(&str, &str, &str) -> String,
 ) -> Result<LoopbackAuthorization, AppError> {
     let (verifier, challenge) = pkce();
     let csrf = random_b64url(24);
 
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.map_err(|e| {
-        AppError::new(
-            "connector_loopback_bind_failed",
-            format!("Could not start the local connect listener: {e}"),
-        )
-    })?;
+    let listener = bind_loopback(&port).await?;
     let port = listener
         .local_addr()
         .map_err(|e| AppError::new("connector_loopback_bind_failed", e.to_string()))?
@@ -200,8 +238,11 @@ pub async fn authorize(
     scopes: &[&str],
     login_hint: Option<&str>,
 ) -> Result<AuthorizedGrant, AppError> {
-    let authorization =
-        loopback_authorize(flow, "Google", |redirect_uri, code_challenge, state| {
+    let authorization = loopback_authorize(
+        flow,
+        "Google",
+        LoopbackPort::Ephemeral,
+        |redirect_uri, code_challenge, state| {
             build_auth_url(
                 client_id,
                 redirect_uri,
@@ -210,8 +251,9 @@ pub async fn authorize(
                 state,
                 login_hint,
             )
-        })
-        .await?;
+        },
+    )
+    .await?;
 
     let tokens = exchange_code(
         client_id,
