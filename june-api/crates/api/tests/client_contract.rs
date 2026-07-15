@@ -399,6 +399,7 @@ fn error_code_registry_is_stable() -> Result<(), Box<dyn Error>> {
             ("internal", june_api::ERR_INTERNAL),
             ("upstream", june_api::ERR_UPSTREAM),
             ("metering", june_api::ERR_METERING),
+            ("serviceOverloaded", june_api::ERR_SERVICE_OVERLOADED),
             ("timeout", june_api::ERR_TIMEOUT),
         ]
         .map(|(name, code)| (name.to_string(), code)),

@@ -4,7 +4,7 @@ use axum::{
     http::{Method, Request, StatusCode, header},
 };
 use june_api::{AttestationInfo, router};
-use june_config::DEFAULT_MAX_IMAGE_EDIT_BYTES;
+use june_config::{DEFAULT_MAX_AGENT_CHAT_BYTES, DEFAULT_MAX_IMAGE_EDIT_BYTES};
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream, DomainError,
     GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportDelivery, IssueReportSink,
@@ -317,6 +317,107 @@ async fn integration_agent_chat_stream_returns_upstream_sse_body() -> Result<(),
     );
     let body = response_text(response).await?;
     assert_eq!(body, "data: {\"choices\":[]}\n\n");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_admission_preserves_authenticated_happy_path()
+-> Result<(), Box<dyn Error>> {
+    let body = serde_json::json!({
+        "model": "text-model",
+        "stream": true,
+        "messages": [{ "role": "user", "content": "hello" }]
+    })
+    .to_string();
+    let response = send(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_LENGTH, body.len())
+            .header(header::AUTHORIZATION, AUTHORIZATION)
+            .body(Body::from(body))?,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_accepts_tool_heavy_body_over_small_json_cap()
+-> Result<(), Box<dyn Error>> {
+    // 4 MiB: STRICTLY above `test_state`'s shared `max_json_bytes` (1 MiB in
+    // tests/support) so it would 413 under the old shared-cap route, AND above
+    // the previous 3 MiB agent cap so it exercises the raised 1M-token capacity.
+    // It stays under both the 12 MiB agent chat body cap (so the extractor lets
+    // it through) and the 6M-char semantic cap (~4.19M chars here, so
+    // `validate_agent_chat_body` accepts it), and must reach the handler and
+    // stream from the mocked upstream (200, not 413).
+    let body = tool_heavy_chat_body_with_len(4 * 1024 * 1024)?;
+    let router = router(test_state());
+    let response = match router
+        .oneshot(raw_json_request_with_auth("/v1/chat/completions", body)?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_ne!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_rejects_body_over_agent_cap() -> Result<(), Box<dyn Error>> {
+    // One byte over the 3 MiB agent chat body cap: still fails deterministically with a
+    // 413 at the route boundary (JUN-336 acceptance: over-cap requests fail
+    // without wedging).
+    let body = tool_heavy_chat_body_with_len(DEFAULT_MAX_AGENT_CHAT_BYTES + 1)?;
+    let router = router(test_state());
+    let response = match router
+        .oneshot(raw_json_request_with_auth("/v1/chat/completions", body)?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_authenticates_before_buffering_the_body()
+-> Result<(), Box<dyn Error>> {
+    // Unauthenticated + malformed body → 401: auth runs on headers first, so the
+    // body is never buffered or parsed. If auth ran after extraction this would
+    // be the 400 a JSON parse failure gives. This closes the unauthenticated
+    // resource-exhaustion path that the JUN-336 cap increase widened (an
+    // unauthenticated client could otherwise force up to 12 MiB of buffering).
+    let unauthenticated = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/chat/completions")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{ not valid json"))?;
+    let response = match router(test_state()).oneshot(unauthenticated).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Authenticated + malformed body → 400: auth passes, so parsing proceeds and
+    // fails normally. The gate adds auth without changing handler behaviour.
+    let authenticated = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/chat/completions")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .body(Body::from("{ not valid json"))?;
+    let response = match router(test_state()).oneshot(authenticated).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     Ok(())
 }
 
@@ -1875,6 +1976,87 @@ fn raw_json_request_with_venice_api_key(
         .header(header::AUTHORIZATION, AUTHORIZATION)
         .header("x-venice-api-key", venice_api_key)
         .body(Body::from(body))
+}
+
+/// Raw string body plus the standard bearer, with NO `x-venice-api-key` header.
+/// `text-model` is an OpenAI-provider model in test pricing, so a Venice BYOK
+/// header would trip `venice_api_key_model_unavailable` (422) before the body
+/// ever streams; the plain bearer routes to the mocked upstream so the only
+/// thing that can produce a 413 is the route body-limit layer (JUN-336).
+fn raw_json_request_with_auth(uri: &str, body: String) -> Result<Request<Body>, axum::http::Error> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .body(Body::from(body))
+}
+
+/// A tool-heavy `/v1/chat/completions` body of exactly `total_len` bytes,
+/// shaped like the JUN-336 production failure: several tool schemas plus a
+/// multi-turn assistant/tool-call/tool-result history, with the bulk of the
+/// size in the latest tool result (production: ~340k of ~382k chars were tool
+/// results from the current turn). `model`/`stream` route it to the mocked
+/// upstream. When the body clears the route extractor, `validate_agent_chat_body`
+/// still runs, so callers that want the accept path must keep `total_len` below
+/// the 1.5M-char semantic cap.
+fn tool_heavy_chat_body_with_len(total_len: usize) -> Result<String, Box<dyn Error>> {
+    let schema = |name: &str, description: &str| {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Absolute path" },
+                        "query": { "type": "string", "description": "Search query" },
+                        "limit": { "type": "integer", "description": "Max results" }
+                    },
+                    "required": ["path"]
+                }
+            }
+        })
+    };
+    let tool_call = |id: &str, name: &str, arguments: &str| {
+        serde_json::json!({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": id,
+                "type": "function",
+                "function": { "name": name, "arguments": arguments }
+            }]
+        })
+    };
+    let mut body = serde_json::json!({
+        "model": "text-model",
+        "stream": true,
+        "tools": [
+            schema("read_file", "Read a file from disk and return its contents."),
+            schema("search_notes", "Full-text search across the user's notes."),
+            schema("list_dir", "List the entries of a directory."),
+            schema("web_fetch", "Fetch a URL and return its readable text.")
+        ],
+        "messages": [
+            { "role": "user", "content": "summarize everything the tools returned" },
+            tool_call("call_1", "read_file", "{\"path\":\"/notes/launch.md\"}"),
+            { "role": "tool", "tool_call_id": "call_1", "content": "earlier tool result: launch is Friday" },
+            tool_call("call_2", "search_notes", "{\"query\":\"rate limits\"}"),
+            // The current turn's tool result — padded below to dominate the body.
+            { "role": "tool", "tool_call_id": "call_2", "content": "" }
+        ]
+    });
+    let last = body["messages"]
+        .as_array()
+        .map_or(0, |messages| messages.len().saturating_sub(1));
+    let overhead = serde_json::to_string(&body)?.len();
+    let pad = total_len.saturating_sub(overhead);
+    body["messages"][last]["content"] = serde_json::Value::String("a".repeat(pad));
+    let out = serde_json::to_string(&body)?;
+    assert_eq!(out.len(), total_len, "body length must be exact");
+    Ok(out)
 }
 
 fn image_edit_body_with_len(total_len: usize) -> Result<String, Box<dyn Error>> {

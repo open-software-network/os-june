@@ -1,13 +1,92 @@
-use june_domain::TokenVerifier;
+use crate::error::ApiError;
+use june_domain::{TokenVerifier, UserId};
 use june_services::{
     AgentChatService, DictateService, ImageService, IssueReportService, NoteGenerateService,
     NoteTranscribeService, P3aReportService, PricingTable, VideoService, WebAugmentService,
 };
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 const ISSUE_REPORT_MAX_CONCURRENCY: usize = 1;
+
+pub(crate) struct AgentAdmissionControl {
+    body_budget_kib: Arc<Semaphore>,
+    total_budget_kib: usize,
+    per_user: Arc<Mutex<HashMap<UserId, usize>>>,
+    max_per_user: usize,
+}
+
+pub(crate) struct AgentAdmission {
+    _body_permit: OwnedSemaphorePermit,
+    per_user: Arc<Mutex<HashMap<UserId, usize>>>,
+    user_id: UserId,
+}
+
+impl AgentAdmissionControl {
+    fn new(max_inflight_body_bytes: usize, max_per_user: usize) -> Self {
+        let total_budget_kib = (max_inflight_body_bytes / 1024).max(1);
+        Self {
+            body_budget_kib: Arc::new(Semaphore::new(total_budget_kib)),
+            total_budget_kib,
+            per_user: Arc::new(Mutex::new(HashMap::new())),
+            max_per_user,
+        }
+    }
+
+    fn admit(&self, user_id: &UserId, content_length: usize) -> Result<AgentAdmission, ApiError> {
+        let weight_kib = content_length.div_ceil(1024).max(1);
+        // A request that cannot fit the whole budget is REJECTED, not clamped and
+        // admitted — clamping would let it buffer beyond the budget and defeat the
+        // memory guarantee (JUN-336 review). Config validation keeps the budget at
+        // or above every route cap, so a real request never trips this.
+        if weight_kib > self.total_budget_kib {
+            return Err(ApiError::service_overloaded());
+        }
+        let weight_kib = u32::try_from(weight_kib).map_err(|_| ApiError::service_overloaded())?;
+        let body_permit = self
+            .body_budget_kib
+            .clone()
+            .try_acquire_many_owned(weight_kib)
+            .map_err(|_| ApiError::service_overloaded())?;
+        let Ok(mut per_user) = self.per_user.lock() else {
+            return Err(ApiError::Internal);
+        };
+        let count = per_user.entry(user_id.clone()).or_insert(0);
+        if *count >= self.max_per_user {
+            return Err(ApiError::service_overloaded());
+        }
+        *count += 1;
+        drop(per_user);
+
+        Ok(AgentAdmission {
+            _body_permit: body_permit,
+            per_user: self.per_user.clone(),
+            user_id: user_id.clone(),
+        })
+    }
+}
+
+impl Drop for AgentAdmission {
+    fn drop(&mut self) {
+        let Ok(mut per_user) = self.per_user.lock() else {
+            return;
+        };
+        let remove = if let Some(count) = per_user.get_mut(&self.user_id) {
+            *count = count.saturating_sub(1);
+            *count == 0
+        } else {
+            false
+        };
+        if remove {
+            per_user.remove(&self.user_id);
+        }
+    }
+}
 
 /// Shared ownership keeps the one issue-report permit alive until both the
 /// delivery task and the HTTP response body have finished (or been dropped).
@@ -59,6 +138,7 @@ struct ApiStateInner {
     video: Arc<VideoService>,
     issue_reports: Arc<IssueReportService>,
     issue_report_permits: Arc<Semaphore>,
+    agent_admission: AgentAdmissionControl,
     p3a_reports: Arc<P3aReportService>,
     limits: ApiLimits,
     attestation: AttestationInfo,
@@ -70,6 +150,9 @@ pub struct ApiLimits {
     pub max_json_bytes: usize,
     pub max_issue_report_bytes: usize,
     pub max_image_edit_bytes: usize,
+    pub max_agent_chat_bytes: usize,
+    pub max_agent_inflight_body_bytes: usize,
+    pub max_agent_concurrent_requests_per_user: usize,
     pub request_timeout_secs: u64,
 }
 
@@ -117,6 +200,10 @@ impl ApiState {
                 video: params.video,
                 issue_reports: params.issue_reports,
                 issue_report_permits: Arc::new(Semaphore::new(ISSUE_REPORT_MAX_CONCURRENCY)),
+                agent_admission: AgentAdmissionControl::new(
+                    params.limits.max_agent_inflight_body_bytes,
+                    params.limits.max_agent_concurrent_requests_per_user,
+                ),
                 p3a_reports: params.p3a_reports,
                 limits: params.limits,
                 attestation: params.attestation,
@@ -184,11 +271,79 @@ impl ApiState {
         &self.inner.p3a_reports
     }
 
+    pub(crate) fn admit_agent_request(
+        &self,
+        user_id: &UserId,
+        content_length: usize,
+    ) -> Result<AgentAdmission, ApiError> {
+        self.inner.agent_admission.admit(user_id, content_length)
+    }
+
     pub(crate) fn limits(&self) -> ApiLimits {
         self.inner.limits
     }
 
     pub(crate) fn attestation(&self) -> &AttestationInfo {
         &self.inner.attestation
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentAdmissionControl;
+    use crate::ApiError;
+    use june_domain::UserId;
+
+    fn user(id: &str) -> UserId {
+        UserId(id.to_string())
+    }
+
+    #[test]
+    fn per_user_cap_load_sheds_beyond_limit() {
+        let control = AgentAdmissionControl::new(1024 * 1024, 2);
+        let user = user("usr_test");
+
+        let first = control.admit(&user, 1024).expect("first admission");
+        let _second = control.admit(&user, 1024).expect("second admission");
+        let err = control.admit(&user, 1024).err().expect("third must shed");
+        assert!(matches!(err, ApiError::ServiceOverloaded));
+
+        drop(first);
+        assert!(control.admit(&user, 1024).is_ok());
+    }
+
+    #[test]
+    fn global_budget_load_sheds_when_exhausted() {
+        let control = AgentAdmissionControl::new(10 * 1024, 100);
+        let user_a = user("usr_a");
+        let user_b = user("usr_b");
+
+        let first = control.admit(&user_a, 8 * 1024).expect("first admission");
+        let err = control
+            .admit(&user_b, 8 * 1024)
+            .err()
+            .expect("second must shed");
+        assert!(matches!(err, ApiError::ServiceOverloaded));
+
+        drop(first);
+        assert!(control.admit(&user_b, 8 * 1024).is_ok());
+    }
+
+    #[test]
+    fn request_weight_over_budget_is_rejected_not_admitted() {
+        // A request that cannot fit the whole budget is load-shed rather than
+        // clamped and admitted (which would buffer beyond the budget). Config
+        // validation keeps this unreachable in production; the guard is defensive.
+        let control = AgentAdmissionControl::new(4 * 1024, 100);
+        let user_a = user("usr_a");
+
+        let err = control
+            .admit(&user_a, 100 * 1024 * 1024)
+            .err()
+            .expect("oversized request must be rejected");
+        assert!(matches!(err, ApiError::ServiceOverloaded));
+
+        // A request within the budget still admits (the whole budget here).
+        assert!(control.admit(&user_a, 4 * 1024).is_ok());
     }
 }
