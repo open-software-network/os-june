@@ -3939,9 +3939,14 @@ fn looks_like_instruction_response(value: &str) -> bool {
 }
 
 fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
-    let Some((preamble, _)) = normalized.split_once(':') else {
+    let Some(preamble_end) = [":", ". ", "\n", " - ", " — ", " – "]
+        .iter()
+        .filter_map(|separator| normalized.find(separator))
+        .min()
+    else {
         return false;
     };
+    let preamble = normalized[..preamble_end].trim_end_matches('.').trim_end();
     if preamble == "here you go" {
         return true;
     }
@@ -6917,6 +6922,15 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here's the cleaned-up version: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript. Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here are the cleaned notes - Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected text\nHello."
         ));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
