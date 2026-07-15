@@ -3939,7 +3939,7 @@ fn looks_like_instruction_response(value: &str) -> bool {
 }
 
 fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
-    let Some(preamble_end) = [":", ". ", "\n", " - ", " — ", " – "]
+    let Some(preamble_end) = [":", ". ", ", ", "\n", " - ", " — ", " – ", "—", "–"]
         .iter()
         .filter_map(|separator| normalized.find(separator))
         .min()
@@ -6931,6 +6931,12 @@ mod tests {
         ));
         assert!(looks_like_instruction_response(
             "Here is the corrected text\nHello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript, Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the cleaned-up version—Hello."
         ));
         assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
