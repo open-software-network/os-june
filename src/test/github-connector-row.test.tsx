@@ -389,6 +389,140 @@ describe("GitHubConnectorRow", () => {
     expect(mocks.githubInstallationsRefresh).toHaveBeenCalledTimes(1);
   });
 
+  it("queues one installation return refresh behind an active refresh", async () => {
+    const activeRefresh = deferred<GitHubConnection>();
+    const returnRefresh = deferred<GitHubConnection>();
+    const activeResult = connection({
+      installations: [installation({ repositories: [repository("active-result")] })],
+    });
+    const returnResult = connection({
+      installations: [installation({ repositories: [repository("return-result")] })],
+    });
+    let refreshCalls = 0;
+    mocks.githubInstallationsRefresh.mockImplementation(() => {
+      refreshCalls += 1;
+      return refreshCalls === 1 ? activeRefresh.promise : returnRefresh.promise;
+    });
+    render(<StatefulRow initial={connection()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "View GitHub repositories" }));
+    const dialog = screen.getByRole("dialog", { name: "GitHub repositories" });
+    await userEvent.click(screen.getByRole("button", { name: "Refresh GitHub repositories" }));
+    expect(mocks.githubInstallationsRefresh).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Manage repositories for octo-org" }),
+    );
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(mocks.githubInstallationsRefresh).toHaveBeenCalledTimes(1);
+
+    await act(async () => activeRefresh.resolve(activeResult));
+    await waitFor(() => expect(mocks.githubInstallationsRefresh).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Refresh GitHub repositories" })).toBeDisabled();
+
+    await act(async () => returnRefresh.resolve(returnResult));
+    expect(await within(dialog).findByText("return-result")).toBeInTheDocument();
+    expect(within(dialog).queryByText("active-result")).toBeNull();
+    expect(mocks.githubInstallationsRefresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the latest connection callback for an armed return refresh", async () => {
+    const initialCallback = vi.fn();
+    const latestCallback = vi.fn();
+    const refreshed = connection({
+      installations: [installation({ repositories: [repository("latest-result")] })],
+    });
+    mocks.githubInstallationsRefresh.mockResolvedValue(refreshed);
+    const setupIncomplete = connection({ status: "setup_incomplete", installations: [] });
+    const { rerender } = render(
+      <GitHubConnectorRow
+        connection={setupIncomplete}
+        loading={false}
+        onConnectionChanged={initialCallback}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Install GitHub App" }));
+    rerender(
+      <GitHubConnectorRow
+        connection={setupIncomplete}
+        loading={false}
+        onConnectionChanged={latestCallback}
+      />,
+    );
+
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(latestCallback).toHaveBeenCalledWith(refreshed));
+    expect(initialCallback).not.toHaveBeenCalled();
+  });
+
+  it("keeps newer refresh ownership when an older lifecycle settles", async () => {
+    const oldRefresh = deferred<GitHubConnection>();
+    const newerRefresh = deferred<GitHubConnection>();
+    const staleCallback = vi.fn();
+    const currentCallback = vi.fn();
+    const staleResult = connection({
+      installations: [installation({ repositories: [repository("stale-result")] })],
+    });
+    const newerResult = connection({
+      installations: [installation({ repositories: [repository("newer-result")] })],
+    });
+    mocks.githubInstallationsRefresh
+      .mockReturnValueOnce(oldRefresh.promise)
+      .mockReturnValueOnce(newerRefresh.promise);
+    const { rerender } = render(
+      <GitHubConnectorRow
+        connection={connection()}
+        loading={false}
+        onConnectionChanged={staleCallback}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh GitHub repositories" }));
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect GitHub" }));
+    await userEvent.click(
+      within(screen.getByRole("dialog", { name: "Disconnect GitHub?" })).getByRole("button", {
+        name: "Disconnect",
+      }),
+    );
+    await waitFor(() => expect(staleCallback).toHaveBeenCalledWith(null));
+    staleCallback.mockClear();
+
+    rerender(
+      <GitHubConnectorRow
+        connection={null}
+        loading={false}
+        onConnectionChanged={currentCallback}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeEnabled();
+    rerender(
+      <GitHubConnectorRow
+        connection={connection({ login: "reconnected-octocat" })}
+        loading={false}
+        onConnectionChanged={currentCallback}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Refresh GitHub repositories" }));
+    expect(mocks.githubInstallationsRefresh).toHaveBeenCalledTimes(2);
+
+    await act(async () => oldRefresh.resolve(staleResult));
+    expect(staleCallback).not.toHaveBeenCalled();
+    expect(currentCallback).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Refresh GitHub repositories" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Refresh GitHub repositories" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+
+    await act(async () => newerRefresh.resolve(newerResult));
+    await waitFor(() => expect(currentCallback).toHaveBeenCalledWith(newerResult));
+    expect(staleCallback).not.toHaveBeenCalled();
+    expect(currentCallback).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Refresh GitHub repositories" })).toBeEnabled();
+  });
+
   it("does not arm return refresh when installation settings fail to open", async () => {
     mocks.githubInstallationOpen.mockRejectedValue({
       code: "github_request_failed",

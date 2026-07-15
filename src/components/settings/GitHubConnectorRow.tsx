@@ -90,6 +90,7 @@ export function GitHubConnectorRow({
   const onConnectionChangedRef = useRef(onConnectionChanged);
   const refreshingRef = useRef(false);
   const installationReturnRefreshArmed = useRef(false);
+  const installationReturnRefreshQueuedGeneration = useRef<number | null>(null);
 
   useEffect(() => {
     onConnectionChangedRef.current = onConnectionChanged;
@@ -99,6 +100,7 @@ export function GitHubConnectorRow({
     () => () => {
       flowGeneration.current += 1;
       installationReturnRefreshArmed.current = false;
+      installationReturnRefreshQueuedGeneration.current = null;
       lifecycleGeneration.current += 1;
       if (!flowPending.current) return;
       flowPending.current = false;
@@ -171,7 +173,7 @@ export function GitHubConnectorRow({
     }
   }
 
-  const refreshInstallations = useCallback(async () => {
+  const refreshInstallations = useCallback(async function refreshInstallations() {
     if (refreshingRef.current) return;
     const generation = lifecycleGeneration.current;
     refreshingRef.current = true;
@@ -187,7 +189,12 @@ export function GitHubConnectorRow({
     } finally {
       if (generation === lifecycleGeneration.current) {
         refreshingRef.current = false;
-        setRefreshing(false);
+        if (installationReturnRefreshQueuedGeneration.current === generation) {
+          installationReturnRefreshQueuedGeneration.current = null;
+          void refreshInstallations();
+        } else {
+          setRefreshing(false);
+        }
       }
     }
   }, []);
@@ -196,12 +203,17 @@ export function GitHubConnectorRow({
     function refreshAfterInstallationReturn() {
       if (!installationReturnRefreshArmed.current) return;
       installationReturnRefreshArmed.current = false;
+      if (refreshingRef.current) {
+        installationReturnRefreshQueuedGeneration.current = lifecycleGeneration.current;
+        return;
+      }
       void refreshInstallations();
     }
 
     window.addEventListener("focus", refreshAfterInstallationReturn);
     return () => {
       installationReturnRefreshArmed.current = false;
+      installationReturnRefreshQueuedGeneration.current = null;
       window.removeEventListener("focus", refreshAfterInstallationReturn);
     };
   }, [refreshInstallations]);
@@ -220,6 +232,7 @@ export function GitHubConnectorRow({
 
   async function disconnect() {
     installationReturnRefreshArmed.current = false;
+    installationReturnRefreshQueuedGeneration.current = null;
     refreshingRef.current = false;
     const generation = ++lifecycleGeneration.current;
     setRefreshing(false);
