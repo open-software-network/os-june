@@ -5,6 +5,8 @@ use std::{fmt, time::Duration};
 
 const PRODUCTION_BASE_URL: &str = "https://api.github.com/";
 const GITHUB_USER_AGENT: &str = "os-june/0.1";
+const GITHUB_JSON_ACCEPT: &str = "application/vnd.github+json";
+const GITHUB_TEXT_MATCH_ACCEPT: &str = "application/vnd.github.text-match+json";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RETRY_AFTER_SECONDS: u64 = 24 * 60 * 60;
 
@@ -93,6 +95,41 @@ impl GitHubReadClient {
         query_pairs: &[(&str, &str)],
         max_response_bytes: usize,
     ) -> Result<T, GitHubApiError> {
+        self.get_json_with_accept(
+            access_token,
+            path_segments,
+            query_pairs,
+            max_response_bytes,
+            GITHUB_JSON_ACCEPT,
+        )
+        .await
+    }
+
+    pub(super) async fn get_json_with_text_matches<T: DeserializeOwned>(
+        &self,
+        access_token: &str,
+        path_segments: &[&str],
+        query_pairs: &[(&str, &str)],
+        max_response_bytes: usize,
+    ) -> Result<T, GitHubApiError> {
+        self.get_json_with_accept(
+            access_token,
+            path_segments,
+            query_pairs,
+            max_response_bytes,
+            GITHUB_TEXT_MATCH_ACCEPT,
+        )
+        .await
+    }
+
+    async fn get_json_with_accept<T: DeserializeOwned>(
+        &self,
+        access_token: &str,
+        path_segments: &[&str],
+        query_pairs: &[(&str, &str)],
+        max_response_bytes: usize,
+        accept: &'static str,
+    ) -> Result<T, GitHubApiError> {
         if path_segments.is_empty()
             || path_segments.iter().any(|segment| {
                 segment.is_empty()
@@ -124,7 +161,7 @@ impl GitHubReadClient {
         let mut response = self
             .http
             .get(url)
-            .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+            .header(reqwest::header::ACCEPT, accept)
             .header("X-GitHub-Api-Version", GITHUB_API_VERSION)
             .bearer_auth(access_token)
             .send()
