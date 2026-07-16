@@ -12006,13 +12006,15 @@ mod tests {
                 "provider-tok"
             );
         }
-        // Connector routes (mail/calendar) require the connector-scoped secret,
-        // never the general provider token.
+        // Connector routes require the connector-scoped secret, never the
+        // general provider token.
         for path in [
             "/v1/gmail/search_threads",
             "/v1/gmail-actions/send_email",
             "/v1/gcal/list_events",
             "/v1/gcal-actions/create_event",
+            "/v1/notion/tools",
+            "/v1/notion-actions/notion-create-pages",
         ] {
             assert_eq!(
                 provider_proxy_required_token(
@@ -12082,6 +12084,10 @@ mod tests {
         );
         assert_eq!(
             provider_proxy_max_body_bytes("/v1/chat/completions"),
+            JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES
+        );
+        assert_eq!(
+            provider_proxy_max_body_bytes("/v1/notion-actions/notion-create-pages"),
             JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES
         );
         assert_eq!(

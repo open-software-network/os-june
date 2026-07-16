@@ -354,14 +354,21 @@ pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccoun
             status: ConnectorAccountStatus::from_db(&record.status),
         })
         .collect();
-    if notion::status().await?.connected {
-        accounts.push(ConnectorAccount {
+    match notion::status().await {
+        Ok(status) if status.connected => accounts.push(ConnectorAccount {
             account_id: notion::notion_account_id().to_string(),
             provider: ConnectorProvider::Notion,
             email: notion::notion_account_email().to_string(),
             scopes: Vec::new(),
             status: ConnectorAccountStatus::Connected,
-        });
+        }),
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(
+                error_code = %error.code,
+                "failed to read optional Notion connector status; treating it as disconnected"
+            );
+        }
     }
     Ok(accounts)
 }
@@ -567,6 +574,15 @@ mod tests {
             "\"google\""
         );
         assert_eq!(
+            serde_json::to_string(&ConnectorProvider::Notion).unwrap(),
+            "\"notion\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ConnectorProvider>("\"notion\"").unwrap(),
+            ConnectorProvider::Notion
+        );
+        assert_eq!(ConnectorProvider::Notion.as_str(), "notion");
+        assert_eq!(
             serde_json::to_string(&ConnectorAccountStatus::ReconnectRequired).unwrap(),
             "\"reconnect_required\""
         );
@@ -588,6 +604,23 @@ mod tests {
         let json = serde_json::to_value(&account).unwrap();
         assert_eq!(json["accountId"], "user@example.com");
         assert_eq!(json["provider"], "google");
+        assert_eq!(json["status"], "connected");
+    }
+
+    #[test]
+    fn notion_account_serializes_camel_case_for_the_frontend() {
+        let account = ConnectorAccount {
+            account_id: notion::notion_account_id().to_string(),
+            provider: ConnectorProvider::Notion,
+            email: notion::notion_account_email().to_string(),
+            scopes: Vec::new(),
+            status: ConnectorAccountStatus::Connected,
+        };
+        let json = serde_json::to_value(&account).unwrap();
+        assert_eq!(json["accountId"], "notion-hosted-mcp");
+        assert_eq!(json["provider"], "notion");
+        assert_eq!(json["email"], "Notion hosted MCP preview");
+        assert_eq!(json["scopes"].as_array().unwrap().len(), 0);
         assert_eq!(json["status"], "connected");
     }
 

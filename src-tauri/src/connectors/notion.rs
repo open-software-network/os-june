@@ -59,7 +59,7 @@ fn http_client() -> &'static reqwest::Client {
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .user_agent("os-june/0.1 notion-hosted-mcp-preview")
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
+            .expect("Notion hosted MCP HTTP client configuration must be valid")
     })
 }
 
