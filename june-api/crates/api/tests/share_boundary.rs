@@ -880,6 +880,9 @@ async fn viewer_shell_is_static_noindex_and_identical_for_any_id() {
     let shell = std::str::from_utf8(&pages[0]).expect("viewer shell is utf-8");
     assert!(shell.contains("[hidden] { display: none !important; }"));
     assert!(shell.contains("Passcode required"));
+    assert!(shell.contains(
+        "<a id=\"download-cta\" href=\"https://opensoftware.co/june\" rel=\"noreferrer\">Get June</a>"
+    ));
     assert!(!shell.contains("Maybe later"));
 }
 
