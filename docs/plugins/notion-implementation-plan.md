@@ -2,7 +2,7 @@
 
 - **Mode:** CTO
 - **Date:** 2026-07-13
-- **Status:** Proposed; hosted MCP transport proven, selected-resource scoping blocked
+- **Status:** Proposed; hosted MCP transport reported proven, evidence recovery blocked, selected-resource scoping blocked
 - **PRD:** [notion-prd.md](notion-prd.md)
 - **Issue:** JUN-283
 
@@ -17,7 +17,8 @@ boundary is proven.
 
 ## Current Phase 0 evidence
 
-A hosted MCP prototype proved the live transport chain:
+The prior handoff reports that a hosted MCP prototype proved the live transport
+chain:
 
 - June Rust shell -> Keychain token -> rmcp Streamable HTTP -> Notion hosted MCP
   -> `tools/list`.
@@ -28,10 +29,22 @@ A hosted MCP prototype proved the live transport chain:
   `notion-query-data-sources`, and `notion-query-database-view`, plus write-class
   tools such as page create/update.
 
-This proves transport/auth viability only. It does not prove June can safely
-claim that Notion access is limited to user-selected pages.
+This reported result supports transport/auth viability only. It does not prove
+June can safely claim that Notion access is limited to user-selected pages. The
+reported transport result remains provisional until the prototype source or
+complete JSON evidence with secrets and private identifiers/content redacted is
+recovered.
 
 ## Phase 0A: recover prototype evidence
+
+**Checkpoint, 2026-07-16:** the prototype source is unavailable in this clone.
+The referenced commits (`e3f22675`, `6670efc`, and `9425221`) are absent from
+local objects, local and remote refs, reflogs, and unreachable commits. The
+referenced `spike__notion-adr-0024-prototype` worktree currently resolves to
+`origin/main`, and no Notion hosted-MCP source is present here. Recover the
+original checkout, branch, patch, or complete JSON
+evidence with secrets and private identifiers/content redacted before adding or
+promoting transport code.
 
 Before promoting prototype code:
 
