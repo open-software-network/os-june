@@ -110,6 +110,7 @@ function readAccountAvatarVariant(identity: string): number {
 }
 
 function writeAccountAvatarVariant(identity: string, variant: number) {
+  if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(accountAvatarVariantStorageKey(identity), String(variant));
   } catch {
