@@ -55,10 +55,11 @@ fn http_client() -> Result<&'static reqwest::Client, AppError> {
             // Notion hosted MCP traffic carries user-granted connector tokens.
             // Keep it direct-to-provider for this preview instead of honoring
             // ambient process proxy variables that could redirect credentials.
+            // This means proxy-required networks are intentionally unsupported
+            // until June has an explicit trusted-proxy connector setting.
             reqwest::Client::builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
-                .timeout(HTTP_TIMEOUT)
                 .pool_idle_timeout(Duration::from_secs(90))
                 .tcp_keepalive(Some(Duration::from_secs(30)))
                 .user_agent("os-june/0.1 notion-hosted-mcp-preview")
@@ -506,6 +507,7 @@ async fn discover_and_validate() -> Result<(ResourceMetadata, AuthorizationServe
 async fn get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T, AppError> {
     let response = http_client()?
         .get(url)
+        .timeout(HTTP_TIMEOUT)
         .send()
         .await
         .map_err(|_| metadata_error())?;
@@ -532,6 +534,7 @@ async fn register_client(
         .ok_or_else(metadata_error)?;
     let response = http_client()?
         .post(endpoint)
+        .timeout(HTTP_TIMEOUT)
         .json(&RegistrationRequest {
             client_name: "June",
             redirect_uris: vec![redirect_uri],
@@ -601,6 +604,7 @@ async fn exchange_code(
     }
     let response = http_client()?
         .post(&auth_server.token_endpoint)
+        .timeout(HTTP_TIMEOUT)
         .form(&form)
         .send()
         .await

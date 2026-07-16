@@ -8761,16 +8761,11 @@ async fn handle_june_provider_connection(
             write_json_response(&mut stream, 200, recorder_status_body()).await?;
         }
         ("POST", path)
-            if path.starts_with("/v1/gmail/")
-                || path.starts_with("/v1/gmail-actions/")
-                || path.starts_with("/v1/gcal/")
-                || path.starts_with("/v1/gcal-actions/") =>
+            if provider_proxy_is_connector_route(path) && !path.starts_with("/v1/notion") =>
         {
             handle_connector_route(&mut stream, &state, path, &request.body).await?;
         }
-        ("POST", path)
-            if path.starts_with("/v1/notion/") || path.starts_with("/v1/notion-actions/") =>
-        {
+        ("POST", path) if provider_proxy_is_notion_connector_route(path) => {
             handle_notion_connector_route(&mut stream, &state, path, &request.body).await?;
         }
         _ => {
@@ -10001,9 +9996,8 @@ fn model_catalog_with_fallback(
 }
 
 /// Recorder mutations require the recorder-scoped secret; connector routes
-/// (mail/calendar) require the connector-scoped secret; every other route keeps
-/// the general provider token. Distinct secrets, so none authorizes another's
-/// surface.
+/// require the connector-scoped secret; every other route keeps the general
+/// provider token. Distinct secrets, so none authorizes another's surface.
 fn provider_proxy_required_token<'a>(
     path: &str,
     provider_token: &'a str,
@@ -10012,17 +10006,23 @@ fn provider_proxy_required_token<'a>(
 ) -> &'a str {
     if path.starts_with("/v1/recorder/") {
         recorder_token
-    } else if path.starts_with("/v1/gmail/")
-        || path.starts_with("/v1/gmail-actions/")
-        || path.starts_with("/v1/gcal/")
-        || path.starts_with("/v1/gcal-actions/")
-        || path.starts_with("/v1/notion/")
-        || path.starts_with("/v1/notion-actions/")
-    {
+    } else if provider_proxy_is_connector_route(path) {
         connector_token
     } else {
         provider_token
     }
+}
+
+fn provider_proxy_is_connector_route(path: &str) -> bool {
+    path.starts_with("/v1/gmail/")
+        || path.starts_with("/v1/gmail-actions/")
+        || path.starts_with("/v1/gcal/")
+        || path.starts_with("/v1/gcal-actions/")
+        || provider_proxy_is_notion_connector_route(path)
+}
+
+fn provider_proxy_is_notion_connector_route(path: &str) -> bool {
+    path.starts_with("/v1/notion/") || path.starts_with("/v1/notion-actions/")
 }
 
 fn provider_proxy_authorized(request: &HttpRequest, token: &str) -> bool {
