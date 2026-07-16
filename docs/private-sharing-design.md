@@ -107,6 +107,12 @@ fail closed.
 ## Viewer
 
 The static `/s/{share_id}` shell has a strict self-only CSP and no analytics.
+Production links use `https://june.link/s/{share_id}#…`; the production ingress
+serves that hostname from the same June API process as
+`https://june-api.opensoftware.co`. Staging and local builds keep the viewer on
+their configured API origin. This preserves the viewer's self-only network
+policy while keeping production links short and branded.
+
 For a new link it:
 
 1. parses the fragment;

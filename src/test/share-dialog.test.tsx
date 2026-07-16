@@ -28,7 +28,7 @@ vi.mock("../lib/tauri", () => ({
   getShareBaseUrl: mocks.getShareBaseUrl,
 }));
 
-const BASE_URL = "https://june-api.opensoftware.co";
+const BASE_URL = "https://june.link";
 
 function noteItem(overrides: Partial<Parameters<typeof ShareDialog>[0]["item"]> = {}) {
   return {
@@ -91,6 +91,7 @@ describe("ShareDialog", () => {
       }),
     );
     const link = clipboard.mock.calls[0][0] as string;
+    expect(link).toMatch(/^https:\/\/june\.link\/s\/shr_1#link\./);
     const fragment = link.split("#")[1].split(".");
     expect(fragment.slice(0, 3)).toEqual(["link", "shi_link", "key"]);
 
