@@ -70,6 +70,11 @@ const EMAIL_APP_BUNDLE_IDS: &[&str] = &[
     "com.superhuman.electron",
 ];
 const DICTATION_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.04;
+/// Sound Analysis reports a confidence for its trained `speech` class. When
+/// both this score and the helper's independent peak/RMS meter stay low, June
+/// withholds automatic paste but keeps the transcript recoverable. This is not
+/// a destructive silence test: quiet speech can also fall below both cutoffs.
+const DICTATION_SPEECH_CONFIDENCE_THRESHOLD: f32 = 0.4;
 const DICTATION_EVENT_LOG: &str = "dictation-events.log";
 
 static SETTINGS_CACHE: OnceLock<Mutex<DictationSettings>> = OnceLock::new();
@@ -3335,6 +3340,15 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         .as_deref()
         .map(|bundle_id| is_email_app_bundle(bundle_id).then(|| APP_CONTEXT_EMAIL.to_string()))
         .unwrap_or_else(frontmost_app_context);
+    let low_speech_evidence = recording_has_low_speech_evidence(&recording);
+    if low_speech_evidence {
+        tracing::info!(
+            observed_audio_level = recording.observed_audio_level,
+            speech_confidence = recording.speech_confidence,
+            speech_analysis_status = ?recording.speech_analysis_status,
+            "dictation capture had low speech evidence; automatic paste will require manual review"
+        );
+    }
     // Backstop for the toggle-start path (where the start-time gate in
     // send_dictation_command can't tell start from stop) and for tokens that
     // expired between start and finish.
@@ -3417,24 +3431,93 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     )
     .await;
     let outcome = outcome_from_transcription_result(result, recording.observed_audio_level, style);
-    let state = app.state::<HelperState>();
-    if let Err(error) = send_helper_command(&state, outcome.helper_command) {
-        update_shortcut_helper_finalizing(&app, false);
-        emit_dictation_event_value(&app, app_error_event(error));
-        let _ = std::fs::remove_file(&audio_path);
-        return;
-    }
+    let history_already_persisted = if low_speech_evidence {
+        let recovery_transcript = outcome
+            .transcript
+            .as_ref()
+            .or(outcome.quarantine_transcript.as_ref());
+        if let Some(transcript) = recovery_transcript {
+            match persist_dictation_history_item(&app, transcript).await {
+                Ok(()) => true,
+                Err(error) => {
+                    retain_low_speech_evidence_recording(&app, &audio_path, transcript, &error);
+                    return;
+                }
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let outcome = quarantine_low_speech_evidence_outcome(outcome, low_speech_evidence);
+    deliver_dictation_outcome(&app, &audio_path, outcome, history_already_persisted);
+}
+
+fn deliver_dictation_outcome(
+    app: &AppHandle,
+    audio_path: &std::path::Path,
+    outcome: DictationTranscriptionOutcome,
+    history_already_persisted: bool,
+) {
+    // Low-evidence transcripts reach this point only after a successful,
+    // awaited history write. Normal transcripts keep the existing best-effort
+    // background write so their paste path does not gain database latency.
     if let Some(transcript) = outcome.transcript.as_ref() {
         crate::p3a::record_question_best_effort(
             app.clone(),
             crate::p3a::questions::Question::DictationSessions,
         );
-        spawn_dictation_history_write(app.clone(), transcript.clone());
+        if !history_already_persisted {
+            spawn_dictation_history_write(app.clone(), transcript.clone());
+        }
+    }
+    let state = app.state::<HelperState>();
+    if let Err(error) = send_helper_command(&state, outcome.helper_command) {
+        update_shortcut_helper_finalizing(app, false);
+        emit_dictation_event_value(app, app_error_event(error));
+        let _ = std::fs::remove_file(audio_path);
+        return;
     }
     if let Some(event) = outcome.event {
-        emit_dictation_event_value(&app, event);
+        emit_dictation_event_value(app, event);
     }
-    let _ = std::fs::remove_file(&audio_path);
+    let _ = std::fs::remove_file(audio_path);
+}
+
+fn retain_low_speech_evidence_recording(
+    app: &AppHandle,
+    audio_path: &std::path::Path,
+    transcript: &TranscriptionProviderResult,
+    history_error: &AppError,
+) {
+    tracing::error!(
+        code = %history_error.code,
+        audio_path = %audio_path.display(),
+        "dictation history save failed; retaining low-evidence recording"
+    );
+    let state = app.state::<HelperState>();
+    let command = serde_json::json!({
+        "type": "copy_text_for_review",
+        "text": transcript.text,
+        "keepRecordingFile": true,
+        "historySaved": false,
+    });
+    if let Err(error) = send_helper_command(&state, command) {
+        update_shortcut_helper_finalizing(app, false);
+        emit_dictation_event_value(
+            app,
+            app_error_event(AppError::new(
+                "dictation_recovery_unavailable",
+                "June couldn't save this dictation. The recording was kept for recovery.",
+            )),
+        );
+        tracing::error!(
+            code = %error.code,
+            audio_path = %audio_path.display(),
+            "could not hand retained dictation to helper"
+        );
+    }
 }
 
 fn prepare_dictation_audio(
@@ -4229,6 +4312,8 @@ fn recording_ready_info_from_event(
     Ok(RecordingReadyInfo {
         audio_path: PathBuf::from(path),
         observed_audio_level: observed_audio_level_from_event(event),
+        speech_confidence: speech_confidence_from_event(event),
+        speech_analysis_status: speech_analysis_status_from_event(event),
         target_bundle_id: event
             .get("payload")
             .and_then(|payload| payload.get("targetBundleIdentifier"))
@@ -4240,9 +4325,30 @@ fn recording_ready_info_from_event(
 }
 
 fn observed_audio_level_from_event(event: &serde_json::Value) -> Option<f32> {
-    let value = event
+    let level = finite_f32_from_event_payload(event, "observedAudioLevel")?;
+    (0.0..=1.0).contains(&level).then_some(level)
+}
+
+fn speech_confidence_from_event(event: &serde_json::Value) -> Option<f32> {
+    let confidence = finite_f32_from_event_payload(event, "speechConfidence")?;
+    (0.0..=1.0).contains(&confidence).then_some(confidence)
+}
+
+fn speech_analysis_status_from_event(event: &serde_json::Value) -> Option<SpeechAnalysisStatus> {
+    let status = event
         .get("payload")
-        .and_then(|payload| payload.get("observedAudioLevel"))?;
+        .and_then(|payload| payload.get("speechAnalysisStatus"))
+        .and_then(serde_json::Value::as_str)?;
+    match status {
+        "ok" => Some(SpeechAnalysisStatus::Ok),
+        "no_complete_window" => Some(SpeechAnalysisStatus::NoCompleteWindow),
+        "unavailable" => Some(SpeechAnalysisStatus::Unavailable),
+        _ => None,
+    }
+}
+
+fn finite_f32_from_event_payload(event: &serde_json::Value, key: &str) -> Option<f32> {
+    let value = event.get("payload").and_then(|payload| payload.get(key))?;
     let level = value
         .as_f64()
         .map(|level| level as f32)
@@ -4259,16 +4365,73 @@ struct DictationTranscriptionOutcome {
     helper_command: serde_json::Value,
     event: Option<serde_json::Value>,
     transcript: Option<TranscriptionProviderResult>,
+    quarantine_transcript: Option<TranscriptionProviderResult>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpeechAnalysisStatus {
+    Ok,
+    NoCompleteWindow,
+    Unavailable,
 }
 
 #[derive(Debug)]
 struct RecordingReadyInfo {
     audio_path: PathBuf,
     observed_audio_level: Option<f32>,
+    /// Maximum confidence for the macOS built-in `speech` class over the
+    /// finalized capture. Missing when analysis failed, produced no complete
+    /// window, or came from a helper version/platform without Sound Analysis.
+    speech_confidence: Option<f32>,
+    speech_analysis_status: Option<SpeechAnalysisStatus>,
     /// Bundle id of the paste target the helper pinned when the recording
     /// stopped: the same app it will paste into once we hand back a
     /// transcript. None with older helper builds that predate the field.
     target_bundle_id: Option<String>,
+}
+
+fn recording_has_low_speech_evidence(recording: &RecordingReadyInfo) -> bool {
+    let classifier_is_low = match recording.speech_analysis_status {
+        Some(SpeechAnalysisStatus::NoCompleteWindow) => true,
+        Some(SpeechAnalysisStatus::Unavailable) => false,
+        Some(SpeechAnalysisStatus::Ok) | None => recording
+            .speech_confidence
+            .is_some_and(|confidence| confidence < DICTATION_SPEECH_CONFIDENCE_THRESHOLD),
+    };
+    classifier_is_low
+        && recording
+            .observed_audio_level
+            .is_some_and(|level| level < DICTATION_AUDIO_ACTIVITY_THRESHOLD)
+}
+
+fn quarantine_low_speech_evidence_outcome(
+    mut outcome: DictationTranscriptionOutcome,
+    low_speech_evidence: bool,
+) -> DictationTranscriptionOutcome {
+    if !low_speech_evidence {
+        return outcome;
+    }
+    let Some(transcript) = outcome
+        .transcript
+        .clone()
+        .or_else(|| outcome.quarantine_transcript.clone())
+    else {
+        return outcome;
+    };
+
+    // A generic speech classifier cannot prove that a quiet capture contains
+    // no real words. Keep the ASR result in history and on the clipboard, but
+    // never let a low-evidence hallucination type itself into another app or
+    // launch an agent action without the user's review.
+    outcome.helper_command = serde_json::json!({
+        "type": "copy_text_for_review",
+        "text": transcript.text,
+        "historySaved": true,
+    });
+    outcome.event = None;
+    outcome.transcript = Some(transcript);
+    outcome.quarantine_transcript = None;
+    outcome
 }
 
 fn outcome_from_transcription_result(
@@ -4286,11 +4449,7 @@ fn outcome_from_transcription_result(
                 // silent no_speech event, regardless of the observed audio
                 // level — the audio-detected-but-no-text error is meant for
                 // genuine silence misheard as loud audio, not for fillers.
-                return DictationTranscriptionOutcome {
-                    helper_command: serde_json::json!({ "type": "discard_recording" }),
-                    event: Some(silent_no_speech_event()),
-                    transcript: None,
-                };
+                return silent_no_speech_outcome();
             }
             outcome_from_clean_transcript(transcript, observed_audio_level)
         }
@@ -4303,8 +4462,18 @@ fn outcome_from_transcription_result(
                 helper_command: serde_json::json!({ "type": "discard_recording" }),
                 event: Some(event),
                 transcript: None,
+                quarantine_transcript: None,
             }
         }
+    }
+}
+
+fn silent_no_speech_outcome() -> DictationTranscriptionOutcome {
+    DictationTranscriptionOutcome {
+        helper_command: serde_json::json!({ "type": "discard_recording" }),
+        event: Some(silent_no_speech_event()),
+        transcript: None,
+        quarantine_transcript: None,
     }
 }
 
@@ -4320,6 +4489,7 @@ fn outcome_from_clean_transcript(
             helper_command: serde_json::json!({ "type": "discard_recording" }),
             event: Some(no_text_event_for_observed_audio(observed_audio_level)),
             transcript: None,
+            quarantine_transcript: None,
         },
         transcript if looks_like_instruction_response(&transcript.text) => {
             DictationTranscriptionOutcome {
@@ -4332,6 +4502,7 @@ fn outcome_from_clean_transcript(
                     },
                 })),
                 transcript: None,
+                quarantine_transcript: Some(transcript),
             }
         }
         transcript => {
@@ -4343,6 +4514,7 @@ fn outcome_from_clean_transcript(
                         "payload": { "prompt": prompt },
                     })),
                     transcript: Some(transcript),
+                    quarantine_transcript: None,
                 }
             } else {
                 DictationTranscriptionOutcome {
@@ -4352,6 +4524,7 @@ fn outcome_from_clean_transcript(
                     }),
                     event: None,
                     transcript: Some(transcript),
+                    quarantine_transcript: None,
                 }
             }
         }
@@ -4712,26 +4885,40 @@ fn skip_word_separators(value: &str) -> &str {
 }
 
 async fn store_dictation_history_item(app: &AppHandle, transcript: &TranscriptionProviderResult) {
-    match crate::commands::repositories(app).await {
-        Ok(repos) => {
-            if let Err(error) = repos
-                .create_dictation_history_item(
-                    &transcript.text,
-                    transcript.language.clone(),
-                    &transcript.provider,
-                )
-                .await
-            {
-                eprintln!("[dictation] history save failed: {error}");
-            }
-        }
-        Err(error) => {
-            eprintln!(
-                "[dictation] history unavailable code={} message={}",
-                error.code, error.message
-            );
-        }
+    if let Err(error) = persist_dictation_history_item(app, transcript).await {
+        tracing::error!(
+            code = %error.code,
+            "dictation history save failed after transcript delivery"
+        );
     }
+}
+
+async fn persist_dictation_history_item(
+    app: &AppHandle,
+    transcript: &TranscriptionProviderResult,
+) -> Result<(), AppError> {
+    let repos = crate::commands::repositories(app).await.map_err(|error| {
+        tracing::error!(code = %error.code, "dictation history repository unavailable");
+        AppError::new(
+            "dictation_history_save_failed",
+            "Dictation history could not save this transcript.",
+        )
+    })?;
+    repos
+        .create_dictation_history_item(
+            &transcript.text,
+            transcript.language.clone(),
+            &transcript.provider,
+        )
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "dictation history insert failed");
+            AppError::new(
+                "dictation_history_save_failed",
+                "Dictation history could not save this transcript.",
+            )
+        })?;
+    Ok(())
 }
 
 fn app_error_event(error: AppError) -> serde_json::Value {
@@ -4853,6 +5040,12 @@ fn dictation_event_log_entry(event_type: &str, event: &serde_json::Value) -> ser
             .and_then(serde_json::Value::as_str),
         "observedAudioLevel": payload
             .and_then(|payload| payload.get("observedAudioLevel"))
+            .cloned(),
+        "speechConfidence": payload
+            .and_then(|payload| payload.get("speechConfidence"))
+            .cloned(),
+        "speechAnalysisStatus": payload
+            .and_then(|payload| payload.get("speechAnalysisStatus"))
             .cloned(),
         "pasteTarget": payload
             .and_then(|payload| payload.get("app"))
@@ -6974,6 +7167,233 @@ mod tests {
     }
 
     #[test]
+    fn recording_ready_info_includes_valid_speech_confidence() {
+        let event = serde_json::json!({
+            "type": "recording_ready",
+            "payload": {
+                "path": "/tmp/os-june-dictation-test.m4a",
+                "speechConfidence": "0.2630",
+                "speechAnalysisStatus": "ok",
+            }
+        });
+        let info = recording_ready_info_from_event(&event).expect("recording info");
+        assert_eq!(info.speech_confidence, Some(0.263));
+        assert_eq!(info.speech_analysis_status, Some(SpeechAnalysisStatus::Ok));
+        let log_entry = dictation_event_log_entry("recording_ready", &event);
+        assert_eq!(log_entry["speechConfidence"], "0.2630");
+        assert_eq!(log_entry["speechAnalysisStatus"], "ok");
+
+        let invalid = serde_json::json!({
+            "type": "recording_ready",
+            "payload": {
+                "path": "/tmp/os-june-dictation-test.m4a",
+                "speechConfidence": "1.2",
+            }
+        });
+        let info = recording_ready_info_from_event(&invalid).expect("recording info");
+        assert_eq!(info.speech_confidence, None);
+    }
+
+    #[test]
+    fn observed_audio_level_rejects_values_outside_the_normalized_range() {
+        for value in ["-0.1", "1.1", "NaN", "inf"] {
+            let event = serde_json::json!({
+                "type": "recording_ready",
+                "payload": {
+                    "path": "/tmp/os-june-dictation-test.m4a",
+                    "observedAudioLevel": value,
+                }
+            });
+            let info = recording_ready_info_from_event(&event).expect("recording info");
+            assert_eq!(info.observed_audio_level, None, "accepted {value}");
+        }
+
+        let event = serde_json::json!({
+            "type": "recording_ready",
+            "payload": {
+                "path": "/tmp/os-june-dictation-test.m4a",
+                "observedAudioLevel": "0",
+            }
+        });
+        let info = recording_ready_info_from_event(&event).expect("recording info");
+        assert_eq!(info.observed_audio_level, Some(0.0));
+    }
+
+    #[test]
+    fn low_speech_evidence_requires_both_low_audio_signals() {
+        let info =
+            |speech_confidence, speech_analysis_status, observed_audio_level| RecordingReadyInfo {
+                audio_path: PathBuf::from("/tmp/os-june-dictation-test.m4a"),
+                observed_audio_level,
+                speech_confidence,
+                speech_analysis_status,
+                target_bundle_id: None,
+            };
+
+        assert!(recording_has_low_speech_evidence(&info(
+            Some(0.263),
+            Some(SpeechAnalysisStatus::Ok),
+            Some(0.0305)
+        )));
+        assert!(!recording_has_low_speech_evidence(&info(
+            Some(DICTATION_SPEECH_CONFIDENCE_THRESHOLD),
+            Some(SpeechAnalysisStatus::Ok),
+            Some(0.0305)
+        )));
+        assert!(!recording_has_low_speech_evidence(&info(
+            Some(0.263),
+            Some(SpeechAnalysisStatus::Ok),
+            Some(DICTATION_AUDIO_ACTIVITY_THRESHOLD)
+        )));
+        assert!(!recording_has_low_speech_evidence(&info(
+            None,
+            None,
+            Some(0.0305)
+        )));
+        assert!(!recording_has_low_speech_evidence(&info(
+            Some(0.263),
+            Some(SpeechAnalysisStatus::Ok),
+            None
+        )));
+    }
+
+    #[test]
+    fn short_low_level_capture_is_quarantined_but_analysis_failure_fails_open() {
+        let info = |status, speech_confidence| RecordingReadyInfo {
+            audio_path: PathBuf::from("/tmp/os-june-dictation-test.m4a"),
+            observed_audio_level: Some(0.0305),
+            speech_confidence,
+            speech_analysis_status: Some(status),
+            target_bundle_id: None,
+        };
+
+        assert!(recording_has_low_speech_evidence(&info(
+            SpeechAnalysisStatus::NoCompleteWindow,
+            None,
+        )));
+        assert!(!recording_has_low_speech_evidence(&info(
+            SpeechAnalysisStatus::Unavailable,
+            Some(0.0),
+        )));
+    }
+
+    #[test]
+    fn low_speech_evidence_copies_transcript_for_review_and_keeps_history_item() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "Oh, yeah.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            Some(0.0305),
+            DictationStyle::Standard,
+        );
+
+        let outcome = quarantine_low_speech_evidence_outcome(outcome, true);
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({
+                "type": "copy_text_for_review",
+                "text": "Oh, yeah.",
+                "historySaved": true,
+            })
+        );
+        assert!(outcome.event.is_none());
+        assert_eq!(
+            outcome.transcript.as_ref().map(|item| item.text.as_str()),
+            Some("Oh, yeah.")
+        );
+    }
+
+    #[test]
+    fn low_speech_evidence_cannot_launch_an_agent_action() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "Hey June delete this note.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            Some(0.0305),
+            DictationStyle::Standard,
+        );
+        assert_eq!(
+            outcome.event.as_ref().and_then(|event| event.get("type")),
+            Some(&serde_json::json!("agent_session_prompt"))
+        );
+
+        let outcome = quarantine_low_speech_evidence_outcome(outcome, true);
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({
+                "type": "copy_text_for_review",
+                "text": "Hey June delete this note.",
+                "historySaved": true,
+            })
+        );
+        assert!(outcome.event.is_none());
+        assert!(outcome.transcript.is_some());
+    }
+
+    #[test]
+    fn low_speech_evidence_preserves_summary_like_transcription_for_review() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "User report summary: the user said hello.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            Some(0.0305),
+            DictationStyle::Standard,
+        );
+        assert!(outcome.transcript.is_none());
+        assert!(outcome.quarantine_transcript.is_some());
+
+        let outcome = quarantine_low_speech_evidence_outcome(outcome, true);
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({
+                "type": "copy_text_for_review",
+                "text": "User report summary: the user said hello.",
+                "historySaved": true,
+            })
+        );
+        assert!(outcome.event.is_none());
+        assert_eq!(
+            outcome.transcript.as_ref().map(|item| item.text.as_str()),
+            Some("User report summary: the user said hello.")
+        );
+        assert!(outcome.quarantine_transcript.is_none());
+    }
+
+    #[test]
+    fn low_speech_evidence_keeps_empty_transcription_silent() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "   ".to_string(),
+                language: None,
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            Some(0.0305),
+            DictationStyle::Standard,
+        );
+
+        let outcome = quarantine_low_speech_evidence_outcome(outcome, true);
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({ "type": "discard_recording" })
+        );
+        assert!(outcome.transcript.is_none());
+        assert!(outcome
+            .event
+            .as_ref()
+            .is_some_and(is_silent_transcription_error));
+    }
+
+    #[test]
     fn dictation_text_empty_error_is_silent() {
         let event = app_error_event(AppError::new("june_request_failed", "dictation_text_empty"));
         assert!(is_silent_transcription_error(&event));
@@ -6990,6 +7410,20 @@ mod tests {
             "payload": {
                 "code": "accessibility_permission_missing",
                 "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+            }
+        });
+        assert!(!is_silent_transcription_error(&event));
+        annotate_silent_error(&mut event);
+        assert_eq!(event["payload"]["silent"], false);
+    }
+
+    #[test]
+    fn low_speech_evidence_error_is_visible() {
+        let mut event = serde_json::json!({
+            "type": "error",
+            "payload": {
+                "code": "dictation_low_speech_evidence",
+                "message": "Speech was unclear. Use Cmd+V to paste the transcript.",
             }
         });
         assert!(!is_silent_transcription_error(&event));

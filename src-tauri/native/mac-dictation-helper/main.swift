@@ -4,6 +4,7 @@ import AppKit
 import Carbon
 import CoreMedia
 import CoreGraphics
+import SoundAnalysis
 
 struct HelperEvent: Encodable {
     let type: String
@@ -167,8 +168,31 @@ enum RecordingCueSound: String {
     case stop = "record-end"
 }
 
+private final class RecordingCueCompletion: NSObject, NSSoundDelegate {
+    private var completion: (() -> Void)?
+
+    init(completion: @escaping () -> Void) {
+        self.completion = completion
+    }
+
+    func sound(_ sound: NSSound, didFinishPlaying flag: Bool) {
+        finish()
+    }
+
+    func finish() {
+        let completion = completion
+        self.completion = nil
+        completion?()
+    }
+
+    func cancel() {
+        completion = nil
+    }
+}
+
 enum RecordingCuePlayer {
     private static var sounds: [RecordingCueSound: NSSound] = [:]
+    private static var completions: [RecordingCueSound: RecordingCueCompletion] = [:]
 
     static func play(_ cue: RecordingCueSound) {
         let sound = sounds[cue] ?? load(cue)
@@ -178,6 +202,49 @@ enum RecordingCuePlayer {
         sound.stop()
         sound.currentTime = 0
         sound.play()
+    }
+
+    static func play(_ cue: RecordingCueSound, completion: @escaping () -> Void) {
+        let sound = sounds[cue] ?? load(cue)
+        guard let sound else {
+            completion()
+            return
+        }
+
+        cancel(cue)
+        let delegate = RecordingCueCompletion {
+            sound.delegate = nil
+            completions.removeValue(forKey: cue)
+            completion()
+        }
+        completions[cue] = delegate
+        sound.delegate = delegate
+        sound.currentTime = 0
+        guard sound.play() else {
+            delegate.finish()
+            return
+        }
+
+        // NSSound normally calls its delegate when playback finishes. Keep a
+        // bounded fallback so a broken output route cannot wedge dictation in
+        // the pending state forever.
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(1, sound.duration + 0.5)) {
+            guard completions[cue] === delegate else {
+                return
+            }
+            sound.delegate = nil
+            sound.stop()
+            delegate.finish()
+        }
+    }
+
+    static func cancel(_ cue: RecordingCueSound) {
+        completions.removeValue(forKey: cue)?.cancel()
+        guard let sound = sounds[cue] else {
+            return
+        }
+        sound.delegate = nil
+        sound.stop()
     }
 
     private static func load(_ cue: RecordingCueSound) -> NSSound? {
@@ -190,6 +257,94 @@ enum RecordingCuePlayer {
         sounds[cue] = sound
         return sound
     }
+}
+
+private final class SpeechActivityObserver: NSObject, SNResultsObserving {
+    private(set) var speechResultCount = 0
+    private(set) var maxSpeechConfidence = 0.0
+    private(set) var failed = false
+
+    func request(_ request: SNRequest, didProduce result: SNResult) {
+        guard let classification = result as? SNClassificationResult else {
+            return
+        }
+        guard let speech = classification.classification(forIdentifier: "speech") else {
+            return
+        }
+        speechResultCount += 1
+        let confidence = speech.confidence
+        maxSpeechConfidence = max(maxSpeechConfidence, confidence)
+    }
+
+    func request(_ request: SNRequest, didFailWithError error: Error) {
+        failed = true
+    }
+
+    func requestDidComplete(_ request: SNRequest) {}
+}
+
+let speechAnalysisWindowDurationSeconds: Double = 0.5
+
+private final class SpeechConfidenceAnalysis {
+    private static let timeout: TimeInterval = 5
+
+    private let analyzer: SNAudioFileAnalyzer
+    private let observer = SpeechActivityObserver()
+    private var completion: ((Double?) -> Void)?
+
+    init(url: URL, completion: @escaping (Double?) -> Void) throws {
+        self.completion = completion
+        let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
+        request.windowDuration = CMTime(
+            seconds: speechAnalysisWindowDurationSeconds,
+            preferredTimescale: 16_000
+        )
+        request.overlapFactor = 0.5
+        analyzer = try SNAudioFileAnalyzer(url: url)
+        try analyzer.add(request, withObserver: observer)
+    }
+
+    func start() {
+        analyzer.analyze { success in
+            let confidence = success && !self.observer.failed && self.observer.speechResultCount > 0
+                ? self.observer.maxSpeechConfidence
+                : nil
+            runOnMain {
+                self.finish(confidence)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.timeout) {
+            self.finish(nil)
+        }
+    }
+
+    private func finish(_ confidence: Double?) {
+        guard let completion else {
+            return
+        }
+        self.completion = nil
+        analyzer.cancelAnalysis()
+        completion(confidence)
+    }
+}
+
+func analyzeSpeechConfidence(at url: URL, completion: @escaping (Double?) -> Void) {
+    do {
+        let analysis = try SpeechConfidenceAnalysis(url: url, completion: completion)
+        analysis.start()
+    } catch {
+        completion(nil)
+    }
+}
+
+func audioDurationSeconds(at url: URL) -> Double? {
+    guard
+        let file = try? AVAudioFile(forReading: url),
+        file.fileFormat.sampleRate > 0
+    else {
+        return nil
+    }
+    return Double(file.length) / file.fileFormat.sampleRate
 }
 
 func microphoneDevices() -> [[String: String]] {
@@ -1436,6 +1591,10 @@ enum RecordingPurpose {
 }
 
 let micTestCapturePaddingSeconds: Double = 0.35
+// Keep in sync with DICTATION_AUDIO_ACTIVITY_THRESHOLD in dictation.rs. The
+// trained classifier only affects captures below this independent meter gate,
+// so louder dictation should not pay for file analysis during finalization.
+let dictationAudioActivityThreshold: Float = 0.04
 
 final class DictationController {
     private var audioRecorder: AVAudioRecorder?
@@ -1489,7 +1648,7 @@ final class DictationController {
     /// sees the mismatch and does nothing.
     private var dictationStartGeneration = 0
 
-    func start() {
+    func start(playCue: Bool) {
         if startPending {
             return
         }
@@ -1509,13 +1668,33 @@ final class DictationController {
                 guard let self, self.dictationStartGeneration == generation else {
                     return
                 }
-                self.startPending = false
                 guard microphoneAllowed else {
+                    self.startPending = false
                     emit("error", ["code": "microphone_permission_missing", "message": "Microphone permission is required."])
                     emit("permission_status", permissionPayload())
                     return
                 }
-                self.startRecording(purpose: .dictation, durationSeconds: nil)
+                let beginRecording = { [weak self] in
+                    guard
+                        let self,
+                        self.startPending,
+                        self.dictationStartGeneration == generation
+                    else {
+                        return
+                    }
+                    self.startPending = false
+                    self.startRecording(purpose: .dictation, durationSeconds: nil)
+                }
+                if playCue {
+                    // Toggle dictation has no key-up timing contract, so its
+                    // cue can finish before capture starts without entering
+                    // the recording. Push-to-talk skips this cue and calls
+                    // beginRecording immediately so the down edge remains
+                    // the start of capture.
+                    RecordingCuePlayer.play(.start, completion: beginRecording)
+                } else {
+                    beginRecording()
+                }
             }
         }
     }
@@ -1527,7 +1706,8 @@ final class DictationController {
         // pending flag until a helper restart.
         if startPending && !isListening {
             dictationStartGeneration += 1
-            startPending = false
+            RecordingCuePlayer.cancel(.start)
+            resetRecordingState()
             emit("recording_discarded", ["reason": "start_cancelled"])
             return
         }
@@ -1540,12 +1720,12 @@ final class DictationController {
     }
 
     func toggle(shortcut: String) {
-        if isListening {
+        if isListening || startPending {
             emit("hotkey_trigger", ["action": "stop", "shortcut": shortcut])
             stop()
-        } else if !isFinalizing && !startPending {
+        } else if !isFinalizing {
             emit("hotkey_trigger", ["action": "start", "shortcut": shortcut])
-            start()
+            start(playCue: true)
         }
     }
 
@@ -1585,6 +1765,17 @@ final class DictationController {
         emit("final_transcript", ["text": text])
         PasteboardInserter.paste(text)
         resetRecordingState()
+    }
+
+    func copyForReview(text: String, keepRecordingFile: Bool, historySaved: Bool) {
+        let text = dictationPasteText(text)
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            fail(DictationError.missingTranscript)
+            return
+        }
+
+        PasteboardInserter.copyForReview(text, historySaved: historySaved)
+        resetRecordingState(keepRecordingFile: keepRecordingFile)
     }
 
     func discard() {
@@ -1730,11 +1921,37 @@ final class DictationController {
             return
         }
 
-        emit("recording_ready", [
+        let observedAudioLevel = maxObservedAudioLevel
+        let targetBundleIdentifier = FocusTargetController.shared.targetBundleIdentifier() ?? ""
+        let basePayload = [
             "path": recordingURL.path,
-            "observedAudioLevel": String(format: "%.4f", maxObservedAudioLevel),
-            "targetBundleIdentifier": FocusTargetController.shared.targetBundleIdentifier() ?? "",
-        ])
+            "observedAudioLevel": String(format: "%.4f", observedAudioLevel),
+            "targetBundleIdentifier": targetBundleIdentifier,
+        ]
+        guard observedAudioLevel < dictationAudioActivityThreshold else {
+            emit("recording_ready", basePayload)
+            return
+        }
+        if let duration = audioDurationSeconds(at: recordingURL),
+           duration < speechAnalysisWindowDurationSeconds {
+            var payload = basePayload
+            payload["speechAnalysisStatus"] = "no_complete_window"
+            emit("recording_ready", payload)
+            return
+        }
+        analyzeSpeechConfidence(at: recordingURL) { [weak self] speechConfidence in
+            guard let self, self.isFinalizing, self.recordingURL == recordingURL else {
+                return
+            }
+            var payload = basePayload
+            if let speechConfidence {
+                payload["speechConfidence"] = String(format: "%.4f", speechConfidence)
+                payload["speechAnalysisStatus"] = "ok"
+            } else {
+                payload["speechAnalysisStatus"] = "unavailable"
+            }
+            emit("recording_ready", payload)
+        }
     }
 
     private func emitMicTestReady(url: URL) {
@@ -1755,8 +1972,8 @@ final class DictationController {
         durationSeconds: Double?
     ) {
         isListening = true
-        RecordingCuePlayer.play(.start)
         if purpose == .micTest {
+            RecordingCuePlayer.play(.start)
             scheduleMicTestStop(after: durationSeconds ?? 5)
             emitJSON("mic_test_started", [
                 "durationMs": Int((durationSeconds ?? 5) * 1000),
@@ -1782,7 +1999,6 @@ final class DictationController {
         micTestStopWorkItem?.cancel()
         micTestStopWorkItem = nil
         stopMetering()
-        RecordingCuePlayer.play(.stop)
         if purpose == .dictation {
             emit("finalizing_transcript")
         }
@@ -1791,6 +2007,7 @@ final class DictationController {
             selectedDeviceRecorder.stop { [weak self] error in
                 runOnMain {
                     self?.selectedDeviceRecorder = nil
+                    RecordingCuePlayer.play(.stop)
                     if let error {
                         self?.fail(error)
                         return
@@ -1802,6 +2019,7 @@ final class DictationController {
         }
 
         audioRecorder?.stop()
+        RecordingCuePlayer.play(.stop)
         emitRecordingReady()
     }
 
@@ -1936,6 +2154,7 @@ final class DictationController {
     }
 
     private func resetRecordingState(keepRecordingFile: Bool = false) {
+        RecordingCuePlayer.cancel(.start)
         FocusTargetController.shared.clearPinnedTarget()
         isListening = false
         isFinalizing = false
@@ -2056,6 +2275,32 @@ enum PasteboardInserter {
         }
     }
 
+    /// Keeps an uncertain transcript recoverable without typing it into the
+    /// user's active app. Unlike a normal paste, the clipboard is deliberately
+    /// not restored after a successful write.
+    static func copyForReview(_ text: String, historySaved: Bool) {
+        let pasteboard = NSPasteboard.general
+        let snapshot = capture(pasteboard)
+
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else {
+            restore(snapshot, to: pasteboard)
+            let message = historySaved
+                ? "Could not write transcript to the clipboard. Find it in Dictation history."
+                : "Could not save or copy this dictation. The recording was kept for recovery."
+            emit("error", ["code": "pasteboard_write_failed", "message": message])
+            return
+        }
+
+        let message = historySaved
+            ? "Speech was unclear. Use Cmd+V to paste the transcript."
+            : "Could not save this dictation. Use Cmd+V to keep the transcript."
+        emit("error", [
+            "code": "dictation_low_speech_evidence",
+            "message": message,
+        ])
+    }
+
     /// Calls `completion(true)` only when `target` is alive and frontmost at
     /// that moment. `NSRunningApplication.isActive` means "currently
     /// frontmost", so a read taken right before the keystroke is the strongest
@@ -2158,7 +2403,7 @@ func handleCommandLine(_ line: String) {
         }
     case "start_listening":
         runOnMain {
-            dictation.start()
+            dictation.start(playCue: false)
         }
     case "stop_and_paste":
         runOnMain {
@@ -2212,6 +2457,17 @@ func handleCommandLine(_ line: String) {
         let text = command?["text"] as? String ?? ""
         runOnMain {
             dictation.paste(text: text)
+        }
+    case "copy_text_for_review":
+        let text = command?["text"] as? String ?? ""
+        let keepRecordingFile = command?["keepRecordingFile"] as? Bool ?? false
+        let historySaved = command?["historySaved"] as? Bool ?? true
+        runOnMain {
+            dictation.copyForReview(
+                text: text,
+                keepRecordingFile: keepRecordingFile,
+                historySaved: historySaved
+            )
         }
     case "discard_recording":
         runOnMain {
