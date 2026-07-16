@@ -282,8 +282,9 @@ export function NoteEditor({
   const processingLock = processingStatus !== null;
   const recordButtonDisabled = recordingDisabled || Boolean(recordingBlockedReason);
   // A funding block disables the record button but not the options chevron:
-  // choosing sources is free, so that setting stays reachable while gated.
-  const recordOptionsDisabled = processingLock || recordingDisabled;
+  // choosing sources is free, and note processing can queue another recording,
+  // so that setting stays reachable unless another recording is active.
+  const recordOptionsDisabled = recordingDisabled;
   // When generation finishes for the note you're looking at, reveal the fresh
   // notes with a top-down wipe instead of letting the text snap in. Only fires
   // on the live processing -> ready edge for this same note — never when
