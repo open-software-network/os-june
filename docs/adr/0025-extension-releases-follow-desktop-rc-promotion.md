@@ -83,11 +83,21 @@ and stable `extension-build.json` to the `vX.Y.Z` release. Publishing the
 extension before the desktop is deliberately rejected: a desktop failure would
 otherwise expose users to an extension that depends on an unreleased app.
 
+Homebrew and source-repo version bookkeeping run only after that extension job.
+They are deliberately outside the desktop-publication job so a bookkeeping
+failure cannot suppress publication of the correlated extension. Unchanged
+bytes are rechecked against live store state after the desktop publish too.
+
 The RC and stable-promotion workflows share one non-cancelling concurrency lock,
 so a newer fixed RC release cannot replace a candidate during promotion. The
 two external stores cannot be updated atomically. The desktop therefore
 publishes first; an extension publish failure leaves the workflow red and is
 safe to retry because the store operations are idempotent.
+
+On the fixed RC release, the ZIP is uploaded (or the obsolete ZIP removed)
+before `extension-build.json`. Metadata is the commit marker: promotion never
+trusts a package write that did not complete. A retry rebuilds deterministically
+and lets the current expected version perform the final idempotency check.
 
 ### CI uses keyless identity federation
 

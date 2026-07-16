@@ -210,10 +210,30 @@ async function checkUnchangedExtensionState({ client, metadata }) {
   return status;
 }
 
+async function settleUnchangedExtensionState({ client, metadata }) {
+  const supersedes = metadata.release.supersedes;
+  if (supersedes) {
+    const status = await client.fetchStatus();
+    const classified = classifyStoreStatus(status, metadata.extension.version);
+    assertSafeStoreStatus(classified);
+    if (ACTIVE_SUBMISSION_STATES.has(classified.submittedState)) {
+      if (classified.submittedVersion !== supersedes) {
+        throw new Error(
+          `Chrome Web Store has active version ${classified.submittedVersion ?? "unknown"}; ` +
+            `expected correlated superseded version ${supersedes}.`,
+        );
+      }
+      await client.cancelSubmission();
+      await client.waitForRevision(supersedes, new Set(["CANCELLED"]));
+    }
+  }
+  return checkUnchangedExtensionState({ client, metadata });
+}
+
 export async function submitExtensionRc({ client, metadataPath, packagePath }) {
   const metadata = await loadMetadata(metadataPath);
   if (!metadata.release.required) {
-    return checkUnchangedExtensionState({ client, metadata });
+    return settleUnchangedExtensionState({ client, metadata });
   }
   assert(packagePath, `${EXTENSION_PACKAGE_NAME} is required for an extension submission.`);
   assert(SHA256_RE.test(metadata.release.packageSha256), "Extension package hash is invalid.");
@@ -225,12 +245,14 @@ export async function submitExtensionRc({ client, metadataPath, packagePath }) {
   let status = await client.fetchStatus();
   let classified = classifyStoreStatus(status, metadata.extension.version);
   assertSafeStoreStatus(classified);
-  if (classified.publishedExpected || classified.submittedExpected) {
-    if (
-      classified.publishedExpected ||
-      classified.submittedState === "PENDING_REVIEW" ||
-      classified.submittedState === "STAGED"
-    ) {
+  if (classified.publishedExpected) {
+    throw new Error(
+      `Extension ${metadata.extension.version} was published before desktop stable promotion; ` +
+        "refusing to treat it as an RC submission.",
+    );
+  }
+  if (classified.submittedExpected) {
+    if (classified.submittedState === "PENDING_REVIEW" || classified.submittedState === "STAGED") {
       await saveStoreState(metadataPath, metadata, status);
       return status;
     }
@@ -290,10 +312,7 @@ export async function previousRcCanBeReused({ client, metadataPath }) {
   assertSafeStoreStatus(classified);
   if (ACTIVE_SUBMISSION_STATES.has(classified.submittedState)) {
     if (!classified.submittedExpected) {
-      throw new Error(
-        `Chrome Web Store has active version ${classified.submittedVersion ?? "unknown"}; ` +
-          `expected prior RC ${metadata.extension.version}.`,
-      );
+      return false;
     }
     return true;
   }

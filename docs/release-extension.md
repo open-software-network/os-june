@@ -60,8 +60,9 @@ automatically.
 It compares the normalized built-payload fingerprint (with release version
 fields removed) with the latest stable `extension-build.json`:
 
-- `unchanged` - no store call; metadata records that the desktop RC continues
-  using the current published extension;
+- `unchanged` - no store write or review submission; metadata records that the
+  desktop RC continues using the current published extension after live state
+  validation;
 - `reused-rc` - a later desktop RC has identical extension inputs and reuses the
   current package/submission;
 - `changed` - the workflow builds `June-extension.zip`, maps
@@ -94,7 +95,9 @@ Chrome Web Store before starting the costly macOS build:
 After the desktop release succeeds, `Publish reviewed extension to stable`
 calls `DEFAULT_PUBLISH` for the staged submission and verifies the version is
 `PUBLISHED`. The stable release in the Releases repo receives the same ZIP and
-a stable `extension-build.json`.
+a stable `extension-build.json`. Unchanged bytes are checked again at this
+post-desktop boundary. Homebrew and source-repo version bookkeeping then run in
+a separate job, so their failure cannot suppress the correlated extension step.
 
 ## Review timing and recovery
 
@@ -110,7 +113,12 @@ staged.
 - **Wrong active submission** - the workflow refuses to cancel it. Resolve the
   uncorrelated dashboard state before rerunning.
 - **Superseded correlated RC** - a higher RC with changed extension inputs may
-  cancel only the exact earlier version named in RC metadata.
+  cancel only the exact earlier version named in RC metadata. If a higher RC
+  restores the already-published stable bytes, it cancels that same correlated
+  active submission before verifying the unchanged published version.
+- **Submission succeeded but RC asset upload failed** - rerun the failed job.
+  Live state for the current version is treated as non-reusable prior metadata;
+  the current package is rebuilt deterministically and submission is idempotent.
 - **Staged submission expired** - cut a higher RC and submit again. Deferred
   submissions expire after 30 days.
 - **Desktop stable succeeded, extension publish failed** - rerun the failed

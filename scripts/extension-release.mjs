@@ -299,6 +299,7 @@ export async function prepareExtensionRelease({
       release: {
         required: false,
         reason: "unchanged",
+        supersedes: reusePreviousRc ? previousRc?.extension.version : null,
         packageFile: null,
         packageSha256: null,
       },

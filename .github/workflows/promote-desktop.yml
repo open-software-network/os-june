@@ -515,114 +515,6 @@ jobs:
             --repo open-software-network/os-june-releases \
             --clobber
 
-      # Keep the org tap cask (open-software-network/homebrew-tap, Casks/june.rb)
-      # pointing at the stable DMG published above; a stale tap ships users an
-      # old build, so any failure here must fail the promote loudly. Only the
-      # org tap is maintained here; the homebrew/homebrew-cask entry is bumped
-      # by BrewTestBot once that submission lands.
-      - name: Bump Homebrew tap cask
-        env:
-          TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          dmg="$RUNNER_TEMP/stable-release-assets/June_universal.dmg"
-          sha="$(shasum -a 256 "$dmg" | awk '{print $1}')"
-
-          tap_dir="$RUNNER_TEMP/homebrew-tap"
-          rm -rf "$tap_dir"
-          git clone --depth 1 \
-            "https://x-access-token:${TOKEN}@github.com/open-software-network/homebrew-tap.git" \
-            "$tap_dir"
-          cask="$tap_dir/Casks/june.rb"
-
-          # Parse before rewriting so a cask that drifted from the expected
-          # two-space `version`/`sha256` lines fails here instead of being
-          # silently left stale by a non-matching sed.
-          current_version="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$cask")"
-          current_sha="$(sed -n 's/^  sha256 "\(.*\)"$/\1/p' "$cask")"
-          if [ -z "$current_version" ] || [ -z "$current_sha" ]; then
-            echo "::error::Casks/june.rb is missing the expected version/sha256 lines."
-            exit 1
-          fi
-          # Idempotent on rerun: a promote retried after the tap push already
-          # landed must not fail the whole workflow.
-          if [ "$current_version" = "$VERSION" ] && [ "$current_sha" = "$sha" ]; then
-            echo "Tap cask already at v$VERSION with matching sha256; nothing to bump."
-            exit 0
-          fi
-
-          sed -i '' \
-            -e "s/^  version \".*\"\$/  version \"$VERSION\"/" \
-            -e "s/^  sha256 \".*\"\$/  sha256 \"$sha\"/" \
-            "$cask"
-          grep -Fqx "  version \"$VERSION\"" "$cask"
-          grep -Fqx "  sha256 \"$sha\"" "$cask"
-
-          git -C "$tap_dir" config user.name "github-actions[bot]"
-          git -C "$tap_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C "$tap_dir" add "$cask"
-          git -C "$tap_dir" commit -m "june v$VERSION"
-          git -C "$tap_dir" push origin HEAD:main
-
-      # Record the released version on main so its version files advance and the
-      # next changelog can find this release. Runs only after the stable release
-      # is published, so a build/notarize failure never leaves main bumped without
-      # a matching release. The release App is on main's branch-protection bypass
-      # list, so it commits the bump straight to main (no PR to merge); the push
-      # authenticates as the App via the credentials persisted at checkout. This
-      # is the version-bump duty inherited from the retired production workflow.
-      - name: Record released version on main
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-        run: |
-          set -euo pipefail
-          bot_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
-          git config user.name "${APP_SLUG}[bot]"
-          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
-
-          # This bump is the last step, after the stable release is already
-          # published. Its push can lose a race with an unrelated commit to main;
-          # rather than fail the whole promote (which would force a 30-60 min
-          # rebuild rerun), re-fetch and replay the deterministic bump onto the new
-          # tip, then fast-forward push again. promote's own tree (the rc's pinned
-          # commit with the build version stamped in) is discarded each attempt.
-          for attempt in 1 2 3 4 5; do
-            git fetch origin main
-            git reset --hard
-            git checkout -B main origin/main
-            current="$(node -e 'process.stdout.write(require("./package.json").version)')"
-            if [ "$current" = "$VERSION" ]; then
-              echo "main is already at v$VERSION; nothing to record."
-              exit 0
-            fi
-            # version:bump (not set-build-version) so main's monotonic X.Y.Z gate applies.
-            pnpm version:bump "$VERSION"
-            cargo update --workspace --manifest-path src-tauri/Cargo.toml
-            git add package.json pnpm-lock.yaml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
-            git commit -m "release: v$VERSION"
-            # Plain push (never force main); the App bypasses branch protection.
-            if git push origin HEAD:main; then
-              echo "Recorded release: v$VERSION on main."
-              exit 0
-            fi
-            echo "::warning::Push to main was rejected (it advanced); retrying ($attempt/5)."
-          done
-          echo "::error::Could not record release: v$VERSION on main after 5 attempts."
-          exit 1
-
-      # Release announcements are handled by the org's GitHub Slack app
-      # (`/github subscribe open-software-network/os-june-releases releases`),
-      # which posts when the stable `vX.Y.Z` release is published. See
-      # docs/release-macos.md.
-      - name: Summary
-        run: |
-          {
-            echo "### Promoted rc to stable"
-            echo "- Promoted: \`$RC_VERSION\` -> \`v$VERSION\` (rebuilt from \`$BUILD_COMMIT\`)"
-            echo "- Stable manifest: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   extension-stable:
     name: Publish reviewed extension to stable
     needs: [extension-preflight, promote]
@@ -655,7 +547,6 @@ jobs:
           path: ${{ runner.temp }}/release-candidate
 
       - name: Authenticate to Google Cloud
-        if: needs.extension-preflight.outputs.release_required == 'true'
         id: google-auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
@@ -664,8 +555,7 @@ jobs:
           token_format: access_token
           access_token_scopes: https://www.googleapis.com/auth/chromewebstore
 
-      - name: Publish staged extension
-        if: needs.extension-preflight.outputs.release_required == 'true'
+      - name: Publish staged extension or recheck unchanged state
         env:
           CHROME_WEB_STORE_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
           CHROME_WEB_STORE_PUBLISHER_ID: ${{ vars.CHROME_WEB_STORE_PUBLISHER_ID }}
@@ -713,6 +603,139 @@ jobs:
             if [ "${{ needs.extension-preflight.outputs.release_required }}" = "true" ]; then
               echo "- Result: published the exact Chrome-reviewed RC package."
             else
-              echo "- Result: skipped; extension build inputs were unchanged."
+              echo "- Result: unchanged bytes reverified against live store state."
             fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  post-release:
+    name: Finish desktop release bookkeeping
+    needs: [extension-preflight, promote, extension-stable]
+    runs-on: ${{ fromJSON(inputs.macos-runner == 'mac-studio' && '["self-hosted","macOS","ARM64","desktop-release"]' || '["blacksmith-6vcpu-macos-15"]') }}
+    environment: production
+    steps:
+      - name: Mint release token (GitHub App)
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: open-software-network
+          repositories: os-june,os-june-releases,homebrew-tap
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.extension-preflight.outputs.source_commit }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: true
+
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Resolve stable release and download its DMG
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RC_VERSION: ${{ needs.extension-preflight.outputs.desktop_version }}
+        run: |
+          set -euo pipefail
+          version="${RC_VERSION%-rc.*}"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          release_dir="$RUNNER_TEMP/stable-release-assets"
+          mkdir -p "$release_dir"
+          gh release download "v$version" \
+            --repo open-software-network/os-june-releases \
+            --pattern "June_universal.dmg" \
+            --dir "$release_dir"
+
+      # Keep the org tap cask (open-software-network/homebrew-tap, Casks/june.rb)
+      # pointing at the stable DMG. This job runs only after the correlated
+      # extension publication succeeds, so bookkeeping cannot suppress it.
+      - name: Bump Homebrew tap cask
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          dmg="$RUNNER_TEMP/stable-release-assets/June_universal.dmg"
+          sha="$(shasum -a 256 "$dmg" | awk '{print $1}')"
+
+          tap_dir="$RUNNER_TEMP/homebrew-tap"
+          rm -rf "$tap_dir"
+          git clone --depth 1 \
+            "https://x-access-token:${TOKEN}@github.com/open-software-network/homebrew-tap.git" \
+            "$tap_dir"
+          cask="$tap_dir/Casks/june.rb"
+
+          current_version="$(sed -n 's/^  version "\(.*\)"$/\1/p' "$cask")"
+          current_sha="$(sed -n 's/^  sha256 "\(.*\)"$/\1/p' "$cask")"
+          if [ -z "$current_version" ] || [ -z "$current_sha" ]; then
+            echo "::error::Casks/june.rb is missing the expected version/sha256 lines."
+            exit 1
+          fi
+          if [ "$current_version" = "$VERSION" ] && [ "$current_sha" = "$sha" ]; then
+            echo "Tap cask already at v$VERSION with matching sha256; nothing to bump."
+          else
+            sed -i '' \
+              -e "s/^  version \".*\"\$/  version \"$VERSION\"/" \
+              -e "s/^  sha256 \".*\"\$/  sha256 \"$sha\"/" \
+              "$cask"
+            grep -Fqx "  version \"$VERSION\"" "$cask"
+            grep -Fqx "  sha256 \"$sha\"" "$cask"
+            git -C "$tap_dir" config user.name "github-actions[bot]"
+            git -C "$tap_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git -C "$tap_dir" add "$cask"
+            git -C "$tap_dir" commit -m "june v$VERSION"
+            git -C "$tap_dir" push origin HEAD:main
+          fi
+
+      - name: Record released version on main
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          bot_id="$(gh api "/users/${APP_SLUG}[bot]" --jq .id)"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${bot_id}+${APP_SLUG}[bot]@users.noreply.github.com"
+
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard
+            git checkout -B main origin/main
+            current="$(node -e 'process.stdout.write(require("./package.json").version)')"
+            if [ "$current" = "$VERSION" ]; then
+              echo "main is already at v$VERSION; nothing to record."
+              exit 0
+            fi
+            pnpm version:bump "$VERSION"
+            cargo update --workspace --manifest-path src-tauri/Cargo.toml
+            git add package.json pnpm-lock.yaml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+            git commit -m "release: v$VERSION"
+            if git push origin HEAD:main; then
+              echo "Recorded release: v$VERSION on main."
+              exit 0
+            fi
+            echo "::warning::Push to main was rejected (it advanced); retrying ($attempt/5)."
+          done
+          echo "::error::Could not record release: v$VERSION on main after 5 attempts."
+          exit 1
+
+      # Release announcements are handled by the org's GitHub Slack app
+      # (`/github subscribe open-software-network/os-june-releases releases`).
+      - name: Summary
+        env:
+          RC_VERSION: ${{ needs.extension-preflight.outputs.desktop_version }}
+          BUILD_COMMIT: ${{ needs.extension-preflight.outputs.source_commit }}
+        run: |
+          {
+            echo "### Promoted rc to stable"
+            echo "- Promoted: \`$RC_VERSION\` -> \`v$VERSION\` (rebuilt from \`$BUILD_COMMIT\`)"
+            echo "- Stable manifest: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -112,9 +112,12 @@ ships the same source you tested with a clean version string. It then:
 - publishes the `vX.Y.Z` stable release (marked latest) with the DMG, updater
   archive + signature, a regenerated `latest.json`, and a `stable-build.json`
   recording the source commit (so the Windows build reuses the same tree);
+- publishes the exact staged extension (or rechecks unchanged store state)
+  immediately after the desktop release boundary;
 - generates the changelog (first-parent commits since the previous `release: v...`)
   and embeds it in both the GitHub release notes and `latest.json`;
-- commits `release: vX.Y.Z` directly to `main` (the release bot is on the
+- updates the Homebrew tap and commits `release: vX.Y.Z` directly to `main`
+  only after the extension step succeeds (the release bot is on the
   branch-protection bypass list), advancing the version files so the next RC's
   gate and the next changelog can anchor on it. No PR to merge.
 

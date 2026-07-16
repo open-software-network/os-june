@@ -173,6 +173,54 @@ describe("extension release metadata", () => {
     expect(result.metadata.release.supersedes).toBe("2.2.3.4");
     expect(result.metadata.extension.version).toBe("2.2.3.5");
   });
+
+  it("carries an active correlated RC when the payload returns to stable bytes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "june-extension-revert-"));
+    const dist = join(root, "extension", "dist");
+    const output = join(root, "output");
+    await mkdir(dist, { recursive: true });
+    await writeFile(join(dist, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(dist, "background.js"), "console.log('stable');\n");
+    const currentFingerprint = await extensionPayloadFingerprint(dist);
+    const previous = await releaseFixture();
+    previous.metadata.source.fingerprint = currentFingerprint;
+    await writeFile(previous.metadataPath, `${JSON.stringify(previous.metadata, null, 2)}\n`);
+    const stablePath = join(root, "stable-extension-build.json");
+    await writeFile(
+      stablePath,
+      `${JSON.stringify(
+        {
+          ...previous.metadata,
+          channel: "stable",
+          desktop: {
+            version: "1.2.2",
+            baseVersion: "1.2.2",
+            rcVersion: "1.2.2-rc.1",
+            sourceCommit,
+          },
+          extension: { ...previous.metadata.extension, version: "2.2.2.1" },
+          store: { state: "published" },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const result = await prepareExtensionRelease({
+      root,
+      desktopVersion: "1.2.3-rc.5",
+      sourceCommit,
+      outputDir: output,
+      previousStableMetadataPath: stablePath,
+      previousRcMetadataPath: previous.metadataPath,
+      previousRcPackagePath: previous.packagePath,
+      reusePreviousRc: true,
+    });
+
+    expect(result.metadata.release.reason).toBe("unchanged");
+    expect(result.metadata.release.supersedes).toBe("2.2.3.4");
+    expect(result.metadata.extension.version).toBe("2.2.2.1");
+  });
 });
 
 describe("Chrome Web Store state gates", () => {
@@ -238,8 +286,18 @@ describe("Chrome Web Store state gates", () => {
     const unrelatedClient = {
       fetchStatus: vi.fn().mockResolvedValue(status("STAGED", "2.2.3.5")),
     };
-    await expect(previousRcCanBeReused({ client: unrelatedClient, metadataPath })).rejects.toThrow(
-      "expected prior RC 2.2.3.4",
+    await expect(previousRcCanBeReused({ client: unrelatedClient, metadataPath })).resolves.toBe(
+      false,
+    );
+  });
+
+  it("rejects an RC package that was published before desktop promotion", async () => {
+    const { metadataPath, packagePath } = await releaseFixture();
+    const client = {
+      fetchStatus: vi.fn().mockResolvedValue(status("PUBLISHED", "2.2.3.4", { published: true })),
+    };
+    await expect(submitExtensionRc({ client, metadataPath, packagePath })).rejects.toThrow(
+      "published before desktop stable promotion",
     );
   });
 
@@ -263,6 +321,27 @@ describe("Chrome Web Store state gates", () => {
     await expect(checkExtensionRcReady({ client, metadataPath })).rejects.toThrow(
       "uncorrelated 2.2.3.5 submission",
     );
+  });
+
+  it("cancels only a correlated active RC when bytes revert to stable", async () => {
+    const { metadata, metadataPath } = await releaseFixture({ required: false });
+    metadata.release.supersedes = "2.2.3.5";
+    await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
+    const published = status("PUBLISHED", "2.2.3.4", { published: true });
+    const active = {
+      ...published,
+      ...status("PENDING_REVIEW", "2.2.3.5"),
+    };
+    const client = {
+      fetchStatus: vi.fn().mockResolvedValueOnce(active).mockResolvedValueOnce(published),
+      cancelSubmission: vi.fn().mockResolvedValue({}),
+      waitForRevision: vi.fn().mockResolvedValue(status("CANCELLED", "2.2.3.5")),
+    };
+    await expect(
+      submitExtensionRc({ client, metadataPath, packagePath: undefined }),
+    ).resolves.toEqual(published);
+    expect(client.cancelSubmission).toHaveBeenCalledOnce();
+    expect(client.waitForRevision).toHaveBeenCalledWith("2.2.3.5", new Set(["CANCELLED"]));
   });
 
   it("promotes only a staged package and verifies it becomes public", async () => {
