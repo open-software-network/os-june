@@ -3,6 +3,7 @@ import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "../lib/june-spinner-grid";
 import agentHudCss from "../styles/agent-hud.css?raw";
 import appCss from "../styles/app.css?raw";
 import spinnerCss from "../styles/dot-spinner.css?raw";
+import tokensCss from "../styles/tokens.css?raw";
 
 describe("June spinner grid", () => {
   it("uses full 3×3 grids for sm and md, and a full 5×5 grid for lg", () => {
@@ -35,7 +36,7 @@ describe("June spinner grid", () => {
     expect(lg.filter(Boolean)).toHaveLength(10);
   });
 
-  it("orders each cell by its diagonal from the bottom-left so the swell climbs", () => {
+  it("orders each cell by its diagonal from the bottom-left so the reveal climbs", () => {
     // Diagonal distance from the bottom-left corner (row 2): bottom-left is 0,
     // top-right is 4, tracing the stroke's path up the grid.
     expect(juneSpinnerGrid("sm").map((c) => c.order)).toEqual([2, 3, 4, 1, 2, 3, 0, 1, 2]);
@@ -44,7 +45,7 @@ describe("June spinner grid", () => {
     ]);
   });
 
-  it("sweeps brightness across fixed-size dots with a settled reset for each pass", () => {
+  it("sweeps brightness while revealing mark dots up to their base size", () => {
     const normalizedCss = spinnerCss.replace(/\s+/g, " ");
     const pulseMs = 100 + 160 + 240;
     const pauseMs = 100;
@@ -92,17 +93,25 @@ describe("June spinner grid", () => {
     );
     expect(spinnerCss).toContain("--june-frame: calc((var(--t-fast) + var(--t-med)) / 2);");
     expect(spinnerCss).toContain("--june-frame: calc(var(--t-med) / 2);");
-    // The grid rests at full size (scale 1) and only swells lightly with the
-    // sweep — a large scale excursion shimmers at this dot size.
+    // Field dots stay at their base size. Mark dots reveal quickly from a
+    // smaller rest state to exactly scale 1, never beyond their designed size.
+    expect(spanRule).toContain("box-sizing: border-box;");
+    expect(spanRule).toContain("width: var(--june-dot);");
+    expect(spanRule).toContain("height: var(--june-dot);");
+    expect(spanRule).toContain("aspect-ratio: 1 / 1;");
+    expect(spanRule).toContain("border-radius: 50%;");
     expect(spanRule).toContain("transform: scale(1);");
     expect(spanRule).toContain(
       "animation: june-sweep-sm var(--june-dur) var(--ease-in-out) infinite;",
     );
     expect(spanRule).not.toContain("june-scale-sm");
     expect(spanRule).toContain("will-change: opacity;");
+    expect(markRule).toContain("--june-cell-rest-scale: var(--june-rest-scale);");
     expect(markRule).toContain("animation-name: june-sweep-sm, june-scale-sm;");
+    expect(markRule).toContain("animation-timing-function: var(--ease-in-out), linear;");
     expect(markRule).toContain("will-change: opacity, transform;");
-    expect(spinnerCss).toContain("--june-swell: 1.16;");
+    expect(spinnerCss).toContain("--june-rest-scale: 0.8;");
+    expect(spinnerCss).not.toContain("--june-swell");
     expect(spinnerCss).not.toContain("--june-field-swell");
     // The mark must always outrank the field: field peak stays below mark rest.
     expect(spinnerCss).toContain("--june-off: 0.44;");
@@ -113,18 +122,37 @@ describe("June spinner grid", () => {
     expect(smSweep).toMatch(/22\.321%\s*{[^}]*opacity: var\(--june-cell-peak-opacity\)/s);
     expect(lgSweep).toMatch(/0%,\s*40\.323%,\s*100%\s*{[^}]*opacity: var\(--june-cell-opacity\)/s);
     expect(lgSweep).toMatch(/20\.161%\s*{[^}]*opacity: var\(--june-cell-peak-opacity\)/s);
-    // The swell rides the same bell and returns to a steady scale 1 at rest.
-    expect(smScale).toMatch(/0%,\s*44\.643%,\s*100%\s*{[^}]*transform: scale\(1\)/s);
-    expect(smScale).toMatch(/22\.321%\s*{[^}]*transform: scale\(var\(--june-cell-swell\)\)/s);
-    expect(lgScale).toMatch(/0%,\s*40\.323%,\s*100%\s*{[^}]*transform: scale\(1\)/s);
-    expect(lgScale).toMatch(/20\.161%\s*{[^}]*transform: scale\(var\(--june-cell-swell\)\)/s);
+    // Scale arrives at the base diameter in 100ms, holds through the crest,
+    // and returns to the smaller rest state by the end of the 500ms pulse.
+    expect(smScale).toMatch(
+      /0%\s*{[^}]*scale\(var\(--june-cell-rest-scale\)\)[^}]*cubic-bezier\(0\.22, 1, 0\.36, 1\)/s,
+    );
+    expect(smScale).toMatch(/8\.929%\s*{[^}]*transform: scale\(1\)/s);
+    expect(smScale).toMatch(/33\.929%\s*{[^}]*scale\(1\)[^}]*cubic-bezier\(0\.65, 0, 0\.35, 1\)/s);
+    expect(smScale).toMatch(/44\.643%,\s*100%\s*{[^}]*scale\(var\(--june-cell-rest-scale\)\)/s);
+    expect(lgScale).toMatch(/8\.065%\s*{[^}]*transform: scale\(1\)/s);
+    expect(lgScale).toMatch(/30\.645%\s*{[^}]*scale\(1\)[^}]*cubic-bezier\(0\.65, 0, 0\.35, 1\)/s);
+    expect(lgScale).toMatch(/40\.323%,\s*100%\s*{[^}]*scale\(var\(--june-cell-rest-scale\)\)/s);
+    expect(spinnerCss).not.toMatch(/scale\(1\.\d+\)/);
     expect(spinnerCss).toContain("animation-name: june-sweep-lg;");
     expect(spinnerCss).toContain("animation-name: june-sweep-lg, june-scale-lg;");
     expect(spinnerCss).toContain("var(--june-order) * var(--june-frame)");
     expect(spinnerCss).toContain('.dot-spinner[data-size="md"]');
     expect(spinnerCss).toContain("--june-dot: 3px;");
-    expect(spinnerCss).toContain("color: var(--muted-foreground);");
-    expect(appCss).toContain(".agent-tool-spinner .dot-spinner");
-    expect(agentHudCss).toMatch(/\.agent-hud-status \.dot-spinner\s*{[^}]*color: currentColor;/s);
+    expect(spinnerCss).toContain("color: var(--spinner-color, var(--spinner-neutral));");
+    // Light mode leans toward the foreground for contrast on bright surfaces;
+    // the dark theme re-mixes a softer muted-leaning neutral.
+    expect(tokensCss).toMatch(
+      /--spinner-neutral:\s*color-mix\([^;]*var\(--muted-foreground\) 45%,\s*var\(--foreground\)/s,
+    );
+    expect(tokensCss).toMatch(
+      /--spinner-neutral:\s*color-mix\([^;]*var\(--muted-foreground\) 72%,\s*var\(--foreground\)/s,
+    );
+    // In-flow chat spinners stay on the neutral default — no themed override.
+    expect(appCss).not.toMatch(/\.agent-tool-spinner[^{]*{[^}]*--spinner-color/s);
+    expect(appCss).not.toMatch(/\.agent-tool-spinner\s*{[^}]*color:/s);
+    expect(agentHudCss).toMatch(
+      /\.agent-hud-status \.dot-spinner\s*{[^}]*--spinner-color: currentColor;/s,
+    );
   });
 });

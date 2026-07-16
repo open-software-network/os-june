@@ -9,7 +9,7 @@
 // the mark abstracts to one stepped stroke: the bottom-left corner, across the
 // middle row, up to the top-right corner (a `_/‾` step); at 5×5 it separates
 // into the full two strokes. Each cell carries a sweep order — its diagonal
-// distance from the bottom-left corner — and dot-spinner.css rides a swell keyed
+// distance from the bottom-left corner — and dot-spinner.css rides a reveal keyed
 // to that order, so the crest traces the stroke from bottom-left to top-right,
 // settles, and takes a short breath before the next pass.
 
@@ -24,7 +24,7 @@ export const JUNE_SPINNER_COLS: Record<JuneSpinnerSize, number> = {
 };
 
 // Row-major masks marking June's stroke(s) within the full grid. 1 = a mark dot
-// (swells bright), 0 = a field dot (ripples faintly).
+// (reveals at full brightness), 0 = a field dot (ripples faintly).
 // 3×3: one stepped stroke — bottom-left corner, across the middle row, up to the
 // top-right corner.
 // biome-ignore format: the grid layout is the documentation.
@@ -54,7 +54,7 @@ export type JuneSpinnerCell = {
   // Sweep order: diagonal distance from the bottom-left corner, so the highlight
   // climbs from bottom-left to top-right, tracing June's ascending stroke.
   order: number;
-  // Whether the cell sits on June's mark and swells bright.
+  // Whether the cell sits on June's mark and reveals bright.
   mark: boolean;
 };
 

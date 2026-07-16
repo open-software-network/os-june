@@ -41,7 +41,7 @@ export function FeedbackIndicators() {
         A full dot grid with a smooth highlight that climbs June's mark from bottom-left to
         top-right, then settles briefly before the next pass. The sm and md variants use the compact
         3×3 mark at two inline sizes; size="lg" uses the full 5×5 mark for standalone loading
-        moments.
+        moments. Its neutral follows the active theme and contexts can override --spinner-color.
       </p>
       <div className="sg-row">
         <div className="sg-card">

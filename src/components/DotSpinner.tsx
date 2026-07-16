@@ -3,12 +3,12 @@ import { JUNE_SPINNER_COLS, type JuneSpinnerSize, juneSpinnerGrid } from "../lib
 
 // The dot spinner, drawn rather than typeset: a full square grid of perfect
 // circles with a smooth highlight that climbs diagonally from the bottom-left.
-// June's stepped mark swells bright as the crest traces it; field dots ripple
+// June's stepped mark reveals bright as the crest traces it; field dots ripple
 // faintly. The grid and sweep order live in lib/june-spinner-grid, while the
 // bounded motion lives in styles/dot-spinner.css and rests as the mark under
 // prefers-reduced-motion. Each variant is a fixed-size, integer-px square rather
-// than a font-scaled glyph, with a neutral gray default that contextual classes
-// can override through currentColor.
+// than a font-scaled glyph. Its theme-aware neutral default is exposed through
+// --spinner-neutral; contextual wrappers can override --spinner-color.
 //
 // "sm" and "md" are compact 3×3 grids; "lg" is the 5×5 board for larger
 // standalone loading moments.

@@ -14741,11 +14741,7 @@ export function BranchFromHereAction({
       disabled={submitting}
       onClick={() => onBranch(messageId, sessionId)}
     >
-      {submitting ? (
-        <DotSpinner className="agent-turn-action-spinner" />
-      ) : (
-        <IconBranchSimple size={14} aria-hidden />
-      )}
+      {submitting ? <DotSpinner /> : <IconBranchSimple size={14} aria-hidden />}
     </button>
   );
 

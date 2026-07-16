@@ -1,13 +1,12 @@
 /* The dot spinner: a full square grid of circles with a brightness highlight
- * that sweeps diagonally from the bottom-left. The grid rests stable at full
- * size; as the highlight passes, every dot brightens while mark dots also give
- * a small synchronized swell, then settle back. Motion is mostly tone (a big
- * scale excursion shimmers at 2–3px). A bright band glides along June's stepped
- * mark; field dots ripple faintly without changing size. The grid and each
- * cell's sweep order live in
+ * that sweeps diagonally from the bottom-left. Field dots stay at full size;
+ * as the highlight passes, every dot brightens while mark dots quickly
+ * reveal up to their designed size, then recede. They never grow beyond scale
+ * 1. A bright band glides along June's stepped mark; field dots ripple faintly
+ * without changing size. The grid and each cell's sweep order live in
  * lib/june-spinner-grid (shared with the agent HUD page entry, which has no
- * React tree). The default is a neutral gray. Contexts that require their own
- * contrast color opt back into inherited currentColor in app.css.
+ * React tree). The default neutral becomes darker in the light theme and lighter
+ * in the dark theme; contexts can override --spinner-color for local contrast.
  *
  * Three optical variants: "sm" (3×3) for compact inline use, "md" (3×3) for a
  * slightly larger inline mark, and "lg" (5×5) for standalone loading moments.
@@ -19,14 +18,13 @@
    * --june-field-off and ripple only up to --june-field-peak, which MUST stay
    * below --june-off. If the field peak ever exceeds the mark's rest, the sweep
    * paints a diagonal band that hides the logo. All tones are opacity on
-   * currentColor (var(--muted-foreground)), so they track light/dark themes. */
+   * currentColor (var(--spinner-neutral) by default), so they track themes. */
   --june-off: 0.44;
   --june-field-off: 0.14;
   --june-field-peak: 0.26;
-  /* Peak scale as the highlight passes; rest is always 1 so the grid holds
-   * steady. Only the mark swells so the motion stays on June's strokes; keep the
-   * excursion small — a big swell shimmers at this dot size. */
-  --june-swell: 1.16;
+  /* Only mark dots scale. They start below their designed diameter and reveal
+   * to exactly 1, matching the reference's fast arrival without overshoot. */
+  --june-rest-scale: 0.8;
   /* Every dot gets the same 500ms brightening and each completed pass gets a
    * 100ms reset. The compact grid takes a deliberate 130ms diagonal step; the
    * denser large grid overrides that with an 80ms step so its crest stays
@@ -50,7 +48,7 @@
   display: inline-grid;
   grid-template-columns: repeat(var(--june-cols), var(--june-dot));
   gap: var(--june-gap);
-  color: var(--muted-foreground);
+  color: var(--spinner-color, var(--spinner-neutral));
   line-height: 1;
 }
 
@@ -73,14 +71,16 @@
 }
 
 /* Every cell runs the brightness envelope, shifted by its diagonal order. Mark
- * cells add the synchronized swell; field cells stay at scale 1, so they do not
+ * cells add the synchronized reveal; field cells stay at scale 1, so they do not
  * pay for a no-op transform animation or compositor hint. */
 .dot-spinner > span {
   --june-cell-opacity: var(--june-field-off);
   --june-cell-peak-opacity: var(--june-field-peak);
 
+  box-sizing: border-box;
   width: var(--june-dot);
   height: var(--june-dot);
+  aspect-ratio: 1 / 1;
   border-radius: 50%;
   background: currentColor;
   opacity: var(--june-cell-opacity);
@@ -93,10 +93,11 @@
 .dot-spinner > span[data-mark] {
   --june-cell-opacity: var(--june-off);
   --june-cell-peak-opacity: 1;
-  --june-cell-swell: var(--june-swell);
+  --june-cell-rest-scale: var(--june-rest-scale);
 
   animation-name: june-sweep-sm, june-scale-sm;
-  /* GPU-composite the visible swell as well as the fade. */
+  animation-timing-function: var(--ease-in-out), linear;
+  /* GPU-composite the visible reveal as well as the fade. */
   will-change: opacity, transform;
 }
 
@@ -137,30 +138,50 @@
   }
 }
 
-/* The light swell rides the same bell: rest at full size, ease to the cell's
- * peak scale at the midpoint, and ease back. The grid holds steady between
- * passes because rest is always scale 1. */
+/* Scale is a reveal capped at the base dot. The strong ease-out
+ * reaches scale 1 at 100ms, matching the reference's measured fast arrival,
+ * holds through the crest, then the in-out curve returns it to the smaller rest
+ * state by 500ms. Chromium and WebKit ignore var() timing functions inside
+ * keyframes, so the token curves are repeated verbatim here. */
 @keyframes june-scale-sm {
-  0%,
-  44.643%,
-  100% {
+  0% {
+    transform: scale(var(--june-cell-rest-scale));
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  8.929% {
     transform: scale(1);
   }
 
-  22.321% {
-    transform: scale(var(--june-cell-swell));
+  33.929% {
+    transform: scale(1);
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+
+  44.643%,
+  100% {
+    transform: scale(var(--june-cell-rest-scale));
   }
 }
 
 @keyframes june-scale-lg {
-  0%,
-  40.323%,
-  100% {
+  0% {
+    transform: scale(var(--june-cell-rest-scale));
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  8.065% {
     transform: scale(1);
   }
 
-  20.161% {
-    transform: scale(var(--june-cell-swell));
+  30.645% {
+    transform: scale(1);
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+
+  40.323%,
+  100% {
+    transform: scale(var(--june-cell-rest-scale));
   }
 }
 
@@ -173,5 +194,6 @@
 
   .dot-spinner > span[data-mark] {
     opacity: 1;
+    transform: scale(1);
   }
 }
