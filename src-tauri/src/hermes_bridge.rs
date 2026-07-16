@@ -8760,13 +8760,11 @@ async fn handle_june_provider_connection(
         ("GET", "/v1/recorder/status") => {
             write_json_response(&mut stream, 200, recorder_status_body()).await?;
         }
-        ("POST", path)
-            if provider_proxy_is_connector_route(path) && !path.starts_with("/v1/notion") =>
-        {
-            handle_connector_route(&mut stream, &state, path, &request.body).await?;
-        }
         ("POST", path) if provider_proxy_is_notion_connector_route(path) => {
             handle_notion_connector_route(&mut stream, &state, path, &request.body).await?;
+        }
+        ("POST", path) if provider_proxy_is_connector_route(path) => {
+            handle_connector_route(&mut stream, &state, path, &request.body).await?;
         }
         _ => {
             write_not_found_response(&mut stream).await?;
