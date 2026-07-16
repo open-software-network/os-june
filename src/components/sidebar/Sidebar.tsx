@@ -33,6 +33,7 @@ import { IconPlugin1 } from "central-icons/IconPlugin1";
 import { IconGithub } from "central-icons/IconGithub";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconToolbox } from "central-icons/IconToolbox";
+import { IconTelevision } from "central-icons/IconTelevision";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
@@ -117,6 +118,7 @@ export type SidebarView =
   | "folders"
   | "dictation"
   | "routines"
+  | "plugins"
   | "agent"
   | "agent-sessions";
 
@@ -267,6 +269,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
       },
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
       { id: "agent", label: "Agent", icon: <IconRobot2 size={16} /> },
+      {
+        id: "computer-use",
+        label: "Computer use",
+        icon: <IconTelevision size={16} />,
+      },
       {
         id: "connectors",
         label: "Connectors",
@@ -663,6 +670,13 @@ export function Sidebar({
         icon: <IconZap size={15} />,
         searchText: normalizeCommandQuery("routines go to"),
         action: () => onChangeView("routines"),
+      },
+      {
+        id: "quick:plugins",
+        label: "Go to plugins",
+        icon: <IconPlugin1 size={15} />,
+        searchText: normalizeCommandQuery("plugins computer use go to"),
+        action: () => onChangeView("plugins"),
       },
       {
         id: "quick:settings",
@@ -1208,6 +1222,18 @@ export function Sidebar({
                 <IconZap size={16} />
               </span>
               <span className="sidebar-nav-label">Routines</span>
+            </button>
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              data-active={activeView === "plugins"}
+              aria-current={activeView === "plugins" ? "page" : undefined}
+              onClick={() => onChangeView("plugins")}
+            >
+              <span className="sidebar-nav-icon">
+                <IconPlugin1 size={16} />
+              </span>
+              <span className="sidebar-nav-label">Plugins</span>
             </button>
           </nav>
 

@@ -2,15 +2,16 @@
 
 - **Mode:** CTO
 - **Date:** 2026-07-13
-- **Status:** Accepted phase 2; spike active
+- **Status:** Implemented for review
 - **PRD:** [computer-use-prd.md](computer-use-prd.md)
-- **Decision:** [ADR-0017](../adr/0017-browser-use-via-june-extension.md)
+- **Decisions:** [ADR-0017](../adr/0017-browser-use-via-june-extension.md), [ADR-0025](../adr/0025-private-stdio-broker-for-computer-use.md)
 
 ## Technical objective
 
-Productize the pinned runtime's existing computer-use toolset behind a June
-grant, a pinned signed `cua-driver`, TCC onboarding, model-capability gating,
-and June-native approval cards.
+Productize the pinned upstream macOS capture/input implementation behind a
+June-owned helper, native policy broker, June grant, TCC onboarding,
+model-capability gating, and June-native approval cards. Hermes never receives
+the upstream toolset or helper transport.
 
 ## Phase 0: sandbox spike
 
@@ -29,10 +30,12 @@ new ADR before hardening the plan.
 
 ## Packaging
 
-- Pin the driver source/version and expected hash in the repo.
-- Build or fetch it only in controlled release tooling; never at runtime.
+- Pin the driver source/version to an exact Git commit in the repo.
+- Compile the June-owned narrow helper only in controlled build tooling; never
+  install or update it at runtime.
 - Sign it with the app release identity and include it as a Tauri resource.
-- Point the runtime at the exact binary with supported path/version overrides.
+- Keep the exact helper path and fresh initialization capability inside the
+  Rust broker; do not expose either as runtime overrides.
 - Add SBOM/provenance and a release test that starts, handshakes, captures a
   fixture app, and exits.
 
@@ -50,9 +53,10 @@ permission remains; removing TCC access is an explicit user follow-up.
 
 ## Runtime and approvals
 
-- Keep the upstream toolset absent unless the grant is ready and the selected
-  model has authoritative vision capability.
-- Route every runtime approval hook into the June event seam and approval card.
+- Keep both upstream Computer Use toolsets disabled. Expose only June's single
+  app-owned MCP tool when every native readiness gate passes.
+- Route every mutation through the Rust approval registry and June approval
+  card.
 - Park with a stable action id, target application identity, action summary,
   relevant capture reference, and expiry.
 - Never offer approve-all or autonomous mode in v1.

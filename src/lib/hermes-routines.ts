@@ -57,7 +57,6 @@ export const UNRESTRICTED_ROUTINE_TOOLSETS = [
   "file",
   "code_execution",
   "web",
-  "browser",
   "vision",
   "tts",
   "skills",
@@ -66,21 +65,17 @@ export const UNRESTRICTED_ROUTINE_TOOLSETS = [
   "context_engine",
   "session_search",
   "delegation",
-  "computer_use",
 ];
 
 /** Toolsets that let a routine change the machine or act on it: their
  * presence in a job's override is what "Unrestricted" means for routines.
  * The sandboxed cron default contains none of them. */
-const MACHINE_TOOLSETS = new Set([
-  "terminal",
-  "file",
-  "code_execution",
-  "browser",
-  "computer_use",
-  "delegation",
-  "skills",
-]);
+const MACHINE_TOOLSETS = new Set(["terminal", "file", "code_execution", "delegation", "skills"]);
+const INTERACTIVE_ONLY_TOOLSETS = new Set(["computer_use", "june_computer_use"]);
+
+function routineToolsets(toolsets: string[]) {
+  return toolsets.filter((toolset) => !INTERACTIVE_ONLY_TOOLSETS.has(toolset.trim()));
+}
 
 /** Whether a routine can touch the machine when it fires. Derived from the
  * stored job rather than any UI state, so the badge reflects what the
@@ -170,9 +165,10 @@ export async function createRoutine(input: {
       schedule: input.schedule,
       name: input.name,
     });
-    const toolsets =
+    const requestedToolsets =
       input.enabledToolsets ?? (input.unrestricted ? UNRESTRICTED_ROUTINE_TOOLSETS : undefined);
-    if (!toolsets) return routineFromRecord(created);
+    if (!requestedToolsets) return routineFromRecord(created);
+    const toolsets = routineToolsets(requestedToolsets);
     const widened = await updateHermesBridgeCronJob(created.id, {
       enabled_toolsets: toolsets,
     });
@@ -208,7 +204,9 @@ export async function updateRoutine(jobId: string, updates: RoutineUpdates): Pro
   if (updates.schedule !== undefined) payload.schedule = updates.schedule;
   if (updates.prompt !== undefined) payload.prompt = updates.prompt;
   if (updates.enabledToolsets !== undefined) {
-    payload.enabled_toolsets = updates.enabledToolsets;
+    payload.enabled_toolsets = updates.enabledToolsets
+      ? routineToolsets(updates.enabledToolsets)
+      : null;
   } else if (updates.unrestricted === true) {
     payload.enabled_toolsets = UNRESTRICTED_ROUTINE_TOOLSETS;
   } else if (updates.unrestricted === false) {

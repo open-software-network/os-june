@@ -72,6 +72,7 @@ const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 // pinned-value assert on each side; change BOTH or an in-window agent chat
 // request is rejected by the stricter gate again.
 const JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES: usize = 12 * 1024 * 1024;
+const JUNE_PROVIDER_PROXY_MAX_COMPUTER_USE_BODY_BYTES: usize = 64 * 1024;
 // Compile-time half of that cross-workspace invariant: the june-api side mirrors
 // it against `DEFAULT_MAX_AGENT_CHAT_BYTES`.
 const _: () = assert!(JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES == 12 * 1024 * 1024);
@@ -132,6 +133,10 @@ const JUNE_RECORDER_MCP_SCRIPT: &str = include_str!("hermes/june_recorder_mcp.py
 /// Environment variable the `june_recorder` MCP reads its loopback proxy token
 /// from. Kept out of argv so it does not appear in process listings.
 const JUNE_RECORDER_MCP_TOKEN_ENV: &str = "JUNE_RECORDER_PROXY_TOKEN";
+/// Interactive-dashboard-only Computer use capability. Config stores an env
+/// placeholder rather than the secret, so launchd routine gateways cannot opt
+/// into the registered server by naming its toolset.
+const JUNE_COMPUTER_USE_MCP_TOKEN_ENV: &str = "JUNE_COMPUTER_USE_PROXY_TOKEN";
 /// Hermes-side per-tool-call timeout for `june_recorder`; the top of the
 /// timeout stack (proxy lease < python client < this), pinned by
 /// `recorder_timeout_stack_ordering_holds`.
@@ -399,6 +404,15 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_TUI_TOOLSETS",
     "HERMES_MODEL",
     "HERMES_PROVIDER",
+    "HERMES_CUA_DRIVER_CMD",
+    "HERMES_CUA_DRIVER_VERSION",
+    "HERMES_COMPUTER_USE_BACKEND",
+    "JUNE_COMPUTER_USE_PROXY_TOKEN",
+    "CUA_DRIVER_RS_MCP_FORCE_PROXY",
+    "CUA_DRIVER_RS_MCP_NO_RELAUNCH",
+    "CUA_DRIVER_RS_PERMISSIONS_GATE",
+    "CUA_DRIVER_RS_TELEMETRY_ENABLED",
+    "CUA_DRIVER_RS_UPDATE_CHECK",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "VENICE_API_KEY",
@@ -414,6 +428,29 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "REQUESTS_CA_BUNDLE",
     "SSL_CERT_FILE",
     "NODE_EXTRA_CA_CERTS",
+];
+
+/// The pinned runtime's `hermes-cli` composite includes its own browser and
+/// direct cua-driver tool. June owns both trust boundaries, so interactive
+/// sessions expand that composite into the same native capabilities minus
+/// `browser` and `computer_use`; app-owned MCP servers are appended later.
+const JUNE_INTERACTIVE_NATIVE_TOOLSETS: &[&str] = &[
+    "web",
+    "terminal",
+    "file",
+    "vision",
+    "image_gen",
+    "skills",
+    "tts",
+    "todo",
+    "memory",
+    "session_search",
+    "clarify",
+    "code_execution",
+    "delegation",
+    "cronjob",
+    "homeassistant",
+    "kanban",
 ];
 
 #[derive(Default)]
@@ -488,6 +525,7 @@ struct SharedProviderProxy {
     token: String,
     recorder_token: String,
     connector_token: String,
+    computer_use_token: String,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -502,6 +540,10 @@ struct ProviderProxyState {
     /// secret, handed only to the four connector MCP servers: a user's mail and
     /// calendar must not be reachable with the general provider token.
     connector_token: String,
+    /// Computer use gets a dedicated capability token. The MCP transport can
+    /// reach exactly the Rust policy broker and cannot use the provider,
+    /// recorder, or connector routes with this credential.
+    computer_use_token: String,
     image_sources: ImageSourceCapabilities,
     videos_dir: PathBuf,
     video_generation_enabled: bool,
@@ -1143,6 +1185,13 @@ async fn start_hermes_bridge_inner(
         None
     };
     let june_recorder_mcp = sync_june_recorder_mcp(app, &command)?;
+    // Resolved from the live catalog so Hermes' vision tools attach an image
+    // straight to a vision-capable model's context instead of falling back to
+    // the (unconfigured) auxiliary vision LLM. `provider: custom` hides the
+    // capability from Hermes, so June has to declare it via config.
+    let supports_vision = crate::providers::generation_model_supports_vision().await;
+    let computer_use_ready = crate::computer_use::runtime_ready(app, supports_vision).await;
+    let june_computer_use_mcp = sync_june_computer_use_mcp(app, &command, computer_use_ready)?;
     // The four private-connector MCP servers are registered only when at least
     // one Google account is connected (v1: the first connected account).
     let june_connector_mcp = sync_june_connector_mcps(app, &command).await?;
@@ -1151,11 +1200,6 @@ async fn start_hermes_bridge_inner(
     let connectors_registered = june_connector_mcp
         .as_ref()
         .is_some_and(|configs| configs.base.is_some());
-    // Resolved from the live catalog so Hermes' vision tools attach an image
-    // straight to a vision-capable model's context instead of falling back to
-    // the (unconfigured) auxiliary vision LLM. `provider: custom` hides the
-    // capability from Hermes, so June has to declare it via config.
-    let supports_vision = crate::providers::generation_model_supports_vision().await;
     sync_hermes_config(
         app,
         &hermes_home,
@@ -1163,12 +1207,14 @@ async fn start_hermes_bridge_inner(
         &provider_proxy.token,
         &provider_proxy.recorder_token,
         &provider_proxy.connector_token,
+        &provider_proxy.computer_use_token,
         supports_vision,
         &june_context_mcp,
         &june_web_mcp,
         &june_image_mcp,
         june_video_mcp.as_ref(),
         &june_recorder_mcp,
+        &june_computer_use_mcp,
         june_connector_mcp.as_ref(),
     )?;
 
@@ -1245,6 +1291,15 @@ async fn start_hermes_bridge_inner(
         &token,
         environment_hint_for_spawn(full_mode, sandbox_available),
     );
+    if computer_use_ready {
+        // Only the visible interactive dashboard gets this capability. The
+        // separately launched routine gateway sees the same config placeholder
+        // but this variable is scrubbed from its environment.
+        cmd.env(
+            JUNE_COMPUTER_USE_MCP_TOKEN_ENV,
+            &provider_proxy.computer_use_token,
+        );
+    }
     // The pinned runtime otherwise auto-includes every enabled MCP server in
     // interactive chat. Per-routine autonomy servers carry bypass grants, so
     // normal chat must never inherit them; it uses the base action servers,
@@ -1370,12 +1425,14 @@ async fn ensure_provider_proxy(
                 token: proxy.token.clone(),
                 recorder_token: proxy.recorder_token.clone(),
                 connector_token: proxy.connector_token.clone(),
+                computer_use_token: proxy.computer_use_token.clone(),
             });
         }
     }
     let token = random_token();
     let recorder_token = random_token();
     let connector_token = random_token();
+    let computer_use_token = random_token();
     let app_data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     let image_sources = ImageSourceCapabilities {
@@ -1387,6 +1444,7 @@ async fn ensure_provider_proxy(
         token.clone(),
         recorder_token.clone(),
         connector_token.clone(),
+        computer_use_token.clone(),
         image_sources,
         videos_dir,
         crate::feature_flags::VIDEO_GENERATION_ENABLED,
@@ -1405,6 +1463,7 @@ async fn ensure_provider_proxy(
         token: token.clone(),
         recorder_token: recorder_token.clone(),
         connector_token: connector_token.clone(),
+        computer_use_token: computer_use_token.clone(),
         shutdown: Some(started.shutdown),
     });
     Ok(SharedProviderProxyInfo {
@@ -1412,6 +1471,7 @@ async fn ensure_provider_proxy(
         token,
         recorder_token,
         connector_token,
+        computer_use_token,
     })
 }
 
@@ -1420,6 +1480,7 @@ struct SharedProviderProxyInfo {
     token: String,
     recorder_token: String,
     connector_token: String,
+    computer_use_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1453,6 +1514,13 @@ struct JuneVideoMcpConfig {
 struct JuneRecorderMcpConfig {
     command: String,
     script_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct JuneComputerUseMcpConfig {
+    command: String,
+    script_path: PathBuf,
+    enabled: bool,
 }
 
 /// One private-connector MCP server (gmail/gcal, read/action). All four carry
@@ -1573,11 +1641,22 @@ pub async fn connectors_apply_runtime(
     app: AppHandle,
     bridge: State<'_, HermesBridge>,
 ) -> Result<(), AppError> {
+    apply_runtime_config_change(&app, &bridge).await
+}
+
+/// Re-render June-owned MCP policy for every live mode while preserving each
+/// process's project directory. Computer use uses the same restart seam as
+/// connectors, but its broker independently fails closed immediately on grant
+/// revocation even if a runtime restart later fails.
+pub(crate) async fn apply_runtime_config_change(
+    app: &AppHandle,
+    bridge: &HermesBridge,
+) -> Result<(), AppError> {
     // Capture each live runtime's working directory alongside its mode so the
     // restart lands in the same project the user was in. Restarting with
     // cwd: None would drop a custom cwd back to the default workspace, so a
     // connector settings change would silently relocate the agent's files.
-    let connections: Vec<(bool, Option<String>)> = live_connections(&bridge)?
+    let connections: Vec<(bool, Option<String>)> = live_connections(bridge)?
         .iter()
         .map(|connection| (connection.full_mode, connection.cwd.clone()))
         .collect();
@@ -1585,10 +1664,10 @@ pub async fn connectors_apply_runtime(
         // Mode-scoped restart (same path the MCP admin uses): stop that one
         // runtime, then re-start it so `sync_hermes_config` re-renders the
         // connector MCP servers into config.yaml.
-        stop_hermes_mode(&bridge, full_mode)?;
+        stop_hermes_mode(bridge, full_mode)?;
         start_hermes_bridge_inner(
-            &app,
-            &bridge,
+            app,
+            bridge,
             StartHermesBridgeRequest {
                 cwd,
                 full_mode: Some(full_mode),
@@ -1597,7 +1676,7 @@ pub async fn connectors_apply_runtime(
         .await?;
     }
     // Best-effort gateway restart so scheduled routines pick up the new config.
-    if let Some(connection) = live_connections(&bridge)?.into_iter().next() {
+    if let Some(connection) = live_connections(bridge)?.into_iter().next() {
         let _ = hermes_connection_json(
             &connection,
             reqwest::Method::POST,
@@ -6611,6 +6690,15 @@ fn apply_isolated_hermes_env(
     for name in ISOLATED_HERMES_ENV_VARS {
         cmd.env_remove(name);
     }
+    // Future driver releases may add new override variables. Strip the whole
+    // namespaces as well as today's explicit list so a hostile inherited env
+    // cannot point Hermes at a driver or broker outside June's Rust boundary.
+    for (name, _) in std::env::vars_os() {
+        let name_text = name.to_string_lossy();
+        if name_text.starts_with("HERMES_CUA_DRIVER") || name_text.starts_with("CUA_DRIVER_RS_") {
+            cmd.env_remove(name);
+        }
+    }
     cmd.env("HERMES_HOME", hermes_home)
         .env("HERMES_DASHBOARD_SESSION_TOKEN", token)
         .env("NO_PROXY", "127.0.0.1,localhost,::1")
@@ -6649,13 +6737,13 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
     // Block the jailed agent from reading the connector token stores: the
     // Keychain is already denied above; add the dev plaintext connector token
     // file (debug builds' fallback custody) explicitly.
-    let mut secret_read_paths = vec![image_source_key_path];
-    #[cfg(debug_assertions)]
-    secret_read_paths.push(
+    let secret_read_paths = vec![
+        image_source_key_path,
+        #[cfg(debug_assertions)]
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("dev-google-connector-tokens.json"),
-    );
+    ];
     let profile = build_sandbox_profile(
         &home,
         &write_roots,
@@ -7120,6 +7208,27 @@ fn sync_june_recorder_mcp(
     })
 }
 
+fn sync_june_computer_use_mcp(
+    app: &AppHandle,
+    hermes_command: &str,
+    enabled: bool,
+) -> Result<JuneComputerUseMcpConfig, AppError> {
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_computer_use_mcp_failed", error.to_string()))?;
+    let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
+    fs::create_dir_all(&mcp_dir)
+        .map_err(|error| AppError::new("june_computer_use_mcp_failed", error.to_string()))?;
+    let script_path = mcp_dir.join(crate::computer_use::MCP_SCRIPT_NAME);
+    fs::write(&script_path, crate::computer_use::MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_computer_use_mcp_failed", error.to_string()))?;
+
+    Ok(JuneComputerUseMcpConfig {
+        command: hermes_python_command(hermes_command),
+        script_path,
+        enabled,
+    })
+}
+
 /// Writes the four connector MCP scripts and returns their configs, but ONLY
 /// when at least one Google account is connected. v1 registers a single account
 /// context: the first connected account's email is passed to every server, and
@@ -7280,12 +7389,14 @@ fn sync_hermes_config(
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
+    computer_use_proxy_token: &str,
     supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
     june_video_mcp: Option<&JuneVideoMcpConfig>,
     june_recorder_mcp: &JuneRecorderMcpConfig,
+    june_computer_use_mcp: &JuneComputerUseMcpConfig,
     june_connector_mcp: Option<&ConnectorMcpConfigs>,
 ) -> Result<(), AppError> {
     sync_hermes_config_with_external_dirs(
@@ -7294,12 +7405,14 @@ fn sync_hermes_config(
         provider_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
+        computer_use_proxy_token,
         supports_vision,
         june_context_mcp,
         june_web_mcp,
         june_image_mcp,
         june_video_mcp,
         june_recorder_mcp,
+        june_computer_use_mcp,
         june_connector_mcp,
         &builtin_external_skill_dirs(app),
     )
@@ -7312,12 +7425,14 @@ fn sync_hermes_config_with_external_dirs(
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
+    computer_use_proxy_token: &str,
     supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
     june_video_mcp: Option<&JuneVideoMcpConfig>,
     june_recorder_mcp: &JuneRecorderMcpConfig,
+    june_computer_use_mcp: &JuneComputerUseMcpConfig,
     june_connector_mcp: Option<&ConnectorMcpConfigs>,
     default_external_skill_dirs: &[PathBuf],
 ) -> Result<(), AppError> {
@@ -7333,6 +7448,7 @@ fn sync_hermes_config_with_external_dirs(
         image: Some(june_image_mcp),
         video: june_video_mcp,
         recorder: Some(june_recorder_mcp),
+        computer_use: Some(june_computer_use_mcp),
         gmail: connector_base.map(|base| &base.gmail),
         gmail_actions: connector_base.map(|base| &base.gmail_actions),
         gcal: connector_base.map(|base| &base.gcal),
@@ -7349,6 +7465,7 @@ fn sync_hermes_config_with_external_dirs(
         provider_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
+        computer_use_proxy_token,
         &cron_toolsets,
         &external_skill_dirs,
         mcp_configs,
@@ -7431,7 +7548,10 @@ fn hermes_interactive_toolsets(config_path: &Path) -> Vec<String> {
     let Some(config) = config else {
         // Fail closed for MCP access: a malformed config gets the native
         // interactive default but no globally registered MCP server.
-        return vec!["hermes-cli".to_string()];
+        return JUNE_INTERACTIVE_NATIVE_TOOLSETS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
     };
 
     let mut selected: Vec<String> = config
@@ -7446,6 +7566,39 @@ fn hermes_interactive_toolsets(config_path: &Path) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_else(|| vec!["hermes-cli".to_string()]);
+
+    // The upstream composite contains its direct browser and computer-use
+    // implementations. Expand it before handing the list to the TUI gateway,
+    // which accepts only an allowlist and does not apply agent.disabled_toolsets.
+    // Direct selections are filtered too. This keeps the app-owned brokers as
+    // the only way either capability can enter an interactive June session.
+    let had_cli_composite = selected.iter().any(|name| {
+        name == "hermes-cli"
+            || name == "coding"
+            || name == "hermes-acp"
+            || name == "hermes-api-server"
+            || name == "hermes-gateway"
+    });
+    selected.retain(|name| {
+        !matches!(
+            name.as_str(),
+            "hermes-cli"
+                | "coding"
+                | "hermes-acp"
+                | "hermes-api-server"
+                | "hermes-gateway"
+                | "browser"
+                | "browser_tools"
+                | "computer_use"
+        )
+    });
+    if had_cli_composite {
+        selected.extend(
+            JUNE_INTERACTIVE_NATIVE_TOOLSETS
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
+    }
 
     let enabled_mcp: Vec<String> = config
         .get("mcp_servers")
@@ -7498,6 +7651,9 @@ struct BuiltinMcpConfigs<'a> {
     image: Option<&'a JuneImageMcpConfig>,
     video: Option<&'a JuneVideoMcpConfig>,
     recorder: Option<&'a JuneRecorderMcpConfig>,
+    /// Always rendered so a revoked or not-yet-ready grant overwrites any
+    /// stale enabled value left in the merged Hermes config.
+    computer_use: Option<&'a JuneComputerUseMcpConfig>,
     gmail: Option<&'a JuneConnectorMcpConfig>,
     gmail_actions: Option<&'a JuneConnectorMcpConfig>,
     gcal: Option<&'a JuneConnectorMcpConfig>,
@@ -7663,6 +7819,7 @@ fn render_hermes_config(
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
+    computer_use_proxy_token: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
     mcp_configs: BuiltinMcpConfigs<'_>,
@@ -7682,6 +7839,7 @@ fn render_hermes_config(
         provider_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
+        computer_use_proxy_token,
     );
     format!(
         r#"model:
@@ -7693,6 +7851,7 @@ fn render_hermes_config(
   supports_vision: {supports_vision}
 agent:
   max_turns: 90
+  disabled_toolsets: [browser, computer_use]
 display:
   skin: mono
 platform_toolsets:
@@ -7713,6 +7872,7 @@ fn render_mcp_servers_config(
     proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
+    computer_use_proxy_token: &str,
 ) -> String {
     let mut entries = String::new();
     if let Some(config) = configs.context {
@@ -7732,6 +7892,13 @@ fn render_mcp_servers_config(
             config,
             base_url,
             recorder_proxy_token,
+        ));
+    }
+    if let Some(config) = configs.computer_use {
+        entries.push_str(&render_computer_use_mcp_entry(
+            config,
+            base_url,
+            computer_use_proxy_token,
         ));
     }
     // Read connector servers get the read timeout; action servers get a longer
@@ -7925,6 +8092,38 @@ fn render_recorder_mcp_entry(
         base_url = yaml_string(base_url),
         token_env = JUNE_RECORDER_MCP_TOKEN_ENV,
         token = yaml_string(proxy_token),
+    )
+}
+
+fn render_computer_use_mcp_entry(
+    config: &JuneComputerUseMcpConfig,
+    base_url: &str,
+    _proxy_token: &str,
+) -> String {
+    let proxy_url = format!(
+        "{}{}",
+        base_url.trim_end_matches("/v1"),
+        crate::computer_use::PROXY_PATH
+    );
+    format!(
+        r#"  {server_name}:
+    enabled: {enabled}
+    command: {command}
+    args:
+      - {script_path}
+    env:
+      PYTHONUNBUFFERED: "1"
+      JUNE_COMPUTER_USE_PROXY_URL: {proxy_url}
+      JUNE_COMPUTER_USE_PROXY_TOKEN: {token}
+    timeout: 660
+    connect_timeout: 10
+"#,
+        server_name = crate::computer_use::MCP_SERVER_NAME,
+        enabled = config.enabled,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        proxy_url = yaml_string(&proxy_url),
+        token = yaml_string(&format!("${{{JUNE_COMPUTER_USE_MCP_TOKEN_ENV}}}")),
     )
 }
 
@@ -8390,6 +8589,7 @@ async fn start_june_provider_proxy(
     token: String,
     recorder_token: String,
     connector_token: String,
+    computer_use_token: String,
     image_sources: ImageSourceCapabilities,
     videos_dir: PathBuf,
     video_generation_enabled: bool,
@@ -8414,6 +8614,7 @@ async fn start_june_provider_proxy(
             token,
             recorder_token,
             connector_token,
+            computer_use_token,
             image_sources,
             videos_dir,
             video_generation_enabled,
@@ -8483,6 +8684,7 @@ async fn handle_june_provider_connection(
         &state.token,
         &state.recorder_token,
         &state.connector_token,
+        &state.computer_use_token,
     );
     // Authenticate on the parsed headers BEFORE reading the body, so an
     // unauthenticated local process cannot force the loopback proxy to buffer a
@@ -8693,6 +8895,24 @@ async fn handle_june_provider_connection(
         }
         ("GET", "/v1/recorder/status") => {
             write_json_response(&mut stream, 200, recorder_status_body()).await?;
+        }
+        ("POST", crate::computer_use::PROXY_PATH) => {
+            let body = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .unwrap_or_else(|_| serde_json::json!({}));
+            let Some(app) = state.app.as_ref() else {
+                write_json_response(
+                    &mut stream,
+                    503,
+                    serde_json::json!({
+                        "content": [{ "type": "text", "text": "Computer use is unavailable." }],
+                        "isError": true,
+                    }),
+                )
+                .await?;
+                return Ok(());
+            };
+            let result = crate::computer_use::handle_proxy_action(app, body).await;
+            write_json_response(&mut stream, 200, result).await?;
         }
         ("POST", path)
             if path.starts_with("/v1/gmail/")
@@ -9663,6 +9883,7 @@ async fn read_http_body(
 
 fn provider_proxy_max_body_bytes(path: &str) -> usize {
     match path {
+        crate::computer_use::PROXY_PATH => JUNE_PROVIDER_PROXY_MAX_COMPUTER_USE_BODY_BYTES,
         "/v1/image/generate" | "/v1/image/edit" => JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES,
         "/v1/video/animate" => JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES,
         "/v1/video/generate" => JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES,
@@ -9672,6 +9893,9 @@ fn provider_proxy_max_body_bytes(path: &str) -> usize {
 
 fn provider_proxy_body_too_large_message(path: &str) -> &'static str {
     match path {
+        crate::computer_use::PROXY_PATH => {
+            "computer_use_request_too_large: Computer use arguments are too large."
+        }
         "/v1/image/generate" | "/v1/image/edit" | "/v1/video/animate" => {
             "image_request_too_large: the image request body is too large for June. \
              Use a smaller image and retry."
@@ -9864,9 +10088,12 @@ fn provider_proxy_required_token<'a>(
     provider_token: &'a str,
     recorder_token: &'a str,
     connector_token: &'a str,
+    computer_use_token: &'a str,
 ) -> &'a str {
     if path.starts_with("/v1/recorder/") {
         recorder_token
+    } else if path == crate::computer_use::PROXY_PATH {
+        computer_use_token
     } else if path.starts_with("/v1/gmail/")
         || path.starts_with("/v1/gmail-actions/")
         || path.starts_with("/v1/gcal/")
@@ -11267,6 +11494,7 @@ mod tests {
             token: "proxy-token".to_string(),
             recorder_token: "recorder-token".to_string(),
             connector_token: "connector-token".to_string(),
+            computer_use_token: "computer-use-token".to_string(),
             image_sources: ImageSourceCapabilities {
                 images_dir: home.path().join("images"),
                 secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
@@ -11322,6 +11550,7 @@ mod tests {
             token: "proxy-token".to_string(),
             recorder_token: "recorder-token".to_string(),
             connector_token: "connector-token".to_string(),
+            computer_use_token: "computer-use-token".to_string(),
             image_sources: ImageSourceCapabilities {
                 images_dir: home.path().join("images"),
                 secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
@@ -11838,7 +12067,8 @@ mod tests {
                     path,
                     "provider-tok",
                     "recorder-tok",
-                    "connector-tok"
+                    "connector-tok",
+                    "computer-use-tok"
                 ),
                 "recorder-tok"
             );
@@ -11854,7 +12084,8 @@ mod tests {
                     path,
                     "provider-tok",
                     "recorder-tok",
-                    "connector-tok"
+                    "connector-tok",
+                    "computer-use-tok"
                 ),
                 "provider-tok"
             );
@@ -11872,7 +12103,8 @@ mod tests {
                     path,
                     "provider-tok",
                     "recorder-tok",
-                    "connector-tok"
+                    "connector-tok",
+                    "computer-use-tok"
                 ),
                 "connector-tok"
             );
@@ -11880,17 +12112,28 @@ mod tests {
 
         let provider_bearer = request_with_authorization("Bearer provider-tok");
         let recorder_bearer = request_with_authorization("Bearer recorder-tok");
+        let connector_bearer = request_with_authorization("Bearer connector-tok");
+        let computer_use_bearer = request_with_authorization("Bearer computer-use-tok");
         let recorder_required = provider_proxy_required_token(
             "/v1/recorder/start",
             "provider-tok",
             "recorder-tok",
             "connector-tok",
+            "computer-use-tok",
         );
         let provider_required = provider_proxy_required_token(
             "/v1/models",
             "provider-tok",
             "recorder-tok",
             "connector-tok",
+            "computer-use-tok",
+        );
+        let computer_use_required = provider_proxy_required_token(
+            crate::computer_use::PROXY_PATH,
+            "provider-tok",
+            "recorder-tok",
+            "connector-tok",
+            "computer-use-tok",
         );
         assert!(!provider_proxy_authorized(
             &provider_bearer,
@@ -11908,6 +12151,17 @@ mod tests {
             &provider_bearer,
             provider_required
         ));
+        assert_eq!(computer_use_required, "computer-use-tok");
+        assert!(provider_proxy_authorized(
+            &computer_use_bearer,
+            computer_use_required
+        ));
+        for wrong_scope in [&provider_bearer, &recorder_bearer, &connector_bearer] {
+            assert!(!provider_proxy_authorized(
+                wrong_scope,
+                computer_use_required
+            ));
+        }
     }
 
     #[test]
@@ -11927,7 +12181,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_proxy_uses_larger_body_cap_for_image_tools() {
+    fn provider_proxy_uses_route_specific_body_caps() {
         assert_eq!(
             JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES,
             base64_encoded_len(HERMES_IMAGE_EDIT_SOURCE_MAX_BYTES)
@@ -11949,6 +12203,14 @@ mod tests {
             provider_proxy_max_body_bytes("/v1/image/edit")
                 > provider_proxy_max_body_bytes("/v1/chat/completions")
         );
+        assert_eq!(
+            provider_proxy_max_body_bytes(crate::computer_use::PROXY_PATH),
+            JUNE_PROVIDER_PROXY_MAX_COMPUTER_USE_BODY_BYTES
+        );
+        assert!(
+            provider_proxy_max_body_bytes(crate::computer_use::PROXY_PATH)
+                < provider_proxy_max_body_bytes("/v1/chat/completions")
+        );
     }
 
     #[test]
@@ -11965,6 +12227,10 @@ mod tests {
         let image_message = provider_proxy_body_too_large_message("/v1/image/edit");
         assert!(image_message.contains("image_request_too_large"));
         assert!(!image_message.contains("maximum context length"));
+        let computer_use_message =
+            provider_proxy_body_too_large_message(crate::computer_use::PROXY_PATH);
+        assert!(computer_use_message.contains("computer_use_request_too_large"));
+        assert!(!computer_use_message.contains("maximum context length"));
     }
 
     #[test]
@@ -12699,6 +12965,7 @@ mcp_servers:
             "new-token",
             "recorder-token",
             "connector-token",
+            "computer-use-token",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -12707,6 +12974,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                computer_use: None,
                 gmail: None,
                 gmail_actions: None,
                 gcal: None,
@@ -12788,6 +13056,7 @@ mcp_servers:
             "t",
             "recorder",
             "connector",
+            "computer-use",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -12796,6 +13065,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                computer_use: None,
                 gmail: None,
                 gmail_actions: None,
                 gcal: None,
@@ -13005,12 +13275,14 @@ mcp_servers:
             "proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
+            "computer-use-proxy-token",
             false,
             &test_june_context_mcp_config(),
             &test_june_web_mcp_config(),
             &test_june_image_mcp_config(),
             None,
             &test_june_recorder_mcp_config(),
+            &test_june_computer_use_mcp_config(false),
             None,
             std::slice::from_ref(&default_dir),
         )
@@ -13056,6 +13328,7 @@ mcp_servers:
             "tok",
             "recorder-tok",
             "connector-tok",
+            "computer-use-tok",
             "web, memory",
             &dirs,
             BuiltinMcpConfigs {
@@ -13064,6 +13337,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                computer_use: None,
                 gmail: None,
                 gmail_actions: None,
                 gcal: None,
@@ -13098,6 +13372,7 @@ mcp_servers:
             "tok",
             "recorder-tok",
             "connector-tok",
+            "computer-use-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -13106,6 +13381,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                computer_use: None,
                 gmail: None,
                 gmail_actions: None,
                 gcal: None,
@@ -13148,6 +13424,14 @@ mcp_servers:
         }
     }
 
+    fn test_june_computer_use_mcp_config(enabled: bool) -> JuneComputerUseMcpConfig {
+        JuneComputerUseMcpConfig {
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            script_path: PathBuf::from("/tmp/june/hermes-mcp/june_computer_use_mcp.py"),
+            enabled,
+        }
+    }
+
     fn test_june_connector_mcp_config(script: &str) -> JuneConnectorMcpConfig {
         JuneConnectorMcpConfig {
             command: "/tmp/hermes/venv/bin/python".to_string(),
@@ -13163,6 +13447,7 @@ mcp_servers:
         let image = test_june_image_mcp_config();
         let video = test_june_video_mcp_config();
         let recorder = test_june_recorder_mcp_config();
+        let computer_use = test_june_computer_use_mcp_config(true);
         let gmail = test_june_connector_mcp_config("june_gmail_mcp.py");
         let gmail_actions = test_june_connector_mcp_config("june_gmail_actions_mcp.py");
         let gcal = test_june_connector_mcp_config("june_gcal_mcp.py");
@@ -13182,6 +13467,7 @@ mcp_servers:
             "proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
+            "computer-use-proxy-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -13190,6 +13476,7 @@ mcp_servers:
                 image: Some(&image),
                 video: Some(&video),
                 recorder: Some(&recorder),
+                computer_use: Some(&computer_use),
                 gmail: Some(&gmail),
                 gmail_actions: Some(&gmail_actions),
                 gcal: Some(&gcal),
@@ -13202,6 +13489,10 @@ mcp_servers:
         assert!(config.contains("mcp_servers:\n  june_context:\n"));
         assert!(config.contains("  june_web:\n"));
         assert!(config.contains("  june_recorder:\n"));
+        assert!(config.contains("  june_computer_use:\n"));
+        assert!(config
+            .contains("agent:\n  max_turns: 90\n  disabled_toolsets: [browser, computer_use]\n"));
+        assert!(config.contains("  june_computer_use:\n    enabled: true\n"));
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_context_mcp.py\"\n"));
         assert!(config.contains("      - \"/tmp/june/notes.sqlite3\"\n"));
@@ -13231,6 +13522,15 @@ mcp_servers:
         // general provider token.
         assert!(config.contains("      JUNE_RECORDER_PROXY_TOKEN: \"recorder-proxy-tok\"\n"));
         assert!(!config.contains("      JUNE_RECORDER_PROXY_TOKEN: \"proxy-tok\"\n"));
+        assert!(config.contains(
+            "      JUNE_COMPUTER_USE_PROXY_TOKEN: \"${JUNE_COMPUTER_USE_PROXY_TOKEN}\"\n"
+        ));
+        assert!(!config.contains("computer-use-proxy-tok"));
+        assert!(config.contains(
+            "      JUNE_COMPUTER_USE_PROXY_URL: \"http://127.0.0.1:9/v1/computer-use/action\"\n"
+        ));
+        assert!(!config.contains("CUA_DRIVER_RS_"));
+        assert!(!config.contains("HERMES_CUA_DRIVER"));
         // The Hermes-side tool timeout must sit at the top of the stack
         // (proxy lease < python client < hermes), or Hermes reports failure
         // while June is still honestly waiting on the permission prompt;
@@ -13282,6 +13582,7 @@ mcp_servers:
             "proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
+            "computer-use-proxy-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -13290,6 +13591,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                computer_use: None,
                 gmail: Some(&gmail),
                 gmail_actions: Some(&gmail_actions),
                 gcal: Some(&gcal),
@@ -13315,6 +13617,7 @@ mcp_servers:
             "proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
+            "computer-use-proxy-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -13323,6 +13626,7 @@ mcp_servers:
                 image: Some(&image),
                 video: None,
                 recorder: None,
+                computer_use: None,
                 gmail: None,
                 gmail_actions: None,
                 gcal: None,
@@ -13348,6 +13652,7 @@ mcp_servers:
             "tok",
             "recorder-tok",
             "connector-tok",
+            "computer-use-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -13356,6 +13661,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                computer_use: None,
                 gmail: None,
                 gmail_actions: None,
                 gcal: None,
@@ -13381,6 +13687,7 @@ mcp_servers:
             "proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
+            "computer-use-proxy-token",
             "web, memory",
             &[],
             BuiltinMcpConfigs {
@@ -13389,6 +13696,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                computer_use: None,
                 gmail: None,
                 gmail_actions: None,
                 gcal: None,
@@ -13405,6 +13713,7 @@ mcp_servers:
             "proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
+            "computer-use-proxy-token",
             "web, memory",
             &[],
             BuiltinMcpConfigs {
@@ -13413,6 +13722,7 @@ mcp_servers:
                 image: None,
                 video: None,
                 recorder: None,
+                computer_use: None,
                 gmail: None,
                 gmail_actions: None,
                 gcal: None,
@@ -13701,7 +14011,7 @@ mcp_servers:
     }
 
     #[test]
-    fn interactive_toolsets_exclude_per_routine_autonomy_servers() {
+    fn interactive_toolsets_exclude_bypass_and_per_routine_autonomy_servers() {
         let home = tempfile::tempdir().expect("tempdir");
         let config_path = home.path().join("config.yaml");
         std::fs::write(
@@ -13721,7 +14031,12 @@ mcp_servers:
         .expect("write config");
 
         let selected = hermes_interactive_toolsets(&config_path);
-        assert!(selected.contains(&"hermes-cli".to_string()));
+        for safe in JUNE_INTERACTIVE_NATIVE_TOOLSETS {
+            assert!(selected.contains(&(*safe).to_string()), "missing {safe}");
+        }
+        assert!(!selected.contains(&"hermes-cli".to_string()));
+        assert!(!selected.contains(&"browser".to_string()));
+        assert!(!selected.contains(&"computer_use".to_string()));
         assert!(selected.contains(&"june_context".to_string()));
         assert!(selected.contains(&"june_gmail".to_string()));
         assert!(selected.contains(&"june_gmail_actions".to_string()));
@@ -13785,6 +14100,7 @@ mcp_servers:
         let image = test_june_image_mcp_config();
         let video = test_june_video_mcp_config();
         let recorder = test_june_recorder_mcp_config();
+        let computer_use = test_june_computer_use_mcp_config(false);
         let connectors = ConnectorMcpConfigs {
             base: Some(ConnectorBaseMcpConfigs {
                 gmail: test_june_connector_mcp_config("june_gmail_mcp.py"),
@@ -13809,12 +14125,14 @@ mcp_servers:
             "proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
+            "computer-use-proxy-token",
             false,
             &mcp,
             &web,
             &image,
             Some(&video),
             &recorder,
+            &computer_use,
             Some(&connectors),
             &[],
         )
@@ -13822,6 +14140,7 @@ mcp_servers:
 
         let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
         assert!(config.contains("platform_toolsets:"));
+        assert!(config.contains("  june_computer_use:\n    enabled: false\n"));
         // Naming any MCP server flips cron's auto-include into an allowlist, so
         // every built-in READ server that must stay available to routines is
         // listed explicitly alongside the sandboxed toolsets, plus the two

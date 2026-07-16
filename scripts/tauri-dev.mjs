@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+
+if (process.platform === "darwin") {
+  const prepare = spawnSync(process.execPath, [resolve(SCRIPT_DIR, "prepare-cua-driver.mjs")], {
+    cwd: resolve(SCRIPT_DIR, ".."),
+    stdio: "inherit",
+  });
+  if (prepare.status !== 0) process.exit(prepare.status ?? 1);
+}
 
 // A port is "free" when a connection is refused. Mirrors the probe in
 // tauri-before-dev.mjs so both scripts agree on which port to use.

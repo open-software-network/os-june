@@ -7,6 +7,7 @@
     "resources": {
       "../.tauri-helper/June.app": "native/bin/June.app",
       "../.tauri-helper/June Dictation Helper.app": "native/bin/June Dictation Helper.app",
+      "../.tauri-helper/June Computer Use Driver.app": "native/bin/June Computer Use Driver.app",
       "../.tauri-hermes/hermes": "native/hermes",
       "resources/hermes-skills": "native/hermes-skills"
     },

@@ -27,6 +27,7 @@ import type { ReportCategory } from "../components/agent/composer/reportCategory
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { RoutinesView } from "../components/routines/RoutinesView";
+import { PluginsView } from "../components/plugins/PluginsView";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
 import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToProjectDialog";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
@@ -51,7 +52,9 @@ import { IconProjects } from "central-icons/IconProjects";
 import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
+import { IconPlugin1 } from "central-icons/IconPlugin1";
 import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
+import { ComputerUseApprovalsTray } from "../components/agent/ComputerUseApprovalsTray";
 import {
   OPEN_REFERRAL_DIALOG_EVENT,
   ReferralNudge,
@@ -336,6 +339,11 @@ function tabMeta(
       return {
         title: "Routines",
         icon: <IconZap size={TAB_ICON_SIZE} />,
+      };
+    case "plugins":
+      return {
+        title: "Plugins",
+        icon: <IconPlugin1 size={TAB_ICON_SIZE} />,
       };
     case "dictation":
       return {
@@ -3780,6 +3788,24 @@ export function App() {
                     setActiveView("agent");
                   }}
                 />
+              ) : activeView === "plugins" ? (
+                <PluginsView
+                  onOpenComputerUseSettings={() => {
+                    setSettingsReturnView("plugins");
+                    setSettingsTab("computer-use");
+                    setActiveView("settings");
+                  }}
+                  onOpenModels={() => {
+                    setSettingsReturnView("plugins");
+                    setSettingsTab("models");
+                    setActiveView("settings");
+                  }}
+                  onOpenBilling={() => {
+                    setSettingsReturnView("plugins");
+                    setSettingsTab("billing");
+                    setActiveView("settings");
+                  }}
+                />
               ) : activeView === "agent" ? (
                 // The origin crumbs render inside the workspace's own sticky
                 // session bar, so they persist while the chat scrolls beneath.
@@ -4328,7 +4354,10 @@ export function App() {
       />
       {/* Connector action approvals (approval trust mode) can arrive from a
           routine or chat in any view, so the tray is mounted at the shell. */}
-      <ConnectorApprovalsTray />
+      <div className="shell-approvals-stack">
+        <ComputerUseApprovalsTray />
+        <ConnectorApprovalsTray />
+      </div>
       {/* The referral delight nudge floats bottom-left at the shell so it can
           appear over any view; click-through opens the sidebar-owned referral
           dialog by event. */}
