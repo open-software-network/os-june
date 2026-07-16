@@ -7,6 +7,7 @@ import type { ConnectorAccount, LinearTeam } from "../lib/tauri";
 const mocks = vi.hoisted(() => ({
   connectorsList: vi.fn<() => Promise<ConnectorAccount[]>>(),
   connectorsConnect: vi.fn(),
+  connectorsCancelConnect: vi.fn(),
   connectorsDisconnect: vi.fn(),
   connectorsApplyRuntime: vi.fn(),
   connectorsLinearTeams: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/tauri")>()),
   connectorsList: mocks.connectorsList,
   connectorsConnect: mocks.connectorsConnect,
+  connectorsCancelConnect: mocks.connectorsCancelConnect,
   connectorsDisconnect: mocks.connectorsDisconnect,
   connectorsApplyRuntime: mocks.connectorsApplyRuntime,
   connectorsLinearTeams: mocks.connectorsLinearTeams,
@@ -69,6 +71,7 @@ beforeEach(() => {
   mocks.connectorsConnect.mockResolvedValue(account());
   mocks.connectorsDisconnect.mockResolvedValue(undefined);
   mocks.connectorsApplyRuntime.mockResolvedValue(undefined);
+  mocks.connectorsCancelConnect.mockResolvedValue(undefined);
   mocks.connectorsLinearTeams.mockResolvedValue({
     teams: [TEAM_ENG, TEAM_DESIGN],
     truncated: false,
@@ -149,6 +152,41 @@ describe("ConnectorsSection", () => {
     );
     await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
     expect(await screen.findByText(/alex@example\.com/)).toBeInTheDocument();
+  });
+
+  it("cancels an in-flight connect and closes the dialog while waiting for the browser", async () => {
+    // Hold the connect pending so the dialog stays in the "Waiting for
+    // browser…" state, where Cancel must abort the backend loopback wait
+    // rather than being inert.
+    let rejectConnect: (reason: unknown) => void = () => {};
+    mocks.connectorsConnect.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectConnect = reject;
+      }),
+    );
+
+    render(<ConnectorsSection />);
+    await userEvent.click(await findEnabledConnect("Connect Google"));
+    const dialog = screen.getByRole("dialog", { name: "Connect Google account" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    // In the waiting state: the primary button reflects it, and Cancel stays
+    // clickable.
+    await within(dialog).findByRole("button", { name: /waiting for browser/i });
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    expect(cancel).toBeEnabled();
+
+    await userEvent.click(cancel);
+    // The backend loopback wait is aborted and the dialog closes.
+    await waitFor(() => expect(mocks.connectorsCancelConnect).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Connect Google account" })).toBeNull(),
+    );
+
+    // The backend then rejects the awaited connect with the cancel code; that
+    // is expected and must not surface an error toast.
+    rejectConnect({ code: "connector_connect_canceled", message: "canceled" });
+    expect(screen.queryByText(/canceled/i)).toBeNull();
   });
 
   it("shows an inline notice when the connector is not configured in this build", async () => {

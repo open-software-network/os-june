@@ -9,10 +9,11 @@ import {
   grantedFeatureLabels,
   isConnectorNotConfiguredError,
 } from "../../lib/connectors";
-import { messageFromError } from "../../lib/errors";
+import { errorCode, messageFromError } from "../../lib/errors";
 import {
   CONNECTORS_CHANGED_EVENT,
   connectorsApplyRuntime,
+  connectorsCancelConnect,
   connectorsConnect,
   connectorsDisconnect,
   connectorsLinearTeams,
@@ -305,12 +306,24 @@ export function ConnectorsSection() {
       if (isConnectorNotConfiguredError(err)) {
         setNotConfigured(connectProvider);
         setConnectOpen(false);
-      } else {
+      } else if (errorCode(err) !== "connector_connect_canceled") {
+        // A user-initiated cancel rejects the in-flight connect with this
+        // code; that is the expected outcome of clicking Cancel, not an
+        // error to surface.
         toast.error(messageFromError(err));
       }
     } finally {
       setConnecting(false);
     }
+  }
+
+  // Dismiss the connect dialog. While a connect is in flight ("Waiting for
+  // browser…") this also aborts the backend's loopback wait, so Cancel and
+  // the close button work during that window instead of being stuck until
+  // the browser handoff resolves or times out.
+  function dismissConnect() {
+    if (connecting) void connectorsCancelConnect();
+    setConnectOpen(false);
   }
 
   async function reconnect(account: ConnectorAccount) {
@@ -545,9 +558,7 @@ export function ConnectorsSection() {
 
       <Dialog
         open={connectOpen}
-        onClose={() => {
-          if (!connecting) setConnectOpen(false);
-        }}
+        onClose={dismissConnect}
         title={
           connectTarget
             ? CONNECT_TITLES[connectProvider].add
@@ -556,12 +567,7 @@ export function ConnectorsSection() {
         description={connectDescription(connectProvider, connectTarget)}
         footer={
           <>
-            <button
-              type="button"
-              className="primary-action"
-              onClick={() => setConnectOpen(false)}
-              disabled={connecting}
-            >
+            <button type="button" className="primary-action" onClick={dismissConnect}>
               Cancel
             </button>
             <button
