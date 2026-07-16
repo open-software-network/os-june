@@ -732,7 +732,7 @@ describe("NoteEditor", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
-  it("keeps recording options interactive after recording transitions to transcription", async () => {
+  it("keeps recording options interactive after recording transitions to note transcription", async () => {
     const user = userEvent.setup();
     const recordingStatus = {
       sessionId: "session-1",
