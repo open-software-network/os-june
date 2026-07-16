@@ -898,12 +898,14 @@ describe("MoveNoteToFolderDialog", () => {
     {
       id: "folder-1",
       name: "Alpha",
+      memoryDisabled: false,
       createdAt: now,
       updatedAt: now,
     },
     {
       id: "folder-2",
       name: "Beta",
+      memoryDisabled: false,
       createdAt: now,
       updatedAt: now,
     },
@@ -1000,6 +1002,7 @@ describe("MoveNoteToFolderDialog", () => {
     const created: FolderDto = {
       id: "folder-new",
       name: "Roadmap",
+      memoryDisabled: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -1052,6 +1055,7 @@ describe("MoveNoteToFolderDialog", () => {
     const created: FolderDto = {
       id: "folder-new",
       name: "Client work",
+      memoryDisabled: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -1083,6 +1087,7 @@ describe("MoveNoteToFolderDialog", () => {
     const created: FolderDto = {
       id: "folder-new",
       name: "Roadmap",
+      memoryDisabled: false,
       createdAt: now,
       updatedAt: now,
     };

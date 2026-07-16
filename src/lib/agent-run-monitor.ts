@@ -3,15 +3,14 @@ import {
   dispatchAgentRunStarted,
   dispatchAgentSessionStatus,
 } from "./agent-events";
+import { hasFinalContentBearingAssistantReply } from "./agent-chat-runtime";
 import { hermesConnectionForMode } from "./hermes-connection";
 import { HermesGatewayClient } from "./hermes-gateway";
 import { watchHermesRunSettlement, type HermesRunSettlementHandle } from "./hermes-run-settlement";
 import {
   hermesBridgeSessionMessages,
-  hermesBridgeSessions,
   hermesBridgeStatus,
   type HermesSessionMessage,
-  type HermesSessionInfo,
 } from "./tauri";
 
 export type StartAgentRunMonitoringInput = {
@@ -37,7 +36,8 @@ export type AgentRunTerminalEvidence = {
   status: "completed" | "failed" | "cancelled";
   summary: string;
   /** Earliest timestamp that can belong to this accepted prompt. Persisted
-   * terminal metadata older than this boundary belongs to an earlier run. */
+   * or replayed outcome evidence older than this boundary belongs to an
+   * earlier run. */
   notBeforeMs: number;
 };
 
@@ -52,7 +52,7 @@ type AgentRunMonitor = StartAgentRunMonitoringInput & {
   generation: number;
   stopping: boolean;
   succeeded: boolean;
-  successAuthority?: "explicit" | "persisted-terminal" | "assistant-fallback";
+  successAuthority?: "explicit" | "assistant-fallback";
   settlement?: HermesRunSettlementHandle;
   settlementCleanupTimer?: ReturnType<typeof setTimeout>;
   stopCallbacks?: Set<() => void>;
@@ -65,10 +65,7 @@ type ModeObserver = {
   reconnectTimer?: ReturnType<typeof setTimeout>;
 };
 
-type TerminalOutcome =
-  | { kind: "succeeded"; authority: "persisted-terminal" | "assistant-fallback" }
-  | { kind: "failed"; summary: string }
-  | { kind: "cancelled" };
+type PersistedCompletion = { authority: "assistant-fallback" };
 
 const OBSERVER_RECONNECT_MS = 1_000;
 const MONITOR_POLL_INTERVAL_MS = 500;
@@ -132,11 +129,10 @@ export function markAgentRunSucceeded(storedSessionId: string, expectedGeneratio
   return true;
 }
 
-/** Retains a repeated anonymous terminal as unresolved evidence for the current
- * monitor generation. The frame itself is not authoritative: only run-fresh
- * persisted terminal metadata (or a later unique terminal frame) may resolve
- * it. While evidence is pending, partial assistant prose cannot be inferred as
- * successful completion. */
+/** Retains unresolved run-outcome evidence for the current monitor generation.
+ * A failed transcript completion is negative evidence without itself being an
+ * Agent-run terminal; a repeated anonymous terminal is replay-ambiguous. While
+ * either is pending, partial assistant prose cannot be inferred as success. */
 export function preserveAgentRunTerminalEvidence(
   storedSessionId: string,
   evidence: AgentRunTerminalEvidence,
@@ -144,12 +140,22 @@ export function preserveAgentRunTerminalEvidence(
 ) {
   const run = currentRunForGeneration(storedSessionId, expectedGeneration);
   if (!run || run.stopping || !Number.isFinite(evidence.notBeforeMs)) return false;
-  if (run.successAuthority === "explicit" || run.successAuthority === "persisted-terminal") {
-    return false;
-  }
-  if (run.successAuthority === "assistant-fallback") {
+  if (run.successAuthority === "explicit") return false;
+  if (
+    run.successAuthority === "assistant-fallback" &&
+    (evidence.status === "failed" || evidence.status === "cancelled")
+  ) {
     run.succeeded = false;
     run.successAuthority = undefined;
+  }
+  if (
+    evidence.status === "completed" &&
+    (run.terminalEvidence?.status === "failed" || run.terminalEvidence?.status === "cancelled")
+  ) {
+    // Anonymous/replayed completion is weaker than negative evidence already
+    // observed for this accepted run. Only the surface's explicit terminal
+    // authority may clear that failure or cancellation via markAgentRunSucceeded.
+    return true;
   }
   run.terminalEvidence = {
     ...evidence,
@@ -306,11 +312,11 @@ function startSettlementIfReady(run: AgentRunMonitor) {
       );
       // Hermes routes session events only to the transport that created or
       // resumed that session. The submitting UI can report success as a fast
-      // path, but persisted session state is the correctness path after that
-      // UI disappears.
+      // path, but persisted messages are the correctness path after that UI
+      // disappears.
       if (!run.succeeded && matchingRows.every((row) => row.status === "idle")) {
         const terminalEvidence = run.terminalEvidence;
-        const outcome = await persistedTerminalOutcome(run, terminalEvidence);
+        const completion = await persistedRunCompletion(run, terminalEvidence);
         if (!isCurrent(run) || run.generation !== generation) {
           return [{ id: run.runtimeSessionId ?? run.storedSessionId, status: "working" }];
         }
@@ -318,31 +324,10 @@ function startSettlementIfReady(run: AgentRunMonitor) {
         if (run.terminalEvidence !== terminalEvidence) {
           return [{ id: run.runtimeSessionId ?? run.storedSessionId, status: "working" }];
         }
-        if (outcome?.kind === "succeeded") {
+        if (completion) {
           run.terminalEvidence = undefined;
           run.succeeded = true;
-          run.successAuthority = outcome.authority;
-        } else if (outcome) {
-          finishRun(run);
-          if (outcome.kind === "failed") {
-            dispatchAgentSessionStatus({
-              sessionId: run.storedSessionId,
-              title: run.title,
-              status: "failed",
-              runMonitorGeneration: run.generation,
-              // Replay-ambiguous evidence may carry prose from an older run.
-              // Persisted current-run metadata proves only the generic outcome.
-              summary: outcome.summary,
-            });
-          } else if (outcome.kind === "cancelled") {
-            dispatchAgentSessionStatus({
-              sessionId: run.storedSessionId,
-              title: run.title,
-              status: "cancelled",
-              runMonitorGeneration: run.generation,
-              summary: "Stopped.",
-            });
-          }
+          run.successAuthority = completion.authority;
         }
       }
 
@@ -378,19 +363,12 @@ function startSettlementIfReady(run: AgentRunMonitor) {
   }, MONITOR_TIMEOUT_MS + 1);
 }
 
-async function persistedTerminalOutcome(
+async function persistedRunCompletion(
   run: AgentRunMonitor,
   terminalEvidence: AgentRunTerminalEvidence | undefined,
-): Promise<TerminalOutcome | undefined> {
+): Promise<PersistedCompletion | undefined> {
   try {
-    const [sessionsResponse, messagesResponse] = await Promise.all([
-      hermesBridgeSessions({
-        limit: 100,
-        minMessages: 0,
-        order: "recent",
-      }),
-      hermesBridgeSessionMessages(run.storedSessionId),
-    ]);
+    const messagesResponse = await hermesBridgeSessionMessages(run.storedSessionId);
     const messages =
       messagesResponse.messages ?? messagesResponse.items ?? messagesResponse.data ?? [];
     const persistedUserIndex = run.acceptedPrompt.findPersistedUserIndex(messages);
@@ -402,94 +380,18 @@ async function persistedTerminalOutcome(
     ) {
       return undefined;
     }
-    const session = sessionsResponse.sessions?.find(
-      (candidate) => candidate.id === run.storedSessionId,
-    );
-    if (!session) return undefined;
-    const terminalNotBeforeMs = Math.max(
-      run.acceptedPrompt.dispatchedAtMs,
-      terminalEvidence?.notBeforeMs ?? Number.NEGATIVE_INFINITY,
-    );
-    if (!Number.isFinite(terminalNotBeforeMs)) return undefined;
-    const outcome = terminalOutcomeFromSession(session, terminalNotBeforeMs);
-    if (outcome || sessionLooksFreshlyWaiting(session, terminalNotBeforeMs)) return outcome;
     // A repeated anonymous failure and a successful run with a stale replay can
-    // both persist an assistant row. Until fresh terminal metadata breaks that
+    // both persist an assistant row. Until unique runtime evidence breaks that
     // tie, treating prose as success would silently erase a genuine failure.
-    if (terminalEvidence !== undefined) return undefined;
-    return assistantRepliedToAcceptedPrompt(messages, persistedUserIndex)
-      ? { kind: "succeeded", authority: "assistant-fallback" }
+    if (terminalEvidence?.status === "failed" || terminalEvidence?.status === "cancelled") {
+      return undefined;
+    }
+    return hasFinalContentBearingAssistantReply(messages, persistedUserIndex)
+      ? { authority: "assistant-fallback" }
       : undefined;
   } catch {
     return undefined;
   }
-}
-
-function sessionLooksFreshlyWaiting(session: HermesSessionInfo, notBeforeMs: number) {
-  if (
-    !/(?:waiting|approval|needs.?input|clarif)/i.test(
-      `${session.status ?? ""} ${session.end_reason ?? ""}`,
-    )
-  ) {
-    return false;
-  }
-  const lastActiveAtMs = persistedSessionLastActiveAtMs(session);
-  return lastActiveAtMs !== undefined && lastActiveAtMs >= notBeforeMs;
-}
-
-function assistantRepliedToAcceptedPrompt(
-  messages: readonly HermesSessionMessage[],
-  persistedUserIndex: number,
-) {
-  const followingMessages = messages.slice(persistedUserIndex + 1);
-  const nextUserIndex = followingMessages.findIndex((message) => message.role === "user");
-  const acceptedAgentRunMessages =
-    nextUserIndex < 0 ? followingMessages : followingMessages.slice(0, nextUserIndex);
-  return acceptedAgentRunMessages.some((message) => message.role === "assistant");
-}
-
-function terminalOutcomeFromSession(
-  session: HermesSessionInfo,
-  terminalNotBeforeMs: number,
-): TerminalOutcome | undefined {
-  if (session.active === true || session.is_active === true) return undefined;
-  const marker = `${session.status ?? ""} ${session.end_reason ?? ""}`.toLowerCase();
-  const hasCancelledMarker = /(?:cancel|stop|interrupt|abort)/.test(marker);
-  const hasFailedMarker = /(?:fail|error|timeout)/.test(marker);
-  const hasCompletedMarker = /(?:complete|success|finish|done)/.test(marker);
-  const endedAtMs = persistedSessionEndedAtMs(session);
-  // ended_at proves only that some run ended. Require both a current-prompt
-  // freshness boundary and an explicit outcome marker before metadata can
-  // settle this monitor generation.
-  if (
-    (!hasCancelledMarker && !hasFailedMarker && !hasCompletedMarker) ||
-    endedAtMs === undefined ||
-    endedAtMs <= terminalNotBeforeMs
-  ) {
-    return undefined;
-  }
-  if (hasCancelledMarker) return { kind: "cancelled" };
-  if (hasFailedMarker) {
-    return { kind: "failed", summary: "June hit a problem." };
-  }
-  if (hasCompletedMarker) {
-    return { kind: "succeeded", authority: "persisted-terminal" };
-  }
-  return undefined;
-}
-
-function persistedSessionEndedAtMs(session: HermesSessionInfo) {
-  const value = session.ended_at ?? session.endedAt;
-  if (typeof value !== "string" || !value.trim()) return undefined;
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? undefined : parsed;
-}
-
-function persistedSessionLastActiveAtMs(session: HermesSessionInfo) {
-  const value = session.last_active ?? session.lastActive;
-  if (typeof value !== "string" || !value.trim()) return undefined;
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? undefined : parsed;
 }
 
 function createObserver(fullMode: boolean) {

@@ -23,6 +23,7 @@ type ReasoningEvent = Extract<JuneHermesEvent, { kind: "reasoning" }>;
 type ToolEvent = Extract<JuneHermesEvent, { kind: "tool" }>;
 type PendingActionEvent = Extract<JuneHermesEvent, { kind: "pending_action" }>;
 type PendingActionResolutionEvent = Extract<JuneHermesEvent, { kind: "pending_action_resolution" }>;
+type PendingActionExpirationEvent = Extract<JuneHermesEvent, { kind: "pending_action_expiration" }>;
 type BackgroundActivityEvent = Extract<JuneHermesEvent, { kind: "background_activity" }>;
 type ErrorEvent = Extract<JuneHermesEvent, { kind: "error" }>;
 type LifecycleEvent = Extract<JuneHermesEvent, { kind: "lifecycle" }>;
@@ -66,6 +67,17 @@ function pendingActionEvent(
 ): PendingActionEvent {
   return {
     kind: "pending_action",
+    sessionId: "",
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function pendingActionExpirationEvent(
+  event: Pick<PendingActionExpirationEvent, "action"> & Partial<PendingActionExpirationEvent>,
+): PendingActionExpirationEvent {
+  return {
+    kind: "pending_action_expiration",
     sessionId: "",
     receivedAt: DEFAULT_RECEIVED_AT,
     ...event,
@@ -759,6 +771,28 @@ describe("Agent chat runtime", () => {
     ).toBe("wdyt?");
   });
 
+  it("hides injected project context from persisted user turns", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "project-prompt",
+        role: "user",
+        content: [
+          "[June project context]",
+          "project_id: project-1",
+          "project: Launch",
+          "instructions:",
+          "Prefer concise updates.",
+          "[/June project context]",
+          "",
+          "What changed?",
+        ].join("\n"),
+        timestamp: "2026-07-14T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "What changed?", status: "complete" }]);
+  });
+
   it("keeps attachment paths in turn data but hides them from the rendered user bubble", () => {
     // The user bubble renders each part through displayedComposerUserMessageText
     // (AgentWorkspace), so it must show only the user's words. The built turn
@@ -1107,6 +1141,174 @@ describe("Agent chat runtime", () => {
         status: "resolved",
       },
     ]);
+  });
+
+  it("deduplicates one approval before and after reconnect while keeping distinct requests", () => {
+    const approval = pendingActionEvent({
+      sessionId: "runtime-session",
+      action: {
+        kind: "approval",
+        requestId: "approval-1",
+        description: "Connect Todoist?",
+        allowPermanent: false,
+      },
+    });
+    const distinct = pendingActionEvent({
+      sessionId: "runtime-session",
+      action: {
+        kind: "approval",
+        requestId: "approval-2",
+        description: "Share another resource?",
+        allowPermanent: false,
+      },
+    });
+    const response = pendingActionResolutionEvent({
+      sessionId: "runtime-session",
+      action: {
+        kind: "approval",
+        requestId: "approval-1",
+        command: "",
+        description: "",
+        allowPermanent: false,
+        choice: "once",
+      },
+    });
+
+    const turns = buildAgentChatTurns([], [], [approval, approval, distinct, response, approval]);
+    const approvals = turns[0]?.parts.filter((part) => part.type === "approval") ?? [];
+    expect(approvals).toHaveLength(2);
+    expect(approvals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "approval-1", status: "resolved", choice: "once" }),
+        expect.objectContaining({ id: "approval-2", status: "pending" }),
+      ]),
+    );
+  });
+
+  it("shows a fail-closed expiration instead of a resolved approval", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        pendingActionEvent({
+          action: {
+            kind: "approval",
+            requestId: "approval-expired",
+            description: "Connect Todoist?",
+            allowPermanent: false,
+          },
+        }),
+        pendingActionExpirationEvent({
+          action: { kind: "approval", requestId: "approval-expired", reason: "timeout" },
+        }),
+      ],
+    );
+    expect(turns[0]?.parts).toContainEqual(
+      expect.objectContaining({
+        type: "approval",
+        id: "approval-expired",
+        status: "expired",
+        retiredReason: "timeout",
+      }),
+    );
+  });
+
+  it("renders repeated legacy approval instances independently across Agent runs", () => {
+    const requestId = "legacy:approval.request:shared-payload";
+    const firstInstanceId = `${requestId}\u0000run:4`;
+    const laterInstanceId = `${requestId}\u0000run:9`;
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        pendingActionEvent({
+          action: {
+            kind: "approval",
+            requestId,
+            requestIdProvenance: "payload-fingerprint",
+            instanceId: firstInstanceId,
+            description: "Connect Todoist?",
+            allowPermanent: false,
+          },
+        }),
+        pendingActionExpirationEvent({
+          action: {
+            kind: "approval",
+            requestId,
+            instanceId: firstInstanceId,
+            reason: "disconnect",
+          },
+        }),
+        pendingActionEvent({
+          action: {
+            kind: "approval",
+            requestId,
+            requestIdProvenance: "payload-fingerprint",
+            instanceId: laterInstanceId,
+            description: "Connect Todoist?",
+            allowPermanent: false,
+          },
+        }),
+      ],
+    );
+    const approvals = turns
+      .flatMap((turn) => turn.parts)
+      .filter((part) => part.type === "approval");
+
+    expect(approvals).toEqual([
+      expect.objectContaining({
+        id: requestId,
+        instanceId: firstInstanceId,
+        status: "expired",
+      }),
+      expect.objectContaining({
+        id: requestId,
+        instanceId: laterInstanceId,
+        status: "pending",
+      }),
+    ]);
+  });
+
+  it("does not let a replayed expiration overwrite a resolved approval", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        pendingActionEvent({
+          action: {
+            kind: "approval",
+            requestId: "approval-resolved-before-expire",
+            description: "Connect Todoist?",
+            allowPermanent: false,
+          },
+        }),
+        pendingActionResolutionEvent({
+          action: {
+            kind: "approval",
+            requestId: "approval-resolved-before-expire",
+            command: "",
+            description: "",
+            allowPermanent: false,
+            choice: "once",
+          },
+        }),
+        pendingActionExpirationEvent({
+          action: {
+            kind: "approval",
+            requestId: "approval-resolved-before-expire",
+            reason: "disconnect",
+          },
+        }),
+      ],
+    );
+    expect(turns[0]?.parts).toContainEqual(
+      expect.objectContaining({
+        type: "approval",
+        id: "approval-resolved-before-expire",
+        status: "resolved",
+        choice: "once",
+      }),
+    );
   });
 
   it("preserves whitespace-only message deltas", () => {

@@ -18,6 +18,8 @@ import {
   reserveHermesSessionDispatch,
   resetHermesSessionDispatchForTests,
 } from "../lib/hermes-session-dispatch-mutex";
+import { classifyHermesEvent } from "../lib/hermes-control-plane/event-classifier";
+import { HermesGatewayError } from "../lib/hermes-gateway";
 import {
   rememberAppliedSessionModelSelection,
   stageSessionModelSelection,
@@ -1130,7 +1132,7 @@ describe("note chat session map", () => {
     );
   });
 
-  it("settles a current pre-ack failure after rejecting a stale success candidate", async () => {
+  it("does not treat a persisted tool-call tail as authority for a deferred completion", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     let acceptPrompt: (() => void) | undefined;
     const promptAccepted = new Promise<void>((resolve) => {
@@ -1156,6 +1158,86 @@ describe("note chat session map", () => {
     });
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
     await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let submission: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      submission = result.current.submit("Finish after the tool result.");
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-note-chat",
+        text: "Finish after the tool result.",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          event_id: "deferred-tool-tail-completion",
+          session_id: "runtime-note-chat",
+          payload: { status: "success" },
+        });
+      }
+    });
+    mocks.hermesBridgeSessionMessages.mockResolvedValue({
+      messages: [
+        {
+          id: "current-user",
+          role: "user",
+          content: "Finish after the tool result.",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "assistant-tool-call",
+          role: "assistant",
+          content: "I will inspect that now.",
+          tool_calls: [{ id: "read-1", name: "read_file" }],
+          timestamp: new Date(Date.now() + 500).toISOString(),
+        },
+        {
+          id: "tool-result",
+          role: "tool",
+          content: "Tool result",
+          tool_call_id: "read-1",
+          timestamp: new Date(Date.now() + 1_000).toISOString(),
+        },
+      ],
+    });
+
+    await act(async () => acceptPrompt?.());
+    await expect(submission).resolves.toBe(true);
+    await act(async () => Promise.resolve());
+    expect(result.current.working).toBe(true);
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.active_list", {});
+  });
+
+  it("settles a current pre-ack failure after rejecting a stale success candidate", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let acceptPrompt: (() => void) | undefined;
+    const promptAccepted = new Promise<void>((resolve) => {
+      acceptPrompt = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "prompt.submit") return promptAccepted;
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-note-chat",
+              session_key: "stored-note-chat",
+              status: "idle",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
 
     let submission: Promise<boolean> = Promise.resolve(false);
     act(() => {
@@ -1580,7 +1662,58 @@ describe("note chat session map", () => {
     });
   });
 
-  it("serializes a same-ID replacement resume through the stale interrupt", async () => {
+  it("does not let gateway recovery resume over a newer cross-surface Agent run", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let resumeCount = 0;
+    let finishRecovery: ((value: { session_id: string }) => void) | undefined;
+    const recovery = new Promise<{ session_id: string }>((resolve) => {
+      finishRecovery = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method !== "session.resume") return Promise.resolve({});
+      resumeCount += 1;
+      if (resumeCount === 1) return Promise.resolve({ session_id: "runtime-before-close" });
+      return recovery;
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Reconnect this Note Chat Agent run.")).toBe(true);
+    });
+
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+    await waitFor(() => expect(resumeCount).toBe(2));
+
+    mocks.agentRunMonitorSnapshot.mockReturnValue({
+      generation: 9,
+      runtimeSessionId: "runtime-workspace",
+      fullMode: false,
+      phase: "active",
+    });
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_STARTED_EVENT, {
+          detail: {
+            storedSessionId: "stored-note-chat",
+            runMonitorGeneration: 9,
+            runtimeSessionId: "runtime-workspace",
+            fullMode: false,
+          },
+        }),
+      );
+    });
+    await act(async () => finishRecovery?.({ session_id: "runtime-after-close" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.interrupt", {
+        session_id: "runtime-after-close",
+      }),
+    );
+  });
+
+  it("serializes a same runtime session id replacement through the stale interrupt", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     let resumeCount = 0;
     let finishStoppedRecovery: ((value: { session_id: string }) => void) | undefined;
@@ -2036,7 +2169,7 @@ describe("note chat session map", () => {
     expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalledWith("stored-note-chat");
   });
 
-  it("preserves a note-chat run and offscreen continuation across panel remount", async () => {
+  it("preserves a Note Chat Agent run and offscreen continuation across panel remount", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     const first = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
     await waitFor(() => expect(first.result.current.storedSessionId).toBe("stored-note-chat"));
@@ -3550,6 +3683,93 @@ describe("note chat session map", () => {
     expect(result.current.error).toBe("Generation two failed fast.");
   });
 
+  it("keeps legacy approval retirement sticky when a newer terminal arrives before run-start", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let rejectPrompt: ((error: Error) => void) | undefined;
+    const heldPrompt = new Promise<void>((_resolve, reject) => {
+      rejectPrompt = reject;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "prompt.submit") return heldPrompt;
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    let submission = Promise.resolve(true);
+    act(() => {
+      submission = result.current.submit("An older local prompt.");
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", expect.anything()),
+    );
+
+    const legacyApproval = {
+      type: "approval.request",
+      session_id: "runtime-note-chat",
+      payload: {
+        description: "Connect the calendar account?",
+        pattern_key: "mcp_elicitation",
+      },
+    };
+    const classifiedApproval = classifyHermesEvent(legacyApproval);
+    if (
+      classifiedApproval.kind !== "pending_action" ||
+      classifiedApproval.action.kind !== "approval"
+    ) {
+      throw new Error("Expected an approval request");
+    }
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler(legacyApproval);
+        handler({
+          type: "approval.expire",
+          session_id: "runtime-note-chat",
+          payload: {
+            request_id: classifiedApproval.action.requestId,
+            reason: "disconnect",
+          },
+        });
+      }
+    });
+
+    mocks.agentRunMonitorSnapshot.mockReturnValue({
+      generation: 9,
+      runtimeSessionId: "runtime-workspace",
+      fullMode: false,
+      phase: "terminal",
+    });
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            runMonitorGeneration: 9,
+            status: "failed",
+            summary: "The newer run failed before start delivery.",
+          },
+        }),
+      );
+    });
+    expect(result.current.working).toBe(false);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(legacyApproval);
+    });
+    expect(
+      result.current.turns
+        .flatMap((turn) => turn.parts)
+        .find(
+          (part) => part.type === "approval" && part.id === classifiedApproval.action.requestId,
+        ),
+    ).toMatchObject({ type: "approval", status: "expired" });
+
+    await act(async () => rejectPrompt?.(new Error("Older prompt failed.")));
+    await expect(submission).resolves.toBe(false);
+  });
+
   it.each([
     "resolve",
     "reject",
@@ -3785,7 +4005,7 @@ describe("note chat session map", () => {
     expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat", 1);
   });
 
-  it("does not let a replayed terminal settle a later note-chat run", async () => {
+  it("does not let a replayed terminal settle a later Note Chat Agent run", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
@@ -3821,7 +4041,7 @@ describe("note chat session map", () => {
     expect(result.current.working).toBe(false);
   });
 
-  it("does not let an untagged terminal replay settle a later note-chat run", async () => {
+  it("does not let an untagged terminal replay settle a later Note Chat Agent run", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
@@ -4213,6 +4433,162 @@ describe("note chat session map", () => {
     });
     expect(result.current.working).toBe(false);
     expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat", 1);
+  });
+
+  it("preserves a failed message completion without terminally settling the Note Chat Agent run", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      expect(await result.current.submit("Search the note, then summarize it.")).toBe(true);
+    });
+    const monitorInput = mocks.startAgentRunMonitoring.mock.calls[0]?.[0];
+    const dispatchedAtMs = monitorInput?.acceptedPrompt?.dispatchedAtMs;
+    expect(dispatchedAtMs).toEqual(expect.any(Number));
+    mocks.preserveAgentRunTerminalEvidence.mockClear();
+    mocks.markAgentRunSucceeded.mockClear();
+    mocks.cancelAgentRunMonitoring.mockClear();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-note-chat",
+          payload: {
+            message_id: "failed-after-tool",
+            status: "error",
+            text: "Context length exceeded after the final tool result.",
+          },
+        });
+      }
+    });
+
+    expect(mocks.preserveAgentRunTerminalEvidence).toHaveBeenCalledWith(
+      "stored-note-chat",
+      {
+        status: "failed",
+        summary: "Context length exceeded after the final tool result.",
+        notBeforeMs: dispatchedAtMs,
+      },
+      1,
+    );
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+    expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalled();
+    expect(result.current.working).toBe(true);
+  });
+
+  it("passes a pre-ack failed message completion into the accepted run monitor", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let acceptPrompt: (() => void) | undefined;
+    const promptAccepted = new Promise<void>((resolve) => {
+      acceptPrompt = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "prompt.submit") return promptAccepted;
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let submission: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      submission = result.current.submit("Fail before the acknowledgement arrives.");
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", expect.anything()),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-note-chat",
+          payload: {
+            message_id: "pre-ack-failure",
+            status: "error",
+            text: "The provider stopped before replying.",
+          },
+        });
+      }
+    });
+
+    expect(mocks.startAgentRunMonitoring).not.toHaveBeenCalled();
+    expect(mocks.preserveAgentRunTerminalEvidence).not.toHaveBeenCalled();
+    expect(result.current.working).toBe(true);
+
+    await act(async () => acceptPrompt?.());
+    await expect(submission).resolves.toBe(true);
+    expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storedSessionId: "stored-note-chat",
+        terminalEvidence: {
+          status: "failed",
+          summary: "The provider stopped before replying.",
+          notBeforeMs: expect.any(Number),
+        },
+      }),
+    );
+    const monitorInput = mocks.startAgentRunMonitoring.mock.calls[0]?.[0];
+    expect(monitorInput?.terminalEvidence?.notBeforeMs).toBe(
+      monitorInput?.acceptedPrompt?.dispatchedAtMs,
+    );
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+    expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalled();
+    expect(result.current.working).toBe(true);
+  });
+
+  it("does not carry a rejected prompt's failed completion into the next Note Chat Agent run", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let rejectPrompt: ((reason: Error) => void) | undefined;
+    const rejectedPrompt = new Promise<void>((_resolve, reject) => {
+      rejectPrompt = reject;
+    });
+    let rejectFirstPrompt = true;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "prompt.submit" && rejectFirstPrompt) return rejectedPrompt;
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let rejectedSubmission: Promise<boolean> = Promise.resolve(true);
+    act(() => {
+      rejectedSubmission = result.current.submit("Reject this failed run.");
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", expect.anything()),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-note-chat",
+          payload: {
+            message_id: "rejected-prompt-failure",
+            status: "error",
+            text: "This evidence belongs only to the rejected prompt.",
+          },
+        });
+      }
+    });
+    await act(async () => rejectPrompt?.(new Error("Prompt rejected")));
+    await expect(rejectedSubmission).resolves.toBe(false);
+    expect(mocks.startAgentRunMonitoring).not.toHaveBeenCalled();
+    expect(mocks.preserveAgentRunTerminalEvidence).not.toHaveBeenCalled();
+
+    rejectFirstPrompt = false;
+    await act(async () => {
+      expect(await result.current.submit("Start a clean replacement run.")).toBe(true);
+    });
+    expect(mocks.startAgentRunMonitoring).toHaveBeenCalledTimes(1);
+    expect(mocks.startAgentRunMonitoring.mock.calls[0]?.[0]?.terminalEvidence).toBeUndefined();
+    expect(result.current.working).toBe(true);
   });
 
   it("preserves a repeated pre-ack failure when the failed run persisted partial prose", async () => {
@@ -4699,7 +5075,7 @@ describe("note chat session map", () => {
     expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
   });
 
-  it("does not attribute an untagged terminal when another note-chat run exists", async () => {
+  it("does not attribute an untagged terminal when another Note Chat Agent run exists", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat-1");
     rememberNoteChatSession("note-2", "stored-note-chat-2");
     mocks.canAttributeUntaggedAgentRun.mockReturnValue(false);
@@ -4803,12 +5179,8 @@ describe("note chat session map", () => {
       noteSubmit = result.current.submit("Run after the workspace message.");
     });
 
-    await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
-        session_id: "stored-note-chat",
-        cols: 96,
-      }),
-    );
+    await waitFor(() => expect(result.current.working).toBe(true));
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
 
     releaseEarlierSend();
@@ -4834,6 +5206,379 @@ describe("note chat session map", () => {
         },
       ],
     ]);
+  });
+
+  it("does not resume a queued session before an external run-start supersedes it", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mocks.gatewayRequest.mockClear();
+
+    let releaseEarlierSend: () => void = () => undefined;
+    const earlierSend = reserveHermesSessionDispatch("stored-note-chat").run(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseEarlierSend = resolve;
+        }),
+    );
+    let submission: Promise<boolean> = Promise.resolve(true);
+    act(() => {
+      submission = result.current.submit("This send should be superseded.");
+    });
+    await waitFor(() => expect(result.current.working).toBe(true));
+
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_STARTED_EVENT, {
+          detail: {
+            storedSessionId: "stored-note-chat",
+            runMonitorGeneration: 9,
+            runtimeSessionId: "runtime-workspace",
+            fullMode: false,
+          },
+        }),
+      );
+    });
+    releaseEarlierSend();
+    await earlierSend;
+    await expect(submission).resolves.toBe(false);
+
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+  });
+
+  it("checks the external run monitor before rebinding a session transport", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mocks.gatewayRequest.mockClear();
+    // The external monitor can be installed after this continuity record was
+    // created but before its transport-rebinding resume reaches the gateway.
+    mocks.agentRunMonitorSnapshot.mockReturnValue({
+      generation: 9,
+      runtimeSessionId: "runtime-workspace",
+      fullMode: false,
+      phase: "active",
+    });
+
+    await act(async () => {
+      expect(await result.current.submit("Do not steal the active run.")).toBe(false);
+    });
+
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+    expect(result.current.error).toBe("June is still working on the previous message.");
+  });
+
+  it("submits with the cached runtime after its own monitor reports success", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Finish the first run.")).toBe(true);
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          event_id: "first-run-terminal",
+          session_id: "runtime-note-chat",
+          payload: { status: "success" },
+        });
+      }
+    });
+    await waitFor(() => expect(result.current.working).toBe(false));
+    mocks.agentRunMonitorSnapshot.mockReturnValue({
+      generation: 1,
+      runtimeSessionId: "runtime-note-chat",
+      fullMode: false,
+      phase: "succeeded",
+    });
+    mocks.gatewayRequest.mockClear();
+
+    await act(async () => {
+      expect(await result.current.submit("Start the next run.")).toBe(true);
+    });
+
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-note-chat",
+      text: "Start the next run.",
+    });
+  });
+
+  it("does not recover an external Agent run onto the NoteChat gateway", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Establish the NoteChat gateway.")).toBe(true);
+    });
+
+    mocks.agentRunMonitorSnapshot.mockReturnValue({
+      generation: 9,
+      runtimeSessionId: "runtime-workspace",
+      fullMode: false,
+      phase: "active",
+    });
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_STARTED_EVENT, {
+          detail: {
+            storedSessionId: "stored-note-chat",
+            runMonitorGeneration: 9,
+            runtimeSessionId: "runtime-workspace",
+            fullMode: false,
+          },
+        }),
+      );
+    });
+    mocks.gatewayRequest.mockClear();
+
+    act(() => {
+      for (const handler of mocks.gatewayCloseHandlers) handler();
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
+  });
+
+  it("starts legacy approval replay scope at the queued prompt dispatch boundary", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let releaseEarlierSend: () => void = () => undefined;
+    const earlierSend = reserveHermesSessionDispatch("stored-note-chat").run(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseEarlierSend = resolve;
+        }),
+    );
+    let submission: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      submission = result.current.submit("Ask after the earlier surface finishes.");
+    });
+    await waitFor(() => expect(result.current.working).toBe(true));
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+    const legacyApproval = {
+      type: "approval.request",
+      session_id: "runtime-note-chat",
+      payload: {
+        description: "Connect the calendar account?",
+        pattern_key: "mcp_elicitation",
+      },
+    };
+    const classifiedApproval = classifyHermesEvent(legacyApproval);
+    if (
+      classifiedApproval.kind !== "pending_action" ||
+      classifiedApproval.action.kind !== "approval"
+    ) {
+      throw new Error("Expected an approval request");
+    }
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler(legacyApproval);
+        handler({
+          type: "approval.expire",
+          session_id: "runtime-note-chat",
+          payload: {
+            request_id: classifiedApproval.action.requestId,
+            reason: "disconnect",
+          },
+        });
+      }
+    });
+
+    releaseEarlierSend();
+    await earlierSend;
+    await act(async () => expect(await submission).toBe(true));
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(legacyApproval);
+    });
+
+    expect(
+      result.current.turns
+        .flatMap((turn) => turn.parts)
+        .find(
+          (part) => part.type === "approval" && part.id === classifiedApproval.action.requestId,
+        ),
+    ).toMatchObject({ type: "approval", status: "pending" });
+  });
+
+  it("restores legacy approval replay scope when prompt dispatch is rejected", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "prompt.submit") return Promise.reject(new Error("session is busy"));
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const legacyApproval = {
+      type: "approval.request",
+      session_id: "stored-note-chat",
+      payload: {
+        description: "Connect the calendar account?",
+        pattern_key: "mcp_elicitation",
+      },
+    };
+    const classifiedApproval = classifyHermesEvent(legacyApproval);
+    if (
+      classifiedApproval.kind !== "pending_action" ||
+      classifiedApproval.action.kind !== "approval"
+    ) {
+      throw new Error("Expected an approval request");
+    }
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler(legacyApproval);
+        handler({
+          type: "approval.expire",
+          session_id: "stored-note-chat",
+          payload: {
+            request_id: classifiedApproval.action.requestId,
+            reason: "disconnect",
+          },
+        });
+      }
+    });
+
+    await act(async () => {
+      expect(await result.current.submit("This prompt will be rejected.")).toBe(false);
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(legacyApproval);
+    });
+
+    expect(
+      result.current.turns
+        .flatMap((turn) => turn.parts)
+        .find(
+          (part) => part.type === "approval" && part.id === classifiedApproval.action.requestId,
+        ),
+    ).toMatchObject({ type: "approval", status: "expired" });
+  });
+
+  it("rolls back legacy approval events admitted while prompt dispatch is pending", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Seed the preceding run.")).toBe(true);
+    });
+
+    const legacyApproval = {
+      type: "approval.request",
+      session_id: "stored-note-chat",
+      payload: {
+        description: "Connect the calendar account?",
+        pattern_key: "mcp_elicitation",
+      },
+    };
+    const classifiedApproval = classifyHermesEvent(legacyApproval);
+    if (
+      classifiedApproval.kind !== "pending_action" ||
+      classifiedApproval.action.kind !== "approval"
+    ) {
+      throw new Error("Expected an approval request");
+    }
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler(legacyApproval);
+        handler({
+          type: "approval.expire",
+          session_id: "stored-note-chat",
+          payload: {
+            request_id: classifiedApproval.action.requestId,
+            reason: "disconnect",
+          },
+        });
+      }
+    });
+    expect(
+      result.current.turns
+        .flatMap((turn) => turn.parts)
+        .some(
+          (part) =>
+            part.type === "approval" &&
+            part.id === classifiedApproval.action.requestId &&
+            part.status === "expired",
+        ),
+    ).toBe(true);
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_SETTLED_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            title: "Launch planning",
+            runMonitorGeneration: 1,
+            summary: "June finished.",
+          },
+        }),
+      );
+    });
+    await waitFor(() => expect(result.current.working).toBe(false));
+
+    let rejectPrompt: ((error: Error) => void) | undefined;
+    const heldPrompt = new Promise<void>((_resolve, reject) => {
+      rejectPrompt = reject;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "prompt.submit") return heldPrompt;
+      return Promise.resolve({});
+    });
+
+    let submission = Promise.resolve(true);
+    act(() => {
+      submission = result.current.submit("This prompt will be rejected after dispatch.");
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", expect.anything()),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({ ...legacyApproval, session_id: "runtime-note-chat" });
+      }
+    });
+    expect(
+      result.current.turns
+        .flatMap((turn) => turn.parts)
+        .some(
+          (part) =>
+            part.type === "approval" &&
+            part.id === classifiedApproval.action.requestId &&
+            part.status === "pending",
+        ),
+    ).toBe(false);
+
+    // The socket may close before the rejected RPC settles. Deferred events
+    // must already carry the stored id because close invalidates runtime aliases.
+    act(() => {
+      for (const handler of mocks.gatewayCloseHandlers) handler();
+    });
+
+    await act(async () => rejectPrompt?.(new HermesGatewayError("session is busy", 4009)));
+    await expect(submission).resolves.toBe(false);
+    const approvals = result.current.turns
+      .flatMap((turn) => turn.parts)
+      .filter(
+        (part) => part.type === "approval" && part.id === classifiedApproval.action.requestId,
+      );
+    expect(approvals).toContainEqual(expect.objectContaining({ status: "expired" }));
+    expect(approvals).not.toContainEqual(expect.objectContaining({ status: "pending" }));
   });
 
   it("snapshots persisted users after the dispatch lock before matching an identical prompt", async () => {
@@ -4923,7 +5668,7 @@ describe("note chat session map", () => {
     }
   });
 
-  it("finalizes a dispatched note run without clearing the new note's Stop fence", async () => {
+  it("finalizes a dispatched Note Chat Agent run without clearing the new note's Stop fence", async () => {
     rememberNoteChatSession("note-a", "stored-a");
     rememberNoteChatSession("note-b", "stored-b");
     let acceptPrompt: (() => void) | undefined;

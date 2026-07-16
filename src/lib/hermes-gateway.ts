@@ -14,6 +14,7 @@ export type HermesGatewayEventName =
   | "clarify.response"
   | "approval.request"
   | "approval.response"
+  | "approval.expire"
   | "subagent.start"
   | "subagent.tool"
   | "subagent.progress"

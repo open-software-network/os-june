@@ -1,4 +1,4 @@
-import type { JuneHermesEvent } from "./hermes-control-plane";
+import type { JuneHermesEvent, PendingHermesAction } from "./hermes-control-plane";
 
 export type HermesLiveStream = {
   revision: number;
@@ -42,11 +42,95 @@ export function createHermesLiveStream(): HermesLiveStream {
   };
 }
 
+/** June-owned identity for one approval request instance. Runtime ids remain
+ * globally stable; payload fingerprints are scoped to the accepted Agent run. */
+export function hermesApprovalInstanceId(
+  action: PendingHermesAction,
+  runStartRevision: number | undefined,
+): string {
+  if (action.kind === "approval" && action.instanceId) return action.instanceId;
+  if (
+    action.kind !== "approval" ||
+    action.requestIdProvenance !== "payload-fingerprint" ||
+    !Number.isSafeInteger(runStartRevision) ||
+    (runStartRevision ?? -1) < 0
+  ) {
+    return action.requestId;
+  }
+  return `${action.requestId}\u0000run:${runStartRevision}`;
+}
+
+/** Returns the currently actionable instance for one raw approval id in the
+ * semantic stream, respecting a payload fingerprint's Agent-run boundary. */
+export function currentHermesApprovalInstanceId(
+  stream: HermesLiveStream,
+  requestId: string,
+  runStartRevision: number | undefined,
+): string | undefined {
+  let pendingInstanceId: string | undefined;
+  for (const { event, revision } of stream.entries) {
+    if ((event.kind === "lifecycle" && event.flavor === "terminal") || event.kind === "error") {
+      pendingInstanceId = undefined;
+      continue;
+    }
+    if (
+      (event.kind !== "pending_action" &&
+        event.kind !== "pending_action_resolution" &&
+        event.kind !== "pending_action_expiration") ||
+      event.action.kind !== "approval" ||
+      event.action.requestId !== requestId
+    ) {
+      continue;
+    }
+    if (event.kind === "pending_action") {
+      if (
+        event.action.requestIdProvenance === "payload-fingerprint" &&
+        runStartRevision !== undefined &&
+        revision <= runStartRevision
+      ) {
+        continue;
+      }
+      pendingInstanceId = hermesApprovalInstanceId(event.action, runStartRevision);
+      continue;
+    }
+    if (!event.action.instanceId || event.action.instanceId === pendingInstanceId) {
+      pendingInstanceId = undefined;
+    }
+  }
+  return pendingInstanceId;
+}
+
 export function appendHermesLiveEvent(
   current: HermesLiveStream,
   event: JuneHermesEvent,
+  options: { runStartRevision?: number } = {},
 ): HermesLiveStream {
-  const deliveryKey = stableDeliveryKey(event);
+  if (
+    event.kind === "transcript" &&
+    event.messageId &&
+    current.transcriptByMessageId[event.messageId]?.complete
+  ) {
+    return current;
+  }
+  const scopedEvent = withApprovalInstance(current, event, options.runStartRevision);
+  if (
+    (scopedEvent.kind === "pending_action_resolution" ||
+      scopedEvent.kind === "pending_action_expiration") &&
+    scopedEvent.action.kind === "approval" &&
+    !scopedEvent.action.instanceId
+  ) {
+    // A retirement without a currently actionable instance is stale replay,
+    // not authority over a later request that happens to share its wire id.
+    return current;
+  }
+  // Approval request ids are logical identities across reconnects. Once the
+  // semantic stream has resolved, expired, or terminally closed one, reject a
+  // fresh-delivery replay before callers can project it into pending-action,
+  // activity, or status stores whose shorter bounded histories may be gone.
+  if (isRetiredApprovalRequestReplay(current, scopedEvent, options.runStartRevision))
+    return current;
+
+  const deliveryKey = stableDeliveryKey(scopedEvent);
   if (deliveryKey && deliveryLedgerHas(current.seenDeliveries, deliveryKey)) return current;
 
   const next: HermesLiveStream = {
@@ -62,12 +146,84 @@ export function appendHermesLiveEvent(
     persistedMessageIds: current.persistedMessageIds,
   };
 
-  if (event.kind === "transcript" && event.messageId) {
-    appendTranscriptEvent(next, event);
+  if (scopedEvent.kind === "transcript" && scopedEvent.messageId) {
+    appendTranscriptEvent(next, scopedEvent);
   } else {
-    appendSemanticEntry(next, event, next.revision);
+    appendSemanticEntry(next, scopedEvent, next.revision);
   }
   return next;
+}
+
+function withApprovalInstance(
+  stream: HermesLiveStream,
+  event: JuneHermesEvent,
+  runStartRevision: number | undefined,
+): JuneHermesEvent {
+  if (event.kind === "pending_action" && event.action.kind === "approval") {
+    const instanceId = hermesApprovalInstanceId(event.action, runStartRevision);
+    return event.action.instanceId === instanceId
+      ? event
+      : { ...event, action: { ...event.action, instanceId } };
+  }
+  if (event.kind === "pending_action_resolution" && event.action.kind === "approval") {
+    const instanceId =
+      event.action.instanceId ??
+      currentHermesApprovalInstanceId(stream, event.action.requestId, runStartRevision);
+    return !instanceId || event.action.instanceId === instanceId
+      ? event
+      : { ...event, action: { ...event.action, instanceId } };
+  }
+  if (event.kind === "pending_action_expiration") {
+    const instanceId =
+      event.action.instanceId ??
+      currentHermesApprovalInstanceId(stream, event.action.requestId, runStartRevision);
+    return !instanceId || event.action.instanceId === instanceId
+      ? event
+      : { ...event, action: { ...event.action, instanceId } };
+  }
+  return event;
+}
+
+function isRetiredApprovalRequestReplay(
+  stream: HermesLiveStream,
+  candidate: JuneHermesEvent,
+  runStartRevision: number | undefined,
+): boolean {
+  if (candidate.kind !== "pending_action" || candidate.action.kind !== "approval") return false;
+
+  const requestId = candidate.action.requestId;
+  // Old development/partial runtimes synthesize an approval identity from the
+  // sanitized payload, so two real Agent runs can legitimately produce the
+  // same id. Limit that compatibility identity to the current accepted run;
+  // patched runtime ids remain sticky across runs so delayed replays stay shut.
+  const revisionFloor =
+    candidate.action.requestIdProvenance === "payload-fingerprint" ? runStartRevision : undefined;
+  let state: "unseen" | "pending" | "retired" = "unseen";
+  for (const { event, revision } of stream.entries) {
+    if (revisionFloor !== undefined && revision <= revisionFloor) continue;
+    if (
+      state === "pending" &&
+      ((event.kind === "lifecycle" && event.flavor === "terminal") || event.kind === "error")
+    ) {
+      state = "retired";
+      continue;
+    }
+    if (
+      (event.kind !== "pending_action" &&
+        event.kind !== "pending_action_resolution" &&
+        event.kind !== "pending_action_expiration") ||
+      event.action.kind !== "approval" ||
+      event.action.requestId !== requestId
+    ) {
+      continue;
+    }
+    if (event.kind === "pending_action") {
+      if (state !== "retired") state = "pending";
+    } else {
+      state = "retired";
+    }
+  }
+  return state === "retired";
 }
 
 export function hermesLiveEvents(current: HermesLiveStream): JuneHermesEvent[] {
@@ -206,7 +362,14 @@ function appendOffsetTranscriptEvent(
       const pending = state.pendingByTextOffset[pendingOffset];
       if (pending?.kind !== "transcript") continue;
       const suffix = verifiedOffsetSuffix(virtualText, pending.delta ?? "", pendingOffset);
-      if (suffix === undefined) continue;
+      if (suffix === undefined) {
+        // This offset is already inside monotonic visible text, so a mismatch
+        // can never become valid later. Keeping its old revision would let it
+        // drag unrelated future text ahead of interleaved semantic activity.
+        delete state.pendingByTextOffset[pendingOffset];
+        delete state.pendingRevisionByTextOffset[pendingOffset];
+        continue;
+      }
 
       virtualText += suffix;
       if (suffix) {
@@ -225,11 +388,16 @@ function appendOffsetTranscriptEvent(
   }
 
   if (appendedText && appendedEvent && earliestRevision !== undefined) {
+    const pendingRevisions = Object.values(state.pendingRevisionByTextOffset);
+    const orderingRevision =
+      pendingRevisions.length > 0
+        ? Math.min(earliestRevision, ...pendingRevisions)
+        : earliestRevision;
     insertSemanticEntryAtRevision(
       stream,
       { ...appendedEvent, delta: appendedText },
       stream.revision,
-      earliestRevision,
+      orderingRevision,
     );
   }
 

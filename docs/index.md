@@ -34,6 +34,9 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0022](adr/0022-venice-private-first-model-routing.md) — service-managed text uses Venice private zero-retention first with Phala TEE fallback; existing `/v1` provider semantics stay compatible and pricing is fallback-safe
 - [adr/0023](adr/0023-attested-os-api-service-chain.md) - superseded by ADR-0024
 - [adr/0024](adr/0024-independent-product-verification.md) - June, Open Software API, and Chat publish independent verification evidence without cross-product release pinning
+- [adr/0025](adr/0025-targeted-hermes-approval-protocol.md) - MCP approvals use stable request identity, targeted resolution, bounded queues, and fail-closed retirement
+- [adr/0026](adr/0026-durable-note-transcription-jobs.md) - saved-audio Source spans use durable, fingerprinted, idempotent note-transcription jobs
+- [adr/0027](adr/0027-june-owned-project-memory-store.md) — memory entries live in June's SQLite (not the Hermes memory toolset), scoped by project, agent writes via the loopback proxy, project context by prompt injection
 
 ## Enforceable rules (spec/)
 
@@ -112,7 +115,7 @@ Per-repo config the engineering skills read before acting (see the
 
 - [hermes-upgrade-checklist.md](hermes-upgrade-checklist.md) — the gate for bumping the pinned runtime
 - [hermes-upstream-template.md](hermes-upstream-template.md) — per-bump pin-note template
-- [hermes-upstream-v2026.6.19.md](hermes-upstream-v2026.6.19.md) — current pin note (v2026.6.19)
+- [hermes-upstream-v2026.6.19.md](hermes-upstream-v2026.6.19.md) — current pin and local compatibility patch note (v2026.6.19, `june-approval-v1`)
 - [hermes-tui-debug.md](hermes-tui-debug.md) — dev-only raw-TUI debug fallback
 
 ## Release & ops runbooks
@@ -126,8 +129,14 @@ Per-repo config the engineering skills read before acting (see the
 ## QA
 
 - [qa/agent-driven-integration.md](qa/agent-driven-integration.md) — QA strategy (3 layers, skill-first agent-driven)
+- [qa/jun-334-note-transcription-latency.md](qa/jun-334-note-transcription-latency.md) — measured baseline and proof for note transcription latency
 - `qa/feature-user-stories.tsv` — story → code → test traceability matrix
 - `qa/agent-e2e-qa-runs/` — dated end-to-end QA run logs
+
+## Feature designs and implementation plans
+
+- [superpowers/specs/2026-07-15-faster-note-transcription-design.md](superpowers/specs/2026-07-15-faster-note-transcription-design.md) — approved JUN-334 design for reducing note transcription latency
+- [superpowers/plans/2026-07-15-faster-note-transcription.md](superpowers/plans/2026-07-15-faster-note-transcription.md) — executable JUN-334 implementation plan for the approved design
 
 ## Feature specs (Spec Kit)
 

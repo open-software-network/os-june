@@ -3901,11 +3901,14 @@ describe("AppSettings", () => {
     // Files is its own settings group on the Agent tab now (no inner tabs).
     await user.click(screen.getByRole("tab", { name: "Agent" }));
 
-    expect(await screen.findByText("Workspace")).toBeInTheDocument();
-    expect(screen.getByText("Memory")).toBeInTheDocument();
-    expect(screen.getByText("sample.pdf")).toBeInTheDocument();
-    expect(screen.getByText("USER.md")).toBeInTheDocument();
-    expect(screen.queryByText("Logs")).toBeNull();
+    const panel = document.getElementById("settings-panel-agent");
+    expect(panel).not.toBeNull();
+    if (!panel) return;
+    expect(await within(panel).findByText("Workspace")).toBeInTheDocument();
+    expect(within(panel).getByText("Memory")).toBeInTheDocument();
+    expect(within(panel).getByText("sample.pdf")).toBeInTheDocument();
+    expect(within(panel).getByText("USER.md")).toBeInTheDocument();
+    expect(within(panel).queryByText("Logs")).toBeNull();
   });
 
   it("shows a refreshable messaging state when platform loading hangs", async () => {

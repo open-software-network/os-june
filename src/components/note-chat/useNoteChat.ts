@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   buildHermesSessionChatTurns,
   displayedComposerUserMessageText,
+  hasFinalContentBearingAssistantReply,
   textFromHermesContent,
   type AgentChatTurn,
 } from "../../lib/agent-chat-runtime";
@@ -14,7 +15,11 @@ import { classifyHermesEvent } from "../../lib/hermes-control-plane/event-classi
 import { createHermesMethods } from "../../lib/hermes-control-plane/methods";
 import { isTerminalHermesEvent, type JuneHermesEvent } from "../../lib/hermes-control-plane/events";
 import { isHermesFeatureSupported } from "../../lib/hermes-control-plane/compatibility/support";
-import { HermesGatewayClient, isSessionBusyError } from "../../lib/hermes-gateway";
+import {
+  HermesGatewayClient,
+  HermesGatewayError,
+  isSessionBusyError,
+} from "../../lib/hermes-gateway";
 import {
   appendHermesLiveEvent,
   createHermesLiveStream,
@@ -46,6 +51,7 @@ import {
 import {
   holdHermesSessionDispatch,
   reserveHermesSessionDispatch,
+  withHermesSessionDispatchLock,
   type HermesSessionDispatchReservation,
 } from "../../lib/hermes-session-dispatch-mutex";
 import {
@@ -130,6 +136,11 @@ type NoteChatIdlessTranscriptOrigin = {
   activeSegmentIndex?: number;
 };
 
+type NoteChatRunTerminalEvidence = {
+  runGeneration: number;
+  evidence: AgentRunTerminalEvidence;
+};
+
 type NoteChatContinuityRecord = {
   liveStream: HermesLiveStream;
   messages: HermesSessionMessage[];
@@ -153,6 +164,9 @@ type NoteChatContinuityRecord = {
   terminalAuthorityCandidates: JuneHermesEvent[];
   terminalEffectsRunGeneration?: number;
   runGeneration: number;
+  runStartRevision: number;
+  pendingDispatchRunBoundary?: NoteChatDispatchRunBoundary;
+  pendingFailedCompletionEvidence?: NoteChatRunTerminalEvidence;
   runMonitorGeneration?: number;
   latestRunMonitorGeneration?: number;
   runtimeIntentEpoch: number;
@@ -161,6 +175,12 @@ type NoteChatContinuityRecord = {
   persistedThroughRevision: number;
   mountedViews: number;
   messagesHydrated: boolean;
+};
+
+type NoteChatDispatchRunBoundary = {
+  runGeneration: number;
+  previousRevision: number;
+  deferredApprovalEvents: JuneHermesEvent[];
 };
 
 type NoteChatPersistenceBoundary = {
@@ -194,6 +214,7 @@ type NoteChatContinuityUpdate = {
 const MAX_NOTE_CHAT_CONTINUITY_RECORDS = 20;
 const MAX_NOTE_CHAT_TERMINAL_EVENT_IDS = 64;
 const MAX_NOTE_CHAT_PRE_ACCEPTANCE_TERMINALS = 16;
+const MAX_NOTE_CHAT_PENDING_DISPATCH_APPROVAL_EVENTS = 64;
 const MAX_NOTE_CHAT_TERMINAL_AUTHORITY_CANDIDATES = 16;
 const NOTE_CHAT_DISPATCH_SNAPSHOT_TIMEOUT_MS = 250;
 const noteChatContinuityByStoredSessionId = new Map<string, NoteChatContinuityRecord>();
@@ -233,6 +254,7 @@ function createNoteChatContinuityRecord(): NoteChatContinuityRecord {
     deferredPreAcceptanceTerminals: [],
     terminalAuthorityCandidates: [],
     runGeneration: 0,
+    runStartRevision: 0,
     runtimeIntentEpoch: 0,
     nextRefreshSequence: 0,
     appliedRefreshSequence: 0,
@@ -274,6 +296,8 @@ function safelyCompactedNoteChatContinuity(record: NoteChatContinuityRecord) {
     record.unpersistedIdlessTranscriptOrigins.size === 0 &&
     !record.hasUnattributedIdlessTranscript &&
     record.deferredPreAcceptanceTerminals.length === 0 &&
+    record.pendingDispatchRunBoundary === undefined &&
+    record.pendingFailedCompletionEvidence === undefined &&
     record.currentRunPendingUserTurn === undefined &&
     record.terminalAuthorityCandidates.length === 0 &&
     record.terminalAuthorityRunGeneration === undefined
@@ -412,15 +436,162 @@ function bufferPreAcceptanceTerminal(record: NoteChatContinuityRecord, event: Ju
   return true;
 }
 
+function isApprovalLifecycleEvent(event: JuneHermesEvent) {
+  return (
+    (event.kind === "pending_action" ||
+      event.kind === "pending_action_resolution" ||
+      event.kind === "pending_action_expiration") &&
+    event.action.kind === "approval"
+  );
+}
+
+function bufferPendingDispatchApproval(record: NoteChatContinuityRecord, event: JuneHermesEvent) {
+  const boundary = record.pendingDispatchRunBoundary;
+  if (
+    !boundary ||
+    boundary.runGeneration !== record.runGeneration ||
+    !record.working ||
+    record.runAccepted
+  ) {
+    return false;
+  }
+  boundary.deferredApprovalEvents.push(event);
+  if (boundary.deferredApprovalEvents.length > MAX_NOTE_CHAT_PENDING_DISPATCH_APPROVAL_EVENTS) {
+    boundary.deferredApprovalEvents.splice(
+      0,
+      boundary.deferredApprovalEvents.length - MAX_NOTE_CHAT_PENDING_DISPATCH_APPROVAL_EVENTS,
+    );
+  }
+  return true;
+}
+
+function replayPendingDispatchApprovals(
+  record: NoteChatContinuityRecord,
+  boundary: NoteChatDispatchRunBoundary,
+) {
+  if (record.pendingDispatchRunBoundary !== boundary) return;
+  record.pendingDispatchRunBoundary = undefined;
+  const deferredApprovalEvents = boundary.deferredApprovalEvents;
+  boundary.deferredApprovalEvents = [];
+  for (const event of deferredApprovalEvents) {
+    dispatchNoteChatControlPlaneEvent(event);
+  }
+}
+
+function approvalLifecycleIdentity(event: JuneHermesEvent) {
+  if (
+    event.kind !== "pending_action" &&
+    event.kind !== "pending_action_resolution" &&
+    event.kind !== "pending_action_expiration"
+  ) {
+    return undefined;
+  }
+  if (event.action.kind !== "approval") return undefined;
+  return `${event.action.requestId}:${event.action.instanceId ?? ""}`;
+}
+
+function replayRetiredPendingDispatchApprovals(
+  record: NoteChatContinuityRecord,
+  boundary: NoteChatDispatchRunBoundary,
+) {
+  if (record.pendingDispatchRunBoundary !== boundary) return;
+  record.pendingDispatchRunBoundary = undefined;
+  const retiredApprovalIds = new Set(
+    boundary.deferredApprovalEvents
+      .filter((event) =>
+        isApprovalLifecycleEvent(event) ? event.kind !== "pending_action" : false,
+      )
+      .map(approvalLifecycleIdentity)
+      .filter((identity): identity is string => identity !== undefined),
+  );
+  const deferredApprovalEvents = boundary.deferredApprovalEvents;
+  boundary.deferredApprovalEvents = [];
+  for (const event of deferredApprovalEvents) {
+    const identity = approvalLifecycleIdentity(event);
+    if (identity && retiredApprovalIds.has(identity)) {
+      dispatchNoteChatControlPlaneEvent(event);
+    }
+  }
+}
+
+function discardPendingDispatchApprovals(record: NoteChatContinuityRecord) {
+  const boundary = record.pendingDispatchRunBoundary;
+  if (!boundary) return;
+  record.pendingDispatchRunBoundary = undefined;
+  boundary.deferredApprovalEvents = [];
+}
+
 function clearNoteChatTerminalAuthority(record: NoteChatContinuityRecord) {
   record.terminalAuthorityCandidates = [];
   record.terminalAuthorityRunGeneration = undefined;
+}
+
+function clearPendingFailedCompletionEvidence(
+  record: NoteChatContinuityRecord,
+  runGeneration?: number,
+) {
+  if (
+    runGeneration !== undefined &&
+    record.pendingFailedCompletionEvidence?.runGeneration !== runGeneration
+  ) {
+    return;
+  }
+  record.pendingFailedCompletionEvidence = undefined;
 }
 
 function noteChatOwnsCurrentRunMonitor(storedSessionId: string, record: NoteChatContinuityRecord) {
   return (
     record.runMonitorGeneration === undefined ||
     isAgentRunMonitorGenerationCurrent(storedSessionId, record.runMonitorGeneration)
+  );
+}
+
+function noteChatOwnsRecoverableRuntime(storedSessionId: string, record: NoteChatContinuityRecord) {
+  return (
+    record.working &&
+    record.runAccepted &&
+    !record.stopped &&
+    record.runMonitorGeneration !== undefined &&
+    (record.latestRunMonitorGeneration === undefined ||
+      record.latestRunMonitorGeneration === record.runMonitorGeneration) &&
+    isAgentRunMonitorGenerationCurrent(storedSessionId, record.runMonitorGeneration)
+  );
+}
+
+type NoteChatRuntimeRecoveryOwner = {
+  record: NoteChatContinuityRecord;
+  runMonitorGeneration: number;
+  runtimeIntentEpoch: number;
+};
+
+function noteChatRuntimeRecoveryOwner(
+  storedSessionId: string,
+  record: NoteChatContinuityRecord,
+): NoteChatRuntimeRecoveryOwner | undefined {
+  if (
+    noteChatContinuityByStoredSessionId.get(storedSessionId) !== record ||
+    !noteChatOwnsRecoverableRuntime(storedSessionId, record) ||
+    record.runMonitorGeneration === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    record,
+    runMonitorGeneration: record.runMonitorGeneration,
+    runtimeIntentEpoch: record.runtimeIntentEpoch,
+  };
+}
+
+function noteChatRuntimeRecoveryIsCurrent(
+  storedSessionId: string,
+  owner: NoteChatRuntimeRecoveryOwner,
+) {
+  const record = noteChatContinuityByStoredSessionId.get(storedSessionId);
+  return (
+    record === owner.record &&
+    record.runMonitorGeneration === owner.runMonitorGeneration &&
+    record.runtimeIntentEpoch === owner.runtimeIntentEpoch &&
+    noteChatOwnsRecoverableRuntime(storedSessionId, record)
   );
 }
 
@@ -476,7 +647,15 @@ function noteChatAcceptsTerminalMonitorEvent(
     ) {
       return false;
     }
+    const supersededBoundary = record.pendingDispatchRunBoundary;
     record.runGeneration += 1;
+    record.runStartRevision = record.liveStream.revision;
+    if (supersededBoundary) {
+      // The newer terminal resolves ownership while this socket's approval
+      // lifecycle was in flight. Preserve a completed retirement sequence at
+      // the newly authoritative boundary before the terminal settles it.
+      replayRetiredPendingDispatchApprovals(record, supersededBoundary);
+    }
     record.runAccepted = true;
   }
 
@@ -538,6 +717,34 @@ function noteChatTerminalEvidence(
   };
 }
 
+function failedNoteChatCompletionEvidence(
+  record: NoteChatContinuityRecord,
+  event: JuneHermesEvent,
+): AgentRunTerminalEvidence | undefined {
+  if (
+    event.kind !== "transcript" ||
+    !event.complete ||
+    !event.failed ||
+    !record.working ||
+    record.stopped ||
+    record.terminalHandled
+  ) {
+    return undefined;
+  }
+  const pendingUserTurn = record.currentRunPendingUserTurn;
+  const promptDispatchedAtMs = pendingUserTurn
+    ? record.pendingUserPersistenceBoundaries.get(pendingUserTurn.id)?.promptDispatchedAtMs
+    : undefined;
+  if (typeof promptDispatchedAtMs !== "number" || !Number.isFinite(promptDispatchedAtMs)) {
+    return undefined;
+  }
+  return {
+    status: "failed",
+    summary: event.delta?.trim() || "June hit a problem.",
+    notBeforeMs: promptDispatchedAtMs,
+  };
+}
+
 function ambiguousNoteChatTerminalEvidence(
   record: NoteChatContinuityRecord,
   pendingUserTurn: AgentChatTurn,
@@ -580,6 +787,9 @@ function routeNoteChatControlPlaneEvent(
   const storedSessionId = storedSessionIdForEvent(event);
   if (!storedSessionId) return undefined;
   const record = noteChatContinuityFor(storedSessionId);
+  // Keep deferred frames routable even if a gateway close invalidates the
+  // runtime-to-stored alias before prompt.submit rejects and drains them.
+  const storedEvent = { ...event, sessionId: storedSessionId } as JuneHermesEvent;
   if (!noteChatLocalGatewayOwnsLatest(record)) {
     return {
       storedSessionId,
@@ -619,13 +829,23 @@ function routeNoteChatControlPlaneEvent(
       stoppedByUser: record.stopped,
     };
   }
+  if (isApprovalLifecycleEvent(storedEvent) && bufferPendingDispatchApproval(record, storedEvent)) {
+    return {
+      storedSessionId,
+      record,
+      terminalAccepted: false,
+      transcriptCompletionAccepted: false,
+      stoppedByUser: record.stopped,
+    };
+  }
   const transcriptWasComplete =
     event.kind === "transcript" &&
     event.complete === true &&
     event.messageId !== undefined &&
     record.liveStream.transcriptByMessageId[event.messageId]?.complete === true;
-  const storedEvent = { ...event, sessionId: storedSessionId } as JuneHermesEvent;
-  const nextLiveStream = appendHermesLiveEvent(record.liveStream, storedEvent);
+  const nextLiveStream = appendHermesLiveEvent(record.liveStream, storedEvent, {
+    runStartRevision: record.runStartRevision,
+  });
   const deliveryAccepted = nextLiveStream !== record.liveStream;
   const terminalFingerprint = terminal ? noteChatTerminalFingerprint(event) : undefined;
   const ambiguousNoIdTerminal =
@@ -668,6 +888,26 @@ function routeNoteChatControlPlaneEvent(
     };
   }
   record.liveStream = nextLiveStream;
+  if (deliveryAccepted && !transcriptWasComplete) {
+    const failedCompletionEvidence = failedNoteChatCompletionEvidence(record, storedEvent);
+    if (failedCompletionEvidence) {
+      if (record.runAccepted && record.runMonitorGeneration !== undefined) {
+        preserveAgentRunTerminalEvidence(
+          storedSessionId,
+          failedCompletionEvidence,
+          record.runMonitorGeneration,
+        );
+      } else if (
+        record.pendingDispatchRunBoundary?.runGeneration === record.runGeneration &&
+        !record.runAccepted
+      ) {
+        record.pendingFailedCompletionEvidence = {
+          runGeneration: record.runGeneration,
+          evidence: failedCompletionEvidence,
+        };
+      }
+    }
+  }
   if (deliveryAccepted && event.kind === "transcript" && !event.messageId) {
     const origin = record.currentRunPendingUserTurn ?? record.lastAcceptedRunPendingUserTurn;
     if (origin) {
@@ -722,6 +962,7 @@ function routeNoteChatControlPlaneEvent(
     }
     if (settlesWorkingState) {
       record.currentRunPendingUserTurn = undefined;
+      clearPendingFailedCompletionEvidence(record, record.runGeneration);
       clearNoteChatTerminalAuthority(record);
     }
   }
@@ -927,6 +1168,7 @@ function confirmNoteChatRunAccepted({
 }) {
   if (record.runGeneration !== runGeneration || record.stopped || record.terminalHandled) {
     record.deferredPreAcceptanceTerminals = [];
+    clearPendingFailedCompletionEvidence(record, runGeneration);
     return false;
   }
   record.runAccepted = true;
@@ -977,7 +1219,7 @@ async function confirmDeferredNoteChatTerminalAuthority({
   );
   const hasCurrentRunAssistant =
     persistedUserIndex >= 0 &&
-    persistedMessages.slice(persistedUserIndex + 1).some((message) => message.role === "assistant");
+    hasFinalContentBearingAssistantReply(persistedMessages, persistedUserIndex);
   const hasCurrentRunPersistence =
     terminalStatus === "completed" ? hasCurrentRunAssistant : persistedUserIndex >= 0;
   if (
@@ -1257,6 +1499,7 @@ function compactSettledOffscreenNoteChatContinuity(record: NoteChatContinuityRec
   record.hasUnattributedIdlessTranscript = false;
   record.currentRunPendingUserTurn = undefined;
   record.lastAcceptedRunPendingUserTurn = undefined;
+  clearPendingFailedCompletionEvidence(record);
   clearNoteChatTerminalAuthority(record);
   record.persistedThroughRevision = 0;
 }
@@ -1376,7 +1619,10 @@ function observeNoteChatRunStarted(event: Event) {
     record.runtimeSessionId = detail.runtimeSessionId;
     noteChatStoredSessionIdByRuntimeSessionId.set(detail.runtimeSessionId, detail.storedSessionId);
   }
+  discardPendingDispatchApprovals(record);
+  clearPendingFailedCompletionEvidence(record);
   record.runGeneration += 1;
+  record.runStartRevision = record.liveStream.revision;
   record.working = true;
   record.terminalHandled = false;
   record.stopped = false;
@@ -1402,6 +1648,7 @@ function settleNoteChatContinuity(event: Event) {
   record.working = false;
   record.terminalHandled = true;
   record.currentRunPendingUserTurn = undefined;
+  clearPendingFailedCompletionEvidence(record);
   clearNoteChatTerminalAuthority(record);
   touchNoteChatContinuity(storedSessionId);
   compactSettledOffscreenNoteChatContinuity(record);
@@ -1429,6 +1676,7 @@ function settleNoteChatContinuityFromStatus(event: Event) {
   record.working = false;
   record.terminalHandled = true;
   record.currentRunPendingUserTurn = undefined;
+  clearPendingFailedCompletionEvidence(record);
   clearNoteChatTerminalAuthority(record);
   touchNoteChatContinuity(detail.sessionId);
   compactSettledOffscreenNoteChatContinuity(record);
@@ -1528,8 +1776,10 @@ async function connectGateway(startIfNeeded: boolean): Promise<HermesGatewayClie
 function resumeNoteChatRuntimeSession(
   gateway: HermesGatewayClient,
   storedSessionId: string,
+  canOwnRuntime?: () => boolean,
 ): Promise<string | undefined> {
   const record = noteChatContinuityFor(storedSessionId);
+  if (canOwnRuntime && !canOwnRuntime()) return Promise.resolve(undefined);
   if (record.runtimeSessionId) return Promise.resolve(record.runtimeSessionId);
   const existing = runtimeResumeByStoredSessionId.get(storedSessionId);
   const intentEpoch = record.runtimeIntentEpoch;
@@ -1537,7 +1787,12 @@ function resumeNoteChatRuntimeSession(
 
   const predecessor = existing?.promise.catch(() => undefined);
   const resume = () => {
-    if (record.runtimeIntentEpoch !== intentEpoch || !record.working || record.stopped) {
+    if (
+      record.runtimeIntentEpoch !== intentEpoch ||
+      !record.working ||
+      record.stopped ||
+      (canOwnRuntime && !canOwnRuntime())
+    ) {
       return Promise.resolve(undefined);
     }
     if (record.runtimeSessionId) return Promise.resolve(record.runtimeSessionId);
@@ -1554,12 +1809,25 @@ function resumeNoteChatRuntimeSession(
         // A response from a socket that closed while session.resume was in flight
         // cannot own the runtime alias used by the replacement gateway.
         if (sharedGateway !== gateway || gatewayEpoch !== resumeEpoch) return undefined;
-        if (record.runtimeIntentEpoch !== intentEpoch || !record.working || record.stopped) {
-          try {
-            await gateway.request("session.interrupt", { session_id: runtimeSessionId });
-          } catch {
-            // A superseding Submit or Stop remains authoritative even when the
-            // best-effort interrupt fails.
+        if (
+          record.runtimeIntentEpoch !== intentEpoch ||
+          !record.working ||
+          record.stopped ||
+          (canOwnRuntime && !canOwnRuntime())
+        ) {
+          const currentMonitor = agentRunMonitorSnapshot(storedSessionId);
+          const currentMonitorOwnsRuntime =
+            currentMonitor !== undefined &&
+            currentMonitor.phase !== "terminal" &&
+            currentMonitor.runtimeSessionId === runtimeSessionId &&
+            isAgentRunMonitorGenerationCurrent(storedSessionId, currentMonitor.generation);
+          if (!currentMonitorOwnsRuntime) {
+            try {
+              await gateway.request("session.interrupt", { session_id: runtimeSessionId });
+            } catch {
+              // A newer Agent run, superseding Submit, or Stop remains
+              // authoritative even when the best-effort interrupt fails.
+            }
           }
           return undefined;
         }
@@ -1576,25 +1844,39 @@ function resumeNoteChatRuntimeSession(
   return attempt;
 }
 
+function recoverNoteChatRuntimeSession(
+  gateway: HermesGatewayClient,
+  storedSessionId: string,
+  owner: NoteChatRuntimeRecoveryOwner,
+) {
+  return withHermesSessionDispatchLock(storedSessionId, async () => {
+    if (!noteChatRuntimeRecoveryIsCurrent(storedSessionId, owner)) return undefined;
+    return resumeNoteChatRuntimeSession(gateway, storedSessionId, () =>
+      noteChatRuntimeRecoveryIsCurrent(storedSessionId, owner),
+    );
+  });
+}
+
 function recoverWorkingNoteChatRuntimeSessions(): Promise<void> {
   if (gatewayRecovery) {
     gatewayRecoveryRetryRequested = true;
     return gatewayRecovery;
   }
-  const storedSessionIds = [...noteChatContinuityByStoredSessionId.entries()]
-    .filter(([, record]) => record.working && !record.stopped)
-    .map(([storedSessionId]) => storedSessionId);
-  if (storedSessionIds.length === 0) return Promise.resolve();
+  const recoveryOwners = [...noteChatContinuityByStoredSessionId.entries()].flatMap(
+    ([storedSessionId, record]) => {
+      const owner = noteChatRuntimeRecoveryOwner(storedSessionId, record);
+      return owner ? [{ storedSessionId, owner }] : [];
+    },
+  );
+  if (recoveryOwners.length === 0) return Promise.resolve();
 
   const recovery = (async () => {
     try {
       const gateway = await connectGateway(true);
       if (!gateway) return;
       await Promise.allSettled(
-        storedSessionIds.map(async (storedSessionId) => {
-          const record = noteChatContinuityByStoredSessionId.get(storedSessionId);
-          if (!record?.working || record.stopped) return;
-          await resumeNoteChatRuntimeSession(gateway, storedSessionId);
+        recoveryOwners.map(async ({ storedSessionId, owner }) => {
+          await recoverNoteChatRuntimeSession(gateway, storedSessionId, owner);
         }),
       );
     } catch {
@@ -2035,11 +2317,16 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         runtimeSessionIdRef.current = undefined;
         const currentStoredSessionId = storedSessionIdRef.current;
         const recoveryRecord = continuityRecordRef.current;
+        const recoveryOwner =
+          currentStoredSessionId && recoveryRecord
+            ? noteChatRuntimeRecoveryOwner(currentStoredSessionId, recoveryRecord)
+            : undefined;
         if (
           !workingRef.current ||
           !noteId ||
           !currentStoredSessionId ||
           !recoveryRecord ||
+          !recoveryOwner ||
           recoveringGatewayRef.current
         ) {
           return;
@@ -2051,12 +2338,14 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           try {
             const gateway = await connectGateway(true);
             if (!gateway) return;
-            const runtimeSessionId = await resumeNoteChatRuntimeSession(
+            const runtimeSessionId = await recoverNoteChatRuntimeSession(
               gateway,
               currentStoredSessionId,
+              recoveryOwner,
             );
             if (
               runtimeSessionId &&
+              noteChatRuntimeRecoveryIsCurrent(currentStoredSessionId, recoveryOwner) &&
               noteGenerationRef.current === noteGeneration &&
               storedSessionIdRef.current === currentStoredSessionId
             ) {
@@ -2121,7 +2410,9 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         let next = route?.record.liveStream;
         if (!next && record && currentStoredSessionId) {
           const storedEvent = { ...event, sessionId: currentStoredSessionId } as JuneHermesEvent;
-          next = appendHermesLiveEvent(record.liveStream, storedEvent);
+          next = appendHermesLiveEvent(record.liveStream, storedEvent, {
+            runStartRevision: record.runStartRevision,
+          });
           record.liveStream = next;
         }
         if (record) continuityRecordRef.current = record;
@@ -2158,6 +2449,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           record.terminalHandled = true;
           record.working = false;
           record.currentRunPendingUserTurn = undefined;
+          clearPendingFailedCompletionEvidence(record);
           clearNoteChatTerminalAuthority(record);
           if (ownsTerminalEffects) {
             record.terminalEffectsRunGeneration = record.runGeneration;
@@ -2239,6 +2531,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       record.working = false;
       record.terminalHandled = true;
       record.currentRunPendingUserTurn = undefined;
+      clearPendingFailedCompletionEvidence(record);
       clearNoteChatTerminalAuthority(record);
       stoppedRunRef.current = false;
       stoppedRuntimeSessionIdRef.current = undefined;
@@ -2273,6 +2566,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       record.working = false;
       record.terminalHandled = true;
       record.currentRunPendingUserTurn = undefined;
+      clearPendingFailedCompletionEvidence(record);
       clearNoteChatTerminalAuthority(record);
       stoppedRunRef.current = false;
       stoppedRuntimeSessionIdRef.current = undefined;
@@ -2340,6 +2634,8 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       runRecord = startingStoredSessionId
         ? noteChatContinuityFor(startingStoredSessionId)
         : provisionalNoteChatContinuityFor(noteId);
+      const previousRunMonitorGeneration = runRecord.runMonitorGeneration;
+      const previouslyStoppedRunMonitorGeneration = runRecord.stoppedRunMonitorGeneration;
       let runStoredSessionId = startingStoredSessionId;
       submissionRunGeneration = (runRecord?.runGeneration ?? runGenerationRef.current) + 1;
       runGenerationRef.current = submissionRunGeneration;
@@ -2360,6 +2656,13 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       let capturedAppliedHermesModelId = appliedHermesModelIdRef.current;
       let dispatchReservation: HermesSessionDispatchReservation | undefined =
         startingStoredSessionId ? reserveHermesSessionDispatch(startingStoredSessionId) : undefined;
+      let dispatchRunBoundary:
+        | {
+            record: NoteChatContinuityRecord;
+            boundary: NoteChatDispatchRunBoundary;
+          }
+        | undefined;
+      let promptAcknowledged = false;
       const visibleQuestion = question || "Use the attached file(s).";
       const base = isFirstMessage
         ? `${noteReferenceToken({ id: noteId, title: noteTitle })} ${visibleQuestion}`
@@ -2397,6 +2700,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         runRecord.runMonitorGeneration = undefined;
         runRecord.deferredPreAcceptanceTerminals = [];
         runRecord.currentRunPendingUserTurn = optimistic;
+        clearPendingFailedCompletionEvidence(runRecord);
         clearNoteChatTerminalAuthority(runRecord);
         runRecord.stopped = false;
         runRecord.stoppedRuntimeSessionId = undefined;
@@ -2465,6 +2769,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           runRecord.runMonitorGeneration = undefined;
           runRecord.deferredPreAcceptanceTerminals = [];
           runRecord.currentRunPendingUserTurn = optimistic;
+          clearPendingFailedCompletionEvidence(runRecord);
           clearNoteChatTerminalAuthority(runRecord);
           runRecord.stopped = false;
           runRecord.stoppedRuntimeSessionId = undefined;
@@ -2499,27 +2804,46 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             stageSessionModelSelection(activeStoredSessionId, latestSelection);
           }
         }
-        if (!runtimeSessionId) {
-          runtimeSessionId = await resumeNoteChatRuntimeSession(gateway, activeStoredSessionId);
-          throwIfSubmissionCancelled();
-          if (!runtimeSessionId) throw new Error("Hermes did not resume the session.");
-        }
-        registerNoteChatRuntimeSession(activeStoredSessionId, runtimeSessionId);
         const activeRecord = runRecord ?? noteChatContinuityFor(activeStoredSessionId);
-        notifyNoteChatContinuity({
-          noteId,
-          storedSessionId: activeStoredSessionId,
-          record: activeRecord,
-        });
-        if (submissionIsCurrent()) {
-          runtimeSessionIdRef.current = runtimeSessionId;
-          continuityRecordRef.current = activeRecord;
-        }
         const activeDispatchReservation =
           dispatchReservation ?? reserveHermesSessionDispatch(activeStoredSessionId);
         dispatchReservation = activeDispatchReservation;
         await activeDispatchReservation.run(async () => {
           throwIfSubmissionCancelled();
+          // session.resume rebinds Hermes' single live transport for a stored
+          // session. Do it only while holding the same dispatch lock as
+          // prompt.submit, and refuse to rebind when another surface installed
+          // an active app-lifetime monitor while this send was queued.
+          const currentMonitor = agentRunMonitorSnapshot(activeStoredSessionId);
+          if (
+            currentMonitor &&
+            currentMonitor.phase !== "terminal" &&
+            !(
+              (currentMonitor.phase === "stopping" &&
+                currentMonitor.generation === previouslyStoppedRunMonitorGeneration) ||
+              (currentMonitor.phase === "succeeded" &&
+                currentMonitor.generation === previousRunMonitorGeneration)
+            ) &&
+            currentMonitor.generation !== activeRecord.runMonitorGeneration
+          ) {
+            throw new HermesGatewayError("The session is already running a newer Agent run.", 4009);
+          }
+          if (!runtimeSessionId) {
+            runtimeSessionId = await resumeNoteChatRuntimeSession(gateway, activeStoredSessionId);
+            throwIfSubmissionCancelled();
+            if (!runtimeSessionId) throw new Error("Hermes did not resume the session.");
+          }
+          const activeRuntimeSessionId = runtimeSessionId;
+          registerNoteChatRuntimeSession(activeStoredSessionId, activeRuntimeSessionId);
+          notifyNoteChatContinuity({
+            noteId,
+            storedSessionId: activeStoredSessionId,
+            record: activeRecord,
+          });
+          if (submissionIsCurrent()) {
+            runtimeSessionIdRef.current = activeRuntimeSessionId;
+            continuityRecordRef.current = activeRecord;
+          }
           // Re-read under the shared lock. AgentWorkspace can dispatch the same
           // session from its still-mounted surface, so its accepted send may
           // have changed the live model after this NoteChat send was captured.
@@ -2543,7 +2867,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             await applySessionModelWhenIdle(() =>
               createHermesMethods(gateway).switchActiveSessionModel({
                 mode: "sandboxed",
-                sessionId: runtimeSessionId,
+                sessionId: activeRuntimeSessionId,
                 model: modelToApply,
               }),
             );
@@ -2580,7 +2904,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             };
             for (const image of pendingImages) {
               throwIfSubmissionCancelled();
-              const result = await attachImageToSession(image, runtimeSessionId, deps);
+              const result = await attachImageToSession(image, activeRuntimeSessionId, deps);
               throwIfSubmissionCancelled();
               if (result.state.status === "failed") {
                 throw new Error(result.error ?? `Could not attach ${image.displayName}.`);
@@ -2596,7 +2920,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           try {
             // This runs under the shared session dispatch lock, after every
             // earlier surface's prompt.submit has returned. Refresh the user
-            // baseline here so an identical turn persisted during the lock
+            // baseline here so an identical user message persisted during the lock
             // wait cannot authorize this run's assistant fallback.
             const persistedBeforeDispatch = sessionMessagesFrom(
               await withTimeout(
@@ -2640,10 +2964,23 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             ...dispatchPersistenceBoundary,
             persistedUserIds: new Set(dispatchPersistenceBoundary.persistedUserIds),
           };
+          // The run begins at dispatch, not when Send is first clicked. A
+          // shared-session send can wait behind another surface, and events
+          // observed during that wait still belong to the preceding run.
+          const boundary: NoteChatDispatchRunBoundary = {
+            runGeneration: submissionRunGeneration,
+            previousRevision: activeRecord.runStartRevision,
+            deferredApprovalEvents: [],
+          };
+          dispatchRunBoundary = { record: activeRecord, boundary };
+          activeRecord.pendingDispatchRunBoundary = boundary;
+          activeRecord.runStartRevision = activeRecord.liveStream.revision;
           await gateway.request("prompt.submit", {
-            session_id: runtimeSessionId,
+            session_id: activeRuntimeSessionId,
             text: content,
           });
+          promptAcknowledged = true;
+          replayPendingDispatchApprovals(activeRecord, boundary);
           // A different surface can install a newer run while this RPC is in
           // flight. Once the request was dispatched, a note/view switch alone
           // must not discard its acknowledgement: finish the originating
@@ -2653,23 +2990,27 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             throw new NoteChatSubmissionCancelledError();
           }
           const acceptedRecord = runRecord ?? noteChatContinuityFor(activeStoredSessionId);
-          const initialTerminalEvidence = deferredNoteChatTerminalEvidence(
-            acceptedRecord,
-            optimistic,
-          );
+          const pendingFailedCompletionEvidence =
+            acceptedRecord.pendingFailedCompletionEvidence?.runGeneration ===
+            submissionRunGeneration
+              ? acceptedRecord.pendingFailedCompletionEvidence.evidence
+              : undefined;
+          const initialTerminalEvidence =
+            pendingFailedCompletionEvidence ??
+            deferredNoteChatTerminalEvidence(acceptedRecord, optimistic);
           if (
             confirmNoteChatRunAccepted({
               gateway,
               pendingUserTurn: optimistic,
               record: acceptedRecord,
               runGeneration: submissionRunGeneration,
-              runtimeSessionId,
+              runtimeSessionId: activeRuntimeSessionId,
               storedSessionId: activeStoredSessionId,
             })
           ) {
             const runMonitorGeneration = startAgentRunMonitoring({
               storedSessionId: activeStoredSessionId,
-              runtimeSessionId,
+              runtimeSessionId: activeRuntimeSessionId,
               title: noteTitle.trim() || "Note chat",
               fullMode: false,
               settlementHeld: false,
@@ -2689,6 +3030,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
               acceptedRecord.latestRunMonitorGeneration ?? 0,
               runMonitorGeneration,
             );
+            clearPendingFailedCompletionEvidence(acceptedRecord, submissionRunGeneration);
           }
           if (!acceptedRecord.stopped) {
             if (submissionIsCurrent()) {
@@ -2704,6 +3046,17 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         const cancelled = err instanceof NoteChatSubmissionCancelledError;
         const ownsRunLifecycle = submissionOwnsRunRecord();
         dispatchReservation?.cancel();
+        if (dispatchRunBoundary && !promptAcknowledged) {
+          const { record, boundary } = dispatchRunBoundary;
+          if (record.pendingDispatchRunBoundary === boundary) {
+            if (ownsRunLifecycle) {
+              record.runStartRevision = boundary.previousRevision;
+              replayPendingDispatchApprovals(record, boundary);
+            } else {
+              discardPendingDispatchApprovals(record);
+            }
+          }
+        }
         if (runRecord) {
           runRecord.pendingUserTurns = runRecord.pendingUserTurns.filter(
             (turn) => turn !== optimistic,
@@ -2715,6 +3068,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             runRecord.runAccepted = false;
             runRecord.deferredPreAcceptanceTerminals = [];
             runRecord.currentRunPendingUserTurn = undefined;
+            clearPendingFailedCompletionEvidence(runRecord, submissionRunGeneration);
             clearNoteChatTerminalAuthority(runRecord);
           }
           notifyNoteChatContinuity({
@@ -2815,6 +3169,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       record.runtimeSessionId = undefined;
       record.terminalHandled = true;
       record.currentRunPendingUserTurn = undefined;
+      clearPendingFailedCompletionEvidence(record);
       clearNoteChatTerminalAuthority(record);
       record.stoppedRuntimeSessionId = runtimeSessionId;
       if (noteId) notifyNoteChatContinuity({ noteId, storedSessionId, record });

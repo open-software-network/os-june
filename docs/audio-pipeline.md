@@ -21,12 +21,14 @@ preview).
    `*.partial.wav` → `*.wav` (the durability commit), stops the helper, cancels
    preview.
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
-   the batch pipeline: `drop_silent_system_sources` → `turns::detect_turns` →
-   `coalesce_turns_for_transcription` → `write_turn_wav` (seek-extract each turn)
-   → `normalize_wav_for_transcription` → `split_wav_for_transcription` (≤8-min
-   chunks) → `transcribe_saved_audio` (POST `/v1/notes/transcribe`, provider
-   routing is server-side) → persist per-source transcript rows → **note
-   generation**.
+   the batch pipeline for microphone-only and dual-Source recordings:
+   `drop_silent_system_sources` → dual-Source `turns::detect_turns` (or one
+   authoritative full-Source microphone job) → reconcile durable fingerprinted
+   note-transcription jobs → bounded Turn preparation → one
+   in-flight provider request per Source → atomically persist each successful
+   job and transcript row → **note generation**. Full-Source fallbacks are
+   prepared lazily when a Source is materially incomplete and atomically
+   replace that Source's partial rows only after the replacement succeeds.
 
 ## Key files
 
@@ -53,6 +55,15 @@ The helper is controlled and observed out-of-process (see ADR-0004):
   `SIGTERM` / `SIGKILL` = stop. Launched via `/usr/bin/open -n`.
 - **Observation:** a `status.json` file with events `ready` / `level` / `error`
   / `stopped` (fields include `level` / `maxLevel` / `message`).
+- **Routing:** a private stereo process tap is bound to the current default
+  system output device, so it records the same device stream the user hears.
+  The private aggregate contains the tap only; adding a physical output
+  subdevice can create an output-only IO cycle with no tap callbacks. The helper
+  performs at most one full-graph rebuild for missing callbacks or zero-filled
+  buffers. If callbacks still stall or remain zero-filled after that rebuild,
+  the helper reports the system source unavailable instead of silently writing
+  a meeting-length silent WAV or entering a restart loop. Ordinary sustained
+  silence remains subject to the saved-audio speech gate below.
 - **CLI:** `--output` / `--status` / `--pid` / `--log`.
 - **Timeouts:** ~30s readiness, ~75s probe. **macOS 14.2+** required for
   CoreAudio process taps; older systems get microphone-only.
@@ -67,6 +78,8 @@ Energy-based, per-source, **no diarization**:
 - Hysteresis: `start_active_ms` / `end_silence_ms` / `min_turn_ms` /
   `merge_gap_ms`, with separate microphone vs system config tables
   (`config_for_source`).
+- Pre-provider silence checks require at least 180 ms of consecutive activity;
+  one loud device-start window cannot certify an otherwise silent Source.
 - Turns are ordered purely by `start_ms` / `turn_index`.
 - **Speaker-echo trimming:** because the two sources are not captured through a
   single mixer, a remote participant's voice bleeding from the speakers into the
@@ -78,8 +91,8 @@ Energy-based, per-source, **no diarization**:
 
 Before transcription each turn WAV is downmixed to **mono**, resampled to
 **16 kHz**, and gain-adjusted toward a target peak (bounded, with a
-reuse-original shortcut when already loud enough), then split into **≤8-minute**
-chunks with rolling context.
+reuse-original shortcut when already loud enough), then split into
+**≤30-second** chunks with rolling context.
 
 ## Recovery
 
@@ -87,4 +100,6 @@ chunks with rolling context.
 The governing rule: **bytes on disk win over DB status** — the mic WAV is
 flushed periodically and the finalized filename only appears after a clean
 finalize, so a crash leaves replayable audio that recovery can finish
-processing.
+processing. Durable note-transcription jobs record exact Source spans and
+attempt state; interrupted `running` jobs return to `pending`, and explicit
+Retry resumes only jobs whose fingerprint has not already succeeded.

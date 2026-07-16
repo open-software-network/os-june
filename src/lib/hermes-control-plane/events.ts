@@ -49,6 +49,12 @@ export type PendingHermesAction =
   | {
       kind: "approval";
       requestId: string;
+      /** Present only when June synthesized the id from a sanitized legacy
+       * payload. Runtime-provided ids remain globally replay-sticky. */
+      requestIdProvenance?: "payload-fingerprint";
+      /** June-owned identity for one actionable approval instance. The raw
+       * request id is still used on the Hermes response wire. */
+      instanceId?: string;
       toolName?: string;
       command?: string;
       description?: string;
@@ -86,6 +92,7 @@ export type PendingHermesActionResolution =
   | {
       kind: "approval";
       requestId: string;
+      instanceId?: string;
       command: string;
       description: string;
       allowPermanent: boolean;
@@ -106,6 +113,16 @@ export type PendingHermesActionResolution =
        * only metadata, never the value the user entered. */
       redacted: true;
     };
+
+/** A pending approval that Hermes retired without a user decision. Expiration
+ * is deliberately distinct from denial: neither outcome approves anything,
+ * but only denial is an explicit user response. */
+export type PendingHermesActionExpiration = {
+  kind: "approval";
+  requestId: string;
+  instanceId?: string;
+  reason: "timeout" | "disconnect" | "overflow" | "stale" | "unconfirmed" | "unknown";
+};
 
 /** The lifecycle phase a background subagent is reporting. */
 export type BackgroundHermesPhase =
@@ -215,6 +232,11 @@ export type JuneHermesEvent =
       kind: "pending_action_resolution";
       sessionId: string;
       action: PendingHermesActionResolution;
+    })
+  | (JuneHermesEventBase & {
+      kind: "pending_action_expiration";
+      sessionId: string;
+      action: PendingHermesActionExpiration;
     })
   | (JuneHermesEventBase & {
       kind: "background_activity";

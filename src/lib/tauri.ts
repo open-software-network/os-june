@@ -24,8 +24,23 @@ export type FolderDto = {
   id: string;
   name: string;
   description?: string;
+  instructions?: string;
+  memoryDisabled: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+export type MemoryDto = {
+  id: string;
+  folderId?: string;
+  content: string;
+  source: "agent" | "user";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MemorySettingsDto = {
+  enabled: boolean;
 };
 
 /** Which project (folder) an agent session is filed under. Sessions live in
@@ -56,6 +71,8 @@ export type NoteListItemDto = {
 export type TranscriptDto = {
   id: string;
   text: string;
+  recordingSessionId?: string;
+  spanId?: string;
   sourceMode?: RecordingSourceMode;
   source?: RecordingSource;
   startMs?: number;
@@ -388,6 +405,8 @@ export type NoteDto = NoteListItemDto & {
   audioSources?: AudioArtifactDto[];
   activeTab?: "notes" | "transcription";
   lastError?: string;
+  /** Recording whose saved-audio artifacts should be used by Retry. */
+  retryRecordingSessionId?: string;
   /** Recordings queued behind the one currently processing (0 when none). */
   queuedRecordings?: number;
 };
@@ -602,6 +621,8 @@ export type HermesMessagingPlatformsResponse = {
   platforms: HermesMessagingPlatformInfo[];
 };
 
+export type HermesTimestamp = string | number;
+
 export type HermesSessionInfo = {
   id: string;
   active?: boolean;
@@ -616,17 +637,17 @@ export type HermesSessionInfo = {
   user_id?: string;
   model?: string;
   title?: string;
-  started_at?: string;
-  startedAt?: string;
-  ended_at?: string | null;
-  endedAt?: string | null;
+  started_at?: HermesTimestamp;
+  startedAt?: HermesTimestamp;
+  ended_at?: HermesTimestamp | null;
+  endedAt?: HermesTimestamp | null;
   end_reason?: string | null;
   message_count?: number;
   tool_call_count?: number;
   parent_session_id?: string | null;
   parentSessionId?: string | null;
-  last_active?: string;
-  lastActive?: string;
+  last_active?: HermesTimestamp;
+  lastActive?: HermesTimestamp;
   preview?: string;
   has_system_prompt?: boolean;
   has_model_config?: boolean;
@@ -835,6 +856,51 @@ export async function deleteDictionaryEntry(entryId: string) {
   return invoke<void>("delete_dictionary_entry", {
     request: { entryId },
   });
+}
+
+export async function listMemories(folderId?: string, includeGlobal = false) {
+  return invoke<MemoryDto[]>("list_memories", {
+    folderId,
+    includeGlobal,
+  });
+}
+
+export async function createMemory(input: {
+  folderId?: string;
+  content: string;
+  source: "agent" | "user";
+}) {
+  return invoke<MemoryDto>("create_memory", input);
+}
+
+export async function updateMemory(id: string, content: string) {
+  return invoke<MemoryDto>("update_memory", { id, content });
+}
+
+export async function deleteMemory(id: string) {
+  return invoke<void>("delete_memory", { id });
+}
+
+export async function setFolderInstructions(folderId: string, instructions?: string) {
+  return invoke<FolderDto>("set_folder_instructions", {
+    folderId,
+    instructions,
+  });
+}
+
+export async function setFolderMemoryDisabled(folderId: string, disabled: boolean) {
+  return invoke<FolderDto>("set_folder_memory_disabled", {
+    folderId,
+    disabled,
+  });
+}
+
+export async function memorySettings() {
+  return invoke<MemorySettingsDto>("memory_settings");
+}
+
+export async function setMemoryEnabled(enabled: boolean) {
+  return invoke<MemorySettingsDto>("set_memory_enabled", { enabled });
 }
 
 export async function listAgentTasks() {
@@ -1597,9 +1663,11 @@ export async function resolveAgentRecorderRequest(request: ResolveAgentRecorderR
   return invoke<void>("resolve_agent_recorder_request", { request });
 }
 
-export async function retryProcessing(noteId: string) {
+export async function retryProcessing(noteId: string, recordingSessionId?: string) {
   return invoke<NoteDto>("retry_processing", {
-    request: { noteId, step: "all" },
+    request: recordingSessionId
+      ? { noteId, step: "all", recordingSessionId }
+      : { noteId, step: "all" },
   });
 }
 

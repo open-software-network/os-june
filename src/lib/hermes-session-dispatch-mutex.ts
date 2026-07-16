@@ -2,7 +2,7 @@ const sessionDispatchTails = new Map<string, Promise<void>>();
 const sessionDispatchFinishes = new Set<() => void>();
 
 export type HermesSessionDispatchReservation = {
-  /** True when another accepted Send already owns an earlier FIFO position. */
+  /** True when another stored-session operation owns an earlier FIFO position. */
   queuedBehindPrior: boolean;
   /** Release a reservation whose preparation failed before dispatch began. */
   cancel: () => void;
@@ -16,10 +16,10 @@ export type HermesSessionDispatchHold = {
 };
 
 /**
- * Reserve one stored session's FIFO position synchronously at Send acceptance.
- * Preparation can happen after reservation without allowing a later surface to
- * overtake it. Cancelling still keeps later reservations behind every earlier
- * tail before releasing this position.
+ * Reserve one stored session's next FIFO position. Send callers do this
+ * synchronously at acceptance so preparation can happen without allowing a
+ * later surface to overtake them. Cancelling still keeps later operations
+ * behind every earlier tail before releasing this position.
  */
 export function reserveHermesSessionDispatch(
   storedSessionId: string,
@@ -90,8 +90,9 @@ export function holdHermesSessionDispatch(storedSessionId: string): HermesSessio
 }
 
 /**
- * Runs one model-configuration and prompt-submission critical section at a
- * time for a Hermes session. Dispatches for other sessions remain independent.
+ * Runs one transport-affecting critical section at a time for a stored Hermes
+ * session. Send, Stop, usage lookup, and recovery share this FIFO; operations
+ * for other sessions remain independent.
  */
 export async function withHermesSessionDispatchLock<Result>(
   storedSessionId: string,

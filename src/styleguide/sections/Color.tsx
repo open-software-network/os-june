@@ -23,6 +23,7 @@ const COLOR_GROUPS: { label: string; names: string[] }[] = [
       "--card-foreground",
       "--muted-foreground",
       "--body-copy",
+      "--spinner-neutral",
       "--primary",
       "--primary-foreground",
     ],

@@ -175,6 +175,7 @@ import {
   type AgentSessionStatusKind,
 } from "../../lib/agent-events";
 import {
+  agentRunMonitorSnapshot,
   cancelAgentRunMonitoring,
   hasPendingAgentRunTerminalEvidence,
   isAgentRunMonitorGenerationCurrent,
@@ -228,11 +229,12 @@ import { normalizeSteerText } from "../../lib/hermes-session-steer";
 import { recordPositiveFeedbackSent } from "../../lib/referral-nudge";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
-import { pendingActionStore } from "../../lib/hermes-pending-actions";
+import { pendingActionInstanceId, pendingActionStore } from "../../lib/hermes-pending-actions";
 import { hermesActivityStore, type AgentActivityRecord } from "../../lib/hermes-activity-store";
 import {
   appendHermesLiveEvent,
   createHermesLiveStream,
+  currentHermesApprovalInstanceId,
   hermesLiveEvents,
   reconcileHermesLiveStream,
   type HermesLiveStream,
@@ -275,6 +277,7 @@ import { applySessionModelWhenIdle } from "../../lib/hermes-next-prompt-model";
 import {
   holdHermesSessionDispatch,
   reserveHermesSessionDispatch,
+  withHermesSessionDispatchLock,
   type HermesSessionDispatchReservation,
 } from "../../lib/hermes-session-dispatch-mutex";
 import {
@@ -378,6 +381,7 @@ import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   displayedComposerUserMessageText,
+  hasFinalContentBearingAssistantReply,
   stripRenderedMediaReferences,
   textFromHermesContent,
   type AgentApprovalChoice,
@@ -385,6 +389,13 @@ import {
   type AgentChatTurn,
 } from "../../lib/agent-chat-runtime";
 import { toolActivitySentence } from "../../lib/agent-tool-labels";
+import {
+  COMPACTED_CONTEXT_SIGNATURE,
+  prepareProjectPrompt,
+  ProjectContextSignatureStore,
+  stripProjectContext,
+  type AgentProjectContext,
+} from "../../lib/agent-project-context";
 import {
   buildAgentChatGallery,
   buildAgentErrorGallery,
@@ -398,6 +409,7 @@ const AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000];
 const AGENT_WORKSPACE_MAX_SESSION_RETRY_DELAY_MS =
   AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS[AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS.length - 1] ??
   2000;
+const projectContextSignaturesBySessionId = new ProjectContextSignatureStore();
 const QUEUED_STEER_RETRY_DELAY_MS = 300;
 const RESTORED_QUEUED_STEER_RECONCILE_DELAY_MS = 1000;
 const RESTORED_QUEUED_STEER_BUSY_RECONCILE_DELAY_MS = 3000;
@@ -423,6 +435,10 @@ const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
 const SESSION_GONE_MESSAGE = "This session has ended, so the request can no longer be answered.";
 const SESSION_NOT_AVAILABLE_MESSAGE =
   "This session is no longer available. Open another conversation or start a new one.";
+
+function approvalResponseKey(storedSessionId: string, instanceId: string): string {
+  return `${storedSessionId}\u0000${instanceId}`;
+}
 
 // A stable id for the "June is still working" nudge (fired when a send is
 // rejected mid-turn), so repeated send attempts refresh one toast instead of
@@ -1828,6 +1844,13 @@ type AgentWorkspaceProps = {
   /** Whether the active session is filed in a project — drives the session
    * bar menu's project item label (App owns the folder state). */
   sessionInProject?: boolean;
+  /** Current project metadata for hidden prompt context injection. */
+  projectContext?: AgentProjectContext;
+  /** Resolves the project a specific stored session is filed in. Background
+   * deliveries (queued steers/attachments) target sessions other than the
+   * active one; injecting the ambient `projectContext` there would leak the
+   * open project's instructions into another session's run. */
+  resolveSessionProjectContext?: (storedSessionId: string) => AgentProjectContext | undefined;
   /** Opens the change-project dialog (which also owns removal) for the given
    * stored session id. */
   onMoveSessionToProject?: (sessionId: string) => void;
@@ -2934,6 +2957,8 @@ export function AgentWorkspace({
   onTopUp,
   topUpLabel = "Upgrade",
   sessionInProject = false,
+  projectContext,
+  resolveSessionProjectContext,
   onMoveSessionToProject,
   creditActionsDisabledReason,
   fundingNotice,
@@ -3198,6 +3223,25 @@ export function AgentWorkspace({
   const activeComposerDispatchReservationsRef = useRef(
     new Map<HermesSessionDispatchReservation, string>(),
   );
+  // Once a stored-session FIFO dispatch starts, cancel() can no longer release
+  // it. Keep the socket alive across unmount until every such dispatch settles,
+  // including its resume/configuration work and prompt acknowledgement.
+  const inFlightSessionDispatchesRef = useRef(new Set<Promise<void>>());
+  const trackInFlightSessionDispatch = useCallback(
+    async <Result,>(sessionDispatch: Promise<Result>) => {
+      const sessionDispatchSettled = sessionDispatch.then(
+        () => undefined,
+        () => undefined,
+      );
+      inFlightSessionDispatchesRef.current.add(sessionDispatchSettled);
+      try {
+        return await sessionDispatch;
+      } finally {
+        inFlightSessionDispatchesRef.current.delete(sessionDispatchSettled);
+      }
+    },
+    [],
+  );
   const invalidatedComposerDispatchReservationsRef = useRef(
     new WeakSet<HermesSessionDispatchReservation>(),
   );
@@ -3439,6 +3483,10 @@ export function AgentWorkspace({
   const [approvalSubmitting, setApprovalSubmitting] = useState<
     Partial<Record<string, AgentApprovalChoice>>
   >({});
+  // Synchronous transport state for disconnect reconciliation. React state can
+  // lag behind the socket close callback by one render, so it cannot tell us
+  // reliably whether Hermes may already have accepted a response.
+  const approvalResponsesInFlightRef = useRef(new Map<string, AgentApprovalChoice>());
   const [clarifySubmitting, setClarifySubmitting] = useState<Record<string, string>>({});
   // Sudo records which choice (approve/deny) is in flight per request id;
   // secret records only that a submit is in flight (NEVER the value).
@@ -3867,6 +3915,31 @@ export function AgentWorkspace({
       },
       hermesModeFor(sessionId),
     );
+  }
+
+  function recordHermesActivityAndDeriveStatus(event: JuneHermesEvent, storedSessionId: string) {
+    hermesActivityStore.record(event, hermesModeFor(storedSessionId));
+    const hasOpenPendingAction = pendingActionStore
+      .openRecords()
+      .some((record) => record.sessionId === storedSessionId);
+    return agentStatusFromHermesEvent(event, hasOpenPendingAction);
+  }
+
+  function recordOptimisticHermesActivityAndDispatchStatus(
+    event: JuneHermesEvent,
+    storedSessionId: string,
+  ) {
+    const storedEvent = withStoredHermesSessionId(event, storedSessionId);
+    const status = recordHermesActivityAndDeriveStatus(storedEvent, storedSessionId);
+    if (!status) return;
+    dispatchAgentSessionStatus({
+      sessionId: storedSessionId,
+      title:
+        hermesSessionItemsRef.current.find((session) => session.id === storedSessionId)?.title ??
+        "Agent session",
+      status,
+      summary: agentStatusSummaryFromHermesEvent(storedEvent, status),
+    });
   }
 
   function recordSessionErrorActivity(sessionId: string, message: string) {
@@ -5102,10 +5175,9 @@ export function AgentWorkspace({
       removeHermesSessionLocally,
     };
     gatewayCloseHandlerRef.current = (fullMode: boolean) => {
-      // Feature 04: a disconnect is NOT a resolution — pending actions must
-      // survive it. markDisconnected is intentionally a no-op on state; the
-      // reconcile after a successful reconnect (below) is what marks anything
-      // unconfirmed as stale rather than dropping it.
+      // Feature 04: mark the transport drop, then let recovery retire approvals
+      // fail closed while preserving the existing stale/reannounce contract for
+      // clarify, sudo, and secret actions.
       pendingActionStore.markDisconnected();
       void recoverFromGatewayClose(fullMode);
     };
@@ -5283,6 +5355,11 @@ export function AgentWorkspace({
       const consentRequest = imageSafeModeConsentRequestRef.current;
       imageSafeModeConsentRequestRef.current = null;
       consentRequest?.resolve({ action: "dismiss" });
+      // Explicit gateway close suppresses the unexpected-close callback, but
+      // the runtime still drains approvals fail-closed when the socket drops.
+      // Mirror that boundary before capturing continuity so the next mount
+      // cannot restore an actionable card for a request Hermes already denied.
+      retireApprovalsForGatewayDetach({ publishMountedState: false });
       // Keep any mid-run session alive for the next mount before the
       // gateways (and with them the live event streams) go away.
       sessionContinuity = captureSessionContinuity({
@@ -5305,13 +5382,18 @@ export function AgentWorkspace({
       const ownedDeliveries = [...completedAgentRunContinuationRegistry.values()].filter(
         (continuation) => continuation.phase === "delivering" && continuation.owner === mountEpoch,
       );
-      if (ownedDeliveries.length > 0) {
-        // Keep the JSON-RPC socket alive until an already-dispatched
-        // prompt.submit receives its acknowledgement. Closing it here leaves
-        // the accepted-vs-lost result unknowable and can manufacture a Retry.
-        void Promise.all(
-          ownedDeliveries.map((continuation) => continuation.deliverySettled ?? Promise.resolve()),
-        ).finally(() => {
+      const inFlightSessionDispatches = [...inFlightSessionDispatchesRef.current];
+      inFlightSessionDispatchesRef.current.clear();
+      const gatewayCloseBarriers = [
+        ...inFlightSessionDispatches,
+        ...ownedDeliveries.map((continuation) => continuation.deliverySettled ?? Promise.resolve()),
+      ];
+      if (gatewayCloseBarriers.length > 0) {
+        // Keep the JSON-RPC socket alive until every already-started dispatch
+        // settles. Closing it during resume can strand the FIFO until timeout;
+        // closing it during prompt.submit makes acceptance unknowable and can
+        // manufacture a Retry.
+        void Promise.all(gatewayCloseBarriers).finally(() => {
           for (const gateway of new Set(gatewaysRef.current.values())) gateway.close();
         });
       } else {
@@ -6670,6 +6752,21 @@ export function AgentWorkspace({
       ? reserveComposerDispatch(sentModelTarget.targetStoredSessionId)
       : undefined;
     const sentStartedNewSession = sentModelTarget.targetStoredSessionId === null;
+    // prompt.submit prepends the injected `[June project context]` block for a
+    // project-filed session (see prepareProjectPrompt at the dispatch site), so
+    // the size guard must estimate that same larger text — otherwise a project
+    // with long instructions can slip a near-limit prompt past the warning and
+    // fail only after submit. Mirror the dispatch: ambient project context plus
+    // this send's last delivered signature, so the block counts exactly when it
+    // will actually be injected and dedup-skipped turns aren't over-warned.
+    // (The steer path never calls prompt.submit, so it estimates the raw text.)
+    const sizeEstimateContent = (baseContent: string, targetSessionId?: string): string => {
+      const previousSignature =
+        !newSessionModeRef.current && targetSessionId
+          ? projectContextSignaturesBySessionId.get(targetSessionId)
+          : undefined;
+      return prepareProjectPrompt(baseContent, projectContext, previousSignature).text;
+    };
     if (message) {
       try {
         const handledBuiltinCommand = await handleBuiltinComposerSlashCommand(
@@ -6721,7 +6818,7 @@ export function AgentWorkspace({
         return;
       }
       const sizeWarning = oversizedComposerInputWarning({
-        content: prepared.runtimeContent,
+        content: sizeEstimateContent(prepared.runtimeContent, attachmentQueueSessionId),
         inputSignature: composerInputSignature,
         attachments,
         model: generationModel,
@@ -6867,7 +6964,7 @@ export function AgentWorkspace({
         : prepared.runtimeContent;
       preparedForRecovery = { ...prepared, runtimeContent };
       const sizeWarning = oversizedComposerInputWarning({
-        content: runtimeContent,
+        content: sizeEstimateContent(runtimeContent, selectedHermesSessionId ?? undefined),
         inputSignature: composerInputSignature,
         attachments,
         model: generationModel,
@@ -7798,24 +7895,8 @@ export function AgentWorkspace({
         pendingAgentRunTerminalEvidenceRef.current.delete(storedSessionId);
       }
     };
-    const latchAmbiguousTerminal = (
-      classified: JuneHermesEvent,
-      notBeforeMs = runAuthorityProof?.persistenceBoundary.promptDispatchedAtMs ??
-        runAuthorityProof?.persistenceBoundary.submittedAtMs,
-    ) => {
-      const status = agentStatusFromHermesEvent(classified);
-      if (
-        (status !== "completed" && status !== "failed" && status !== "cancelled") ||
-        !runAuthorityProof ||
-        notBeforeMs === undefined
-      ) {
-        return;
-      }
-      const evidence: AgentRunTerminalEvidence = {
-        status,
-        summary: agentStatusSummaryFromHermesEvent(classified, status),
-        notBeforeMs,
-      };
+    const latchAgentRunTerminalEvidence = (evidence: AgentRunTerminalEvidence) => {
+      if (!runAuthorityProof) return;
       pendingTerminalEvidence = evidence;
       const monitorOwner = agentRunMonitorOwnersRef.current.get(storedSessionId);
       if (
@@ -7830,6 +7911,25 @@ export function AgentWorkspace({
           evidence,
         });
       }
+    };
+    const latchAmbiguousTerminal = (
+      classified: JuneHermesEvent,
+      notBeforeMs = runAuthorityProof?.persistenceBoundary.promptDispatchedAtMs ??
+        runAuthorityProof?.persistenceBoundary.submittedAtMs,
+    ) => {
+      const status = agentStatusFromHermesEvent(classified);
+      if (
+        (status !== "completed" && status !== "failed" && status !== "cancelled") ||
+        !runAuthorityProof ||
+        notBeforeMs === undefined
+      ) {
+        return;
+      }
+      latchAgentRunTerminalEvidence({
+        status,
+        summary: agentStatusSummaryFromHermesEvent(classified, status),
+        notBeforeMs,
+      });
     };
     const acceptWithCurrentListener = () => {
       if (!sourceIsCurrent() || sourceWasHandled()) return false;
@@ -8022,7 +8122,48 @@ export function AgentWorkspace({
       // consume the typed event; the raw frame remains only for trace capture
       // and the Stage B status helpers below.
       const classified = classifyHermesEvent(liveEvent);
-      const storedClassified = withStoredHermesSessionId(classified, storedSessionId);
+      const storedEvent = withStoredHermesSessionId(classified, storedSessionId);
+      const approvalRunEpoch = agentRunStartRevisionsRef.current.get(storedSessionId);
+      const currentSessionEvents =
+        liveEventsRef.current[storedSessionId] ?? createHermesLiveStream();
+      const retiringApprovalRequestId =
+        storedEvent.kind === "pending_action_expiration"
+          ? storedEvent.action.requestId
+          : storedEvent.kind === "pending_action_resolution" &&
+              storedEvent.action.kind === "approval"
+            ? storedEvent.action.requestId
+            : undefined;
+      const retiringApprovalInstanceId = retiringApprovalRequestId
+        ? currentHermesApprovalInstanceId(
+            currentSessionEvents,
+            retiringApprovalRequestId,
+            approvalRunEpoch,
+          )
+        : undefined;
+      let storedClassified: JuneHermesEvent = storedEvent;
+      if (storedEvent.kind === "pending_action" && storedEvent.action.kind === "approval") {
+        storedClassified = {
+          ...storedEvent,
+          action: {
+            ...storedEvent.action,
+            instanceId: pendingActionInstanceId(storedEvent.action, approvalRunEpoch),
+          },
+        };
+      } else if (
+        storedEvent.kind === "pending_action_resolution" &&
+        storedEvent.action.kind === "approval" &&
+        retiringApprovalInstanceId
+      ) {
+        storedClassified = {
+          ...storedEvent,
+          action: { ...storedEvent.action, instanceId: retiringApprovalInstanceId },
+        };
+      } else if (storedEvent.kind === "pending_action_expiration" && retiringApprovalInstanceId) {
+        storedClassified = {
+          ...storedEvent,
+          action: { ...storedEvent.action, instanceId: retiringApprovalInstanceId },
+        };
+      }
       const terminal = isTerminalHermesEvent(classified);
       if (terminal && sourceWasHandled()) return;
       const monitorOwner = agentRunMonitorOwnersRef.current.get(storedSessionId);
@@ -8106,9 +8247,20 @@ export function AgentWorkspace({
         }
         return;
       }
-      const currentSessionEvents =
-        liveEventsRef.current[storedSessionId] ?? createHermesLiveStream();
-      const nextSessionEvents = appendHermesLiveEvent(currentSessionEvents, storedClassified);
+      if (
+        (storedClassified.kind === "pending_action_resolution" ||
+          storedClassified.kind === "pending_action_expiration") &&
+        storedClassified.action.kind === "approval" &&
+        !storedClassified.action.instanceId
+      ) {
+        // A retirement frame with no currently actionable instance is a replay
+        // or stale delivery. Do not let its raw compatibility id mutate an old
+        // receipt or a later Agent run.
+        return;
+      }
+      const nextSessionEvents = appendHermesLiveEvent(currentSessionEvents, storedClassified, {
+        runStartRevision: agentRunStartRevisionsRef.current.get(storedSessionId),
+      });
       // Delivery identity is replay-stable when Hermes provides an event id.
       // Reject a replay before it can touch activity, status, or follow-up
       // settlement. A new listener for the next Agent run must not reinterpret
@@ -8163,7 +8315,28 @@ export function AgentWorkspace({
         // recorded opt-in (sudo carries its own; the rest derive it here). A
         // fresh event for a known request also re-confirms a row that went
         // stale across a reconnect (see the store's reconcile logic).
-        pendingActionStore.record(storedClassified, hermesModeFor(storedSessionId));
+        pendingActionStore.record(storedClassified, hermesModeFor(storedSessionId), {
+          approvalRunEpoch,
+        });
+      } else if (storedClassified.kind === "pending_action_resolution") {
+        // Resolution events can arrive independently of this surface's local
+        // response promise (for example after reconnect). Reconcile the exact
+        // logical request before deriving the session status so another
+        // distinct pending action keeps the session in "Needs you".
+        pendingActionStore.resolveRequest(
+          storedSessionId,
+          storedClassified.action.requestId,
+          storedClassified.action.kind === "approval"
+            ? { instanceId: storedClassified.action.instanceId }
+            : undefined,
+        );
+      } else if (storedClassified.kind === "pending_action_expiration") {
+        pendingActionStore.expireRequest(
+          storedSessionId,
+          storedClassified.action.requestId,
+          storedClassified.action.reason,
+          { instanceId: storedClassified.action.instanceId },
+        );
       }
       // Feature 11: roll EVERY classified event into the global activity store
       // that backs the Agent activity drawer. The store is total and ignores
@@ -8171,7 +8344,7 @@ export function AgentWorkspace({
       // derives the session's phase (running/waiting/background/error/complete),
       // current tool, and subagent count from the normalized event — never from
       // the raw frame (raw JSON belongs to feature 15's trace panel).
-      hermesActivityStore.record(storedClassified, hermesModeFor(storedSessionId));
+      const status = recordHermesActivityAndDeriveStatus(storedClassified, storedSessionId);
       // Feature 14: extract any file/artifact reference this event carries into
       // the per-session artifact timeline behind the drawer's "Artifacts"
       // section. The store is total and only acts on `tool` completions that
@@ -8180,6 +8353,16 @@ export function AgentWorkspace({
       // artifact can show its blast radius (sandboxed copy vs unrestricted path).
       hermesArtifactStore.record(storedClassified, hermesModeFor(storedSessionId));
       if (storedClassified.kind === "transcript" && storedClassified.complete) {
+        if (storedClassified.failed && runAuthorityProof) {
+          const notBeforeMs =
+            runAuthorityProof.persistenceBoundary.promptDispatchedAtMs ??
+            runAuthorityProof.persistenceBoundary.submittedAtMs;
+          latchAgentRunTerminalEvidence({
+            status: "failed",
+            summary: storedClassified.delta?.trim() || "June hit a problem.",
+            notBeforeMs,
+          });
+        }
         // Hydrate persistence at the message boundary without treating it as
         // the Agent run boundary. Later tool/continuation frames stay subscribed.
         window.setTimeout(() => {
@@ -8203,7 +8386,6 @@ export function AgentWorkspace({
           for (const entry of list) entry.toolDrained = true;
         }
       }
-      const status = agentStatusFromHermesEvent(classified);
       const activityCounts =
         status === "completed" || status === "failed" || status === "cancelled"
           ? agentActivityCountsFromStore()
@@ -8452,6 +8634,12 @@ export function AgentWorkspace({
       throw new Error(creditActionsDisabledReason);
     }
     const displayContent = options?.displayContent ?? content;
+    // Explicit-target submissions (background steer/attachment delivery, CLI
+    // notices) must use the TARGET session's project, never the ambient one —
+    // the user may have a different project session open by then. The ambient
+    // context still covers the new-session flow, where the filing is applied
+    // only after Hermes returns the session id.
+    const submittedProjectContext = explicitSession ? undefined : projectContext;
     const titleContent = options?.titleContent ?? displayContent;
     let attachmentOnlyTitle: string | undefined;
     if (!titleContent.trim() && options?.attachments?.length) {
@@ -8694,32 +8882,38 @@ export function AgentWorkspace({
     if (!optimisticSession) {
       await withTimeout(ensureStoredHermesSession(), 2500).catch(() => undefined);
     }
-    let runtimeSessionId: string | undefined;
-    try {
-      runtimeSessionId =
-        created?.session_id ??
-        runtimeSessionIdsRef.current[storedSessionId] ??
-        (
-          await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
-            session_id: storedSessionId,
-            cols: 96,
-          })
-        ).session_id;
-    } catch (err) {
-      activeDispatchReservation.cancel();
-      clearQueuedIssueReport();
-      if (optimisticSession) {
-        removeOptimisticHermesSession(optimisticSession.id, storedSessionIdForRollback);
-      }
-      throw err;
-    }
-    if (!runtimeSessionId) {
-      clearQueuedIssueReport();
-      rollbackOptimisticBeforePrompt(new Error("Hermes did not resume the session."));
-    }
+    let runtimeSessionId: string | undefined = created?.session_id;
     const dispatchPreparedSession = async (): Promise<string | undefined> => {
       if (!options?.skipPrompt && !promptGenerationIsCurrent()) {
         throw supersededPromptError();
+      }
+      // `session.resume` changes the live runtime bound to a stored session.
+      // Resolve it only after this Send owns the cross-surface FIFO slot and
+      // its generation fence is still current; otherwise a queued Workspace
+      // Send could rebind a newer Note Chat Agent run before being rejected.
+      let activeRuntimeSessionId: string | undefined =
+        runtimeSessionId ?? runtimeSessionIdsRef.current[storedSessionId];
+      if (!activeRuntimeSessionId) {
+        try {
+          activeRuntimeSessionId = (
+            await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+              session_id: storedSessionId,
+              cols: 96,
+            })
+          ).session_id;
+          runtimeSessionId = activeRuntimeSessionId;
+        } catch (err) {
+          clearQueuedIssueReport();
+          rollbackOptimisticBeforePrompt(err);
+        }
+      }
+      if (!activeRuntimeSessionId) {
+        clearQueuedIssueReport();
+        activeDispatchReservation.cancel();
+        if (optimisticSession) {
+          removeOptimisticHermesSession(optimisticSession.id, storedSessionIdForRollback);
+        }
+        throw new Error("Hermes did not resume the session.");
       }
       // Re-read after acquiring the cross-surface lock. NoteChat may have sent
       // this same stored session and changed its live model after this Send was
@@ -8740,7 +8934,7 @@ export function AgentWorkspace({
           await applySessionModelWhenIdle(() =>
             createHermesMethods(gateway).switchActiveSessionModel({
               mode: hermesModeFor(storedSessionId),
-              sessionId: runtimeSessionId,
+              sessionId: activeRuntimeSessionId,
               model: targetSessionModelId,
             }),
           );
@@ -8778,7 +8972,7 @@ export function AgentWorkspace({
         try {
           const updatedAttachments = await attachPendingImages(
             gateway,
-            runtimeSessionId,
+            activeRuntimeSessionId,
             storedSessionId,
             agentRunAttachments,
           );
@@ -8817,7 +9011,7 @@ export function AgentWorkspace({
       }
       setRuntimeSessionIds((current) => ({
         ...current,
-        [storedSessionId]: runtimeSessionId,
+        [storedSessionId]: activeRuntimeSessionId,
       }));
       if (!optimisticSession) {
         if (!targetStoredSessionId && options?.skipPrompt) {
@@ -8933,12 +9127,20 @@ export function AgentWorkspace({
         gateway,
         onSuperseded: clearQueuedIssueReport,
         persistenceBoundary,
-        runtimeSessionId,
+        runtimeSessionId: activeRuntimeSessionId,
         sessionDisplayTitle,
         storedSessionId,
         submittedUserMessage: pendingUserMessage,
       });
       try {
+        const targetProjectContext = explicitSession
+          ? resolveSessionProjectContext?.(storedSessionId)
+          : submittedProjectContext;
+        const preparedProjectPrompt = prepareProjectPrompt(
+          promptSubmitContent,
+          targetProjectContext,
+          projectContextSignaturesBySessionId.get(storedSessionId),
+        );
         // Feature 15: record the outbound prompt.submit in the trace buffer. Its
         // params are sanitized before storage (the text is the user's own prompt,
         // kept; any secret-like value would be masked). This is the primary
@@ -8947,7 +9149,7 @@ export function AgentWorkspace({
         hermesTraceBuffer.recordOutbound({
           sessionId: storedSessionId,
           method: "prompt.submit",
-          params: { session_id: runtimeSessionId, text: promptSubmitContent },
+          params: { session_id: activeRuntimeSessionId, text: preparedProjectPrompt.text },
         });
         // This is the earliest instant at which a terminal or persisted session
         // outcome can belong to this prompt. Keep the earlier optimistic time
@@ -8971,8 +9173,8 @@ export function AgentWorkspace({
           persistedUserIds: new Set(persistenceBoundary.persistedUserIds),
         };
         await gateway.request("prompt.submit", {
-          session_id: runtimeSessionId,
-          text: promptSubmitContent,
+          session_id: activeRuntimeSessionId,
+          text: preparedProjectPrompt.text,
         });
         const promptAttemptWasCurrent = promptAttemptIsCurrent();
         if (!promptAttemptWasCurrent || !promptGenerationIsCurrent()) {
@@ -8988,7 +9190,7 @@ export function AgentWorkspace({
         if (confirmRunAccepted()) {
           const runMonitorGeneration = startAgentRunMonitoring({
             storedSessionId,
-            runtimeSessionId,
+            runtimeSessionId: activeRuntimeSessionId,
             title: sessionDisplayTitle,
             fullMode: sessionUnrestricted(storedSessionId),
             settlementHeld: true,
@@ -9005,6 +9207,10 @@ export function AgentWorkspace({
           });
           confirmMonitorStarted(runMonitorGeneration);
         }
+        projectContextSignaturesBySessionId.set(
+          storedSessionId,
+          preparedProjectPrompt.contextSignature,
+        );
         // JUN-171 (Phase A): the held fast-path images have now ridden along
         // with a successful follow-up prompt, either as structured image bytes or
         // in the non-vision path fallback. Clear only after prompt.submit accepts
@@ -9088,7 +9294,7 @@ export function AgentWorkspace({
       return undefined;
     };
 
-    return activeDispatchReservation.run(dispatchPreparedSession);
+    return trackInFlightSessionDispatch(activeDispatchReservation.run(dispatchPreparedSession));
   }
 
   // Returns the gateway for the given write-access mode, starting that
@@ -9127,36 +9333,56 @@ export function AgentWorkspace({
       const methods = createHermesMethods(gateway);
       const usageFor = async (runtimeId: string) =>
         parseSessionUsage(storedSessionId, await methods.getSessionUsage({ sessionId: runtimeId }));
-      // session.usage reads the LIVE runtime, keyed by the runtime id — not the
-      // stored id the panel passes. Use the cached runtime if it is still alive;
-      // if it has been torn down between turns ("session not found"), resume the
-      // session to spin up a fresh runtime and retry once. Mirrors the send
-      // flow's cached-or-resume resolution (see submit()).
-      const cached = runtimeSessionIdsRef.current[storedSessionId];
-      if (cached) {
-        try {
-          return await usageFor(cached);
-        } catch (err) {
-          if (!isSessionGoneError(messageFromError(err))) throw err;
-        }
-      }
-      const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
-        session_id: storedSessionId,
-        cols: 96,
-      });
-      const runtimeSessionId = resumed.session_id;
-      if (!runtimeSessionId) {
-        throw new Error("Hermes did not resume the session.");
-      }
-      setRuntimeSessionIds((current) => ({
-        ...current,
-        [storedSessionId]: runtimeSessionId,
-      }));
-      return usageFor(runtimeSessionId);
+      // session.usage reads the live runtime by runtime id. Keep the lookup in
+      // the same cross-surface FIFO as Send because session.resume mutates that
+      // binding. During an app-lifetime Agent run, query only the monitor's exact
+      // runtime; a missing/dead runtime must fail closed instead of rebinding the
+      // stored session underneath the owning surface.
+      return trackInFlightSessionDispatch(
+        withHermesSessionDispatchLock(storedSessionId, async () => {
+          const monitor = agentRunMonitorSnapshot(storedSessionId);
+          const activeMonitor = monitor && monitor.phase !== "terminal" ? monitor : undefined;
+          if (activeMonitor) {
+            if (!activeMonitor.runtimeSessionId) {
+              throw new Error("Session usage is unavailable while June is working.");
+            }
+            try {
+              return await usageFor(activeMonitor.runtimeSessionId);
+            } catch (err) {
+              if (!isSessionGoneError(messageFromError(err))) throw err;
+              throw new Error("Session usage is unavailable while June is working.");
+            }
+          }
+
+          const cached = runtimeSessionIdsRef.current[storedSessionId];
+          if (cached) {
+            try {
+              return await usageFor(cached);
+            } catch (err) {
+              if (!isSessionGoneError(messageFromError(err))) throw err;
+            }
+          }
+          const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+            session_id: storedSessionId,
+            cols: 96,
+          });
+          const runtimeSessionId = resumed.session_id;
+          if (!runtimeSessionId) {
+            throw new Error("Hermes did not resume the session.");
+          }
+          setRuntimeSessionIds((current) => {
+            const next = {
+              ...current,
+              [storedSessionId]: runtimeSessionId,
+            };
+            runtimeSessionIdsRef.current = next;
+            return next;
+          });
+          return usageFor(runtimeSessionId);
+        }),
+      );
     },
-    // Stable closure over refs and imported helpers; deps intentionally omitted.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    [trackInFlightSessionDispatch],
   );
 
   // Compacts one session's context (feature 08). Routes through the gateway
@@ -9170,7 +9396,16 @@ export function AgentWorkspace({
       const raw = await createHermesMethods(gateway).compressSession({
         sessionId,
       });
-      return parseCompressSessionResult(sessionId, raw);
+      const result = parseCompressSessionResult(sessionId, raw);
+      // Compaction replaces the working context with a summary that may still
+      // contain the old project block. Mark the session compacted rather than
+      // deleting the entry: the sentinel differs from every real project
+      // signature (so a still-filed session reinjects on its next prompt) yet
+      // is not "no block ever" (so if the user then removes the session from
+      // its project, prepareProjectPrompt still emits the clearing block
+      // instead of silently leaving stale instructions in the summary).
+      projectContextSignaturesBySessionId.set(sessionId, COMPACTED_CONTEXT_SIGNATURE);
+      return result;
     },
     // Same stable-closure rationale as fetchSessionUsage above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -9206,62 +9441,301 @@ export function AgentWorkspace({
   // either way, refresh them immediately so the working-gated poll reconciles
   // their true state from persisted messages. Only the dropped mode's
   // gateway is rebuilt — sessions of that mode are the ones it served.
+  function retireApprovalsForGatewayDetach(
+    options: { storedSessionIds?: ReadonlySet<string>; publishMountedState?: boolean } = {},
+  ) {
+    type LiveApprovalState = {
+      instanceId: string;
+      storedSessionId: string;
+      requestId: string;
+      approvalRunEpoch?: number;
+      status: "pending" | "resolved" | "expired";
+    };
+
+    // The app-wide pending-action store is bounded, so an older open row can
+    // be evicted while its semantic live stream still renders the card. Fold
+    // both sources and keep resolution/expiration sticky against later replay.
+    const liveApprovalStates = new Map<string, LiveApprovalState>();
+    for (const [storedSessionId, stream] of Object.entries(liveEventsRef.current)) {
+      if (options.storedSessionIds && !options.storedSessionIds.has(storedSessionId)) continue;
+      const currentRunStartRevision = agentRunStartRevisionsRef.current.get(storedSessionId);
+      for (const { event, revision } of stream.entries) {
+        if ((event.kind === "lifecycle" && event.flavor === "terminal") || event.kind === "error") {
+          // A terminal stream edge expires every approval that was still open
+          // in that run. Preserve that fact even if the bounded activity or
+          // pending-action stores have already evicted their corresponding
+          // rows; a later detach must not recreate the completed Agent run as active.
+          for (const [key, state] of liveApprovalStates) {
+            if (state.storedSessionId === storedSessionId && state.status === "pending") {
+              liveApprovalStates.set(key, { ...state, status: "expired" });
+            }
+          }
+          continue;
+        }
+        if (
+          (event.kind !== "pending_action" &&
+            event.kind !== "pending_action_resolution" &&
+            event.kind !== "pending_action_expiration") ||
+          event.action.kind !== "approval"
+        ) {
+          continue;
+        }
+        const requestId = event.action.requestId;
+        if (event.kind === "pending_action") {
+          const payloadFingerprintId = event.action.requestIdProvenance === "payload-fingerprint";
+          if (
+            payloadFingerprintId &&
+            currentRunStartRevision !== undefined &&
+            revision <= currentRunStartRevision
+          ) {
+            continue;
+          }
+          const approvalRunEpoch = payloadFingerprintId ? currentRunStartRevision : undefined;
+          const instanceId = pendingActionInstanceId(event.action, approvalRunEpoch);
+          const key = approvalResponseKey(storedSessionId, instanceId);
+          const existing = liveApprovalStates.get(key);
+          if (existing?.status === "resolved" || existing?.status === "expired") continue;
+          liveApprovalStates.set(key, {
+            instanceId,
+            storedSessionId,
+            requestId,
+            ...(approvalRunEpoch === undefined ? {} : { approvalRunEpoch }),
+            status: "pending",
+          });
+          continue;
+        }
+
+        let matched = false;
+        for (const [key, state] of liveApprovalStates) {
+          if (state.storedSessionId !== storedSessionId || state.requestId !== requestId) continue;
+          if (event.action.instanceId && state.instanceId !== event.action.instanceId) continue;
+          if (
+            state.approvalRunEpoch !== undefined &&
+            currentRunStartRevision !== undefined &&
+            revision <= currentRunStartRevision
+          ) {
+            continue;
+          }
+          matched = true;
+          if (event.kind === "pending_action_resolution") {
+            liveApprovalStates.set(key, { ...state, status: "resolved" });
+          } else if (state.status !== "resolved") {
+            liveApprovalStates.set(key, { ...state, status: "expired" });
+          }
+        }
+        if (!matched) {
+          // Resolution can be replayed before its request after reconnect. The
+          // raw id is the only authority available until a legacy request
+          // proves a run-scoped instance; keep this fallback globally sticky.
+          const instanceId = requestId;
+          liveApprovalStates.set(approvalResponseKey(storedSessionId, instanceId), {
+            instanceId,
+            storedSessionId,
+            requestId,
+            status: event.kind === "pending_action_resolution" ? "resolved" : "expired",
+          });
+        }
+      }
+    }
+
+    const approvalsToRetire = new Map<
+      string,
+      Pick<LiveApprovalState, "instanceId" | "storedSessionId" | "requestId">
+    >();
+    for (const [key, state] of liveApprovalStates) {
+      if (state.status === "pending") approvalsToRetire.set(key, state);
+    }
+    for (const record of pendingActionStore.openRecords()) {
+      if (
+        record.action.kind !== "approval" ||
+        (options.storedSessionIds && !options.storedSessionIds.has(record.sessionId))
+      ) {
+        continue;
+      }
+      const key = approvalResponseKey(record.sessionId, record.instanceId);
+      const liveState = liveApprovalStates.get(key);
+      if (liveState?.status === "resolved" || liveState?.status === "expired") continue;
+      approvalsToRetire.set(key, {
+        instanceId: record.instanceId,
+        storedSessionId: record.sessionId,
+        requestId: record.requestId,
+      });
+    }
+    if (approvalsToRetire.size === 0) return;
+
+    let retiredApprovalEvents = liveEventsRef.current;
+    let retiredApprovalChanged = false;
+    const retiredApprovalStatuses = new Map<
+      string,
+      { event: JuneHermesEvent; status: AgentSessionStatusKind }
+    >();
+    const retiredAt = new Date().toISOString();
+    for (const { instanceId, storedSessionId, requestId } of approvalsToRetire.values()) {
+      // A response that reached Hermes before disconnect may be unacknowledged
+      // locally. Retire it so it cannot be sent twice without claiming that
+      // nothing was approved when the outcome is unknowable.
+      const reason = approvalResponsesInFlightRef.current.has(
+        approvalResponseKey(storedSessionId, instanceId),
+      )
+        ? "unconfirmed"
+        : "disconnect";
+      pendingActionStore.expireRequest(storedSessionId, requestId, reason, { instanceId });
+      const expiration: JuneHermesEvent = {
+        kind: "pending_action_expiration",
+        sessionId: storedSessionId,
+        action: {
+          kind: "approval",
+          requestId,
+          instanceId,
+          reason,
+        },
+        receivedAt: retiredAt,
+      };
+      const status = recordHermesActivityAndDeriveStatus(expiration, storedSessionId);
+      const activityPhase = hermesActivityStore.getRecord(storedSessionId)?.phase;
+      if (status && activityPhase !== "complete" && activityPhase !== "error") {
+        retiredApprovalStatuses.set(storedSessionId, { event: expiration, status });
+      }
+      const currentSessionEvents =
+        retiredApprovalEvents[storedSessionId] ?? createHermesLiveStream();
+      const nextSessionEvents = appendHermesLiveEvent(currentSessionEvents, expiration);
+      if (nextSessionEvents !== currentSessionEvents) {
+        retiredApprovalEvents = {
+          ...retiredApprovalEvents,
+          [storedSessionId]: nextSessionEvents,
+        };
+        retiredApprovalChanged = true;
+      }
+    }
+    if (retiredApprovalChanged) {
+      liveEventsRef.current = retiredApprovalEvents;
+      if (options.publishMountedState !== false) setLiveEvents(retiredApprovalEvents);
+    }
+    for (const [storedSessionId, { event, status }] of retiredApprovalStatuses) {
+      dispatchAgentSessionStatus({
+        sessionId: storedSessionId,
+        title:
+          hermesSessionItemsRef.current.find((session) => session.id === storedSessionId)?.title ??
+          "Agent session",
+        status,
+        summary: agentStatusSummaryFromHermesEvent(event, status),
+      });
+    }
+  }
+
   async function recoverFromGatewayClose(fullMode: boolean) {
+    // Approval retirement is a property of every physical gateway close, not
+    // of whether reconnect work is needed or already running. Derive its
+    // session scope from the synchronous semantic/store sources so a close in
+    // the same event-loop task as approval.request cannot race React's activity refs.
+    const storedSessionIdsWithApprovals = new Set<string>();
+    for (const [storedSessionId, stream] of Object.entries(liveEventsRef.current)) {
+      if (sessionUnrestricted(storedSessionId) !== fullMode) continue;
+      if (
+        stream.entries.some(
+          ({ event }) =>
+            (event.kind === "pending_action" ||
+              event.kind === "pending_action_resolution" ||
+              event.kind === "pending_action_expiration") &&
+            event.action.kind === "approval",
+        )
+      ) {
+        storedSessionIdsWithApprovals.add(storedSessionId);
+      }
+    }
+    for (const record of pendingActionStore.openRecords()) {
+      if (record.action.kind === "approval" && sessionUnrestricted(record.sessionId) === fullMode) {
+        storedSessionIdsWithApprovals.add(record.sessionId);
+      }
+    }
+    // The patched Hermes gateway denies and drains unresolved MCP approvals
+    // when its notification socket disconnects. Mirror that fail-closed
+    // boundary before every recovery guard: an old card must never remain
+    // actionable against a newly resumed runtime. Other pending-action kinds
+    // keep their existing stale/reannounce reconciliation contract.
+    retireApprovalsForGatewayDetach({ storedSessionIds: storedSessionIdsWithApprovals });
+
     if (gatewayRecoveringRef.current.has(fullMode)) return;
-    const activeSessionIds = new Set(
+    const activeStoredSessionIds = new Set(
       [...workingSessionIdsRef.current, ...waitingSessionIdsRef.current].filter(
-        (sessionId) => sessionUnrestricted(sessionId) === fullMode,
+        (storedSessionId) => sessionUnrestricted(storedSessionId) === fullMode,
       ),
     );
-    if (!activeSessionIds.size) return;
-    const recoverySources = new Map(
-      Array.from(activeSessionIds).flatMap((sessionId) => {
-        const source = agentRunCompletionSourcesRef.current.get(sessionId);
-        return source ? ([[sessionId, source]] as const) : [];
+    if (!activeStoredSessionIds.size) return;
+    const recoveryRuns = new Map(
+      Array.from(activeStoredSessionIds).flatMap((storedSessionId) => {
+        const source = agentRunCompletionSourcesRef.current.get(storedSessionId);
+        const monitorOwner = agentRunMonitorOwnersRef.current.get(storedSessionId);
+        return source && monitorOwner
+          ? ([[storedSessionId, { monitorOwner, source }]] as const)
+          : [];
       }),
     );
     gatewayRecoveringRef.current.add(fullMode);
     try {
       const gateway = await ensureHermesGateway(fullMode);
       await Promise.all(
-        Array.from(recoverySources).map(async ([sessionId, recoverySource]) => {
+        Array.from(recoveryRuns).map(async ([storedSessionId, recoveryRun]) => {
+          const { monitorOwner: recoveryMonitorOwner, source: recoverySource } = recoveryRun;
+          const recoveryRunIsCurrent = () =>
+            agentRunCompletionSourcesRef.current.get(storedSessionId) === recoverySource &&
+            handledAgentRunCompletionSourcesRef.current.get(storedSessionId) !== recoverySource &&
+            agentRunMonitorOwnersRef.current.get(storedSessionId) === recoveryMonitorOwner &&
+            agentRunAuthorityProofsRef.current.get(storedSessionId) ===
+              recoveryMonitorOwner.authorityProof &&
+            latestAgentRunGenerationRegistry.get(storedSessionId) ===
+              recoveryMonitorOwner.generation &&
+            isAgentRunMonitorGenerationCurrent(storedSessionId, recoveryMonitorOwner.generation);
           try {
-            if (agentRunCompletionSourcesRef.current.get(sessionId) !== recoverySource) return;
-            const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
-              session_id: sessionId,
-              cols: 96,
-            });
-            const runtimeSessionId = resumed.session_id;
-            if (agentRunCompletionSourcesRef.current.get(sessionId) !== recoverySource) {
-              if (
-                runtimeSessionId &&
-                runtimeSessionId !== runtimeSessionIdsRef.current[sessionId]
-              ) {
-                await gateway
-                  .request("session.interrupt", { session_id: runtimeSessionId })
-                  .catch(() => undefined);
-              }
-              return;
-            }
-            if (runtimeSessionId) {
-              setRuntimeSessionIds((current) => {
-                const next = {
-                  ...current,
-                  [sessionId]: runtimeSessionId,
-                };
-                runtimeSessionIdsRef.current = next;
-                return next;
-              });
-              attachHermesSessionEventListener({
-                gateway,
-                runAlreadyAccepted: true,
-                runtimeSessionId,
-                sessionDisplayTitle:
-                  hermesSessionItemsRef.current.find((session) => session.id === sessionId)
-                    ?.title ?? "Agent session",
-                storedSessionId: sessionId,
-              });
-            }
+            await trackInFlightSessionDispatch(
+              withHermesSessionDispatchLock(storedSessionId, async () => {
+                if (!recoveryRunIsCurrent()) return;
+                const resumed = await gateway.request<HermesRuntimeSessionResponse>(
+                  "session.resume",
+                  {
+                    session_id: storedSessionId,
+                    cols: 96,
+                  },
+                );
+                const runtimeSessionId = resumed.session_id;
+                if (!recoveryRunIsCurrent()) {
+                  const currentMonitor = agentRunMonitorSnapshot(storedSessionId);
+                  const runtimeBelongsToCurrentMonitor =
+                    currentMonitor?.phase !== "terminal" &&
+                    currentMonitor?.runtimeSessionId === runtimeSessionId;
+                  if (
+                    runtimeSessionId &&
+                    runtimeSessionId !== runtimeSessionIdsRef.current[storedSessionId] &&
+                    !runtimeBelongsToCurrentMonitor
+                  ) {
+                    await gateway
+                      .request("session.interrupt", { session_id: runtimeSessionId })
+                      .catch(() => undefined);
+                  }
+                  return;
+                }
+                if (runtimeSessionId) {
+                  setRuntimeSessionIds((current) => {
+                    const next = {
+                      ...current,
+                      [storedSessionId]: runtimeSessionId,
+                    };
+                    runtimeSessionIdsRef.current = next;
+                    return next;
+                  });
+                  attachHermesSessionEventListener({
+                    gateway,
+                    runAlreadyAccepted: true,
+                    runtimeSessionId,
+                    sessionDisplayTitle:
+                      hermesSessionItemsRef.current.find(
+                        (session) => session.id === storedSessionId,
+                      )?.title ?? "Agent session",
+                    storedSessionId,
+                  });
+                }
+              }),
+            );
           } catch {
             // The runtime session may be gone; the poll reconciles it.
           }
@@ -9272,13 +9746,13 @@ export function AgentWorkspace({
     } finally {
       gatewayRecoveringRef.current.delete(fullMode);
     }
-    // Feature 04: the gateway is back. Any pending action not re-announced by a
-    // fresh event is now unverifiable across the drop, so mark it stale —
-    // visible but visually distinct — rather than silently dropping a possible
-    // blocker. A re-announced request flips its row back to open in the feed.
+    // Feature 04: the gateway is back. Any non-approval pending action not
+    // re-announced by a fresh event is unverifiable across the drop, so mark it
+    // stale rather than silently dropping a possible blocker. Approvals were
+    // already retired above because the gateway drains them fail closed.
     pendingActionStore.reconcileAfterReconnect();
-    for (const sessionId of activeSessionIds) {
-      void refreshHermesSession(sessionId);
+    for (const storedSessionId of activeStoredSessionIds) {
+      void refreshHermesSession(storedSessionId);
     }
   }
 
@@ -9636,31 +10110,79 @@ export function AgentWorkspace({
     liveEventKey: string,
     sessionId: string,
     requestId: string,
+    instanceId: string,
     choice: AgentApprovalChoice,
     unrestricted = false,
   ) {
-    setApprovalSubmitting((current) => ({ ...current, [requestId]: choice }));
+    const responseKey = approvalResponseKey(liveEventKey, instanceId);
+    // The card disables on the next render; guard synchronously too so a rapid
+    // second activation cannot target the same logical approval twice.
+    if (approvalResponsesInFlightRef.current.has(responseKey)) return;
+    approvalResponsesInFlightRef.current.set(responseKey, choice);
+    setApprovalSubmitting((current) => ({ ...current, [responseKey]: choice }));
+    const responseStillTargetsOpenInstance = () => {
+      const stream = liveEventsRef.current[liveEventKey];
+      return (
+        stream !== undefined &&
+        currentHermesApprovalInstanceId(
+          stream,
+          requestId,
+          agentRunStartRevisionsRef.current.get(liveEventKey),
+        ) === instanceId
+      );
+    };
     try {
       // The approval lives in the runtime process that asked, so the
       // response must go out on that mode's gateway.
       const gateway = await ensureHermesGateway(unrestricted);
-      await gateway.request("approval.respond", {
+      hermesTraceBuffer.recordOutbound({
+        sessionId: liveEventKey,
+        method: "approval.respond",
+        params: { session_id: sessionId, request_id: requestId, choice },
+      });
+      const response = await gateway.request<unknown>("approval.respond", {
         session_id: sessionId,
+        request_id: requestId,
         choice,
       });
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "approval.response",
+      if (!responseStillTargetsOpenInstance()) return;
+      if (
+        response === null ||
+        typeof response !== "object" ||
+        Array.isArray(response) ||
+        !("resolved" in response) ||
+        (response.resolved !== 0 && response.resolved !== 1)
+      ) {
+        setError("June could not confirm the approval outcome. Reconnect, then try again.", {
+          sessionId: liveEventKey,
+        });
+        return;
+      }
+      if (response.resolved === 0) {
+        const expiration = classifyOptimisticLiveEvent({
+          type: "approval.expire",
           session_id: sessionId,
-          payload: { request_id: requestId, choice },
-        }),
-      );
+          payload: { request_id: requestId, reason: "stale" },
+        });
+        pushLiveEvent(liveEventKey, expiration);
+        pendingActionStore.expireRequest(liveEventKey, requestId, "stale", { instanceId });
+        recordOptimisticHermesActivityAndDispatchStatus(expiration, liveEventKey);
+        setError("This approval is no longer pending. Nothing was approved.", { sessionId });
+        return;
+      }
+      const resolution = classifyOptimisticLiveEvent({
+        type: "approval.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, choice },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user just answered this approval — clear its global
       // "Needs you" row immediately (the response itself is the resolution).
-      pendingActionStore.resolveRequest(liveEventKey, requestId);
+      pendingActionStore.resolveRequest(liveEventKey, requestId, { instanceId });
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
+      if (!responseStillTargetsOpenInstance()) return;
       const message = messageFromError(err);
       if (isSessionGoneError(message)) {
         // The runtime session is gone. Scrub only the affected session/task —
@@ -9681,16 +10203,17 @@ export function AgentWorkspace({
         setLiveEvents(liveEventsRef.current);
         // The request can never be answered now — retire its card so neither the
         // sidebar count nor the inline prompt offers a dead-end "Respond".
-        pendingActionStore.resolveRequest(liveEventKey, requestId);
+        pendingActionStore.expireRequest(liveEventKey, requestId, "disconnect", { instanceId });
         void loadHermesSessions();
         setError(SESSION_GONE_MESSAGE, { sessionId });
       } else {
         setError(message, { sessionId });
       }
     } finally {
+      approvalResponsesInFlightRef.current.delete(responseKey);
       setApprovalSubmitting((current) => {
         const next = { ...current };
-        delete next[requestId];
+        delete next[responseKey];
         return next;
       });
     }
@@ -9709,15 +10232,14 @@ export function AgentWorkspace({
         request_id: requestId,
         answer,
       });
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "clarify.response",
-          payload: { request_id: requestId, answer },
-        }),
-      );
+      const resolution = classifyOptimisticLiveEvent({
+        type: "clarify.response",
+        payload: { request_id: requestId, answer },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user answered the clarification — clear its pending record.
       pendingActionStore.resolveRequest(liveEventKey, requestId);
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -9762,16 +10284,15 @@ export function AgentWorkspace({
         approved,
         mode,
       });
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "sudo.response",
-          session_id: sessionId,
-          payload: { request_id: requestId, granted: approved, mode },
-        }),
-      );
+      const resolution = classifyOptimisticLiveEvent({
+        type: "sudo.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, granted: approved, mode },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user resolved the sudo prompt — clear its pending record.
       pendingActionStore.resolveRequest(liveEventKey, requestId);
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -9810,16 +10331,15 @@ export function AgentWorkspace({
         requestId,
         value,
       });
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "secret.response",
-          session_id: sessionId,
-          payload: { request_id: requestId, provided: true },
-        }),
-      );
+      const resolution = classifyOptimisticLiveEvent({
+        type: "secret.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, provided: true },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user provided the secret — clear its pending record.
       pendingActionStore.resolveRequest(liveEventKey, requestId);
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -9972,31 +10492,44 @@ export function AgentWorkspace({
         raw = await branchVia(sessionId);
       } catch (err) {
         if (!isSessionGoneError(messageFromError(err))) throw err;
-        let runtimeSessionId: string | undefined = runtimeSessionIdsRef.current[sessionId];
-        if (runtimeSessionId) {
-          try {
-            raw = await branchVia(runtimeSessionId);
-          } catch (runtimeErr) {
-            if (!isSessionGoneError(messageFromError(runtimeErr))) throw runtimeErr;
-            runtimeSessionId = undefined;
-          }
-        }
-        if (!runtimeSessionId) {
-          const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
-            session_id: sessionId,
-            cols: 96,
-          });
-          runtimeSessionId = resumed.session_id;
-          if (!runtimeSessionId) {
-            throw new Error("Hermes did not resume the session.");
-          }
-          const resumedRuntimeSessionId = runtimeSessionId;
-          setRuntimeSessionIds((current) => ({
-            ...current,
-            [sessionId]: resumedRuntimeSessionId,
-          }));
-          raw = await branchVia(resumedRuntimeSessionId);
-        }
+        raw = await trackInFlightSessionDispatch(
+          withHermesSessionDispatchLock(sessionId, async () => {
+            // The fallback can rebind the source's live transport. Re-read both
+            // ownership and the runtime alias inside the stored-session FIFO so
+            // Branch cannot resume underneath another surface's Agent run.
+            const currentMonitor = agentRunMonitorSnapshot(sessionId);
+            if (currentMonitor && currentMonitor.phase !== "terminal") {
+              throw new Error(SESSION_BUSY_NOTICE);
+            }
+
+            let runtimeSessionId: string | undefined = runtimeSessionIdsRef.current[sessionId];
+            if (runtimeSessionId) {
+              try {
+                return await branchVia(runtimeSessionId);
+              } catch (runtimeErr) {
+                if (!isSessionGoneError(messageFromError(runtimeErr))) throw runtimeErr;
+                runtimeSessionId = undefined;
+              }
+            }
+
+            const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+              session_id: sessionId,
+              cols: 96,
+            });
+            runtimeSessionId = resumed.session_id;
+            if (!runtimeSessionId) throw new Error("Hermes did not resume the session.");
+            const resumedRuntimeSessionId = runtimeSessionId;
+            setRuntimeSessionIds((current) => ({
+              ...current,
+              [sessionId]: resumedRuntimeSessionId,
+            }));
+            runtimeSessionIdsRef.current = {
+              ...runtimeSessionIdsRef.current,
+              [sessionId]: resumedRuntimeSessionId,
+            };
+            return branchVia(resumedRuntimeSessionId);
+          }),
+        );
       }
       const result: BranchSessionResult | undefined = parseBranchSessionResult(raw, {
         sourceSessionId: sessionId,
@@ -12891,6 +13424,7 @@ export function AgentWorkspace({
           activeThinkingKey={activeThinkingKey}
           artifacts={turnArtifacts.get(turn.id)}
           approvalSubmitting={approvalSubmitting}
+          approvalScopeId={selectedHermesSessionId}
           clarifySubmitting={clarifySubmitting}
           sudoSubmitting={sudoSubmitting}
           secretSubmitting={secretSubmitting}
@@ -12920,6 +13454,7 @@ export function AgentWorkspace({
                 part.sessionId ??
                 selectedHermesSessionId,
               part.id,
+              part.instanceId ?? part.id,
               choice,
               sessionUnrestricted(selectedHermesSessionId),
             )
@@ -13016,6 +13551,7 @@ export function AgentWorkspace({
             activeThinkingKey={activeThinkingKey}
             artifacts={turnArtifacts.get(turn.id)}
             approvalSubmitting={approvalSubmitting}
+            approvalScopeId={selectedTask.id}
             clarifySubmitting={clarifySubmitting}
             sudoSubmitting={sudoSubmitting}
             secretSubmitting={secretSubmitting}
@@ -13040,6 +13576,7 @@ export function AgentWorkspace({
                 selectedTask.id,
                 sessionId,
                 part.id,
+                part.instanceId ?? part.id,
                 choice,
                 sessionUnrestricted(selectedTask.hermesSessionId),
               );
@@ -13163,6 +13700,7 @@ export function AgentWorkspace({
               : undefined
           }
           inProject={sessionInProject}
+          projectContext={sessionInProject ? projectContext : undefined}
           onMoveToProject={
             onMoveSessionToProject &&
             !newSessionMode &&
@@ -13428,6 +13966,7 @@ function AgentSessionBar({
   artifactCount = 0,
   artifactsOpen = false,
   inProject = false,
+  projectContext,
   onToggleArtifacts,
   onRename,
   onMoveToProject,
@@ -13443,6 +13982,7 @@ function AgentSessionBar({
   artifactCount?: number;
   artifactsOpen?: boolean;
   inProject?: boolean;
+  projectContext?: AgentProjectContext;
   onToggleArtifacts?: () => void;
   onRename?: (title: string) => void;
   /** Opens the change-project dialog (which also owns removal). */
@@ -13457,6 +13997,7 @@ function AgentSessionBar({
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title ?? "");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
   const menuWrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -13553,6 +14094,15 @@ function AgentSessionBar({
         </ol>
       </nav>
       <div className="detail-bar-actions">
+        {projectContext ? (
+          <button
+            type="button"
+            className="agent-project-instructions"
+            onClick={() => setInstructionsOpen(true)}
+          >
+            Project instructions
+          </button>
+        ) : null}
         {fullMode ? <UnrestrictedBadge /> : null}
         {onToggleArtifacts && artifactCount > 0 ? (
           <button
@@ -13679,6 +14229,24 @@ function AgentSessionBar({
           </div>
         ) : null}
       </div>
+      <Dialog
+        open={instructionsOpen}
+        onClose={() => setInstructionsOpen(false)}
+        title={`${projectContext?.name ?? "Project"} instructions`}
+        footer={
+          <button
+            type="button"
+            className="primary-action"
+            onClick={() => setInstructionsOpen(false)}
+          >
+            Close
+          </button>
+        }
+      >
+        <div className="agent-project-instructions-content">
+          {projectContext?.instructions?.trim() || "No project instructions have been added."}
+        </div>
+      </Dialog>
     </div>
   );
 }
@@ -14781,6 +15349,7 @@ function AgentResponseGallery({
               turn={turn}
               artifacts={section.artifacts}
               approvalSubmitting={{}}
+              approvalScopeId="gallery"
               clarifySubmitting={{}}
               sudoSubmitting={{}}
               secretSubmitting={{}}
@@ -14804,6 +15373,7 @@ function AgentResponseGallery({
 function AgentChatTurnRow({
   activeThinkingKey,
   approvalSubmitting,
+  approvalScopeId,
   artifacts,
   clarifySubmitting,
   sudoSubmitting,
@@ -14833,6 +15403,7 @@ function AgentChatTurnRow({
 }: {
   activeThinkingKey?: string;
   approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
+  approvalScopeId: string;
   artifacts?: AgentArtifact[];
   clarifySubmitting: Record<string, string>;
   sudoSubmitting: Record<string, "approve" | "deny">;
@@ -15198,7 +15769,9 @@ function AgentChatTurnRow({
             <ApprovalPart
               key={`${turn.id}:approval:${part.id}`}
               part={part}
-              submitting={approvalSubmitting[part.id]}
+              submitting={
+                approvalSubmitting[approvalResponseKey(approvalScopeId, part.instanceId ?? part.id)]
+              }
               onApproval={onApproval}
             />
           ) : part.type === "clarify" ? (
@@ -16222,19 +16795,23 @@ function videoProgressLabel(part: Extract<AgentChatPart, { type: "video" }>) {
 
 /** A resolved action card renders as a quiet, expandable one-line row instead
  * of a full card — a receipt in the transcript rather than a prompt. The row
- * mirrors {@link ContextCompactionPart}: an outcome glyph (checkmark / cross)
+ * mirrors {@link ContextCompactionPart}: an outcome glyph (checkmark / cross /
+ * warning)
  * that cross-fades to a plain-text "+"/"−" on hover (pure opacity — no layout
  * shift, a WKWebView compositing constraint), a short outcome label, and a
  * truncated one-line detail. Expanding reveals the full detail body (the
  * `children`) minus the action buttons. */
 function ResolvedActionRow({
   denied = false,
+  unknown = false,
   label,
   detail,
   children,
 }: {
   /** Renders the cross glyph and destructive tint instead of the checkmark. */
   denied?: boolean;
+  /** Renders a neutral warning glyph when the transport lost the outcome. */
+  unknown?: boolean;
   /** Short outcome word(s), e.g. "Approved once" / "Answered" / "Denied". */
   label: string;
   /** One-line truncated detail shown inline on the collapsed row. */
@@ -16245,11 +16822,16 @@ function ResolvedActionRow({
   return (
     <details
       className="agent-tool-disclosure agent-resolved-row"
-      data-choice={denied ? "deny" : "done"}
+      data-choice={unknown ? "unknown" : denied ? "deny" : "done"}
     >
       <summary>
         <span className="agent-tool-icon">
-          {denied ? (
+          {unknown ? (
+            <IconExclamationTriangle
+              size={15}
+              className="agent-tool-icon-glyph agent-resolved-icon-glyph"
+            />
+          ) : denied ? (
             <IconCrossSmall size={15} className="agent-tool-icon-glyph agent-resolved-icon-glyph" />
           ) : (
             <IconCheckmark2Small
@@ -16713,6 +17295,34 @@ export function ApprovalPart({
   // command (or description) truncated to one line, expandable to the full
   // description and command — no action buttons.
   if (resolved) {
+    if (part.status === "expired") {
+      const outcomeUnconfirmed = part.retiredReason === "unconfirmed";
+      return (
+        <ResolvedActionRow
+          denied={!outcomeUnconfirmed}
+          unknown={outcomeUnconfirmed}
+          label={outcomeUnconfirmed ? "Approval outcome unknown" : "Approval expired"}
+          detail={
+            part.command ? (
+              <span className="agent-resolved-mono">{part.command}</span>
+            ) : (
+              part.description
+            )
+          }
+        >
+          {outcomeUnconfirmed ? (
+            <p>
+              The connection closed before June could confirm the response. This approval is no
+              longer actionable, but it may have already been applied. Check the agent activity
+              before retrying.
+            </p>
+          ) : (
+            <p>This approval is no longer pending. June did not approve anything.</p>
+          )}
+          {part.command ? <pre>{part.command}</pre> : null}
+        </ResolvedActionRow>
+      );
+    }
     return (
       <ResolvedActionRow
         denied={activeChoice === "deny"}
@@ -16932,11 +17542,7 @@ export function BranchFromHereAction({
       disabled={submitting}
       onClick={() => onBranch(messageId, sessionId)}
     >
-      {submitting ? (
-        <DotSpinner className="agent-turn-action-spinner" />
-      ) : (
-        <IconBranchSimple size={14} aria-hidden />
-      )}
+      {submitting ? <DotSpinner /> : <IconBranchSimple size={14} aria-hidden />}
     </button>
   );
 
@@ -18340,7 +18946,7 @@ function persistedAssistantAfterPendingUser(
   );
   return (
     persistedUserIndex >= 0 &&
-    persistedMessages.slice(persistedUserIndex + 1).some((message) => message.role === "assistant")
+    hasFinalContentBearingAssistantReply(persistedMessages, persistedUserIndex)
   );
 }
 
@@ -18382,17 +18988,10 @@ function hermesMessageTimestampMs(message: HermesSessionMessage) {
 
 function sessionHasAssistantAfterLatestUser(messages: HermesSessionMessage[]) {
   let latestUserIndex = -1;
-  let latestAssistantIndex = -1;
   messages.forEach((message, index) => {
-    if (message.role === "user") {
-      latestUserIndex = index;
-    } else if (message.role === "assistant") {
-      latestAssistantIndex = index;
-    }
+    if (message.role === "user") latestUserIndex = index;
   });
-  if (latestAssistantIndex < 0) return false;
-  if (latestUserIndex < 0) return true;
-  return latestAssistantIndex > latestUserIndex;
+  return hasFinalContentBearingAssistantReply(messages, latestUserIndex);
 }
 
 // A session whose latest message is a recent user prompt with no assistant
@@ -18495,10 +19094,10 @@ export function projectAgentActivityLevels(
   const waitingSessionIds = new Set<string>();
   const toolCallSessionIds = new Set<string>();
   for (const record of records) {
-    if (record.phase === "running" || record.phase === "background") {
-      workingSessionIds.add(record.sessionId);
-    } else if (record.phase === "waiting") {
+    if (record.pendingActionCount > 0 || record.phase === "waiting") {
       waitingSessionIds.add(record.sessionId);
+    } else if (record.phase === "running" || record.phase === "background") {
+      workingSessionIds.add(record.sessionId);
     }
     if (record.currentTool) {
       toolCallSessionIds.add(record.sessionId);
@@ -18531,10 +19130,18 @@ function lifecycleStatusLooksRunning(event: Extract<JuneHermesEvent, { kind: "li
   return event.flavor === "running";
 }
 
-function agentStatusFromHermesEvent(event: JuneHermesEvent): AgentSessionStatusKind | undefined {
+function agentStatusFromHermesEvent(
+  event: JuneHermesEvent,
+  hasOpenPendingAction = false,
+): AgentSessionStatusKind | undefined {
   if (event.kind === "error") return "failed";
   if (event.kind === "pending_action") return "waitingForUser";
-  if (event.kind === "pending_action_resolution") return "running";
+  if (event.kind === "pending_action_resolution" || event.kind === "pending_action_expiration") {
+    return hasOpenPendingAction ? "waitingForUser" : "running";
+  }
+  // A complete transcript closes one assistant message, not the Agent run.
+  // The owning listener or monitor settles the run from lifecycle and
+  // persistence evidence so replayed message boundaries cannot finish it.
   if (event.kind === "lifecycle" && event.flavor === "terminal") {
     const status = event.status.toLowerCase();
     if (/(?:cancel|stop|interrupt|abort)/.test(status)) return "cancelled";
@@ -18692,7 +19299,8 @@ function sameVisibleMessageText(left: string, right: string) {
 }
 
 function stripHermesVisibleContext(value: string) {
-  const withoutWarnings = value.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
+  const withoutProjectContext = stripProjectContext(value);
+  const withoutWarnings = withoutProjectContext.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
   const marker = withoutWarnings.search(/\n*--- Attached Context ---/m);
   const visible = marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;
   // Drop the scheduled-run delivery preamble so a routine's title and dedup

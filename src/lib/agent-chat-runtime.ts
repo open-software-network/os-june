@@ -14,6 +14,7 @@ import { displayedUserMessageText } from "./issue-report-prompt";
 import { displayedSkillInvocationText } from "./skill-slash-commands";
 import type { JuneHermesEvent } from "./hermes-control-plane";
 import { generatedMediaToolKind, toolActivityLabel } from "./agent-tool-labels";
+import { stripProjectContext } from "./agent-project-context";
 
 export type AgentChatTextPart = {
   type: "text";
@@ -55,12 +56,15 @@ export type AgentApprovalChoice = "once" | "session" | "always" | "deny";
 export type AgentChatApprovalPart = {
   type: "approval";
   id: string;
+  /** June-owned instance identity; Hermes responses still use `id`. */
+  instanceId?: string;
   sessionId?: string;
   command: string;
   description: string;
   allowPermanent: boolean;
   choice?: AgentApprovalChoice;
-  status: "pending" | "resolved";
+  status: "pending" | "resolved" | "expired";
+  retiredReason?: string;
 };
 
 export type AgentChatClarifyPart = {
@@ -835,10 +839,12 @@ function appendLiveHermesEvents(
           case "approval":
             upsertApprovalPart(currentAssistant.parts, {
               id: action.requestId,
+              instanceId: action.instanceId,
               command: action.command ?? "",
               description: action.description ?? "Hermes needs approval before continuing.",
               sessionId: optionalSessionId(event.sessionId),
               allowPermanent: action.allowPermanent,
+              allowRetiredReopen: action.requestIdProvenance === "payload-fingerprint",
               status: "pending",
             });
             break;
@@ -882,6 +888,7 @@ function appendLiveHermesEvents(
           case "approval":
             upsertApprovalPart(targetParts, {
               id: action.requestId,
+              instanceId: action.instanceId,
               command: action.command,
               description: action.description,
               sessionId: optionalSessionId(event.sessionId),
@@ -909,6 +916,21 @@ function appendLiveHermesEvents(
             });
             break;
         }
+        break;
+      }
+
+      case "pending_action_expiration": {
+        const targetParts = (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [];
+        upsertApprovalPart(targetParts, {
+          id: event.action.requestId,
+          instanceId: event.action.instanceId,
+          command: "",
+          description: "",
+          sessionId: optionalSessionId(event.sessionId),
+          allowPermanent: false,
+          status: "expired",
+          retiredReason: event.action.reason,
+        });
         break;
       }
 
@@ -1384,7 +1406,10 @@ function completeRunningParts(parts: AgentChatPart[]) {
       part.status = "complete";
     }
     if (part.type === "tool" && part.status === "running") part.status = "complete";
-    if (part.type === "approval" && part.status === "pending") part.status = "resolved";
+    if (part.type === "approval" && part.status === "pending") {
+      part.status = "expired";
+      part.retiredReason = "session-complete";
+    }
     if (part.type === "clarify" && part.status === "pending") part.status = "resolved";
     if (part.type === "sudo" && part.status === "pending") part.status = "resolved";
     if (part.type === "secret" && part.status === "pending") part.status = "resolved";
@@ -1487,29 +1512,57 @@ function upsertApprovalPart(
     AgentChatApprovalPart,
     "id" | "command" | "description" | "allowPermanent" | "status"
   > &
-    Partial<Pick<AgentChatApprovalPart, "choice" | "sessionId">>,
+    Partial<
+      Pick<AgentChatApprovalPart, "choice" | "instanceId" | "sessionId" | "retiredReason">
+    > & {
+      allowRetiredReopen?: boolean;
+    },
 ) {
+  const nextInstanceId = next.instanceId ?? next.id;
   const existing = parts.find(
-    (part): part is AgentChatApprovalPart => part.type === "approval" && part.id === next.id,
+    (part): part is AgentChatApprovalPart =>
+      part.type === "approval" && (part.instanceId ?? part.id) === nextInstanceId,
   );
   if (existing) {
+    // Resolution and expiration are sticky for upstream-owned ids. The live
+    // stream separately admits a payload-fingerprint id again only after a
+    // new Agent-run boundary, so that compatibility identity may reopen here.
+    const reopeningRetiredLegacyApproval =
+      next.status === "pending" &&
+      existing.status !== "pending" &&
+      next.allowRetiredReopen === true;
+    if (
+      next.status === "pending" &&
+      existing.status !== "pending" &&
+      !reopeningRetiredLegacyApproval
+    ) {
+      return;
+    }
+    // A late expiration must not hide the decision the user already made.
+    if (next.status === "expired" && existing.status === "resolved") return;
     existing.command = next.command || existing.command;
     existing.description = next.description || existing.description;
+    existing.instanceId = next.instanceId ?? existing.instanceId;
     existing.sessionId = next.sessionId || existing.sessionId;
     existing.allowPermanent = next.allowPermanent;
-    existing.choice = next.choice ?? existing.choice;
+    existing.choice = reopeningRetiredLegacyApproval ? undefined : (next.choice ?? existing.choice);
+    existing.retiredReason = reopeningRetiredLegacyApproval
+      ? undefined
+      : (next.retiredReason ?? existing.retiredReason);
     existing.status = next.status;
     return;
   }
   parts.push({
     type: "approval",
     id: next.id,
+    instanceId: next.instanceId,
     sessionId: next.sessionId,
     command: next.command,
     description: next.description,
     allowPermanent: next.allowPermanent,
     choice: next.choice,
     status: next.status,
+    retiredReason: next.retiredReason,
   });
 }
 
@@ -1755,6 +1808,50 @@ function contextCompactionPreview(value: string) {
 type TextFromHermesContentOptions = {
   stripMediaImageReferences?: boolean;
 };
+
+/**
+ * Returns true only when one persisted Agent run ends with a visible assistant
+ * reply. Intermediate prose attached to a tool call is not a final reply: all
+ * tool results must precede the last content-bearing assistant message, and
+ * that final assistant must not request another tool. A following user message
+ * starts a different Agent run and is outside this proof boundary.
+ */
+export function hasFinalContentBearingAssistantReply(
+  messages: readonly HermesSessionMessage[],
+  persistedUserIndex: number,
+) {
+  const followingMessages = messages.slice(persistedUserIndex + 1);
+  const nextUserIndex = followingMessages.findIndex((message) => message.role === "user");
+  const acceptedAgentRunMessages =
+    nextUserIndex < 0 ? followingMessages : followingMessages.slice(0, nextUserIndex);
+  let lastToolResultIndex = -1;
+  acceptedAgentRunMessages.forEach((message, index) => {
+    if (message.role === "tool") lastToolResultIndex = index;
+  });
+  const finalAssistant = acceptedAgentRunMessages
+    .slice(lastToolResultIndex + 1)
+    .reduce<HermesSessionMessage | undefined>(
+      (latest, message) => (message.role === "assistant" ? message : latest),
+      undefined,
+    );
+  return (
+    finalAssistant !== undefined &&
+    !hermesAssistantMessageHasToolCalls(finalAssistant) &&
+    [finalAssistant.content, finalAssistant.text, finalAssistant.context].some(
+      (value) => textFromHermesContent(value) !== undefined,
+    )
+  );
+}
+
+function hermesAssistantMessageHasToolCalls(message: HermesSessionMessage) {
+  const toolCalls = message.tool_calls;
+  if (Array.isArray(toolCalls)) return toolCalls.length > 0;
+  if (typeof toolCalls === "string") {
+    const serialized = toolCalls.trim();
+    return serialized !== "" && serialized !== "[]";
+  }
+  return toolCalls !== undefined && toolCalls !== null;
+}
 
 export function textFromHermesContent(
   value: unknown,
@@ -2043,7 +2140,8 @@ export function videoPartsFromHermesContent(content: unknown): AgentChatVideoPar
 }
 
 function stripHermesContextMarkers(value: string) {
-  const withoutWarnings = value.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
+  const withoutProjectContext = stripProjectContext(value);
+  const withoutWarnings = withoutProjectContext.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
   const marker = withoutWarnings.search(/\n*--- Attached Context ---/m);
   const visible = marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;
   return visible.trim();

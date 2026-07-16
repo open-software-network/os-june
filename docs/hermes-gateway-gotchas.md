@@ -106,6 +106,23 @@ falls back to the config's `oauth` marker and OAuth-shaped probe errors.
 
 ## Events
 
+**MCP approvals are identity-addressed, not FIFO.** The pinned runtime carries
+June's checksum-gated `june-approval-v1` patch. MCP elicitation preserves the
+SDK request id and emits an opaque stable `request_id` on `approval.request`.
+While unanswered, the same logical request retried after an MCP transport
+reconnect joins the existing entry; separate requests on one transport remain
+separate even when their prompt text matches.
+Send that exact id back with `approval.respond`; never use `all: true` and never
+assume the first visible card is the queue head. Timeout and disconnect emit
+`approval.expire` and must render as a retired, non-actionable request. A
+missing or malformed id fails closed. See ADR 0025.
+
+**A gateway drop retires pre-drop approvals.** The patched runtime drains them
+fail closed as soon as the WebSocket transport detaches. AgentWorkspace mirrors that boundary locally
+before `session.resume`, then replaces the session event listener with the new
+runtime id. A delayed replay is diagnostic noise, not a reason to reopen the
+card.
+
 **The control plane fails loudly on unknown event types — by design.** A new
 raw type renders as the red "event June does not support yet" banner until it
 gets a branch in `classifyHermesEvent` (`hermes-control-plane/event-classifier.ts`)

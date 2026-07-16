@@ -14,6 +14,7 @@ import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPageSearch } from "central-icons/IconPageSearch";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
+import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconSortArrowUpDown } from "central-icons/IconSortArrowUpDown";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import type { FolderDto, HermesSessionInfo, NoteListItemDto } from "../../lib/tauri";
@@ -37,6 +38,7 @@ import { AddNotesToFolderDialog } from "./AddNotesToFolderDialog";
 import { AddSessionsToProjectDialog } from "./AddSessionsToProjectDialog";
 import { CreateFolderDialog } from "./CreateFolderDialog";
 import { EditFolderDialog } from "./EditFolderDialog";
+import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
 
 const NO_FOLDERS: FolderDto[] = [];
 
@@ -54,7 +56,8 @@ type FoldersWorkspaceProps = {
   };
   onSelectFolder: (folderId?: string) => void;
   onCreateFolder: (name: string, description?: string) => Promise<FolderDto | undefined> | void;
-  onRenameFolder: (folderId: string, name: string, description?: string) => void;
+  onRenameFolder: (folderId: string, name: string, description?: string) => Promise<unknown> | void;
+  onFolderUpdated: (folder: FolderDto) => void;
   onDeleteFolder: (folderId: string, deleteNotes: boolean) => Promise<unknown> | void;
   onCreateNote: (folderId?: string) => void;
   /** Start a fresh agent session that gets filed into this project. */
@@ -68,6 +71,8 @@ type FoldersWorkspaceProps = {
   onAssignSessionToFolder: (sessionId: string, folderId: string) => Promise<unknown>;
   onRemoveSessionFromFolder: (sessionId: string, folderId: string) => void;
   onOpenSessionMoveDialog: (sessionId: string) => void;
+  /** Open the full Memory manager (Settings > Memory) filtered to a project. */
+  onManageProjectMemory: (folderId: string) => void;
 };
 
 export function FoldersWorkspace(props: FoldersWorkspaceProps) {
@@ -559,6 +564,7 @@ function FolderDetail({
   sessionFolderIds,
   onSelectFolder,
   onRenameFolder,
+  onFolderUpdated,
   onDeleteFolder,
   onCreateNote,
   onCreateSession,
@@ -571,13 +577,14 @@ function FolderDetail({
   onAssignSessionToFolder,
   onRemoveSessionFromFolder,
   onOpenSessionMoveDialog,
+  onManageProjectMemory,
 }: FoldersWorkspaceProps & { folder: FolderDto }) {
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(folder.name);
   const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [addSessionsOpen, setAddSessionsOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const titleRef = useRef<HTMLInputElement | null>(null);
 
@@ -795,10 +802,7 @@ function FolderDetail({
           <FolderEmptyState
             onCreateSession={() => onCreateSession(folder.id)}
             onCreateNote={() => onCreateNote(folder.id)}
-            onAddExisting={() => setAddOpen(true)}
-            onAddSessions={() => setAddSessionsOpen(true)}
-            hasNotesElsewhere={notes.some((note) => !note.folderIds.includes(folder.id))}
-            hasSessionsElsewhere={hasSessionsElsewhere}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
         )}
       </div>
@@ -815,11 +819,11 @@ function FolderDetail({
             role="menuitem"
             onClick={() => {
               setMenu(null);
-              setEditOpen(true);
+              setSettingsOpen(true);
             }}
           >
-            <IconPencil size={14} />
-            Edit details
+            <IconSettingsGear4 size={14} />
+            Project settings
           </button>
           <button
             type="button"
@@ -864,11 +868,14 @@ function FolderDetail({
         confirmLabel="Delete project"
         destructive
       />
-      <EditFolderDialog
-        open={editOpen}
-        onClose={() => setEditOpen(false)}
+      <ProjectSettingsDialog
+        open={settingsOpen}
         folder={folder}
-        onSave={(name, description) => onRenameFolder(folder.id, name, description)}
+        onClose={() => setSettingsOpen(false)}
+        onSaveDetails={(name, description) => onRenameFolder(folder.id, name, description)}
+        onFolderUpdated={onFolderUpdated}
+        onManageMemory={onManageProjectMemory}
+        onRequestDelete={() => setDeleteOpen(true)}
       />
     </section>
   );
@@ -1153,45 +1160,6 @@ function FolderAddMenu({
   );
 }
 
-function FolderEmptyActions({
-  onCreateSession,
-  onCreateNote,
-  onAddExisting,
-  onAddSessions,
-  hasNotesElsewhere,
-  hasSessionsElsewhere,
-}: {
-  onCreateSession: () => void;
-  onCreateNote: () => void;
-  onAddExisting: () => void;
-  onAddSessions: () => void;
-  hasNotesElsewhere: boolean;
-  hasSessionsElsewhere: boolean;
-}) {
-  return (
-    <div className="folder-empty-actions">
-      {hasSessionsElsewhere ? (
-        <button type="button" className="primary-action" onClick={onAddSessions}>
-          Add existing session
-        </button>
-      ) : null}
-      {hasNotesElsewhere ? (
-        <button type="button" className="primary-action" onClick={onAddExisting}>
-          Add existing meeting note
-        </button>
-      ) : null}
-      <button type="button" className="primary-action" onClick={onCreateSession}>
-        <IconBubble3 size={13} />
-        New session
-      </button>
-      <button type="button" className="primary-action primary-solid" onClick={onCreateNote}>
-        <IconPlusMedium size={13} />
-        New meeting note
-      </button>
-    </div>
-  );
-}
-
 function FolderNoteRow({
   note,
   folder: _folder,
@@ -1326,33 +1294,44 @@ function FolderNoteRow({
 function FolderEmptyState({
   onCreateSession,
   onCreateNote,
-  onAddExisting,
-  onAddSessions,
-  hasNotesElsewhere,
-  hasSessionsElsewhere,
+  onOpenSettings,
 }: {
   onCreateSession: () => void;
   onCreateNote: () => void;
-  onAddExisting: () => void;
-  onAddSessions: () => void;
-  hasNotesElsewhere: boolean;
-  hasSessionsElsewhere: boolean;
+  onOpenSettings: () => void;
 }) {
   return (
-    <div className="folder-empty-surface" role="group">
-      <p className="folder-empty-hint">
-        Capture a meeting, a phone call, or a half-formed thought. Or start an agent session on this
-        project.
-      </p>
-      <FolderEmptyActions
-        onCreateSession={onCreateSession}
-        onCreateNote={onCreateNote}
-        onAddExisting={onAddExisting}
-        onAddSessions={onAddSessions}
-        hasNotesElsewhere={hasNotesElsewhere}
-        hasSessionsElsewhere={hasSessionsElsewhere}
-      />
-    </div>
+    <EmptyState
+      label="Add to this project"
+      icon={<IconFolderOpen size={28} />}
+      title="Nothing here yet"
+      description="Start an agent session or capture a meeting note. Everything you add stays in this project."
+      action={
+        <>
+          <div className="folder-empty-cta">
+            <button type="button" className="primary-action" onClick={onCreateSession}>
+              <IconBubble3 size={13} />
+              New session
+            </button>
+            <button type="button" className="primary-action primary-solid" onClick={onCreateNote}>
+              <IconPlusMedium size={13} />
+              New meeting note
+            </button>
+          </div>
+          <p className="folder-empty-nudge">
+            Want June to follow instructions or remember details here? Set it up in{" "}
+            <button
+              type="button"
+              className="settings-inline-link folder-empty-nudge-link"
+              onClick={onOpenSettings}
+            >
+              project settings
+            </button>
+            .
+          </p>
+        </>
+      }
+    />
   );
 }
 

@@ -91,6 +91,40 @@ describe("createHermesActivityStore", () => {
     expect(store.getRecord("s1")?.phase).toBe("running");
   });
 
+  it("keeps the session waiting when a different pending action remains", () => {
+    let pendingCount = 2;
+    const store = createHermesActivityStore({ pendingCountFor: () => pendingCount });
+    store.record(
+      classified("approval.request", "s1", {
+        request_id: "r1",
+        tool_name: "write_file",
+      }),
+      "sandboxed",
+    );
+
+    pendingCount = 1;
+    store.record(
+      classified("approval.response", "s1", {
+        request_id: "r1",
+        choice: "once",
+      }),
+      "sandboxed",
+    );
+
+    expect(store.getRecord("s1")?.phase).toBe("waiting");
+
+    pendingCount = 0;
+    store.record(
+      classified("approval.expire", "s1", {
+        request_id: "r2",
+        reason: "disconnect",
+      }),
+      "sandboxed",
+    );
+
+    expect(store.getRecord("s1")?.phase).toBe("running");
+  });
+
   it("a failed tool event clears the in-flight tool", () => {
     const store = createHermesActivityStore();
     store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");

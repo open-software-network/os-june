@@ -7,22 +7,23 @@
  * surfaced inline in the session it belongs to (feature 03), but the inline
  * cards can't answer "what across ALL my sessions is waiting on me right now?".
  * This store is that aggregation: every `pending_action` event the gateway
- * classifies lands here, keyed by `mode + sessionId + requestId`, so the tray
- * can list one row per outstanding action and route a click to the right
- * session.
+ * classifies lands here, keyed by mode, normalized stored session id, and the
+ * June-owned action instance id. The instance id is the runtime request id for
+ * ordinary actions; legacy approval fingerprints add their owning Agent-run
+ * epoch so a later run can surface the same fingerprint independently.
  *
  * Lifecycle (the careful part):
  * - An action is `open` when first seen and stays open until *confirmed*
  *   resolution: a matching response/the user responds (`resolveRequest`), the
  *   session completes or is interrupted or hits a terminal error
  *   (`resolveSession`).
- * - On a gateway reconnect we do NOT clear anything — a disconnect is not a
- *   resolution. Instead `reconcileAfterReconnect` marks still-unresolved actions
- *   `stale`: they remain visible (a stale-but-dismissable row beats a hidden
- *   blocker) but the tray renders them visually distinct. A fresh event for the
- *   same request after reconnect re-confirms it back to `open`.
- * - Resolution is sticky: once `resolved`, a straggler duplicate of the same
- *   request can't resurrect the row.
+ * - A gateway detach retires approval instances before reconnect because the
+ *   pinned runtime fails them closed. The store does not globally clear the
+ *   remaining action kinds: `reconcileAfterReconnect` marks those unresolved
+ *   instances `stale`, and a fresh event for the same instance re-confirms it
+ *   back to `open`.
+ * - Resolution and expiration are sticky: once `resolved` or `expired`, a
+ *   straggler duplicate of the same instance can't resurrect the row.
  *
  * Framework-agnostic (no React) so tests drive it directly; AgentWorkspace
  * adapts it with a `useSyncExternalStore` wrapper, mirroring features 02/15.
@@ -31,6 +32,7 @@
 
 import type { HermesMode, JuneHermesEvent, PendingHermesAction } from "./hermes-control-plane";
 import { nonEmpty } from "./hermes-control-plane";
+import { hermesApprovalInstanceId } from "./hermes-live-stream";
 
 /** The `pending_action` variant of the classifier union — the store's input. */
 type PendingActionEvent = Extract<JuneHermesEvent, { kind: "pending_action" }>;
@@ -43,9 +45,9 @@ type PendingActionEvent = Extract<JuneHermesEvent, { kind: "pending_action" }>;
 export const PENDING_ACTIONS_CAP = 200;
 
 /** A record's lifecycle phase. `stale` = unreconciled after a reconnect. */
-export type PendingActionStatus = "open" | "submitting" | "resolved" | "stale";
+export type PendingActionStatus = "open" | "submitting" | "resolved" | "stale" | "expired";
 
-/** Stable identity across the pack: mode, session, and the request id. */
+/** Stable store identity: mode, normalized stored session id, and instance id. */
 export type PendingActionKey = `${HermesMode}:${string}:${string}`;
 
 /**
@@ -55,13 +57,19 @@ export type PendingActionKey = `${HermesMode}:${string}:${string}`;
  */
 export type PendingActionRecord = {
   key: PendingActionKey;
+  /** Store identity. Legacy approval fingerprints add the owning Agent-run
+   * epoch while runtime-provided request ids remain globally scoped. */
+  instanceId: string;
   mode: HermesMode;
+  /** Normalized stored session id used by June-owned history and UI. */
   sessionId: string;
   requestId: string;
+  approvalRunEpoch?: number;
   action: PendingHermesAction;
   firstSeenAt: number;
   lastSeenAt: number;
   status: PendingActionStatus;
+  retiredReason?: string;
 };
 
 /** Statuses that still demand the user's attention (and so show in the tray). */
@@ -69,28 +77,43 @@ const OPEN_STATUSES: ReadonlySet<PendingActionStatus> = new Set(["open", "submit
 
 export type PendingActionStore = {
   /**
-   * Ingest one classified `pending_action` event. `mode` is the session's mode
-   * (derive it with `hermesModeFor(sessionId)` at the call site). Total: never
-   * throws. A second event for an already-`resolved` request is ignored so a
-   * straggler can't resurrect a row; any other re-record refreshes `lastSeenAt`
-   * and (if `stale`) re-confirms the row back to `open`.
+   * Ingest one classified `pending_action` event. `mode` belongs to the
+   * normalized stored session (derive it with `hermesModeFor` at the call
+   * site). Total: never throws. A second event for an already-resolved instance
+   * is ignored so a straggler can't resurrect a row; any other re-record
+   * refreshes `lastSeenAt` and (if `stale`) re-confirms the row back to `open`.
    */
-  record(event: PendingActionEvent, mode: HermesMode): void;
+  record(
+    event: PendingActionEvent,
+    mode: HermesMode,
+    options?: { approvalRunEpoch?: number },
+  ): void;
   /**
-   * Mark the action for `(sessionId, requestId)` resolved — the user responded
-   * or a matching response arrived. No-op (and no version bump) if unknown.
+   * Mark an action for the normalized stored session id and request id resolved
+   * because the user responded or a matching response arrived. Pass
+   * `instanceId` to target one approval instance; omit it to retire every
+   * matching request. No-op (and no version bump) if unknown.
    */
-  resolveRequest(sessionId: string, requestId: string): void;
+  resolveRequest(sessionId: string, requestId: string, options?: { instanceId?: string }): void;
+  /** Retire an approval that timed out, disconnected, or was no longer pending. */
+  expireRequest(
+    sessionId: string,
+    requestId: string,
+    reason?: string,
+    options?: { instanceId?: string },
+  ): void;
   /**
-   * Resolve every still-open action for a session. Call when the session
-   * completes, is interrupted, or reports a terminal (non-recoverable) error —
-   * the agent is no longer waiting, so the blockers are moot.
+   * Resolve every still-open action for a stored session. Call when that
+   * session completes, is interrupted, or reports a terminal (non-recoverable)
+   * error — the agent is no longer waiting, so the blockers are moot.
    */
   resolveSession(sessionId: string): void;
   /**
-   * Record that the gateway dropped. Intentionally a no-op on state: a
-   * disconnect is NOT a resolution, so pending actions must survive it. Present
-   * so the call site reads clearly and a future policy has a hook.
+   * Record that the gateway dropped. Intentionally a no-op on store state:
+   * AgentWorkspace expires approval instances before detach, while other
+   * unresolved action kinds survive until reconnect reconciliation marks them
+   * stale. Present so the call site reads clearly and a future policy has a
+   * hook.
    */
   markDisconnected(): void;
   /**
@@ -111,6 +134,18 @@ export type PendingActionStore = {
 };
 
 /**
+ * Identity used by June-owned pending-action consumers. Runtime ids are
+ * globally stable. A payload-fingerprint compatibility id is only stable
+ * inside the validated Agent run that observed it.
+ */
+export function pendingActionInstanceId(
+  action: PendingHermesAction,
+  approvalRunEpoch: number | undefined,
+): string {
+  return hermesApprovalInstanceId(action, approvalRunEpoch);
+}
+
+/**
  * Creates an isolated store instance. The app holds one (see
  * {@link pendingActionStore}); tests create their own so state never leaks.
  */
@@ -126,11 +161,15 @@ export function createPendingActionStore(): PendingActionStore {
     for (const listener of listeners) listener();
   }
 
-  function keyFor(mode: HermesMode, sessionId: string, requestId: string): PendingActionKey {
-    return `${mode}:${sessionId}:${requestId}`;
+  function keyFor(mode: HermesMode, sessionId: string, instanceId: string): PendingActionKey {
+    return `${mode}:${sessionId}:${instanceId}`;
   }
 
-  function record(event: PendingActionEvent, mode: HermesMode): void {
+  function record(
+    event: PendingActionEvent,
+    mode: HermesMode,
+    options: { approvalRunEpoch?: number } = {},
+  ): void {
     const sessionId = nonEmpty(event.sessionId);
     const requestId = nonEmpty(event.action.requestId);
     // A pending action that can't be attributed to a session a user could open
@@ -138,13 +177,21 @@ export function createPendingActionStore(): PendingActionStore {
     // rather than show a dead row.
     if (!sessionId || !requestId) return;
 
-    const key = keyFor(mode, sessionId, requestId);
+    const approvalRunEpoch =
+      event.action.kind === "approval" &&
+      event.action.requestIdProvenance === "payload-fingerprint" &&
+      Number.isSafeInteger(options.approvalRunEpoch) &&
+      (options.approvalRunEpoch ?? -1) >= 0
+        ? options.approvalRunEpoch
+        : undefined;
+    const instanceId = pendingActionInstanceId(event.action, approvalRunEpoch);
+    const key = keyFor(mode, sessionId, instanceId);
     const now = Date.now();
     const existing = byKey.get(key);
 
     if (existing) {
       // A duplicate of an already-resolved request must NOT reopen it.
-      if (existing.status === "resolved") return;
+      if (existing.status === "resolved" || existing.status === "expired") return;
       existing.lastSeenAt = now;
       // A fresh event proves the action is still pending → clear any staleness.
       existing.status = "open";
@@ -159,9 +206,11 @@ export function createPendingActionStore(): PendingActionStore {
 
     byKey.set(key, {
       key,
+      instanceId,
       mode,
       sessionId,
       requestId,
+      ...(approvalRunEpoch === undefined ? {} : { approvalRunEpoch }),
       action: event.action,
       firstSeenAt: now,
       lastSeenAt: now,
@@ -171,14 +220,51 @@ export function createPendingActionStore(): PendingActionStore {
     emit();
   }
 
-  function resolveRequest(sessionId: string, requestId: string): void {
+  function resolveRequest(
+    sessionId: string,
+    requestId: string,
+    options: { instanceId?: string } = {},
+  ): void {
     const sid = nonEmpty(sessionId);
     const rid = nonEmpty(requestId);
     if (!sid || !rid) return;
     let changed = false;
     for (const record of byKey.values()) {
-      if (record.sessionId === sid && record.requestId === rid && record.status !== "resolved") {
+      if (
+        record.sessionId === sid &&
+        record.requestId === rid &&
+        (options.instanceId === undefined || record.instanceId === options.instanceId) &&
+        record.status !== "resolved" &&
+        record.status !== "expired"
+      ) {
         record.status = "resolved";
+        record.lastSeenAt = Date.now();
+        changed = true;
+      }
+    }
+    if (changed) emit();
+  }
+
+  function expireRequest(
+    sessionId: string,
+    requestId: string,
+    reason?: string,
+    options: { instanceId?: string } = {},
+  ): void {
+    const sid = nonEmpty(sessionId);
+    const rid = nonEmpty(requestId);
+    if (!sid || !rid) return;
+    let changed = false;
+    for (const record of byKey.values()) {
+      if (
+        record.sessionId === sid &&
+        record.requestId === rid &&
+        (options.instanceId === undefined || record.instanceId === options.instanceId) &&
+        record.status !== "resolved" &&
+        record.status !== "expired"
+      ) {
+        record.status = "expired";
+        record.retiredReason = nonEmpty(reason);
         record.lastSeenAt = Date.now();
         changed = true;
       }
@@ -191,7 +277,7 @@ export function createPendingActionStore(): PendingActionStore {
     if (!sid) return;
     let changed = false;
     for (const record of byKey.values()) {
-      if (record.sessionId === sid && record.status !== "resolved") {
+      if (record.sessionId === sid && record.status !== "resolved" && record.status !== "expired") {
         record.status = "resolved";
         record.lastSeenAt = Date.now();
         changed = true;
@@ -245,17 +331,17 @@ export function createPendingActionStore(): PendingActionStore {
   }
 
   /**
-   * Keep the map within the cap. Evict already-resolved history first (oldest by
-   * insertion order), and only touch still-open rows if resolved history alone
+   * Keep the map within the cap. Evict terminal history first (oldest by
+   * insertion order), and only touch still-open rows if terminal history alone
    * can't get us under the cap — a blocker the user hasn't answered is the last
    * thing we want to silently drop.
    */
   function evict(): void {
     if (byKey.size <= PENDING_ACTIONS_CAP) return;
-    // First pass: drop oldest resolved.
+    // First pass: drop oldest terminal history.
     for (const [key, record] of byKey) {
       if (byKey.size <= PENDING_ACTIONS_CAP) break;
-      if (record.status === "resolved") byKey.delete(key);
+      if (record.status === "resolved" || record.status === "expired") byKey.delete(key);
     }
     // Second pass (rare): still over cap with only open rows — drop oldest.
     for (const key of byKey.keys()) {
@@ -267,6 +353,7 @@ export function createPendingActionStore(): PendingActionStore {
   return {
     record,
     resolveRequest,
+    expireRequest,
     resolveSession,
     markDisconnected,
     reconcileAfterReconnect,
