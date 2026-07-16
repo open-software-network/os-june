@@ -542,15 +542,11 @@ jobs:
           response=$(curl -sS -f -X POST \
             --connect-timeout 5 \
             --max-time 20 \
-            --retry 3 \
-            --retry-all-errors \
-            --retry-delay 2 \
-            --retry-max-time 60 \
             -H "Content-Type: application/json" \
             --data-binary "@$payload_file" \
             "$SLACK_WEBHOOK_URL" 2>&1) || {
-            echo "::warning::Slack notification failed: $response"
-            echo "- Slack notification: failed after bounded retries (see step warning)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Slack notification failed or delivery could not be confirmed: $response"
+            echo "- Slack notification: delivery unconfirmed (check Slack before posting manually)" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           }
           echo "Slack notification sent successfully."

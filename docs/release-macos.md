@@ -137,10 +137,12 @@ It posts when a `vX.Y.Z` stable release is published. RC builds reuse the fixed
 `rc-desktop-release` workflow posts each successful candidate through
 `SLACK_WEBHOOK_URL` after its release assets are available. The webhook message
 links the source commit, that candidate's immutable versioned macOS DMG, and the
-fixed `rc` release page. Delivery uses bounded retries and reports its result in
-the Actions summary. It remains best effort and never turns a successfully
-published candidate into a failed release run; a missed announcement is handled
-manually rather than rerunning or replacing the signed release.
+fixed `rc` release page. Delivery uses one bounded attempt and reports its result
+in the Actions summary. It remains best effort and never turns a successfully
+published candidate into a failed release run. If delivery is unconfirmed, check
+Slack before posting manually; automatically retrying an incoming webhook could
+duplicate an announcement when Slack accepted the request but its response was
+lost.
 
 The app polls:
 
