@@ -90,3 +90,16 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | os-api private routing (pre-PR) | Standards (codex, r1+final) | 3 | 3 | caught `/v1` provider-semantic drift, missing canonical glossary coverage, and stale response-shape wording; final clean |
 | os-api private routing (pre-PR) | Spec (codex, r1+final) | 0 | — | clean twice; verified deliberate Venice-private-first policy, BYOK isolation, additive metadata, compatibility, and pricing |
 | os-api private routing (pre-PR) | Adversarial (codex, r1-r3) | 2 | 2 | caught underpriced canonical Kimi first, then expanded the same billing invariant to all five multi-route preferred models; final approve |
+| JUN-334 (pre-PR) | Standards (codex, r1+fix audit) | 5 | 5 | canonical note-transcription/checkpoint names, recording-session ids, Turn WAV vocabulary, generated Note wording, and docs-index coverage were all real and fixed |
+| JUN-334 (pre-PR) | Spec (codex, r1+fix audit) | 2 | 2 | caught missing terminal telemetry on microphone setup failure and non-canonical Source fallback order; both received focused regressions |
+| JUN-334 (pre-PR) | Adversarial (codex, initial+convergence r1) | 1 | 1 | independently confirmed the microphone setup-telemetry gap, then approved the fixed scheduler, cleanup, evidence, polling, and privacy paths |
+| JUN-334 (pre-PR) | Adversarial (codex, convergence r2) | 0 | — | second consecutive clean review by a different reviewer; explicitly checked dual-Source setup, buffered preparation errors, fallback guards, benchmark reproduction, and billing/privacy |
+| #777 | Greptile (bot) | 2 | 2 | caught process-global environment mutation in the default test suite and an implicit odd-sample median contract; fixed with child-process isolation and executable five-run/all-or-none invariants |
+| #777 | Adversarial (codex, post-bot fix) | 1 | 1 | caught libtest's exit-0 behavior when a stale exact filter runs zero tests; added a child-only completion sentinel and a focused false-pass regression |
+| #777 | Codex (bot) | 1 | 1 | caught dictionary-load failure returning before dual-Source terminal telemetry; aligned it with microphone-only finalization and added storage-failure checkpoint coverage |
+| JUN-349 (pre-PR) | Standards (codex) | 0 | — | clean on the runtime startup guard and focused relaunch regression coverage |
+| JUN-349 (pre-PR) | Spec (codex) | 0 | — | clean against the immediate relaunch-history restoration contract and explicit non-goals |
+| JUN-349 (pre-PR) | Adversarial (claude) | 0 | — | approved after tracing double-start locking, shared session storage across runtime modes, and the canonical message read path |
+| JUN-324 (pre-PR) | Standards (codex, r1+final) | 1 | 1 | caught the ambiguous bare “transcription” term in the new regression test; renamed it to canonical note transcription wording, final clean |
+| JUN-324 (pre-PR) | Spec (codex, r1+final) | 0 | — | clean against the chevron visibility, enabled-state, open/close interaction, and regression-coverage acceptance criteria |
+| JUN-324 (pre-PR) | Adversarial (codex, r1+convergence) | 0 | — | approved after tracing the persisted recording source mode and confirming the newly reachable options affect only the next recording |

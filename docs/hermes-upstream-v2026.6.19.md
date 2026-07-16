@@ -7,6 +7,38 @@
 - Archive checksum: `7a9bd367066183898831c2760f269368ab54b458a1d1b51d14ef1f484dd490cc`
 - Upstream changelog: `https://github.com/NousResearch/hermes-agent/compare/v2026.6.5...v2026.6.19`
 
+## June compatibility patch
+
+The upstream pin remains unchanged. June applies the deterministic
+`june-approval-v1` patch set before building the bundled runtime and before
+finishing a managed runtime install. See
+[ADR 0025](adr/0025-targeted-hermes-approval-protocol.md).
+
+The patch preserves MCP `RequestContext.request_id`, derives an opaque stable
+approval id, and coalesces a still-pending logical request retried after an MCP
+transport reconnect without merging separate requests on one live transport.
+It bounds queue entries, reconnect aliases, completed requests, and completed
+sessions; adds targeted `approval.respond`; and emits targeted
+`approval.expire` events on timeout and disconnect. Missing identity, malformed
+responses, notification failure, queue overflow, timeout, and disconnect fail
+closed. Existing command/code approvals derive targeted identity from their
+turn/tool-call context, so non-MCP approval behavior is preserved.
+
+The patcher in `src-tauri/src/hermes/apply_june_patches.py` accepts only these
+exact source states:
+
+| File | Upstream SHA-256 | Patched SHA-256 |
+| --- | --- | --- |
+| `tools/approval.py` | `e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85` | `56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d` |
+| `tools/mcp_tool.py` | `3f0aca90d076a1b0aa5daffd7bb39b0d1a4fee83265f855e68d556e5c8a29d01` | `48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa` |
+| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `41197c75c3aee760a05a8ecdce4daa3d0ca7f62b34486f29a21f097086a4ef4e` |
+
+Both macOS and Windows bundlers apply the same patch, write `PATCHSET`, verify
+the patched hashes after relocation, and run
+`scripts/hermes-approval-patch-smoke.py`. Managed installs record the upstream
+commit and patch set separately in `runtime.json`; the bridge verifies the
+patched source hashes before launch.
+
 ## Compatibility checked
 
 June still starts Hermes through:
@@ -101,15 +133,20 @@ Two phases, gated independently:
   (4009 busy is retried, but only acceptance passes), `session.interrupt`. A local
   `/v1/models` stub validates a switch from the configured model to an alternate
   listed model; no model tokens are spent.
+- Approval patch smoke (during macOS and Windows bundle self-test): duplicate
+  delivery, distinct concurrent requests, targeted approval and denial,
+  replay, timeout, malformed identity, bounded overflow, and disconnect drain.
 - Model smoke (opt-in): set `HERMES_SMOKE_MODEL=1` and ensure the runtime config
   has a real provider key. This adds a minimal no-tool `prompt.submit` and waits
   for a completion. It costs provider tokens, so it is off by default.
 
 Environment variables:
 
-- `JUNE_HERMES_COMMAND`: absolute path to a `hermes` binary. Highest priority
-  (mirrors the Rust override). When unset, the script probes the same
-  user-local venv locations the bridge falls back to.
+- `JUNE_HERMES_COMMAND`: explicit development override for an absolute path to
+  a `hermes` binary. Production resolution otherwise accepts only a verified
+  June-bundled or June-managed runtime and fails closed instead of using an
+  unpatched user-local or `PATH` fallback. The standalone smoke still probes
+  common developer-local installs when the override is unset.
 - `HERMES_SMOKE_MODEL=1`: also run the model-costing `prompt.submit` phase.
 - `HERMES_SMOKE_TIMEOUT_MS`: per-step RPC timeout (default 120000).
 - `HERMES_SMOKE_READY_MS`: readiness-wait budget (default 45000, matches the

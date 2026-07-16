@@ -114,6 +114,7 @@ import {
   type AgentRunSettledDetail,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
+import { selectSessionProjectContext } from "../lib/agent-project-context";
 import {
   notifyAgentRunSettled,
   notifyAgentSessionStatus,
@@ -124,7 +125,11 @@ import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { errorCode, messageFromError } from "../lib/errors";
 import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
-import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
+import {
+  authoritativeTranscriptCoverageKey,
+  clearTerminalLiveTranscriptEvents,
+  upsertLiveTranscriptEvent,
+} from "../lib/live-transcript-preview";
 import {
   RECORDING_INACTIVITY_RESPONSE_MS,
   RECORDING_INACTIVITY_SNOOZE_MS,
@@ -440,12 +445,33 @@ export function App() {
   // is opened so "back" lands the user where they were, not on Notes.
   const [settingsReturnView, setSettingsReturnView] = useState<SidebarView>("notes");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  // When the Memory tab is opened from a project ("Manage memories"), the
+  // manager pre-filters to that project. Cleared on any normal tab navigation.
+  const [memoryFolderFilter, setMemoryFolderFilter] = useState<string | undefined>();
   const openSettings = useCallback(() => {
     const returnView = activeViewRef.current;
     if (returnView !== "settings") {
       setSettingsReturnView(returnView);
     }
+    setMemoryFolderFilter(undefined);
     setActiveView("settings");
+  }, []);
+  // Deep-link into Settings > Memory filtered to a project (from the project
+  // settings dialog's "Manage memories").
+  const openMemorySettings = useCallback((folderId?: string) => {
+    const returnView = activeViewRef.current;
+    if (returnView !== "settings") {
+      setSettingsReturnView(returnView);
+    }
+    setMemoryFolderFilter(folderId);
+    setSettingsTab("memory");
+    setActiveView("settings");
+  }, []);
+  // Any deliberate tab change clears the project pre-filter so opening Memory
+  // from the settings nav shows all memories, not a stale project scope.
+  const changeSettingsTab = useCallback((tab: SettingsTab) => {
+    setMemoryFolderFilter(undefined);
+    setSettingsTab(tab);
   }, []);
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
   // Tracks that the open note was drilled into from the All notes view, so the
@@ -973,6 +999,9 @@ export function App() {
     });
   }, []);
   const selectedNote = state.selectedNote;
+  const selectedNoteTranscriptCoverageKey = authoritativeTranscriptCoverageKey(
+    selectedNote?.sourceTranscripts ?? [],
+  );
   const selectedNoteId = selectedNote?.id;
   // The contextual Ask June panel next to the open note. Scoped to one note:
   // it only renders while a note is the active view, and closes whenever the
@@ -1030,13 +1059,19 @@ export function App() {
     agentOrigin?.kind === "project"
       ? state.folders.find((folder) => folder.id === agentOrigin.folderId)
       : undefined;
-  // The active session's own project. Sessions opened outside a project (the
-  // Sessions view, the sidebar) still crumb to the project they're filed in,
-  // so membership is visible wherever the session was entered from — same as
-  // meeting notes showing their project up top.
+  // The active session's project. Legacy sessions may have multiple project
+  // assignments, so an explicit project origin wins over assignment order;
+  // sessions opened elsewhere fall back to their first assignment.
   const activeAgentSessionFolder = activeAgentSessionId
-    ? state.folders.find((folder) => folder.id === sessionFolders[activeAgentSessionId]?.[0])
+    ? selectSessionProjectContext(
+        state.folders,
+        sessionFolders[activeAgentSessionId],
+        agentOrigin?.kind === "project" ? agentOrigin.folderId : undefined,
+      )
     : undefined;
+  const agentProjectContextFolder =
+    activeAgentSessionFolder ??
+    (!activeAgentSessionId && agentOrigin?.kind === "project" ? agentOriginFolder : undefined);
   const recoveriesByNote = useMemo(() => {
     const map = new Map<string, (typeof state.activeRecoveries)[number]>();
     for (const recovery of state.activeRecoveries) {
@@ -2314,7 +2349,13 @@ export function App() {
   function handleEnableAccessibility() {
     void dictationHelperCommand({
       type: "request_accessibility_permission",
-    }).catch(() => undefined);
+    }).catch(async () => {
+      try {
+        await openPrivacySettings("accessibility");
+      } catch {
+        // The fallback is best-effort; there is no further recovery surface.
+      }
+    });
   }
 
   useEffect(() => {
@@ -2370,10 +2411,33 @@ export function App() {
   }, [state.recordingStatus?.sessionId, state.recordingStatus?.state]);
 
   useEffect(() => {
-    if (!state.recordingStatus) {
-      setLiveTranscriptEvents([]);
+    if (
+      !selectedNote ||
+      (selectedNote.processingStatus !== "ready" && selectedNote.processingStatus !== "failed") ||
+      (selectedNote.queuedRecordings ?? 0) > 0
+    ) {
+      return;
     }
-  }, [state.recordingStatus?.sessionId]);
+    const protectedSessionIds = [...finishingSessionsRef.current];
+    if (recordingNoteId === selectedNote.id && state.recordingStatus?.sessionId) {
+      protectedSessionIds.push(state.recordingStatus.sessionId);
+    }
+    setLiveTranscriptEvents((current) =>
+      clearTerminalLiveTranscriptEvents(
+        current,
+        selectedNote.id,
+        selectedNote.sourceTranscripts ?? [],
+        protectedSessionIds,
+      ),
+    );
+  }, [
+    recordingNoteId,
+    selectedNote?.id,
+    selectedNote?.processingStatus,
+    selectedNote?.queuedRecordings,
+    selectedNoteTranscriptCoverageKey,
+    state.recordingStatus?.sessionId,
+  ]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -2923,7 +2987,6 @@ export function App() {
       if (!startAlreadyClaimed) {
         recordingStartInFlightRef.current = true;
       }
-      setLiveTranscriptEvents([]);
       setRecordingNote(noteId);
       const startingStatus = startingRecordingStatus(noteId, requestedSourceMode);
       recordingStatusRef.current = startingStatus;
@@ -3276,7 +3339,6 @@ export function App() {
     // notes…") plus a queued count tell the user work is still in flight.
     const owningNoteId = recordingNoteIdRef.current;
     dispatch({ type: "recordingStatusCleared" });
-    setLiveTranscriptEvents([]);
     setRecordingNote(undefined);
     playRecordingSound("stop");
     // Optimistically flip the note that owns this recording to transcribing.
@@ -3556,7 +3618,7 @@ export function App() {
         activeView={activeView}
         account={account}
         settingsTab={settingsTab}
-        onSettingsTabChange={setSettingsTab}
+        onSettingsTabChange={changeSettingsTab}
         onChangeView={(view) => {
           if (takeNewTabIntent()) {
             openTab({ view });
@@ -3735,8 +3797,14 @@ export function App() {
                   onEnableMicrophone={handleEnableMicrophone}
                   onEnableAccessibility={handleEnableAccessibility}
                   onEnableSystemAudio={handleEnableSystemAudio}
+                  folders={state.folders}
+                  memoryFolderFilter={memoryFolderFilter}
+                  onOpenProject={(folderId) => {
+                    handleSelectFolder(folderId);
+                    setActiveView("folders");
+                  }}
                   activeTab={settingsTab}
-                  onTabChange={setSettingsTab}
+                  onTabChange={changeSettingsTab}
                   onDetailPinnedChange={setSettingsDetailPinned}
                   onCheckForUpdates={() => runUpdateCheck("manual")}
                   updateReadyToRelaunch={readyUpdate != null}
@@ -3806,6 +3874,28 @@ export function App() {
                   topUpLabel={topUpLabel}
                   onTopUp={handleTopUp}
                   sessionInProject={Boolean(activeAgentSessionFolder)}
+                  resolveSessionProjectContext={(sessionId) => {
+                    const folder =
+                      sessionId === activeAgentSessionId
+                        ? activeAgentSessionFolder
+                        : selectSessionProjectContext(state.folders, sessionFolders[sessionId]);
+                    return folder
+                      ? {
+                          id: folder.id,
+                          name: folder.name,
+                          instructions: folder.instructions,
+                        }
+                      : undefined;
+                  }}
+                  projectContext={
+                    agentProjectContextFolder
+                      ? {
+                          id: agentProjectContextFolder.id,
+                          name: agentProjectContextFolder.name,
+                          instructions: agentProjectContextFolder.instructions,
+                        }
+                      : undefined
+                  }
                   onMoveSessionToProject={(sessionId) => setMoveDialogSessionIds([sessionId])}
                   origin={
                     agentOriginFolder
@@ -3936,8 +4026,9 @@ export function App() {
                   onSelectFolder={(folderId) => handleSelectFolder(folderId)}
                   onCreateFolder={(name, description) => handleCreateFolder(name, description)}
                   onRenameFolder={(folderId, name, description) =>
-                    void handleRenameFolder(folderId, name, description)
+                    handleRenameFolder(folderId, name, description)
                   }
+                  onFolderUpdated={(folder) => dispatch({ type: "folderUpdated", folder })}
                   onDeleteFolder={(folderId) => handleDeleteFolder(folderId)}
                   onCreateNote={(folderId) => void handleCreateNote(folderId)}
                   onSelectNote={(noteId) => {
@@ -3995,6 +4086,7 @@ export function App() {
                     void handleRemoveSessionFromFolder(sessionId, folderId)
                   }
                   onOpenSessionMoveDialog={(sessionId) => setMoveDialogSessionIds([sessionId])}
+                  onManageProjectMemory={(folderId) => openMemorySettings(folderId)}
                 />
               ) : selectedNote ? (
                 <div className="note-shell">
@@ -4095,9 +4187,9 @@ export function App() {
                       recoveryBlockedReason={
                         fundingRequired ? RECOVERY_FUNDING_DISABLED_REASON : undefined
                       }
-                      liveTranscript={
-                        selectedNoteId === recordingNoteId ? liveTranscriptEvents : []
-                      }
+                      liveTranscript={liveTranscriptEvents.filter(
+                        (event) => event.noteId === selectedNoteId,
+                      )}
                       sourceMode={sourceMode}
                       sourceReadiness={sourceReadiness}
                       recovery={selectedRecovery}
@@ -4137,7 +4229,10 @@ export function App() {
                           return;
                         }
                         try {
-                          const note = await retryProcessing(selectedNote.id);
+                          const note = await retryProcessing(
+                            selectedNote.id,
+                            selectedNote.retryRecordingSessionId,
+                          );
                           dispatch({ type: "noteProcessingUpdated", note });
                         } catch (err) {
                           const message = messageFromError(err);
@@ -4585,14 +4680,11 @@ function isDeniedPermission(state?: string) {
   return state === "denied" || state === "restricted";
 }
 
-// TCC grants are bundle-scoped, so the two microphone signals cover different
-// bundles: the dictation helper reports its own grant, while the Rust
-// readiness probe (AVCaptureDevice in recording_source_readiness) reads the
-// main app's — the one recording actually uses. Either reporting a denial
-// means Record would start a take with no audio, so either flips the
-// actionable mic-blocked notice before a doomed recording can start (JUN-319).
-// `not_determined` stays startable: the start path fires the main app's own
-// TCC prompt.
+// TCC grants are bundle-scoped. The readiness probe reads the main app's
+// authorization, which is the only grant relevant to note recording. Once
+// that probe has reported, never let the dictation helper's separate grant
+// override it. The helper remains a launch-time fallback before readiness is
+// available. `not_determined` stays startable so the main app can prompt.
 export function isMicrophoneRecordingBlocked(
   helperStatus: string | undefined,
   readiness: RecordingSourceReadinessDto | undefined,
@@ -4600,7 +4692,9 @@ export function isMicrophoneRecordingBlocked(
   const readinessState = readiness?.sources.find(
     (source) => source.source === "microphone",
   )?.permissionState;
-  return isDeniedPermission(helperStatus) || isDeniedPermission(readinessState);
+  return readinessState === undefined
+    ? isDeniedPermission(helperStatus)
+    : isDeniedPermission(readinessState);
 }
 
 // Accessibility is a plain bool from the helper (AXIsProcessTrusted),

@@ -800,13 +800,27 @@ pub fn setup(app: &mut tauri::App) {
         controller: Mutex::new(ShortcutActivationController::default()),
     });
 
-    let helper = spawn_helper(app.handle()).ok();
-    app.manage(HelperState {
-        process: Mutex::new(helper),
-        ..HelperState::default()
-    });
+    // Install state before spawning so a helper that exits immediately can be
+    // observed by its stdout supervisor instead of disappearing during setup.
+    app.manage(HelperState::default());
+    let helper_started = match spawn_helper(app.handle()) {
+        Ok(helper) => {
+            let helper_state = app.state::<HelperState>();
+            matches!(
+                store_respawned_helper(&helper_state, helper),
+                StoreRespawnedHelper::Stored
+            )
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error.message,
+                "failed to start dictation helper during setup; retrying in background"
+            );
+            false
+        }
+    };
 
-    {
+    if helper_started {
         let settings = app.state::<DictationSettingsState>();
         let helper_state = app.state::<HelperState>();
         let settings = settings
@@ -826,11 +840,21 @@ pub fn setup(app: &mut tauri::App) {
         .lock()
         .map(|settings| settings.clone())
         .unwrap_or_default();
-    let event = initial_hotkey_event(&settings);
+    let helper_expected = cfg!(any(target_os = "macos", target_os = "windows"));
+    let event = if helper_started || !helper_expected {
+        initial_hotkey_event(&settings)
+    } else {
+        helper_unavailable_event("restarting", "Dictation is starting.")
+    };
     app.manage(HotkeyStatus {
         event: Mutex::new(event.clone()),
     });
     let _ = app.emit("dictation-event", event.to_string());
+
+    if helper_expected && !helper_started {
+        let app_handle = app.handle().clone();
+        thread::spawn(move || supervise_initial_helper_start(&app_handle));
+    }
 }
 
 #[tauri::command]
@@ -2764,10 +2788,38 @@ fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
     }
 }
 
-/// Whether a pid is live and signalable by us (`kill -0`). Same-user only, which
-/// is all June ever records.
+/// Whether a macOS `ps` state represents a process that can still own runtime
+/// resources. `E` (exiting) and `Z` (zombie) entries may remain in the process
+/// table and pass `kill -0`, but cannot own June's global event tap.
+#[cfg(target_os = "macos")]
+fn process_state_is_terminal(state: &str) -> bool {
+    state.trim().chars().any(|flag| matches!(flag, 'E' | 'Z'))
+}
+
+/// Whether a pid is still a functioning process. Check macOS process state
+/// before `kill -0`: an exiting (`E`) or zombie (`Z`) entry can remain
+/// signalable indefinitely even though it is inert.
 #[cfg(target_os = "macos")]
 fn process_alive(pid: u32) -> bool {
+    if let Ok(output) = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .args(["-o", "state="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            let state = String::from_utf8_lossy(&output.stdout);
+            if state.trim().is_empty() || process_state_is_terminal(&state) {
+                return false;
+            }
+        } else if output.status.code() == Some(1) {
+            // BSD ps uses status 1 when the selected pid no longer exists.
+            return false;
+        }
+    }
+
     Command::new("/bin/kill")
         .arg("-0")
         .arg(pid.to_string())
@@ -2967,6 +3019,13 @@ fn helper_unavailable_event(reason: &str, message: &str) -> serde_json::Value {
     })
 }
 
+/// Retries the first helper launch. Previously only helpers that had already
+/// launched were supervised; any setup-time failure left dictation silently
+/// unavailable for the entire app session.
+fn supervise_initial_helper_start(app: &AppHandle) {
+    retry_helper_spawn(app, Duration::ZERO, true);
+}
+
 /// Runs on the helper's stdout reader thread once that stream closes (the helper
 /// exited or was killed). Reaps the child, then respawns with backoff unless the
 /// exit was an intentional shutdown or the retry cap is exhausted. A successful
@@ -2990,8 +3049,14 @@ fn supervise_helper_exit(app: &AppHandle, spawn_instant: Instant) {
     }
     reset_shortcut_activation(app);
 
+    retry_helper_spawn(app, spawn_instant.elapsed(), false);
+}
+
+fn retry_helper_spawn(app: &AppHandle, mut survived: Duration, initial_start: bool) {
+    let Some(state) = app.try_state::<HelperState>() else {
+        return;
+    };
     let policy = RespawnPolicy::default();
-    let mut survived = spawn_instant.elapsed();
     loop {
         let (action, next_failures) = decide_and_record_respawn(&state, survived, &policy);
 
@@ -3000,25 +3065,33 @@ fn supervise_helper_exit(app: &AppHandle, spawn_instant: Instant) {
             RespawnAction::GiveUp => {
                 tracing::error!(
                     attempts = next_failures,
-                    "dictation helper kept exiting; giving up until relaunch"
+                    initial_start,
+                    "dictation helper recovery exhausted; giving up until relaunch"
                 );
-                emit_helper_unavailable(
-                    app,
-                    "exhausted",
-                    "Dictation stopped and could not restart. Relaunch June to restore it.",
-                );
+                let message = if initial_start {
+                    "Dictation could not start. Relaunch June to try again."
+                } else {
+                    "Dictation stopped and could not restart. Relaunch June to restore it."
+                };
+                emit_helper_unavailable(app, "exhausted", message);
                 return;
             }
             RespawnAction::Respawn { attempt, backoff } => {
                 tracing::warn!(
                     attempt,
                     ?backoff,
-                    "dictation helper exited unexpectedly; respawning"
+                    initial_start,
+                    "dictation helper unavailable; respawning"
                 );
                 // Surface the notice while the helper is down so the hotkey is
                 // never silently dead; a successful respawn clears it by
                 // re-emitting the hotkey-ready event.
-                emit_helper_unavailable(app, "restarting", "Dictation stopped and is restarting.");
+                let message = if initial_start {
+                    "Dictation is starting."
+                } else {
+                    "Dictation stopped and is restarting."
+                };
+                emit_helper_unavailable(app, "restarting", message);
                 thread::sleep(backoff);
                 if state.shutting_down.load(Ordering::SeqCst) {
                     return;
@@ -3914,7 +3987,7 @@ fn looks_like_instruction_response(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase();
     looks_like_report_summary_response(&normalized)
         || normalized.starts_with("sure")
-        || normalized.starts_with("here")
+        || looks_like_here_prefaced_instruction_response(&normalized)
         || normalized.starts_with("summary:")
         || normalized.starts_with("the transcript ")
         || normalized.starts_with("the user expresses")
@@ -3936,6 +4009,179 @@ fn looks_like_instruction_response(value: &str) -> bool {
         || normalized.contains(" spelled correctly ")
         || normalized.contains("rewritten text")
         || normalized.contains("normalized transcript")
+}
+
+fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
+    let normalized = normalized.replace('’', "'");
+    let normalized = normalized.as_str();
+    let structural_preamble_end = [":", "\n", " - ", " — ", " – ", "—", "–"]
+        .iter()
+        .filter_map(|separator| normalized.find(separator))
+        .min();
+    if structural_preamble_end
+        .is_some_and(|end| is_terminal_here_instruction_preamble(&normalized[..end]))
+    {
+        return true;
+    }
+    let punctuation_preamble_end = [". ", "! ", "? "]
+        .iter()
+        .filter_map(|separator| normalized.find(separator))
+        .min();
+    if punctuation_preamble_end
+        .is_some_and(|end| is_terminal_here_instruction_preamble(&normalized[..end]))
+    {
+        return true;
+    }
+    if normalized
+        .find(", ")
+        .is_some_and(|end| is_terminal_here_instruction_preamble(&normalized[..end]))
+    {
+        return true;
+    }
+    is_terminal_here_instruction_preamble(normalized)
+}
+
+fn is_terminal_here_instruction_preamble(normalized: &str) -> bool {
+    let preamble = normalized.trim_end_matches(['.', '!', '?']).trim_end();
+    if is_generic_here_instruction_preamble(preamble) {
+        return true;
+    }
+    let Some(subject) = ["here is ", "here's ", "here are "]
+        .iter()
+        .find_map(|prefix| preamble.strip_prefix(prefix))
+    else {
+        return false;
+    };
+    let words: Vec<&str> = subject
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.iter().copied().any(|word| {
+        is_here_instruction_subject_marker(word) || is_here_instruction_cleanup_modifier(word)
+    }) && words.iter().all(|word| {
+        is_here_instruction_subject_marker(word)
+            || is_here_instruction_cleanup_modifier(word)
+            || matches!(
+                *word,
+                "a" | "an"
+                    | "and"
+                    | "as"
+                    | "below"
+                    | "for"
+                    | "per"
+                    | "request"
+                    | "requested"
+                    | "the"
+                    | "up"
+                    | "you"
+                    | "your"
+            )
+    })
+}
+
+fn is_here_instruction_subject_marker(word: &str) -> bool {
+    matches!(
+        word,
+        "transcript"
+            | "transcription"
+            | "correction"
+            | "corrections"
+            | "dictation"
+            | "text"
+            | "notes"
+            | "version"
+            | "result"
+            | "content"
+            | "output"
+            | "message"
+            | "email"
+            | "response"
+            | "copy"
+            | "draft"
+            | "improvements"
+            | "rewrite"
+            | "summary"
+    )
+}
+
+fn is_here_instruction_cleanup_modifier(word: &str) -> bool {
+    matches!(
+        word,
+        "clean"
+            | "cleaned"
+            | "corrected"
+            | "final"
+            | "normalized"
+            | "polished"
+            | "punctuated"
+            | "rewritten"
+    )
+}
+
+fn is_generic_here_instruction_preamble(preamble: &str) -> bool {
+    if matches!(
+        preamble,
+        "here you go"
+            | "here it is"
+            | "here you are"
+            | "here is what i heard"
+            | "here's what i heard"
+            | "here is what i got"
+            | "here's what i got"
+            | "here is what i have"
+            | "here's what i have"
+            | "here is what you said"
+            | "here's what you said"
+            | "here is what you asked for"
+            | "here's what you asked for"
+            | "here is what you requested"
+            | "here's what you requested"
+            | "here is what you dictated"
+            | "here's what you dictated"
+    ) {
+        return true;
+    }
+    if [
+        "here it is with ",
+        "here you go with ",
+        "here you are with ",
+    ]
+    .iter()
+    .any(|prefix| preamble.starts_with(prefix))
+    {
+        return true;
+    }
+    if let Some(subject) = preamble.strip_prefix("here it is ") {
+        let words: Vec<&str> = subject
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .collect();
+        if words
+            .iter()
+            .copied()
+            .any(is_here_instruction_cleanup_modifier)
+            && words.iter().all(|word| {
+                is_here_instruction_cleanup_modifier(word)
+                    || matches!(*word, "as" | "for" | "requested" | "up" | "you")
+            })
+        {
+            return true;
+        }
+    }
+    (preamble.starts_with("here, i") || preamble.starts_with("here i"))
+        && preamble
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|word| {
+                matches!(
+                    word,
+                    "cleaned"
+                        | "corrected"
+                        | "normalized"
+                        | "polished"
+                        | "punctuated"
+                        | "rewritten"
+                )
+            })
 }
 
 fn looks_like_report_summary_response(normalized: &str) -> bool {
@@ -5283,11 +5529,21 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn terminal_macos_process_states_are_not_treated_as_live() {
+        // The field can contain multiple flags. The reported production case
+        // was `UE`: uninterruptible + exiting, which still passed kill -0.
+        for state in ["E", "UE", "Z", "Z+", "  UE\n"] {
+            assert!(process_state_is_terminal(state), "state={state:?}");
+        }
+        for state in ["R", "R+", "S", "U", "  S+\n", ""] {
+            assert!(!process_state_is_terminal(state), "state={state:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn wait_for_pid_exit_confirms_a_kill_and_bounds_a_survivor() {
-        // A dead pid is observed as exited. Reap the child first so it is not a
-        // zombie: `kill -0` still reports a zombie as alive, but a real orphan
-        // (whose parent is the dead prior app) is reparented to launchd and
-        // reaped, so in production the pid genuinely disappears.
+        // A dead pid is observed as exited.
         let mut victim = Command::new("/bin/sleep")
             .arg("30")
             .stdin(Stdio::null())
@@ -6293,6 +6549,32 @@ mod tests {
     }
 
     #[test]
+    fn literal_dictation_starting_with_heres_maps_to_paste_command() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "Here's the API key to Poncho.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            None,
+            DictationStyle::Standard,
+        );
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({
+                "type": "paste_text",
+                "text": "Here's the API key to Poncho.",
+            })
+        );
+        assert!(outcome.event.is_none());
+        assert_eq!(
+            outcome.transcript.as_ref().map(|item| item.text.as_str()),
+            Some("Here's the API key to Poncho.")
+        );
+    }
+
+    #[test]
     fn summary_like_transcription_discards_with_visible_error() {
         let outcome = outcome_from_transcription_result(
             Ok(TranscriptionProviderResult {
@@ -6859,6 +7141,176 @@ mod tests {
             "Here is the normalized transcript: Hello."
         ));
         assert!(looks_like_instruction_response(
+            "Here is the corrected transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here’s the corrected transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response("Here you go: Hello."));
+        assert!(looks_like_instruction_response(
+            "Here is the transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here are the cleaned notes: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the cleaned-up version: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript. Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here are the cleaned notes - Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected text\nHello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript, Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected, punctuated transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned and punctuated transcript. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here you go, Hello. World."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the cleaned-up version—Hello."
+        ));
+        assert!(looks_like_instruction_response("Here it is: Hello."));
+        assert!(looks_like_instruction_response("Here you are: Hello."));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned dictation: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the result: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned content: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned output: Hello."
+        ));
+        assert!(looks_like_instruction_response("Here is the transcript."));
+        assert!(looks_like_instruction_response("Here you go."));
+        assert!(looks_like_instruction_response("Here you go!"));
+        assert!(looks_like_instruction_response("Here is the transcript?"));
+        assert!(looks_like_instruction_response(
+            "Here's the cleaned-up message: Hello."
+        ));
+        assert!(looks_like_instruction_response("Here is the email: Hello."));
+        assert!(!looks_like_instruction_response(
+            "Here's your text message from John."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's your text message from John. Call him back."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's your text message from John, call him back."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's my email: jane@example.com"
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's the text message from John: call him back"
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's the result of the game."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's my notes on the trip."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is what I heard: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned transcript below:\nSend it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is what I have:\nSend it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's what I got: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here, I've cleaned it up: Send it today."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here, I think we should send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's a cleaned-up copy: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the rewritten draft: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here are the improvements: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here are the corrections: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is what you said: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's what you asked for: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's what you dictated: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is a summary: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here it is with punctuation: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here it is, punctuated: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here it is cleaned up: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here it is punctuated. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the final transcript. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the polished version. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here I've cleaned it up: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's your corrected transcript. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript as requested."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript for your request. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the cleaned-up transcript for you. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript as you requested. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the transcription: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here you go! Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the transcript? Send it today."
+        ));
+        assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
         ));
         assert!(looks_like_instruction_response(
@@ -6874,6 +7326,13 @@ mod tests {
         assert!(!looks_like_instruction_response(
             "User reported the bug to support."
         ));
+        assert!(!looks_like_instruction_response(
+            "Here's the API key to Poncho."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here’s the API key to Poncho."
+        ));
+        assert!(!looks_like_instruction_response("I’ll send the agenda."));
     }
 
     #[test]

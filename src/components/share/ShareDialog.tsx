@@ -57,6 +57,7 @@ export function ShareDialog({
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState<"link" | "passcode" | null>(null);
   const [legacyShare, setLegacyShare] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busyRef = useRef(false);
@@ -76,6 +77,7 @@ export function ShareDialog({
     setPasscode("");
     setCopied(null);
     setLegacyShare(false);
+    setLoadFailed(false);
     setConfirmStop(false);
     setError(null);
 
@@ -113,7 +115,11 @@ export function ShareDialog({
           setLinkMaterialB64(localKey.inviteKeyB64);
           setPasswordProtected(material.length === PASSCODE_SALT_BYTES);
         } catch (loadError) {
-          if (!isShareNotFoundError(loadError)) throw loadError;
+          if (cancelled || activeItemRef.current !== startedItem) return;
+          if (!isShareNotFoundError(loadError)) {
+            setLoadFailed(true);
+            throw loadError;
+          }
           // The remote share is gone. Keep the ambiguous local key mapping so
           // another signed-in owner cannot destroy the original owner's keys.
           setShareId(null);
@@ -150,7 +156,7 @@ export function ShareDialog({
   );
 
   const handleCopyLink = useCallback(async () => {
-    if (busyRef.current || loading || legacyShare) return;
+    if (busyRef.current || loading || legacyShare || loadFailed) return;
     setError(null);
     setCopied(null);
     if (shareId && inviteId && linkMaterialB64) {
@@ -204,14 +210,14 @@ export function ShareDialog({
         shareId: created.shareId,
         inviteKeyB64: materialB64,
       });
-      createdShareId = null;
-      await copyExistingLink(created.shareId, createdInvite.inviteId, materialB64, Boolean(salt));
       if (activeItemRef.current === startedItem) {
         setShareId(created.shareId);
         setInviteId(createdInvite.inviteId);
         setLinkMaterialB64(materialB64);
         setPasswordProtected(Boolean(salt));
       }
+      createdShareId = null;
+      await copyExistingLink(created.shareId, createdInvite.inviteId, materialB64, Boolean(salt));
     } catch (createError) {
       if (createdShareId) await shareDelete(createdShareId).catch(() => {});
       if (activeItemRef.current === startedItem) setError(messageFromError(createError));
@@ -225,6 +231,7 @@ export function ShareDialog({
     item,
     legacyShare,
     linkMaterialB64,
+    loadFailed,
     loading,
     passcode,
     passwordProtected,
@@ -299,7 +306,7 @@ export function ShareDialog({
               <input
                 type="checkbox"
                 checked={requirePasscode}
-                disabled={busy}
+                disabled={busy || loadFailed}
                 onChange={(event) => {
                   setRequirePasscode(event.currentTarget.checked);
                   setError(null);
@@ -318,6 +325,7 @@ export function ShareDialog({
                 className="dialog-input"
                 type="password"
                 autoComplete="new-password"
+                disabled={loadFailed}
                 value={passcode}
                 placeholder="At least 8 characters"
                 onChange={(event) => setPasscode(event.currentTarget.value)}
@@ -331,7 +339,7 @@ export function ShareDialog({
             <button
               type="button"
               className="primary-action primary-solid"
-              disabled={busy}
+              disabled={busy || loadFailed}
               onClick={() => void handleCopyLink()}
             >
               {busy ? "Creating link..." : copied === "link" ? "Link copied" : "Copy link"}

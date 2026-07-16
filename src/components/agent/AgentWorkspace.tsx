@@ -369,6 +369,13 @@ import {
 } from "../../lib/agent-chat-runtime";
 import { toolActivitySentence } from "../../lib/agent-tool-labels";
 import {
+  COMPACTED_CONTEXT_SIGNATURE,
+  prepareProjectPrompt,
+  ProjectContextSignatureStore,
+  stripProjectContext,
+  type AgentProjectContext,
+} from "../../lib/agent-project-context";
+import {
   buildAgentChatGallery,
   buildAgentErrorGallery,
   type AgentChatGallerySection,
@@ -381,6 +388,7 @@ const AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000];
 const AGENT_WORKSPACE_MAX_SESSION_RETRY_DELAY_MS =
   AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS[AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS.length - 1] ??
   2000;
+const projectContextSignaturesBySessionId = new ProjectContextSignatureStore();
 const QUEUED_STEER_RETRY_DELAY_MS = 300;
 const RESTORED_QUEUED_STEER_RECONCILE_DELAY_MS = 1000;
 const RESTORED_QUEUED_STEER_BUSY_RECONCILE_DELAY_MS = 3000;
@@ -406,6 +414,10 @@ const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
 const SESSION_GONE_MESSAGE = "This session has ended, so the request can no longer be answered.";
 const SESSION_NOT_AVAILABLE_MESSAGE =
   "This session is no longer available. Open another conversation or start a new one.";
+
+function approvalResponseKey(sessionId: string, requestId: string): string {
+  return `${sessionId}\u0000${requestId}`;
+}
 
 // A stable id for the "June is still working" nudge (fired when a send is
 // rejected mid-turn), so repeated send attempts refresh one toast instead of
@@ -1782,6 +1794,13 @@ type AgentWorkspaceProps = {
   /** Whether the active session is filed in a project — drives the session
    * bar menu's project item label (App owns the folder state). */
   sessionInProject?: boolean;
+  /** Current project metadata for hidden prompt context injection. */
+  projectContext?: AgentProjectContext;
+  /** Resolves the project a specific stored session is filed in. Background
+   * deliveries (queued steers/attachments) target sessions other than the
+   * active one; injecting the ambient `projectContext` there would leak the
+   * open project's instructions into another session's run. */
+  resolveSessionProjectContext?: (storedSessionId: string) => AgentProjectContext | undefined;
   /** Opens the change-project dialog (which also owns removal) for the given
    * stored session id. */
   onMoveSessionToProject?: (sessionId: string) => void;
@@ -2318,6 +2337,22 @@ export function composerInSteerStateFor(input: {
   );
 }
 
+export function canShareAgentSession(input: {
+  selectedSessionId?: string;
+  newSessionMode: boolean;
+  provisional: boolean;
+  historyLoaded: boolean;
+  working: boolean;
+}): boolean {
+  return Boolean(
+    input.selectedSessionId &&
+      !input.newSessionMode &&
+      !input.provisional &&
+      input.historyLoaded &&
+      !input.working,
+  );
+}
+
 export function AgentWorkspace({
   initialSession,
   initialSessionId: initialSessionIdProp,
@@ -2326,6 +2361,8 @@ export function AgentWorkspace({
   onTopUp,
   topUpLabel = "Upgrade",
   sessionInProject = false,
+  projectContext,
+  resolveSessionProjectContext,
   onMoveSessionToProject,
   creditActionsDisabledReason,
   fundingNotice,
@@ -2751,6 +2788,10 @@ export function AgentWorkspace({
   const [approvalSubmitting, setApprovalSubmitting] = useState<
     Partial<Record<string, AgentApprovalChoice>>
   >({});
+  // Synchronous transport state for disconnect reconciliation. React state can
+  // lag behind the socket close callback by one render, so it cannot tell us
+  // reliably whether Hermes may already have accepted a response.
+  const approvalResponsesInFlightRef = useRef(new Map<string, AgentApprovalChoice>());
   const [clarifySubmitting, setClarifySubmitting] = useState<Record<string, string>>({});
   // Sudo records which choice (approve/deny) is in flight per request id;
   // secret records only that a submit is in flight (NEVER the value).
@@ -3050,6 +3091,31 @@ export function AgentWorkspace({
       },
       hermesModeFor(sessionId),
     );
+  }
+
+  function recordHermesActivityAndDeriveStatus(event: JuneHermesEvent, storedSessionId: string) {
+    hermesActivityStore.record(event, hermesModeFor(storedSessionId));
+    const hasOpenPendingAction = pendingActionStore
+      .openRecords()
+      .some((record) => record.sessionId === storedSessionId);
+    return agentStatusFromHermesEvent(event, hasOpenPendingAction);
+  }
+
+  function recordOptimisticHermesActivityAndDispatchStatus(
+    event: JuneHermesEvent,
+    storedSessionId: string,
+  ) {
+    const storedEvent = withStoredHermesSessionId(event, storedSessionId);
+    const status = recordHermesActivityAndDeriveStatus(storedEvent, storedSessionId);
+    if (!status) return;
+    dispatchAgentSessionStatus({
+      sessionId: storedSessionId,
+      title:
+        hermesSessionItemsRef.current.find((session) => session.id === storedSessionId)?.title ??
+        "Agent session",
+      status,
+      summary: agentStatusSummaryFromHermesEvent(storedEvent, status),
+    });
   }
 
   function recordSessionErrorActivity(sessionId: string, message: string) {
@@ -4254,10 +4320,9 @@ export function AgentWorkspace({
       removeHermesSessionLocally,
     };
     gatewayCloseHandlerRef.current = (fullMode: boolean) => {
-      // Feature 04: a disconnect is NOT a resolution — pending actions must
-      // survive it. markDisconnected is intentionally a no-op on state; the
-      // reconcile after a successful reconnect (below) is what marks anything
-      // unconfirmed as stale rather than dropping it.
+      // Feature 04: mark the transport drop, then let recovery retire approvals
+      // fail closed while preserving the existing stale/reannounce contract for
+      // clarify, sudo, and secret actions.
       pendingActionStore.markDisconnected();
       void recoverFromGatewayClose(fullMode);
     };
@@ -4428,7 +4493,11 @@ export function AgentWorkspace({
     sessionContinuity = null;
     void (async () => {
       try {
-        const status = await hermesBridgeStatus();
+        let status = await hermesBridgeStatus();
+        if (cancelled) return;
+        if (!status.running) {
+          status = await startHermesBridge(undefined, false);
+        }
         if (cancelled) return;
         setBridge(status);
       } catch (err) {
@@ -5691,6 +5760,21 @@ export function AgentWorkspace({
       ? reserveComposerDispatch(sentModelTarget.targetStoredSessionId)
       : undefined;
     const sentStartedNewSession = sentModelTarget.targetStoredSessionId === null;
+    // prompt.submit prepends the injected `[June project context]` block for a
+    // project-filed session (see prepareProjectPrompt at the dispatch site), so
+    // the size guard must estimate that same larger text — otherwise a project
+    // with long instructions can slip a near-limit prompt past the warning and
+    // fail only after submit. Mirror the dispatch: ambient project context plus
+    // this send's last delivered signature, so the block counts exactly when it
+    // will actually be injected and dedup-skipped turns aren't over-warned.
+    // (The steer path never calls prompt.submit, so it estimates the raw text.)
+    const sizeEstimateContent = (baseContent: string, targetSessionId?: string): string => {
+      const previousSignature =
+        !newSessionModeRef.current && targetSessionId
+          ? projectContextSignaturesBySessionId.get(targetSessionId)
+          : undefined;
+      return prepareProjectPrompt(baseContent, projectContext, previousSignature).text;
+    };
     if (message) {
       try {
         const handledBuiltinCommand = await handleBuiltinComposerSlashCommand(
@@ -5742,7 +5826,7 @@ export function AgentWorkspace({
         return;
       }
       const sizeWarning = oversizedComposerInputWarning({
-        content: prepared.runtimeContent,
+        content: sizeEstimateContent(prepared.runtimeContent, attachmentQueueSessionId),
         inputSignature: composerInputSignature,
         attachments,
         model: generationModel,
@@ -5888,7 +5972,7 @@ export function AgentWorkspace({
         : prepared.runtimeContent;
       preparedForRecovery = { ...prepared, runtimeContent };
       const sizeWarning = oversizedComposerInputWarning({
-        content: runtimeContent,
+        content: sizeEstimateContent(runtimeContent, selectedHermesSessionId ?? undefined),
         inputSignature: composerInputSignature,
         attachments,
         model: generationModel,
@@ -6726,6 +6810,18 @@ export function AgentWorkspace({
         // fresh event for a known request also re-confirms a row that went
         // stale across a reconnect (see the store's reconcile logic).
         pendingActionStore.record(storedClassified, hermesModeFor(storedSessionId));
+      } else if (storedClassified.kind === "pending_action_resolution") {
+        // Resolution events can arrive independently of this surface's local
+        // response promise (for example after reconnect). Reconcile the exact
+        // logical request before deriving the session status so another
+        // distinct pending action keeps the session in "Needs you".
+        pendingActionStore.resolveRequest(storedSessionId, storedClassified.action.requestId);
+      } else if (storedClassified.kind === "pending_action_expiration") {
+        pendingActionStore.expireRequest(
+          storedSessionId,
+          storedClassified.action.requestId,
+          storedClassified.action.reason,
+        );
       }
       // Feature 11: roll EVERY classified event into the global activity store
       // that backs the Agent activity drawer. The store is total and ignores
@@ -6733,7 +6829,7 @@ export function AgentWorkspace({
       // derives the session's phase (running/waiting/background/error/complete),
       // current tool, and subagent count from the normalized event — never from
       // the raw frame (raw JSON belongs to feature 15's trace panel).
-      hermesActivityStore.record(storedClassified, hermesModeFor(storedSessionId));
+      const status = recordHermesActivityAndDeriveStatus(storedClassified, storedSessionId);
       // Feature 14: extract any file/artifact reference this event carries into
       // the per-session artifact timeline behind the drawer's "Artifacts"
       // section. The store is total and only acts on `tool` completions that
@@ -6767,7 +6863,6 @@ export function AgentWorkspace({
           for (const entry of list) entry.toolDrained = true;
         }
       }
-      const status = agentStatusFromHermesEvent(classified);
       const activityCounts =
         status === "completed" || status === "failed" || status === "cancelled"
           ? agentActivityCountsFromStore()
@@ -6867,6 +6962,12 @@ export function AgentWorkspace({
       throw new Error(creditActionsDisabledReason);
     }
     const displayContent = options?.displayContent ?? content;
+    // Explicit-target submissions (background steer/attachment delivery, CLI
+    // notices) must use the TARGET session's project, never the ambient one —
+    // the user may have a different project session open by then. The ambient
+    // context still covers the new-session flow, where the filing is applied
+    // only after Hermes returns the session id.
+    const submittedProjectContext = explicitSession ? undefined : projectContext;
     const titleContent = options?.titleContent ?? displayContent;
     let attachmentOnlyTitle: string | undefined;
     if (!titleContent.trim() && options?.attachments?.length) {
@@ -7311,6 +7412,14 @@ export function AgentWorkspace({
         storedSessionId,
       });
       try {
+        const targetProjectContext = explicitSession
+          ? resolveSessionProjectContext?.(storedSessionId)
+          : submittedProjectContext;
+        const preparedProjectPrompt = prepareProjectPrompt(
+          promptSubmitContent,
+          targetProjectContext,
+          projectContextSignaturesBySessionId.get(storedSessionId),
+        );
         // Feature 15: record the outbound prompt.submit in the trace buffer. Its
         // params are sanitized before storage (the text is the user's own prompt,
         // kept; any secret-like value would be masked). This is the primary
@@ -7319,11 +7428,11 @@ export function AgentWorkspace({
         hermesTraceBuffer.recordOutbound({
           sessionId: storedSessionId,
           method: "prompt.submit",
-          params: { session_id: runtimeSessionId, text: promptSubmitContent },
+          params: { session_id: runtimeSessionId, text: preparedProjectPrompt.text },
         });
         await gateway.request("prompt.submit", {
           session_id: runtimeSessionId,
-          text: promptSubmitContent,
+          text: preparedProjectPrompt.text,
         });
         startAgentRunMonitoring({
           storedSessionId,
@@ -7332,6 +7441,10 @@ export function AgentWorkspace({
           fullMode: sessionUnrestricted(storedSessionId),
           settlementHeld: true,
         });
+        projectContextSignaturesBySessionId.set(
+          storedSessionId,
+          preparedProjectPrompt.contextSignature,
+        );
         // JUN-171 (Phase A): the held fast-path images have now ridden along
         // with a successful follow-up prompt, either as structured image bytes or
         // in the non-vision path fallback. Clear only after prompt.submit accepts
@@ -7472,7 +7585,16 @@ export function AgentWorkspace({
       const raw = await createHermesMethods(gateway).compressSession({
         sessionId,
       });
-      return parseCompressSessionResult(sessionId, raw);
+      const result = parseCompressSessionResult(sessionId, raw);
+      // Compaction replaces the working context with a summary that may still
+      // contain the old project block. Mark the session compacted rather than
+      // deleting the entry: the sentinel differs from every real project
+      // signature (so a still-filed session reinjects on its next prompt) yet
+      // is not "no block ever" (so if the user then removes the session from
+      // its project, prepareProjectPrompt still emits the clearing block
+      // instead of silently leaving stale instructions in the summary).
+      projectContextSignaturesBySessionId.set(sessionId, COMPACTED_CONTEXT_SIGNATURE);
+      return result;
     },
     // Same stable-closure rationale as fetchSessionUsage above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -7517,6 +7639,66 @@ export function AgentWorkspace({
     );
     if (!activeSessionIds.size) return;
     gatewayRecoveringRef.current.add(fullMode);
+    // The patched Hermes gateway denies and drains unresolved MCP approvals
+    // when its notification socket disconnects. Mirror that fail-closed
+    // boundary locally before reconnecting: an old card must never remain
+    // actionable against a newly resumed runtime. Other pending-action kinds
+    // keep their existing stale/reannounce reconciliation contract.
+    let retiredApprovalEvents = liveEventsRef.current;
+    let retiredApprovalChanged = false;
+    const retiredApprovalStatuses = new Map<
+      string,
+      { event: JuneHermesEvent; status: AgentSessionStatusKind }
+    >();
+    const retiredAt = new Date().toISOString();
+    for (const record of pendingActionStore.openRecords()) {
+      if (!activeSessionIds.has(record.sessionId) || record.action.kind !== "approval") continue;
+      // The socket rejects pending RPCs immediately before this close handler
+      // runs. A response that was already processed upstream may therefore be
+      // unacknowledged locally. Retire it so it cannot be sent twice, but do not
+      // claim that nothing was approved when the outcome is unknowable.
+      const reason = approvalResponsesInFlightRef.current.has(
+        approvalResponseKey(record.sessionId, record.requestId),
+      )
+        ? "unconfirmed"
+        : "disconnect";
+      pendingActionStore.expireRequest(record.sessionId, record.requestId, reason);
+      const expiration: JuneHermesEvent = {
+        kind: "pending_action_expiration",
+        sessionId: record.sessionId,
+        action: {
+          kind: "approval",
+          requestId: record.requestId,
+          reason,
+        },
+        receivedAt: retiredAt,
+      };
+      const status = recordHermesActivityAndDeriveStatus(expiration, record.sessionId);
+      if (status) {
+        retiredApprovalStatuses.set(record.sessionId, { event: expiration, status });
+      }
+      retiredApprovalEvents = {
+        ...retiredApprovalEvents,
+        [record.sessionId]: [...(retiredApprovalEvents[record.sessionId] ?? []), expiration].slice(
+          -200,
+        ),
+      };
+      retiredApprovalChanged = true;
+    }
+    if (retiredApprovalChanged) {
+      liveEventsRef.current = retiredApprovalEvents;
+      setLiveEvents(retiredApprovalEvents);
+    }
+    for (const [sessionId, { event, status }] of retiredApprovalStatuses) {
+      dispatchAgentSessionStatus({
+        sessionId,
+        title:
+          hermesSessionItemsRef.current.find((session) => session.id === sessionId)?.title ??
+          "Agent session",
+        status,
+        summary: agentStatusSummaryFromHermesEvent(event, status),
+      });
+    }
     try {
       const gateway = await ensureHermesGateway(fullMode);
       await Promise.all(
@@ -7532,6 +7714,14 @@ export function AgentWorkspace({
                 ...current,
                 [sessionId]: runtimeSessionId,
               }));
+              attachHermesSessionEventListener({
+                gateway,
+                runtimeSessionId,
+                sessionDisplayTitle:
+                  hermesSessionItemsRef.current.find((session) => session.id === sessionId)
+                    ?.title ?? "Agent session",
+                storedSessionId: sessionId,
+              });
             }
           } catch {
             // The runtime session may be gone; the poll reconciles it.
@@ -7543,10 +7733,10 @@ export function AgentWorkspace({
     } finally {
       gatewayRecoveringRef.current.delete(fullMode);
     }
-    // Feature 04: the gateway is back. Any pending action not re-announced by a
-    // fresh event is now unverifiable across the drop, so mark it stale —
-    // visible but visually distinct — rather than silently dropping a possible
-    // blocker. A re-announced request flips its row back to open in the feed.
+    // Feature 04: the gateway is back. Any non-approval pending action not
+    // re-announced by a fresh event is unverifiable across the drop, so mark it
+    // stale rather than silently dropping a possible blocker. Approvals were
+    // already retired above because the gateway drains them fail closed.
     pendingActionStore.reconcileAfterReconnect();
     for (const sessionId of activeSessionIds) {
       void refreshHermesSession(sessionId);
@@ -7779,26 +7969,60 @@ export function AgentWorkspace({
     choice: AgentApprovalChoice,
     unrestricted = false,
   ) {
+    const responseKey = approvalResponseKey(liveEventKey, requestId);
+    // The card disables on the next render; guard synchronously too so a rapid
+    // second activation cannot target the same logical approval twice.
+    if (approvalResponsesInFlightRef.current.has(responseKey)) return;
+    approvalResponsesInFlightRef.current.set(responseKey, choice);
     setApprovalSubmitting((current) => ({ ...current, [requestId]: choice }));
     try {
       // The approval lives in the runtime process that asked, so the
       // response must go out on that mode's gateway.
       const gateway = await ensureHermesGateway(unrestricted);
-      await gateway.request("approval.respond", {
+      hermesTraceBuffer.recordOutbound({
+        sessionId: liveEventKey,
+        method: "approval.respond",
+        params: { session_id: sessionId, request_id: requestId, choice },
+      });
+      const response = await gateway.request<unknown>("approval.respond", {
         session_id: sessionId,
+        request_id: requestId,
         choice,
       });
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "approval.response",
+      if (
+        response === null ||
+        typeof response !== "object" ||
+        Array.isArray(response) ||
+        !("resolved" in response) ||
+        (response.resolved !== 0 && response.resolved !== 1)
+      ) {
+        setError("June could not confirm the approval outcome. Reconnect, then try again.", {
+          sessionId: liveEventKey,
+        });
+        return;
+      }
+      if (response.resolved === 0) {
+        const expiration = classifyOptimisticLiveEvent({
+          type: "approval.expire",
           session_id: sessionId,
-          payload: { request_id: requestId, choice },
-        }),
-      );
+          payload: { request_id: requestId, reason: "stale" },
+        });
+        pushLiveEvent(liveEventKey, expiration);
+        pendingActionStore.expireRequest(liveEventKey, requestId, "stale");
+        recordOptimisticHermesActivityAndDispatchStatus(expiration, liveEventKey);
+        setError("This approval is no longer pending. Nothing was approved.", { sessionId });
+        return;
+      }
+      const resolution = classifyOptimisticLiveEvent({
+        type: "approval.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, choice },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user just answered this approval — clear its global
       // "Needs you" row immediately (the response itself is the resolution).
       pendingActionStore.resolveRequest(liveEventKey, requestId);
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -7821,13 +8045,14 @@ export function AgentWorkspace({
         setLiveEvents(liveEventsRef.current);
         // The request can never be answered now — retire its card so neither the
         // sidebar count nor the inline prompt offers a dead-end "Respond".
-        pendingActionStore.resolveRequest(liveEventKey, requestId);
+        pendingActionStore.expireRequest(liveEventKey, requestId, "disconnect");
         void loadHermesSessions();
         setError(SESSION_GONE_MESSAGE, { sessionId });
       } else {
         setError(message, { sessionId });
       }
     } finally {
+      approvalResponsesInFlightRef.current.delete(responseKey);
       setApprovalSubmitting((current) => {
         const next = { ...current };
         delete next[requestId];
@@ -7849,15 +8074,14 @@ export function AgentWorkspace({
         request_id: requestId,
         answer,
       });
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "clarify.response",
-          payload: { request_id: requestId, answer },
-        }),
-      );
+      const resolution = classifyOptimisticLiveEvent({
+        type: "clarify.response",
+        payload: { request_id: requestId, answer },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user answered the clarification — clear its pending record.
       pendingActionStore.resolveRequest(liveEventKey, requestId);
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -7902,16 +8126,15 @@ export function AgentWorkspace({
         approved,
         mode,
       });
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "sudo.response",
-          session_id: sessionId,
-          payload: { request_id: requestId, granted: approved, mode },
-        }),
-      );
+      const resolution = classifyOptimisticLiveEvent({
+        type: "sudo.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, granted: approved, mode },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user resolved the sudo prompt — clear its pending record.
       pendingActionStore.resolveRequest(liveEventKey, requestId);
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -7950,16 +8173,15 @@ export function AgentWorkspace({
         requestId,
         value,
       });
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "secret.response",
-          session_id: sessionId,
-          payload: { request_id: requestId, provided: true },
-        }),
-      );
+      const resolution = classifyOptimisticLiveEvent({
+        type: "secret.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, provided: true },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user provided the secret — clear its pending record.
       pendingActionStore.resolveRequest(liveEventKey, requestId);
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -9661,7 +9883,7 @@ export function AgentWorkspace({
     // persisted, never retried.
     w.__imageGenDemo = (
       show: boolean | "complete" = true,
-      prompt = "a calm mountain lake at dawn",
+      prompt = "Generate an image of a wide, zoomed-out view of people sunbathing along the Rio Grande in New Mexico, painted in the style of Claude Monet. The riverbank is as crowded and lively as a New Jersey beach, creating a striking contrast with the high-desert landscape.",
     ) => {
       if (!selectedHermesSessionId || selectedHermesSessionIsProvisional) {
         return "Open a real session first, then run __imageGenDemo().";
@@ -9706,6 +9928,32 @@ export function AgentWorkspace({
           [selectedHermesSessionId]: show
             ? [
                 ...others,
+                {
+                  id: `${turnId}:seed-user`,
+                  role: "user" as const,
+                  createdAt: new Date(startedAt - 120_000).toISOString(),
+                  status: "complete" as const,
+                  parts: [
+                    {
+                      type: "text" as const,
+                      text: "I'm putting together a visual concept for a summer scene in New Mexico.",
+                      status: "complete" as const,
+                    },
+                  ],
+                },
+                {
+                  id: `${turnId}:seed-assistant`,
+                  role: "assistant" as const,
+                  createdAt: new Date(startedAt - 60_000).toISOString(),
+                  status: "complete" as const,
+                  parts: [
+                    {
+                      type: "text" as const,
+                      text: "What kind of setting and atmosphere would you like the image to have?",
+                      status: "complete" as const,
+                    },
+                  ],
+                },
                 ...runningImageSlashTurns({
                   id: turnId,
                   prompt,
@@ -11075,15 +11323,22 @@ export function AgentWorkspace({
           onShare={
             // Gate on loaded history: sharing snapshots the transcript, and
             // hermesTurns is empty until the selected session hydrates. Sharing
-            // early would persist an empty/partial session permanently.
-            !newSessionMode &&
-            selectedHermesSessionId &&
-            !selectedHermesSessionIsProvisional &&
-            selectedHistoryLoaded
+            // early or while a response is streaming would persist an
+            // empty/partial session permanently.
+            canShareAgentSession({
+              selectedSessionId: selectedHermesSessionId,
+              newSessionMode,
+              provisional: selectedHermesSessionIsProvisional,
+              historyLoaded: selectedHistoryLoaded,
+              working: selectedHermesSessionId
+                ? workingSessionIds.has(selectedHermesSessionId)
+                : false,
+            }) && selectedHermesSessionId
               ? () => setShareSessionId(selectedHermesSessionId)
               : undefined
           }
           inProject={sessionInProject}
+          projectContext={sessionInProject ? projectContext : undefined}
           onMoveToProject={
             onMoveSessionToProject &&
             !newSessionMode &&
@@ -11374,6 +11629,7 @@ function AgentSessionBar({
   artifactCount = 0,
   artifactsOpen = false,
   inProject = false,
+  projectContext,
   onToggleArtifacts,
   onRename,
   onShare,
@@ -11390,6 +11646,7 @@ function AgentSessionBar({
   artifactCount?: number;
   artifactsOpen?: boolean;
   inProject?: boolean;
+  projectContext?: AgentProjectContext;
   onToggleArtifacts?: () => void;
   onRename?: (title: string) => void;
   /** Opens the private-sharing dialog for this session (JUN-308). */
@@ -11406,6 +11663,7 @@ function AgentSessionBar({
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title ?? "");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
   const menuWrapRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -11508,6 +11766,15 @@ function AgentSessionBar({
         </ol>
       </nav>
       <div className="detail-bar-actions">
+        {projectContext ? (
+          <button
+            type="button"
+            className="agent-project-instructions"
+            onClick={() => setInstructionsOpen(true)}
+          >
+            Project instructions
+          </button>
+        ) : null}
         {fullMode ? <UnrestrictedBadge /> : null}
         {onToggleArtifacts && artifactCount > 0 ? (
           <button
@@ -11647,6 +11914,24 @@ function AgentSessionBar({
           </div>
         ) : null}
       </div>
+      <Dialog
+        open={instructionsOpen}
+        onClose={() => setInstructionsOpen(false)}
+        title={`${projectContext?.name ?? "Project"} instructions`}
+        footer={
+          <button
+            type="button"
+            className="primary-action"
+            onClick={() => setInstructionsOpen(false)}
+          >
+            Close
+          </button>
+        }
+      >
+        <div className="agent-project-instructions-content">
+          {projectContext?.instructions?.trim() || "No project instructions have been added."}
+        </div>
+      </Dialog>
     </div>
   );
 }
@@ -14116,19 +14401,23 @@ function videoProgressLabel(part: Extract<AgentChatPart, { type: "video" }>) {
 
 /** A resolved action card renders as a quiet, expandable one-line row instead
  * of a full card — a receipt in the transcript rather than a prompt. The row
- * mirrors {@link ContextCompactionPart}: an outcome glyph (checkmark / cross)
+ * mirrors {@link ContextCompactionPart}: an outcome glyph (checkmark / cross /
+ * warning)
  * that cross-fades to a plain-text "+"/"−" on hover (pure opacity — no layout
  * shift, a WKWebView compositing constraint), a short outcome label, and a
  * truncated one-line detail. Expanding reveals the full detail body (the
  * `children`) minus the action buttons. */
 function ResolvedActionRow({
   denied = false,
+  unknown = false,
   label,
   detail,
   children,
 }: {
   /** Renders the cross glyph and destructive tint instead of the checkmark. */
   denied?: boolean;
+  /** Renders a neutral warning glyph when the transport lost the outcome. */
+  unknown?: boolean;
   /** Short outcome word(s), e.g. "Approved once" / "Answered" / "Denied". */
   label: string;
   /** One-line truncated detail shown inline on the collapsed row. */
@@ -14139,11 +14428,16 @@ function ResolvedActionRow({
   return (
     <details
       className="agent-tool-disclosure agent-resolved-row"
-      data-choice={denied ? "deny" : "done"}
+      data-choice={unknown ? "unknown" : denied ? "deny" : "done"}
     >
       <summary>
         <span className="agent-tool-icon">
-          {denied ? (
+          {unknown ? (
+            <IconExclamationTriangle
+              size={15}
+              className="agent-tool-icon-glyph agent-resolved-icon-glyph"
+            />
+          ) : denied ? (
             <IconCrossSmall size={15} className="agent-tool-icon-glyph agent-resolved-icon-glyph" />
           ) : (
             <IconCheckmark2Small
@@ -14607,6 +14901,34 @@ export function ApprovalPart({
   // command (or description) truncated to one line, expandable to the full
   // description and command — no action buttons.
   if (resolved) {
+    if (part.status === "expired") {
+      const outcomeUnconfirmed = part.retiredReason === "unconfirmed";
+      return (
+        <ResolvedActionRow
+          denied={!outcomeUnconfirmed}
+          unknown={outcomeUnconfirmed}
+          label={outcomeUnconfirmed ? "Approval outcome unknown" : "Approval expired"}
+          detail={
+            part.command ? (
+              <span className="agent-resolved-mono">{part.command}</span>
+            ) : (
+              part.description
+            )
+          }
+        >
+          {outcomeUnconfirmed ? (
+            <p>
+              The connection closed before June could confirm the response. This approval is no
+              longer actionable, but it may have already been applied. Check the agent activity
+              before retrying.
+            </p>
+          ) : (
+            <p>This approval is no longer pending. June did not approve anything.</p>
+          )}
+          {part.command ? <pre>{part.command}</pre> : null}
+        </ResolvedActionRow>
+      );
+    }
     return (
       <ResolvedActionRow
         denied={activeChoice === "deny"}
@@ -14826,11 +15148,7 @@ export function BranchFromHereAction({
       disabled={submitting}
       onClick={() => onBranch(messageId, sessionId)}
     >
-      {submitting ? (
-        <DotSpinner className="agent-turn-action-spinner" />
-      ) : (
-        <IconBranchSimple size={14} aria-hidden />
-      )}
+      {submitting ? <DotSpinner /> : <IconBranchSimple size={14} aria-hidden />}
     </button>
   );
 
@@ -16256,10 +16574,10 @@ export function projectAgentActivityLevels(
   const waitingSessionIds = new Set<string>();
   const toolCallSessionIds = new Set<string>();
   for (const record of records) {
-    if (record.phase === "running" || record.phase === "background") {
-      workingSessionIds.add(record.sessionId);
-    } else if (record.phase === "waiting") {
+    if (record.pendingActionCount > 0 || record.phase === "waiting") {
       waitingSessionIds.add(record.sessionId);
+    } else if (record.phase === "running" || record.phase === "background") {
+      workingSessionIds.add(record.sessionId);
     }
     if (record.currentTool) {
       toolCallSessionIds.add(record.sessionId);
@@ -16292,10 +16610,15 @@ function lifecycleStatusLooksRunning(event: Extract<JuneHermesEvent, { kind: "li
   return event.flavor === "running";
 }
 
-function agentStatusFromHermesEvent(event: JuneHermesEvent): AgentSessionStatusKind | undefined {
+function agentStatusFromHermesEvent(
+  event: JuneHermesEvent,
+  hasOpenPendingAction = false,
+): AgentSessionStatusKind | undefined {
   if (event.kind === "error") return "failed";
   if (event.kind === "pending_action") return "waitingForUser";
-  if (event.kind === "pending_action_resolution") return "running";
+  if (event.kind === "pending_action_resolution" || event.kind === "pending_action_expiration") {
+    return hasOpenPendingAction ? "waitingForUser" : "running";
+  }
   if (event.kind === "transcript" && event.complete) {
     return event.failed ? "failed" : "completed";
   }
@@ -16456,7 +16779,8 @@ function sameVisibleMessageText(left: string, right: string) {
 }
 
 function stripHermesVisibleContext(value: string) {
-  const withoutWarnings = value.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
+  const withoutProjectContext = stripProjectContext(value);
+  const withoutWarnings = withoutProjectContext.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
   const marker = withoutWarnings.search(/\n*--- Attached Context ---/m);
   const visible = marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;
   // Drop the scheduled-run delivery preamble so a routine's title and dedup

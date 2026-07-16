@@ -49,8 +49,41 @@ pub struct FolderDto {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default)]
+    pub memory_disabled: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryDto {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+    pub content: String,
+    pub source: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySettingsDto {
+    #[serde(default = "memory_enabled_by_default")]
+    pub enabled: bool,
+}
+
+impl Default for MemorySettingsDto {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+fn memory_enabled_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +128,9 @@ pub struct NoteDto {
     /// processing queue at the command layer, not persisted.
     #[serde(default)]
     pub queued_recordings: i64,
+    /// Exact recording session selected by the durable retry policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_recording_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,6 +320,8 @@ pub struct FinishRecordingResponse {
 pub struct RetryProcessingRequest {
     pub note_id: String,
     pub step: Option<String>,
+    #[serde(default)]
+    pub recording_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,6 +376,10 @@ pub struct OpenPrivacySettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptDto {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
     pub text: String,
     pub source_mode: Option<RecordingSourceMode>,
     pub source: Option<String>,
@@ -400,6 +442,112 @@ pub struct AudioArtifactDto {
     pub size_bytes: i64,
     pub checksum: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteTranscriptionJobKind {
+    Turn,
+    SourceFallback,
+}
+
+impl NoteTranscriptionJobKind {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::SourceFallback => "source_fallback",
+        }
+    }
+}
+
+impl From<&str> for NoteTranscriptionJobKind {
+    fn from(value: &str) -> Self {
+        match value {
+            "source_fallback" | "sourceFallback" => Self::SourceFallback,
+            _ => Self::Turn,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteTranscriptionJobStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Superseded,
+}
+
+impl NoteTranscriptionJobStatus {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Superseded => "superseded",
+        }
+    }
+}
+
+impl From<&str> for NoteTranscriptionJobStatus {
+    fn from(value: &str) -> Self {
+        match value {
+            "running" => Self::Running,
+            "succeeded" => Self::Succeeded,
+            "failed" => Self::Failed,
+            "superseded" => Self::Superseded,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// Complete, output-affecting plan for one durable saved-audio Source span.
+/// `configuration_fingerprint` is supplied by processing and covers language,
+/// dictionary, and other context revisions that repositories cannot derive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTranscriptionJobPlan {
+    pub span_id: String,
+    pub audio_artifact_id: String,
+    pub source: String,
+    pub job_kind: NoteTranscriptionJobKind,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub turn_index: i64,
+    pub provider: String,
+    pub max_chunk_ms: Option<i64>,
+    pub pipeline_version: String,
+    pub configuration_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTranscriptionJobRecord {
+    pub id: String,
+    pub note_id: String,
+    pub recording_session_id: String,
+    pub audio_artifact_id: String,
+    pub source: String,
+    pub source_mode: RecordingSourceMode,
+    pub job_kind: NoteTranscriptionJobKind,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub turn_index: i64,
+    pub input_fingerprint: String,
+    pub configuration_fingerprint: String,
+    pub operation_id: String,
+    pub provider: String,
+    pub max_chunk_ms: Option<i64>,
+    pub pipeline_version: String,
+    pub status: NoteTranscriptionJobStatus,
+    pub attempt_count: i64,
+    pub transcript_id: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1096,4 +1244,30 @@ pub struct ShareInviteKeysGetRequest {
 pub struct ShareInviteKeyDto {
     pub invite_id: String,
     pub invite_key_b64: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemoryDto;
+
+    fn memory(folder_id: Option<&str>) -> MemoryDto {
+        MemoryDto {
+            id: "memory-1".to_string(),
+            folder_id: folder_id.map(str::to_string),
+            content: "Remember this".to_string(),
+            source: "user".to_string(),
+            created_at: "2026-07-14T00:00:00Z".to_string(),
+            updated_at: "2026-07-14T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn memory_folder_id_is_omitted_for_global_memory_and_present_for_scoped_memory() {
+        let global = serde_json::to_value(memory(None)).expect("serialize global memory");
+        assert!(global.get("folderId").is_none());
+
+        let scoped =
+            serde_json::to_value(memory(Some("folder-1"))).expect("serialize folder-scoped memory");
+        assert_eq!(scoped["folderId"], "folder-1");
+    }
 }

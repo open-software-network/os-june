@@ -152,6 +152,41 @@ describe("ShareDialog", () => {
     expect(screen.getByRole("button", { name: "Stop sharing" })).toBeEnabled();
   });
 
+  it("keeps link creation disabled when an existing share fails to reload", async () => {
+    const keyB64 = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+    mocks.shareKeyGet.mockResolvedValue({ shareId: "shr_1", contentKeyB64: keyB64 });
+    mocks.shareGet.mockRejectedValue(new Error("temporary load failure"));
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("temporary load failure");
+    const copyButton = screen.getByRole("button", { name: "Copy link" });
+    expect(copyButton).toBeDisabled();
+    fireEvent.click(copyButton);
+    expect(mocks.shareCreate).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Stop sharing" })).toBeEnabled();
+  });
+
+  it("keeps a created share attached when copying its link fails", async () => {
+    mocks.shareCreate.mockResolvedValue({
+      shareId: "shr_1",
+      invites: [{ inviteId: "shi_link", email: "link@share.invalid" }],
+    });
+    const user = userEvent.setup();
+    const clipboard = mockClipboard();
+    clipboard.mockRejectedValueOnce(new Error("clipboard unavailable"));
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("clipboard unavailable");
+    expect(screen.getByRole("button", { name: "Stop sharing" })).toBeEnabled();
+    expect(mocks.shareDelete).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Copy link" }));
+    await waitFor(() => expect(clipboard).toHaveBeenCalledTimes(2));
+    expect(mocks.shareCreate).toHaveBeenCalledTimes(1);
+  });
+
   it("blocks every close path while link creation is in flight", async () => {
     let resolveCreate: (value: unknown) => void = () => {};
     mocks.shareCreate.mockReturnValue(

@@ -35,6 +35,10 @@ import { isMacLikePlatform } from "../../lib/platform";
 import { useDismiss } from "../../lib/use-dismiss";
 import { systemAudioAvailability } from "../../lib/source-readiness";
 import {
+  coalesceLiveTranscriptEventsForDisplay,
+  reconcileLiveTranscriptEvents,
+} from "../../lib/live-transcript-preview";
+import {
   isInvalidJuneResponseMessage,
   NoteFailureBanner,
   userFacingFailureMessage,
@@ -171,9 +175,16 @@ export function NoteEditor({
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
   const sourceTranscripts = orderedVisibleSourceTranscripts(note);
+  const reconciledLiveTranscript = useMemo(
+    () => reconcileLiveTranscriptEvents(liveTranscript, note.sourceTranscripts ?? []),
+    [liveTranscript, note.sourceTranscripts],
+  );
   const liveTranscriptTurns = useMemo(
-    () => liveTranscript.map(liveTranscriptEventToTurn),
-    [liveTranscript],
+    () =>
+      coalesceLiveTranscriptEventsForDisplay(reconciledLiveTranscript).map(
+        liveTranscriptEventToTurn,
+      ),
+    [reconciledLiveTranscript],
   );
   const transcriptTurns = useMemo(
     () =>
@@ -196,7 +207,7 @@ export function NoteEditor({
 
   // The filter only earns its place when both sources are present — a
   // mic-only voice memo has nothing to switch between. Built on the
-  // already-pruned visible list so silent/error-only lanes don't count.
+  // already-pruned visible list so silent/error-only Sources don't count.
   const hasBothSources = useMemo(() => {
     let mic = false;
     let system = false;
@@ -282,8 +293,9 @@ export function NoteEditor({
   const processingLock = processingStatus !== null;
   const recordButtonDisabled = recordingDisabled || Boolean(recordingBlockedReason);
   // A funding block disables the record button but not the options chevron:
-  // choosing sources is free, so that setting stays reachable while gated.
-  const recordOptionsDisabled = processingLock || recordingDisabled;
+  // choosing sources is free, and note processing can queue another recording,
+  // so that setting stays reachable unless another recording is active.
+  const recordOptionsDisabled = recordingDisabled;
   // When generation finishes for the note you're looking at, reveal the fresh
   // notes with a top-down wipe instead of letting the text snap in. Only fires
   // on the live processing -> ready edge for this same note — never when
@@ -1005,6 +1017,7 @@ function liveTranscriptEventToTurn(event: LiveTranscriptEventDto): RenderedTrans
   return {
     id: `live-${event.sessionId}-${event.source}-${event.segmentId}`,
     text: event.text,
+    recordingSessionId: event.sessionId,
     sourceMode: event.sourceMode,
     source: event.source,
     startMs: event.startMs,

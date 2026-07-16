@@ -38,6 +38,31 @@ On a bump, set the new version here, in the matrix constant, and in a new pin
 note (copy `docs/hermes-upstream-template.md` to
 `docs/hermes-upstream-v<version>.md`), then re-run `pnpm hermes:upgrade-check`.
 
+## June compatibility patch set
+
+The current pin also carries the checksum-gated `june-approval-v1` patch set
+documented in `docs/hermes-upstream-v2026.6.19.md` and ADR 0025. On every pin
+bump:
+
+1. Check whether upstream now preserves MCP request identity, deduplicates one
+   still-pending logical elicitation across transport reconnects without
+   merging distinct same-transport requests, bounds unresolved approvals, targets
+   `approval.respond`, and retires timeout and disconnect fail closed.
+2. If upstream supplies the complete contract, remove the local patch and its
+   `PATCHSET` plumbing only after the protocol smoke passes against the new pin.
+3. Otherwise rebase `apply_june_patches.py` onto the exact new sources and seal
+   both upstream and patched SHA-256 values. Source drift must remain a hard
+   failure.
+4. Build both macOS and Windows bundles. Confirm both packaging paths apply the
+   same patch, stamp the patch set, verify it after relocation, and run
+   `scripts/hermes-approval-patch-smoke.py`.
+5. Confirm managed installs record the new commit and patch set independently
+   and verify patched source hashes before launch. Confirm production cannot
+   fall back to an unpatched user-local or `PATH` runtime.
+
+Never carry the old post-patch hashes onto a new pin, patch only one platform,
+or treat a UI deduplication filter as a replacement for the runtime protocol.
+
 ## Runtime start command
 
 Confirm June still launches the new build the same way (the smoke test asserts
@@ -71,6 +96,13 @@ url, status url, request/response framing, binary discovery) are pinned as pure
 helpers in `src/lib/hermes-smoke/helpers.ts` and unit-tested in
 `src/test/hermes-smoke.test.ts`. Run `pnpm test` to catch a framing change, and
 `pnpm test:hermes-smoke` to catch a behavior change against the live runtime.
+
+Recheck the targeted approval extension at the same time: `approval.request`
+must carry a stable `request_id`; `approval.respond` with that id must resolve
+exactly one request; `approval.response` and `approval.expire` must reference
+the same id. A missing or malformed id must not fall back to an actionable
+approval. Re-run the reconnect-retry, same-transport concurrency, disconnect
+drain, non-MCP command approval, alias-bound, and tombstone-bound smoke cases.
 
 ## New methods/events (gateway method + event catalog diff)
 
