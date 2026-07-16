@@ -65,6 +65,7 @@ describe("hermes compatibility matrix — required keys", () => {
       "prompt.submit",
       "session.interrupt",
       "session.active_list",
+      "approval.respond",
     ]) {
       expect(methodKeys, `methods.${required}`).toContain(required);
     }
@@ -95,6 +96,7 @@ describe("hermes compatibility matrix — required keys", () => {
       "imageEditing",
       "automationBlueprints",
       "messagingIntegrations",
+      "targetedMcpApprovals",
     ]) {
       expect(featureKeys, `features.${required}`).toContain(required);
     }
@@ -176,6 +178,13 @@ describe("isHermesFeatureSupported — honest support gate", () => {
     expect(isHermesFeatureSupported("sudo.respond")).toBe(true);
     expect(getFeatureStatus("secret.respond")).toBe("supported");
     expect(isHermesFeatureSupported("secret.respond")).toBe(true);
+  });
+
+  it("reports targeted MCP approvals as supported by the sealed runtime patch", () => {
+    expect(getFeatureStatus("approval.respond")).toBe("supported");
+    expect(isHermesFeatureSupported("approval.respond")).toBe(true);
+    expect(getFeatureStatus("targetedMcpApprovals")).toBe("supported");
+    expect(isHermesFeatureSupported("targetedMcpApprovals")).toBe(true);
   });
 
   it("reports feature 10's config.set model seam as supported once shipped", () => {

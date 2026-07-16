@@ -34,6 +34,7 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v1";
 const HERMES_SOURCE_TARBALL_URL: &str =
     "https://github.com/NousResearch/hermes-agent/archive/2bd1977d8fad185c9b4be47884f7e87f1add0ce3.tar.gz";
 const HERMES_SOURCE_TARBALL_SHA256: &str =
@@ -548,8 +549,6 @@ enum HermesCommandSource {
     EnvOverride,
     BundledRuntime,
     ManagedRuntime,
-    UserLocalFallback,
-    PathFallback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5975,6 +5974,7 @@ async fn resolve_hermes_command(
     let managed_install_dir = managed_hermes_runtime_dir(app)?.join("hermes-agent");
     let managed_command = hermes_venv_command(&managed_install_dir.join("venv"));
     if managed_command.exists() && managed_hermes_runtime_current(app)? {
+        verify_managed_hermes_runtime_patch(app, &managed_install_dir)?;
         ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
         return Ok(HermesCommandResolution {
             command: managed_command.to_string_lossy().into_owned(),
@@ -5982,21 +5982,10 @@ async fn resolve_hermes_command(
         });
     }
 
-    if let Err(error) = install_managed_hermes_runtime(app, hermes_home).await {
-        if let Some(command) = user_local_hermes_command() {
-            eprintln!(
-                "failed to install June-managed Hermes runtime; using existing user-local Hermes fallback: {}",
-                error.message
-            );
-            return Ok(HermesCommandResolution {
-                command: command.to_string_lossy().into_owned(),
-                source: HermesCommandSource::UserLocalFallback,
-            });
-        }
-        return Err(error);
-    }
+    install_managed_hermes_runtime(app, hermes_home).await?;
 
     if managed_command.exists() {
+        verify_managed_hermes_runtime_patch(app, &managed_install_dir)?;
         ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
         return Ok(HermesCommandResolution {
             command: managed_command.to_string_lossy().into_owned(),
@@ -6004,17 +5993,10 @@ async fn resolve_hermes_command(
         });
     }
 
-    if let Some(command) = user_local_hermes_command() {
-        return Ok(HermesCommandResolution {
-            command: command.to_string_lossy().into_owned(),
-            source: HermesCommandSource::UserLocalFallback,
-        });
-    }
-
-    Ok(HermesCommandResolution {
-        command: "hermes".to_string(),
-        source: HermesCommandSource::PathFallback,
-    })
+    Err(AppError::new(
+        "hermes_runtime_install_failed",
+        "June-managed Hermes install completed without a Hermes executable",
+    ))
 }
 
 fn bundled_hermes_command(app: &AppHandle) -> Option<PathBuf> {
@@ -6058,22 +6040,10 @@ fn managed_hermes_runtime_current(app: &AppHandle) -> Result<bool, AppError> {
     let Ok(metadata) = fs::read_to_string(metadata_path) else {
         return Ok(false);
     };
-    Ok(metadata.contains(&format!(r#""commit":"{HERMES_AGENT_INSTALL_COMMIT}""#)))
-}
-
-fn user_local_hermes_command() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    for home in home_dir_candidates() {
-        candidates.push(hermes_venv_command(
-            &home.join(".hermes").join("hermes-agent").join("venv"),
-        ));
-        candidates.push(if cfg!(target_os = "windows") {
-            home.join(".local").join("bin").join("hermes.exe")
-        } else {
-            home.join(".local").join("bin").join("hermes")
-        });
-    }
-    candidates.into_iter().find(|path| path.exists())
+    Ok(
+        metadata.contains(&format!(r#""commit":"{HERMES_AGENT_INSTALL_COMMIT}""#))
+            && metadata.contains(&format!(r#""patchSet":"{HERMES_RUNTIME_PATCH_SET}""#)),
+    )
 }
 
 fn hermes_venv_command(venv_dir: &Path) -> PathBuf {
@@ -6085,6 +6055,45 @@ fn hermes_venv_command(venv_dir: &Path) -> PathBuf {
 }
 
 const HERMES_SITE_CUSTOMIZE: &str = include_str!("hermes/sitecustomize.py");
+const HERMES_RUNTIME_PATCH_SCRIPT: &str = include_str!("hermes/apply_june_patches.py");
+
+fn write_managed_hermes_patch_script(runtime_dir: &Path) -> Result<PathBuf, AppError> {
+    let path = runtime_dir.join("apply-june-hermes-patches.py");
+    if fs::read_to_string(&path).ok().as_deref() != Some(HERMES_RUNTIME_PATCH_SCRIPT) {
+        fs::write(&path, HERMES_RUNTIME_PATCH_SCRIPT)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    }
+    Ok(path)
+}
+
+fn verify_managed_hermes_runtime_patch(
+    app: &AppHandle,
+    install_dir: &Path,
+) -> Result<(), AppError> {
+    let runtime_dir = managed_hermes_runtime_dir(app)?;
+    let script = write_managed_hermes_patch_script(&runtime_dir)?;
+    let python = if cfg!(target_os = "windows") {
+        install_dir.join("venv").join("Scripts").join("python.exe")
+    } else {
+        install_dir.join("venv").join("bin").join("python")
+    };
+    let status = Command::new(&python)
+        .arg(&script)
+        .arg(install_dir)
+        .arg("--verify")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| AppError::new("hermes_runtime_patch_failed", error.to_string()))?;
+    if !status.success() {
+        return Err(AppError::new(
+            "hermes_runtime_patch_failed",
+            "The managed Hermes runtime failed its June patch checksum verification.",
+        ));
+    }
+    Ok(())
+}
 
 fn ensure_managed_hermes_sitecustomize(install_dir: &Path) -> Result<(), AppError> {
     for site_packages in managed_hermes_site_packages_dirs(install_dir)? {
@@ -6202,6 +6211,7 @@ async fn install_managed_hermes_runtime_unix(
     let install_dir = runtime_dir.join("hermes-agent");
     fs::create_dir_all(&runtime_dir)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let patch_script = write_managed_hermes_patch_script(&runtime_dir)?;
     if install_dir.exists() && !managed_hermes_runtime_current(app)? {
         fs::remove_dir_all(&install_dir)
             .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
@@ -6233,6 +6243,8 @@ async fn install_managed_hermes_runtime_unix(
                 .env("JUNE_HERMES_INSTALL_DIR", &install_dir)
                 .env("JUNE_HERMES_HOME", &hermes_home)
                 .env("JUNE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
+                .env("JUNE_HERMES_PATCH_SET", HERMES_RUNTIME_PATCH_SET)
+                .env("JUNE_HERMES_PATCH_SCRIPT", &patch_script)
                 .env("JUNE_HERMES_SOURCE_TARBALL_URL", HERMES_SOURCE_TARBALL_URL)
                 .env(
                     "JUNE_HERMES_SOURCE_TARBALL_SHA256",
@@ -6291,6 +6303,7 @@ async fn install_managed_hermes_runtime_windows(
     let install_dir = runtime_dir.join("hermes-agent");
     fs::create_dir_all(&runtime_dir)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let patch_script = write_managed_hermes_patch_script(&runtime_dir)?;
     if install_dir.exists() && !managed_hermes_runtime_current(app)? {
         fs::remove_dir_all(&install_dir)
             .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
@@ -6326,6 +6339,8 @@ async fn install_managed_hermes_runtime_windows(
                 .env("JUNE_HERMES_INSTALL_DIR", &install_dir)
                 .env("JUNE_HERMES_HOME", &hermes_home)
                 .env("JUNE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
+                .env("JUNE_HERMES_PATCH_SET", HERMES_RUNTIME_PATCH_SET)
+                .env("JUNE_HERMES_PATCH_SCRIPT", &patch_script)
                 .env("JUNE_HERMES_SOURCE_TARBALL_URL", HERMES_SOURCE_TARBALL_URL)
                 .env(
                     "JUNE_HERMES_SOURCE_TARBALL_SHA256",
@@ -6380,6 +6395,8 @@ runtime_dir="${JUNE_HERMES_RUNTIME_DIR:?}"
 install_dir="${JUNE_HERMES_INSTALL_DIR:?}"
 hermes_home="${JUNE_HERMES_HOME:?}"
 install_commit="${JUNE_HERMES_INSTALL_COMMIT:?}"
+patch_set="${JUNE_HERMES_PATCH_SET:?}"
+patch_script="${JUNE_HERMES_PATCH_SCRIPT:?}"
 source_tarball_url="${JUNE_HERMES_SOURCE_TARBALL_URL:?}"
 source_tarball_sha256="${JUNE_HERMES_SOURCE_TARBALL_SHA256:?}"
 
@@ -6421,6 +6438,8 @@ sed -e 's/^\$UV_CMD/"$UV_CMD"/g' \
   > "$install_dir/scripts/install.sh.quoted"
 mv "$install_dir/scripts/install.sh.quoted" "$install_dir/scripts/install.sh"
 
+/usr/bin/python3 "$patch_script" "$install_dir"
+
 run_stage() {
   local stage="$1"
   HERMES_HOME="$hermes_home" HERMES_INSTALL_DIR="$install_dir" \
@@ -6439,7 +6458,7 @@ run_stage config
 run_stage complete
 
 cat > "$runtime_dir/runtime.json" <<EOF
-{"source":"NousResearch/hermes-agent","commit":"$install_commit","installDir":"$install_dir"}
+{"source":"NousResearch/hermes-agent","commit":"$install_commit","patchSet":"$patch_set","installDir":"$install_dir"}
 EOF
 "#;
 
@@ -6452,6 +6471,8 @@ $runtimeDir = $env:JUNE_HERMES_RUNTIME_DIR
 $installDir = $env:JUNE_HERMES_INSTALL_DIR
 $hermesHome = $env:JUNE_HERMES_HOME
 $installCommit = $env:JUNE_HERMES_INSTALL_COMMIT
+$patchSet = $env:JUNE_HERMES_PATCH_SET
+$patchScript = $env:JUNE_HERMES_PATCH_SCRIPT
 $sourceTarballUrl = $env:JUNE_HERMES_SOURCE_TARBALL_URL
 $sourceTarballSha256 = ($env:JUNE_HERMES_SOURCE_TARBALL_SHA256).ToLowerInvariant()
 
@@ -6534,6 +6555,8 @@ if (!(Test-Path (Join-Path $installDir "pyproject.toml"))) {
 }
 
 $python = Resolve-Python
+$patchArgs = @($python.Args + @($patchScript, $installDir))
+Invoke-Native $python.Exe $patchArgs
 $venvDir = Join-Path $installDir "venv"
 if (Test-Path $venvDir) {
   Remove-Item -Recurse -Force -Path $venvDir
@@ -6597,6 +6620,7 @@ if (!(Test-Path $hermesExe)) {
 $metadata = [ordered]@{
   source = "NousResearch/hermes-agent"
   commit = $installCommit
+  patchSet = $patchSet
   installDir = $installDir
 } | ConvertTo-Json -Compress
 [System.IO.File]::WriteAllText((Join-Path $runtimeDir "runtime.json"), $metadata, (New-Object System.Text.UTF8Encoding $false))

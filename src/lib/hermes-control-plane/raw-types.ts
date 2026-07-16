@@ -58,6 +58,7 @@ export type RawHermesEventName =
   | "clarify.response"
   | "approval.request"
   | "approval.response"
+  | "approval.expire"
   | "sudo.request"
   | "sudo.response"
   | "secret.request"

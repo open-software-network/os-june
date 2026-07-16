@@ -4,6 +4,7 @@ import type {
   BackgroundHermesPhase,
   JuneHermesEvent,
   PendingHermesAction,
+  PendingHermesActionExpiration,
   PendingHermesActionResolution,
 } from "./events";
 import { parseHermesMode } from "./events";
@@ -78,6 +79,25 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
         action: classifyPendingActionResolution(type, payload, receivedAt),
         receivedAt,
       };
+
+    case "approval.expire": {
+      const requestId = explicitRequestIdOf(payload);
+      if (!requestId) {
+        return {
+          kind: "unsupported",
+          sessionId,
+          rawType: type,
+          sanitizedPayload: payload === undefined ? undefined : sanitizePayload(payload),
+          receivedAt,
+        };
+      }
+      return {
+        kind: "pending_action_expiration",
+        sessionId: sessionId ?? "",
+        action: classifyPendingActionExpiration(requestId, payload),
+        receivedAt,
+      };
+    }
 
     case "error":
       return classifyError(sessionId, payload, receivedAt);
@@ -400,6 +420,21 @@ function classifyPendingActionResolution(
   }
 }
 
+function classifyPendingActionExpiration(
+  requestId: string,
+  payload: RawHermesPayload | undefined,
+): PendingHermesActionExpiration {
+  const rawReason = stringValue(payload?.reason)?.toLowerCase();
+  const reason =
+    rawReason === "timeout" ||
+    rawReason === "disconnect" ||
+    rawReason === "overflow" ||
+    rawReason === "stale"
+      ? rawReason
+      : "unknown";
+  return { kind: "approval", requestId, reason };
+}
+
 function classifyBackgroundActivity(
   type: string,
   sessionId: string | undefined,
@@ -531,11 +566,53 @@ function requestIdOf(
   receivedAt: string,
 ): string {
   return (
-    stringValue(payload?.request_id) ??
-    stringValue(payload?.requestId) ??
-    stringValue(payload?.id) ??
-    `${type}:${receivedAt}`
+    explicitRequestIdOf(payload) ??
+    (type === "approval.request" ? stableLegacyRequestId(type, payload) : `${type}:${receivedAt}`)
   );
+}
+
+function explicitRequestIdOf(payload: RawHermesPayload | undefined): string | undefined {
+  return (
+    stringValue(payload?.request_id) ?? stringValue(payload?.requestId) ?? stringValue(payload?.id)
+  );
+}
+
+/**
+ * Legacy Hermes builds omitted approval request ids. A timestamp made each
+ * replay look unique, so derive an opaque, deterministic fingerprint from the
+ * already-sanitized payload instead. The pinned runtime now supplies a real id;
+ * this approval-only fallback prevents old or partially-upgraded runtimes from
+ * causing a card storm without changing non-MCP action compatibility. No raw
+ * payload text is retained in the id.
+ */
+function stableLegacyRequestId(type: string, payload: RawHermesPayload | undefined): string {
+  const canonical = stableJson(sanitizePayload(payload ?? {}));
+  return `legacy:${type}:${fingerprint(canonical)}`;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function fingerprint(value: string): string {
+  let left = 0x811c9dc5;
+  let right = 0x9e3779b9;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    left = Math.imul(left ^ code, 0x01000193);
+    right = Math.imul(right ^ code, 0x85ebca6b);
+  }
+  return `${(left >>> 0).toString(16).padStart(8, "0")}${(right >>> 0)
+    .toString(16)
+    .padStart(8, "0")}`;
 }
 
 function messageRole(

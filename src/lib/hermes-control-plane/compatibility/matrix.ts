@@ -107,6 +107,12 @@ const methods: HermesCompatibilitySection = {
       "AgentWorkspace polls session.active_list as ground truth for what is actually running.",
     since: PIN,
   },
+  "approval.respond": {
+    status: "supported",
+    rationale:
+      "AgentWorkspace sends the stable request id with approval.respond so June's sealed Hermes patch resolves exactly the approval represented by the clicked card.",
+    since: PIN,
+  },
 
   // --- Feature 01 stubs: typed wrappers exist, no UI wiring yet. ---
   "session.steer": {
@@ -208,7 +214,7 @@ const events: HermesCompatibilitySection = {
   approval: {
     status: "supported",
     rationale:
-      "approval.request classifies to a pending_action and renders an approval card resolved via approval.respond.",
+      "approval.request classifies to a pending_action with stable identity, approval.response resolves the targeted card, and approval.expire retires it without granting permission.",
     since: PIN,
   },
   clarify: {
@@ -256,6 +262,12 @@ const events: HermesCompatibilitySection = {
  * June's UI, not Hermes' capability.
  */
 const features: HermesCompatibilitySection = {
+  targetedMcpApprovals: {
+    status: "supported",
+    rationale:
+      "The checksum-gated june-approval-v1 patch preserves MCP request identity, deduplicates retries, bounds the per-session queue, resolves a targeted approval or denial exactly once, and drains timeout or disconnect fail closed on macOS and Windows.",
+    since: PIN,
+  },
   backgroundSubagentWatch: {
     status: "supported",
     rationale:
@@ -300,6 +312,7 @@ export const hermesCompatibilityMatrix: HermesCompatibilityMatrix = Object.freez
  * greppable and testable. Feature numbers match the pack plan.
  */
 export const OWNERSHIP: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "JUN-350": ["methods.approval.respond", "events.approval", "features.targetedMcpApprovals"],
   "03": ["events.sudo", "events.secret", "methods.sudo.respond", "methods.secret.respond"],
   "06": ["methods.session.steer"],
   "07": ["methods.session.branch"],

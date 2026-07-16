@@ -21,8 +21,8 @@
  *   `stale`: they remain visible (a stale-but-dismissable row beats a hidden
  *   blocker) but the tray renders them visually distinct. A fresh event for the
  *   same request after reconnect re-confirms it back to `open`.
- * - Resolution is sticky: once `resolved`, a straggler duplicate of the same
- *   request can't resurrect the row.
+ * - Resolution and expiration are sticky: once `resolved` or `expired`, a
+ *   straggler duplicate of the same request can't resurrect the row.
  *
  * Framework-agnostic (no React) so tests drive it directly; AgentWorkspace
  * adapts it with a `useSyncExternalStore` wrapper, mirroring features 02/15.
@@ -43,7 +43,7 @@ type PendingActionEvent = Extract<JuneHermesEvent, { kind: "pending_action" }>;
 export const PENDING_ACTIONS_CAP = 200;
 
 /** A record's lifecycle phase. `stale` = unreconciled after a reconnect. */
-export type PendingActionStatus = "open" | "submitting" | "resolved" | "stale";
+export type PendingActionStatus = "open" | "submitting" | "resolved" | "stale" | "expired";
 
 /** Stable identity across the pack: mode, session, and the request id. */
 export type PendingActionKey = `${HermesMode}:${string}:${string}`;
@@ -62,6 +62,7 @@ export type PendingActionRecord = {
   firstSeenAt: number;
   lastSeenAt: number;
   status: PendingActionStatus;
+  retiredReason?: string;
 };
 
 /** Statuses that still demand the user's attention (and so show in the tray). */
@@ -81,6 +82,8 @@ export type PendingActionStore = {
    * or a matching response arrived. No-op (and no version bump) if unknown.
    */
   resolveRequest(sessionId: string, requestId: string): void;
+  /** Retire an approval that timed out, disconnected, or was no longer pending. */
+  expireRequest(sessionId: string, requestId: string, reason?: string): void;
   /**
    * Resolve every still-open action for a session. Call when the session
    * completes, is interrupted, or reports a terminal (non-recoverable) error —
@@ -144,7 +147,7 @@ export function createPendingActionStore(): PendingActionStore {
 
     if (existing) {
       // A duplicate of an already-resolved request must NOT reopen it.
-      if (existing.status === "resolved") return;
+      if (existing.status === "resolved" || existing.status === "expired") return;
       existing.lastSeenAt = now;
       // A fresh event proves the action is still pending → clear any staleness.
       existing.status = "open";
@@ -177,8 +180,34 @@ export function createPendingActionStore(): PendingActionStore {
     if (!sid || !rid) return;
     let changed = false;
     for (const record of byKey.values()) {
-      if (record.sessionId === sid && record.requestId === rid && record.status !== "resolved") {
+      if (
+        record.sessionId === sid &&
+        record.requestId === rid &&
+        record.status !== "resolved" &&
+        record.status !== "expired"
+      ) {
         record.status = "resolved";
+        record.lastSeenAt = Date.now();
+        changed = true;
+      }
+    }
+    if (changed) emit();
+  }
+
+  function expireRequest(sessionId: string, requestId: string, reason?: string): void {
+    const sid = nonEmpty(sessionId);
+    const rid = nonEmpty(requestId);
+    if (!sid || !rid) return;
+    let changed = false;
+    for (const record of byKey.values()) {
+      if (
+        record.sessionId === sid &&
+        record.requestId === rid &&
+        record.status !== "resolved" &&
+        record.status !== "expired"
+      ) {
+        record.status = "expired";
+        record.retiredReason = nonEmpty(reason);
         record.lastSeenAt = Date.now();
         changed = true;
       }
@@ -191,7 +220,7 @@ export function createPendingActionStore(): PendingActionStore {
     if (!sid) return;
     let changed = false;
     for (const record of byKey.values()) {
-      if (record.sessionId === sid && record.status !== "resolved") {
+      if (record.sessionId === sid && record.status !== "resolved" && record.status !== "expired") {
         record.status = "resolved";
         record.lastSeenAt = Date.now();
         changed = true;
@@ -267,6 +296,7 @@ export function createPendingActionStore(): PendingActionStore {
   return {
     record,
     resolveRequest,
+    expireRequest,
     resolveSession,
     markDisconnected,
     reconcileAfterReconnect,

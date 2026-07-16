@@ -161,6 +161,28 @@ describe("createPendingActionStore", () => {
     expect(store.openRecords()).toHaveLength(0);
   });
 
+  it("retires an expired approval without letting a replay reopen it", () => {
+    const store = createPendingActionStore();
+    const request = pendingClassified("approval.request", "s1", { request_id: "r-expired" });
+    store.record(request, "sandboxed");
+
+    store.expireRequest("s1", "r-expired", "timeout");
+    expect(store.openCount()).toBe(0);
+    expect(store.getRecords()[0]).toMatchObject({
+      requestId: "r-expired",
+      status: "expired",
+      retiredReason: "timeout",
+    });
+
+    store.record(request, "sandboxed");
+    expect(store.openCount()).toBe(0);
+    expect(store.getRecords()[0]?.status).toBe("expired");
+
+    store.resolveRequest("s1", "r-expired");
+    store.resolveSession("s1");
+    expect(store.getRecords()[0]?.status).toBe("expired");
+  });
+
   it("secret actions never carry a value, only the request", () => {
     const store = createPendingActionStore();
     store.record(

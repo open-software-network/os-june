@@ -4243,10 +4243,9 @@ export function AgentWorkspace({
       removeHermesSessionLocally,
     };
     gatewayCloseHandlerRef.current = (fullMode: boolean) => {
-      // Feature 04: a disconnect is NOT a resolution — pending actions must
-      // survive it. markDisconnected is intentionally a no-op on state; the
-      // reconcile after a successful reconnect (below) is what marks anything
-      // unconfirmed as stale rather than dropping it.
+      // Feature 04: mark the transport drop, then let recovery retire approvals
+      // fail closed while preserving the existing stale/reannounce contract for
+      // clarify, sudo, and secret actions.
       pendingActionStore.markDisconnected();
       void recoverFromGatewayClose(fullMode);
     };
@@ -6719,6 +6718,12 @@ export function AgentWorkspace({
         // fresh event for a known request also re-confirms a row that went
         // stale across a reconnect (see the store's reconcile logic).
         pendingActionStore.record(storedClassified, hermesModeFor(storedSessionId));
+      } else if (storedClassified.kind === "pending_action_expiration") {
+        pendingActionStore.expireRequest(
+          storedSessionId,
+          storedClassified.action.requestId,
+          storedClassified.action.reason,
+        );
       }
       // Feature 11: roll EVERY classified event into the global activity store
       // that backs the Agent activity drawer. The store is total and ignores
@@ -7510,6 +7515,39 @@ export function AgentWorkspace({
     );
     if (!activeSessionIds.size) return;
     gatewayRecoveringRef.current.add(fullMode);
+    // The patched Hermes gateway denies and drains unresolved MCP approvals
+    // when its notification socket disconnects. Mirror that fail-closed
+    // boundary locally before reconnecting: an old card must never remain
+    // actionable against a newly resumed runtime. Other pending-action kinds
+    // keep their existing stale/reannounce reconciliation contract.
+    let retiredApprovalEvents = liveEventsRef.current;
+    let retiredApprovalChanged = false;
+    const retiredAt = new Date().toISOString();
+    for (const record of pendingActionStore.openRecords()) {
+      if (!activeSessionIds.has(record.sessionId) || record.action.kind !== "approval") continue;
+      pendingActionStore.expireRequest(record.sessionId, record.requestId, "disconnect");
+      const expiration: JuneHermesEvent = {
+        kind: "pending_action_expiration",
+        sessionId: record.sessionId,
+        action: {
+          kind: "approval",
+          requestId: record.requestId,
+          reason: "disconnect",
+        },
+        receivedAt: retiredAt,
+      };
+      retiredApprovalEvents = {
+        ...retiredApprovalEvents,
+        [record.sessionId]: [...(retiredApprovalEvents[record.sessionId] ?? []), expiration].slice(
+          -200,
+        ),
+      };
+      retiredApprovalChanged = true;
+    }
+    if (retiredApprovalChanged) {
+      liveEventsRef.current = retiredApprovalEvents;
+      setLiveEvents(retiredApprovalEvents);
+    }
     try {
       const gateway = await ensureHermesGateway(fullMode);
       await Promise.all(
@@ -7525,6 +7563,14 @@ export function AgentWorkspace({
                 ...current,
                 [sessionId]: runtimeSessionId,
               }));
+              attachHermesSessionEventListener({
+                gateway,
+                runtimeSessionId,
+                sessionDisplayTitle:
+                  hermesSessionItemsRef.current.find((session) => session.id === sessionId)
+                    ?.title ?? "Agent session",
+                storedSessionId: sessionId,
+              });
             }
           } catch {
             // The runtime session may be gone; the poll reconciles it.
@@ -7536,10 +7582,10 @@ export function AgentWorkspace({
     } finally {
       gatewayRecoveringRef.current.delete(fullMode);
     }
-    // Feature 04: the gateway is back. Any pending action not re-announced by a
-    // fresh event is now unverifiable across the drop, so mark it stale —
-    // visible but visually distinct — rather than silently dropping a possible
-    // blocker. A re-announced request flips its row back to open in the feed.
+    // Feature 04: the gateway is back. Any non-approval pending action not
+    // re-announced by a fresh event is unverifiable across the drop, so mark it
+    // stale rather than silently dropping a possible blocker. Approvals were
+    // already retired above because the gateway drains them fail closed.
     pendingActionStore.reconcileAfterReconnect();
     for (const sessionId of activeSessionIds) {
       void refreshHermesSession(sessionId);
@@ -7777,10 +7823,29 @@ export function AgentWorkspace({
       // The approval lives in the runtime process that asked, so the
       // response must go out on that mode's gateway.
       const gateway = await ensureHermesGateway(unrestricted);
-      await gateway.request("approval.respond", {
+      hermesTraceBuffer.recordOutbound({
+        sessionId: liveEventKey,
+        method: "approval.respond",
+        params: { session_id: sessionId, request_id: requestId, choice },
+      });
+      const response = await gateway.request<{ resolved?: number }>("approval.respond", {
         session_id: sessionId,
+        request_id: requestId,
         choice,
       });
+      if (response?.resolved !== 1) {
+        pushLiveEvent(
+          liveEventKey,
+          classifyOptimisticLiveEvent({
+            type: "approval.expire",
+            session_id: sessionId,
+            payload: { request_id: requestId, reason: "stale" },
+          }),
+        );
+        pendingActionStore.expireRequest(liveEventKey, requestId, "stale");
+        setError("This approval is no longer pending. Nothing was approved.", { sessionId });
+        return;
+      }
       pushLiveEvent(
         liveEventKey,
         classifyOptimisticLiveEvent({
@@ -7814,7 +7879,7 @@ export function AgentWorkspace({
         setLiveEvents(liveEventsRef.current);
         // The request can never be answered now — retire its card so neither the
         // sidebar count nor the inline prompt offers a dead-end "Respond".
-        pendingActionStore.resolveRequest(liveEventKey, requestId);
+        pendingActionStore.expireRequest(liveEventKey, requestId, "disconnect");
         void loadHermesSessions();
         setError(SESSION_GONE_MESSAGE, { sessionId });
       } else {
@@ -14568,6 +14633,24 @@ export function ApprovalPart({
   // command (or description) truncated to one line, expandable to the full
   // description and command — no action buttons.
   if (resolved) {
+    if (part.status === "expired") {
+      return (
+        <ResolvedActionRow
+          denied
+          label="Approval expired"
+          detail={
+            part.command ? (
+              <span className="agent-resolved-mono">{part.command}</span>
+            ) : (
+              part.description
+            )
+          }
+        >
+          <p>This approval is no longer pending. June did not approve anything.</p>
+          {part.command ? <pre>{part.command}</pre> : null}
+        </ResolvedActionRow>
+      );
+    }
     return (
       <ResolvedActionRow
         denied={activeChoice === "deny"}
@@ -16256,7 +16339,9 @@ function lifecycleStatusLooksRunning(event: Extract<JuneHermesEvent, { kind: "li
 function agentStatusFromHermesEvent(event: JuneHermesEvent): AgentSessionStatusKind | undefined {
   if (event.kind === "error") return "failed";
   if (event.kind === "pending_action") return "waitingForUser";
-  if (event.kind === "pending_action_resolution") return "running";
+  if (event.kind === "pending_action_resolution" || event.kind === "pending_action_expiration") {
+    return "running";
+  }
   if (event.kind === "transcript" && event.complete) {
     return event.failed ? "failed" : "completed";
   }

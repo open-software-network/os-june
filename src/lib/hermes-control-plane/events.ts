@@ -107,6 +107,15 @@ export type PendingHermesActionResolution =
       redacted: true;
     };
 
+/** A pending approval that Hermes retired without a user decision. Expiration
+ * is deliberately distinct from denial: neither outcome approves anything,
+ * but only denial is an explicit user response. */
+export type PendingHermesActionExpiration = {
+  kind: "approval";
+  requestId: string;
+  reason: "timeout" | "disconnect" | "overflow" | "stale" | "unknown";
+};
+
 /** The lifecycle phase a background subagent is reporting. */
 export type BackgroundHermesPhase =
   | "start"
@@ -202,6 +211,11 @@ export type JuneHermesEvent =
       kind: "pending_action_resolution";
       sessionId: string;
       action: PendingHermesActionResolution;
+    })
+  | (JuneHermesEventBase & {
+      kind: "pending_action_expiration";
+      sessionId: string;
+      action: PendingHermesActionExpiration;
     })
   | (JuneHermesEventBase & {
       kind: "background_activity";
