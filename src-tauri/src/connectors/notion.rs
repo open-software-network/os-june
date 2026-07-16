@@ -47,20 +47,31 @@ const NOTION_READ_TOOL_ALLOWLIST: &[&str] = &[
 const NOTION_ACTION_TOOL_ALLOWLIST: &[&str] = &["notion-create-pages"];
 const NOTION_ACTIONS_SERVER_NAME: &str = "june_notion_actions";
 
-static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
 
-fn http_client() -> &'static reqwest::Client {
-    HTTP_CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(HTTP_TIMEOUT)
-            .pool_idle_timeout(Duration::from_secs(90))
-            .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent("os-june/0.1 notion-hosted-mcp-preview")
-            .build()
-            .expect("Notion hosted MCP HTTP client configuration must be valid")
-    })
+fn http_client() -> Result<&'static reqwest::Client, AppError> {
+    HTTP_CLIENT
+        .get_or_init(|| {
+            // Notion hosted MCP traffic carries user-granted connector tokens.
+            // Keep it direct-to-provider for this preview instead of honoring
+            // ambient process proxy variables that could redirect credentials.
+            reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(HTTP_TIMEOUT)
+                .pool_idle_timeout(Duration::from_secs(90))
+                .tcp_keepalive(Some(Duration::from_secs(30)))
+                .user_agent("os-june/0.1 notion-hosted-mcp-preview")
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| {
+            AppError::new(
+                "notion_http_client_failed",
+                format!("Could not initialize the Notion HTTP client: {error}"),
+            )
+        })
 }
 
 #[derive(Default)]
@@ -244,6 +255,10 @@ pub async fn status() -> Result<NotionConnectionStatus, AppError> {
             .is_some_and(|entry| !entry.client_id.is_empty()),
         keychain_only: true,
     })
+}
+
+pub async fn has_connection() -> Result<bool, AppError> {
+    Ok(store::load().await?.is_some())
 }
 
 pub async fn connect(flow: &NotionConnectFlow) -> Result<NotionConnection, AppError> {
@@ -489,7 +504,7 @@ async fn discover_and_validate() -> Result<(ResourceMetadata, AuthorizationServe
 }
 
 async fn get_json<T: for<'de> Deserialize<'de>>(url: &str) -> Result<T, AppError> {
-    let response = http_client()
+    let response = http_client()?
         .get(url)
         .send()
         .await
@@ -515,7 +530,7 @@ async fn register_client(
         .registration_endpoint
         .as_deref()
         .ok_or_else(metadata_error)?;
-    let response = http_client()
+    let response = http_client()?
         .post(endpoint)
         .json(&RegistrationRequest {
             client_name: "June",
@@ -584,7 +599,7 @@ async fn exchange_code(
     if let Some(secret) = client_secret.filter(|secret| !secret.is_empty()) {
         form.push(("client_secret", secret));
     }
-    let response = http_client()
+    let response = http_client()?
         .post(&auth_server.token_endpoint)
         .form(&form)
         .send()
@@ -740,7 +755,7 @@ impl McpHttpClient {
     }
 
     async fn post_json(&self, body: serde_json::Value) -> Result<reqwest::Response, AppError> {
-        let mut request = http_client()
+        let mut request = http_client()?
             .post(MCP_ENDPOINT)
             .bearer_auth(&self.access_token)
             .header("accept", "application/json, text/event-stream")

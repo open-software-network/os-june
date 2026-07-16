@@ -354,15 +354,20 @@ pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccoun
             status: ConnectorAccountStatus::from_db(&record.status),
         })
         .collect();
-    match notion::status().await {
-        Ok(status) if status.connected => accounts.push(ConnectorAccount {
+    // `list_accounts` is a connected-account listing. The Connectors settings
+    // provider directory owns disconnected rows, so a disconnected or
+    // unavailable Notion preview is represented here by omission. Keep this to
+    // a local credential check so an optional hosted-MCP connector cannot delay
+    // unrelated Google account listing with network work.
+    match notion::has_connection().await {
+        Ok(true) => accounts.push(ConnectorAccount {
             account_id: notion::notion_account_id().to_string(),
             provider: ConnectorProvider::Notion,
             email: notion::notion_account_email().to_string(),
             scopes: Vec::new(),
             status: ConnectorAccountStatus::Connected,
         }),
-        Ok(_) => {}
+        Ok(false) => {}
         Err(error) => {
             tracing::warn!(
                 error_code = %error.code,
