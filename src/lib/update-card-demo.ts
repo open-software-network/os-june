@@ -65,7 +65,7 @@ export function registerUpdateCardDemo({
   setProgress,
 }: {
   setReadyUpdate: (payload: UpdatePromptPayload<JuneUpdate> | null) => void;
-  setStatus: (status: string | null) => void;
+  setStatus: (status: string | null, failed?: boolean) => void;
   setRelaunching: (value: boolean) => void;
   setPreparing: (value: boolean) => void;
   setChecking: (value: boolean) => void;
@@ -111,7 +111,7 @@ export function registerUpdateCardDemo({
   function failed(version = DEFAULT_VERSION) {
     reset();
     setReadyUpdate(makePayload(version));
-    setStatus("Update failed. Try again.");
+    setStatus("Update failed. Try again.", true);
   }
 
   function checking() {
@@ -148,7 +148,7 @@ export function registerUpdateCardDemo({
 
   function checkFailed() {
     reset();
-    setStatus("Update check failed: network unreachable.");
+    setStatus("Update check failed: network unreachable.", true);
   }
 
   const hook = (state?: string, version?: string) => {

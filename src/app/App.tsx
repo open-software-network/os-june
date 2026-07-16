@@ -511,8 +511,8 @@ export function App() {
   );
   const updateStatus = updateStatusDisplay.status;
   const updateStatusLeaving = updateStatusDisplay.leaving;
-  const setUpdateStatus = useCallback((status: string | null) => {
-    dispatchUpdateStatusDisplay({ type: "show", status });
+  const setUpdateStatus = useCallback((status: string | null, failed = false) => {
+    dispatchUpdateStatusDisplay({ type: "show", status, failed });
   }, []);
   const [preparingUpdate, setPreparingUpdate] = useState(false);
   // Render-only flag for a visible manual check. checkingUpdateRef separately
@@ -1612,7 +1612,7 @@ export function App() {
           updateProgressHiddenRef.current = false;
           setPreparingUpdate(false);
           setUpdateProgress(null);
-          setUpdateStatus(`Update failed: ${message}`);
+          setUpdateStatus(`Update failed: ${message}`, true);
         },
       });
     },
@@ -1647,7 +1647,7 @@ export function App() {
           reportNoUpdate: () => setUpdateStatus(UP_TO_DATE_STATUS),
           reportFailure: (message) => {
             if (mode !== "periodic") {
-              setUpdateStatus(`Update check failed: ${message}`);
+              setUpdateStatus(`Update check failed: ${message}`, true);
             }
           },
         },
@@ -1694,7 +1694,7 @@ export function App() {
     void relaunchJune().catch((error) => {
       relaunchingUpdateRef.current = false;
       setRelaunchingUpdate(false);
-      setUpdateStatus(`Relaunch failed: ${messageFromError(error)}`);
+      setUpdateStatus(`Relaunch failed: ${messageFromError(error)}`, true);
     });
   }, [setUpdateStatus]);
 
@@ -3735,6 +3735,7 @@ export function App() {
             <UpdateHub
               readyUpdate={readyUpdate}
               status={updateStatus}
+              failed={updateStatusDisplay.failed}
               statusLeaving={updateStatusLeaving}
               checking={checkingUpdate}
               preparing={preparingUpdate}
@@ -4543,6 +4544,7 @@ function updateMenuBarSessionStatus(
 function UpdateHub({
   readyUpdate,
   status,
+  failed,
   statusLeaving,
   checking,
   preparing,
@@ -4553,6 +4555,7 @@ function UpdateHub({
 }: {
   readyUpdate: UpdatePromptPayload<JuneUpdate> | null;
   status: string | null;
+  failed: boolean;
   statusLeaving: boolean;
   checking: boolean;
   preparing: boolean;
@@ -4566,6 +4569,7 @@ function UpdateHub({
       <UpdateRelaunchCard
         payload={readyUpdate}
         status={status}
+        failed={failed}
         relaunching={relaunching}
         onRelaunch={onRelaunch}
       />
@@ -4576,6 +4580,7 @@ function UpdateHub({
   return (
     <UpdateStatusCard
       status={status}
+      failed={failed}
       leaving={statusLeaving}
       checking={checking}
       preparing={preparing}
@@ -4588,16 +4593,17 @@ function UpdateHub({
 function UpdateRelaunchCard({
   payload,
   status,
+  failed,
   relaunching,
   onRelaunch,
 }: {
   payload: UpdatePromptPayload<JuneUpdate>;
   status: string | null;
+  failed: boolean;
   relaunching: boolean;
   onRelaunch: () => void;
 }) {
   const meta = status ?? updateVersionLabel(payload.version);
-  const failed = status?.toLowerCase().includes("failed") ?? false;
 
   return (
     <aside className="update-popover" role={failed ? "alert" : "status"} aria-live="polite">
@@ -4629,6 +4635,7 @@ function UpdateRelaunchCard({
 
 function UpdateStatusCard({
   status,
+  failed,
   leaving,
   checking,
   preparing,
@@ -4636,6 +4643,7 @@ function UpdateStatusCard({
   onDismiss,
 }: {
   status: string;
+  failed: boolean;
   leaving: boolean;
   checking: boolean;
   preparing: boolean;
@@ -4645,7 +4653,6 @@ function UpdateStatusCard({
   const percent = updateProgressPercent(progress);
   const progressWidth =
     progress?.state === "installing" && percent === undefined ? "100%" : `${percent ?? 0}%`;
-  const failed = status.toLowerCase().includes("failed");
   // Explicit flags, never string-sniffed: checking covers the manual
   // "Checking for updates..." round-trip, preparing covers download + install.
   // The spinner is decorative; the status text announces the state to AT.

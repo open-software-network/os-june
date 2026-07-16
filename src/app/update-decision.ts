@@ -20,16 +20,18 @@ export const UP_TO_DATE_STATUS = "June is up to date.";
 export type UpdateStatusDisplayState = {
   status: string | null;
   leaving: boolean;
+  failed: boolean;
 };
 
 export type UpdateStatusDisplayAction =
-  | { type: "show"; status: string | null }
+  | { type: "show"; status: string | null; failed?: boolean }
   | { type: "beginUpToDateExit" }
   | { type: "clearUpToDate" };
 
 export const INITIAL_UPDATE_STATUS_DISPLAY: UpdateStatusDisplayState = {
   status: null,
   leaving: false,
+  failed: false,
 };
 
 // Status changes reset the exit phase synchronously. Timed exit actions are
@@ -40,8 +42,9 @@ export function updateStatusDisplayReducer(
   action: UpdateStatusDisplayAction,
 ): UpdateStatusDisplayState {
   if (action.type === "show") {
-    if (state.status === action.status && !state.leaving) return state;
-    return { status: action.status, leaving: false };
+    const failed = action.status !== null && action.failed === true;
+    if (state.status === action.status && state.failed === failed && !state.leaving) return state;
+    return { status: action.status, leaving: false, failed };
   }
   if (state.status !== UP_TO_DATE_STATUS) return state;
   if (action.type === "beginUpToDateExit") {

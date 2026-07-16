@@ -31,8 +31,22 @@ describe("update status display", () => {
       type: "show",
       status: "Checking for updates...",
     });
-    expect(checking).toEqual({ status: "Checking for updates...", leaving: false });
+    expect(checking).toEqual({
+      status: "Checking for updates...",
+      leaving: false,
+      failed: false,
+    });
     expect(updateStatusDisplayReducer(checking, { type: "clearUpToDate" })).toBe(checking);
+  });
+
+  it("carries failure styling independently of message wording", () => {
+    const failure = updateStatusDisplayReducer(INITIAL_UPDATE_STATUS_DISPLAY, {
+      type: "show",
+      status: "Could not check for updates.",
+      failed: true,
+    });
+
+    expect(failure.failed).toBe(true);
   });
 });
 
