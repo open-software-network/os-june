@@ -2,18 +2,22 @@
 
 - **Mode:** CTO
 - **Date:** 2026-07-13
-- **Status:** Proposed; hosted MCP transport reported proven, evidence recovery blocked, selected-resource scoping blocked
+- **Status:** Proposed; connect-only hosted MCP preview in implementation, selected-resource scoping intentionally out of scope for this pass
 - **PRD:** [notion-prd.md](notion-prd.md)
 - **Issue:** JUN-283
 
 ## Technical objective
 
-Expose selected Notion content through read and action MCP servers, with the
-authorized page boundary proven at the provider or enforced in Rust and all
-writes parked for approval. Under the current PRD, production connect requires
-one of the selected-resource boundaries below. The Connectors settings page must
-include a Notion row early, but it must not offer production connect until that
-boundary is proven.
+Ship a connect-only Notion hosted MCP connector preview. Clicking **Connect**
+opens Notion's hosted MCP OAuth flow in the default browser, stores the returned
+OAuth material in the OS Keychain, and lets the user disconnect locally. This
+slice intentionally does not test or enforce selected-resource scoping and does
+not expose Notion content or tools to Hermes.
+
+The broader PRD still targets selected Notion content through read and action
+MCP servers, with the authorized page boundary proven at the provider or
+enforced in Rust and all writes parked for approval. That content path remains
+blocked until one of the selected-resource boundaries below is proven.
 
 ## Current Phase 0 evidence
 
@@ -178,10 +182,15 @@ graph.
 
 ## Delivery slices after Phase 0
 
-1. **Connector page shell (small first slice):** add a Notion row to Connectors
-   with planned/blocked state, privacy-accurate copy, and no token handling in
-   the UI. If Phase 0B has not passed, the row can explain that Notion is being
-   verified and must not start production OAuth.
+0. **Connect-only hosted MCP preview (current slice):** add a Notion row to
+   Connectors with privacy-accurate copy. The primary Connect action opens the
+   hosted MCP OAuth flow, stores credentials only in the Notion Keychain
+   service, reports local connection state, and supports local disconnect. It
+   does not call hosted tools, fetch content, run scoping probes, or register
+   Notion with Hermes.
+1. **Connector page shell:** keep the Notion row visible and label the connected
+   state as preview/unverified until selected-resource scoping is proven. The
+   subtitle must not promise selected-page-only access.
 2. **Threat model update:** extend or supersede
    [private-connectors-threat-model.md](../private-connectors-threat-model.md)
    before enabling production connect. Cover Notion token custody, direct Notion
@@ -205,15 +214,19 @@ so plugin connect controls should route here rather than duplicating token or
 status handling. The Connectors page lists Notion alongside Google from the first
 implementation slice so users and reviewers can see the intended account path.
 
-- **Not connected, blocked:** show Notion as planned while selected-resource
-  scoping is under verification. Primary action is disabled and the subtitle must
-  not promise selected-page-only access.
-- **Not connected, verified:** enable connect. Clicking connect starts the Rust
-  OAuth/hosted-MCP flow; React never receives token material.
+- **Not connected, preview:** show Notion as available to connect through the
+  hosted MCP preview. The subtitle must not promise selected-page-only access.
+  Clicking connect starts the Rust OAuth/hosted-MCP flow; React never receives
+  token material.
+- **Not connected, verified:** after a future selected-resource gate passes,
+  copy may graduate from preview language to the proven privacy claim.
 - **Connecting:** show a waiting state while the browser flow is active.
-- **Connected:** show workspace/account metadata and the exact selected-resource
-  privacy claim proven by Phase 0B. Under the current PRD, this state is not
-  reachable for broad workspace access.
+- **Connected preview:** show that Notion is connected locally for hosted MCP
+  auth, with unverified-access copy. Do not show workspace/account content or a
+  selected-resource privacy claim in this slice.
+- **Connected verified:** show workspace/account metadata and the exact
+  selected-resource privacy claim proven by Phase 0B. Under the current content
+  PRD, this state is not reachable for broad workspace access.
 - **Reconnect needed:** offer reconnect using the same Rust-owned credential
   custody path.
 - **Disconnect:** remove local token custody, apply the runtime update, and
