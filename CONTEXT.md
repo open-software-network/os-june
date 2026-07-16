@@ -514,6 +514,48 @@ _Avoid_: top-up (a user-initiated purchase), refill.
 
 ### Desktop shell & updates
 
+### June companion
+
+**June Companion**:
+The separate native iPhone and iPad app that presents typed views of data held
+by a user's running June Desktop. Its native SwiftUI is not June Desktop, and
+the shared Rust crypto library is not June's embedded **Hermes**
+agent runtime.
+_Avoid_: mobile June, Tauri mobile, WebView companion.
+
+**Linked device**:
+One phone, tablet, or desktop installation with its own stable device id and
+Curve25519 identity, explicitly approved by the user for a fixed capability
+set. OS Accounts authenticates the desktop that grants access; the companion
+does not repeat account login or receive the desktop session.
+_Avoid_: session, login, trusted account.
+
+**Companion pairing**:
+The five-minute, desktop-approved QR flow that authenticates the two device
+identities and establishes a **linked device** relationship. The QR provisioning
+secret is single-use state for pairing, not a reusable device credential.
+_Avoid_: login, sync, invite.
+
+**Device credential**:
+The random opaque credential June API issues to a companion only after
+desktop-approved pairing. The companion stores it in Keychain and the relay
+stores only its SHA-256 hash. It authorizes one linked device at the relay but
+cannot decrypt companion frames or replace the device's Curve25519 private key.
+_Avoid_: OS Accounts token, desktop token, pairing secret.
+
+**Companion relay**:
+The June API module that authenticates devices and routes bounded opaque
+ciphertext between linked devices. It cannot decrypt a **companion frame** and
+does not queue offline control requests.
+_Avoid_: Gateway (reserved for the Hermes JSON-RPC boundary), remote command
+server, sync server.
+
+**Companion frame**:
+A versioned, capability-scoped, expiring application message encrypted between
+linked devices. Only routing metadata and ciphertext are visible to the
+**companion relay**.
+_Avoid_: raw command, Hermes frame, Tauri command.
+
 **Release channel**:
 The updater track: `stable` or `rc` (shipped in PR #529; see
 [ADR-0003](docs/adr/0003-release-candidate-channel-and-promotion.md)).

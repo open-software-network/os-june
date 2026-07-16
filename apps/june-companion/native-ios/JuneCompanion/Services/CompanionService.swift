@@ -1,0 +1,415 @@
+import CryptoKit
+import Foundation
+import UIKit
+import UserNotifications
+
+struct Snapshot: Codable {
+  var connection: String
+  var message: String?
+  var notes: [[String: JSONValue]]
+  var agentSessions: [[String: JSONValue]]
+  var safeSettings: [String: JSONValue]?
+  var device: [String: JSONValue]?
+  var activeRecording: [String: JSONValue]?
+}
+
+enum JSONValue: Codable {
+  case string(String), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    if container.decodeNil() { self = .null }
+    else if let value = try? container.decode(Bool.self) { self = .bool(value) }
+    else if let value = try? container.decode(Double.self) { self = .number(value) }
+    else if let value = try? container.decode(String.self) { self = .string(value) }
+    else if let value = try? container.decode([String: JSONValue].self) { self = .object(value) }
+    else { self = .array(try container.decode([JSONValue].self)) }
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    switch self {
+    case .string(let value): try container.encode(value)
+    case .number(let value): try container.encode(value)
+    case .bool(let value): try container.encode(value)
+    case .object(let value): try container.encode(value)
+    case .array(let value): try container.encode(value)
+    case .null: try container.encodeNil()
+    }
+  }
+}
+
+@MainActor
+final class CompanionService {
+  static let shared = CompanionService()
+  var eventSink: ((String, String) -> Void)?
+
+  private let transport = CompanionTransport()
+  private let pairingAPI = PairingAPI()
+  private var snapshot = Snapshot(connection: "unpaired", notes: [], agentSessions: [])
+  private var linked: LinkedConfiguration?
+  private var unlocked = false
+  private var reconnectAttempt = 0
+
+  private init() {
+    linked = try? SecureStore.shared.read(account: "linked.configuration")
+      .flatMap {try? JSONDecoder().decode(LinkedConfiguration.self, from: $0)}
+    snapshot = restoredSnapshot()
+    NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+      Task { @MainActor in self.lock() }
+    }
+    NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
+      Task { @MainActor in await self.reconnectIfPossible() }
+    }
+  }
+
+  func snapshotJSON() throws -> String { try jsonString(snapshot) }
+
+  func pair(payloadJSON: String) async throws -> String {
+    guard let data = payloadJSON.data(using: .utf8) else { throw CompanionNativeError.invalidData("The pairing code is invalid.") }
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    guard let payload = try? decoder.decode(PairingPayload.self, from: data) else {
+      throw CompanionNativeError.invalidData("The pairing code is invalid.")
+    }
+    guard payload.version == 1, payload.expiresAtMs > currentMilliseconds() else {
+      throw CompanionNativeError.invalidData("The pairing code expired or uses an unsupported version.")
+    }
+    guard let secretData = Data(base64URL: payload.pairingSecret), secretData.count == 32 else {
+      throw CompanionNativeError.invalidData("The pairing secret is invalid.")
+    }
+    var secret = [UInt8](secretData)
+    defer { secret.indices.forEach {secret[$0] = 0} }
+    let pairingProof = PairingProof.make(secret: secretData)
+    snapshot.connection = "connecting"
+    emitSnapshot()
+    let identity = try DeviceIdentityService.shared.identity()
+    _ = try await pairingAPI.propose(
+      payload: payload,
+      identity: identity,
+      pairingProof: pairingProof
+    )
+    let approved = try await pairingAPI.waitForApproval(
+      payload: payload,
+      pairingProof: pairingProof
+    )
+    guard approved.desktopPublicKey.count == 32,
+          let deviceCredential = approved.deviceCredential,
+          !deviceCredential.isEmpty else {
+      throw CompanionNativeError.invalidData("The Mac identity is invalid.")
+    }
+    let crypto = try CompanionCryptoSession(pairingInitiator: true, localPrivate: identity.privateKey, pairingSecret: secret)
+    try await transport.connect(
+      relayURL: payload.relayUrl,
+      deviceCredential: deviceCredential,
+      identity: identity,
+      desktopDeviceID: approved.desktopDeviceId,
+      crypto: crypto,
+      pairing: true,
+      expectedDesktopPublicKey: approved.desktopPublicKey,
+      eventHandler: handleTransportEvent
+    )
+    let configuration = LinkedConfiguration(relayURL: payload.relayUrl, desktopDeviceID: approved.desktopDeviceId, desktopPublicKey: approved.desktopPublicKey, linkedAt: Date())
+    try SecureStore.shared.save(JSONEncoder().encode(configuration), account: "linked.configuration")
+    try SecureStore.shared.save(
+      Data(deviceCredential.utf8),
+      account: "device.credential",
+      accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    )
+    linked = configuration
+    unlocked = true
+    snapshot.connection = "ready"
+    reconnectAttempt = 0
+    await registerStoredPushToken()
+    return try await refresh()
+  }
+
+  func unlock() async throws -> Bool {
+    let result = try await DeviceIdentityService.shared.unlock()
+    unlocked = result
+    if result { await reconnectIfPossible() }
+    return result
+  }
+
+  func refresh() async throws -> String {
+    try await ensureConnected()
+    let notes = try await request(capability: "notesRead", body: ["type": "notesList", "data": ["cursor": NSNull(), "limit": 50]])
+    let sessions = try await request(capability: "agentRead", body: ["type": "agentSessionsList", "data": ["cursor": NSNull(), "limit": 50]])
+    let settings = try await request(capability: "settingsRead", body: ["type": "settingsGet"])
+    let device = try await request(capability: "devicesReadSelf", body: ["type": "deviceGetSelf"])
+    snapshot.notes = pageItems(notes)
+    snapshot.agentSessions = pageItems(sessions)
+    snapshot.safeSettings = objectResult(settings)
+    snapshot.device = objectResult(device)
+    snapshot.connection = "ready"
+    try persistSnapshot()
+    emitSnapshot()
+    return try snapshotJSON()
+  }
+
+  func listNotes(cursor: String?) async throws -> String {
+    let response = try await request(capability: "notesRead", body: ["type": "notesList", "data": ["cursor": optionalJSON(cursor), "limit": 50]])
+    return try jsonString(resultData(response) ?? [:])
+  }
+
+  func getNote(id: String) async throws -> String {
+    let response = try await request(capability: "notesRead", body: ["type": "noteGet", "data": ["noteId": id]])
+    return try jsonString(resultData(response) ?? [:])
+  }
+
+  func saveNote(id: String, revision: Double, title: String, content: String) async throws -> String {
+    let response = try await request(capability: "notesEdit", body: [
+      "type": "noteEdit",
+      "data": ["noteId": id, "expectedRevision": UInt64(revision), "title": title, "editedContent": content],
+    ])
+    if resultType(response) == "conflict", let conflict = resultData(response) {
+      return try jsonString(["conflict": conflict])
+    }
+    return try jsonString(resultData(response) ?? [:])
+  }
+
+  func listAgentSessions(cursor: String?) async throws -> String {
+    let response = try await request(capability: "agentRead", body: ["type": "agentSessionsList", "data": ["cursor": optionalJSON(cursor), "limit": 50]])
+    return try jsonString(resultData(response) ?? [:])
+  }
+
+  func listAgentMessages(sessionID: String, cursor: String?) async throws -> String {
+    let response = try await request(capability: "agentRead", body: ["type": "agentMessagesList", "data": ["sessionId": sessionID, "page": ["cursor": optionalJSON(cursor), "limit": 100]]])
+    return try jsonString(resultData(response) ?? [:])
+  }
+
+  func sendAgentMessage(sessionID: String?, message: String) async throws -> String {
+    guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      throw CompanionNativeError.invalidData("Enter a message first.")
+    }
+    let response = try await request(capability: "agentChat", body: ["type": "agentSend", "data": ["sessionId": optionalJSON(sessionID), "message": message]])
+    return try jsonString(resultData(response) ?? ["sessionId": sessionID ?? ""])
+  }
+
+  func cancelAgent(sessionID: String) async throws {
+    _ = try await request(capability: "agentCancel", body: ["type": "agentCancel", "data": ["sessionId": sessionID]])
+  }
+
+  func setSafeSettings(style: String, imageSafeMode: Bool) async throws -> String {
+    let response = try await request(capability: "settingsEditSafe", body: ["type": "settingsEditSafe", "data": ["dictationStyle": style, "imageSafeMode": imageSafeMode]])
+    return try jsonString(resultData(response) ?? [:])
+  }
+
+  func controlRecording(sessionID: String, action: String) async throws {
+    let type: String
+    switch action {
+    case "pause": type = "recordingPause"
+    case "resume": type = "recordingResume"
+    case "stop": type = "recordingStop"
+    default: throw CompanionNativeError.invalidData("That recording control is not allowed.")
+    }
+    _ = try await request(capability: "recordingControlExisting", body: ["type": type, "data": ["sessionId": sessionID]])
+  }
+
+  func focusDesktop(targetJSON: String) async throws {
+    guard let data = targetJSON.data(using: .utf8), let target = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      throw CompanionNativeError.invalidData("The focus target is invalid.")
+    }
+    _ = try await request(capability: "appFocus", body: ["type": "appFocus", "data": ["target": target]])
+  }
+
+  func revokeThisDevice() async throws {
+    guard let linked else { return }
+    let identity = try DeviceIdentityService.shared.identity()
+    let credential = try deviceCredential()
+    _ = try? await request(capability: "devicesRevokeSelf", body: ["type": "deviceRevokeSelf"])
+    try await pairingAPI.revoke(
+      relayURL: linked.relayURL,
+      deviceID: identity.deviceID,
+      deviceCredential: credential
+    )
+    transport.disconnect()
+    SecureStore.shared.delete(account: "linked.configuration")
+    SecureStore.shared.delete(account: "device.credential")
+    DeviceIdentityService.shared.delete()
+    self.linked = nil
+    unlocked = false
+    snapshot = Snapshot(connection: "revoked", notes: [], agentSessions: [])
+    try? persistSnapshot()
+    emitSnapshot()
+  }
+
+  func registerPushToken(_ token: Data) {
+    // APNs is a generic wake hint only. The token never crosses JavaScript and
+    // the relay receives no note, chat, operation, or notification-body data.
+    try? SecureStore.shared.save(token, account: "apns.token", accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly)
+    Task { await registerStoredPushToken() }
+  }
+
+  func handleRemoteNotification() async {
+    guard unlocked else { return }
+    await reconnectIfPossible()
+  }
+
+  private func ensureConnected() async throws {
+    guard unlocked else { snapshot.connection = linked == nil ? "unpaired" : "locked"; throw CompanionNativeError.unavailable("Unlock June Companion first.") }
+    guard let linked else { snapshot.connection = "unpaired"; throw CompanionNativeError.unavailable("Link this device from June on your Mac.") }
+    let credential = try deviceCredential()
+    let identity = try DeviceIdentityService.shared.identity()
+    let crypto = try CompanionCryptoSession(linkedInitiator: true, localPrivate: identity.privateKey, remotePublic: linked.desktopPublicKey)
+    try await transport.connect(relayURL: linked.relayURL, deviceCredential: credential, identity: identity, desktopDeviceID: linked.desktopDeviceID, crypto: crypto, pairing: false, expectedDesktopPublicKey: linked.desktopPublicKey, eventHandler: handleTransportEvent)
+  }
+
+  private func registerStoredPushToken() async {
+    guard let linked,
+          let deviceToken = try? SecureStore.shared.read(account: "apns.token"),
+          !deviceToken.isEmpty,
+          let identity = try? DeviceIdentityService.shared.identity(),
+          let credential = try? deviceCredential() else { return }
+    try? await pairingAPI.registerPush(
+      relayURL: linked.relayURL,
+      deviceID: identity.deviceID,
+      deviceToken: deviceToken,
+      deviceCredential: credential
+    )
+  }
+
+  private func request(capability: String, body: [String: Any]) async throws -> [String: Any] {
+    do {
+      let data = try await transport.request(capability: capability, body: body)
+      guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw CompanionNativeError.invalidData("The Mac response was invalid.")
+      }
+      if resultType(object) == "error" {
+        let message = resultData(object)?["message"] as? String
+          ?? "The Mac rejected the companion request."
+        throw CompanionNativeError.unavailable(message)
+      }
+      return object
+    } catch {
+      snapshot.connection = "offline"
+      emitSnapshot()
+      throw error
+    }
+  }
+
+  private func handleTransportEvent(_ event: [String: Any]) {
+    if event["type"] as? String == "transportError" {
+      snapshot.connection = "offline"
+      emitSnapshot()
+      scheduleReconnect()
+    } else if let data = try? JSONSerialization.data(withJSONObject: event), let json = String(data: data, encoding: .utf8) {
+      eventSink?("protocolEvent", json)
+    }
+  }
+
+  private func reconnectIfPossible() async {
+    guard linked != nil, (try? deviceCredential()) != nil, unlocked else { return }
+    do { _ = try await refresh(); reconnectAttempt = 0 }
+    catch { scheduleReconnect() }
+  }
+
+  private func scheduleReconnect() {
+    reconnectAttempt = min(reconnectAttempt + 1, 8)
+    let cap = min(pow(2, Double(reconnectAttempt)), 60)
+    let delay = Double.random(in: 0...cap)
+    Task {
+      try? await Task.sleep(for: .seconds(delay))
+      await self.reconnectIfPossible()
+    }
+  }
+
+  private func lock() {
+    unlocked = false
+    if linked != nil { snapshot.connection = "locked" }
+    transport.disconnect()
+    emitSnapshot()
+  }
+
+  private func emitSnapshot() {
+    if let value = try? snapshotJSON() { eventSink?("snapshot", value) }
+  }
+
+  private func pageItems(_ response: [String: Any]) -> [[String: JSONValue]] {
+    guard let data = resultData(response), let items = data["items"] as? [[String: Any]] else { return [] }
+    return items.compactMap { try? JSONDecoder().decode([String: JSONValue].self, from: JSONSerialization.data(withJSONObject: $0)) }
+  }
+
+  private func objectResult(_ response: [String: Any]) -> [String: JSONValue]? {
+    guard let data = resultData(response) else { return nil }
+    return try? JSONDecoder().decode([String: JSONValue].self, from: JSONSerialization.data(withJSONObject: data))
+  }
+
+  private func resultType(_ response: [String: Any]) -> String? {
+    (((response["body"] as? [String: Any])?["data"] as? [String: Any])?["result"] as? [String: Any])?["type"] as? String
+  }
+
+  private func resultData(_ response: [String: Any]) -> [String: Any]? {
+    (((response["body"] as? [String: Any])?["data"] as? [String: Any])?["result"] as? [String: Any])?["data"] as? [String: Any]
+  }
+
+  private func persistSnapshot() throws {
+    let plaintext = try JSONEncoder().encode(snapshot)
+    let key: SymmetricKey
+    if let stored = try SecureStore.shared.read(account: "cache.key") { key = SymmetricKey(data: stored) }
+    else {
+      let data = Data((0..<32).map {_ in UInt8.random(in: .min ... .max)})
+      try SecureStore.shared.save(data, account: "cache.key")
+      key = SymmetricKey(data: data)
+    }
+    let sealed = try AES.GCM.seal(plaintext, using: key).combined!
+    let url = try cacheURL()
+    try sealed.write(to: url, options: [.atomic, .completeFileProtection])
+  }
+
+  private func restoredSnapshot() -> Snapshot {
+    guard linked != nil, (try? deviceCredential()) != nil else {
+      return Snapshot(connection: "unpaired", notes: [], agentSessions: [])
+    }
+    guard let data = try? Data(contentsOf: cacheURL()),
+          let keyData = try? SecureStore.shared.read(account: "cache.key"),
+          let box = try? AES.GCM.SealedBox(combined: data),
+          let plaintext = try? AES.GCM.open(box, using: SymmetricKey(data: keyData)),
+          var cached = try? JSONDecoder().decode(Snapshot.self, from: plaintext) else {
+      return Snapshot(connection: "locked", notes: [], agentSessions: [])
+    }
+    cached.connection = "locked"
+    return cached
+  }
+
+  private func cacheURL() throws -> URL {
+    let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+    return directory.appendingPathComponent("companion-cache.bin", isDirectory: false)
+  }
+
+  private func deviceCredential() throws -> String {
+    guard let data = try SecureStore.shared.read(account: "device.credential"),
+          let credential = String(data: data, encoding: .utf8),
+          !credential.isEmpty else {
+      throw CompanionNativeError.unavailable("Link this device from June on your Mac.")
+    }
+    return credential
+  }
+
+  private func optionalJSON(_ value: String?) -> Any {
+    guard let value else { return NSNull() }
+    return value
+  }
+
+  private func jsonString(_ value: Any) throws -> String {
+    let data: Data
+    if JSONSerialization.isValidJSONObject(value) { data = try JSONSerialization.data(withJSONObject: value) }
+    else { data = try JSONEncoder().encode(value as! Snapshot) }
+    guard let string = String(data: data, encoding: .utf8) else { throw CompanionNativeError.invalidData("Native data could not be encoded.") }
+    return string
+  }
+
+  private func jsonString<T: Encodable>(_ value: T) throws -> String {
+    let data = try JSONEncoder().encode(value)
+    guard let string = String(data: data, encoding: .utf8) else { throw CompanionNativeError.invalidData("Native data could not be encoded.") }
+    return string
+  }
+}
+
+private extension Data {
+  init?(base64URL value: String) {
+    var value = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+    value += String(repeating: "=", count: (4 - value.count % 4) % 4)
+    self.init(base64Encoded: value)
+  }
+}

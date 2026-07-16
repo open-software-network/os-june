@@ -22,6 +22,16 @@ pub struct Repositories {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompanionDeviceRecord {
+    pub id: String,
+    pub display_name: String,
+    pub public_key: Vec<u8>,
+    pub linked_at: String,
+    pub last_seen_at: Option<String>,
+    pub revoked_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct P3aCounterState {
     pub raw_value: u64,
     pub reported_value: u64,
@@ -115,6 +125,124 @@ pub struct ConnectorGrant {
 impl Repositories {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    pub async fn upsert_companion_device(
+        &self,
+        id: &str,
+        display_name: &str,
+        public_key: &[u8],
+    ) -> Result<CompanionDeviceRecord, sqlx::error::Error> {
+        let now = timestamp();
+        query(
+            "INSERT INTO companion_devices (id, display_name, public_key, linked_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               display_name = excluded.display_name,
+               public_key = excluded.public_key,
+               revoked_at = NULL",
+        )
+        .bind(id)
+        .bind(display_name)
+        .bind(public_key)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.companion_device(id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn companion_device(
+        &self,
+        id: &str,
+    ) -> Result<Option<CompanionDeviceRecord>, sqlx::error::Error> {
+        let row = query(
+            "SELECT id, display_name, public_key, linked_at, last_seen_at, revoked_at
+             FROM companion_devices WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(companion_device_from_row))
+    }
+
+    pub async fn list_companion_devices(
+        &self,
+    ) -> Result<Vec<CompanionDeviceRecord>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT id, display_name, public_key, linked_at, last_seen_at, revoked_at
+             FROM companion_devices ORDER BY linked_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(companion_device_from_row).collect())
+    }
+
+    pub async fn rename_companion_device(
+        &self,
+        id: &str,
+        display_name: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query("UPDATE companion_devices SET display_name = ? WHERE id = ? AND revoked_at IS NULL")
+            .bind(display_name)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn revoke_companion_device(&self, id: &str) -> Result<(), sqlx::error::Error> {
+        query("UPDATE companion_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+            .bind(timestamp())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn touch_companion_device(&self, id: &str) -> Result<(), sqlx::error::Error> {
+        query("UPDATE companion_devices SET last_seen_at = ? WHERE id = ? AND revoked_at IS NULL")
+            .bind(timestamp())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn companion_operation(
+        &self,
+        device_id: &str,
+        operation_id: &str,
+    ) -> Result<Option<Vec<u8>>, sqlx::error::Error> {
+        let row = query(
+            "SELECT response FROM companion_operations
+             WHERE device_id = ? AND operation_id = ?",
+        )
+        .bind(device_id)
+        .bind(operation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| row.try_get("response")).transpose()
+    }
+
+    pub async fn remember_companion_operation(
+        &self,
+        device_id: &str,
+        operation_id: &str,
+        response: &[u8],
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "INSERT OR IGNORE INTO companion_operations
+             (device_id, operation_id, response, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(device_id)
+        .bind(operation_id)
+        .bind(response)
+        .bind(timestamp())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn increment_p3a_counter(
@@ -1118,7 +1246,7 @@ impl Repositories {
 
     pub async fn get_note(&self, note_id: &str) -> Result<NoteDto, sqlx::error::Error> {
         let row = query(
-            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, last_error FROM notes WHERE id = ?",
+            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, revision, last_error FROM notes WHERE id = ?",
         )
         .bind(note_id)
         .fetch_one(&self.pool)
@@ -1154,6 +1282,7 @@ impl Repositories {
             folder_ids,
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
+            revision: row.get::<i64, _>("revision").try_into().unwrap_or(1),
             duration_ms: None,
             generated_content: row.get("generated_content"),
             edited_content: row.get("edited_content"),
@@ -1178,7 +1307,7 @@ impl Repositories {
     ) -> Result<ListNotesResponse, sqlx::error::Error> {
         let rows = if let Some(folder_id) = folder_id {
             query(
-                "SELECT n.id, n.title, n.generated_content, n.edited_content, n.processing_status, n.created_at, n.updated_at
+                "SELECT n.id, n.title, n.generated_content, n.edited_content, n.processing_status, n.created_at, n.updated_at, n.revision
                  FROM notes n
                  INNER JOIN note_folders nf ON nf.note_id = n.id
                  WHERE nf.folder_id = ?
@@ -1191,7 +1320,7 @@ impl Repositories {
             .await?
         } else {
             query(
-                "SELECT id, title, generated_content, edited_content, processing_status, created_at, updated_at
+                "SELECT id, title, generated_content, edited_content, processing_status, created_at, updated_at, revision
                  FROM notes
                  ORDER BY created_at DESC, rowid DESC
                  LIMIT ?",
@@ -1223,6 +1352,7 @@ impl Repositories {
                 folder_ids: self.folder_ids(&id).await?,
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
+                revision: row.get::<i64, _>("revision").try_into().unwrap_or(1),
                 duration_ms: None,
             });
         }
@@ -1881,7 +2011,7 @@ impl Repositories {
             .unwrap_or_else(|| "notes".to_string());
 
         query(
-            "UPDATE notes SET title = ?, edited_content = ?, active_tab = ?, updated_at = ? WHERE id = ?",
+            "UPDATE notes SET title = ?, edited_content = ?, active_tab = ?, updated_at = ?, revision = revision + 1 WHERE id = ?",
         )
         .bind(next_title)
         .bind(next_content)
@@ -1892,6 +2022,44 @@ impl Repositories {
         .await?;
 
         self.get_note(note_id).await
+    }
+
+    /// Compare-and-swap update for linked devices. A stale writer receives the
+    /// current note in structured error details instead of overwriting edits.
+    pub async fn update_note_cas(
+        &self,
+        note_id: &str,
+        expected_revision: u64,
+        title: Option<String>,
+        edited_content: Option<String>,
+    ) -> Result<NoteDto, AppError> {
+        let current = self.get_note(note_id).await.map_err(AppError::from)?;
+        let next_title = title.unwrap_or(current.title.clone());
+        let next_content = edited_content.or(current.edited_content.clone());
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| AppError::new("note_revision_invalid", "The note revision is invalid."))?;
+        let result = query(
+            "UPDATE notes
+             SET title = ?, edited_content = ?, updated_at = ?, revision = revision + 1
+             WHERE id = ? AND revision = ?",
+        )
+        .bind(next_title)
+        .bind(next_content)
+        .bind(timestamp())
+        .bind(note_id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::from)?;
+        if result.rows_affected() == 0 {
+            let current = self.get_note(note_id).await.map_err(AppError::from)?;
+            return Err(AppError {
+                code: "note_revision_conflict".to_string(),
+                message: "The note changed on another device.".to_string(),
+                details: serde_json::to_value(current).ok(),
+            });
+        }
+        self.get_note(note_id).await.map_err(AppError::from)
     }
 
     pub async fn audio_artifact_paths_for_note(
@@ -2134,7 +2302,7 @@ impl Repositories {
             }
         });
         query(
-            "UPDATE notes SET title = ?, generated_content = ?, edited_content = ?, active_tab = 'notes', processing_status = 'ready', last_error = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE notes SET title = ?, generated_content = ?, edited_content = ?, active_tab = 'notes', processing_status = 'ready', last_error = NULL, updated_at = ?, revision = revision + 1 WHERE id = ?",
         )
         .bind(title)
         .bind(next_generated_content)
@@ -4839,6 +5007,17 @@ fn dictation_history_cutoff_timestamp() -> String {
         .to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+fn companion_device_from_row(row: sqlx_sqlite::SqliteRow) -> CompanionDeviceRecord {
+    CompanionDeviceRecord {
+        id: row.get("id"),
+        display_name: row.get("display_name"),
+        public_key: row.get("public_key"),
+        linked_at: row.get("linked_at"),
+        last_seen_at: row.get("last_seen_at"),
+        revoked_at: row.get("revoked_at"),
+    }
+}
+
 fn title_from_prompt(prompt: &str) -> String {
     let compact = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
     let title: String = compact.chars().take(64).collect();
@@ -5899,6 +6078,51 @@ mod tests {
             .await
             .expect("clear instructions");
         assert_eq!(cleared.instructions, None);
+    }
+
+    #[tokio::test]
+    async fn companion_note_edits_use_compare_and_swap_revisions() {
+        let repos = test_repositories().await;
+        let note = repos.create_note(None).await.expect("create note");
+        assert_eq!(note.revision, 1);
+
+        let updated = repos
+            .update_note_cas(
+                &note.id,
+                note.revision,
+                Some("From iPhone".to_string()),
+                Some("Encrypted edit".to_string()),
+            )
+            .await
+            .expect("first compare-and-swap update");
+        assert_eq!(updated.revision, 2);
+
+        let conflict = repos
+            .update_note_cas(
+                &note.id,
+                note.revision,
+                None,
+                Some("Stale edit".to_string()),
+            )
+            .await
+            .expect_err("stale revision must not overwrite the note");
+        assert_eq!(conflict.code, "note_revision_conflict");
+        assert_eq!(
+            conflict
+                .details
+                .as_ref()
+                .and_then(|value| value["revision"].as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            repos
+                .get_note(&note.id)
+                .await
+                .expect("current note")
+                .edited_content
+                .as_deref(),
+            Some("Encrypted edit")
+        );
     }
 
     #[tokio::test]

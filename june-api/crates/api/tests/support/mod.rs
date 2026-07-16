@@ -281,6 +281,7 @@ pub(crate) fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
     test_state_from_deps_with_viewer(deps, june_api::ShareViewerInfo::default())
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn test_state_from_deps_with_viewer(
     deps: TestStateDeps,
     share_viewer: june_api::ShareViewerInfo,
@@ -321,6 +322,10 @@ pub(crate) fn test_state_from_deps_with_viewer(
         pricing: pricing.clone(),
         local_dev_enabled: deps.local_dev_enabled,
         token_verifier: Arc::new(FakeTokenVerifier),
+        companion_store: None,
+        companion_snapshot: june_domain::CompanionSnapshot::default(),
+        companion_enabled: true,
+        companion_push: None,
         note_transcribe: Arc::new(NoteTranscribeService::new(NoteTranscribeServiceDeps {
             pricing: pricing.clone(),
             os_accounts: os_accounts.clone(),

@@ -1697,6 +1697,39 @@ export function App() {
   }, [openSettings]);
 
   useEffect(() => {
+    type CompanionFocusTarget =
+      | "settings"
+      | { agent: { sessionId?: string | null } }
+      | { note: { noteId: string } };
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen<CompanionFocusTarget>("june://companion-focus", (event) => {
+      const target = event.payload;
+      if (target === "settings") {
+        openSettings();
+        return;
+      }
+      if ("note" in target) {
+        setActiveView("meetings");
+        void getNote(target.note.noteId)
+          .then((note) => dispatch({ type: "noteLoaded", note }))
+          .catch((error) => setError(messageFromError(error)));
+        return;
+      }
+      setAgentOrigin(undefined);
+      setActiveAgentSession(target.agent.sessionId ? { id: target.agent.sessionId } : undefined);
+      setActiveView("agent");
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, [openSettings]);
+
+  useEffect(() => {
     let aborted = false;
 
     function openAgentWorkspace(session?: HermesSessionInfo) {

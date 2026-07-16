@@ -65,6 +65,8 @@ export type NoteListItemDto = {
   folderIds: string[];
   createdAt: string;
   updatedAt: string;
+  /** Monotonic compare-and-swap revision for companion edits. */
+  revision?: number;
   durationMs?: number;
 };
 
@@ -2359,4 +2361,131 @@ export async function shareInviteKeysGet(shareId: string) {
 
 export async function getShareBaseUrl() {
   return invoke<string>("get_share_base_url");
+}
+
+// ---------------------------------------------------------------------------
+// June companion (typed frontend completion boundary)
+// ---------------------------------------------------------------------------
+
+export type CompanionCapability =
+  | "notesRead"
+  | "notesEdit"
+  | "agentRead"
+  | "agentChat"
+  | "agentCancel"
+  | "settingsRead"
+  | "settingsEditSafe"
+  | "recordingControlExisting"
+  | "appFocus"
+  | "devicesReadSelf"
+  | "devicesRevokeSelf";
+
+export type CompanionPairingQr = {
+  pairingId: string;
+  expiresAtMs: number;
+  qrSvg: string;
+};
+
+export type CompanionPairingStatus = {
+  pairingId: string;
+  expiresAtMs: number;
+  state: "waitingForPhone" | "waitingForApproval" | "approved" | "expired";
+  desktopDeviceId: string;
+  desktopPublicKey: number[];
+  mobileDeviceId?: string;
+  mobilePublicKey?: number[];
+  mobileDisplayName?: string;
+};
+
+export type LinkedCompanionDevice = {
+  id: string;
+  displayName: string;
+  linkedAt: string;
+  lastSeenAt?: string;
+  revokedAt?: string;
+  capabilities: CompanionCapability[];
+};
+
+export async function companionBeginPairing() {
+  return invoke<CompanionPairingQr>("companion_begin_pairing");
+}
+
+export async function companionPairingStatus(pairingId: string) {
+  return invoke<CompanionPairingStatus>("companion_pairing_status", { pairingId });
+}
+
+export async function companionApprovePairing(pairingId: string, mobileDeviceId: string) {
+  return invoke<CompanionPairingStatus>("companion_approve_pairing", {
+    pairingId,
+    mobileDeviceId,
+  });
+}
+
+export async function companionListDevices() {
+  return invoke<LinkedCompanionDevice[]>("companion_list_devices");
+}
+
+export async function companionRenameDevice(deviceId: string, displayName: string) {
+  return invoke<void>("companion_rename_device", {
+    request: { deviceId, displayName },
+  });
+}
+
+export async function companionRevokeDevice(deviceId: string) {
+  return invoke<void>("companion_revoke_device", { deviceId });
+}
+
+export type CompanionAgentStatus =
+  | "idle"
+  | "running"
+  | "waitingForUser"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type CompanionAgentEventRequest =
+  | { type: "delta"; data: { sessionId: string; text: string } }
+  | { type: "status"; data: { sessionId: string; status: CompanionAgentStatus } };
+
+export async function companionPublishAgentEvent(request: CompanionAgentEventRequest) {
+  return invoke<void>("companion_publish_agent_event", { request });
+}
+
+export type CompanionFrontendIntent =
+  | { type: "agentSend"; data: { sessionId?: string; message: string } }
+  | { type: "agentCancel"; data: { sessionId: string } };
+
+export type CompanionFrontendRequest = {
+  operationId: string;
+  intent: CompanionFrontendIntent;
+};
+
+export type CompanionResultPayload =
+  | { type: "accepted" }
+  | { type: "agentAccepted"; data: { sessionId: string } }
+  | {
+      type: "error";
+      data: {
+        code:
+          | "unauthorized"
+          | "revoked"
+          | "expired"
+          | "replay"
+          | "unsupported"
+          | "invalid_request"
+          | "not_found"
+          | "conflict"
+          | "mac_offline"
+          | "busy"
+          | "internal";
+        message: string;
+        retryable: boolean;
+      };
+    };
+
+export async function companionCompleteFrontendRequest(
+  operationId: string,
+  result: CompanionResultPayload,
+) {
+  return invoke<void>("companion_complete_frontend_request", { operationId, result });
 }

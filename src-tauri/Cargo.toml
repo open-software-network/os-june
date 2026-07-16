@@ -24,8 +24,12 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 cpal = "0.15"
 dotenvy = "0.15"
+futures-util = { version = "0.3", features = ["sink"] }
 hound = "3.5"
+june-companion-crypto = { path = "../crates/june-companion-crypto" }
+june-companion-protocol = { path = "../crates/june-companion-protocol" }
 rand = "0.8"
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 # Pure-Rust FFT for the echo-rejection similarity gate (GCC-PHAT lag estimation).
 rustfft = "6.2"
@@ -52,6 +56,7 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-updater = "2.10.1"
 thiserror = "2.0"
 tokio = { version = "1.42", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 tracing = "0.1"
 urlencoding = "2"
 uuid = { version = "1.11", features = ["serde", "v4"] }

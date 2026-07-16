@@ -2857,7 +2857,7 @@ fn june_api_operation_id(operation_id: &str) -> String {
     format!("june-op-{:x}", digest.finalize())
 }
 
-fn june_api_url() -> String {
+pub(crate) fn june_api_url() -> String {
     crate::os_accounts::load_local_env();
     std::env::var("JUNE_API_URL")
         .ok()

@@ -846,6 +846,72 @@ pub trait ViewerIdentity: Send + Sync {
     async fn verified_emails(&self, access_token: &str) -> Result<Vec<String>, DomainError>;
 }
 
+// ── June companion relay trust metadata ──────────────────────────────────
+// The relay persists only identities and explicit device links. Encrypted
+// frames are never stored, and plaintext companion content cannot cross this
+// interface.
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompanionDeviceRecord {
+    pub device_id: uuid::Uuid,
+    pub user_id: UserId,
+    pub public_key: [u8; 32],
+    pub display_name: String,
+    /// SHA-256 of the opaque credential issued only to a mobile device after
+    /// desktop approval. Desktop devices continue to authenticate with OS
+    /// Accounts and therefore have no device credential.
+    pub credential_hash: Option<[u8; 32]>,
+    pub push_token: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompanionLinkRecord {
+    pub left_device_id: uuid::Uuid,
+    pub right_device_id: uuid::Uuid,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompanionApprovalRecord {
+    pub desktop: CompanionDeviceRecord,
+    pub mobile: CompanionDeviceRecord,
+    pub link: CompanionLinkRecord,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CompanionSnapshot {
+    pub devices: Vec<CompanionDeviceRecord>,
+    pub links: Vec<CompanionLinkRecord>,
+}
+
+#[derive(Debug, Error)]
+pub enum CompanionStoreError {
+    #[error("companion device identity conflicts with an existing record")]
+    IdentityConflict,
+    #[error("companion store unavailable: {reason}")]
+    Unavailable { reason: String },
+}
+
+#[async_trait]
+pub trait CompanionStore: Send + Sync {
+    async fn snapshot(&self) -> Result<CompanionSnapshot, CompanionStoreError>;
+    async fn approve_pairing(
+        &self,
+        user_id: &UserId,
+        approval: CompanionApprovalRecord,
+    ) -> Result<(), CompanionStoreError>;
+    async fn revoke_device(
+        &self,
+        user_id: &UserId,
+        device_id: uuid::Uuid,
+    ) -> Result<(), CompanionStoreError>;
+    async fn set_push_token(
+        &self,
+        user_id: &UserId,
+        device_id: uuid::Uuid,
+        token: Vec<u8>,
+    ) -> Result<(), CompanionStoreError>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::AudioFormat;

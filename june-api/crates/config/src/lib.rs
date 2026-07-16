@@ -160,6 +160,9 @@ pub struct AppConfig {
     /// feature cannot regress deployments that predate it.
     #[serde(default)]
     pub share: ShareConfig,
+    /// June companion relay persistence and optional opaque APNs wake hints.
+    #[serde(default)]
+    pub companion: CompanionConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
     /// Flat credits charged per generated image, keyed by image model id. Kept
     /// separate from `pricing` (the text/ASR catalog) so image models never leak
@@ -223,6 +226,7 @@ impl Debug for AppConfig {
             .field("attestation", &self.attestation)
             .field("issue_reports", &self.issue_reports)
             .field("share", &RedactedShare(&self.share))
+            .field("companion", &RedactedCompanion(&self.companion))
             .field("pricing", &self.pricing)
             .field("image_pricing", &self.image_pricing)
             .field("image_edit_pricing", &self.image_edit_pricing)
@@ -481,6 +485,57 @@ pub struct ShareConfig {
     /// Max accepted ciphertext, in bytes.
     #[serde(default = "default_share_max_ciphertext_bytes")]
     pub max_ciphertext_bytes: usize,
+}
+
+#[derive(Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CompanionConfig {
+    /// Dedicated Postgres store for linked-device trust metadata. Empty
+    /// disables companion endpoints outside local development.
+    #[serde(default)]
+    pub database_url: String,
+    #[serde(default)]
+    pub apns_team_id: String,
+    #[serde(default)]
+    pub apns_key_id: String,
+    /// Apple .p8 signing key, injected as a secret environment value.
+    #[serde(default)]
+    pub apns_private_key_pem: String,
+    #[serde(default)]
+    pub apns_bundle_id: String,
+    /// False targets Apple's sandbox endpoint; true targets production APNs.
+    #[serde(default)]
+    pub apns_production: bool,
+}
+
+struct RedactedCompanion<'a>(&'a CompanionConfig);
+
+impl Debug for RedactedCompanion<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CompanionConfig")
+            .field(
+                "database_url",
+                &if self.0.database_url.is_empty() {
+                    "<unset>"
+                } else {
+                    REDACTED
+                },
+            )
+            .field("apns_team_id", &self.0.apns_team_id)
+            .field("apns_key_id", &self.0.apns_key_id)
+            .field(
+                "apns_private_key_pem",
+                &if self.0.apns_private_key_pem.is_empty() {
+                    "<unset>"
+                } else {
+                    REDACTED
+                },
+            )
+            .field("apns_bundle_id", &self.0.apns_bundle_id)
+            .field("apns_production", &self.0.apns_production)
+            .finish()
+    }
 }
 
 impl Default for ShareConfig {
@@ -1068,6 +1123,7 @@ impl Default for AppConfig {
             },
             issue_reports: IssueReportsConfig::default(),
             share: ShareConfig::default(),
+            companion: CompanionConfig::default(),
             pricing: default_pricing(),
             image_pricing: default_image_pricing(),
             image_edit_pricing: default_image_edit_pricing(),

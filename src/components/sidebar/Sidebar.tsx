@@ -29,6 +29,7 @@ import { IconPeople } from "central-icons/IconPeople";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconPin } from "central-icons/IconPin";
 import { IconPlugin1 } from "central-icons/IconPlugin1";
+import { IconPhone } from "central-icons/IconPhone";
 import { IconGithub } from "central-icons/IconGithub";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconToolbox } from "central-icons/IconToolbox";
@@ -346,7 +347,10 @@ const SETTINGS_SIDEBAR_GROUPS: {
   },
   {
     title: "App",
-    items: [{ id: "about", label: "About", icon: <IconCircleInfo size={16} /> }],
+    items: [
+      { id: "linked-devices", label: "Linked devices", icon: <IconPhone size={16} /> },
+      { id: "about", label: "About", icon: <IconCircleInfo size={16} /> },
+    ],
   },
 ];
 

@@ -88,6 +88,8 @@ import { Spinner } from "../ui/Spinner";
 import { Switch } from "../ui/Switch";
 import {
   cancelAgentTask,
+  companionCompleteFrontendRequest,
+  companionPublishAgentEvent,
   dictationHelperCommand,
   explainAgentApproval,
   finalizeHermesBridgeBranch,
@@ -133,6 +135,7 @@ import {
   videoStatus,
   type AgentTaskDto,
   type AgentTaskStatus,
+  type CompanionFrontendRequest,
   type HermesBridgeStatus,
   type HermesFilesystemEntry,
   type HermesFilesystemSnapshot,
@@ -3080,6 +3083,55 @@ export function AgentWorkspace({
     waitingSessionIds,
     workingSessionIds,
   ]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<CompanionFrontendRequest>("june://companion-request", async ({ payload }) => {
+      try {
+        switch (payload.intent.type) {
+          case "agentSend": {
+            const { sessionId: requestedSessionId, message } = payload.intent.data;
+            const explicitSession = requestedSessionId
+              ? hermesSessionItemsRef.current.find((session) => session.id === requestedSessionId)
+              : undefined;
+            if (requestedSessionId && !explicitSession) {
+              throw new Error("That agent session is no longer available.");
+            }
+            const sessionId = await submitHermesSession(message, explicitSession, {
+              selectSession: false,
+            });
+            if (!sessionId) throw new Error("June could not identify the agent session.");
+            await companionCompleteFrontendRequest(payload.operationId, {
+              type: "agentAccepted",
+              data: { sessionId },
+            });
+            return;
+          }
+          case "agentCancel":
+            await stopHermesSession(payload.intent.data.sessionId);
+            await companionCompleteFrontendRequest(payload.operationId, { type: "accepted" });
+            return;
+        }
+      } catch (error) {
+        await companionCompleteFrontendRequest(payload.operationId, {
+          type: "error",
+          data: {
+            code: "internal",
+            message: messageFromError(error),
+            retryable: true,
+          },
+        }).catch(() => undefined);
+      }
+    }).then((remove) => {
+      if (disposed) remove();
+      else unlisten = remove;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   function recordSessionRunningActivity(sessionId: string) {
     hermesActivityStore.record(
@@ -6786,6 +6838,16 @@ export function AgentWorkspace({
       // and the Stage B status helpers below.
       const classified = classifyHermesEvent(liveEvent);
       const storedClassified = withStoredHermesSessionId(classified, storedSessionId);
+      if (
+        storedClassified.kind === "transcript" &&
+        storedClassified.role === "assistant" &&
+        storedClassified.delta
+      ) {
+        void companionPublishAgentEvent({
+          type: "delta",
+          data: { sessionId: storedSessionId, text: storedClassified.delta },
+        }).catch(() => undefined);
+      }
       // Feature 15: record every inbound frame (raw type + the kind it
       // classified to) into the bounded, sanitized trace buffer so the dev/debug
       // trace panel can reconstruct the session. recordInbound re-classifies and
@@ -6878,6 +6940,13 @@ export function AgentWorkspace({
         pendingActionStore.resolveSession(storedSessionId);
       }
       if (status) {
+        void companionPublishAgentEvent({
+          type: "status",
+          data: {
+            sessionId: storedSessionId,
+            status: status === "received" || status === "starting" ? "running" : status,
+          },
+        }).catch(() => undefined);
         if (status === "completed") {
           markAgentRunSucceeded(storedSessionId);
         } else if (status === "failed" || status === "cancelled") {
@@ -7502,7 +7571,7 @@ export function AgentWorkspace({
         });
         throw err;
       }
-      return undefined;
+      return storedSessionId;
     };
 
     return activeDispatchReservation.run(dispatchPreparedSession);

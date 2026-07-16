@@ -5,8 +5,10 @@
 
 use async_trait::async_trait;
 use june_domain::{
-    MAX_INVITES_PER_SHARE, NewShare, NewShareInvite, SHARE_LINK_EMAIL, ShareInviteRecord,
-    ShareKind, ShareRecord, ShareStore, ShareStoreError, ShareViewRecord, ViewRequest,
+    CompanionApprovalRecord, CompanionDeviceRecord, CompanionLinkRecord, CompanionSnapshot,
+    CompanionStore, CompanionStoreError, MAX_INVITES_PER_SHARE, NewShare, NewShareInvite,
+    SHARE_LINK_EMAIL, ShareInviteRecord, ShareKind, ShareRecord, ShareStore, ShareStoreError,
+    ShareViewRecord, UserId, ViewRequest,
 };
 use sqlx::{
     PgPool, Row,
@@ -18,6 +20,218 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 pub struct PgShareStore {
     pool: PgPool,
+}
+
+#[derive(Clone)]
+pub struct PgCompanionStore {
+    pool: PgPool,
+}
+
+impl PgCompanionStore {
+    pub async fn connect(database_url: &str) -> Result<Self, CompanionStoreError> {
+        let pool = PgPoolOptions::new()
+            .max_connections(8)
+            .connect(database_url)
+            .await
+            .map_err(companion_query_error)?;
+        MIGRATOR
+            .run(&pool)
+            .await
+            .map_err(|error| CompanionStoreError::Unavailable {
+                reason: format!("migration failed: {error}"),
+            })?;
+        Ok(Self { pool })
+    }
+
+    pub fn from_pool(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+fn companion_query_error(error: impl std::fmt::Display) -> CompanionStoreError {
+    CompanionStoreError::Unavailable {
+        reason: format!("query failed: {error}"),
+    }
+}
+
+#[async_trait]
+impl CompanionStore for PgCompanionStore {
+    async fn snapshot(&self) -> Result<CompanionSnapshot, CompanionStoreError> {
+        let device_rows = sqlx::query(
+            r"
+            SELECT device_id, user_id, public_key, display_name, credential_hash, apns_token
+            FROM companion_devices
+            WHERE revoked_at IS NULL
+            ",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(companion_query_error)?;
+        let devices = device_rows
+            .into_iter()
+            .map(|row| {
+                let public_key: Vec<u8> =
+                    row.try_get("public_key").map_err(companion_query_error)?;
+                let public_key =
+                    public_key
+                        .try_into()
+                        .map_err(|_| CompanionStoreError::Unavailable {
+                            reason: "stored companion public key has invalid length".to_string(),
+                        })?;
+                let credential_hash: Option<Vec<u8>> = row
+                    .try_get("credential_hash")
+                    .map_err(companion_query_error)?;
+                let credential_hash = credential_hash
+                    .map(|value| {
+                        value
+                            .try_into()
+                            .map_err(|_| CompanionStoreError::Unavailable {
+                                reason: "stored companion credential hash has invalid length"
+                                    .to_string(),
+                            })
+                    })
+                    .transpose()?;
+                Ok(CompanionDeviceRecord {
+                    device_id: row.try_get("device_id").map_err(companion_query_error)?,
+                    user_id: UserId(row.try_get("user_id").map_err(companion_query_error)?),
+                    public_key,
+                    display_name: row.try_get("display_name").map_err(companion_query_error)?,
+                    credential_hash,
+                    push_token: row.try_get("apns_token").map_err(companion_query_error)?,
+                })
+            })
+            .collect::<Result<Vec<_>, CompanionStoreError>>()?;
+        let link_rows = sqlx::query(
+            r"
+            SELECT left_device_id, right_device_id
+            FROM companion_device_links links
+            WHERE EXISTS (
+                SELECT 1 FROM companion_devices devices
+                WHERE devices.device_id = links.left_device_id AND devices.revoked_at IS NULL
+            ) AND EXISTS (
+                SELECT 1 FROM companion_devices devices
+                WHERE devices.device_id = links.right_device_id AND devices.revoked_at IS NULL
+            )
+            ",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(companion_query_error)?;
+        let links = link_rows
+            .into_iter()
+            .map(|row| {
+                Ok(CompanionLinkRecord {
+                    left_device_id: row
+                        .try_get("left_device_id")
+                        .map_err(companion_query_error)?,
+                    right_device_id: row
+                        .try_get("right_device_id")
+                        .map_err(companion_query_error)?,
+                })
+            })
+            .collect::<Result<Vec<_>, CompanionStoreError>>()?;
+        Ok(CompanionSnapshot { devices, links })
+    }
+
+    async fn approve_pairing(
+        &self,
+        user_id: &UserId,
+        approval: CompanionApprovalRecord,
+    ) -> Result<(), CompanionStoreError> {
+        let mut transaction = self.pool.begin().await.map_err(companion_query_error)?;
+        for device in [approval.desktop, approval.mobile] {
+            if device.user_id != *user_id {
+                return Err(CompanionStoreError::IdentityConflict);
+            }
+            let result = sqlx::query(
+                r"
+                INSERT INTO companion_devices (
+                    device_id, user_id, public_key, display_name, credential_hash
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (device_id) DO UPDATE SET
+                    display_name = EXCLUDED.display_name,
+                    credential_hash = COALESCE(
+                        EXCLUDED.credential_hash,
+                        companion_devices.credential_hash
+                    ),
+                    updated_at = NOW()
+                WHERE companion_devices.user_id = EXCLUDED.user_id
+                  AND companion_devices.public_key = EXCLUDED.public_key
+                  AND companion_devices.revoked_at IS NULL
+                ",
+            )
+            .bind(device.device_id)
+            .bind(device.user_id.0)
+            .bind(device.public_key.as_slice())
+            .bind(device.display_name)
+            .bind(device.credential_hash.map(|hash| hash.to_vec()))
+            .execute(&mut *transaction)
+            .await
+            .map_err(companion_query_error)?;
+            if result.rows_affected() != 1 {
+                return Err(CompanionStoreError::IdentityConflict);
+            }
+        }
+        sqlx::query(
+            r"
+            INSERT INTO companion_device_links (left_device_id, right_device_id, user_id)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (left_device_id, right_device_id) DO NOTHING
+            ",
+        )
+        .bind(approval.link.left_device_id)
+        .bind(approval.link.right_device_id)
+        .bind(&user_id.0)
+        .execute(&mut *transaction)
+        .await
+        .map_err(companion_query_error)?;
+        transaction.commit().await.map_err(companion_query_error)?;
+        Ok(())
+    }
+
+    async fn revoke_device(
+        &self,
+        user_id: &UserId,
+        device_id: uuid::Uuid,
+    ) -> Result<(), CompanionStoreError> {
+        let mut transaction = self.pool.begin().await.map_err(companion_query_error)?;
+        sqlx::query(
+            "UPDATE companion_devices SET revoked_at = NOW(), updated_at = NOW() WHERE device_id = $1 AND user_id = $2",
+        )
+        .bind(device_id)
+        .bind(&user_id.0)
+        .execute(&mut *transaction)
+        .await
+        .map_err(companion_query_error)?;
+        sqlx::query(
+            "DELETE FROM companion_device_links WHERE left_device_id = $1 OR right_device_id = $1",
+        )
+        .bind(device_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(companion_query_error)?;
+        transaction.commit().await.map_err(companion_query_error)?;
+        Ok(())
+    }
+
+    async fn set_push_token(
+        &self,
+        user_id: &UserId,
+        device_id: uuid::Uuid,
+        token: Vec<u8>,
+    ) -> Result<(), CompanionStoreError> {
+        sqlx::query(
+            "UPDATE companion_devices SET apns_token = $3, updated_at = NOW() WHERE device_id = $1 AND user_id = $2 AND revoked_at IS NULL",
+        )
+        .bind(device_id)
+        .bind(&user_id.0)
+        .bind(token)
+        .execute(&self.pool)
+        .await
+        .map_err(companion_query_error)?;
+        Ok(())
+    }
 }
 
 impl PgShareStore {
