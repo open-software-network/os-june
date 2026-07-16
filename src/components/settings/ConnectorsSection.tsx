@@ -18,7 +18,6 @@ import {
   connectorsList,
   notionConnectorConnect,
   notionConnectorDisconnect,
-  notionConnectorListTools,
   type ConnectorAccount,
   type ConnectorScopeBundle,
 } from "../../lib/tauri";
@@ -86,7 +85,6 @@ export function ConnectorsSection() {
   const [disconnecting, setDisconnecting] = useState(false);
   const [notionConnecting, setNotionConnecting] = useState(false);
   const [notionDisconnecting, setNotionDisconnecting] = useState(false);
-  const [notionDiscovering, setNotionDiscovering] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -174,19 +172,6 @@ export function ConnectorsSection() {
       toast.error(messageFromError(err));
     } finally {
       setNotionConnecting(false);
-    }
-  }
-
-  async function discoverNotionTools() {
-    if (notionDiscovering) return;
-    setNotionDiscovering(true);
-    try {
-      const inventory = await notionConnectorListTools();
-      toast.success(`Discovered ${inventory.toolCount} Notion tools`);
-    } catch (err) {
-      toast.error(messageFromError(err));
-    } finally {
-      setNotionDiscovering(false);
     }
   }
 
@@ -364,28 +349,16 @@ export function ConnectorsSection() {
                     {account ? "Preview connected" : "Preview"}
                   </span>
                   {account ? (
-                    <>
-                      <button
-                        type="button"
-                        className="btn btn-secondary"
-                        aria-label="Discover Notion tools"
-                        disabled={notionDiscovering || notionDisconnecting}
-                        aria-busy={notionDiscovering || undefined}
-                        onClick={() => void discoverNotionTools()}
-                      >
-                        {notionDiscovering ? "Discovering…" : "Discover tools"}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-ghost"
-                        aria-label="Disconnect Notion"
-                        disabled={notionDisconnecting || notionDiscovering}
-                        aria-busy={notionDisconnecting || undefined}
-                        onClick={() => void disconnectNotion()}
-                      >
-                        {notionDisconnecting ? "Disconnecting…" : "Disconnect"}
-                      </button>
-                    </>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      aria-label="Disconnect Notion"
+                      disabled={notionDisconnecting}
+                      aria-busy={notionDisconnecting || undefined}
+                      onClick={() => void disconnectNotion()}
+                    >
+                      {notionDisconnecting ? "Disconnecting…" : "Disconnect"}
+                    </button>
                   ) : (
                     <button
                       type="button"

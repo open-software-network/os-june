@@ -312,11 +312,28 @@ pub async fn connect(flow: &NotionConnectFlow) -> Result<NotionConnection, AppEr
         endpoint: MCP_ENDPOINT.to_string(),
     };
     store::store(&stored).await?;
+    if let Err(error) = verify_hosted_mcp_discovery(&stored.access_token).await {
+        let _ = store::delete().await;
+        return Err(error);
+    }
     Ok(connection())
 }
 
 pub async fn disconnect() -> Result<(), AppError> {
     store::delete().await
+}
+
+async fn verify_hosted_mcp_discovery(access_token: &str) -> Result<(), AppError> {
+    let client = McpHttpClient::new(access_token.to_string());
+    client.initialize().await?;
+    let tools = client.hosted_tools_list().await?;
+    if tools.is_empty() {
+        return Err(AppError::new(
+            "notion_mcp_tools_list_failed",
+            "Notion hosted MCP returned no tools.",
+        ));
+    }
+    Ok(())
 }
 
 pub async fn list_tools() -> Result<NotionToolInventory, AppError> {
