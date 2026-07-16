@@ -26,6 +26,13 @@ fn installation_required_error() -> AppError {
     )
 }
 
+fn github_refresh_changes_connector_state(result: &Result<GitHubConnection, AppError>) -> bool {
+    result.is_ok()
+        || result
+            .as_ref()
+            .is_err_and(|error| error.code == "github_reconnect_required")
+}
+
 #[tauri::command]
 pub async fn github_connect_start(
     _app: tauri::AppHandle,
@@ -79,9 +86,11 @@ pub async fn github_installations_refresh(
     let client = GitHubAuthClient::production()?;
     let vault = PlatformGitHubTokenVault;
     let repositories = crate::commands::repositories(&app).await?;
-    let connection = github::installations_refresh(&client, &vault, &repositories, &config).await?;
-    super::emit_connectors_changed(&app);
-    Ok(connection)
+    let result = github::installations_refresh(&client, &vault, &repositories, &config).await;
+    if github_refresh_changes_connector_state(&result) {
+        super::emit_connectors_changed(&app);
+    }
+    result
 }
 
 #[tauri::command]
@@ -118,9 +127,14 @@ pub async fn github_disconnect(
 
 #[cfg(test)]
 mod tests {
-    use crate::connectors::{
-        github::{GitHubConnection, GitHubConnectionStatus, GitHubInstallation, GitHubRepository},
-        github_auth::GitHubDevicePrompt,
+    use crate::{
+        connectors::{
+            github::{
+                GitHubConnection, GitHubConnectionStatus, GitHubInstallation, GitHubRepository,
+            },
+            github_auth::GitHubDevicePrompt,
+        },
+        domain::types::AppError,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -200,5 +214,28 @@ mod tests {
         assert_eq!(error.message, "GitHub connection storage is unavailable.");
         assert!(!serialized.contains("device-code-secret"));
         assert!(!serialized.contains("access-token-secret"));
+    }
+
+    #[test]
+    fn refresh_event_is_emitted_only_when_connector_state_can_change() {
+        let connected = GitHubConnection {
+            github_user_id: "123".into(),
+            login: "octocat".into(),
+            avatar_url: None,
+            status: GitHubConnectionStatus::Connected,
+            installations: Vec::new(),
+        };
+        assert!(super::github_refresh_changes_connector_state(&Ok(
+            connected
+        )));
+        assert!(super::github_refresh_changes_connector_state(&Err(
+            AppError::new(
+                "github_reconnect_required",
+                "GitHub access expired. Reconnect it in settings.",
+            )
+        )));
+        assert!(!super::github_refresh_changes_connector_state(&Err(
+            AppError::new("github_refresh_failed", "Could not refresh GitHub access.",)
+        )));
     }
 }

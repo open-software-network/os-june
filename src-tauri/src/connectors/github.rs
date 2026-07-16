@@ -2557,6 +2557,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_revocation_deletes_custody_and_marks_reconnect_without_rediscovery() {
+        let repositories = test_repositories().await;
+        seed_snapshot(
+            &repositories,
+            "123",
+            "connected",
+            None,
+            Some(r#"{"pull":true}"#),
+        )
+        .await;
+        let vault = InMemoryGitHubTokenVault::default();
+        vault
+            .insert(stored_tokens(
+                "123",
+                "access-revoked",
+                "refresh-revoked",
+                now_unix() + 3_600,
+            ))
+            .await;
+        let (base_url, server) = scripted_server(vec![
+            unauthorized_fixture("access-revoked"),
+            (
+                ResponseFixture::json(200, r#"{"error":"incorrect_client_credentials"}"#),
+                RequestExpectations {
+                    client_id: Some("Iv23example"),
+                    refresh_token: Some("refresh-revoked"),
+                    grant_type: Some("refresh_token"),
+                    ..RequestExpectations::default()
+                },
+            ),
+        ])
+        .await;
+        let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+
+        let error = installations_refresh(&client, &vault, &repositories, &config())
+            .await
+            .expect_err("revoked authorization must require reconnect");
+
+        assert_eq!(error.code, "github_reconnect_required");
+        assert!(vault.token("123").await.is_none());
+        let snapshot = repositories.github_snapshot().await.unwrap().unwrap();
+        assert_eq!(snapshot.connection.status, "reconnect_required");
+        assert_eq!(snapshot.repositories.len(), 1);
+        let captures = server.await.expect("server task");
+        assert_eq!(
+            captures.len(),
+            2,
+            "must not retry discovery after terminal refresh"
+        );
+    }
+
+    #[tokio::test]
     async fn transient_refresh_failure_preserves_token_and_good_snapshot() {
         let repositories = test_repositories().await;
         seed_snapshot(
