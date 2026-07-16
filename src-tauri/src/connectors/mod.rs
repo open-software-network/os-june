@@ -14,11 +14,15 @@
 pub mod approvals;
 pub mod commands;
 pub mod github;
+pub mod github_api;
 pub mod github_auth;
 pub mod github_capabilities;
 pub mod github_commands;
 pub mod github_content_guard;
+pub mod github_issue_reads;
+pub mod github_pull_reads;
 pub mod github_read;
+pub mod github_repository_reads;
 pub mod github_store;
 pub mod google;
 pub mod oauth;

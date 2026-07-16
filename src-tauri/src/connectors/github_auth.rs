@@ -16,7 +16,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 const DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const API_BASE_URL: &str = "https://api.github.com";
-const GITHUB_API_VERSION: &str = "2026-03-10";
+pub(crate) const GITHUB_API_VERSION: &str = "2026-03-10";
 const GITHUB_VERIFICATION_URI: &str = "https://github.com/login/device";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PAGES: u32 = 100;
@@ -1371,7 +1371,7 @@ pub(crate) mod tests {
             self
         }
 
-        fn chunked(mut self) -> Self {
+        pub(crate) fn chunked(mut self) -> Self {
             self.chunked = true;
             self.allow_early_close = true;
             self

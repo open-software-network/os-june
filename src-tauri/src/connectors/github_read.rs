@@ -1,4 +1,4 @@
-use crate::domain::types::AppError;
+use crate::{connectors::github_api::GitHubApiError, domain::types::AppError};
 use serde::{Deserialize, Serialize};
 
 #[allow(dead_code)]
@@ -148,6 +148,13 @@ pub(crate) struct GitHubReadEnvelope {
 pub(crate) struct GitHubReadOutcome {
     pub result: Result<GitHubReadEnvelope, AppError>,
     pub connector_state_changed: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(crate) enum GitHubReadFailure {
+    Input(AppError),
+    Provider(GitHubApiError),
 }
 
 #[cfg(test)]
