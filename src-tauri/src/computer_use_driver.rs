@@ -14,13 +14,42 @@ use cua_driver_core::{
 #[cfg(target_os = "macos")]
 use serde_json::{json, Value};
 #[cfg(target_os = "macos")]
-use std::{collections::HashSet, path::PathBuf, sync::Arc};
+use std::{collections::HashSet, io, path::PathBuf, sync::Arc};
 #[cfg(target_os = "macos")]
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 const UPSTREAM_VERSION: &str = "0.5.0";
 const UPSTREAM_COMMIT: &str = "51582fd2ad8cffb68b2c6c81077d391132d7a0e1";
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, PartialEq, Eq)]
+enum BoundedLine {
+    Eof,
+    Line(String),
+    TooLarge,
+}
+
+#[cfg(target_os = "macos")]
+async fn read_bounded_line<R>(reader: &mut R, max_bytes: usize) -> io::Result<BoundedLine>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut bytes = Vec::with_capacity(max_bytes.min(8 * 1024));
+    let limit = u64::try_from(max_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let read = reader.take(limit).read_until(b'\n', &mut bytes).await?;
+    if read == 0 {
+        return Ok(BoundedLine::Eof);
+    }
+    if read > max_bytes {
+        return Ok(BoundedLine::TooLarge);
+    }
+    String::from_utf8(bytes)
+        .map(BoundedLine::Line)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
 
 #[cfg(target_os = "macos")]
 const ALLOWED_TOOLS: &[&str] = &[
@@ -74,18 +103,16 @@ async fn serve() -> anyhow::Result<()> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut stdout = tokio::io::BufWriter::new(tokio::io::stdout());
-    let mut line = String::new();
 
     loop {
-        line.clear();
-        let read = reader.read_line(&mut line).await?;
-        if read == 0 {
-            break;
-        }
-        if read > MAX_REQUEST_BYTES {
-            write_response(&mut stdout, Response::parse_error()).await?;
-            break;
-        }
+        let line = match read_bounded_line(&mut reader, MAX_REQUEST_BYTES).await? {
+            BoundedLine::Eof => break,
+            BoundedLine::TooLarge => {
+                write_response(&mut stdout, Response::parse_error()).await?;
+                break;
+            }
+            BoundedLine::Line(line) => line,
+        };
         let request = match serde_json::from_str::<Request>(line.trim()) {
             Ok(request) => request,
             Err(_) => {
@@ -365,6 +392,23 @@ async fn write_response(
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn request_reader_enforces_the_limit_while_reading() {
+        let mut reader = BufReader::new(&b"{}\n"[..]);
+        assert_eq!(
+            read_bounded_line(&mut reader, 3).await.expect("valid line"),
+            BoundedLine::Line("{}\n".to_string())
+        );
+
+        let mut oversized = BufReader::new(&b"12345"[..]);
+        assert_eq!(
+            read_bounded_line(&mut oversized, 4)
+                .await
+                .expect("bounded read"),
+            BoundedLine::TooLarge
+        );
+    }
 
     #[test]
     fn narrow_contract_excludes_upstream_process_and_update_tools() {
