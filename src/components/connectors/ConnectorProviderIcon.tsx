@@ -1,5 +1,5 @@
-import { IconFileText } from "central-icons/IconFileText";
 import { IconGoogle } from "central-icons/IconGoogle";
+import { IconNotion } from "central-icons/IconNotion";
 
 /** The monochrome provider icon (central-icons, currentColor). Shared by the
  * Connectors settings directory and approvals tray so provider identity renders
@@ -11,6 +11,6 @@ export function ConnectorProviderIcon({
   provider: "google" | "notion";
   size?: number;
 }) {
-  if (provider === "notion") return <IconFileText size={size} aria-hidden />;
+  if (provider === "notion") return <IconNotion size={size} aria-hidden />;
   return <IconGoogle size={size} aria-hidden />;
 }
