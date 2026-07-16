@@ -237,7 +237,8 @@ import {
 } from "./update-decision";
 
 // "June is up to date." is a confirmation, not a call to action: linger, then
-// hide on its own. Failures and busy statuses persist until dismissed.
+// hide on its own. Failures persist until dismissed; busy statuses advance
+// when their operation resolves and may also be dismissed while in flight.
 const UP_TO_DATE_DISMISS_MS = 4000;
 // Soft-exit window: the update-popover-out animation runs var(--t-med) (160ms);
 // the status clears just after it finishes.
@@ -682,9 +683,9 @@ export function App() {
       dispose?.();
     };
   }, []);
-  // Dev console driver for the sidebar "Relaunch to update" card
-  // (window.__updateCard). Pushes synthetic values into the real update state
-  // so the card's styling can be parked and inspected without a live update.
+  // Dev console driver for the sidebar update cards (window.__updateCard).
+  // Pushes synthetic values into the real update state so each card's styling
+  // can be parked and inspected without a live update.
   const updateCardDemoRef = useRef<UpdateCardDemoApi | null>(null);
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -1661,8 +1662,8 @@ export function App() {
 
   // Auto-dismiss ONLY the up-to-date confirmation: linger, play the soft exit,
   // then clear. Any status change (a new check, a failure, a manual dismiss)
-  // or unmount runs the cleanup, cancelling the pending hide; failures and
-  // busy statuses never match, so they persist until the user dismisses them.
+  // or unmount runs the cleanup and cancels the pending hide. Other statuses
+  // never match, so this effect does not control their lifecycle.
   useEffect(() => {
     if (updateStatus !== UP_TO_DATE_STATUS) return;
     const leaveTimer = window.setTimeout(() => {
