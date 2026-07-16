@@ -6,41 +6,55 @@ struct PairingView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 28) {
-                JuneBrandLockup()
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(model.snapshot.connection == .revoked ? "Link this device again" : "Link this device")
-                        .font(JuneFont.hero)
-                        .accessibilityAddTraits(.isHeader)
-                    Text("On your Mac, open June Settings, choose Linked devices, and show a pairing code.")
-                        .foregroundStyle(.secondary)
-                }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 32) {
+                    JuneBrandLockup()
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text(model.snapshot.connection == .revoked ? "Link June again" : "Link June on your Mac")
+                            .font(JuneFont.hero)
+                            .accessibilityAddTraits(.isHeader)
+                        Text("Create a new pairing code in June on your Mac. The signed-in desktop app will authorize this device.")
+                            .font(JuneFont.body)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
-                VStack(spacing: 0) {
-                    PairingStep(number: "1", text: "Show a pairing code on your Mac")
-                    Divider()
-                    PairingStep(number: "2", text: "Scan it with this device")
-                    Divider()
-                    PairingStep(number: "3", text: "Review and approve the device on your Mac")
+                    VStack(alignment: .leading, spacing: 18) {
+                        PairingStep(number: "1", text: "Open Settings, then Linked devices on your Mac")
+                        PairingStep(number: "2", text: "Show a new pairing code and scan it here")
+                        PairingStep(number: "3", text: "Approve this device on your Mac")
+                    }
                 }
-
-                Spacer(minLength: 20)
-
-                Button(action: model.scanAndPair) {
-                    JunePrimaryButtonLabel(title: "Scan pairing code", systemImage: "qrcode.viewfinder")
-                }
-                .buttonStyle(JuneSolidButtonStyle())
-                .disabled(model.isWorking)
-                .accessibilityIdentifier("scan-pairing-code")
+                .padding(.horizontal, 24)
+                .padding(.top, 36)
+                .padding(.bottom, 28)
+                .juneReadableColumn()
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 10) {
+                    Button(action: model.scanAndPair) {
+                        JunePrimaryButtonLabel(title: "Scan pairing code", systemImage: "qrcode.viewfinder")
+                    }
+                    .buttonStyle(JuneSolidButtonStyle())
+                    .disabled(model.isWorking)
+                    .accessibilityIdentifier("scan-pairing-code")
 
 #if targetEnvironment(simulator)
-                Button("Enter code for simulator") { showsManualPairing = true }
-                    .buttonStyle(JuneSecondaryButtonStyle())
+                    Button("Enter code for simulator") { showsManualPairing = true }
+                        .buttonStyle(JuneSecondaryButtonStyle())
 #endif
-
+                    Text("No OS Accounts sign-in is needed on this device.")
+                        .font(JuneFont.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 14)
+                .padding(.bottom, 8)
+                .juneReadableColumn()
+                .frame(maxWidth: .infinity)
+                .background(.bar)
             }
-            .padding(24)
-            .juneReadableColumn()
             .sheet(isPresented: $showsManualPairing) {
                 ManualPairingSheet { payload in
                     model.pair(pastedPayload: payload)
@@ -64,11 +78,10 @@ private struct PairingStep: View {
                 .font(JuneFont.mono)
                 .foregroundStyle(.secondary)
                 .frame(width: 26, height: 26)
-                .background(Color(.secondarySystemBackground), in: Circle())
+                .background(Color(.secondarySystemFill), in: Circle())
             Text(text).font(JuneFont.body)
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 16)
         .accessibilityElement(children: .combine)
     }
 }

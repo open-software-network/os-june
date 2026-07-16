@@ -2,6 +2,7 @@ import SwiftUI
 
 struct NotesView: View {
     @ObservedObject var model: AppModel
+    let openNavigation: (() -> Void)?
     @State private var query = ""
 
     var body: some View {
@@ -28,6 +29,16 @@ struct NotesView: View {
             .searchable(text: $query, prompt: "Search notes")
             .refreshable { await model.refresh() }
             .toolbar {
+                if let openNavigation {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(action: openNavigation) {
+                            Image(systemName: "sidebar.left")
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(JunePressButtonStyle())
+                        .accessibilityLabel("Open navigation")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     ConnectionLabel(state: model.snapshot.connection)
                 }

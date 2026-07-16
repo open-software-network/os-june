@@ -2,16 +2,19 @@ import SwiftUI
 
 struct AgentView: View {
     @ObservedObject var model: AppModel
+    let openNavigation: (() -> Void)?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Color(.systemBackground).ignoresSafeArea()
                 VStack(spacing: 0) {
-                    if model.messages.isEmpty {
-                        emptyState
-                    } else {
+                    if !model.messages.isEmpty {
                         conversation
+                    } else {
+                        Spacer()
                     }
                 }
             }
@@ -27,21 +30,6 @@ struct AgentView: View {
         model.snapshot.agentSessions.first(where: { $0.id == model.selectedSessionID })?.title ?? "June"
     }
 
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Spacer()
-            Text("What should we work through?")
-                .font(JuneFont.hero)
-                .accessibilityAddTraits(.isHeader)
-            Text("The agent runs on your Mac. This device receives only the encrypted conversation.")
-                .font(JuneFont.body)
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding(.horizontal, 24)
-        .juneReadableColumn()
-    }
-
     private var conversation: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -51,13 +39,15 @@ struct AgentView: View {
                             .id(message.id)
                     }
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
                 .padding(.vertical, 24)
                 .juneReadableColumn()
             }
             .onChange(of: model.messages.count) {
                 guard let last = model.messages.last else { return }
-                withAnimation(JuneMotion.state) { proxy.scrollTo(last.id, anchor: .bottom) }
+                withAnimation(JuneMotion.animation(.response, reduceMotion: reduceMotion)) {
+                    proxy.scrollTo(last.id, anchor: .bottom)
+                }
             }
         }
     }
@@ -70,7 +60,7 @@ struct AgentView: View {
                     .foregroundStyle(.secondary)
             }
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("Message June", text: $model.draft, axis: .vertical)
+                TextField("Ask June", text: $model.draft, axis: .vertical)
                     .font(JuneFont.body)
                     .lineLimit(1...6)
                     .padding(.leading, 16)
@@ -80,17 +70,24 @@ struct AgentView: View {
                 if isRunning {
                     Button(action: model.cancelAgent) {
                         Image(systemName: "stop.fill")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Color(.systemBackground))
+                            .frame(width: 36, height: 36)
+                            .background(Color(.label), in: Circle())
                             .frame(width: 44, height: 44)
                     }
+                    .buttonStyle(JunePressButtonStyle())
                     .accessibilityLabel("Cancel agent run")
                 } else {
                     Button(action: model.sendMessage) {
                         Image(systemName: "arrow.up")
                             .font(.system(size: 16, weight: .medium))
                             .foregroundStyle(canSend ? Color(.systemBackground) : .secondary)
-                            .frame(width: 44, height: 44)
+                            .frame(width: 36, height: 36)
                             .background(canSend ? Color.primary : Color(.secondarySystemFill), in: Circle())
+                            .frame(width: 44, height: 44)
                     }
+                    .buttonStyle(JunePressButtonStyle())
                     .disabled(!canSend)
                     .accessibilityLabel("Send message")
                 }
@@ -98,10 +95,9 @@ struct AgentView: View {
             .padding(.trailing, 4)
             .juneComposerSurface()
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 10)
-        .padding(.bottom, 8)
-        .background(.bar)
+        .padding(.horizontal, 32)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
     }
 
     private var isRunning: Bool {
@@ -116,30 +112,31 @@ struct AgentView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            Menu {
-                Button("New chat", action: model.startNewChat)
-                if !model.snapshot.agentSessions.isEmpty {
-                    Section("Recent") {
-                        ForEach(model.snapshot.agentSessions) { session in
-                            Button {
-                                model.openAgentSession(session)
-                            } label: {
-                                Label(session.title, systemImage: session.status.systemImage)
-                            }
-                        }
-                    }
-                }
-            } label: {
+        if let openNavigation {
+            ToolbarItem(placement: .topBarLeading) {
+              Button(action: openNavigation) {
                 Image(systemName: "sidebar.left")
+                    .frame(width: 44, height: 44)
+              }
+              .buttonStyle(JunePressButtonStyle())
+              .accessibilityLabel("Open navigation")
             }
-            .accessibilityLabel("Open conversation history")
+        }
+        ToolbarItem(placement: .principal) {
+            JuneBrandLockup(compact: true)
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
-            ConnectionLabel(state: model.snapshot.connection)
+            Button(action: model.startNewChat) {
+                Image(systemName: "square.and.pencil")
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(JunePressButtonStyle())
+            .accessibilityLabel("New chat")
             Button(action: model.focusMac) {
                 Image(systemName: "arrow.up.forward.app")
+                    .frame(width: 44, height: 44)
             }
+            .buttonStyle(JunePressButtonStyle())
             .disabled(model.snapshot.connection != .ready)
             .accessibilityLabel("Open on Mac")
         }
@@ -171,18 +168,5 @@ private struct MessageRow: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(message.role == "user" ? "You" : "June"): \(message.text)")
-    }
-}
-
-private extension AgentStatusModel {
-    var systemImage: String {
-        switch self {
-        case .running: "circle.dotted"
-        case .waitingForUser: "person.crop.circle.badge.questionmark"
-        case .completed: "checkmark.circle"
-        case .failed: "exclamationmark.circle"
-        case .cancelled: "xmark.circle"
-        case .idle: "circle"
-        }
     }
 }

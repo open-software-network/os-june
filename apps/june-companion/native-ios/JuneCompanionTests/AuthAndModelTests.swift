@@ -90,6 +90,7 @@ final class AuthAndModelTests: XCTestCase {
 
     func testBuildHasNoBearerTokenConfiguration() {
         XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "CompanionLocalBearerToken"))
+        XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "OS_ACCOUNTS_APP_API_KEY"))
         XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "JUNE_ACCOUNTS_CLIENT_ID"))
     }
 

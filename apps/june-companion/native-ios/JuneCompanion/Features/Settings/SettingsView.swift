@@ -2,11 +2,22 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    let openNavigation: (() -> Void)?
+    @AppStorage("companion.appearance") private var storedAppearance = JuneAppearance.system.rawValue
     @State private var confirmsRevoke = false
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Appearance") {
+                    Picker("Appearance", selection: appearanceBinding) {
+                        ForEach(JuneAppearance.allCases) { appearance in
+                            Text(appearance.title).tag(appearance)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
                 Section("Connection") {
                     LabeledContent("June Desktop") {
                         ConnectionLabel(state: model.snapshot.connection)
@@ -74,6 +85,18 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
             .refreshable { await model.refresh() }
+            .toolbar {
+                if let openNavigation {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(action: openNavigation) {
+                            Image(systemName: "sidebar.left")
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(JunePressButtonStyle())
+                        .accessibilityLabel("Open navigation")
+                    }
+                }
+            }
             .alert("Revoke this device?", isPresented: $confirmsRevoke) {
                 Button("Revoke", role: .destructive, action: model.revokeThisDevice)
                 Button("Cancel", role: .cancel) {}
@@ -93,6 +116,13 @@ struct SettingsView: View {
                     imageSafeMode: model.snapshot.safeSettings?.imageSafeMode ?? false
                 )
             }
+        )
+    }
+
+    private var appearanceBinding: Binding<JuneAppearance> {
+        Binding(
+            get: { JuneAppearance(rawValue: storedAppearance) ?? .system },
+            set: { storedAppearance = $0.rawValue }
         )
     }
 

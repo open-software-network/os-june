@@ -131,7 +131,7 @@ enum AppSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .agent: "Agent"
+        case .agent: "Chats"
         case .notes: "Notes"
         case .settings: "Settings"
         }
@@ -139,7 +139,7 @@ enum AppSection: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .agent: "bubble.left.and.text.bubble.right"
+        case .agent: "bubble.left.and.bubble.right"
         case .notes: "note.text"
         case .settings: "gearshape"
         }
