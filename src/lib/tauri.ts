@@ -627,6 +627,8 @@ export type HermesSessionInfo = {
   id: string;
   active?: boolean;
   is_active?: boolean;
+  /** June-side scheduled-run display state. The pinned Hermes session API does
+   * not persist TUI Agent-run outcomes in this field. */
   status?: string;
   source?: string;
   kind?: string | null;

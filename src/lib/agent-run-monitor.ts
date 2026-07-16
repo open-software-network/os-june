@@ -380,6 +380,9 @@ async function persistedRunCompletion(
     ) {
       return undefined;
     }
+    // Pinned Hermes persists TUI session lifecycle, not an Agent-run outcome:
+    // `/api/sessions` has ended_at/end_reason but no run status. Do not infer a
+    // failed or cancelled Agent run from lifecycle teardown metadata.
     // A repeated anonymous failure and a successful run with a stale replay can
     // both persist an assistant row. Until unique runtime evidence breaks that
     // tie, treating prose as success would silently erase a genuine failure.

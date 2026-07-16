@@ -639,7 +639,7 @@ describe("agent run monitor", () => {
     "ws_orphan_reap",
     "tui_shutdown",
     "idle_timeout",
-  ])("does not treat the persisted %s teardown reason as an Agent run outcome", async (endReason) => {
+  ])("does not query persisted session lifecycle for the %s teardown reason", async (endReason) => {
     monitorMocks.sessions.mockResolvedValue({
       sessions: [
         persistedTuiSession({
