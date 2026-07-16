@@ -163,9 +163,9 @@ stable version is a newly published `vX.Y.Z` release. RC iterations still edit
 the fixed `rc` prerelease in place, so `rc-desktop-dmg.yml` now posts a
 best-effort incoming-webhook message after the candidate assets are published.
 The separate path is intentional: it announces every RC iteration without
-changing the fixed-tag update-channel contract. A missing or failing webhook
+changing the fixed-tag RC release channel contract. A missing or failing webhook
 warns but does not fail the release after signed artifacts have published. The
-fixed DMG asset continues to follow the update channel, while Slack links an
+fixed DMG asset continues to follow the RC release channel, while Slack links an
 additional versioned DMG that remains immutable for the candidate named in the
 announcement. The versioned asset is uploaded without replacement, and the RC
 version guard fails closed unless GitHub explicitly reports that the fixed

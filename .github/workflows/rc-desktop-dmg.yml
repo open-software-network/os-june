@@ -451,7 +451,7 @@ jobs:
           gh release upload rc "$versioned_dmg" \
             --repo open-software-network/os-june-releases
 
-          # Fixed channel assets intentionally follow the newest candidate.
+          # Fixed RC release channel assets intentionally follow the newest candidate.
           gh release upload rc \
             "$stable_dmg" \
             "$app_archive" \
