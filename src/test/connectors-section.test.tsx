@@ -35,6 +35,7 @@ const CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events";
 
 const TEAM_ENG: LinearTeam = { id: "team-eng", key: "ENG", name: "Engineering" };
 const TEAM_DESIGN: LinearTeam = { id: "team-design", key: "DES", name: "Design" };
+let connectorsChangedListener: (() => void) | null = null;
 
 function account(overrides: Partial<ConnectorAccount> = {}): ConnectorAccount {
   const email = overrides.email ?? "alex@example.com";
@@ -67,6 +68,7 @@ function linearAccount(overrides: Partial<ConnectorAccount> = {}): ConnectorAcco
 
 beforeEach(() => {
   vi.clearAllMocks();
+  connectorsChangedListener = null;
   mocks.connectorsList.mockResolvedValue([]);
   mocks.connectorsConnect.mockResolvedValue(account());
   mocks.connectorsDisconnect.mockResolvedValue(undefined);
@@ -77,7 +79,10 @@ beforeEach(() => {
     truncated: false,
   });
   mocks.connectorsSetSelectedTeams.mockResolvedValue(linearAccount({ selectedTeams: [TEAM_ENG] }));
-  mocks.listen.mockResolvedValue(() => {});
+  mocks.listen.mockImplementation(async (_event: string, handler: () => void) => {
+    connectorsChangedListener = handler;
+    return () => {};
+  });
 });
 
 /** Waits for the initial connectorsList load to settle. */
@@ -104,6 +109,16 @@ describe("ConnectorsSection", () => {
     expect(screen.getByText("Linear")).toBeInTheDocument();
     expect(await findEnabledConnect("Connect Linear")).toBeInTheDocument();
     expect(screen.getByText(/projects, cycles, and issues/i)).toBeInTheDocument();
+  });
+
+  it("qualifies local connector privacy with the model inference path", async () => {
+    render(<ConnectorsSection />);
+    await findEnabledConnect("Connect Google");
+
+    expect(
+      screen.getByText(/connector content.*goes to your chosen model provider/i),
+    ).toBeVisible();
+    expect(screen.queryByText(/OpenSoftware's servers cannot read your data/i)).toBeNull();
   });
 
   it("lists connected accounts with feature labels and status", async () => {
@@ -365,6 +380,34 @@ describe("ConnectorsSection — Linear", () => {
     // edit); the grant change is enforced per-request in Rust, so no
     // restart.
     expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed first-team runtime apply after the account refreshes", async () => {
+    const selectedAccount = linearAccount({ selectedTeams: [TEAM_ENG] });
+    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [] })]);
+    mocks.connectorsApplyRuntime
+      .mockRejectedValueOnce({ message: "Runtime apply failed" })
+      .mockResolvedValueOnce(undefined);
+    mocks.connectorsSetSelectedTeams.mockImplementation(async () => {
+      mocks.connectorsList.mockResolvedValue([selectedAccount]);
+      connectorsChangedListener?.();
+      return selectedAccount;
+    });
+
+    render(<ConnectorsSection />);
+    await screen.findByText("Select teams to finish setup");
+    await userEvent.click(screen.getByRole("button", { name: "Select teams" }));
+    const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
+    await userEvent.click(await within(dialog).findByRole("checkbox", { name: /engineering/i }));
+    const saveButton = within(dialog).getByRole("button", { name: "Save teams" });
+
+    await userEvent.click(saveButton);
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1));
+    expect(dialog).toBeInTheDocument();
+    await screen.findByText(/1 team selected/i);
+
+    await userEvent.click(saveButton);
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalledTimes(2));
   });
 
   it("preselects the account's current teams when managing teams", async () => {

@@ -173,6 +173,13 @@ export function ConnectorsSection() {
   const [teamsTruncated, setTeamsTruncated] = useState(false);
   const [selectedTeamIds, setSelectedTeamIds] = useState<ReadonlySet<string>>(new Set());
   const [savingTeams, setSavingTeams] = useState(false);
+  // A first team save persists the grant before applying the runtime. Keep
+  // that second step pending by account id until it succeeds: the persistence
+  // event refreshes `accounts`, so selectedTeams alone cannot tell a retry
+  // that registration still needs to be applied.
+  const [runtimeApplyPendingAccountId, setRuntimeApplyPendingAccountId] = useState<string | null>(
+    null,
+  );
 
   // Previously selected teams the live listing no longer returns (archived,
   // visibility lost, or beyond the truncation cap). They must stay visible
@@ -403,6 +410,7 @@ export function ConnectorsSection() {
 
   async function saveTeams() {
     if (!teamsAccountId || teamsPayload.length === 0 || savingTeams) return;
+    const accountId = teamsAccountId;
     setSavingTeams(true);
     try {
       // The june_linear server only registers once at least one team is
@@ -412,10 +420,16 @@ export function ConnectorsSection() {
       // unregistered until an unrelated restart. Later edits never
       // (de)register the server: the grant is enforced per-request in Rust,
       // so they skip the restart.
-      const crossesRegistrationBoundary = (teamsAccount?.selectedTeams.length ?? 0) === 0;
-      await connectorsSetSelectedTeams({ accountId: teamsAccountId, teams: teamsPayload });
-      if (crossesRegistrationBoundary) {
+      const needsRuntimeApply =
+        runtimeApplyPendingAccountId === accountId ||
+        (teamsAccount?.selectedTeams.length ?? 0) === 0;
+      await connectorsSetSelectedTeams({ accountId, teams: teamsPayload });
+      if (needsRuntimeApply) {
+        setRuntimeApplyPendingAccountId(accountId);
         await connectorsApplyRuntime();
+        setRuntimeApplyPendingAccountId((pendingAccountId) =>
+          pendingAccountId === accountId ? null : pendingAccountId,
+        );
       }
       await refresh();
       setTeamsAccountId(null);
@@ -432,7 +446,7 @@ export function ConnectorsSection() {
       <SettingsPageHeader
         id="connectors-heading"
         title="Connectors"
-        blurb="Connect Google and Linear in local mode. Tokens stay in your Mac's Keychain, provider calls go straight from this device, and OpenSoftware's servers cannot read your data."
+        blurb="Connect Google and Linear in local mode. Tokens stay in your Mac's Keychain, and provider calls go straight from this device. When an AI feature uses connector content, that content goes to your chosen model provider. Choose a local model to keep inference on this device."
       />
 
       {notConfigured ? (

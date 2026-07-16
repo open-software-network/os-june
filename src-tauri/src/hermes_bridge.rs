@@ -9206,6 +9206,7 @@ async fn describe_linear_action(
             .ok()
             .and_then(|projects| {
                 projects
+                    .projects
                     .into_iter()
                     .find(|project| project.id == project_id)
                     .map(|project| project.name)
@@ -9648,21 +9649,21 @@ async fn dispatch_connector_route(
             // the boundary into the workspace directory.
             let granted = crate::connectors::linear_granted_team_ids(app, account_id).await?;
             let first = body_u32(body, "first");
-            let users = connector_linear_call(app, account_id, |token| {
+            let listing = connector_linear_call(app, account_id, |token| {
                 let granted = granted.clone();
                 async move { crate::connectors::linear::list_users(&token, &granted, first).await }
             })
             .await?;
-            Ok(serde_json::json!({ "users": connector_json(users)? }))
+            connector_json(listing)
         }
         "/v1/linear/list_projects" => {
             let granted = crate::connectors::linear_granted_team_ids(app, account_id).await?;
-            let projects = connector_linear_call(app, account_id, |token| {
+            let listing = connector_linear_call(app, account_id, |token| {
                 let granted = granted.clone();
                 async move { crate::connectors::linear::list_projects(&token, &granted).await }
             })
             .await?;
-            Ok(serde_json::json!({ "projects": connector_json(projects)? }))
+            connector_json(listing)
         }
         "/v1/linear/list_cycles" => {
             let team_id = require_body_str(body, "team_id")?;
@@ -9670,21 +9671,21 @@ async fn dispatch_connector_route(
             // Validated before the provider call: an out-of-grant team id
             // fails closed without spending a Linear request.
             crate::connectors::linear_require_team_granted(&team_id, &granted)?;
-            let cycles = connector_linear_call(app, account_id, |token| {
+            let listing = connector_linear_call(app, account_id, |token| {
                 let team_id = team_id.clone();
                 async move { crate::connectors::linear::list_cycles(&token, &team_id).await }
             })
             .await?;
-            Ok(serde_json::json!({ "cycles": connector_json(cycles)? }))
+            connector_json(listing)
         }
         "/v1/linear/list_initiatives" => {
             let granted = crate::connectors::linear_granted_team_ids(app, account_id).await?;
-            let initiatives = connector_linear_call(app, account_id, |token| {
+            let listing = connector_linear_call(app, account_id, |token| {
                 let granted = granted.clone();
                 async move { crate::connectors::linear::list_initiatives(&token, &granted).await }
             })
             .await?;
-            Ok(serde_json::json!({ "initiatives": connector_json(initiatives)? }))
+            connector_json(listing)
         }
         "/v1/linear/search_issues" => {
             let granted = crate::connectors::linear_granted_team_ids(app, account_id).await?;

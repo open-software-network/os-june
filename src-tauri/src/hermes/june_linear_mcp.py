@@ -84,6 +84,7 @@ TOOLS: list[dict[str, Any]] = [
             "List the members of your selected teams (names only, no "
             "emails). Returns id, name, display name, and active status. "
             "A user on more than one selected team appears once. "
+            "The response sets truncated=true when a bounded page has more results. "
             + INJECTION_WARNING
         ),
         "inputSchema": {
@@ -106,7 +107,8 @@ TOOLS: list[dict[str, Any]] = [
             "List projects in the user's selected teams: id, name, state, "
             "target date, the team ids it belongs to, and its Linear URL. "
             "Only projects linked to at least one selected team are "
-            "returned. " + INJECTION_WARNING
+            "returned. The response sets truncated=true when a bounded page "
+            "has more results. " + INJECTION_WARNING
         ),
         "inputSchema": {
             "type": "object",
@@ -118,7 +120,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "list_cycles",
         "description": (
             "List a team's cycles. Fails if the team is not in the user's "
-            "selected teams. " + INJECTION_WARNING
+            "selected teams. The response sets truncated=true when the "
+            "bounded page has more results. " + INJECTION_WARNING
         ),
         "inputSchema": {
             "type": "object",
@@ -140,6 +143,7 @@ TOOLS: list[dict[str, Any]] = [
             "List initiatives that include at least one of your selected "
             "teams' projects, each with only those in-scope projects. "
             "Initiatives with no project on a selected team are omitted. "
+            "The response sets truncated=true when a bounded page has more results. "
             + INJECTION_WARNING
         ),
         "inputSchema": {

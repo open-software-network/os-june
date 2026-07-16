@@ -31,7 +31,7 @@
 //! errors. Error messages carry stable codes and short human text only.
 
 use crate::domain::types::AppError;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::oauth::{self, ConnectFlow};
@@ -60,9 +60,32 @@ pub struct LinearTokenResponse {
     pub expires_in: i64,
     /// The granted scope set. Linear's separator is not contractual, so
     /// callers parse it with [`parse_scope_field`] (commas or whitespace).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_scope_response")]
     #[zeroize(skip)]
     pub scope: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LinearScopeResponse {
+    String(String),
+    Array(Vec<String>),
+}
+
+/// Normalize both token-response shapes Linear documents: current apps
+/// receive one string, while apps created before 2023-12-01 receive an array.
+/// Keeping the public field as a string preserves the existing scope parser
+/// and every downstream caller.
+fn deserialize_scope_response<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(
+        Option::<LinearScopeResponse>::deserialize(deserializer)?.map(|scope| match scope {
+            LinearScopeResponse::String(value) => value,
+            LinearScopeResponse::Array(values) => values.join(" "),
+        }),
+    )
 }
 
 /// Split a token response `scope` field into individual scopes. Accepts
@@ -345,6 +368,12 @@ pub enum LinearApiError {
     UnusableResponse {
         status: u16,
     },
+    /// A successful HTTP response carried both mutation data and GraphQL
+    /// errors. At least part of the mutation may have committed, so callers
+    /// must reconcile by the client-minted object UUID before retrying.
+    AmbiguousMutationResponse {
+        status: u16,
+    },
     Network(String),
 }
 
@@ -380,9 +409,19 @@ impl From<LinearApiError> for AppError {
                 "linear_upstream_error",
                 format!("Linear returned an unusable response ({status})."),
             ),
+            LinearApiError::AmbiguousMutationResponse { status } => AppError::new(
+                "linear_upstream_error",
+                format!("Linear returned a partial mutation response ({status})."),
+            ),
             LinearApiError::Network(message) => AppError::new("network_error", message),
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GraphqlOperation {
+    Query,
+    Mutation,
 }
 
 #[derive(Deserialize)]
@@ -413,9 +452,8 @@ struct GraphqlErrorExtensionsWire {
     kind: Option<String>,
 }
 
-/// Shared GraphQL POST for every fixed document in this module - queries
-/// and mutations alike (a mutation document is just a different query
-/// string to the same endpoint). HTTP 401 maps to `Unauthorized`; a
+/// Shared GraphQL POST for every fixed document in this module. HTTP 401 maps
+/// to `Unauthorized`; a
 /// `RATELIMITED` code anywhere in the errors array maps to `RateLimited`;
 /// any other GraphQL error surfaces the first message (bounded). Never logs
 /// or echoes the access token.
@@ -423,6 +461,25 @@ async fn graphql<T: DeserializeOwned>(
     access_token: &str,
     query: &str,
     variables: serde_json::Value,
+) -> Result<T, LinearApiError> {
+    graphql_with_operation(access_token, query, variables, GraphqlOperation::Query).await
+}
+
+/// Mutation variant of [`graphql`]. A 2xx response containing both data and
+/// errors is ambiguous because some mutation work may already have committed.
+async fn graphql_mutation<T: DeserializeOwned>(
+    access_token: &str,
+    query: &str,
+    variables: serde_json::Value,
+) -> Result<T, LinearApiError> {
+    graphql_with_operation(access_token, query, variables, GraphqlOperation::Mutation).await
+}
+
+async fn graphql_with_operation<T: DeserializeOwned>(
+    access_token: &str,
+    query: &str,
+    variables: serde_json::Value,
+    operation: GraphqlOperation,
 ) -> Result<T, LinearApiError> {
     let response = oauth::http_client()
         .post(GRAPHQL_ENDPOINT)
@@ -441,6 +498,21 @@ async fn graphql<T: DeserializeOwned>(
     }
     let parsed: GraphqlResponseWire<T> =
         serde_json::from_str(&body).map_err(|_| LinearApiError::UnusableResponse { status })?;
+    graphql_data(parsed, status, operation)
+}
+
+fn graphql_data<T>(
+    parsed: GraphqlResponseWire<T>,
+    status: u16,
+    operation: GraphqlOperation,
+) -> Result<T, LinearApiError> {
+    if operation == GraphqlOperation::Mutation
+        && (200..300).contains(&status)
+        && parsed.data.is_some()
+        && !parsed.errors.is_empty()
+    {
+        return Err(LinearApiError::AmbiguousMutationResponse { status });
+    }
     check_graphql_errors(&parsed.errors, status)?;
     if !(200..300).contains(&status) {
         return Err(LinearApiError::Api {
@@ -611,7 +683,7 @@ struct TeamsPageWire {
     page_info: PageInfoWire,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PageInfoWire {
     #[serde(default)]
@@ -797,9 +869,12 @@ struct KeyOnlyWire {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct IdListPageWire {
     #[serde(default)]
     nodes: Vec<IdOnlyWire>,
+    #[serde(default)]
+    page_info: PageInfoWire,
 }
 
 fn ids_from_page(page: Option<IdListPageWire>) -> Vec<String> {
@@ -822,6 +897,13 @@ pub struct LinearUser {
     pub active: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearUsersListing {
+    pub users: Vec<LinearUser>,
+    pub truncated: bool,
+}
+
 // `UserFilter` has no team-membership field, so users are scoped by walking
 // the selected teams' `members` connections instead of filtering the
 // workspace-wide `users` root query. `Query.teams(filter: { id: { in } })`
@@ -835,7 +917,8 @@ pub struct LinearUser {
 const LIST_USERS_QUERY: &str =
     "query TeamMembers($teamIds: [ID!]!, $teamLimit: Int!, $first: Int!) \
      { teams(filter: { id: { in: $teamIds } }, first: $teamLimit) \
-     { nodes { members(first: $first) { nodes { id name displayName active } } } } }";
+     { nodes { members(first: $first) { nodes { id name displayName active } \
+     pageInfo { hasNextPage } } } pageInfo { hasNextPage } } }";
 
 #[derive(Deserialize)]
 struct TeamMembersDataWire {
@@ -843,9 +926,12 @@ struct TeamMembersDataWire {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TeamMembersTeamsWire {
     #[serde(default)]
     nodes: Vec<TeamMembersNodeWire>,
+    #[serde(default)]
+    page_info: PageInfoWire,
 }
 
 #[derive(Deserialize)]
@@ -855,9 +941,12 @@ struct TeamMembersNodeWire {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct UsersPageWire {
     #[serde(default)]
     nodes: Vec<UserWire>,
+    #[serde(default)]
+    page_info: PageInfoWire,
 }
 
 #[derive(Deserialize)]
@@ -899,6 +988,15 @@ fn union_team_members(teams: Vec<TeamMembersNodeWire>) -> Vec<LinearUser> {
     users
 }
 
+fn team_members_page_truncated(teams: &TeamMembersTeamsWire) -> bool {
+    teams.page_info.has_next_page
+        || teams.nodes.iter().any(|team| {
+            team.members
+                .as_ref()
+                .is_some_and(|page| page.page_info.has_next_page)
+        })
+}
+
 /// Members of the account's SELECTED teams (not the workspace directory):
 /// one bounded page of members per granted team, unioned and deduped by id.
 /// `first` caps each team's member page (1..=[`USERS_PAGE_MAX`], default
@@ -909,9 +1007,12 @@ pub async fn list_users(
     access_token: &str,
     granted_team_ids: &[String],
     first: Option<u32>,
-) -> Result<Vec<LinearUser>, LinearApiError> {
+) -> Result<LinearUsersListing, LinearApiError> {
     if granted_team_ids.is_empty() {
-        return Ok(Vec::new());
+        return Ok(LinearUsersListing {
+            users: Vec::new(),
+            truncated: false,
+        });
     }
     let limit = clamp_first(first, USERS_PAGE_DEFAULT, 1, USERS_PAGE_MAX);
     // The outer connection must return every granted team, so its page size is
@@ -927,7 +1028,11 @@ pub async fn list_users(
         }),
     )
     .await?;
-    Ok(union_team_members(data.teams.nodes))
+    let truncated = team_members_page_truncated(&data.teams);
+    Ok(LinearUsersListing {
+        users: union_team_members(data.teams.nodes),
+        truncated,
+    })
 }
 
 // --- Projects ------------------------------------------------------------------------
@@ -947,9 +1052,17 @@ pub struct LinearProject {
     pub url: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearProjectsListing {
+    pub projects: Vec<LinearProject>,
+    pub truncated: bool,
+}
+
 const LIST_PROJECTS_QUERY: &str = "query Projects($filter: ProjectFilter, $first: Int!) \
      { projects(filter: $filter, first: $first) \
-     { nodes { id name status { name } targetDate teams(first: 10) { nodes { id } } url } } }";
+     { nodes { id name status { name } targetDate teams(first: 10) \
+     { nodes { id } pageInfo { hasNextPage } } url } pageInfo { hasNextPage } } }";
 
 #[derive(Deserialize)]
 struct ProjectsDataWire {
@@ -957,9 +1070,12 @@ struct ProjectsDataWire {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProjectsPageWire {
     #[serde(default)]
     nodes: Vec<ProjectWire>,
+    #[serde(default)]
+    page_info: PageInfoWire,
 }
 
 #[derive(Deserialize)]
@@ -990,6 +1106,16 @@ fn project_from_wire(wire: ProjectWire) -> LinearProject {
     }
 }
 
+fn projects_page_truncated(projects: &ProjectsPageWire) -> bool {
+    projects.page_info.has_next_page
+        || projects.nodes.iter().any(|project| {
+            project
+                .teams
+                .as_ref()
+                .is_some_and(|page| page.page_info.has_next_page)
+        })
+}
+
 /// Projects linked to at least one granted team, one bounded page. Schema
 /// note: `ProjectFilter.accessibleTeams` (a `TeamCollectionFilter`) supports
 /// exactly this via `some: { id: { in: $teamIds } } }`, so the grant is
@@ -999,7 +1125,7 @@ fn project_from_wire(wire: ProjectWire) -> LinearProject {
 pub async fn list_projects(
     access_token: &str,
     granted_team_ids: &[String],
-) -> Result<Vec<LinearProject>, LinearApiError> {
+) -> Result<LinearProjectsListing, LinearApiError> {
     // `granted_team_ids` backs a GraphQL `id: { in: [...] } }` comparator. An
     // empty `in` list must never reach the server: some GraphQL backends
     // treat an empty in-list as "no constraint" rather than "matches
@@ -1009,7 +1135,10 @@ pub async fn list_projects(
     // grant fails closed first, in `connectors::linear_granted_team_ids`);
     // this is the defense-in-depth backstop.
     if granted_team_ids.is_empty() {
-        return Ok(Vec::new());
+        return Ok(LinearProjectsListing {
+            projects: Vec::new(),
+            truncated: false,
+        });
     }
     let filter = serde_json::json!({
         "accessibleTeams": { "some": { "id": { "in": granted_team_ids } } }
@@ -1020,12 +1149,16 @@ pub async fn list_projects(
         serde_json::json!({ "filter": filter, "first": PROJECTS_PAGE_SIZE }),
     )
     .await?;
-    Ok(data
-        .projects
-        .nodes
-        .into_iter()
-        .map(project_from_wire)
-        .collect())
+    let truncated = projects_page_truncated(&data.projects);
+    Ok(LinearProjectsListing {
+        projects: data
+            .projects
+            .nodes
+            .into_iter()
+            .map(project_from_wire)
+            .collect(),
+        truncated,
+    })
 }
 
 // --- Cycles --------------------------------------------------------------------------
@@ -1041,9 +1174,17 @@ pub struct LinearCycle {
     pub completed_at: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearCyclesListing {
+    pub cycles: Vec<LinearCycle>,
+    pub truncated: bool,
+}
+
 const LIST_CYCLES_QUERY: &str = "query TeamCycles($teamId: String!, $first: Int!) \
      { team(id: $teamId) { cycles(first: $first) \
-     { nodes { id number name startsAt endsAt completedAt } } } }";
+     { nodes { id number name startsAt endsAt completedAt } \
+     pageInfo { hasNextPage } } } }";
 
 #[derive(Deserialize)]
 struct TeamCyclesDataWire {
@@ -1057,9 +1198,12 @@ struct TeamCyclesWire {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CyclesPageWire {
     #[serde(default)]
     nodes: Vec<CycleWire>,
+    #[serde(default)]
+    page_info: PageInfoWire,
 }
 
 #[derive(Deserialize)]
@@ -1094,7 +1238,7 @@ fn team_not_found() -> LinearApiError {
 pub async fn list_cycles(
     access_token: &str,
     team_id: &str,
-) -> Result<Vec<LinearCycle>, LinearApiError> {
+) -> Result<LinearCyclesListing, LinearApiError> {
     let data: TeamCyclesDataWire = graphql(
         access_token,
         LIST_CYCLES_QUERY,
@@ -1102,19 +1246,22 @@ pub async fn list_cycles(
     )
     .await?;
     let team = data.team.ok_or_else(team_not_found)?;
-    Ok(team
-        .cycles
-        .nodes
-        .into_iter()
-        .map(|cycle| LinearCycle {
-            id: cycle.id,
-            number: round_to_i64(cycle.number),
-            name: cycle.name,
-            starts_at: cycle.starts_at,
-            ends_at: cycle.ends_at,
-            completed_at: cycle.completed_at,
-        })
-        .collect())
+    Ok(LinearCyclesListing {
+        truncated: team.cycles.page_info.has_next_page,
+        cycles: team
+            .cycles
+            .nodes
+            .into_iter()
+            .map(|cycle| LinearCycle {
+                id: cycle.id,
+                number: round_to_i64(cycle.number),
+                name: cycle.name,
+                starts_at: cycle.starts_at,
+                ends_at: cycle.ends_at,
+                completed_at: cycle.completed_at,
+            })
+            .collect(),
+    })
 }
 
 // --- Initiatives ---------------------------------------------------------------------
@@ -1141,9 +1288,18 @@ pub struct LinearInitiative {
     pub projects: Vec<InitiativeProjectRef>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearInitiativesListing {
+    pub initiatives: Vec<LinearInitiative>,
+    pub truncated: bool,
+}
+
 const LIST_INITIATIVES_QUERY: &str = "query Initiatives($first: Int!) \
      { initiatives(first: $first) { nodes { id name targetDate status \
-     projects(first: 25) { nodes { id name teams(first: 10) { nodes { id } } } } } } }";
+     projects(first: 25) { nodes { id name teams(first: 10) \
+     { nodes { id } pageInfo { hasNextPage } } } pageInfo { hasNextPage } } } \
+     pageInfo { hasNextPage } } }";
 
 #[derive(Deserialize)]
 struct InitiativesDataWire {
@@ -1151,9 +1307,12 @@ struct InitiativesDataWire {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct InitiativesPageWire {
     #[serde(default)]
     nodes: Vec<InitiativeWire>,
+    #[serde(default)]
+    page_info: PageInfoWire,
 }
 
 #[derive(Deserialize)]
@@ -1172,9 +1331,12 @@ struct InitiativeWire {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct InitiativeProjectsPageWire {
     #[serde(default)]
     nodes: Vec<InitiativeProjectWire>,
+    #[serde(default)]
+    page_info: PageInfoWire,
 }
 
 #[derive(Deserialize)]
@@ -1219,6 +1381,21 @@ fn initiative_from_wire(
     })
 }
 
+fn initiatives_page_truncated(initiatives: &InitiativesPageWire) -> bool {
+    initiatives.page_info.has_next_page
+        || initiatives.nodes.iter().any(|initiative| {
+            initiative.projects.as_ref().is_some_and(|projects| {
+                projects.page_info.has_next_page
+                    || projects.nodes.iter().any(|project| {
+                        project
+                            .teams
+                            .as_ref()
+                            .is_some_and(|teams| teams.page_info.has_next_page)
+                    })
+            })
+        })
+}
+
 /// Initiatives that touch the selected-team boundary, one bounded page. Each
 /// initiative's project list is narrowed to `granted_team_ids` client side,
 /// and an initiative with no granted project is dropped entirely - only
@@ -1227,19 +1404,23 @@ fn initiative_from_wire(
 pub async fn list_initiatives(
     access_token: &str,
     granted_team_ids: &[String],
-) -> Result<Vec<LinearInitiative>, LinearApiError> {
+) -> Result<LinearInitiativesListing, LinearApiError> {
     let data: InitiativesDataWire = graphql(
         access_token,
         LIST_INITIATIVES_QUERY,
         serde_json::json!({ "first": INITIATIVES_PAGE_SIZE }),
     )
     .await?;
-    Ok(data
-        .initiatives
-        .nodes
-        .into_iter()
-        .filter_map(|initiative| initiative_from_wire(initiative, granted_team_ids))
-        .collect())
+    let truncated = initiatives_page_truncated(&data.initiatives);
+    Ok(LinearInitiativesListing {
+        initiatives: data
+            .initiatives
+            .nodes
+            .into_iter()
+            .filter_map(|initiative| initiative_from_wire(initiative, granted_team_ids))
+            .collect(),
+        truncated,
+    })
 }
 
 // --- Issue search --------------------------------------------------------------------
@@ -2073,7 +2254,7 @@ pub async fn create_issue(
         priority: clamp_priority(input.priority),
         ..input
     };
-    let data: IssueCreateDataWire = graphql(
+    let data: IssueCreateDataWire = graphql_mutation(
         access_token,
         CREATE_ISSUE_MUTATION,
         serde_json::json!({ "input": input }),
@@ -2096,7 +2277,7 @@ pub async fn update_issue(
         priority: clamp_priority(input.priority),
         ..input
     };
-    let data: IssueUpdateDataWire = graphql(
+    let data: IssueUpdateDataWire = graphql_mutation(
         access_token,
         UPDATE_ISSUE_MUTATION,
         serde_json::json!({ "id": issue_id, "input": input }),
@@ -2111,7 +2292,7 @@ pub async fn add_comment(
     access_token: &str,
     input: LinearCommentCreate,
 ) -> Result<LinearCommentRef, LinearApiError> {
-    let data: CommentCreateDataWire = graphql(
+    let data: CommentCreateDataWire = graphql_mutation(
         access_token,
         ADD_COMMENT_MUTATION,
         serde_json::json!({ "input": input }),
@@ -2128,7 +2309,7 @@ pub async fn create_project_update(
     input: LinearProjectUpdateCreate,
 ) -> Result<LinearProjectUpdateRef, LinearApiError> {
     validate_project_update_health(input.health.as_deref())?;
-    let data: ProjectUpdateCreateDataWire = graphql(
+    let data: ProjectUpdateCreateDataWire = graphql_mutation(
         access_token,
         CREATE_PROJECT_UPDATE_MUTATION,
         serde_json::json!({ "input": input }),
@@ -2344,6 +2525,31 @@ mod tests {
     }
 
     #[test]
+    fn token_response_accepts_string_and_array_scope_shapes() {
+        let string_scope: LinearTokenResponse = serde_json::from_str(
+            r#"{
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "expires_in": 86399,
+                "scope": "read write"
+            }"#,
+        )
+        .expect("modern string-valued scope");
+        let array_scope: LinearTokenResponse = serde_json::from_str(
+            r#"{
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "expires_in": 86399,
+                "scope": ["read", "write"]
+            }"#,
+        )
+        .expect("legacy array-valued scope");
+
+        assert_eq!(string_scope.scope.as_deref(), Some("read write"));
+        assert_eq!(array_scope.scope.as_deref(), Some("read write"));
+    }
+
+    #[test]
     fn graphql_auth_errors_classify_as_unauthorized_at_any_status() {
         // Linear signals failures through GraphQL error codes rather than
         // semantic HTTP statuses, so an auth failure must classify as
@@ -2537,6 +2743,33 @@ mod tests {
     }
 
     #[test]
+    fn partial_mutation_response_is_ambiguous_but_partial_query_is_definitive() {
+        let mutation_response: GraphqlResponseWire<serde_json::Value> = serde_json::from_str(
+            r#"{
+                "data": { "issueCreate": { "success": true } },
+                "errors": [{ "message": "A sibling field failed" }]
+            }"#,
+        )
+        .expect("partial mutation fixture");
+        assert!(matches!(
+            graphql_data(mutation_response, 200, GraphqlOperation::Mutation),
+            Err(LinearApiError::AmbiguousMutationResponse { status: 200 })
+        ));
+
+        let query_response: GraphqlResponseWire<serde_json::Value> = serde_json::from_str(
+            r#"{
+                "data": { "viewer": { "id": "viewer-1" } },
+                "errors": [{ "message": "A sibling field failed" }]
+            }"#,
+        )
+        .expect("partial query fixture");
+        assert!(matches!(
+            graphql_data(query_response, 200, GraphqlOperation::Query),
+            Err(LinearApiError::Api { status: 200, .. })
+        ));
+    }
+
+    #[test]
     fn api_errors_map_to_stable_app_error_codes() {
         assert_eq!(
             AppError::from(LinearApiError::Unauthorized).code,
@@ -2588,6 +2821,11 @@ mod tests {
                 "unusable body at status {status} must classify as ambiguous"
             );
         }
+        assert_eq!(
+            AppError::from(LinearApiError::AmbiguousMutationResponse { status: 200 }).code,
+            "linear_upstream_error",
+            "partial mutation data must enter the reconciliation path"
+        );
         assert_eq!(
             AppError::from(LinearApiError::Network("down".to_string())).code,
             "network_error"
@@ -2659,6 +2897,7 @@ mod tests {
                     id: "b".to_string(),
                 },
             ],
+            page_info: PageInfoWire::default(),
         };
         assert_eq!(ids_from_page(Some(page)), vec!["a", "b"]);
     }
@@ -2736,7 +2975,76 @@ mod tests {
         let users = list_users("unused-token", &[], None)
             .await
             .expect("empty grant is not an error");
-        assert!(users.is_empty());
+        assert!(users.users.is_empty());
+        assert!(!users.truncated);
+    }
+
+    #[test]
+    fn bounded_list_queries_request_truncation_metadata() {
+        for (name, query) in [
+            ("users", LIST_USERS_QUERY),
+            ("projects", LIST_PROJECTS_QUERY),
+            ("cycles", LIST_CYCLES_QUERY),
+            ("initiatives", LIST_INITIATIVES_QUERY),
+        ] {
+            assert!(
+                query.contains("pageInfo { hasNextPage }"),
+                "{name} query must expose whether its bounded page was truncated"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_listings_include_nested_connection_truncation() {
+        let users: TeamMembersDataWire = serde_json::from_str(
+            r#"{
+                "teams": {
+                    "nodes": [{
+                        "members": {
+                            "nodes": [],
+                            "pageInfo": { "hasNextPage": true }
+                        }
+                    }],
+                    "pageInfo": { "hasNextPage": false }
+                }
+            }"#,
+        )
+        .expect("users fixture");
+        assert!(team_members_page_truncated(&users.teams));
+
+        let projects: ProjectsDataWire = serde_json::from_str(
+            r#"{
+                "projects": {
+                    "nodes": [{
+                        "id": "project-1",
+                        "teams": {
+                            "nodes": [],
+                            "pageInfo": { "hasNextPage": true }
+                        }
+                    }],
+                    "pageInfo": { "hasNextPage": false }
+                }
+            }"#,
+        )
+        .expect("projects fixture");
+        assert!(projects_page_truncated(&projects.projects));
+
+        let initiatives: InitiativesDataWire = serde_json::from_str(
+            r#"{
+                "initiatives": {
+                    "nodes": [{
+                        "id": "initiative-1",
+                        "projects": {
+                            "nodes": [],
+                            "pageInfo": { "hasNextPage": true }
+                        }
+                    }],
+                    "pageInfo": { "hasNextPage": false }
+                }
+            }"#,
+        )
+        .expect("initiatives fixture");
+        assert!(initiatives_page_truncated(&initiatives.initiatives));
     }
 
     // --- Slice 2: projects -------------------------------------------------------------
