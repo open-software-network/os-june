@@ -122,7 +122,11 @@ import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { errorCode, messageFromError } from "../lib/errors";
 import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
-import { upsertLiveTranscriptEvent } from "../lib/live-transcript-preview";
+import {
+  authoritativeTranscriptCoverageKey,
+  clearTerminalLiveTranscriptEvents,
+  upsertLiveTranscriptEvent,
+} from "../lib/live-transcript-preview";
 import {
   RECORDING_INACTIVITY_RESPONSE_MS,
   RECORDING_INACTIVITY_SNOOZE_MS,
@@ -992,6 +996,9 @@ export function App() {
     });
   }, []);
   const selectedNote = state.selectedNote;
+  const selectedNoteTranscriptCoverageKey = authoritativeTranscriptCoverageKey(
+    selectedNote?.sourceTranscripts ?? [],
+  );
   const selectedNoteId = selectedNote?.id;
   // The contextual Ask June panel next to the open note. Scoped to one note:
   // it only renders while a note is the active view, and closes whenever the
@@ -2331,7 +2338,13 @@ export function App() {
   function handleEnableAccessibility() {
     void dictationHelperCommand({
       type: "request_accessibility_permission",
-    }).catch(() => undefined);
+    }).catch(async () => {
+      try {
+        await openPrivacySettings("accessibility");
+      } catch {
+        // The fallback is best-effort; there is no further recovery surface.
+      }
+    });
   }
 
   useEffect(() => {
@@ -2387,10 +2400,33 @@ export function App() {
   }, [state.recordingStatus?.sessionId, state.recordingStatus?.state]);
 
   useEffect(() => {
-    if (!state.recordingStatus) {
-      setLiveTranscriptEvents([]);
+    if (
+      !selectedNote ||
+      (selectedNote.processingStatus !== "ready" && selectedNote.processingStatus !== "failed") ||
+      (selectedNote.queuedRecordings ?? 0) > 0
+    ) {
+      return;
     }
-  }, [state.recordingStatus?.sessionId]);
+    const protectedSessionIds = [...finishingSessionsRef.current];
+    if (recordingNoteId === selectedNote.id && state.recordingStatus?.sessionId) {
+      protectedSessionIds.push(state.recordingStatus.sessionId);
+    }
+    setLiveTranscriptEvents((current) =>
+      clearTerminalLiveTranscriptEvents(
+        current,
+        selectedNote.id,
+        selectedNote.sourceTranscripts ?? [],
+        protectedSessionIds,
+      ),
+    );
+  }, [
+    recordingNoteId,
+    selectedNote?.id,
+    selectedNote?.processingStatus,
+    selectedNote?.queuedRecordings,
+    selectedNoteTranscriptCoverageKey,
+    state.recordingStatus?.sessionId,
+  ]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -2940,7 +2976,6 @@ export function App() {
       if (!startAlreadyClaimed) {
         recordingStartInFlightRef.current = true;
       }
-      setLiveTranscriptEvents([]);
       setRecordingNote(noteId);
       const startingStatus = startingRecordingStatus(noteId, requestedSourceMode);
       recordingStatusRef.current = startingStatus;
@@ -3293,7 +3328,6 @@ export function App() {
     // notes…") plus a queued count tell the user work is still in flight.
     const owningNoteId = recordingNoteIdRef.current;
     dispatch({ type: "recordingStatusCleared" });
-    setLiveTranscriptEvents([]);
     setRecordingNote(undefined);
     playRecordingSound("stop");
     // Optimistically flip the note that owns this recording to transcribing.
@@ -4141,9 +4175,9 @@ export function App() {
                       recoveryBlockedReason={
                         fundingRequired ? RECOVERY_FUNDING_DISABLED_REASON : undefined
                       }
-                      liveTranscript={
-                        selectedNoteId === recordingNoteId ? liveTranscriptEvents : []
-                      }
+                      liveTranscript={liveTranscriptEvents.filter(
+                        (event) => event.noteId === selectedNoteId,
+                      )}
                       sourceMode={sourceMode}
                       sourceReadiness={sourceReadiness}
                       recovery={selectedRecovery}
@@ -4183,7 +4217,10 @@ export function App() {
                           return;
                         }
                         try {
-                          const note = await retryProcessing(selectedNote.id);
+                          const note = await retryProcessing(
+                            selectedNote.id,
+                            selectedNote.retryRecordingSessionId,
+                          );
                           dispatch({ type: "noteProcessingUpdated", note });
                         } catch (err) {
                           const message = messageFromError(err);
@@ -4613,14 +4650,11 @@ function isDeniedPermission(state?: string) {
   return state === "denied" || state === "restricted";
 }
 
-// TCC grants are bundle-scoped, so the two microphone signals cover different
-// bundles: the dictation helper reports its own grant, while the Rust
-// readiness probe (AVCaptureDevice in recording_source_readiness) reads the
-// main app's — the one recording actually uses. Either reporting a denial
-// means Record would start a take with no audio, so either flips the
-// actionable mic-blocked notice before a doomed recording can start (JUN-319).
-// `not_determined` stays startable: the start path fires the main app's own
-// TCC prompt.
+// TCC grants are bundle-scoped. The readiness probe reads the main app's
+// authorization, which is the only grant relevant to note recording. Once
+// that probe has reported, never let the dictation helper's separate grant
+// override it. The helper remains a launch-time fallback before readiness is
+// available. `not_determined` stays startable so the main app can prompt.
 export function isMicrophoneRecordingBlocked(
   helperStatus: string | undefined,
   readiness: RecordingSourceReadinessDto | undefined,
@@ -4628,7 +4662,9 @@ export function isMicrophoneRecordingBlocked(
   const readinessState = readiness?.sources.find(
     (source) => source.source === "microphone",
   )?.permissionState;
-  return isDeniedPermission(helperStatus) || isDeniedPermission(readinessState);
+  return readinessState === undefined
+    ? isDeniedPermission(helperStatus)
+    : isDeniedPermission(readinessState);
 }
 
 // Accessibility is a plain bool from the helper (AXIsProcessTrusted),

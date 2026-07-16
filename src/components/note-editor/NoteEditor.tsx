@@ -35,6 +35,10 @@ import { isMacLikePlatform } from "../../lib/platform";
 import { useDismiss } from "../../lib/use-dismiss";
 import { systemAudioAvailability } from "../../lib/source-readiness";
 import {
+  coalesceLiveTranscriptEventsForDisplay,
+  reconcileLiveTranscriptEvents,
+} from "../../lib/live-transcript-preview";
+import {
   isInvalidJuneResponseMessage,
   NoteFailureBanner,
   userFacingFailureMessage,
@@ -171,9 +175,16 @@ export function NoteEditor({
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
   const sourceTranscripts = orderedVisibleSourceTranscripts(note);
+  const reconciledLiveTranscript = useMemo(
+    () => reconcileLiveTranscriptEvents(liveTranscript, note.sourceTranscripts ?? []),
+    [liveTranscript, note.sourceTranscripts],
+  );
   const liveTranscriptTurns = useMemo(
-    () => liveTranscript.map(liveTranscriptEventToTurn),
-    [liveTranscript],
+    () =>
+      coalesceLiveTranscriptEventsForDisplay(reconciledLiveTranscript).map(
+        liveTranscriptEventToTurn,
+      ),
+    [reconciledLiveTranscript],
   );
   const transcriptTurns = useMemo(
     () =>
@@ -196,7 +207,7 @@ export function NoteEditor({
 
   // The filter only earns its place when both sources are present — a
   // mic-only voice memo has nothing to switch between. Built on the
-  // already-pruned visible list so silent/error-only lanes don't count.
+  // already-pruned visible list so silent/error-only Sources don't count.
   const hasBothSources = useMemo(() => {
     let mic = false;
     let system = false;
@@ -1006,6 +1017,7 @@ function liveTranscriptEventToTurn(event: LiveTranscriptEventDto): RenderedTrans
   return {
     id: `live-${event.sessionId}-${event.source}-${event.segmentId}`,
     text: event.text,
+    recordingSessionId: event.sessionId,
     sourceMode: event.sourceMode,
     source: event.source,
     startMs: event.startMs,

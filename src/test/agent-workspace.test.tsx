@@ -13659,6 +13659,16 @@ describe("AgentWorkspace", () => {
         );
       }
       expect(section?.querySelector('[role="status"], [aria-live]')).toBeNull();
+
+      const runningToolSection = screen
+        .getByRole("heading", { name: "Thinking: in progress" })
+        .closest("section");
+      expect(runningToolSection).not.toBeNull();
+      expect(
+        within(runningToolSection as HTMLElement)
+          .getByRole("status", { name: "Running" })
+          .querySelector(".dot-spinner"),
+      ).not.toBeNull();
     } finally {
       act(() => void agentGallery(false));
     }

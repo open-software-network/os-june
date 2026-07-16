@@ -35,9 +35,12 @@ installNativeContextMenuGuard();
 // from this window's devtools. Emits on the Tauri bus only, so fake demo
 // sessions never leak into the sidebar or menu bar. See lib/agent-hud-demo.ts.
 if (import.meta.env.DEV) {
-  void import("./lib/agent-hud-demo").then(({ registerAgentHudDemo }) =>
-    registerAgentHudDemo({ local: false }),
-  );
+  void import("./lib/agent-hud-demo").then(({ registerAgentHudDemo }) => {
+    registerAgentHudDemo({ local: false });
+    // Composite visual check: __spinnerDemo() opens representative real
+    // spinner contexts, including this separately rendered HUD window.
+    void import("./lib/spinner-demo").then(({ registerSpinnerDemo }) => registerSpinnerDemo());
+  });
   // Same pattern for the meeting-detection prompt: __meetingHud("detected")
   // drives the real dictation HUD window over the Tauri bus.
   void import("./lib/meeting-hud-demo").then(({ registerMeetingHudDemo }) =>

@@ -17,7 +17,8 @@ use crate::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::{
         processing::{
-            manual_notes_for_generation, process_saved_audio, process_saved_source_audio,
+            add_latency_checkpoint, manual_notes_for_generation, process_saved_source_audio,
+            ProcessingTiming,
         },
         processing_queue,
         types::{
@@ -46,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::query::query;
 use sqlx::row::Row;
 use sqlx_sqlite::SqlitePool;
-use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::collections::HashSet;
 use std::fs;
 use std::str::FromStr;
@@ -61,10 +62,21 @@ use tokio::{sync::OnceCell, time::sleep};
 const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
 const FOLDER_INSTRUCTIONS_MAX_CHARS: usize = 4_000;
 static MEMORY_SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+// React StrictMode and renderer reloads may call `bootstrap_app` more than once
+// while native processing tasks keep running. Startup repair must run exactly
+// once per native process or a second bootstrap could reset a genuinely live
+// job from running back to pending.
+static TRANSCRIPTION_STARTUP_REPAIR: OnceCell<()> = OnceCell::const_new();
 
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
     let repos = repositories(&app).await?;
+    TRANSCRIPTION_STARTUP_REPAIR
+        .get_or_try_init(|| async {
+            repos.release_interrupted_note_transcription_jobs().await?;
+            Ok::<(), sqlx::Error>(())
+        })
+        .await?;
     // Complete stale tasks that already received their assistant reply
     // before pausing the rest: the repair only considers queued/running
     // tasks, so it must run before they are flipped to paused.
@@ -1460,10 +1472,13 @@ pub async fn finish_recording(
     app: AppHandle,
     request: SessionRequest,
 ) -> Result<FinishRecordingResponse, AppError> {
+    let timing = ProcessingTiming::from_done(Instant::now());
     let repos = repositories(&app).await?;
     let finalization_started = Instant::now();
     let finished = finish_capture(&request.session_id)?;
-    let response = finish_recording_session(&repos, finished, finalization_started).await?;
+    let response =
+        finish_recording_session_with_timing(&repos, finished, finalization_started, timing)
+            .await?;
     if response.processing_started {
         crate::p3a::record_question_best_effort(
             app,
@@ -1485,6 +1500,21 @@ async fn finish_recording_session(
     repos: &Repositories,
     finished: crate::audio::capture::FinishedRecording,
     finalization_started: Instant,
+) -> Result<FinishRecordingResponse, AppError> {
+    finish_recording_session_with_timing(
+        repos,
+        finished,
+        finalization_started,
+        ProcessingTiming::untracked(),
+    )
+    .await
+}
+
+async fn finish_recording_session_with_timing(
+    repos: &Repositories,
+    finished: crate::audio::capture::FinishedRecording,
+    finalization_started: Instant,
+    timing: ProcessingTiming,
 ) -> Result<FinishRecordingResponse, AppError> {
     let finalization_ms = finalization_started
         .elapsed()
@@ -1743,6 +1773,18 @@ async fn finish_recording_session(
         )
         .await?;
 
+    add_latency_checkpoint(
+        repos,
+        &finished.session_id,
+        "audio_validation",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": validation_started.elapsed().as_millis().min(i64::MAX as u128) as i64,
+            "validSourceCount": valid_sources.len(),
+            "sourceCount": finished.sources.len(),
+        })),
+    )
+    .await;
+
     if valid_sources.is_empty() {
         repos
             .set_note_status(
@@ -1759,27 +1801,6 @@ async fn finish_recording_session(
             processing_started: false,
             warnings,
         });
-    }
-
-    if let Err(error) = repos
-        .add_checkpoint(
-            &finished.session_id,
-            "audio_validation",
-            Some(
-                serde_json::json!({
-                    "durationMs": validation_started.elapsed().as_millis().min(i64::MAX as u128) as i64,
-                    "validSourceCount": valid_sources.len(),
-                    "sourceCount": finished.sources.len(),
-                })
-                .to_string(),
-            ),
-        )
-        .await
-    {
-        eprintln!(
-            "failed to persist audio_validation checkpoint for {}: {}",
-            finished.session_id, error
-        );
     }
 
     // Capture is single-instance, but processing runs asynchronously — so the
@@ -1810,6 +1831,15 @@ async fn finish_recording_session(
     tokio::spawn(async move {
         let queue_lock = ticket.lock();
         let _guard = queue_lock.lock().await;
+        #[cfg(test)]
+        note_transcription_benchmark::record_processing_dequeued(&task_session_id);
+        add_latency_checkpoint(
+            &task_repos,
+            &task_session_id,
+            "processing_dequeued",
+            timing.checkpoint_details(serde_json::json!({})),
+        )
+        .await;
         // Now that earlier jobs on this note are done, read the latest note so
         // generation has the freshest existing content as context.
         let note = match task_repos.get_note(&task_note_id).await {
@@ -1822,38 +1852,18 @@ async fn finish_recording_session(
         let title = note.title.clone();
         let existing_generated_note = note.generated_content.clone();
         let manual_notes = manual_notes_for_generation(&note);
-        let result = if valid_sources.len() == 1
-            && task_source_mode == RecordingSourceMode::MicrophoneOnly
-        {
-            let (artifact_id, _source, path, recorded_silence) = valid_sources
-                .into_iter()
-                .next()
-                .expect("valid source was checked before starting processing");
-            process_saved_audio(
-                &task_repos,
-                &task_note_id,
-                &task_session_id,
-                &artifact_id,
-                path,
-                title,
-                existing_generated_note,
-                manual_notes,
-                recorded_silence,
-            )
-            .await
-        } else {
-            process_saved_source_audio(
-                &task_repos,
-                &task_note_id,
-                &task_session_id,
-                task_source_mode,
-                valid_sources,
-                title,
-                existing_generated_note,
-                manual_notes,
-            )
-            .await
-        };
+        let result = process_saved_source_audio(
+            &task_repos,
+            &task_note_id,
+            &task_session_id,
+            task_source_mode,
+            valid_sources,
+            title,
+            existing_generated_note,
+            manual_notes,
+            timing,
+        )
+        .await;
         if let Err(error) = result {
             let _ = task_repos
                 .set_note_status(
@@ -2023,7 +2033,13 @@ pub async fn retry_processing(
 ) -> Result<NoteDto, AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
-    let sources = retry_audio_sources(&repos, &paths, &request.note_id).await?;
+    let sources = retry_audio_sources(
+        &repos,
+        &paths,
+        &request.note_id,
+        request.recording_session_id.as_deref(),
+    )
+    .await?;
     let (ticket, depth) = processing_queue::enqueue(&request.note_id);
     if depth <= 1 {
         repos
@@ -2036,9 +2052,29 @@ pub async fn retry_processing(
 
     let task_repos = repos.clone();
     let task_note_id = request.note_id.clone();
+    let task_recording_session_id = sources
+        .first()
+        .map(
+            |(_id, _source, _path, recording_session_id, _recorded_silence)| {
+                recording_session_id.clone()
+            },
+        )
+        .unwrap_or_default();
+    let task_source_mode = repos
+        .recording_session_source_mode(&task_recording_session_id)
+        .await?
+        .unwrap_or(RecordingSourceMode::MicrophoneOnly);
     tokio::spawn(async move {
         let queue_lock = ticket.lock();
         let _guard = queue_lock.lock().await;
+        let timing = ProcessingTiming::untracked();
+        add_latency_checkpoint(
+            &task_repos,
+            &task_recording_session_id,
+            "processing_dequeued",
+            timing.checkpoint_details(serde_json::json!({})),
+        )
+        .await;
         let note = match task_repos.get_note(&task_note_id).await {
             Ok(note) => note,
             Err(_) => {
@@ -2049,45 +2085,23 @@ pub async fn retry_processing(
         let title = note.title.clone();
         let existing_generated_note = note.generated_content.clone();
         let manual_notes = manual_notes_for_generation(&note);
-        let result = if sources.len() == 1 {
-            let (audio_artifact_id, _source, audio_path, session_id, recorded_silence) = sources
+        let result = process_saved_source_audio(
+            &task_repos,
+            &task_note_id,
+            &task_recording_session_id,
+            task_source_mode,
+            sources
                 .into_iter()
-                .next()
-                .expect("retry sources were checked before starting processing");
-            process_saved_audio(
-                &task_repos,
-                &task_note_id,
-                &session_id,
-                &audio_artifact_id,
-                audio_path,
-                title,
-                existing_generated_note,
-                manual_notes,
-                recorded_silence,
-            )
-            .await
-        } else {
-            let session_id = sources
-                .first()
-                .map(|(_id, _source, _path, session_id, _recorded_silence)| session_id.clone())
-                .unwrap_or_default();
-            process_saved_source_audio(
-                &task_repos,
-                &task_note_id,
-                &session_id,
-                RecordingSourceMode::MicrophonePlusSystem,
-                sources
-                    .into_iter()
-                    .map(|(id, source, path, _session_id, recorded_silence)| {
-                        (id, source, path, recorded_silence)
-                    })
-                    .collect(),
-                title,
-                existing_generated_note,
-                manual_notes,
-            )
-            .await
-        };
+                .map(|(id, source, path, _session_id, recorded_silence)| {
+                    (id, source, path, recorded_silence)
+                })
+                .collect(),
+            title,
+            existing_generated_note,
+            manual_notes,
+            timing,
+        )
+        .await;
         if let Err(error) = result {
             let _ = task_repos
                 .set_note_status(&task_note_id, ProcessingStatus::Failed, Some(error.message))
@@ -2102,18 +2116,28 @@ async fn retry_audio_sources(
     repos: &Repositories,
     paths: &AppPaths,
     note_id: &str,
+    recording_session_id: Option<&str>,
 ) -> Result<Vec<(String, String, PathBuf, String, bool)>, AppError> {
-    let sources = repos
-        .latest_valid_audio_artifact_paths(note_id)
-        .await?
-        .into_iter()
-        .filter_map(|(id, source, path, session_id, recorded_silence)| {
-            paths
-                .contained_recording_file(path)
-                .ok()
-                .map(|path| (id, source, path, session_id, recorded_silence))
-        })
-        .collect::<Vec<_>>();
+    let source_rows = match recording_session_id {
+        Some(session_id) => {
+            repos
+                .valid_audio_artifact_paths_for_session(note_id, session_id)
+                .await?
+        }
+        None => repos.latest_valid_audio_artifact_paths(note_id).await?,
+    };
+    let mut sources = Vec::with_capacity(source_rows.len());
+    for (id, source, path, session_id, recorded_silence) in source_rows {
+        let path = paths.contained_recording_file(path).map_err(|_| {
+            AppError::new(
+                "audio_artifact_missing",
+                format!(
+                    "The saved {source} audio for this recording is unavailable. No transcript was changed."
+                ),
+            )
+        })?;
+        sources.push((id, source, path, session_id, recorded_silence));
+    }
     if sources.is_empty() {
         return Err(AppError::new(
             "audio_artifact_missing",
@@ -2222,21 +2246,15 @@ pub async fn recover_recording(
                 .await?;
             return Ok(repos.get_note(&info.note_id).await?);
         }
-        let note = repos.get_note(&info.note_id).await?;
-        let existing_generated_note = note.generated_content.clone();
-        let manual_notes = manual_notes_for_generation(&note);
         repos
             .mark_recording_recovery_valid(&info.session_id)
             .await?;
-        return process_saved_source_audio(
+        return process_recovered_source_audio(
             &repos,
             &info.note_id,
             &info.session_id,
             info.source_mode,
             valid_sources,
-            note.title,
-            existing_generated_note,
-            manual_notes,
         )
         .await;
     }
@@ -2297,21 +2315,52 @@ pub async fn recover_recording(
             &checksum,
         )
         .await?;
-    let note = repos.get_note(&info.note_id).await?;
-    let existing_generated_note = note.generated_content.clone();
-    let manual_notes = manual_notes_for_generation(&note);
-    process_saved_audio(
+    process_recovered_source_audio(
         &repos,
         &info.note_id,
         &info.session_id,
-        &artifact.id,
-        path,
-        note.title,
-        existing_generated_note,
-        manual_notes,
-        validation.recorded_silence,
+        RecordingSourceMode::MicrophoneOnly,
+        vec![(
+            artifact.id,
+            RecordingSource::Microphone.as_db().to_string(),
+            path,
+            validation.recorded_silence,
+        )],
     )
     .await
+}
+
+async fn process_recovered_source_audio(
+    repos: &Repositories,
+    note_id: &str,
+    session_id: &str,
+    source_mode: RecordingSourceMode,
+    sources: Vec<crate::domain::processing::SourceAudioForProcessing>,
+) -> Result<NoteDto, AppError> {
+    let (ticket, _depth) = processing_queue::enqueue(note_id);
+    let queue_lock = ticket.lock();
+    let _guard = queue_lock.lock().await;
+    let note = match repos.get_note(note_id).await {
+        Ok(note) => note,
+        Err(error) => {
+            ticket.finish();
+            return Err(error.into());
+        }
+    };
+    let result = process_saved_source_audio(
+        repos,
+        note_id,
+        session_id,
+        source_mode,
+        sources,
+        note.title.clone(),
+        note.generated_content.clone(),
+        manual_notes_for_generation(&note),
+        ProcessingTiming::untracked(),
+    )
+    .await;
+    ticket.finish();
+    result
 }
 
 fn recovery_audio_path(
@@ -2640,7 +2689,11 @@ pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppErr
                 paths.database_path.display()
             ))
             .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?
-            .create_if_missing(true);
+            .create_if_missing(true)
+            // Recording finalization, transcript persistence, and UI polling
+            // legitimately overlap. WAL lets readers observe progress without
+            // blocking the durable job transaction (or vice versa).
+            .journal_mode(SqliteJournalMode::Wal);
             let pool = SqlitePoolOptions::new()
                 .max_connections(5)
                 .connect_with(options)
@@ -2661,6 +2714,93 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
     AppPaths::from_data_dir(data_dir)
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))
 }
+
+#[cfg(test)]
+mod note_transcription_benchmark;
+
+#[cfg(test)]
+mod retry_audio_source_tests {
+    use super::retry_audio_sources;
+    use crate::{
+        app_paths::AppPaths,
+        db::{migrations::run_migrations, repositories::Repositories},
+        domain::types::RecordingSourceMode,
+    };
+
+    #[tokio::test]
+    async fn retry_aborts_when_any_selected_valid_source_file_is_missing() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(temp.path().join("data")).expect("app paths");
+        let note = repos.create_note(None).await.expect("note");
+        let session_id = "retry-missing-source";
+        let session_dir = paths
+            .recording_session_dir(&note.id, session_id)
+            .expect("session path");
+        std::fs::create_dir_all(&session_dir).expect("session directory");
+        let microphone_path = session_dir.join("microphone.wav");
+        let system_path = session_dir.join("system.wav");
+        std::fs::write(&microphone_path, b"saved microphone bytes").expect("microphone file");
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophonePlusSystem,
+                &session_dir.join("microphone.partial.wav").to_string_lossy(),
+                &microphone_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("recording session");
+        for (source, path) in [
+            ("microphone", microphone_path.as_path()),
+            ("system", system_path.as_path()),
+        ] {
+            let artifact = repos
+                .create_pending_source_artifact(
+                    &note.id,
+                    session_id,
+                    source,
+                    &session_dir
+                        .join(format!("{source}.partial.wav"))
+                        .to_string_lossy(),
+                    &path.to_string_lossy(),
+                )
+                .await
+                .expect("source artifact");
+            repos
+                .finalize_source_artifact(
+                    &artifact.id,
+                    &path.to_string_lossy(),
+                    "valid",
+                    30_000,
+                    1,
+                    &format!("{source}-checksum"),
+                    30_000,
+                    None,
+                    None,
+                )
+                .await
+                .expect("finalize source");
+        }
+
+        let error = retry_audio_sources(&repos, &paths, &note.id, Some(session_id))
+            .await
+            .expect_err("missing System WAV must abort the whole retry");
+        assert_eq!(error.code, "audio_artifact_missing");
+        assert!(error.message.contains("system"));
+        assert!(error.message.contains("No transcript was changed"));
+    }
+}
+
+#[cfg(test)]
+mod note_transcription_timing_tests;
 
 #[cfg(test)]
 mod tests {

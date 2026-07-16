@@ -71,6 +71,8 @@ export type NoteListItemDto = {
 export type TranscriptDto = {
   id: string;
   text: string;
+  recordingSessionId?: string;
+  spanId?: string;
   sourceMode?: RecordingSourceMode;
   source?: RecordingSource;
   startMs?: number;
@@ -403,6 +405,8 @@ export type NoteDto = NoteListItemDto & {
   audioSources?: AudioArtifactDto[];
   activeTab?: "notes" | "transcription";
   lastError?: string;
+  /** Recording whose saved-audio artifacts should be used by Retry. */
+  retryRecordingSessionId?: string;
   /** Recordings queued behind the one currently processing (0 when none). */
   queuedRecordings?: number;
 };
@@ -1657,9 +1661,11 @@ export async function resolveAgentRecorderRequest(request: ResolveAgentRecorderR
   return invoke<void>("resolve_agent_recorder_request", { request });
 }
 
-export async function retryProcessing(noteId: string) {
+export async function retryProcessing(noteId: string, recordingSessionId?: string) {
   return invoke<NoteDto>("retry_processing", {
-    request: { noteId, step: "all" },
+    request: recordingSessionId
+      ? { noteId, step: "all", recordingSessionId }
+      : { noteId, step: "all" },
   });
 }
 

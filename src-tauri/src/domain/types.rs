@@ -128,6 +128,9 @@ pub struct NoteDto {
     /// processing queue at the command layer, not persisted.
     #[serde(default)]
     pub queued_recordings: i64,
+    /// Exact recording session selected by the durable retry policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_recording_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,6 +320,8 @@ pub struct FinishRecordingResponse {
 pub struct RetryProcessingRequest {
     pub note_id: String,
     pub step: Option<String>,
+    #[serde(default)]
+    pub recording_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,6 +376,10 @@ pub struct OpenPrivacySettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptDto {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
     pub text: String,
     pub source_mode: Option<RecordingSourceMode>,
     pub source: Option<String>,
@@ -433,6 +442,112 @@ pub struct AudioArtifactDto {
     pub size_bytes: i64,
     pub checksum: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteTranscriptionJobKind {
+    Turn,
+    SourceFallback,
+}
+
+impl NoteTranscriptionJobKind {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::SourceFallback => "source_fallback",
+        }
+    }
+}
+
+impl From<&str> for NoteTranscriptionJobKind {
+    fn from(value: &str) -> Self {
+        match value {
+            "source_fallback" | "sourceFallback" => Self::SourceFallback,
+            _ => Self::Turn,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteTranscriptionJobStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Superseded,
+}
+
+impl NoteTranscriptionJobStatus {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Superseded => "superseded",
+        }
+    }
+}
+
+impl From<&str> for NoteTranscriptionJobStatus {
+    fn from(value: &str) -> Self {
+        match value {
+            "running" => Self::Running,
+            "succeeded" => Self::Succeeded,
+            "failed" => Self::Failed,
+            "superseded" => Self::Superseded,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// Complete, output-affecting plan for one durable saved-audio Source span.
+/// `configuration_fingerprint` is supplied by processing and covers language,
+/// dictionary, and other context revisions that repositories cannot derive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTranscriptionJobPlan {
+    pub span_id: String,
+    pub audio_artifact_id: String,
+    pub source: String,
+    pub job_kind: NoteTranscriptionJobKind,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub turn_index: i64,
+    pub provider: String,
+    pub max_chunk_ms: Option<i64>,
+    pub pipeline_version: String,
+    pub configuration_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTranscriptionJobRecord {
+    pub id: String,
+    pub note_id: String,
+    pub recording_session_id: String,
+    pub audio_artifact_id: String,
+    pub source: String,
+    pub source_mode: RecordingSourceMode,
+    pub job_kind: NoteTranscriptionJobKind,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub turn_index: i64,
+    pub input_fingerprint: String,
+    pub configuration_fingerprint: String,
+    pub operation_id: String,
+    pub provider: String,
+    pub max_chunk_ms: Option<i64>,
+    pub pipeline_version: String,
+    pub status: NoteTranscriptionJobStatus,
+    pub attempt_count: i64,
+    pub transcript_id: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

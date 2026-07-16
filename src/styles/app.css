@@ -2903,14 +2903,14 @@ input:focus-visible,
   opacity: 0;
 }
 
-/* Running rows trade the status word for the rolling dot spinner (fixed-size
- * mark; wrappers only set color). */
+/* Running rows trade the status word for the fixed-size June mark spinner.
+ * It stays on the spinner's neutral default — a working row is ambient
+ * activity, not a semantic accent. */
 .agent-tool-spinner {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  color: var(--warm-strong);
 }
 
 /* Name inherits the row's muted color (the whole line darkens on hover). */
@@ -5014,7 +5014,7 @@ input:focus-visible,
 /* Why a rejected send didn't go through — sits on the composer because that's
  * where the user just acted, and clears itself when the turn finishes. A
  * content-sized pill (not another full-width box, which read as a second
- * composer) with the rolling dot spinner tying it to the working state. Same
+ * composer) with the dot-grid spinner tying it to the working state. Same
  * surface recipe as the "Generating notes…" pill so the app's progress
  * statuses read as one family. (The recording-consent note left this family
  * for the funding-notice card chrome — it asks, it doesn't report progress.) */
@@ -5222,12 +5222,6 @@ input:focus-visible,
   --tier-ink: oklch(10% 0.01 60);
   --tier-mark: oklch(82% 0.07 75);
   --tier-mark-relief: oklch(16% 0.012 60);
-}
-
-/* Waiting states swap the coin glyph for the dot spinner: neutral progress,
- * not a caution accent. */
-.funding-notice-spinner {
-  color: var(--muted-foreground);
 }
 
 .funding-notice-body {
@@ -7759,7 +7753,7 @@ input:focus-visible,
 }
 
 .report-dialog-submit-spinner {
-  color: currentColor;
+  --spinner-color: currentColor;
 }
 
 /* Mic is the resting affordance — a light ghost button (matches our other ghost
@@ -9481,10 +9475,6 @@ input:focus-visible,
   border-radius: var(--r-pill);
 }
 
-.agent-sidebar-spinner {
-  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
-}
-
 .agent-sidebar-working[data-status="waitingForUser"],
 .agent-sidebar-working[data-status="unread"] {
   background: var(--warm-strong);
@@ -10661,7 +10651,6 @@ input:focus-visible,
 
 .transcript-processing-spinner {
   flex: none;
-  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
 /* Pairs with the shared .shimmer utility in markup. The label just sets its
@@ -10946,11 +10935,10 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-/* The rolling dot spinner (drawn, colored via currentColor) — the same working
- * indicator as the agent chat, sidebar, and composer notice. */
+/* The dot-grid spinner — the same working indicator as the agent chat, sidebar,
+ * and composer notice. */
 .note-processing-progress-spinner {
   flex: none;
-  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
 /* The rolling stage label: a one-line window the stage names roll through.
@@ -12017,10 +12005,6 @@ input:focus-visible,
 
 /* Feature 07: the fork lifecycle (creating → branched) is now surfaced as a
  * toast, not an inline banner — see branchFromMessage in AgentWorkspace.tsx. */
-
-.agent-turn-action-spinner {
-  color: var(--warm-strong);
-}
 
 .agent-error-banner {
   display: flex;
@@ -17213,8 +17197,9 @@ button.memory-project:hover {
   animation: sign-in-prompt-spin 0.9s linear infinite;
 }
 
-/* App-wide loading indicator: the rolling dot spinner. Size comes
- * from font-size (set inline by <Spinner size>); color inherits. */
+/* App-wide loading indicator: the dot spinner that draws June's mark. Its size
+ * is fixed per variant (data-size sm/md/lg) in dot-spinner.css, not font-scaled;
+ * the default color is the theme-aware --spinner-neutral token. */
 .spinner {
   display: inline-flex;
   flex-shrink: 0;
@@ -17225,6 +17210,13 @@ button.memory-project:hover {
 
 /* The dot spinner itself lives in dot-spinner.css (shared with the agent
  * HUD page entry). */
+
+/* Solid controls opt back into their inherited foreground instead of the
+ * spinner's neutral-gray default, so the dots stay legible on a brand fill. */
+.agent-composer-send .dot-spinner,
+.primary-action.primary-solid .dot-spinner {
+  --spinner-color: currentColor;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .sign-in-prompt-spinner,
