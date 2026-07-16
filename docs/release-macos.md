@@ -74,7 +74,11 @@ GitHub Actions -> rc-desktop-release -> Run workflow
 version `X.Y.Z-rc.N` (bundling the Hermes runtime), and publishes it to a fixed
 `rc` prerelease in `open-software-network/os-june-releases` with `latest-rc.json`.
 It records the source commit in `rc-build.json` (so promote can rebuild the same
-tree) and does NOT touch `main`.
+tree) and does NOT touch `main`. After the desktop asset publishes, the extension
+release job compares its build inputs with the latest stable extension. Changed
+inputs are packaged, attached to the same fixed `rc` release, and submitted to
+Chrome for deferred publication; unchanged inputs make no store write. See
+[release-extension.md](release-extension.md).
 
 ### 2. Test the candidate
 
@@ -93,6 +97,13 @@ GitHub Actions -> promote-desktop-release -> Run workflow
 `rc-version` is required and must equal the version the `rc` release currently
 holds; a mismatch (or a blank field) fails the run, so you can never promote a
 different candidate than you intend.
+
+Before the macOS stable build starts, promotion also freezes and verifies the RC
+extension metadata. If the extension changed, Chrome must have approved that
+exact package into `STAGED`; pending review or any version/hash mismatch blocks
+the whole stable release. After the desktop release succeeds, the same reviewed
+extension package is published to stable. Allow for Chrome review time when
+planning a release.
 
 `promote-desktop-release` checks out the exact commit the RC was built from,
 stamps the clean `X.Y.Z`, and reruns the full sign + notarize path, so stable

@@ -33,8 +33,141 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  extension-preflight:
+    name: Verify extension is ready to promote
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      release_required: ${{ steps.rc.outputs.release_required }}
+      store_version: ${{ steps.rc.outputs.store_version }}
+      desktop_version: ${{ steps.rc.outputs.desktop_version }}
+      source_commit: ${{ steps.rc.outputs.source_commit }}
+    steps:
+      - name: Mint release token (GitHub App)
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: open-software-network
+          repositories: os-june,os-june-releases
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Freeze and verify RC release metadata
+        id: rc
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RC_VERSION_INPUT: ${{ inputs.rc-version }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/release-candidate"
+          mkdir -p "$dir"
+          gh release download rc \
+            --repo open-software-network/os-june-releases \
+            --pattern "rc-build.json" \
+            --pattern "extension-build.json" \
+            --dir "$dir"
+
+          RC_DIR="$dir" node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
+          import { join } from "node:path";
+          const desktop = JSON.parse(readFileSync(join(process.env.RC_DIR, "rc-build.json"), "utf8"));
+          const extension = JSON.parse(
+            readFileSync(join(process.env.RC_DIR, "extension-build.json"), "utf8"),
+          );
+          if (desktop.version !== process.env.RC_VERSION_INPUT) {
+            throw new Error(
+              `Requested ${process.env.RC_VERSION_INPUT}, but the RC release holds ${desktop.version}.`,
+            );
+          }
+          if (!/^[0-9a-f]{40}$/.test(desktop.commit)) {
+            throw new Error("rc-build.json has an invalid source commit.");
+          }
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            [
+              `desktop_version=${desktop.version}`,
+              `source_commit=${desktop.commit}`,
+              `release_required=${extension.release?.required === true}`,
+              `store_version=${extension.extension?.version ?? "unknown"}`,
+              "",
+            ].join("\n"),
+          );
+          NODE
+
+          required="$(node -e 'const d=require(process.argv[1]);process.stdout.write(String(d.release.required))' "$dir/extension-build.json")"
+          args=(
+            verify-rc
+            --metadata "$dir/extension-build.json"
+            --desktop-version "$RC_VERSION_INPUT"
+            --source-commit "$(node -e 'const d=require(process.argv[1]);process.stdout.write(d.commit)' "$dir/rc-build.json")"
+          )
+          if [ "$required" = "true" ]; then
+            gh release download rc \
+              --repo open-software-network/os-june-releases \
+              --pattern "June-extension.zip" \
+              --dir "$dir"
+            args+=(--package "$dir/June-extension.zip")
+          fi
+          node scripts/extension-release.mjs "${args[@]}"
+
+      - name: Validate Web Store identity configuration
+        if: steps.rc.outputs.release_required == 'true'
+        env:
+          WORKLOAD_IDENTITY_PROVIDER: ${{ vars.CHROME_WEB_STORE_WORKLOAD_IDENTITY_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.CHROME_WEB_STORE_SERVICE_ACCOUNT }}
+          PUBLISHER_ID: ${{ vars.CHROME_WEB_STORE_PUBLISHER_ID }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in WORKLOAD_IDENTITY_PROVIDER SERVICE_ACCOUNT PUBLISHER_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::${name} is required for Chrome Web Store publishing."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Authenticate to Google Cloud
+        if: steps.rc.outputs.release_required == 'true'
+        id: google-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.CHROME_WEB_STORE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.CHROME_WEB_STORE_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+
+      - name: Require reviewed extension package
+        if: steps.rc.outputs.release_required == 'true'
+        env:
+          CHROME_WEB_STORE_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CHROME_WEB_STORE_PUBLISHER_ID: ${{ vars.CHROME_WEB_STORE_PUBLISHER_ID }}
+        run: |
+          node scripts/chrome-web-store.mjs check-staged \
+            --metadata "$RUNNER_TEMP/release-candidate/extension-build.json"
+
+      - name: Preserve immutable RC inputs for promotion jobs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-extension-release-candidate
+          path: ${{ runner.temp }}/release-candidate
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
   promote:
     name: Promote rc macOS app to stable
+    needs: extension-preflight
     runs-on: ${{ fromJSON(inputs.macos-runner == 'mac-studio' && '["self-hosted","macOS","ARM64","desktop-release"]' || '["blacksmith-6vcpu-macos-15"]') }}
     environment: production
     steps:
@@ -49,21 +182,20 @@ jobs:
           # App, so the App must be installed on that repo too.
           repositories: os-june,os-june-releases,homebrew-tap
 
+      - name: Download frozen RC metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: desktop-extension-release-candidate
+          path: ${{ runner.temp }}/rc-meta
+
       # Read the rc build manifest first (no checkout needed) to learn which
       # version + source commit to promote, then check that commit out below.
       - name: Resolve rc version and source commit
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           RC_VERSION_INPUT: ${{ inputs.rc-version }}
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/rc-meta"
-          rm -rf "$dir"
-          mkdir -p "$dir"
-          gh release download rc \
-            --repo open-software-network/os-june-releases \
-            --pattern "rc-build.json" \
-            --dir "$dir"
 
           rc_version="$(node -e 'const d=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(d.version||""))' "$dir/rc-build.json")"
           commit="$(node -e 'const d=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(d.commit||""))' "$dir/rc-build.json")"
@@ -492,4 +624,98 @@ jobs:
             echo "### Promoted rc to stable"
             echo "- Promoted: \`$RC_VERSION\` -> \`v$VERSION\` (rebuilt from \`$BUILD_COMMIT\`)"
             echo "- Stable manifest: \`https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  extension-stable:
+    name: Publish reviewed extension to stable
+    needs: [extension-preflight, promote]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Mint release token (GitHub App)
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: open-software-network
+          repositories: os-june,os-june-releases
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Download frozen RC metadata
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: desktop-extension-release-candidate
+          path: ${{ runner.temp }}/release-candidate
+
+      - name: Authenticate to Google Cloud
+        if: needs.extension-preflight.outputs.release_required == 'true'
+        id: google-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.CHROME_WEB_STORE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.CHROME_WEB_STORE_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+
+      - name: Publish staged extension
+        if: needs.extension-preflight.outputs.release_required == 'true'
+        env:
+          CHROME_WEB_STORE_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CHROME_WEB_STORE_PUBLISHER_ID: ${{ vars.CHROME_WEB_STORE_PUBLISHER_ID }}
+        run: |
+          node scripts/chrome-web-store.mjs promote \
+            --metadata "$RUNNER_TEMP/release-candidate/extension-build.json"
+
+      - name: Write stable extension metadata
+        env:
+          VERSION: ${{ needs.extension-preflight.outputs.desktop_version }}
+          BUILD_COMMIT: ${{ needs.extension-preflight.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          stable_version="${VERSION%-rc.*}"
+          node scripts/extension-release.mjs write-stable \
+            --metadata "$RUNNER_TEMP/release-candidate/extension-build.json" \
+            --desktop-version "$stable_version" \
+            --source-commit "$BUILD_COMMIT" \
+            --output "$RUNNER_TEMP/release-candidate/stable-extension-build.json"
+
+      - name: Attach extension assets to stable release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RC_VERSION: ${{ needs.extension-preflight.outputs.desktop_version }}
+          RELEASE_REQUIRED: ${{ needs.extension-preflight.outputs.release_required }}
+        run: |
+          set -euo pipefail
+          version="${RC_VERSION%-rc.*}"
+          dir="$RUNNER_TEMP/release-candidate"
+          cp "$dir/stable-extension-build.json" "$dir/extension-build.json"
+          gh release upload "v$version" "$dir/extension-build.json" \
+            --repo open-software-network/os-june-releases \
+            --clobber
+          if [ "$RELEASE_REQUIRED" = "true" ]; then
+            gh release upload "v$version" "$dir/June-extension.zip" \
+              --repo open-software-network/os-june-releases \
+              --clobber
+          fi
+
+      - name: Summary
+        run: |
+          {
+            echo "### Extension stable release"
+            echo "- Store version: \`${{ needs.extension-preflight.outputs.store_version }}\`"
+            if [ "${{ needs.extension-preflight.outputs.release_required }}" = "true" ]; then
+              echo "- Result: published the exact Chrome-reviewed RC package."
+            else
+              echo "- Result: skipped; extension build inputs were unchanged."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

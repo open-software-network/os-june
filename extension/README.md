@@ -43,6 +43,19 @@ enable Developer mode, choose "Load unpacked", and select `extension/dist`.
 The manifest's pinned `key` keeps the id stable (`adckhkfngpnenaapncoipkalcfpjbgcn`),
 so the registered host manifest matches every local build.
 
+## Release
+
+The extension ships through the Chrome Web Store as part of June's desktop
+RC-to-stable flow. A changed extension is packaged and submitted for deferred
+Chrome review after the desktop RC publishes. Stable desktop promotion is
+blocked until that exact package is approved, then publishes the reviewed bytes
+without rebuilding or re-uploading them. Unchanged extension build inputs skip
+the store.
+
+Publisher setup, version mapping, release assets, and recovery procedures are in
+[docs/release-extension.md](../docs/release-extension.md). Do not upload a
+hand-built ZIP from `dist`.
+
 ## Rotating the pinned key
 
 `node extension/scripts/generate-key.mjs` prints a fresh key and the id it
