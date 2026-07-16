@@ -25,6 +25,8 @@ const PREVIEW_BATCH_BUFFER: usize = 512;
 const PREVIEW_STALE_BATCH_THRESHOLD: usize = PREVIEW_BATCH_BUFFER / 2;
 pub const PREVIEW_CHUNK_MS: i64 = 8_000;
 const PREVIEW_SILENCE_RMS_FLOOR: f32 = 0.001;
+const PREVIEW_ACTIVITY_WINDOW_MS: i64 = 30;
+const PREVIEW_MIN_SUSTAINED_ACTIVITY_MS: i64 = 180;
 const SYSTEM_PREVIEW_POLL_MS: u64 = 500;
 // The system lane tails a growing WAV rather than draining a bounded channel,
 // so it has no natural backpressure. If the transcription round-trip runs
@@ -241,7 +243,7 @@ async fn run_live_preview_worker(params: LivePreviewWorkerParams) {
             buffer_start_sample = buffer_start_sample.saturating_add(chunk_samples as u64);
             let start_ms = sample_offset_ms(chunk_start_sample, sample_rate, channels);
             let end_ms = sample_offset_ms(buffer_start_sample, sample_rate, channels);
-            if is_effectively_silent(&samples) {
+            if is_effectively_silent(&samples, sample_rate, channels) {
                 segment_index += 1;
                 continue;
             }
@@ -318,7 +320,7 @@ async fn run_system_live_preview_worker(
                         sample_offset_ms(chunk_start_sample, read.sample_rate, read.channels);
                     let end_ms =
                         sample_offset_ms(buffer_start_sample, read.sample_rate, read.channels);
-                    if is_effectively_silent(&samples) {
+                    if is_effectively_silent(&samples, read.sample_rate, read.channels) {
                         segment_index += 1;
                         continue;
                     }
@@ -711,19 +713,35 @@ fn sample_offset_ms(sample_index: u64, sample_rate: u32, channels: u16) -> i64 {
     millis.min(i64::MAX as u64) as i64
 }
 
-fn is_effectively_silent(samples: &[i16]) -> bool {
+fn is_effectively_silent(samples: &[i16], sample_rate: u32, channels: u16) -> bool {
     if samples.is_empty() {
         return true;
     }
-    let sum_square = samples
-        .iter()
-        .map(|sample| {
-            let normalized = *sample as f64 / i16::MAX as f64;
-            normalized * normalized
-        })
-        .sum::<f64>();
-    let rms = (sum_square / samples.len() as f64).sqrt() as f32;
-    rms < PREVIEW_SILENCE_RMS_FLOOR
+    let samples_per_window =
+        samples_for_ms(sample_rate, channels, PREVIEW_ACTIVITY_WINDOW_MS).max(1);
+    let required_windows = ((PREVIEW_MIN_SUSTAINED_ACTIVITY_MS + PREVIEW_ACTIVITY_WINDOW_MS - 1)
+        / PREVIEW_ACTIVITY_WINDOW_MS)
+        .max(1);
+    let mut active_run = 0_i64;
+    for window in samples.chunks(samples_per_window) {
+        let sum_square = window
+            .iter()
+            .map(|sample| {
+                let normalized = *sample as f64 / i16::MAX as f64;
+                normalized * normalized
+            })
+            .sum::<f64>();
+        let rms = (sum_square / window.len() as f64).sqrt() as f32;
+        if rms >= PREVIEW_SILENCE_RMS_FLOOR {
+            active_run += 1;
+            if active_run >= required_windows {
+                return false;
+            }
+        } else {
+            active_run = 0;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -804,11 +822,17 @@ mod tests {
     }
 
     #[test]
-    fn silence_gate_only_skips_near_zero_preview_chunks() {
-        assert!(is_effectively_silent(&[0; 128]));
-        assert!(is_effectively_silent(&[10; 128]));
-        assert!(!is_effectively_silent(&[170; 128]));
-        assert!(!is_effectively_silent(&[2_000; 128]));
+    fn silence_gate_requires_sustained_preview_activity() {
+        let mut transient = vec![0_i16; 16_000];
+        transient[..2_400].fill(2_000);
+        let mut short_reply = vec![0_i16; 16_000];
+        short_reply[..2_880].fill(2_000);
+
+        assert!(is_effectively_silent(&[0; 16_000], 16_000, 1));
+        assert!(is_effectively_silent(&[10; 16_000], 16_000, 1));
+        assert!(is_effectively_silent(&transient, 16_000, 1));
+        assert!(!is_effectively_silent(&short_reply, 16_000, 1));
+        assert!(!is_effectively_silent(&[2_000; 16_000], 16_000, 1));
     }
 
     #[test]

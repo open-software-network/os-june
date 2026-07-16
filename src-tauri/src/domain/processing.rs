@@ -47,7 +47,7 @@ const TRANSCRIPTION_CONTEXT_MAX_TURNS: usize = 6;
 const DICTIONARY_CONTEXT_MAX_ENTRIES: usize = 80;
 const DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY: usize = 2;
 const PREPARED_TURN_CHANNEL_CAPACITY: usize = DEFAULT_TURN_TRANSCRIPTION_CONCURRENCY;
-const NOTE_TRANSCRIPTION_PIPELINE_VERSION: &str = "saved-audio-v2";
+const NOTE_TRANSCRIPTION_PIPELINE_VERSION: &str = "saved-audio-v3";
 const TRANSCRIPT_COVERAGE_WARN_RATIO: f64 = 0.8;
 const TRANSCRIPT_COVERAGE_WARN_MIN_MISSING_MS: i64 = 60_000;
 const TRANSIENT_TRANSCRIPTION_ATTEMPTS: usize = 3;
@@ -844,6 +844,7 @@ pub(crate) async fn process_saved_audio(
     {
         Ok(generated) => generated,
         Err(error) => {
+            let error = note_generation_failure_for_user(error);
             add_latency_checkpoint(
                 repos,
                 session_id,
@@ -989,6 +990,8 @@ pub(crate) async fn process_saved_source_audio(
                         serde_json::json!({
                             "source": drop.source,
                             "maxRms": drop.max_rms,
+                            "activeMs": drop.active_ms,
+                            "longestActiveMs": drop.longest_active_ms,
                         })
                         .to_string(),
                     ),
@@ -1397,6 +1400,9 @@ pub(crate) async fn process_saved_source_audio(
         processing_started,
     )
     .await?;
+    repos
+        .supersede_pending_note_transcription_fallbacks(session_id)
+        .await?;
     drop(turn_wav_dir_cleanup);
 
     let mut fresh_outcome = pipeline.outcome;
@@ -1581,6 +1587,7 @@ pub(crate) async fn process_saved_source_audio(
     {
         Ok(generated) => generated,
         Err(error) => {
+            let error = note_generation_failure_for_user(error);
             add_latency_checkpoint(
                 repos,
                 session_id,
@@ -2361,6 +2368,9 @@ async fn transcribe_prepared_audio(
             },
         )
         .await?;
+        if transcript.text.trim().is_empty() {
+            return Err(AppError::new("no_speech", "no_speech"));
+        }
         return Ok(TranscribePreparedAudioResult {
             chunk_outcomes: vec![TranscriptionChunkOutcome {
                 start_ms: 0,
@@ -3498,6 +3508,8 @@ struct DroppedSource {
     artifact_id: String,
     source: String,
     max_rms: f32,
+    active_ms: i64,
+    longest_active_ms: i64,
 }
 
 struct SilentSystemDropOutcome {
@@ -3516,10 +3528,10 @@ fn drop_silent_system_sources(
 /// another source remains to carry the recording. Keeping the last source — even
 /// a silent one — preserves the "no speech" failure for system-only captures.
 ///
-/// A system track is only dropped when it falls below what the system lane's
-/// turn detection could still find (`SYSTEM_DETECTION_MIN_RMS`). A higher floor
-/// would strand quiet-but-real tracks before the full-source fallback ever runs,
-/// transcribing mic-only.
+/// A system track is only dropped when it never sustains activity at the floor
+/// used by the system lane's turn detector (`SYSTEM_DETECTION_MIN_RMS`). This
+/// keeps quiet real speech while rejecting the isolated startup spike emitted
+/// by a broken CoreAudio tap.
 fn partition_silent_system_sources(
     sources: Vec<SourceAudioForProcessing>,
 ) -> SilentSystemDropOutcome {
@@ -3535,26 +3547,33 @@ fn partition_silent_system_sources(
     let mut kept = Vec::new();
     let mut dropped = Vec::new();
     for (artifact_id, source, path, recorded_silence) in sources {
-        // Decode once: `source_max_rms` is `None` when the file can't be read,
-        // which must mean "keep" (matching the old read-failure semantics).
-        let max_rms = if source.as_str() == "system" {
-            crate::audio::turns::source_max_rms(&path)
+        // Decode once. `None` means the file could not be read, which must mean
+        // "keep" (matching the old read-failure semantics).
+        let activity = if source.as_str() == "system" {
+            crate::audio::turns::source_activity_evidence_with_floor(
+                &path,
+                crate::audio::turns::SYSTEM_DETECTION_MIN_RMS,
+            )
         } else {
             None
         };
-        let silent = max_rms.is_some_and(|rms| rms < crate::audio::turns::SYSTEM_DETECTION_MIN_RMS);
+        let silent = activity.is_some_and(|evidence| !evidence.has_transcribable_activity);
         if silent {
-            let max_rms = max_rms.unwrap_or(0.0);
+            let activity = activity.expect("silent system activity was decoded");
             tracing::info!(
                 %source,
                 path = %path.display(),
-                max_rms,
+                max_rms = activity.max_rms,
+                active_ms = activity.active_ms,
+                longest_active_ms = activity.longest_active_ms,
                 "skipping silent system source — no transcribable audio"
             );
             dropped.push(DroppedSource {
                 artifact_id,
                 source,
-                max_rms,
+                max_rms: activity.max_rms,
+                active_ms: activity.active_ms,
+                longest_active_ms: activity.longest_active_ms,
             });
         } else {
             kept.push((artifact_id, source, path, recorded_silence));
@@ -3670,6 +3689,28 @@ fn user_facing_transcription_failure_message(
         return "The service is busy right now. Wait a minute, then retry.".to_string();
     }
     message.trim().to_string()
+}
+
+fn note_generation_failure_for_user(mut error: AppError) -> AppError {
+    let normalized_code = error.code.trim().to_ascii_lowercase();
+    let normalized_message = error.message.trim().to_ascii_lowercase();
+    // Keep billing errors intact so the shared failure banner can offer the
+    // correct account action instead of reducing them to a generic retry.
+    if normalized_code.contains("insufficient_credits")
+        || normalized_message.contains("insufficient_credits")
+        || normalized_message.contains("balance is too low")
+        || normalized_message.contains("metering_provider_failed")
+    {
+        return error;
+    }
+    error.message = if normalized_message.contains("authorization_denied") {
+        "Your recording was transcribed, but note generation is busy right now. Your transcript is saved."
+            .to_string()
+    } else {
+        "Your recording was transcribed, but June couldn't generate the note. Your transcript is saved."
+            .to_string()
+    };
+    error
 }
 
 fn ordered_source_transcripts(
@@ -4738,9 +4779,9 @@ mod tests {
         assert_eq!(
             operation_ids,
             vec![
-                "artifact-m0-microphone-0-500-turn-0-fallback-false-saved-audio-v2",
-                "artifact-m2-microphone-2000-2500-turn-2-fallback-false-saved-audio-v2",
-                "artifact-s1-system-1000-1500-turn-1-fallback-false-saved-audio-v2",
+                "artifact-m0-microphone-0-500-turn-0-fallback-false-saved-audio-v3",
+                "artifact-m2-microphone-2000-2500-turn-2-fallback-false-saved-audio-v3",
+                "artifact-s1-system-1000-1500-turn-1-fallback-false-saved-audio-v3",
             ]
         );
         let context_by_path = contexts
@@ -5136,11 +5177,11 @@ mod tests {
         assert_ne!(turn_operation_id(&mic), turn_operation_id(&system));
         assert_eq!(
             turn_operation_id(&mic),
-            "artifact-m0-microphone-0-500-turn-0-fallback-false-saved-audio-v2"
+            "artifact-m0-microphone-0-500-turn-0-fallback-false-saved-audio-v3"
         );
         assert_eq!(
             turn_operation_id(&system),
-            "artifact-s0-system-0-500-turn-0-fallback-false-saved-audio-v2"
+            "artifact-s0-system-0-500-turn-0-fallback-false-saved-audio-v3"
         );
     }
 
@@ -5192,6 +5233,27 @@ mod tests {
                 "microphone",
             ),
             "The service is busy right now. Wait a minute, then retry."
+        );
+    }
+
+    #[test]
+    fn generation_failures_are_not_mislabeled_as_transcription_failures() {
+        let failure = note_generation_failure_for_user(AppError::new(
+            "june_request_failed",
+            "upstream_provider_failed",
+        ));
+        assert_eq!(
+            failure.message,
+            "Your recording was transcribed, but June couldn't generate the note. Your transcript is saved."
+        );
+
+        let balance_failure = note_generation_failure_for_user(AppError::new(
+            "june_request_failed",
+            "Your balance is too low. Upgrade to continue.",
+        ));
+        assert_eq!(
+            balance_failure.message,
+            "Your balance is too low. Upgrade to continue."
         );
     }
 
@@ -6066,6 +6128,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn single_chunk_empty_provider_result_is_no_speech_not_success() {
+        let dir = std::env::temp_dir().join(format!(
+            "os-june-single-chunk-empty-result-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio_path = dir.join("turn.wav");
+        write_segmented_wav(&audio_path, 16_000, &[(16_000, 20_000)]);
+
+        let transcriber = Arc::new(move |_request: TranscriptionRequest| {
+            Box::pin(async move {
+                Ok(TranscriptionProviderResult {
+                    text: "   ".to_string(),
+                    language: None,
+                    provider: "test".to_string(),
+                })
+            }) as TranscriptionFuture
+        }) as TurnTranscriber;
+
+        let error = transcribe_prepared_audio(
+            transcriber,
+            TranscribePreparedAudioRequest {
+                provider: "test".to_string(),
+                audio_path,
+                temp_dir: dir.clone(),
+                chunk_stem: "turn-0".to_string(),
+                title: "Meeting".to_string(),
+                base_context: None,
+                operation_id: "turn-0".to_string(),
+                source: "microphone".to_string(),
+                start_ms: Some(0),
+                end_ms: Some(1_000),
+                turn_index: Some(0),
+                max_chunk_ms: None,
+            },
+        )
+        .await
+        .expect_err("an empty provider result must not certify a transcript");
+
+        assert!(is_no_speech_error(&error));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn silent_chunks_are_skipped_before_reaching_the_transcriber() {
         // 62s: loud 0-30s, silent 30-60s, loud 60-62s -> chunks 0 and 2 audible,
         // chunk 1 silent. The silent chunk must never reach the API (no credit
@@ -6159,7 +6265,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
-        write_test_wav(&mic_path, &[20_000, -18_000, 19_000, -20_000]);
+        write_test_wav(&mic_path, &vec![20_000; 48_000]);
         write_test_wav(&system_path, &[0, 0, 0, 0, 1, -1]);
 
         let kept = drop_silent_system_sources(vec![
@@ -6207,7 +6313,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
-        write_test_wav(&mic_path, &[20_000, -18_000]);
+        write_test_wav(&mic_path, &vec![20_000; 48_000]);
         // ~0.008 RMS: detectable by the system lane (min_rms 0.006) but under the
         // 0.012 normalized-chunk silence floor. Must survive the pre-filter so the
         // full-source fallback can still transcribe it.
@@ -6242,8 +6348,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
-        write_test_wav(&mic_path, &[20_000, -18_000]);
-        write_test_wav(&system_path, &[15_000, -16_000, 14_000]);
+        write_test_wav(&mic_path, &vec![20_000; 48_000]);
+        write_test_wav(&system_path, &vec![15_000; 48_000]);
 
         let kept = drop_silent_system_sources(vec![
             ("mic".to_string(), "microphone".to_string(), mic_path, false),
@@ -6251,6 +6357,32 @@ mod tests {
         ]);
 
         assert_eq!(kept.len(), 2);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn drops_system_source_with_only_a_startup_transient() {
+        let dir = std::env::temp_dir().join(format!(
+            "os-june-drop-transient-system-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mic_path = dir.join("microphone.wav");
+        let system_path = dir.join("system.wav");
+        write_test_wav(&mic_path, &vec![20_000; 48_000]);
+        let mut system_samples = vec![0_i16; 48_000 * 10];
+        system_samples[..7_200].fill(15_000);
+        write_test_wav(&system_path, &system_samples);
+
+        let outcome = partition_silent_system_sources(vec![
+            ("mic".to_string(), "microphone".to_string(), mic_path, false),
+            ("sys".to_string(), "system".to_string(), system_path, false),
+        ]);
+
+        assert_eq!(outcome.kept.len(), 1);
+        assert_eq!(outcome.dropped.len(), 1);
+        assert_eq!(outcome.dropped[0].longest_active_ms, 150);
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -6438,8 +6570,8 @@ mod tests {
         assert_eq!(
             started_before_release,
             vec![
-                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v2".to_string(),
-                "artifact-system-1100-1600-turn-1-fallback-false-saved-audio-v2".to_string(),
+                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v3".to_string(),
+                "artifact-system-1100-1600-turn-1-fallback-false-saved-audio-v3".to_string(),
             ]
         );
         assert!(
@@ -7602,8 +7734,8 @@ mod tests {
         assert_eq!(
             started,
             vec![
-                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v2".to_string(),
-                "artifact-system-1100-1600-turn-1-fallback-false-saved-audio-v2".to_string(),
+                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v3".to_string(),
+                "artifact-system-1100-1600-turn-1-fallback-false-saved-audio-v3".to_string(),
             ]
         );
         assert!(
@@ -7755,7 +7887,7 @@ mod tests {
         );
         assert_eq!(
             turn_operation_id(&prepared.job),
-            "artifact-microphone-400-1250-turn-7-fallback-false-saved-audio-v2"
+            "artifact-microphone-400-1250-turn-7-fallback-false-saved-audio-v3"
         );
 
         let _ = std::fs::remove_dir_all(dir);
@@ -7868,8 +8000,8 @@ mod tests {
         assert_eq!(
             operation_ids,
             vec![
-                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v2",
-                "artifact-system-1100-1600-turn-1-fallback-false-saved-audio-v2",
+                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v3",
+                "artifact-system-1100-1600-turn-1-fallback-false-saved-audio-v3",
             ]
         );
     }
@@ -7961,10 +8093,10 @@ mod tests {
         assert_eq!(
             operation_ids,
             vec![
-                "artifact-microphone-0-2600-turn-0-fallback-true-saved-audio-v2",
-                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v2",
-                "artifact-microphone-2100-2600-turn-2-fallback-false-saved-audio-v2",
-                "artifact-system-1100-1600-turn-1-fallback-false-saved-audio-v2",
+                "artifact-microphone-0-2600-turn-0-fallback-true-saved-audio-v3",
+                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v3",
+                "artifact-microphone-2100-2600-turn-2-fallback-false-saved-audio-v3",
+                "artifact-system-1100-1600-turn-1-fallback-false-saved-audio-v3",
             ]
         );
         let fallback_path = requests
@@ -8046,10 +8178,10 @@ mod tests {
         assert_eq!(
             sorted_operation_ids,
             vec![
-                "artifact-microphone-0-600-turn-0-fallback-true-saved-audio-v2",
-                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v2",
-                "artifact-system-0-1600-turn-1-fallback-true-saved-audio-v2",
-                "artifact-system-1100-1600-turn-1-fallback-false-saved-audio-v2",
+                "artifact-microphone-0-600-turn-0-fallback-true-saved-audio-v3",
+                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v3",
+                "artifact-system-0-1600-turn-1-fallback-true-saved-audio-v3",
+                "artifact-system-1100-1600-turn-1-fallback-false-saved-audio-v3",
             ]
         );
         assert_eq!(
@@ -8059,8 +8191,8 @@ mod tests {
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             vec![
-                "artifact-microphone-0-600-turn-0-fallback-true-saved-audio-v2",
-                "artifact-system-0-1600-turn-1-fallback-true-saved-audio-v2",
+                "artifact-microphone-0-600-turn-0-fallback-true-saved-audio-v3",
+                "artifact-system-0-1600-turn-1-fallback-true-saved-audio-v3",
             ]
         );
     }
@@ -8177,8 +8309,8 @@ mod tests {
         assert_eq!(
             operation_ids,
             vec![
-                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v2",
-                "artifact-microphone-1100-1600-turn-1-fallback-false-saved-audio-v2",
+                "artifact-microphone-100-600-turn-0-fallback-false-saved-audio-v3",
+                "artifact-microphone-1100-1600-turn-1-fallback-false-saved-audio-v3",
             ]
         );
         assert!(operation_ids
@@ -8250,7 +8382,7 @@ mod tests {
         assert_eq!(outcome.failures[0].input.source, "microphone");
         assert_eq!(
             operation_ids.lock().unwrap().as_slice(),
-            ["artifact-microphone-1100-1600-turn-1-fallback-false-saved-audio-v2"]
+            ["artifact-microphone-1100-1600-turn-1-fallback-false-saved-audio-v3"]
         );
     }
 

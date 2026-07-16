@@ -116,3 +116,12 @@ time overlap.
 - Automatic background resume and durable note-generation scheduling remain
   separate decisions. This ADR makes transcription resumable without changing
   launch-time billing behavior.
+
+## 2026-07-16 addendum: unused fallback jobs are terminal
+
+Full-Source fallback jobs may be planned before ordinary Turn results are
+known, but they must not remain pending after the processing pass decides they
+are unnecessary. Completion of an authoritative Turn set supersedes its pending
+fallback atomically; the end of a successful transcription pass supersedes any
+other pending fallback that was deliberately skipped. A successful note must
+therefore have no orphaned pending transcription work.

@@ -55,6 +55,13 @@ The helper is controlled and observed out-of-process (see ADR-0004):
   `SIGTERM` / `SIGKILL` = stop. Launched via `/usr/bin/open -n`.
 - **Observation:** a `status.json` file with events `ready` / `level` / `error`
   / `stopped` (fields include `level` / `maxLevel` / `message`).
+- **Routing:** a global stereo process tap captures app audio across output
+  routes. The private aggregate contains the tap only; adding a physical output
+  subdevice can create an output-only IO cycle with no tap callbacks. The helper
+  performs at most one full-graph rebuild for missing callbacks or zero-filled
+  buffers. A persistent callback stall is reported unavailable instead of
+  entering a restart loop; sustained silence remains subject to the saved-audio
+  speech gate below.
 - **CLI:** `--output` / `--status` / `--pid` / `--log`.
 - **Timeouts:** ~30s readiness, ~75s probe. **macOS 14.2+** required for
   CoreAudio process taps; older systems get microphone-only.
@@ -69,6 +76,8 @@ Energy-based, per-source, **no diarization**:
 - Hysteresis: `start_active_ms` / `end_silence_ms` / `min_turn_ms` /
   `merge_gap_ms`, with separate microphone vs system config tables
   (`config_for_source`).
+- Pre-provider silence checks require at least 180 ms of consecutive activity;
+  one loud device-start window cannot certify an otherwise silent Source.
 - Turns are ordered purely by `start_ms` / `turn_index`.
 - **Speaker-echo trimming:** because the two sources are not captured through a
   single mixer, a remote participant's voice bleeding from the speakers into the

@@ -3311,6 +3311,22 @@ impl Repositories {
             .await?
             .get("count");
             if incomplete_turn_count == 0 && succeeded_turn_count > 0 {
+                // The complete ordinary Turn set is authoritative for this
+                // Source. The lazily planned full-Source fallback was not used
+                // and must not remain as orphaned pending work after success.
+                query(
+                    "UPDATE note_transcription_jobs
+                     SET status = 'superseded', transcript_id = NULL, last_error = NULL,
+                         updated_at = ?, completed_at = ?
+                     WHERE recording_session_id = ? AND source = ?
+                       AND job_kind = 'source_fallback' AND status = 'pending'",
+                )
+                .bind(&now)
+                .bind(&now)
+                .bind(&job.recording_session_id)
+                .bind(&job.source)
+                .execute(&mut *tx)
+                .await?;
                 query(
                     "DELETE FROM transcripts
                      WHERE recording_session_id = ? AND source = ?
@@ -3348,6 +3364,26 @@ impl Repositories {
             last_error: None,
             recorded_silence: false,
         })
+    }
+
+    pub async fn supersede_pending_note_transcription_fallbacks(
+        &self,
+        recording_session_id: &str,
+    ) -> Result<u64, sqlx::error::Error> {
+        let now = timestamp();
+        let result = query(
+            "UPDATE note_transcription_jobs
+             SET status = 'superseded', transcript_id = NULL, last_error = NULL,
+                 updated_at = ?, completed_at = ?
+             WHERE recording_session_id = ?
+               AND job_kind = 'source_fallback' AND status = 'pending'",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(recording_session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn complete_note_transcription_job_failure(
@@ -4834,6 +4870,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_turn_plan_supersedes_unused_source_fallback() {
+        let repos = test_repositories().await;
+        let (note_id, artifact_id) = recording_fixture(
+            &repos,
+            "session-unused-fallback",
+            "microphone",
+            "checksum-a",
+        )
+        .await;
+        let turn = transcription_plan("span-turn", &artifact_id, "microphone", 0, 1_000, 0);
+        let mut fallback =
+            transcription_plan("span-fallback", &artifact_id, "microphone", 0, 10_000, 1);
+        fallback.job_kind = NoteTranscriptionJobKind::SourceFallback;
+        repos
+            .reconcile_note_transcription_jobs(
+                &note_id,
+                "session-unused-fallback",
+                RecordingSourceMode::MicrophonePlusSystem,
+                &[turn.clone(), fallback.clone()],
+            )
+            .await
+            .expect("reconcile");
+
+        assert!(repos
+            .claim_note_transcription_job(&turn.span_id)
+            .await
+            .expect("claim turn"));
+        repos
+            .complete_note_transcription_job_success(&turn.span_id, "Turn text", None)
+            .await
+            .expect("complete turn");
+
+        let fallback_status: String =
+            query("SELECT status FROM note_transcription_jobs WHERE id = 'span-fallback'")
+                .fetch_one(&repos.pool)
+                .await
+                .expect("fallback job")
+                .get("status");
+        assert_eq!(fallback_status, "superseded");
+    }
+
+    #[tokio::test]
     async fn source_fallback_replacement_rolls_back_on_insert_failure() {
         let repos = test_repositories().await;
         let (note_id, artifact_id) =
@@ -4853,17 +4931,15 @@ mod tests {
             )
             .await
             .expect("reconcile");
-        for plan in [&first, &second] {
-            repos
-                .claim_note_transcription_job(&plan.span_id)
-                .await
-                .expect("claim turn");
-            repos
-                .complete_note_transcription_job_success(&plan.span_id, &plan.span_id, None)
-                .await
-                .expect("complete turn");
-        }
-        assert_eq!(transcript_count(&repos, "session-fallback").await, 2);
+        repos
+            .claim_note_transcription_job(&first.span_id)
+            .await
+            .expect("claim turn");
+        repos
+            .complete_note_transcription_job_success(&first.span_id, &first.span_id, None)
+            .await
+            .expect("complete turn");
+        assert_eq!(transcript_count(&repos, "session-fallback").await, 1);
         repos
             .claim_note_transcription_job(&fallback.span_id)
             .await
@@ -4881,7 +4957,7 @@ mod tests {
             .complete_note_transcription_job_success(&fallback.span_id, "Fallback text", None)
             .await
             .is_err());
-        assert_eq!(transcript_count(&repos, "session-fallback").await, 2);
+        assert_eq!(transcript_count(&repos, "session-fallback").await, 1);
         let active_turns: i64 = query(
             "SELECT COUNT(*) AS count FROM note_transcription_jobs
              WHERE id IN ('span-turn-1', 'span-turn-2') AND status = 'succeeded'",
@@ -4890,7 +4966,7 @@ mod tests {
         .await
         .expect("count active turns")
         .get("count");
-        assert_eq!(active_turns, 2);
+        assert_eq!(active_turns, 1);
 
         query("DROP TRIGGER force_transcript_insert_failure")
             .execute(&repos.pool)

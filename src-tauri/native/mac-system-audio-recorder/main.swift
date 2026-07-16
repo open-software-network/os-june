@@ -6,6 +6,10 @@ import Darwin
 import Foundation
 import IOKit.pwr_mgt
 
+private let zeroSignalRMSFloor: Float = 1.0e-7
+private let startupZeroSignalRecoverySeconds: TimeInterval = 10
+private let activeZeroSignalRecoverySeconds: TimeInterval = 30
+
 extension String: @retroactive Error {}
 
 extension String: @retroactive LocalizedError {
@@ -16,10 +20,6 @@ extension AudioObjectID {
     static let system = AudioObjectID(kAudioObjectSystemObject)
     static let unknown = kAudioObjectUnknown
     var isValid: Bool { self != .unknown }
-
-    static func readDefaultSystemOutputDevice() throws -> AudioDeviceID {
-        try AudioObjectID.system.read(kAudioHardwarePropertyDefaultSystemOutputDevice, defaultValue: AudioDeviceID.unknown)
-    }
 
     static func readAudioDevices() throws -> [AudioDeviceID] {
         var address = AudioObjectPropertyAddress(
@@ -38,10 +38,6 @@ extension AudioObjectID {
         }
         guard err == noErr else { throw "Error reading audio device list: \(err)" }
         return devices.filter { $0 != AudioDeviceID.unknown }
-    }
-
-    func readDeviceUID() throws -> String {
-        try readString(kAudioDevicePropertyDeviceUID)
     }
 
     func readName() throws -> String {
@@ -101,10 +97,14 @@ final class SystemAudioRecorder {
     private var outputFramesWritten: AVAudioFramePosition = 0
     private var lastLevelEmit = Date.distantPast
     private var lastInputAt = Date.distantPast
+    private var graphStartedAt = Date.distantPast
+    private var lastSignalAt = Date.distantPast
+    private var observedSignalSinceGraphStart = false
+    private var attemptedGraphRecovery = false
+    private var reportedTerminalInputStall = false
     private var maxLevel: Double = 0
     private var stallTimer: DispatchSourceTimer?
     private var powerAssertionID: IOPMAssertionID = 0
-    private var defaultOutputListenerInstalled = false
     private var rebuildScheduled = false
 
     init(outputURL: URL?, statusURL: URL?, pidURL: URL?, logURL: URL?, timelineOffset: TimeInterval) {
@@ -159,6 +159,7 @@ final class SystemAudioRecorder {
         accumulatedPausedDuration = 0
         pausedAt = nil
         outputFramesWritten = 0
+        resetSignalHealthForRecording()
         markInputReceived()
 
         try startAudioGraph(checkOnly: checkOnly)
@@ -166,7 +167,6 @@ final class SystemAudioRecorder {
             emit(["event": "authorized", "message": "System audio capture is authorized."])
             return
         }
-        installDefaultOutputListener()
         startStallWatchdog()
         emit(["event": "ready", "output": outputURL?.path ?? "check"])
     }
@@ -174,11 +174,10 @@ final class SystemAudioRecorder {
     private func startAudioGraph(checkOnly: Bool = false) throws {
         teardownAudioGraph()
 
-        let systemOutputID = try AudioObjectID.readDefaultSystemOutputDevice()
-        let outputUID = try systemOutputID.readDeviceUID()
-        log("default output device id=\(systemOutputID) uid=\(outputUID)")
-
-        let tapDescription = CATapDescription(excludingProcesses: [], deviceUID: outputUID, stream: 0)
+        // A global tap is itself an input stream source for an aggregate device.
+        // Do not add a physical output device to this aggregate: doing so can
+        // start an output-only IO cycle that never delivers tap input callbacks.
+        let tapDescription = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
         tapDescription.uuid = UUID()
         tapDescription.isMixdown = true
         tapDescription.isMono = false
@@ -216,13 +215,9 @@ final class SystemAudioRecorder {
         let description: [String: Any] = [
             kAudioAggregateDeviceNameKey: "June System Audio",
             kAudioAggregateDeviceUIDKey: aggregateUID,
-            kAudioAggregateDeviceMainSubDeviceKey: outputUID,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
             kAudioAggregateDeviceTapAutoStartKey: true,
-            kAudioAggregateDeviceSubDeviceListKey: [
-                [kAudioSubDeviceUIDKey: outputUID]
-            ],
             kAudioAggregateDeviceTapListKey: [
                 [
                     kAudioSubTapDriftCompensationKey: true,
@@ -269,6 +264,7 @@ final class SystemAudioRecorder {
             throw "Failed to start system audio capture: \(err)"
         }
         log("audio device started")
+        markGraphStarted()
         markInputReceived()
     }
 
@@ -276,7 +272,6 @@ final class SystemAudioRecorder {
         guard !didStop else { return }
         didStop = true
         stopStallWatchdog()
-        removeDefaultOutputListener()
         flushTimelineSilenceToNow()
         teardownAudioGraph()
         audioFile = nil
@@ -362,6 +357,9 @@ final class SystemAudioRecorder {
             }
         }
         let rms = count > 0 ? sqrt(sum / Float(count)) : 0
+        if rms > zeroSignalRMSFloor {
+            markSignalReceived()
+        }
         let level = min(1, Double(rms) * 4)
         maxLevel = max(maxLevel, level)
         emit(["event": "level", "level": String(level), "maxLevel": String(maxLevel)])
@@ -373,11 +371,73 @@ final class SystemAudioRecorder {
         healthLock.unlock()
     }
 
+    private func resetSignalHealthForRecording() {
+        healthLock.lock()
+        graphStartedAt = Date.distantPast
+        lastSignalAt = Date.distantPast
+        observedSignalSinceGraphStart = false
+        attemptedGraphRecovery = false
+        reportedTerminalInputStall = false
+        healthLock.unlock()
+    }
+
+    private func markGraphStarted() {
+        healthLock.lock()
+        graphStartedAt = Date()
+        lastSignalAt = Date.distantPast
+        observedSignalSinceGraphStart = false
+        healthLock.unlock()
+    }
+
+    private func markSignalReceived() {
+        healthLock.lock()
+        lastSignalAt = Date()
+        observedSignalSinceGraphStart = true
+        healthLock.unlock()
+    }
+
+    /// CoreAudio process taps can keep invoking the IO callback while returning
+    /// only zero-filled buffers. One full graph rebuild is safe during real
+    /// silence and recovers that state without sacrificing the saved timeline.
+    private func zeroSignalRecoveryReason() -> String? {
+        healthLock.lock()
+        defer { healthLock.unlock() }
+        guard !attemptedGraphRecovery else { return nil }
+        let now = Date()
+        if !observedSignalSinceGraphStart,
+           now.timeIntervalSince(graphStartedAt) >= startupZeroSignalRecoverySeconds {
+            attemptedGraphRecovery = true
+            return "System audio capture returned only zero-filled buffers after startup; restarting capture."
+        }
+        if observedSignalSinceGraphStart,
+           now.timeIntervalSince(lastSignalAt) >= activeZeroSignalRecoverySeconds {
+            attemptedGraphRecovery = true
+            return "System audio capture stopped returning signal; restarting capture."
+        }
+        return nil
+    }
+
     private func secondsSinceLastInput() -> TimeInterval {
         healthLock.lock()
         let elapsed = Date().timeIntervalSince(lastInputAt)
         healthLock.unlock()
         return elapsed
+    }
+
+    private func claimInputStallRecovery() -> Bool {
+        healthLock.lock()
+        defer { healthLock.unlock() }
+        guard !attemptedGraphRecovery else { return false }
+        attemptedGraphRecovery = true
+        return true
+    }
+
+    private func claimTerminalInputStallReport() -> Bool {
+        healthLock.lock()
+        defer { healthLock.unlock() }
+        guard !reportedTerminalInputStall else { return false }
+        reportedTerminalInputStall = true
+        return true
     }
 
     private func startStallWatchdog() {
@@ -391,11 +451,24 @@ final class SystemAudioRecorder {
             self.pauseLock.unlock()
             guard !paused else { return }
             let stalledFor = self.secondsSinceLastInput()
-            guard stalledFor >= 3 else { return }
-            let message = "System audio capture stalled for \(String(format: "%.1f", stalledFor))s; restarting capture."
-            self.log(message)
-            self.emit(["event": "stalled", "message": message])
-            self.rebuildAudioGraph(reason: message)
+            if stalledFor >= 3 {
+                if self.claimInputStallRecovery() {
+                    let message = "System audio capture stalled for \(String(format: "%.1f", stalledFor))s; restarting capture once."
+                    self.log(message)
+                    self.emit(["event": "stalled", "message": message])
+                    self.rebuildAudioGraph(reason: message)
+                } else if self.claimTerminalInputStallReport() {
+                    let message = "System audio capture did not resume after one restart. Microphone recording can continue."
+                    self.log(message)
+                    self.emit(["event": "error", "message": message])
+                }
+                return
+            }
+            if let message = self.zeroSignalRecoveryReason() {
+                self.log(message)
+                self.emit(["event": "stalled", "message": message])
+                self.rebuildAudioGraph(reason: message)
+            }
         }
         stallTimer = timer
         timer.resume()
@@ -404,44 +477,6 @@ final class SystemAudioRecorder {
     private func stopStallWatchdog() {
         stallTimer?.cancel()
         stallTimer = nil
-    }
-
-    private func installDefaultOutputListener() {
-        guard !defaultOutputListenerInstalled else { return }
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultSystemOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let err = AudioObjectAddPropertyListener(
-            AudioObjectID.system,
-            &address,
-            defaultOutputDeviceChanged,
-            Unmanaged.passUnretained(self).toOpaque()
-        )
-        if err == noErr {
-            defaultOutputListenerInstalled = true
-            log("installed default output device listener")
-        } else {
-            log("default output device listener install failed err=\(err)")
-        }
-    }
-
-    private func removeDefaultOutputListener() {
-        guard defaultOutputListenerInstalled else { return }
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultSystemOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let err = AudioObjectRemovePropertyListener(
-            AudioObjectID.system,
-            &address,
-            defaultOutputDeviceChanged,
-            Unmanaged.passUnretained(self).toOpaque()
-        )
-        log("removed default output device listener err=\(err)")
-        defaultOutputListenerInstalled = false
     }
 
     private func acquirePowerAssertion() {
@@ -589,13 +624,6 @@ private let systemAudioIOProc: AudioDeviceIOProc = { _, _, inputData, _, _, _, c
     guard let clientData else { return noErr }
     let recorder = Unmanaged<SystemAudioRecorder>.fromOpaque(clientData).takeUnretainedValue()
     recorder.handleInputData(inputData)
-    return noErr
-}
-
-private let defaultOutputDeviceChanged: AudioObjectPropertyListenerProc = { _, _, _, clientData in
-    guard let clientData else { return noErr }
-    let recorder = Unmanaged<SystemAudioRecorder>.fromOpaque(clientData).takeUnretainedValue()
-    recorder.rebuildAudioGraph(reason: "Default system output device changed; restarting system audio capture.")
     return noErr
 }
 
