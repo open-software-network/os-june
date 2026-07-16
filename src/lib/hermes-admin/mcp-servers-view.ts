@@ -36,19 +36,34 @@ export const INTERNAL_MCP_SERVER_NAMES = [
   "june_gcal_actions",
 ] as const;
 
+export const VISIBLE_MANAGED_MCP_SERVER_NAMES = ["june_notion"] as const;
+
 const INTERNAL_MCP_SERVER_NAME_SET = new Set<string>(INTERNAL_MCP_SERVER_NAMES);
+const VISIBLE_MANAGED_MCP_SERVER_NAME_SET = new Set<string>(VISIBLE_MANAGED_MCP_SERVER_NAMES);
 
 /** Per-routine autonomy grant servers are named `june_<provider>_auto_<jobid>`;
  * they are implementation details and must never appear on the user-managed
  * MCP admin page either. */
 const INTERNAL_MCP_SERVER_NAME_PATTERN = /^june_(gmail|gcal)_auto_/;
 
+export function isVisibleManagedMcpServerName(name: string): boolean {
+  return VISIBLE_MANAGED_MCP_SERVER_NAME_SET.has(name);
+}
+
 export function isInternalMcpServerName(name: string): boolean {
   return INTERNAL_MCP_SERVER_NAME_SET.has(name) || INTERNAL_MCP_SERVER_NAME_PATTERN.test(name);
 }
 
+export function isHiddenInternalMcpServerName(name: string): boolean {
+  return isInternalMcpServerName(name) && !isVisibleManagedMcpServerName(name);
+}
+
 export function isUserManagedMcpServer(server: HermesMcpServerInfo): boolean {
-  return !isInternalMcpServerName(server.name);
+  return !isHiddenInternalMcpServerName(server.name);
+}
+
+export function isManagedJuneMcpServer(server: HermesMcpServerInfo): boolean {
+  return isVisibleManagedMcpServerName(server.name);
 }
 
 export function userManagedMcpServers(
@@ -455,6 +470,7 @@ export function editFromServer(server: HermesMcpServerInfo): McpServerEdit {
  * transports with a known, non-secret connection field (stdio command/args,
  * http url) qualify; an `unknown` transport has nothing safe to edit. */
 export function canEditServer(server: HermesMcpServerInfo): boolean {
+  if (isManagedJuneMcpServer(server)) return false;
   return (
     server.transport === "stdio" || server.transport === "http" || server.transport === "http-oauth"
   );
