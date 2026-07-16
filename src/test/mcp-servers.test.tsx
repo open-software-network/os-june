@@ -164,6 +164,25 @@ describe("mcp servers — view logic", () => {
     expect(userManagedMcpServers(servers).map((server) => server.name)).toEqual(["linear"]);
   });
 
+  it("does not expose the built-in GitHub server as user-managed", () => {
+    const servers = [
+      serverFromWire({
+        name: "june_github",
+        enabled: true,
+        transport: "stdio",
+        command: "june_github_mcp.py",
+      }),
+      serverFromWire({
+        name: "user_server",
+        enabled: true,
+        transport: "http",
+        url: "https://mcp.example.com",
+      }),
+    ];
+
+    expect(userManagedMcpServers(servers).map((server) => server.name)).toEqual(["user_server"]);
+  });
+
   it("treats a server as having available tools only when enabled with active tools", () => {
     const enabledWithTools = serverFromWire({
       name: "a",
