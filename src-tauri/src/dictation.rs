@@ -800,13 +800,27 @@ pub fn setup(app: &mut tauri::App) {
         controller: Mutex::new(ShortcutActivationController::default()),
     });
 
-    let helper = spawn_helper(app.handle()).ok();
-    app.manage(HelperState {
-        process: Mutex::new(helper),
-        ..HelperState::default()
-    });
+    // Install state before spawning so a helper that exits immediately can be
+    // observed by its stdout supervisor instead of disappearing during setup.
+    app.manage(HelperState::default());
+    let helper_started = match spawn_helper(app.handle()) {
+        Ok(helper) => {
+            let helper_state = app.state::<HelperState>();
+            matches!(
+                store_respawned_helper(&helper_state, helper),
+                StoreRespawnedHelper::Stored
+            )
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error.message,
+                "failed to start dictation helper during setup; retrying in background"
+            );
+            false
+        }
+    };
 
-    {
+    if helper_started {
         let settings = app.state::<DictationSettingsState>();
         let helper_state = app.state::<HelperState>();
         let settings = settings
@@ -826,11 +840,21 @@ pub fn setup(app: &mut tauri::App) {
         .lock()
         .map(|settings| settings.clone())
         .unwrap_or_default();
-    let event = initial_hotkey_event(&settings);
+    let helper_expected = cfg!(any(target_os = "macos", target_os = "windows"));
+    let event = if helper_started || !helper_expected {
+        initial_hotkey_event(&settings)
+    } else {
+        helper_unavailable_event("restarting", "Dictation is starting.")
+    };
     app.manage(HotkeyStatus {
         event: Mutex::new(event.clone()),
     });
     let _ = app.emit("dictation-event", event.to_string());
+
+    if helper_expected && !helper_started {
+        let app_handle = app.handle().clone();
+        thread::spawn(move || supervise_initial_helper_start(&app_handle));
+    }
 }
 
 #[tauri::command]
@@ -2764,10 +2788,38 @@ fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
     }
 }
 
-/// Whether a pid is live and signalable by us (`kill -0`). Same-user only, which
-/// is all June ever records.
+/// Whether a macOS `ps` state represents a process that can still own runtime
+/// resources. `E` (exiting) and `Z` (zombie) entries may remain in the process
+/// table and pass `kill -0`, but cannot own June's global event tap.
+#[cfg(target_os = "macos")]
+fn process_state_is_terminal(state: &str) -> bool {
+    state.trim().chars().any(|flag| matches!(flag, 'E' | 'Z'))
+}
+
+/// Whether a pid is still a functioning process. Check macOS process state
+/// before `kill -0`: an exiting (`E`) or zombie (`Z`) entry can remain
+/// signalable indefinitely even though it is inert.
 #[cfg(target_os = "macos")]
 fn process_alive(pid: u32) -> bool {
+    if let Ok(output) = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .args(["-o", "state="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        if output.status.success() {
+            let state = String::from_utf8_lossy(&output.stdout);
+            if state.trim().is_empty() || process_state_is_terminal(&state) {
+                return false;
+            }
+        } else if output.status.code() == Some(1) {
+            // BSD ps uses status 1 when the selected pid no longer exists.
+            return false;
+        }
+    }
+
     Command::new("/bin/kill")
         .arg("-0")
         .arg(pid.to_string())
@@ -2967,6 +3019,13 @@ fn helper_unavailable_event(reason: &str, message: &str) -> serde_json::Value {
     })
 }
 
+/// Retries the first helper launch. Previously only helpers that had already
+/// launched were supervised; any setup-time failure left dictation silently
+/// unavailable for the entire app session.
+fn supervise_initial_helper_start(app: &AppHandle) {
+    retry_helper_spawn(app, Duration::ZERO, true);
+}
+
 /// Runs on the helper's stdout reader thread once that stream closes (the helper
 /// exited or was killed). Reaps the child, then respawns with backoff unless the
 /// exit was an intentional shutdown or the retry cap is exhausted. A successful
@@ -2990,8 +3049,14 @@ fn supervise_helper_exit(app: &AppHandle, spawn_instant: Instant) {
     }
     reset_shortcut_activation(app);
 
+    retry_helper_spawn(app, spawn_instant.elapsed(), false);
+}
+
+fn retry_helper_spawn(app: &AppHandle, mut survived: Duration, initial_start: bool) {
+    let Some(state) = app.try_state::<HelperState>() else {
+        return;
+    };
     let policy = RespawnPolicy::default();
-    let mut survived = spawn_instant.elapsed();
     loop {
         let (action, next_failures) = decide_and_record_respawn(&state, survived, &policy);
 
@@ -3000,25 +3065,33 @@ fn supervise_helper_exit(app: &AppHandle, spawn_instant: Instant) {
             RespawnAction::GiveUp => {
                 tracing::error!(
                     attempts = next_failures,
-                    "dictation helper kept exiting; giving up until relaunch"
+                    initial_start,
+                    "dictation helper recovery exhausted; giving up until relaunch"
                 );
-                emit_helper_unavailable(
-                    app,
-                    "exhausted",
-                    "Dictation stopped and could not restart. Relaunch June to restore it.",
-                );
+                let message = if initial_start {
+                    "Dictation could not start. Relaunch June to try again."
+                } else {
+                    "Dictation stopped and could not restart. Relaunch June to restore it."
+                };
+                emit_helper_unavailable(app, "exhausted", message);
                 return;
             }
             RespawnAction::Respawn { attempt, backoff } => {
                 tracing::warn!(
                     attempt,
                     ?backoff,
-                    "dictation helper exited unexpectedly; respawning"
+                    initial_start,
+                    "dictation helper unavailable; respawning"
                 );
                 // Surface the notice while the helper is down so the hotkey is
                 // never silently dead; a successful respawn clears it by
                 // re-emitting the hotkey-ready event.
-                emit_helper_unavailable(app, "restarting", "Dictation stopped and is restarting.");
+                let message = if initial_start {
+                    "Dictation is starting."
+                } else {
+                    "Dictation stopped and is restarting."
+                };
+                emit_helper_unavailable(app, "restarting", message);
                 thread::sleep(backoff);
                 if state.shutting_down.load(Ordering::SeqCst) {
                     return;
@@ -5456,11 +5529,21 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn terminal_macos_process_states_are_not_treated_as_live() {
+        // The field can contain multiple flags. The reported production case
+        // was `UE`: uninterruptible + exiting, which still passed kill -0.
+        for state in ["E", "UE", "Z", "Z+", "  UE\n"] {
+            assert!(process_state_is_terminal(state), "state={state:?}");
+        }
+        for state in ["R", "R+", "S", "U", "  S+\n", ""] {
+            assert!(!process_state_is_terminal(state), "state={state:?}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn wait_for_pid_exit_confirms_a_kill_and_bounds_a_survivor() {
-        // A dead pid is observed as exited. Reap the child first so it is not a
-        // zombie: `kill -0` still reports a zombie as alive, but a real orphan
-        // (whose parent is the dead prior app) is reparented to launchd and
-        // reaped, so in production the pid genuinely disappears.
+        // A dead pid is observed as exited.
         let mut victim = Command::new("/bin/sleep")
             .arg("30")
             .stdin(Stdio::null())

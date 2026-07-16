@@ -2307,7 +2307,13 @@ export function App() {
   function handleEnableAccessibility() {
     void dictationHelperCommand({
       type: "request_accessibility_permission",
-    }).catch(() => undefined);
+    }).catch(async () => {
+      try {
+        await openPrivacySettings("accessibility");
+      } catch {
+        // The fallback is best-effort; there is no further recovery surface.
+      }
+    });
   }
 
   useEffect(() => {
