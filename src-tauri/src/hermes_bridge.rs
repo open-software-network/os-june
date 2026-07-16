@@ -470,7 +470,7 @@ struct ProviderProxyState {
     github_token: String,
     /// One service per proxy lifetime so pagination and file-reference
     /// capabilities remain valid across calls without recreating the registry.
-    github_read_service: Arc<crate::connectors::github_read::GitHubReadService>,
+    github_read_service: Option<Arc<crate::connectors::github_read::GitHubReadService>>,
     image_sources: ImageSourceCapabilities,
     videos_dir: PathBuf,
     video_generation_enabled: bool,
@@ -8301,8 +8301,37 @@ async fn start_june_provider_proxy(
     app: Option<AppHandle>,
     recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
 ) -> Result<RunningJuneProviderProxy, AppError> {
-    let github_read_service =
-        Arc::new(crate::connectors::github_read::GitHubReadService::production()?);
+    let github_read_service = crate::connectors::github_read::GitHubReadService::production()
+        .ok()
+        .map(Arc::new);
+    start_june_provider_proxy_with_github_service(
+        token,
+        recorder_token,
+        connector_token,
+        github_token,
+        github_read_service,
+        image_sources,
+        videos_dir,
+        video_generation_enabled,
+        app,
+        recorder_requests,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn start_june_provider_proxy_with_github_service(
+    token: String,
+    recorder_token: String,
+    connector_token: String,
+    github_token: String,
+    github_read_service: Option<Arc<crate::connectors::github_read::GitHubReadService>>,
+    image_sources: ImageSourceCapabilities,
+    videos_dir: PathBuf,
+    video_generation_enabled: bool,
+    app: Option<AppHandle>,
+    recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
+) -> Result<RunningJuneProviderProxy, AppError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     listener
@@ -8377,6 +8406,25 @@ async fn handle_june_provider_connection(
 ) -> io::Result<()> {
     let request = match read_http_request(&mut stream).await {
         Ok(request) => request,
+        Err(HttpRequestReadError::BodyTooLarge(request)) if request.path == "/v1/github/read" => {
+            if !provider_proxy_authorized(&request, &state.github_token) {
+                write_json_response(
+                    &mut stream,
+                    401,
+                    serde_json::json!({ "error": { "message": "Unauthorized" } }),
+                )
+                .await?;
+            } else if request.method == "POST" {
+                let (status, body) = github_read_error_response(
+                    AppError::new("github_input_invalid", "GitHub input is invalid."),
+                    false,
+                );
+                write_json_response(&mut stream, status, body).await?;
+            } else {
+                write_not_found_response(&mut stream).await?;
+            }
+            return Ok(());
+        }
         Err(error) => {
             let _ = write_json_response(
                 &mut stream,
@@ -8622,6 +8670,16 @@ async fn handle_github_read(
         }
     };
 
+    let Some(github_read_service) = state.github_read_service.as_ref() else {
+        let (status, body) = github_read_error_response(
+            AppError::new(
+                "github_setup_required",
+                "GitHub setup is incomplete. Refresh it in settings.",
+            ),
+            false,
+        );
+        return write_json_response(stream, status, body).await;
+    };
     let Some(app) = state.app.as_ref() else {
         let (status, body) = github_read_error_response(
             AppError::new(
@@ -8646,8 +8704,7 @@ async fn handle_github_read(
         }
     };
 
-    let outcome = state
-        .github_read_service
+    let outcome = github_read_service
         .execute(
             request,
             &crate::connectors::github::PlatformGitHubTokenVault,
@@ -9635,7 +9692,34 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
-async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<HttpRequest> {
+enum HttpRequestReadError {
+    Io(io::Error),
+    /// Headers were parsed successfully, so the connection boundary can still
+    /// authenticate and serialize the exact route protocol without reading the
+    /// rejected body.
+    BodyTooLarge(HttpRequest),
+}
+
+impl std::fmt::Display for HttpRequestReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => error.fmt(formatter),
+            Self::BodyTooLarge(request) => {
+                formatter.write_str(provider_proxy_body_too_large_message(&request.path))
+            }
+        }
+    }
+}
+
+impl From<io::Error> for HttpRequestReadError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+async fn read_http_request(
+    stream: &mut tokio::net::TcpStream,
+) -> Result<HttpRequest, HttpRequestReadError> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -9648,10 +9732,9 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
             break;
         }
         if buffer.len() > JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "HTTP headers are too large",
-            ));
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidData, "HTTP headers are too large").into(),
+            );
         }
     }
     let header_end = buffer
@@ -9696,10 +9779,12 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
         // instead of a raw transport error that re-wedges or dead-ends the
         // session. Image bodies use an image-specific message because they are
         // bounded by upload size, not model context.
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            provider_proxy_body_too_large_message(&path),
-        ));
+        return Err(HttpRequestReadError::BodyTooLarge(HttpRequest {
+            method,
+            path,
+            headers,
+            body: Vec::new(),
+        }));
     }
     let mut body = buffer[header_end..].to_vec();
     while body.len() < content_length {
@@ -11214,7 +11299,7 @@ mod tests {
             recorder_token: "recorder-token".to_string(),
             connector_token: "connector-token".to_string(),
             github_token: "github-token".to_string(),
-            github_read_service: Arc::new(
+            github_read_service: Some(Arc::new(
                 crate::connectors::github_read::GitHubReadService::for_test(
                     crate::connectors::github_api::GitHubReadClient::for_test(
                         "http://127.0.0.1:9/",
@@ -11230,7 +11315,7 @@ mod tests {
                     },
                     Arc::new(crate::connectors::github_capabilities::CapabilityRegistry::new()),
                 ),
-            ),
+            )),
             image_sources: ImageSourceCapabilities {
                 images_dir: home.path().join("images"),
                 secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
@@ -11881,6 +11966,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_proxy_token_isolation_starts_without_github_configuration() {
+        async fn request(port: u16, token: &str, method: &str, path: &str, body: &str) -> String {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .expect("connect provider proxy");
+            let request = format!(
+                "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(request.as_bytes())
+                .await
+                .expect("write provider proxy request");
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .await
+                .expect("read provider proxy response");
+            response
+        }
+
+        let home = tempfile::tempdir().expect("proxy tempdir");
+        let running = start_june_provider_proxy_with_github_service(
+            "proxy-token".to_string(),
+            "recorder-token".to_string(),
+            "connector-token".to_string(),
+            "github-token".to_string(),
+            None,
+            ImageSourceCapabilities {
+                images_dir: home.path().join("images"),
+                secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
+            },
+            home.path().join("videos"),
+            false,
+            None,
+            Arc::new(Mutex::new(HashMap::new())),
+        )
+        .await
+        .expect("provider proxy starts without GitHub configuration");
+
+        let recorder = request(
+            running.port,
+            "recorder-token",
+            "GET",
+            "/v1/recorder/status",
+            "",
+        )
+        .await;
+        assert!(recorder.starts_with("HTTP/1.1 200"), "{recorder}");
+
+        let github = request(
+            running.port,
+            "github-token",
+            "POST",
+            "/v1/github/read",
+            r#"{"operation":"list_repositories","arguments":{}}"#,
+        )
+        .await;
+        assert!(github.starts_with("HTTP/1.1 409"), "{github}");
+        assert!(github.contains(r#""code":"github_setup_required""#));
+        assert!(!github.contains("github_not_configured"));
+
+        let _ = running.shutdown.send(());
+    }
+
+    #[tokio::test]
     async fn github_read_proxy_route_requires_exact_post_and_exact_path() {
         for method in ["GET", "PUT", "PATCH", "DELETE"] {
             let response = provider_proxy_response_with_token(
@@ -12033,7 +12184,7 @@ mod tests {
     async fn provider_proxy_body_limits_accept_exact_github_cap_and_reject_one_more_byte() {
         assert_eq!(provider_proxy_max_body_bytes("/v1/github/read"), 64 * 1024);
 
-        async fn read_body(body_len: usize) -> io::Result<HttpRequest> {
+        async fn read_body(body_len: usize) -> Result<HttpRequest, HttpRequestReadError> {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
                 .await
                 .expect("bind request listener");
@@ -12057,7 +12208,10 @@ mod tests {
             result
         }
 
-        let accepted = read_body(64 * 1024).await.expect("exact cap accepted");
+        let accepted = match read_body(64 * 1024).await {
+            Ok(request) => request,
+            Err(_) => panic!("exact cap must be accepted"),
+        };
         assert_eq!(accepted.body.len(), 64 * 1024);
         assert!(read_body(64 * 1024 + 1).await.is_err());
 
@@ -12072,6 +12226,90 @@ mod tests {
         .await;
         assert!(response.starts_with("HTTP/1.1 400"));
         assert!(response.contains(r#""code":"github_input_invalid""#));
+    }
+
+    #[tokio::test]
+    async fn provider_proxy_body_limits_return_the_fixed_github_envelope_for_one_byte_over() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind proxy listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let state = Arc::new(ProviderProxyState {
+            token: "proxy-token".to_string(),
+            recorder_token: "recorder-token".to_string(),
+            connector_token: "connector-token".to_string(),
+            github_token: "github-token".to_string(),
+            github_read_service: Some(Arc::new(
+                crate::connectors::github_read::GitHubReadService::for_test(
+                    crate::connectors::github_api::GitHubReadClient::for_test(
+                        "http://127.0.0.1:9/",
+                    )
+                    .expect("GitHub read client"),
+                    crate::connectors::github_auth::GitHubAuthClient::for_test(
+                        "http://127.0.0.1:9/",
+                    )
+                    .expect("GitHub auth client"),
+                    crate::connectors::github::GitHubAppConfig {
+                        client_id: "Iv12345678".to_string(),
+                        slug: "june-test".to_string(),
+                    },
+                    Arc::new(crate::connectors::github_capabilities::CapabilityRegistry::new()),
+                ),
+            )),
+            image_sources: ImageSourceCapabilities {
+                images_dir: home.path().join("images"),
+                secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
+            },
+            videos_dir: home.path().join("videos"),
+            video_generation_enabled: false,
+            app: None,
+            image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
+            model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
+            recorder_requests: Arc::new(Mutex::new(HashMap::new())),
+        });
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            handle_june_provider_connection(stream, state)
+                .await
+                .expect("handle connection");
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect proxy");
+        let request = format!(
+            "POST /v1/github/read HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer github-token\r\nContent-Length: {}\r\n\r\n",
+            64 * 1024 + 1
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write oversized request headers");
+        stream.shutdown().await.expect("finish request write side");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .await
+            .expect("read oversized response");
+        server.await.expect("server task");
+
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        let body = response
+            .split_once("\r\n\r\n")
+            .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
+            .expect("parse fixed GitHub error envelope");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "success": false,
+                "error": {
+                    "code": "github_input_invalid",
+                    "message": "GitHub input is invalid.",
+                },
+                "connectorStateChanged": false,
+            })
+        );
     }
 
     #[test]
