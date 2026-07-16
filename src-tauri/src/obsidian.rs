@@ -172,7 +172,28 @@ fn validate_vault_path(path: &Path) -> Result<PathBuf, AppError> {
     }
     ensure_readable(&canonical)?;
     ensure_writable(&canonical)?;
-    Ok(canonical)
+    Ok(normalize_vault_path_for_external_use(canonical))
+}
+
+/// `std::fs::canonicalize` returns a Windows extended-length path (`\\?\C:\…`)
+/// even when the user picked a normal drive-letter path. The prefix is useful to
+/// Win32 internals but confusing in Settings and not consistently accepted by
+/// tools the runtime launches, so persist and pass the conventional form.
+#[cfg(target_os = "windows")]
+fn normalize_vault_path_for_external_use(path: PathBuf) -> PathBuf {
+    let path = path.to_string_lossy();
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    if let Some(drive_path) = path.strip_prefix(r"\\?\") {
+        return PathBuf::from(drive_path);
+    }
+    PathBuf::from(path.as_ref())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn normalize_vault_path_for_external_use(path: PathBuf) -> PathBuf {
+    path
 }
 
 fn ensure_readable(path: &Path) -> Result<(), AppError> {
@@ -199,6 +220,8 @@ fn ensure_writable(path: &Path) -> Result<(), AppError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    use super::normalize_vault_path_for_external_use;
     use super::validate_vault_path;
 
     #[test]
@@ -224,5 +247,22 @@ mod tests {
         let err =
             validate_vault_path(std::path::Path::new("relative/vault")).expect_err("relative");
         assert_eq!(err.code, "obsidian_vault_invalid");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn normalizes_windows_extended_length_vault_paths() {
+        assert_eq!(
+            normalize_vault_path_for_external_use(std::path::PathBuf::from(
+                r"\\?\C:\Users\jimmy\OneDrive\Dokumen\Jimmy",
+            )),
+            std::path::PathBuf::from(r"C:\Users\jimmy\OneDrive\Dokumen\Jimmy"),
+        );
+        assert_eq!(
+            normalize_vault_path_for_external_use(std::path::PathBuf::from(
+                r"\\?\UNC\server\share\Vault",
+            )),
+            std::path::PathBuf::from(r"\\server\share\Vault"),
+        );
     }
 }
