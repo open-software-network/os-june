@@ -361,6 +361,7 @@ import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   displayedComposerUserMessageText,
+  isGeneratedVideoFilename,
   stripRenderedMediaReferences,
   textFromHermesContent,
   type AgentApprovalChoice,
@@ -1016,8 +1017,6 @@ type PersistedVideoSlashTurn = {
   requestId?: string;
   model?: string;
   jobId?: string;
-  averageExecutionMs?: number;
-  executionMs?: number;
   /** True once the generation completed but its context has not yet ridden a
    * follow-up prompt (the video fold; see storedPendingVideoSlashContexts). */
   contextPending?: boolean;
@@ -1145,8 +1144,6 @@ function videoSlashAssistantTurn(
     | "requestId"
     | "model"
     | "jobId"
-    | "averageExecutionMs"
-    | "executionMs"
   >,
 ): AgentChatTurn {
   if (turn.pending) {
@@ -1165,8 +1162,6 @@ function videoSlashAssistantTurn(
           jobId: turn.jobId,
           userCreatedAt: turn.createdAt,
           videoCreatedAt: turn.videoCreatedAt,
-          averageExecutionMs: turn.averageExecutionMs,
-          executionMs: turn.executionMs,
           error: turn.jobId ? undefined : "Generation was interrupted. Try again to resume.",
         },
       ],
@@ -1453,12 +1448,6 @@ function persistedVideoSlashTurn(
           requestId: candidate.requestId,
           model: typeof candidate.model === "string" ? candidate.model : undefined,
           jobId: typeof candidate.jobId === "string" ? candidate.jobId : undefined,
-          averageExecutionMs:
-            typeof candidate.averageExecutionMs === "number"
-              ? candidate.averageExecutionMs
-              : undefined,
-          executionMs:
-            typeof candidate.executionMs === "number" ? candidate.executionMs : undefined,
         }
       : {
           model: typeof candidate.model === "string" ? candidate.model : undefined,
@@ -5200,8 +5189,6 @@ export function AgentWorkspace({
               onProgress: (progress) => {
                 updateVideoSlashPart(sessionId, assistantTurnId, {
                   jobId: progress.jobId,
-                  averageExecutionMs: progress.averageExecutionMs,
-                  executionMs: progress.executionMs,
                 });
                 upsertStoredVideoSlashTurn({
                   id: turnId,
@@ -5215,8 +5202,6 @@ export function AgentWorkspace({
                   requestId,
                   model: input.model,
                   jobId: progress.jobId,
-                  averageExecutionMs: progress.averageExecutionMs,
-                  executionMs: progress.executionMs,
                 });
               },
             },
@@ -5300,8 +5285,6 @@ export function AgentWorkspace({
       onProgress: (progress) => {
         updateVideoSlashPart(input.sessionId, `${input.turnId}:assistant`, {
           jobId: progress.jobId,
-          averageExecutionMs: progress.averageExecutionMs,
-          executionMs: progress.executionMs,
         });
         upsertStoredVideoSlashTurn({
           id: input.turnId,
@@ -5315,8 +5298,6 @@ export function AgentWorkspace({
           requestId: input.requestId,
           model: input.model,
           jobId: input.jobId,
-          averageExecutionMs: progress.averageExecutionMs,
-          executionMs: progress.executionMs,
         });
       },
     });
@@ -5337,14 +5318,10 @@ export function AgentWorkspace({
         updateVideoSlashPart(turn.sessionId, assistantTurnId, {
           status: "running",
           jobId: progress.jobId,
-          averageExecutionMs: progress.averageExecutionMs,
-          executionMs: progress.executionMs,
         });
         upsertStoredVideoSlashTurn({
           ...turn,
           pending: true,
-          averageExecutionMs: progress.averageExecutionMs,
-          executionMs: progress.executionMs,
         });
       },
     });
@@ -14312,6 +14289,20 @@ function AgentGeneratedVideo({
     (capturedPoster && capturedPoster.src === src ? capturedPoster.dataUrl : undefined);
   const revealing = useGeneratedMediaReveal(part.status, Boolean(src));
 
+  useEffect(() => {
+    // Capture the poster off an offscreen element so the visible player can stay
+    // in no-CORS mode: the asset protocol omits `Access-Control-Allow-Origin` on
+    // 416 range responses, and only the canvas capture needs CORS.
+    if (!src || part.posterDataUrl || poster) return;
+    let mounted = true;
+    void capturedGeneratedVideoPoster(src).then((dataUrl) => {
+      if (mounted && dataUrl) setCapturedPoster({ src, dataUrl });
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [src, part.posterDataUrl, poster]);
+
   if (part.status === "running") {
     return (
       <div
@@ -14356,18 +14347,7 @@ function AgentGeneratedVideo({
     >
       <div className="agent-generated-video-frame">
         {src ? (
-          <video
-            controls
-            crossOrigin="anonymous"
-            src={part.posterDataUrl ? src : firstFrameVideoSource(src)}
-            poster={poster}
-            preload="metadata"
-            onLoadedData={(event) => {
-              if (poster) return;
-              const dataUrl = firstFramePosterDataUrl(event.currentTarget);
-              if (dataUrl) setCapturedPoster({ src, dataUrl });
-            }}
-          />
+          <video controls src={firstFrameVideoSource(src)} poster={poster} preload="metadata" />
         ) : (
           <span className="agent-generated-image-loading text-shimmer shimmer">
             Loading video...
@@ -14402,6 +14382,39 @@ function AgentGeneratedVideo({
 
 function firstFrameVideoSource(src: string) {
   return src.includes("#") ? src : `${src}#t=0.001`;
+}
+
+// Poster capture is CORS-mode work (canvas.toDataURL taints without it), so it
+// runs on a throwaway offscreen element rather than the visible player. Cache
+// the in-flight promise per src so the capture runs at most once per app run,
+// even across remounts.
+const generatedVideoPosterCache = new Map<string, Promise<string | undefined>>();
+
+export function resetGeneratedVideoPosterCacheForTest() {
+  generatedVideoPosterCache.clear();
+}
+
+function capturedGeneratedVideoPoster(src: string): Promise<string | undefined> {
+  const cached = generatedVideoPosterCache.get(src);
+  if (cached) return cached;
+  const capture = new Promise<string | undefined>((resolve) => {
+    const video = document.createElement("video");
+    video.crossOrigin = "anonymous";
+    video.preload = "auto";
+    video.muted = true;
+    const finish = (dataUrl?: string) => {
+      video.removeAttribute("src");
+      video.load();
+      resolve(dataUrl);
+    };
+    video.addEventListener("loadeddata", () => finish(firstFramePosterDataUrl(video)), {
+      once: true,
+    });
+    video.addEventListener("error", () => finish(), { once: true });
+    video.src = firstFrameVideoSource(src);
+  });
+  generatedVideoPosterCache.set(src, capture);
+  return capture;
 }
 
 function firstFramePosterDataUrl(video: HTMLVideoElement): string | undefined {
@@ -16433,7 +16446,16 @@ function surfacedArtifactsFromTurns(
         // A bare MEDIA reference can arrive before the filesystem snapshot or
         // a later absolute MEDIA reference. Keep the canonical path so Files
         // preview/download actions reach the native validator successfully.
-        if (isBareMediaPath(existingPath) && !isBareMediaPath(artifact.path)) {
+        // Only video aliases are strict generated-video-<hex> filenames (1:1
+        // with files); image aliases can derive from tool-supplied display
+        // names, so two different files can be alias-equal — never upgrade
+        // (and erase) a surfaced image row on that basis.
+        let canonicalPath = existingPath;
+        if (
+          part.type === "video" &&
+          isBareMediaPath(existingPath) &&
+          !isBareMediaPath(artifact.path)
+        ) {
           const index = surfaced.findIndex((item) => item.path === existingPath);
           if (index >= 0) {
             if (surfacedPaths.has(artifact.path)) surfaced.splice(index, 1);
@@ -16445,8 +16467,12 @@ function surfacedArtifactsFromTurns(
             for (const [alias, path] of surfacedMediaAliases) {
               if (path === existingPath) surfacedMediaAliases.set(alias, artifact.path);
             }
+            canonicalPath = artifact.path;
           }
         }
+        // Register this part's own aliases against the surviving row so a later
+        // bare reference through an unregistered alias doesn't push a duplicate.
+        for (const alias of aliases) surfacedMediaAliases.set(alias, canonicalPath);
         continue;
       }
       addArtifact(artifact);
@@ -16463,8 +16489,7 @@ function isBareMediaPath(path: string): boolean {
 
 export function generatedImagePathAliases(path: string, displayName?: string): string[] {
   const normalized = path.replaceAll("\\", "/");
-  const isBare = !normalized.includes("/");
-  if (!isBare && !/\/(?:image_cache|images)\//i.test(normalized)) return [];
+  if (!isBareMediaPath(path) && !/\/(?:image_cache|images)\//i.test(normalized)) return [];
   const aliases = new Set<string>();
   const pathName = normalized.split("/").at(-1);
   if (pathName) aliases.add(normalizedGeneratedImageName(pathName));
@@ -16481,12 +16506,9 @@ function normalizedGeneratedImageName(name: string): string {
 
 function generatedVideoPathAliases(path: string): string[] {
   const normalized = path.replaceAll("\\", "/");
-  const isBare = !normalized.includes("/");
-  if (!isBare && !/\/(?:generated-videos|video_cache|videos)\//i.test(normalized)) return [];
+  if (!isBareMediaPath(path) && !/\/(?:video_cache|videos)\//i.test(normalized)) return [];
   const name = normalized.split("/").at(-1);
-  return name && /^generated-video-[0-9a-f]+\.(?:m4v|mov|mp4|webm)$/i.test(name)
-    ? [name.toLowerCase()]
-    : [];
+  return name && isGeneratedVideoFilename(name) ? [name.toLowerCase()] : [];
 }
 
 function includesQuery(value: unknown, query: string) {

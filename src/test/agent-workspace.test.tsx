@@ -15,6 +15,7 @@ import {
   generatedImagePathAliases,
   projectAgentActivityLevels,
   resetAgentSessionContinuity,
+  resetGeneratedVideoPosterCacheForTest,
   seedAgentComposerDraftForTest,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
@@ -473,6 +474,7 @@ describe("AgentWorkspace", () => {
     // any still-working session for the next mount — across tests that would
     // leak one test's mid-run session into the next.
     resetAgentSessionContinuity();
+    resetGeneratedVideoPosterCacheForTest();
     // Feature 14: the artifact store is a process-wide singleton; drop the
     // session rows these tests touch so one test's artifacts don't leak into
     // the next.
@@ -10427,14 +10429,18 @@ describe("AgentWorkspace", () => {
       },
     ]);
 
-    render(<AgentWorkspace />);
-
-    expect(await screen.findByRole("button", { name: "Download video" })).toBeInTheDocument();
-    const video = document.querySelector<HTMLVideoElement>(".agent-generated-video video");
-    expect(video).not.toBeNull();
-    expect(video).toHaveAttribute("crossorigin", "anonymous");
-    expect(video).toHaveAttribute("preload", "metadata");
-    expect(video?.getAttribute("src")).toMatch(/#t=0\.001$/);
+    // The poster is captured off an offscreen CORS-mode element so the visible
+    // player can stay in no-CORS mode; track the videos React and the capture
+    // effect create so the test can drive the offscreen one.
+    const realCreateElement = document.createElement.bind(document);
+    const createdVideos: HTMLVideoElement[] = [];
+    const createElementSpy = vi
+      .spyOn(document, "createElement")
+      .mockImplementation((tag: string, options?: ElementCreationOptions) => {
+        const element = realCreateElement(tag, options);
+        if (tag === "video") createdVideos.push(element as HTMLVideoElement);
+        return element;
+      });
     const drawImage = vi.fn();
     const getContext = vi
       .spyOn(HTMLCanvasElement.prototype, "getContext")
@@ -10442,15 +10448,32 @@ describe("AgentWorkspace", () => {
     const toDataUrl = vi
       .spyOn(HTMLCanvasElement.prototype, "toDataURL")
       .mockReturnValue("data:image/jpeg;base64,cG9zdGVy");
-    Object.defineProperties(video, {
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByRole("button", { name: "Download video" })).toBeInTheDocument();
+    const video = document.querySelector<HTMLVideoElement>(".agent-generated-video video");
+    expect(video).not.toBeNull();
+    // Playback stays in no-CORS mode.
+    expect(video).not.toHaveAttribute("crossorigin");
+    expect(video).toHaveAttribute("preload", "metadata");
+    expect(video?.getAttribute("src")).toMatch(/#t=0\.001$/);
+
+    await waitFor(() =>
+      expect(createdVideos.some((candidate) => candidate.crossOrigin === "anonymous")).toBe(true),
+    );
+    const posterVideo = createdVideos.find((candidate) => candidate.crossOrigin === "anonymous");
+    expect(posterVideo).toBeDefined();
+    Object.defineProperties(posterVideo, {
       videoWidth: { configurable: true, value: 1280 },
       videoHeight: { configurable: true, value: 720 },
     });
-    fireEvent.loadedData(video as HTMLVideoElement);
+    fireEvent.loadedData(posterVideo as HTMLVideoElement);
+    await waitFor(() => expect(video).toHaveAttribute("poster", "data:image/jpeg;base64,cG9zdGVy"));
+    expect(drawImage).toHaveBeenCalledWith(posterVideo, 0, 0, 960, 540);
+    createElementSpy.mockRestore();
     getContext.mockRestore();
     toDataUrl.mockRestore();
-    await waitFor(() => expect(video).toHaveAttribute("poster", "data:image/jpeg;base64,cG9zdGVy"));
-    expect(drawImage).toHaveBeenCalledWith(video, 0, 0, 960, 540);
 
     await user.click(screen.getByRole("button", { name: "View files (1)" }));
     const panel = await screen.findByRole("complementary", { name: "Files" });
@@ -10640,6 +10663,61 @@ describe("AgentWorkspace", () => {
         role: "assistant",
         content: `MEDIA:${signedName}`,
         timestamp: "2026-06-04T18:41:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByRole("button", { name: "View files (1)" })).toBeInTheDocument();
+  });
+
+  it("lists an image reached through an unregistered cache-name alias only once", async () => {
+    const absolutePath = "/Users/alex/.hermes/image_cache/img_cff5d542a4d2.png";
+    const signedName = "generated-image-abc.june-source-deadbeef.png";
+    const bareCacheName = "img_cff5d542a4d2.png";
+    // The absolute image_cache result carries the signed display name, so its
+    // aliases are {img_cff5d542a4d2.png, generated-image-abc.png} — the second
+    // links it to the bare signed reference, the first to the bare cache ref.
+    const namedAbsoluteResult = JSON.stringify({
+      result: `MEDIA:${absolutePath}`,
+      filename: signedName,
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      // 1) A bare, signed reference surfaces the Files row first. The user turns
+      // between the assistant turns keep each inline image in its own agent run
+      // so the within-run media dedup does not collapse them first.
+      {
+        id: "message-1",
+        role: "assistant",
+        content: `MEDIA:${signedName}`,
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+      {
+        id: "message-2",
+        role: "user",
+        content: "Show it again.",
+        timestamp: "2026-06-04T18:39:01Z",
+      },
+      // 3) An absolute image_cache result whose display name aliases to (1).
+      {
+        id: "message-3",
+        role: "assistant",
+        content: namedAbsoluteResult,
+        timestamp: "2026-06-04T18:39:02Z",
+      },
+      {
+        id: "message-4",
+        role: "user",
+        content: "One more time.",
+        timestamp: "2026-06-04T18:39:03Z",
+      },
+      // 5) A later bare cache-name reference must reuse the same row rather than
+      // push a duplicate synthetic one.
+      {
+        id: "message-5",
+        role: "assistant",
+        content: `MEDIA:${bareCacheName}`,
+        timestamp: "2026-06-04T18:39:04Z",
       },
     ]);
 
