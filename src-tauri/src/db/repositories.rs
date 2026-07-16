@@ -15,6 +15,8 @@ use sqlx_sqlite::SqlitePool;
 use uuid::Uuid;
 
 const DICTATION_HISTORY_RETENTION_DAYS: i64 = 7;
+const COMPANION_OPERATION_RETENTION_DAYS: i64 = 7;
+const MAX_COMPANION_OPERATIONS_PER_DEVICE: i64 = 1_024;
 
 #[derive(Clone)]
 pub struct Repositories {
@@ -193,11 +195,17 @@ impl Repositories {
     }
 
     pub async fn revoke_companion_device(&self, id: &str) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
         query("UPDATE companion_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
             .bind(timestamp())
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
+        query("DELETE FROM companion_operations WHERE device_id = ?")
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -232,6 +240,7 @@ impl Repositories {
         operation_id: &str,
         response: &[u8],
     ) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
         query(
             "INSERT OR IGNORE INTO companion_operations
              (device_id, operation_id, response, created_at) VALUES (?, ?, ?, ?)",
@@ -240,8 +249,28 @@ impl Repositories {
         .bind(operation_id)
         .bind(response)
         .bind(timestamp())
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
+        query("DELETE FROM companion_operations WHERE created_at < ?")
+            .bind(companion_operation_cutoff_timestamp())
+            .execute(&mut *transaction)
+            .await?;
+        query(
+            "DELETE FROM companion_operations
+             WHERE device_id = ?
+               AND operation_id NOT IN (
+                 SELECT operation_id FROM companion_operations
+                 WHERE device_id = ?
+                 ORDER BY created_at DESC, rowid DESC
+                 LIMIT ?
+               )",
+        )
+        .bind(device_id)
+        .bind(device_id)
+        .bind(MAX_COMPANION_OPERATIONS_PER_DEVICE)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -5007,6 +5036,11 @@ fn dictation_history_cutoff_timestamp() -> String {
         .to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+fn companion_operation_cutoff_timestamp() -> String {
+    (Utc::now() - Duration::days(COMPANION_OPERATION_RETENTION_DAYS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
 fn companion_device_from_row(row: sqlx_sqlite::SqliteRow) -> CompanionDeviceRecord {
     CompanionDeviceRecord {
         id: row.get("id"),
@@ -5046,13 +5080,14 @@ fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::Repositories;
+    use super::{Repositories, MAX_COMPANION_OPERATIONS_PER_DEVICE};
     use crate::domain::types::{
         NoteTranscriptionJobKind, NoteTranscriptionJobPlan, NoteTranscriptionJobStatus,
         ProcessingStatus, RecordingSourceMode,
     };
     use sqlx::query::query;
     use sqlx::row::Row;
+    use uuid::Uuid;
 
     async fn test_repositories() -> Repositories {
         let pool = sqlx_sqlite::SqlitePoolOptions::new()
@@ -6122,6 +6157,60 @@ mod tests {
                 .edited_content
                 .as_deref(),
             Some("Encrypted edit")
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_operation_history_is_bounded_and_cleared_on_revocation() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device(&device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+
+        for index in 0..=MAX_COMPANION_OPERATIONS_PER_DEVICE {
+            repos
+                .remember_companion_operation(
+                    &device_id,
+                    &format!("operation-{index:04}"),
+                    b"accepted",
+                )
+                .await
+                .expect("remember operation");
+        }
+        assert_eq!(
+            repos
+                .companion_operation(&device_id, "operation-0000")
+                .await
+                .expect("read pruned operation"),
+            None
+        );
+        assert_eq!(
+            repos
+                .companion_operation(
+                    &device_id,
+                    &format!("operation-{MAX_COMPANION_OPERATIONS_PER_DEVICE:04}"),
+                )
+                .await
+                .expect("read retained operation")
+                .as_deref(),
+            Some(b"accepted".as_slice())
+        );
+
+        repos
+            .revoke_companion_device(&device_id)
+            .await
+            .expect("revoke companion device");
+        assert_eq!(
+            repos
+                .companion_operation(
+                    &device_id,
+                    &format!("operation-{MAX_COMPANION_OPERATIONS_PER_DEVICE:04}"),
+                )
+                .await
+                .expect("read revoked operation"),
+            None
         );
     }
 

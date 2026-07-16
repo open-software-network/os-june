@@ -64,6 +64,7 @@ const mocks = vi.hoisted(() => ({
   deleteNote: vi.fn(),
   updateNote: vi.fn(),
   checkRecordingSourceReadiness: vi.fn(),
+  companionCompleteFrontendRequest: vi.fn(),
   openPrivacySettings: vi.fn(),
   startRecording: vi.fn(),
   pauseRecording: vi.fn(),
@@ -195,6 +196,7 @@ vi.mock("../lib/tauri", () => ({
   deleteNote: mocks.deleteNote,
   updateNote: mocks.updateNote,
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
+  companionCompleteFrontendRequest: mocks.companionCompleteFrontendRequest,
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
   pauseRecording: mocks.pauseRecording,
@@ -345,6 +347,7 @@ describe("App shortcuts", () => {
         { source: "system", ready: true, permissionState: "granted" },
       ],
     });
+    mocks.companionCompleteFrontendRequest.mockResolvedValue(undefined);
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.listDictationHistory.mockResolvedValue({
       items: [],
@@ -445,6 +448,52 @@ describe("App shortcuts", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("serves companion agent reads without opening the agent workspace", async () => {
+    const user = userEvent.setup();
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-companion",
+        title: "Companion planning",
+        status: "completed",
+        last_active: "2026-07-16T10:00:00.000Z",
+      },
+    ]);
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Meeting notes" }));
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+        true,
+      ),
+    );
+    const payload = {
+      operationId: "operation-companion",
+      intent: { type: "agentSessionsList", data: { limit: 50 } },
+    };
+    act(() => {
+      for (const [event, handler] of mocks.listen.mock.calls) {
+        if (event === "june://companion-request") handler({ payload });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-companion", {
+        type: "agentSessions",
+        data: {
+          items: [
+            {
+              id: "session-companion",
+              title: "Companion planning",
+              status: "completed",
+              updatedAt: "2026-07-16T10:00:00.000Z",
+            },
+          ],
+        },
+      }),
+    );
+    expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument();
   });
 
   it("clears the OS Accounts browser session from sidebar sign-out", async () => {

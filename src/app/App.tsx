@@ -68,6 +68,7 @@ import {
   assignSessionToFolder,
   bootstrapApp,
   checkRecordingSourceReadiness,
+  companionCompleteFrontendRequest,
   createFolder,
   createNote,
   deleteFolder,
@@ -125,7 +126,18 @@ import { getAgentSoundsEnabled } from "../lib/agent-sound-settings";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { errorCode, messageFromError } from "../lib/errors";
 import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
-import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
+import {
+  listHermesSessionMessages,
+  listHermesSessions,
+  sessionTimestamp,
+  stripScheduledRunPreamble,
+  titleFromPrompt,
+} from "../lib/hermes-adapter";
+import { boundedCompanionText, companionAgentMessagesFromHermes } from "../lib/agent-chat-runtime";
+import {
+  companionFrontendConsumerAvailable,
+  queueCompanionFrontendRequest,
+} from "../lib/companion-frontend-router";
 import {
   authoritativeTranscriptCoverageKey,
   clearTerminalLiveTranscriptEvents,
@@ -163,6 +175,9 @@ import type {
   NoteDto,
   RecordingStatusDto,
   AccountStatus,
+  CompanionAgentStatus,
+  CompanionFrontendRequest,
+  CompanionResultPayload,
   HermesSessionInfo,
 } from "../lib/tauri";
 import type {
@@ -1728,6 +1743,121 @@ export function App() {
       unlisten?.();
     };
   }, [openSettings]);
+
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+
+    async function handleCompanionRequest(payload: CompanionFrontendRequest) {
+      try {
+        switch (payload.intent.type) {
+          case "agentSessionsList": {
+            const fresh = await listHermesSessions();
+            const currentById = new Map(
+              agentMenuBarSessionsRef.current.map((session) => [session.id, session]),
+            );
+            const sessions = fresh.map((session) => {
+              const current = currentById.get(session.id);
+              return current?.title?.trim() ? { ...session, title: current.title } : session;
+            });
+            const seen = new Set(sessions.map((session) => session.id));
+            for (const current of agentMenuBarSessionsRef.current) {
+              if (
+                !seen.has(current.id) &&
+                (agentMenuBarWorkingSessionIdsRef.current.has(current.id) ||
+                  agentMenuBarWaitingSessionIdsRef.current.has(current.id))
+              ) {
+                sessions.push(current);
+              }
+            }
+            sessions.sort((left, right) =>
+              sessionTimestamp(right).localeCompare(sessionTimestamp(left)),
+            );
+            const page = companionByteBoundedPage(
+              sessions.map((session) => ({
+                id: session.id,
+                title: boundedCompanionText(
+                  session.title?.trim() ||
+                    titleFromPrompt(stripScheduledRunPreamble(session.preview ?? "")),
+                  512,
+                ),
+                status: companionAgentSessionStatus(
+                  session,
+                  agentMenuBarWorkingSessionIdsRef.current,
+                  agentMenuBarWaitingSessionIdsRef.current,
+                ),
+                updatedAt: sessionTimestamp(session),
+              })),
+              payload.intent.data.cursor,
+              payload.intent.data.limit,
+            );
+            await companionCompleteFrontendRequest(
+              payload.operationId,
+              page ? { type: "agentSessions", data: page } : companionCursorError("agent session"),
+            );
+            return;
+          }
+          case "agentMessagesList": {
+            const { sessionId, cursor, limit } = payload.intent.data;
+            const knownSession =
+              agentMenuBarSessionsRef.current.some((session) => session.id === sessionId) ||
+              (await listHermesSessions()).some((session) => session.id === sessionId);
+            if (!knownSession) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That agent session is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            const page = companionByteBoundedPage(
+              companionAgentMessagesFromHermes(await listHermesSessionMessages(sessionId)),
+              cursor,
+              limit,
+            );
+            await companionCompleteFrontendRequest(
+              payload.operationId,
+              page ? { type: "agentMessages", data: page } : companionCursorError("agent message"),
+            );
+            return;
+          }
+          case "agentSend":
+          case "agentCancel": {
+            if (companionFrontendConsumerAvailable()) return;
+            queueCompanionFrontendRequest(payload);
+            const sessionId = payload.intent.data.sessionId;
+            setAgentOrigin(undefined);
+            setActiveAgentSession(sessionId ? { id: sessionId } : undefined);
+            setActiveView("agent");
+            return;
+          }
+        }
+      } catch (error) {
+        await companionCompleteFrontendRequest(payload.operationId, {
+          type: "error",
+          data: {
+            code: "internal",
+            message: messageFromError(error),
+            retryable: true,
+          },
+        }).catch(() => undefined);
+      }
+    }
+
+    void listen<CompanionFrontendRequest>("june://companion-request", ({ payload }) => {
+      void handleCompanionRequest(payload);
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, [setActiveAgentSession]);
 
   useEffect(() => {
     let aborted = false;
@@ -4510,6 +4640,72 @@ export function App() {
       ) : null}
     </main>
   );
+}
+
+function companionByteBoundedPage<T>(
+  items: T[],
+  cursor: string | undefined,
+  limit: number,
+): { items: T[]; nextCursor?: string } | undefined {
+  const offset = companionCursorOffset(cursor);
+  if (offset === undefined) return undefined;
+  const page: T[] = [];
+  let encodedBytes = 0;
+  let index = offset;
+  while (index < items.length && page.length < limit) {
+    const item = items[index];
+    if (item === undefined) break;
+    const itemBytes = new TextEncoder().encode(JSON.stringify(item)).byteLength;
+    if (page.length > 0 && encodedBytes + itemBytes > 38 * 1024) break;
+    page.push(item);
+    encodedBytes += itemBytes;
+    index += 1;
+  }
+  return {
+    items: page,
+    ...(index < items.length ? { nextCursor: String(index) } : {}),
+  };
+}
+
+function companionCursorOffset(cursor: string | undefined) {
+  if (cursor !== undefined && !/^\d+$/.test(cursor)) return undefined;
+  const offset = cursor === undefined ? 0 : Number(cursor);
+  return Number.isSafeInteger(offset) && offset >= 0 ? offset : undefined;
+}
+
+function companionCursorError(scope: string): CompanionResultPayload {
+  return {
+    type: "error",
+    data: {
+      code: "invalid_request",
+      message: `The ${scope} cursor is invalid.`,
+      retryable: false,
+    },
+  };
+}
+
+function companionAgentSessionStatus(
+  session: HermesSessionInfo,
+  workingSessionIds: ReadonlySet<string>,
+  waitingSessionIds: ReadonlySet<string>,
+): CompanionAgentStatus {
+  if (waitingSessionIds.has(session.id)) return "waitingForUser";
+  if (workingSessionIds.has(session.id) || session.active || session.is_active) return "running";
+
+  const status = session.status?.trim().toLowerCase() ?? "";
+  if (/(?:wait|clarif|approval|input)/.test(status)) return "waitingForUser";
+  if (/(?:cancel|stop|interrupt|abort)/.test(status)) return "cancelled";
+  if (/(?:fail|error|timeout)/.test(status)) return "failed";
+  if (/(?:run|work|active|start|progress)/.test(status)) return "running";
+  if (
+    /(?:complete|success|finish|done)/.test(status) ||
+    session.ended_at ||
+    session.endedAt ||
+    session.end_reason
+  ) {
+    return "completed";
+  }
+  return "idle";
 }
 
 function updateMenuBarSessionStatus(

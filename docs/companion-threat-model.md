@@ -13,9 +13,10 @@ control authority, linked-device grants, and APNs signing material.
 - A stolen unlocked phone is limited by the explicit capability allowlist;
   app backgrounding locks and disconnects, and foreground access requires
   Face ID, Touch ID, or device passcode.
-- A mobile device credential is issued only after desktop approval and is
-  accepted only for that non-revoked linked device id. It cannot complete a
-  Noise handshake without the device private key.
+- A mobile device credential is generated on-device and only its hash is
+  activated by desktop approval. It is accepted only for that non-revoked
+  linked device id and cannot complete a Noise handshake without the device
+  private key.
 - A copied QR expires after five minutes and cannot complete without desktop
   approval. Noise XXpsk3 authenticates possession of the QR secret and both
   device identities.
@@ -32,9 +33,10 @@ control authority, linked-device grants, and APNs signing material.
 An OS-compromised endpoint can read data displayed on that endpoint. The relay
 and OS Accounts observe account/device/IP/timing/size metadata. APNs observes
 that a generic wake was sent. Push delivery and iOS background execution are
-best effort. Post-quantum security, traffic padding, multi-desktop routing,
-and peer-to-peer anonymity are not provided.
+best effort. The MVP relay is single-replica and a restart temporarily drops
+availability. Post-quantum security, traffic padding, multi-desktop routing,
+horizontal relay scale, and peer-to-peer anonymity are not provided.
 
 Production claims require review of the C ABI, Noise patterns, Keychain access
-classes, pairing proof and device credential authorization, APNs configuration, app
-signing, dependency provenance, and a penetration test.
+classes, pairing proof and device credential authorization, APNs configuration,
+app signing, dependency provenance, and a penetration test.

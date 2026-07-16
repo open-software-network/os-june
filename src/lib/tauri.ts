@@ -2452,6 +2452,11 @@ export async function companionPublishAgentEvent(request: CompanionAgentEventReq
 }
 
 export type CompanionFrontendIntent =
+  | { type: "agentSessionsList"; data: { cursor?: string; limit: number } }
+  | {
+      type: "agentMessagesList";
+      data: { sessionId: string; cursor?: string; limit: number };
+    }
   | { type: "agentSend"; data: { sessionId?: string; message: string } }
   | { type: "agentCancel"; data: { sessionId: string } };
 
@@ -2462,6 +2467,31 @@ export type CompanionFrontendRequest = {
 
 export type CompanionResultPayload =
   | { type: "accepted" }
+  | {
+      type: "agentSessions";
+      data: {
+        items: Array<{
+          id: string;
+          title: string;
+          status: CompanionAgentStatus;
+          updatedAt: string;
+        }>;
+        nextCursor?: string;
+      };
+    }
+  | {
+      type: "agentMessages";
+      data: {
+        items: Array<{
+          id: string;
+          role: "user" | "assistant" | "system";
+          text: string;
+          createdAt: string;
+          streaming: boolean;
+        }>;
+        nextCursor?: string;
+      };
+    }
   | { type: "agentAccepted"; data: { sessionId: string } }
   | {
       type: "error";

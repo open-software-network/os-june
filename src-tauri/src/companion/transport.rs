@@ -164,6 +164,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                             let ready = std::mem::take(pending);
                             if !ready.is_empty() {
                                 publish_event(
+                                    &repos,
                                     &identity,
                                     &mut socket,
                                     &mut peers,
@@ -175,6 +176,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                         pending.push_str(&text);
                     }
                     event => publish_event(
+                        &repos,
                         &identity,
                         &mut socket,
                         &mut peers,
@@ -187,6 +189,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                 for (session_id, text) in pending_deltas.drain() {
                     if text.is_empty() { continue; }
                     publish_event(
+                        &repos,
                         &identity,
                         &mut socket,
                         &mut peers,
@@ -200,6 +203,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
 }
 
 async fn publish_event(
+    repos: &Repositories,
     identity: &StoredIdentity,
     socket: &mut RelaySocket,
     peers: &mut HashMap<Uuid, PeerSession>,
@@ -207,7 +211,19 @@ async fn publish_event(
     event: Event,
 ) -> Result<(), AppError> {
     let mut encrypted_events = Vec::new();
-    for (peer_id, peer) in peers.iter_mut() {
+    let peer_ids: Vec<Uuid> = peers.keys().copied().collect();
+    for peer_id in peer_ids {
+        let active = repos
+            .companion_device(&peer_id.to_string())
+            .await?
+            .is_some_and(|device| device.revoked_at.is_none());
+        if !active {
+            peers.remove(&peer_id);
+            continue;
+        }
+        let peer = peers
+            .get_mut(&peer_id)
+            .ok_or_else(|| transport_error("The linked device session disappeared."))?;
         if !peer.crypto.is_transport_ready() {
             continue;
         }
@@ -225,7 +241,7 @@ async fn publish_event(
             .crypto
             .write(&encoded)
             .map_err(|_| transport_error("The companion event could not be encrypted."))?;
-        encrypted_events.push((*peer_id, encrypted));
+        encrypted_events.push((peer_id, encrypted));
     }
     for (peer_id, encrypted) in encrypted_events {
         send_envelope(socket, identity.device_id, peer_id, encrypted).await?;
@@ -336,8 +352,25 @@ async fn receive_envelope(
         capability,
         Body::Response(response),
     );
-    let encoded = encode_frame(&response_frame)
-        .map_err(|_| transport_error("The companion response exceeded its size limit."))?;
+    let encoded = match encode_frame(&response_frame) {
+        Ok(encoded) => encoded,
+        Err(_) => encode_frame(&Frame::new(
+            operation_id,
+            *outbound_sequence,
+            current_time_ms(),
+            capability,
+            Body::Response(Response {
+                capability,
+                result: ResultPayload::Error(ProtocolFailure {
+                    code: FailureCode::Unsupported,
+                    message: "This result is too large for the companion. Open it on your Mac."
+                        .to_string(),
+                    retryable: false,
+                }),
+            }),
+        ))
+        .map_err(|_| transport_error("The companion response exceeded its size limit."))?,
+    };
     let encrypted = peer
         .crypto
         .write(&encoded)
@@ -483,6 +516,7 @@ fn protocol_failure(error: &AppError) -> ProtocolFailure {
         "companion_frame_invalid" | "companion_device_name_invalid" => FailureCode::InvalidRequest,
         "companion_device_not_found" => FailureCode::NotFound,
         "note_revision_conflict" => FailureCode::Conflict,
+        "companion_note_too_large" => FailureCode::Unsupported,
         "companion_frontend_timeout" => FailureCode::Busy,
         "companion_frontend_unavailable" => FailureCode::MacOffline,
         _ => FailureCode::Internal,

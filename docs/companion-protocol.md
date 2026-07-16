@@ -24,15 +24,32 @@ static keys. Noise nonces reject replay and reordering/tampering. A fresh
 handshake is required after 2^20 messages or 24 hours.
 
 The relay pairing API receives only SHA-256 of the QR secret as a five-minute
-proof. Desktop approval issues the phone an opaque device credential; the relay
-stores only its hash. The credential authorizes one linked device at the relay,
-while Noise authenticates that device's private key and protects all content.
+proof. The phone generates an opaque device credential and submits only its
+hash during pairing. Desktop approval activates that hash. The phone later
+presents the credential with the `Device` scheme; the relay compares its hash
+without retaining the plaintext. Noise separately authenticates the device's
+private key and protects all content.
 
 ## Capabilities
 
 The only grants are notes read/edit, agent read/chat/cancel, safe settings
-read/edit, existing-recording pause/resume/stop, app focus, and self-device
-read/revoke. Body-to-capability equality is validated before dispatch.
+read/edit, existing-recording state/pause/resume/stop, app focus, and
+self-device read/revoke. Body-to-capability equality is validated before
+dispatch.
+
+Agent session and message reads go through typed frontend intents backed by
+the current Hermes session APIs. The companion receives the same sanitized
+display text as June Desktop: machine context, provider routing details,
+reasoning, tool calls/results, approvals, secrets, and media internals stay on
+the Mac. The always-mounted app shell serves reads even when the Agent screen
+is closed. Send and cancel intents wake the existing Agent workspace.
+
+Agent transcript pages keep encoded results below the frame budget. An
+individual oversized display message is clearly marked as truncated. Notes
+whose editable title or content cannot fit safely in one frame are rejected
+with an instruction to open them on the Mac; the companion never loads a
+truncated note into its editor, which prevents an edit from overwriting unseen
+content.
 
 There is no variant for arbitrary Tauri/Hermes calls, recording start, note
 delete, approvals, unrestricted mode, filesystem, shell, credentials,
@@ -42,9 +59,10 @@ connectors, updates, account deletion, or adding a device.
 
 Mutations carry stable client operation ids. The desktop persists encrypted
 response results keyed by device/operation and returns the prior result on a
-retry. Sequence state resets only after a fresh authenticated Noise session.
-The client refreshes cursor-based lists after foreground/reconnect. No offline
-control request is replayed.
+retry. Results expire after seven days and are capped at 1,024 per device;
+revocation removes prior results. Sequence state resets only after a fresh
+authenticated Noise session. The client refreshes cursor-based lists after
+foreground/reconnect. No offline control request is replayed.
 
 Note edits carry `expectedRevision`; SQLite updates atomically only at that
 revision. A mismatch returns a typed conflict with the current note.

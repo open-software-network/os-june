@@ -2,19 +2,21 @@ use crate::{
     commands,
     db::repositories::{CompanionDeviceRecord, Repositories},
     dictation::{self, DictationStyle as DesktopDictationStyle},
-    domain::types::{
-        AgentMessageRole as DesktopMessageRole, AgentTaskStatus as DesktopAgentStatus, AppError,
-        NoteDto, SessionRequest,
-    },
+    domain::types::{AppError, NoteDto, SessionRequest},
     providers,
 };
 use june_companion_protocol::{
-    AgentMessage, AgentSession, AgentStatus, Body, Capability, DeviceSelf, DictationStyle,
-    FailureCode, Frame, MessageRole, NoteConflict, NoteRecord, NoteSummary, Page, ProtocolFailure,
-    Response, ResultPayload, SafeSettings,
+    ActiveRecording, ActiveRecordingSnapshot, ActiveRecordingState, Body, Capability, DeviceSelf,
+    DictationStyle, FailureCode, Frame, NoteConflict, NoteRecord, NoteSummary, Page,
+    ProtocolFailure, Response, ResultPayload, SafeSettings,
 };
 use std::{collections::HashMap, sync::Mutex};
 use tauri::{AppHandle, Emitter, Manager};
+
+const MAX_COMPANION_NOTE_TITLE_BYTES: usize = 512;
+const MAX_COMPANION_NOTE_SUMMARY_FIELD_BYTES: usize = 256;
+const MAX_COMPANION_NOTE_CONTENT_BYTES: usize = 28 * 1024;
+const MAX_COMPANION_NOTE_CONTENT_JSON_BYTES: usize = 30 * 1024;
 
 /// Only these typed intents can cross from the companion controller into the
 /// frontend. Raw Hermes frames, arbitrary Tauri commands, paths, SQL, shell,
@@ -84,6 +86,16 @@ impl Controller {
             })?;
             return Ok(ControllerOutcome::Immediate(response));
         }
+        let active_device = repositories
+            .companion_device(device_id)
+            .await?
+            .is_some_and(|device| device.revoked_at.is_none());
+        if !active_device {
+            return Err(AppError::new(
+                "unauthorized",
+                "This linked device is no longer authorized.",
+            ));
+        }
         self.accept_sequence(device_id, frame.sequence)?;
         let capability = frame.capability;
         let outcome = match frame.body {
@@ -96,8 +108,11 @@ impl Controller {
                     .into_iter()
                     .map(|note| NoteSummary {
                         id: note.id,
-                        title: note.title,
-                        preview: note.preview,
+                        title: bounded_utf8(&note.title, MAX_COMPANION_NOTE_SUMMARY_FIELD_BYTES),
+                        preview: bounded_utf8(
+                            &note.preview,
+                            MAX_COMPANION_NOTE_SUMMARY_FIELD_BYTES,
+                        ),
                         revision: note.revision,
                         updated_at: note.updated_at,
                     })
@@ -114,10 +129,18 @@ impl Controller {
                 let note = repositories.get_note(&note_id).await?;
                 ControllerOutcome::Immediate(response(
                     capability,
-                    ResultPayload::Note(note_record(note)),
+                    ResultPayload::Note(note_record(note)?),
                 ))
             }
             Body::NoteEdit(request) => {
+                ensure_note_record_size(&repositories.get_note(&request.note_id).await?)?;
+                if request
+                    .edited_content
+                    .as_deref()
+                    .is_some_and(|content| !companion_note_content_fits(content))
+                {
+                    return Err(note_too_large());
+                }
                 match repositories
                     .update_note_cas(
                         &request.note_id,
@@ -129,7 +152,7 @@ impl Controller {
                 {
                     Ok(note) => ControllerOutcome::Immediate(response(
                         capability,
-                        ResultPayload::Note(note_record(note)),
+                        ResultPayload::Note(note_record(note)?),
                     )),
                     Err(error) if error.code == "note_revision_conflict" => {
                         let current: NoteDto = error
@@ -145,7 +168,7 @@ impl Controller {
                             capability,
                             ResultPayload::Conflict(NoteConflict {
                                 expected_revision: request.expected_revision,
-                                current: note_record(current),
+                                current: note_record(current)?,
                             }),
                         ))
                     }
@@ -188,43 +211,17 @@ impl Controller {
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }
             Body::AgentSessionsList(page) => {
-                let tasks = repositories.list_agent_tasks().await?;
-                let (items, next_cursor) = page_slice(tasks.items, page.cursor, page.limit);
-                ControllerOutcome::Immediate(response(
-                    capability,
-                    ResultPayload::AgentSessions(Page {
-                        items: items
-                            .into_iter()
-                            .map(|task| AgentSession {
-                                id: task.id,
-                                title: task.title,
-                                status: agent_status(task.status),
-                                updated_at: task.updated_at,
-                            })
-                            .collect(),
-                        next_cursor,
-                    }),
-                ))
+                ControllerOutcome::Frontend(FrontendIntent::AgentSessionsList {
+                    cursor: page.cursor,
+                    limit: page.limit,
+                })
             }
             Body::AgentMessagesList { session_id, page } => {
-                let task = repositories.get_agent_task(&session_id).await?;
-                let (items, next_cursor) = page_slice(task.messages, page.cursor, page.limit);
-                ControllerOutcome::Immediate(response(
-                    capability,
-                    ResultPayload::AgentMessages(Page {
-                        items: items
-                            .into_iter()
-                            .map(|message| AgentMessage {
-                                id: message.id,
-                                role: message_role(message.role),
-                                text: message.content,
-                                created_at: message.created_at,
-                                streaming: false,
-                            })
-                            .collect(),
-                        next_cursor,
-                    }),
-                ))
+                ControllerOutcome::Frontend(FrontendIntent::AgentMessagesList {
+                    session_id,
+                    cursor: page.cursor,
+                    limit: page.limit,
+                })
             }
             Body::AgentSend(request) => ControllerOutcome::Frontend(FrontendIntent::AgentSend {
                 session_id: request.session_id,
@@ -244,6 +241,22 @@ impl Controller {
             Body::RecordingStop { session_id } => {
                 commands::finish_recording(app.clone(), SessionRequest { session_id }).await?;
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
+            }
+            Body::RecordingGetActive => {
+                let active =
+                    crate::audio::capture::current_status().map(|status| ActiveRecording {
+                        session_id: status.session_id,
+                        state: match status.state {
+                            crate::domain::types::RecordingState::Paused => {
+                                ActiveRecordingState::Paused
+                            }
+                            _ => ActiveRecordingState::Recording,
+                        },
+                    });
+                ControllerOutcome::Immediate(response(
+                    capability,
+                    ResultPayload::Recording(ActiveRecordingSnapshot { active }),
+                ))
             }
             Body::AppFocus { target } => {
                 if let Some(window) = app.get_webview_window("main") {
@@ -316,8 +329,9 @@ fn response(capability: Capability, result: ResultPayload) -> Response {
     Response { capability, result }
 }
 
-fn note_record(note: NoteDto) -> NoteRecord {
-    NoteRecord {
+fn note_record(note: NoteDto) -> Result<NoteRecord, AppError> {
+    ensure_note_record_size(&note)?;
+    Ok(NoteRecord {
         id: note.id,
         title: note.title,
         edited_content: note
@@ -326,7 +340,49 @@ fn note_record(note: NoteDto) -> NoteRecord {
             .unwrap_or_default(),
         revision: note.revision,
         updated_at: note.updated_at,
+    })
+}
+
+fn ensure_note_record_size(note: &NoteDto) -> Result<(), AppError> {
+    let content = note
+        .edited_content
+        .as_deref()
+        .or(note.generated_content.as_deref())
+        .unwrap_or_default();
+    if note.title.len() > MAX_COMPANION_NOTE_TITLE_BYTES || !companion_note_content_fits(content) {
+        return Err(note_too_large());
     }
+    Ok(())
+}
+
+fn companion_note_content_fits(content: &str) -> bool {
+    content.len() <= MAX_COMPANION_NOTE_CONTENT_BYTES
+        && serde_json::to_vec(content)
+            .is_ok_and(|encoded| encoded.len() <= MAX_COMPANION_NOTE_CONTENT_JSON_BYTES)
+}
+
+fn note_too_large() -> AppError {
+    AppError::new(
+        "companion_note_too_large",
+        "This note is too large to edit safely from the companion. Open it on your Mac.",
+    )
+}
+
+fn bounded_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    const SUFFIX: &str = "...";
+    let budget = max_bytes.saturating_sub(SUFFIX.len());
+    let mut end = 0;
+    for (index, character) in value.char_indices() {
+        let next = index + character.len_utf8();
+        if next > budget {
+            break;
+        }
+        end = next;
+    }
+    format!("{}{SUFFIX}", &value[..end])
 }
 
 fn read_safe_settings(app: &AppHandle) -> Result<SafeSettings, AppError> {
@@ -365,46 +421,6 @@ fn device_self(device: CompanionDeviceRecord) -> Result<DeviceSelf, AppError> {
         revoked_at: device.revoked_at,
     })
 }
-
-fn page_slice<T>(items: Vec<T>, cursor: Option<String>, limit: u16) -> (Vec<T>, Option<String>) {
-    let offset = cursor
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
-    let end = offset.saturating_add(usize::from(limit)).min(items.len());
-    if offset >= items.len() {
-        return (Vec::new(), None);
-    }
-    let next_cursor = (end < items.len()).then(|| end.to_string());
-    (
-        items.into_iter().skip(offset).take(end - offset).collect(),
-        next_cursor,
-    )
-}
-
-fn agent_status(status: DesktopAgentStatus) -> AgentStatus {
-    match status {
-        DesktopAgentStatus::Draft | DesktopAgentStatus::Paused => AgentStatus::Idle,
-        DesktopAgentStatus::Queued | DesktopAgentStatus::Running => AgentStatus::Running,
-        DesktopAgentStatus::WaitingForUser => AgentStatus::WaitingForUser,
-        DesktopAgentStatus::Completed => AgentStatus::Completed,
-        DesktopAgentStatus::Failed => AgentStatus::Failed,
-        DesktopAgentStatus::Cancelled => AgentStatus::Cancelled,
-    }
-}
-
-fn message_role(role: DesktopMessageRole) -> MessageRole {
-    match role {
-        DesktopMessageRole::User => MessageRole::User,
-        DesktopMessageRole::Assistant => MessageRole::Assistant,
-        DesktopMessageRole::System => MessageRole::System,
-    }
-}
-
-// The explicit imports below document the read-only DTOs that frontend
-// completion may return; keeping them protocol-owned prevents a raw Hermes
-// response from crossing this boundary accidentally.
-#[allow(dead_code)]
-fn _typed_frontend_response_contract(_: (Vec<AgentSession>, Vec<AgentMessage>)) {}
 
 #[cfg(test)]
 mod tests {
@@ -449,5 +465,15 @@ mod tests {
         assert!(controller.accept_sequence("phone", 0).is_err());
         controller.accept_sequence("phone", 2).unwrap();
         controller.accept_sequence("tablet", 1).unwrap();
+    }
+
+    #[test]
+    fn note_projection_stays_within_the_encrypted_frame_budget() {
+        assert!(companion_note_content_fits(&"a".repeat(28 * 1024)));
+        assert!(!companion_note_content_fits(&"\n".repeat(16 * 1024)));
+
+        let title = bounded_utf8(&"🙂".repeat(200), 512);
+        assert!(title.len() <= 512);
+        assert!(title.ends_with("..."));
     }
 }

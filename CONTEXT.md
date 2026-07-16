@@ -537,10 +537,10 @@ secret is single-use state for pairing, not a reusable device credential.
 _Avoid_: login, sync, invite.
 
 **Device credential**:
-The random opaque credential June API issues to a companion only after
-desktop-approved pairing. The companion stores it in Keychain and the relay
-stores only its SHA-256 hash. It authorizes one linked device at the relay but
-cannot decrypt companion frames or replace the device's Curve25519 private key.
+The random opaque credential a companion generates locally during pairing. It
+sends only its SHA-256 hash for desktop approval, stores the credential in
+Keychain, and uses it to authorize one linked device at the relay. It cannot
+decrypt companion frames or replace the device's Curve25519 private key.
 _Avoid_: OS Accounts token, desktop token, pairing secret.
 
 **Companion relay**:

@@ -244,10 +244,23 @@ pub async fn companion_approve_pairing(
         .mobile_display_name
         .clone()
         .unwrap_or_else(|| "iPhone".to_string());
-    repositories(&app)
-        .await?
-        .upsert_companion_device(&mobile_device_id.to_string(), &display_name, &public_key)
-        .await?;
+    let local_result = async {
+        repositories(&app)
+            .await?
+            .upsert_companion_device(&mobile_device_id.to_string(), &display_name, &public_key)
+            .await
+            .map_err(AppError::from)
+    }
+    .await;
+    if let Err(error) = local_result {
+        if let Err(cleanup_error) = revoke_device_remote(mobile_device_id).await {
+            tracing::error!(
+                code = %cleanup_error.code,
+                "failed to compensate companion approval after local persistence failure"
+            );
+        }
+        return Err(error);
+    }
     if let Some(pairing) = runtime
         .pairings
         .lock()
@@ -315,15 +328,20 @@ pub async fn companion_rename_device(
 
 #[tauri::command]
 pub async fn companion_revoke_device(app: AppHandle, device_id: Uuid) -> Result<(), AppError> {
+    revoke_device_remote(device_id).await?;
+    repositories(&app)
+        .await?
+        .revoke_companion_device(&device_id.to_string())
+        .await?;
+    Ok(())
+}
+
+async fn revoke_device_remote(device_id: Uuid) -> Result<(), AppError> {
     let _: serde_json::Value = companion_post(
         &format!("/v1/companion/devices/{device_id}/revoke"),
         &serde_json::json!({}),
     )
     .await?;
-    repositories(&app)
-        .await?
-        .revoke_companion_device(&device_id.to_string())
-        .await?;
     Ok(())
 }
 

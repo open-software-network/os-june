@@ -40,6 +40,8 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0028](adr/0028-june-companion-trust-boundaries.md) - original companion trust boundaries, relay-first E2EE, and desktop authority
 - [adr/0029](adr/0029-june-companion-native-swiftui.md) - native SwiftUI companion presentation; its mobile-login decision is superseded by ADR 0030
 - [adr/0030](adr/0030-companion-desktop-authorized-device-credential.md) - desktop-authorized mobile pairing and revocable device credentials without mobile account login
+- [adr/0031](adr/0031-companion-device-generates-relay-credential.md) - companion-generated relay credentials; June API receives and stores only their hashes
+- [adr/0032](adr/0032-companion-relay-single-replica-mvp.md) - the MVP relay is single-replica until pairing and live routing have shared cross-instance state
 
 ## Enforceable rules (spec/)
 

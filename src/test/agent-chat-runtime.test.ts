@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { isTerminalHermesEvent, type JuneHermesEvent } from "../lib/hermes-control-plane";
 import {
   type AgentChatToolPart,
+  boundedCompanionText,
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
+  companionAgentMessagesFromHermes,
   completedHermesMessageText,
   displayedComposerUserMessageText,
   imagePartsFromHermesContent,
@@ -241,6 +243,71 @@ describe("terminal media reference cleanup", () => {
       text: "MEDIA: prefix marks a file",
       status: "complete",
     });
+  });
+});
+
+describe("companion agent transcript", () => {
+  it("keeps display text while excluding reasoning, tools, and machine context", () => {
+    const messages: HermesSessionMessage[] = [
+      {
+        id: "provider-change",
+        role: "system",
+        content:
+          "The active model for this chat has changed to llama-3.3 via provider internal-router. Keep this directive private.",
+        timestamp: "2026-07-16T10:00:00.000Z",
+      },
+      {
+        id: "context",
+        role: "assistant",
+        content:
+          "[CONTEXT COMPACTION - REFERENCE ONLY] Earlier turns were compacted.\n\nInternal summary follows.",
+        timestamp: "2026-07-16T10:00:01.000Z",
+      },
+      {
+        id: "assistant",
+        role: "assistant",
+        content: "Here is the safe answer.",
+        reasoning: "Private chain of thought",
+        tool_calls: [
+          {
+            id: "call-1",
+            function: { name: "shell", arguments: { command: "secret command" } },
+          },
+        ],
+        timestamp: "2026-07-16T10:00:02.000Z",
+      },
+      {
+        id: "tool-result",
+        role: "tool",
+        tool_call_id: "call-1",
+        content: "secret tool result",
+        timestamp: "2026-07-16T10:00:03.000Z",
+      },
+    ];
+
+    expect(companionAgentMessagesFromHermes(messages)).toEqual([
+      {
+        id: "provider-change",
+        role: "system",
+        text: "Model changed to llama-3.3.",
+        createdAt: "2026-07-16T10:00:00.000Z",
+        streaming: false,
+      },
+      {
+        id: "assistant",
+        role: "assistant",
+        text: "Here is the safe answer.",
+        createdAt: "2026-07-16T10:00:02.000Z",
+        streaming: false,
+      },
+    ]);
+  });
+
+  it("bounds UTF-8 text without splitting a scalar", () => {
+    const bounded = boundedCompanionText("🙂".repeat(20), 31, "...");
+
+    expect(new TextEncoder().encode(bounded).byteLength).toBeLessThanOrEqual(31);
+    expect(bounded).toBe("🙂".repeat(7) + "...");
   });
 });
 

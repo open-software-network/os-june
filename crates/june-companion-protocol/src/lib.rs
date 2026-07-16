@@ -108,6 +108,7 @@ pub enum Body {
     RecordingStop {
         session_id: String,
     },
+    RecordingGetActive,
     AppFocus {
         target: FocusTarget,
     },
@@ -129,7 +130,8 @@ impl Body {
             Self::SettingsEditSafe(_) => Capability::SettingsEditSafe,
             Self::RecordingPause { .. }
             | Self::RecordingResume { .. }
-            | Self::RecordingStop { .. } => Capability::RecordingControlExisting,
+            | Self::RecordingStop { .. }
+            | Self::RecordingGetActive => Capability::RecordingControlExisting,
             Self::AppFocus { .. } => Capability::AppFocus,
             Self::DeviceGetSelf => Capability::DevicesReadSelf,
             Self::DeviceRevokeSelf => Capability::DevicesRevokeSelf,
@@ -285,6 +287,7 @@ pub enum ResultPayload {
     AgentMessages(Page<AgentMessage>),
     AgentAccepted { session_id: String },
     Settings(SafeSettings),
+    Recording(ActiveRecordingSnapshot),
     Device(DeviceSelf),
     Conflict(NoteConflict),
     Error(ProtocolFailure),
@@ -367,6 +370,26 @@ pub enum MessageRole {
 pub struct SafeSettings {
     pub dictation_style: DictationStyle,
     pub image_safe_mode: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveRecordingSnapshot {
+    pub active: Option<ActiveRecording>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveRecording {
+    pub session_id: String,
+    pub state: ActiveRecordingState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActiveRecordingState {
+    Recording,
+    Paused,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

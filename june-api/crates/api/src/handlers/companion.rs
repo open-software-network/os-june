@@ -19,7 +19,6 @@ use axum::{
     http::{HeaderMap, header::AUTHORIZATION},
     response::Response,
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::{SinkExt, StreamExt};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use june_companion_protocol::{MAX_RELAY_ENVELOPE_BYTES, PROTOCOL_VERSION, RelayEnvelope};
@@ -46,6 +45,9 @@ const MAX_APNS_TOKEN_BYTES: usize = 256;
 const APNS_WAKE_COOLDOWN: Duration = Duration::from_secs(30);
 const DEVICE_AUTH_SCHEME: &str = "Device ";
 const SECRET_BYTES: usize = 32;
+const MAX_PENDING_PAIRINGS_PER_USER: usize = 8;
+const MAX_PENDING_PAIRINGS_TOTAL: usize = 4_096;
+const MAX_ACTIVE_DEVICES_PER_USER: usize = 32;
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 pub(crate) struct CompanionRelay {
@@ -70,6 +72,7 @@ struct Device {
     public_key: [u8; 32],
     display_name: String,
     credential_hash: Option<[u8; SECRET_BYTES]>,
+    persisted: bool,
     revoked: bool,
     push_token: Option<Vec<u8>>,
 }
@@ -86,10 +89,22 @@ struct Pairing {
     desktop_device_id: Uuid,
     proof: [u8; SECRET_BYTES],
     mobile_device_id: Option<Uuid>,
-    mobile_credential: Option<String>,
     expires_at_ms: u64,
     approving: bool,
     approved: bool,
+}
+
+struct PendingPairingApproval {
+    desktop_device_id: Uuid,
+    mobile_device_id: Uuid,
+    desktop: Device,
+    mobile: Device,
+    link: DeviceLink,
+}
+
+enum PairingApprovalPreparation {
+    Approved(PairingResponse),
+    Pending(Box<PendingPairingApproval>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -135,6 +150,7 @@ pub(crate) struct ProposePairingRequest {
     mobile_public_key: Vec<u8>,
     display_name: String,
     pairing_proof: Vec<u8>,
+    device_credential_hash: Vec<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,14 +176,6 @@ pub(crate) struct PairingResponse {
     mobile_device_id: Option<Uuid>,
     mobile_public_key: Option<Vec<u8>>,
     mobile_display_name: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct MobilePairingResponse {
-    #[serde(flatten)]
-    pairing: PairingResponse,
-    device_credential: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -240,30 +248,31 @@ pub(crate) async fn propose_pairing(
     State(state): State<ApiState>,
     Path(pairing_id): Path<Uuid>,
     Json(request): Json<ProposePairingRequest>,
-) -> Result<Json<ApiResponse<MobilePairingResponse>>, ApiError> {
+) -> Result<Json<ApiResponse<PairingResponse>>, ApiError> {
     let public_key = validate_device(&request.mobile_public_key, &request.display_name)?;
     let pairing_proof = validate_secret(&request.pairing_proof, "invalid_pairing_proof")?;
+    let credential_hash = validate_secret(
+        &request.device_credential_hash,
+        "invalid_device_credential_hash",
+    )?;
     let response = state.companion().propose_pairing(
         pairing_id,
         DeviceRegistration {
             device_id: request.mobile_device_id,
             public_key,
             display_name: request.display_name,
-            credential_hash: None,
+            credential_hash: Some(credential_hash),
         },
         &pairing_proof,
     )?;
-    Ok(Json(ApiResponse::ok(MobilePairingResponse {
-        pairing: response,
-        device_credential: None,
-    })))
+    Ok(Json(ApiResponse::ok(response)))
 }
 
 pub(crate) async fn mobile_pairing_status(
     State(state): State<ApiState>,
     Path(pairing_id): Path<Uuid>,
     Json(request): Json<MobilePairingStatusRequest>,
-) -> Result<Json<ApiResponse<MobilePairingResponse>>, ApiError> {
+) -> Result<Json<ApiResponse<PairingResponse>>, ApiError> {
     let pairing_proof = validate_secret(&request.pairing_proof, "invalid_pairing_proof")?;
     let response = state
         .companion()
@@ -311,7 +320,7 @@ pub(crate) async fn register_push(
     Path(device_id): Path<Uuid>,
     Json(request): Json<RegisterPushRequest>,
 ) -> Result<Json<ApiResponse<PushRegistrationResponse>>, ApiError> {
-    let user_id = companion_device_user(&state, &headers, device_id).await?;
+    let user_id = companion_mobile_user(&state, &headers, device_id)?;
     if request.token.len() < MIN_APNS_TOKEN_BYTES || request.token.len() > MAX_APNS_TOKEN_BYTES {
         return Err(ApiError::bad_request("invalid_push_token"));
     }
@@ -330,7 +339,7 @@ pub(crate) async fn relay_socket(
     Query(query): Query<RelayQuery>,
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    let user_id = companion_device_user(&state, &headers, query.device_id).await?;
+    let user_id = companion_relay_user(&state, &headers, query.device_id).await?;
     state
         .companion()
         .authorize_connection(&user_id, query.device_id)?;
@@ -352,6 +361,35 @@ async fn companion_device_user(
             .authorize_device_credential(device_id, credential);
     }
     companion_user(state, headers).await
+}
+
+fn companion_mobile_user(
+    state: &ApiState,
+    headers: &HeaderMap,
+    device_id: Uuid,
+) -> Result<UserId, ApiError> {
+    let credential = device_credential(headers)?
+        .ok_or_else(|| ApiError::unauthorized("invalid_device_credential"))?;
+    state
+        .companion()
+        .authorize_device_credential(device_id, credential)
+}
+
+async fn companion_relay_user(
+    state: &ApiState,
+    headers: &HeaderMap,
+    device_id: Uuid,
+) -> Result<UserId, ApiError> {
+    if let Some(credential) = device_credential(headers)? {
+        return state
+            .companion()
+            .authorize_device_credential(device_id, credential);
+    }
+    let user_id = companion_user(state, headers).await?;
+    state
+        .companion()
+        .authorize_desktop_bearer(&user_id, device_id)?;
+    Ok(user_id)
 }
 
 fn device_credential(headers: &HeaderMap) -> Result<Option<&str>, ApiError> {
@@ -458,6 +496,7 @@ impl CompanionRelay {
                         public_key: record.public_key,
                         display_name: record.display_name,
                         credential_hash: record.credential_hash,
+                        persisted: true,
                         revoked: false,
                         push_token: record.push_token,
                     },
@@ -506,6 +545,17 @@ impl CompanionRelay {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prune_pairings(&mut state, now_ms());
+        if state.pairings.len() >= MAX_PENDING_PAIRINGS_TOTAL
+            || state
+                .pairings
+                .values()
+                .filter(|pairing| pairing.user_id == user_id)
+                .count()
+                >= MAX_PENDING_PAIRINGS_PER_USER
+        {
+            return Err(ApiError::service_overloaded());
+        }
         register_device(&mut state, &user_id, desktop)?;
         state.pairings.insert(
             pairing_id,
@@ -514,7 +564,6 @@ impl CompanionRelay {
                 desktop_device_id,
                 proof,
                 mobile_device_id: None,
-                mobile_credential: None,
                 expires_at_ms,
                 approving: false,
                 approved: false,
@@ -543,6 +592,7 @@ impl CompanionRelay {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prune_pairings(&mut state, now_ms());
         let mobile_device_id = mobile.device_id;
         let user_id = {
             let pairing = valid_mobile_pairing_mut(&mut state, pairing_id, proof)?;
@@ -563,6 +613,11 @@ impl CompanionRelay {
             }
             pairing.user_id.clone()
         };
+        if state.pairings.iter().any(|(candidate_id, pairing)| {
+            *candidate_id != pairing_id && pairing.mobile_device_id == Some(mobile_device_id)
+        }) {
+            return Err(ApiError::bad_request("device_identity_conflict"));
+        }
         register_device(&mut state, &user_id, mobile)?;
         state
             .pairings
@@ -576,22 +631,15 @@ impl CompanionRelay {
         &self,
         pairing_id: Uuid,
         proof: &[u8; SECRET_BYTES],
-    ) -> Result<MobilePairingResponse, ApiError> {
+    ) -> Result<PairingResponse, ApiError> {
         self.ensure_enabled()?;
         let mut state = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pairing_state = valid_mobile_pairing_mut(&mut state, pairing_id, proof)?;
-        let credential = (pairing_state.expires_at_ms >= now_ms() && pairing_state.approved)
-            .then(|| pairing_state.mobile_credential.clone())
-            .flatten();
-        let pairing = pairing_response(&state, pairing_id)
-            .ok_or_else(|| ApiError::not_found("pairing_not_found"))?;
-        Ok(MobilePairingResponse {
-            pairing,
-            device_credential: credential,
-        })
+        prune_pairings(&mut state, now_ms());
+        valid_mobile_pairing_mut(&mut state, pairing_id, proof)?;
+        pairing_response(&state, pairing_id).ok_or_else(|| ApiError::not_found("pairing_not_found"))
     }
 
     fn pairing_status(
@@ -600,10 +648,11 @@ impl CompanionRelay {
         pairing_id: Uuid,
     ) -> Result<PairingResponse, ApiError> {
         self.ensure_enabled()?;
-        let state = self
+        let mut state = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prune_pairings(&mut state, now_ms());
         let pairing = state
             .pairings
             .get(&pairing_id)
@@ -621,73 +670,135 @@ impl CompanionRelay {
         mobile_device_id: Uuid,
     ) -> Result<PairingResponse, ApiError> {
         self.ensure_enabled()?;
-        let (desktop_device_id, desktop, mut mobile) = {
-            let mut state = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let pairing = valid_pairing_mut(&mut state, user_id, pairing_id)?;
-            if pairing.mobile_device_id != Some(mobile_device_id) {
-                return Err(ApiError::bad_request("pairing_device_mismatch"));
-            }
-            if pairing.approved {
-                return pairing_response(&state, pairing_id)
-                    .ok_or_else(|| ApiError::not_found("pairing_not_found"));
-            }
-            if pairing.approving {
-                return Err(ApiError::service_overloaded());
-            }
-            pairing.approving = true;
-            let desktop_device_id = pairing.desktop_device_id;
-            let desktop = state
-                .devices
-                .get(&desktop_device_id)
-                .cloned()
-                .ok_or_else(|| ApiError::not_found("pairing_not_found"))?;
-            let mobile = state
-                .devices
-                .get(&mobile_device_id)
-                .cloned()
-                .ok_or_else(|| ApiError::not_found("pairing_not_found"))?;
-            (desktop_device_id, desktop, mobile)
+        let approval = match self.prepare_pairing_approval(user_id, pairing_id, mobile_device_id)? {
+            PairingApprovalPreparation::Approved(response) => return Ok(response),
+            PairingApprovalPreparation::Pending(approval) => approval,
         };
-        let credential = new_device_credential();
-        let credential_hash = hash_secret(credential.as_bytes());
-        mobile.credential_hash = Some(credential_hash);
-        let link = DeviceLink::new(desktop_device_id, mobile_device_id);
-        if let Some(store) = &self.store {
-            let persisted = store
-                .approve_pairing(
-                    user_id,
-                    CompanionApprovalRecord {
-                        desktop: device_record(desktop_device_id, &desktop),
-                        mobile: device_record(mobile_device_id, &mobile),
-                        link: CompanionLinkRecord {
-                            left_device_id: link.0,
-                            right_device_id: link.1,
-                        },
-                    },
-                )
-                .await;
-            if let Err(error) = persisted {
-                let mut state = self
-                    .inner
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(pairing) = state.pairings.get_mut(&pairing_id) {
-                    pairing.approving = false;
-                }
-                return Err(match error {
-                    CompanionStoreError::IdentityConflict => {
-                        ApiError::bad_request("device_identity_conflict")
-                    }
-                    CompanionStoreError::Unavailable { .. } => {
-                        tracing::error!(%error, "companion pairing persistence failed");
-                        ApiError::service_overloaded()
-                    }
-                });
-            }
+        if approval.desktop.credential_hash.is_some() || approval.mobile.credential_hash.is_none() {
+            self.reset_pairing_approval(pairing_id);
+            return Err(ApiError::bad_request("device_identity_conflict"));
         }
+        if let Err(error) = self.persist_pairing_approval(user_id, &approval).await {
+            self.reset_pairing_approval(pairing_id);
+            return Err(match error {
+                CompanionStoreError::IdentityConflict => {
+                    ApiError::bad_request("device_identity_conflict")
+                }
+                CompanionStoreError::Unavailable { .. } => {
+                    tracing::error!(%error, "companion pairing persistence failed");
+                    ApiError::service_overloaded()
+                }
+            });
+        }
+        self.finish_pairing_approval(user_id, pairing_id, &approval)
+    }
+
+    fn prepare_pairing_approval(
+        &self,
+        user_id: &UserId,
+        pairing_id: Uuid,
+        mobile_device_id: Uuid,
+    ) -> Result<PairingApprovalPreparation, ApiError> {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prune_pairings(&mut state, now_ms());
+        let pairing = valid_pairing_mut(&mut state, user_id, pairing_id)?;
+        if pairing.mobile_device_id != Some(mobile_device_id) {
+            return Err(ApiError::bad_request("pairing_device_mismatch"));
+        }
+        if pairing.approved {
+            let response = pairing_response(&state, pairing_id)
+                .ok_or_else(|| ApiError::not_found("pairing_not_found"))?;
+            return Ok(PairingApprovalPreparation::Approved(response));
+        }
+        if pairing.approving {
+            return Err(ApiError::service_overloaded());
+        }
+        let desktop_device_id = pairing.desktop_device_id;
+        let desktop = state
+            .devices
+            .get(&desktop_device_id)
+            .cloned()
+            .ok_or_else(|| ApiError::not_found("pairing_not_found"))?;
+        let mobile = state
+            .devices
+            .get(&mobile_device_id)
+            .cloned()
+            .ok_or_else(|| ApiError::not_found("pairing_not_found"))?;
+        let active_devices = state
+            .devices
+            .values()
+            .filter(|device| device.persisted && !device.revoked && &device.user_id == user_id)
+            .count();
+        let new_devices = [desktop_device_id, mobile_device_id]
+            .into_iter()
+            .filter(|device_id| {
+                state
+                    .devices
+                    .get(device_id)
+                    .is_some_and(|device| !device.persisted)
+            })
+            .count();
+        if active_devices.saturating_add(new_devices) > MAX_ACTIVE_DEVICES_PER_USER {
+            return Err(ApiError::bad_request("device_limit_reached"));
+        }
+        state
+            .pairings
+            .get_mut(&pairing_id)
+            .ok_or_else(|| ApiError::not_found("pairing_not_found"))?
+            .approving = true;
+        Ok(PairingApprovalPreparation::Pending(Box::new(
+            PendingPairingApproval {
+                desktop_device_id,
+                mobile_device_id,
+                desktop,
+                mobile,
+                link: DeviceLink::new(desktop_device_id, mobile_device_id),
+            },
+        )))
+    }
+
+    async fn persist_pairing_approval(
+        &self,
+        user_id: &UserId,
+        approval: &PendingPairingApproval,
+    ) -> Result<(), CompanionStoreError> {
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        store
+            .approve_pairing(
+                user_id,
+                CompanionApprovalRecord {
+                    desktop: device_record(approval.desktop_device_id, &approval.desktop),
+                    mobile: device_record(approval.mobile_device_id, &approval.mobile),
+                    link: CompanionLinkRecord {
+                        left_device_id: approval.link.0,
+                        right_device_id: approval.link.1,
+                    },
+                },
+            )
+            .await
+    }
+
+    fn reset_pairing_approval(&self, pairing_id: Uuid) {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(pairing) = state.pairings.get_mut(&pairing_id) {
+            pairing.approving = false;
+        }
+    }
+
+    fn finish_pairing_approval(
+        &self,
+        user_id: &UserId,
+        pairing_id: Uuid,
+        approval: &PendingPairingApproval,
+    ) -> Result<PairingResponse, ApiError> {
         let mut state = self
             .inner
             .lock()
@@ -699,13 +810,14 @@ impl CompanionRelay {
             .ok_or_else(|| ApiError::not_found("pairing_not_found"))?;
         pairing.approving = false;
         pairing.approved = true;
-        pairing.mobile_credential = Some(credential);
-        let device = state
-            .devices
-            .get_mut(&mobile_device_id)
-            .ok_or_else(|| ApiError::not_found("pairing_not_found"))?;
-        device.credential_hash = Some(credential_hash);
-        state.links.insert(link);
+        for device_id in [approval.desktop_device_id, approval.mobile_device_id] {
+            let device = state
+                .devices
+                .get_mut(&device_id)
+                .ok_or_else(|| ApiError::not_found("pairing_not_found"))?;
+            device.persisted = true;
+        }
+        state.links.insert(approval.link);
         pairing_response(&state, pairing_id).ok_or_else(|| ApiError::not_found("pairing_not_found"))
     }
 
@@ -750,6 +862,22 @@ impl CompanionRelay {
             || device.revoked
             || !state.links.iter().any(|link| link.contains(device_id))
         {
+            return Err(ApiError::not_found("device_not_found"));
+        }
+        Ok(())
+    }
+
+    fn authorize_desktop_bearer(&self, user_id: &UserId, device_id: Uuid) -> Result<(), ApiError> {
+        self.authorize_connection(user_id, device_id)?;
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let device = state
+            .devices
+            .get(&device_id)
+            .ok_or_else(|| ApiError::not_found("device_not_found"))?;
+        if device.credential_hash.is_some() {
             return Err(ApiError::not_found("device_not_found"));
         }
         Ok(())
@@ -1048,13 +1176,14 @@ fn register_device(
         credential_hash,
     } = registration;
     if let Some(device) = state.devices.get_mut(&device_id) {
-        if &device.user_id != user_id || device.public_key != public_key || device.revoked {
+        if &device.user_id != user_id
+            || device.public_key != public_key
+            || device.credential_hash != credential_hash
+            || device.revoked
+        {
             return Err(ApiError::bad_request("device_identity_conflict"));
         }
         device.display_name = display_name;
-        if credential_hash.is_some() {
-            device.credential_hash = credential_hash;
-        }
         return Ok(());
     }
     state.devices.insert(
@@ -1064,6 +1193,7 @@ fn register_device(
             public_key,
             display_name,
             credential_hash,
+            persisted: false,
             revoked: false,
             push_token: None,
         },
@@ -1082,15 +1212,35 @@ fn device_record(device_id: Uuid, device: &Device) -> CompanionDeviceRecord {
     }
 }
 
-fn new_device_credential() -> String {
-    let mut bytes = Vec::with_capacity(SECRET_BYTES);
-    bytes.extend_from_slice(Uuid::new_v4().as_bytes());
-    bytes.extend_from_slice(Uuid::new_v4().as_bytes());
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
 fn hash_secret(value: &[u8]) -> [u8; SECRET_BYTES] {
     Sha256::digest(value).into()
+}
+
+fn prune_pairings(state: &mut RelayState, now: u64) {
+    state
+        .pairings
+        .retain(|_, pairing| pairing.approving || pairing.expires_at_ms >= now);
+    let referenced_devices: HashSet<Uuid> = state
+        .pairings
+        .values()
+        .flat_map(|pairing| {
+            std::iter::once(pairing.desktop_device_id).chain(pairing.mobile_device_id)
+        })
+        .collect();
+    let linked_devices: HashSet<Uuid> = state
+        .links
+        .iter()
+        .flat_map(|link| [link.0, link.1])
+        .collect();
+    state.devices.retain(|device_id, device| {
+        device.persisted
+            || referenced_devices.contains(device_id)
+            || linked_devices.contains(device_id)
+            || state.connections.contains_key(device_id)
+    });
+    state
+        .last_push_at
+        .retain(|device_id, _| state.devices.contains_key(device_id));
 }
 
 fn constant_time_equal(left: &[u8; SECRET_BYTES], right: &[u8; SECRET_BYTES]) -> bool {
@@ -1155,6 +1305,20 @@ mod tests {
         }
     }
 
+    fn mobile_device(
+        device_id: Uuid,
+        public_key: [u8; 32],
+        display_name: &str,
+        credential: &str,
+    ) -> DeviceRegistration {
+        DeviceRegistration {
+            device_id,
+            public_key,
+            display_name: display_name.to_string(),
+            credential_hash: Some(hash_secret(credential.as_bytes())),
+        }
+    }
+
     async fn linked_relay() -> (CompanionRelay, Uuid, Uuid) {
         let relay = CompanionRelay::default();
         let desktop = Uuid::new_v4();
@@ -1166,7 +1330,7 @@ mod tests {
         relay
             .propose_pairing(
                 pairing.pairing_id,
-                device(mobile, [2; 32], "iPhone"),
+                mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
                 &proof,
             )
             .unwrap();
@@ -1178,10 +1342,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pairing_proof_and_desktop_approval_issue_a_scoped_device_credential() {
+    async fn pairing_proof_and_desktop_approval_accept_a_phone_scoped_credential_hash() {
         let relay = CompanionRelay::default();
         let desktop = Uuid::new_v4();
         let mobile = Uuid::new_v4();
+        let credential = "phone-generated-secret";
         let proof = [3; SECRET_BYTES];
         let pairing = relay
             .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
@@ -1191,7 +1356,7 @@ mod tests {
             relay
                 .propose_pairing(
                     pairing.pairing_id,
-                    device(mobile, [2; 32], "iPhone"),
+                    mobile_device(mobile, [2; 32], "iPhone", credential),
                     &[4; SECRET_BYTES],
                 )
                 .is_err()
@@ -1199,7 +1364,7 @@ mod tests {
         relay
             .propose_pairing(
                 pairing.pairing_id,
-                device(mobile, [2; 32], "iPhone"),
+                mobile_device(mobile, [2; 32], "iPhone", credential),
                 &proof,
             )
             .unwrap();
@@ -1208,17 +1373,67 @@ mod tests {
             .await
             .unwrap();
 
-        let status = relay
+        let _status = relay
             .mobile_pairing_status(pairing.pairing_id, &proof)
             .unwrap();
-        let credential = status.device_credential.unwrap();
         assert_eq!(
             relay
-                .authorize_device_credential(mobile, &credential)
+                .authorize_device_credential(mobile, credential)
                 .unwrap(),
             user()
         );
         assert!(relay.authorize_device_credential(mobile, "wrong").is_err());
+        assert!(relay.authorize_desktop_bearer(&user(), desktop).is_ok());
+        assert!(relay.authorize_desktop_bearer(&user(), mobile).is_err());
+    }
+
+    #[test]
+    fn pending_pairings_are_bounded_and_expired_transient_devices_are_pruned() {
+        let relay = CompanionRelay::default();
+        let expired_desktop = Uuid::new_v4();
+        let expired = relay
+            .create_pairing(
+                user(),
+                device(expired_desktop, [7; SECRET_BYTES], "Old Mac"),
+                [1; SECRET_BYTES],
+            )
+            .unwrap();
+        {
+            let mut state = relay
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state
+                .pairings
+                .get_mut(&expired.pairing_id)
+                .unwrap()
+                .expires_at_ms = 0;
+        }
+
+        let pending_limit = u8::try_from(MAX_PENDING_PAIRINGS_PER_USER).unwrap_or(u8::MAX);
+        for index in 0..pending_limit {
+            relay
+                .create_pairing(
+                    user(),
+                    device(Uuid::new_v4(), [index; SECRET_BYTES], "Mac"),
+                    [index; SECRET_BYTES],
+                )
+                .unwrap();
+        }
+        assert!(
+            relay
+                .create_pairing(
+                    user(),
+                    device(Uuid::new_v4(), [99; SECRET_BYTES], "Mac"),
+                    [99; SECRET_BYTES],
+                )
+                .is_err()
+        );
+        let state = relay
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!state.devices.contains_key(&expired_desktop));
     }
 
     #[tokio::test]

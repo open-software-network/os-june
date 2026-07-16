@@ -84,43 +84,57 @@ final class CompanionService {
     snapshot.connection = "connecting"
     emitSnapshot()
     let identity = try DeviceIdentityService.shared.identity()
-    _ = try await pairingAPI.propose(
-      payload: payload,
-      identity: identity,
-      pairingProof: pairingProof
-    )
-    let approved = try await pairingAPI.waitForApproval(
-      payload: payload,
-      pairingProof: pairingProof
-    )
-    guard approved.desktopPublicKey.count == 32,
-          let deviceCredential = approved.deviceCredential,
-          !deviceCredential.isEmpty else {
-      throw CompanionNativeError.invalidData("The Mac identity is invalid.")
+    let deviceCredential = try pairingCredential()
+    var approvedByDesktop = false
+    do {
+      _ = try await pairingAPI.propose(
+        payload: payload,
+        identity: identity,
+        pairingProof: pairingProof,
+        deviceCredentialHash: deviceCredential.hash
+      )
+      let approved = try await pairingAPI.waitForApproval(
+        payload: payload,
+        pairingProof: pairingProof
+      )
+      approvedByDesktop = true
+      guard approved.desktopPublicKey.count == 32 else {
+        throw CompanionNativeError.invalidData("The Mac identity is invalid.")
+      }
+      let crypto = try CompanionCryptoSession(pairingInitiator: true, localPrivate: identity.privateKey, pairingSecret: secret)
+      try await transport.connect(
+        relayURL: payload.relayUrl,
+        deviceCredential: deviceCredential.value,
+        identity: identity,
+        desktopDeviceID: approved.desktopDeviceId,
+        crypto: crypto,
+        pairing: true,
+        expectedDesktopPublicKey: approved.desktopPublicKey,
+        eventHandler: handleTransportEvent
+      )
+      let configuration = LinkedConfiguration(relayURL: payload.relayUrl, desktopDeviceID: approved.desktopDeviceId, desktopPublicKey: approved.desktopPublicKey, linkedAt: Date())
+      try SecureStore.shared.save(JSONEncoder().encode(configuration), account: "linked.configuration")
+      linked = configuration
+      unlocked = true
+      snapshot.connection = "ready"
+      reconnectAttempt = 0
+      await registerStoredPushToken()
+    } catch {
+      transport.disconnect()
+      if approvedByDesktop {
+        try? await pairingAPI.revoke(
+          relayURL: payload.relayUrl,
+          deviceID: identity.deviceID,
+          deviceCredential: deviceCredential.value
+        )
+        SecureStore.shared.delete(account: "linked.configuration")
+        SecureStore.shared.delete(account: "device.credential")
+        DeviceIdentityService.shared.delete()
+      }
+      snapshot.connection = "unpaired"
+      emitSnapshot()
+      throw error
     }
-    let crypto = try CompanionCryptoSession(pairingInitiator: true, localPrivate: identity.privateKey, pairingSecret: secret)
-    try await transport.connect(
-      relayURL: payload.relayUrl,
-      deviceCredential: deviceCredential,
-      identity: identity,
-      desktopDeviceID: approved.desktopDeviceId,
-      crypto: crypto,
-      pairing: true,
-      expectedDesktopPublicKey: approved.desktopPublicKey,
-      eventHandler: handleTransportEvent
-    )
-    let configuration = LinkedConfiguration(relayURL: payload.relayUrl, desktopDeviceID: approved.desktopDeviceId, desktopPublicKey: approved.desktopPublicKey, linkedAt: Date())
-    try SecureStore.shared.save(JSONEncoder().encode(configuration), account: "linked.configuration")
-    try SecureStore.shared.save(
-      Data(deviceCredential.utf8),
-      account: "device.credential",
-      accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-    )
-    linked = configuration
-    unlocked = true
-    snapshot.connection = "ready"
-    reconnectAttempt = 0
-    await registerStoredPushToken()
     return try await refresh()
   }
 
@@ -133,13 +147,15 @@ final class CompanionService {
 
   func refresh() async throws -> String {
     try await ensureConnected()
-    let notes = try await request(capability: "notesRead", body: ["type": "notesList", "data": ["cursor": NSNull(), "limit": 50]])
-    let sessions = try await request(capability: "agentRead", body: ["type": "agentSessionsList", "data": ["cursor": NSNull(), "limit": 50]])
+    let notes = try await collectPages(capability: "notesRead", type: "notesList")
+    let sessions = try await collectPages(capability: "agentRead", type: "agentSessionsList")
     let settings = try await request(capability: "settingsRead", body: ["type": "settingsGet"])
+    let recording = try await request(capability: "recordingControlExisting", body: ["type": "recordingGetActive"])
     let device = try await request(capability: "devicesReadSelf", body: ["type": "deviceGetSelf"])
-    snapshot.notes = pageItems(notes)
-    snapshot.agentSessions = pageItems(sessions)
+    snapshot.notes = notes
+    snapshot.agentSessions = sessions
     snapshot.safeSettings = objectResult(settings)
+    snapshot.activeRecording = activeRecordingResult(recording)
     snapshot.device = objectResult(device)
     snapshot.connection = "ready"
     try persistSnapshot()
@@ -330,9 +346,45 @@ final class CompanionService {
     return items.compactMap { try? JSONDecoder().decode([String: JSONValue].self, from: JSONSerialization.data(withJSONObject: $0)) }
   }
 
+  /// Refreshes enough bounded pages for useful offline browsing and local
+  /// search without allowing a corrupt or cyclic cursor to loop forever.
+  private func collectPages(
+    capability: String,
+    type: String,
+    pageLimit: Int = 50,
+    maximumPages: Int = 20
+  ) async throws -> [[String: JSONValue]] {
+    var items: [[String: JSONValue]] = []
+    var cursor: String?
+    var seenCursors = Set<String>()
+
+    for _ in 0..<maximumPages {
+      let response = try await request(
+        capability: capability,
+        body: ["type": type, "data": ["cursor": optionalJSON(cursor), "limit": pageLimit]]
+      )
+      items.append(contentsOf: pageItems(response))
+      guard let nextCursor = resultData(response)?["nextCursor"] as? String,
+            !nextCursor.isEmpty,
+            seenCursors.insert(nextCursor).inserted else {
+        break
+      }
+      cursor = nextCursor
+    }
+    return items
+  }
+
   private func objectResult(_ response: [String: Any]) -> [String: JSONValue]? {
     guard let data = resultData(response) else { return nil }
     return try? JSONDecoder().decode([String: JSONValue].self, from: JSONSerialization.data(withJSONObject: data))
+  }
+
+  private func activeRecordingResult(_ response: [String: Any]) -> [String: JSONValue]? {
+    guard let active = resultData(response)?["active"] as? [String: Any] else { return nil }
+    return try? JSONDecoder().decode(
+      [String: JSONValue].self,
+      from: JSONSerialization.data(withJSONObject: active)
+    )
   }
 
   private func resultType(_ response: [String: Any]) -> String? {
@@ -383,6 +435,22 @@ final class CompanionService {
           !credential.isEmpty else {
       throw CompanionNativeError.unavailable("Link this device from June on your Mac.")
     }
+    return credential
+  }
+
+  private func pairingCredential() throws -> DeviceCredential {
+    if let stored = try SecureStore.shared.read(account: "device.credential"),
+       let value = String(data: stored, encoding: .utf8),
+       let bytes = Data(base64URL: value),
+       bytes.count == 32 {
+      return DeviceCredential(value: value, hash: Array(SHA256.hash(data: bytes)))
+    }
+    let credential = try DeviceCredential.generate()
+    try SecureStore.shared.save(
+      Data(credential.value.utf8),
+      account: "device.credential",
+      accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    )
     return credential
   }
 

@@ -8,7 +8,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use snow::{Builder, HandshakeState, TransportState, params::NoiseParams};
-use std::{ptr, slice, time::{Duration, Instant}};
+use std::{
+    ptr, slice,
+    time::{Duration, Instant},
+};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -28,7 +31,9 @@ pub struct IdentityKeypair {
 
 pub fn generate_identity() -> Result<IdentityKeypair, CryptoError> {
     let params: NoiseParams = LINKED_PATTERN.parse().map_err(CryptoError::Noise)?;
-    let pair = Builder::new(params).generate_keypair().map_err(CryptoError::Noise)?;
+    let pair = Builder::new(params)
+        .generate_keypair()
+        .map_err(CryptoError::Noise)?;
     Ok(IdentityKeypair {
         private: Zeroizing::new(pair.private),
         public: pair.public,
@@ -170,7 +175,9 @@ impl Session {
 
     fn ensure_transport_fresh(&self, messages: u64) -> Result<(), CryptoError> {
         if messages >= TRANSPORT_MESSAGE_LIMIT
-            || self.transport_started_at.is_some_and(|at| at.elapsed() >= TRANSPORT_MAX_AGE)
+            || self
+                .transport_started_at
+                .is_some_and(|at| at.elapsed() >= TRANSPORT_MAX_AGE)
         {
             return Err(CryptoError::RehandshakeRequired);
         }
@@ -299,7 +306,17 @@ pub mod ffi {
         output_len: *mut usize,
     ) -> i32 {
         // SAFETY: validated and converted by the shared ABI helper.
-        unsafe { session_operation(session, input, input_len, output, output_capacity, output_len, true) }
+        unsafe {
+            session_operation(
+                session,
+                input,
+                input_len,
+                output,
+                output_capacity,
+                output_len,
+                true,
+            )
+        }
     }
 
     #[unsafe(no_mangle)]
@@ -312,7 +329,17 @@ pub mod ffi {
         output_len: *mut usize,
     ) -> i32 {
         // SAFETY: validated and converted by the shared ABI helper.
-        unsafe { session_operation(session, input, input_len, output, output_capacity, output_len, false) }
+        unsafe {
+            session_operation(
+                session,
+                input,
+                input_len,
+                output,
+                output_capacity,
+                output_len,
+                false,
+            )
+        }
     }
 
     #[unsafe(no_mangle)]
@@ -373,7 +400,11 @@ pub mod ffi {
         let session = unsafe { &mut *session };
         // SAFETY: input_len is supplied by the caller for this readable buffer.
         let input = unsafe { slice::from_raw_parts(input, input_len) };
-        let result = if write { session.write(input) } else { session.read(input) };
+        let result = if write {
+            session.write(input)
+        } else {
+            session.read(input)
+        };
         let bytes = match result {
             Ok(bytes) => bytes,
             Err(CryptoError::RehandshakeRequired) => return REHANDSHAKE_REQUIRED,
@@ -439,11 +470,17 @@ mod tests {
 
         let ciphertext = initiator.write(b"private note").unwrap();
         assert_eq!(responder.read(&ciphertext).unwrap(), b"private note");
-        assert!(responder.read(&ciphertext).is_err(), "nonce replay must fail");
+        assert!(
+            responder.read(&ciphertext).is_err(),
+            "nonce replay must fail"
+        );
 
         let mut tampered = initiator.write(b"second").unwrap();
         tampered[0] ^= 1;
-        assert!(responder.read(&tampered).is_err(), "authentication must fail");
+        assert!(
+            responder.read(&tampered).is_err(),
+            "authentication must fail"
+        );
     }
 
     #[test]

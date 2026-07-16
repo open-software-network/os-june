@@ -15,5 +15,7 @@
   keyboard, pointer, split view, rotation, offline/reconnect, memory pressure,
   and background termination on current iPhone and iPad hardware.
 - Test TestFlight against production pairing, relay DNS/TLS, Postgres, APNs, and
-  June API deployment. Confirm older desktop/API contracts remain additive.
+  a single-replica June API deployment. Confirm older desktop/API contracts
+  remain additive and keep horizontal scale disabled until ADR 0032's shared
+  routing prerequisites ship.
 - Attach the independent security review and penetration-test disposition.

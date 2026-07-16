@@ -2,6 +2,7 @@ import AVFoundation
 import CryptoKit
 import Foundation
 import Network
+import Security
 import UIKit
 import VisionKit
 
@@ -19,6 +20,25 @@ enum PairingProof {
   }
 }
 
+struct DeviceCredential {
+  let value: String
+  let hash: [UInt8]
+
+  static func generate() throws -> DeviceCredential {
+    var bytes = [UInt8](repeating: 0, count: 32)
+    guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+      throw CompanionNativeError.unavailable("A device credential could not be generated.")
+    }
+    defer { bytes.indices.forEach { bytes[$0] = 0 } }
+    let data = Data(bytes)
+    let value = data.base64EncodedString()
+      .replacingOccurrences(of: "+", with: "-")
+      .replacingOccurrences(of: "/", with: "_")
+      .replacingOccurrences(of: "=", with: "")
+    return DeviceCredential(value: value, hash: Array(SHA256.hash(data: data)))
+  }
+}
+
 struct PairingStatusWire: Codable {
   let pairingId: UUID
   let expiresAtMs: UInt64
@@ -28,7 +48,6 @@ struct PairingStatusWire: Codable {
   let mobileDeviceId: UUID?
   let mobilePublicKey: [UInt8]?
   let mobileDisplayName: String?
-  let deviceCredential: String?
 }
 
 struct LinkedConfiguration: Codable {
@@ -53,12 +72,85 @@ private struct APIEnvelope<T: Decodable>: Decodable {
   let message: String?
 }
 
+struct ValidatedInboundFrame {
+  let operationID: UUID
+  let sequence: UInt64
+  let capability: String
+  let bodyType: String
+}
+
+private struct InboundFrameHeader: Decodable {
+  let version: UInt16
+  let operationId: UUID
+  let sequence: UInt64
+  let issuedAtMs: UInt64
+  let expiresAtMs: UInt64
+  let capability: String
+  let body: InboundBodyHeader
+}
+
+private struct InboundBodyHeader: Decodable {
+  let type: String
+  let data: InboundBodyDataHeader?
+}
+
+private struct InboundBodyDataHeader: Decodable {
+  let capability: String?
+  let type: String?
+}
+
+enum CompanionWireValidation {
+  static func frame(
+    _ data: Data,
+    after lastSequence: UInt64,
+    now: UInt64 = currentMilliseconds()
+  ) throws -> ValidatedInboundFrame {
+    let frame = try JSONDecoder().decode(InboundFrameHeader.self, from: data)
+    guard frame.version == 1,
+          frame.sequence > lastSequence,
+          frame.expiresAtMs >= frame.issuedAtMs,
+          frame.expiresAtMs - frame.issuedAtMs <= 30_000,
+          frame.issuedAtMs <= now + 30_000,
+          now <= frame.expiresAtMs else {
+      throw CompanionNativeError.invalidData("The encrypted companion frame expired or failed validation.")
+    }
+    let requiredCapability: String?
+    switch frame.body.type {
+    case "response":
+      requiredCapability = frame.body.data?.capability
+    case "event":
+      requiredCapability = eventCapability(frame.body.data?.type)
+    default:
+      requiredCapability = nil
+    }
+    guard requiredCapability == frame.capability else {
+      throw CompanionNativeError.invalidData("The encrypted companion frame used an invalid capability.")
+    }
+    return ValidatedInboundFrame(
+      operationID: frame.operationId,
+      sequence: frame.sequence,
+      capability: frame.capability,
+      bodyType: frame.body.type
+    )
+  }
+
+  private static func eventCapability(_ type: String?) -> String? {
+    switch type {
+    case "agentDelta", "agentStatus": "agentRead"
+    case "notesChanged": "notesRead"
+    case "deviceRevoked", "resyncRequired": "devicesReadSelf"
+    default: nil
+    }
+  }
+}
+
 @MainActor
 final class PairingAPI {
   func propose(
     payload: PairingPayload,
     identity: DeviceIdentity,
-    pairingProof: [UInt8]
+    pairingProof: [UInt8],
+    deviceCredentialHash: [UInt8]
   ) async throws -> PairingStatusWire {
     try await request(
       relayURL: payload.relayUrl,
@@ -70,6 +162,7 @@ final class PairingAPI {
         "mobilePublicKey": identity.publicKey,
         "displayName": UIDevice.current.name,
         "pairingProof": pairingProof,
+        "deviceCredentialHash": deviceCredentialHash,
       ]
     )
   }
@@ -165,12 +258,19 @@ final class CompanionTransport {
   typealias EventHandler = ([String: Any]) -> Void
 
   private var task: URLSessionWebSocketTask?
+  private var connectionID: UUID?
   private var crypto: CompanionCryptoSession?
   private var ownDeviceID: UUID?
   private var desktopDeviceID: UUID?
   private var sequence: UInt64 = 0
-  private var pending: [UUID: CheckedContinuation<Data, Error>] = [:]
+  private var inboundSequence: UInt64 = 0
+  private var pending: [UUID: PendingRequest] = [:]
   private var eventHandler: EventHandler?
+
+  private struct PendingRequest {
+    let capability: String
+    let continuation: CheckedContinuation<Data, Error>
+  }
 
   func connect(
     relayURL: URL,
@@ -193,32 +293,64 @@ final class CompanionTransport {
     request.setValue("Device \(deviceCredential)", forHTTPHeaderField: "Authorization")
     request.timeoutInterval = 30
     let socket = URLSession(configuration: .ephemeral).webSocketTask(with: request)
+    let connectionID = UUID()
     task = socket
+    self.connectionID = connectionID
     self.crypto = crypto
     ownDeviceID = identity.deviceID
     self.desktopDeviceID = desktopDeviceID
     self.eventHandler = eventHandler
+    sequence = 0
+    inboundSequence = 0
     socket.resume()
 
     let first = try crypto.write([])
-    try await sendEnvelope(first)
-    let second = try await receiveEnvelope()
+    try await sendEnvelope(
+      first,
+      through: socket,
+      sender: identity.deviceID,
+      recipient: desktopDeviceID
+    )
+    let second = try await receiveEnvelope(
+      from: socket,
+      sender: desktopDeviceID,
+      recipient: identity.deviceID
+    )
+    guard self.connectionID == connectionID else { throw CompanionNativeError.cancelled }
     _ = try crypto.read([UInt8](second.ciphertext))
     if pairing {
-      try await sendEnvelope(try crypto.write([]))
+      try await sendEnvelope(
+        try crypto.write([]),
+        through: socket,
+        sender: identity.deviceID,
+        recipient: desktopDeviceID
+      )
     }
-    guard crypto.isReady, try crypto.remoteStatic() == expectedDesktopPublicKey else {
+    guard self.connectionID == connectionID,
+          crypto.isReady,
+          try crypto.remoteStatic() == expectedDesktopPublicKey else {
       disconnect()
       throw CompanionNativeError.unavailable("The Mac did not prove the identity shown during pairing.")
     }
-    Task { await self.receiveLoop() }
+    Task {
+      await self.receiveLoop(
+        socket: socket,
+        connectionID: connectionID,
+        sender: desktopDeviceID,
+        recipient: identity.deviceID
+      )
+    }
   }
 
   func request(capability: String, body: [String: Any]) async throws -> Data {
     guard let crypto, crypto.isReady else {
       throw CompanionNativeError.unavailable("Your Mac is offline.")
     }
-    sequence &+= 1
+    guard sequence < UInt64.max else {
+      disconnect()
+      throw CompanionNativeError.unavailable("Reconnect to establish a fresh secure session.")
+    }
+    sequence += 1
     let operationID = UUID()
     let now = currentMilliseconds()
     let object: [String: Any] = [
@@ -233,7 +365,10 @@ final class CompanionTransport {
     let plaintext = try JSONSerialization.data(withJSONObject: object)
     let encrypted = try crypto.write([UInt8](plaintext))
     return try await withCheckedThrowingContinuation { continuation in
-      pending[operationID] = continuation
+      pending[operationID] = PendingRequest(
+        capability: capability,
+        continuation: continuation
+      )
       Task {
         do { try await self.sendEnvelope(encrypted) }
         catch { self.failPending(operationID, error: error) }
@@ -248,9 +383,10 @@ final class CompanionTransport {
   func disconnect() {
     task?.cancel(with: .goingAway, reason: nil)
     task = nil
+    connectionID = nil
     crypto = nil
-    for continuation in pending.values {
-      continuation.resume(throwing: CompanionNativeError.unavailable("Your Mac disconnected."))
+    for request in pending.values {
+      request.continuation.resume(throwing: CompanionNativeError.unavailable("Your Mac disconnected."))
     }
     pending.removeAll()
   }
@@ -259,6 +395,15 @@ final class CompanionTransport {
     guard let task, let sender = ownDeviceID, let recipient = desktopDeviceID else {
       throw CompanionNativeError.unavailable("The companion relay is disconnected.")
     }
+    try await sendEnvelope(ciphertext, through: task, sender: sender, recipient: recipient)
+  }
+
+  private func sendEnvelope(
+    _ ciphertext: [UInt8],
+    through socket: URLSessionWebSocketTask,
+    sender: UUID,
+    recipient: UUID
+  ) async throws {
     let envelope = RelayEnvelope(
       version: 1,
       senderDeviceId: sender,
@@ -267,12 +412,15 @@ final class CompanionTransport {
       createdAtMs: currentMilliseconds(),
       ciphertext: Data(ciphertext)
     )
-    try await task.send(.data(JSONEncoder().encode(envelope)))
+    try await socket.send(.data(JSONEncoder().encode(envelope)))
   }
 
-  private func receiveEnvelope() async throws -> RelayEnvelope {
-    guard let task else { throw CompanionNativeError.unavailable("The companion relay is disconnected.") }
-    let message = try await task.receive()
+  private func receiveEnvelope(
+    from socket: URLSessionWebSocketTask,
+    sender: UUID,
+    recipient: UUID
+  ) async throws -> RelayEnvelope {
+    let message = try await socket.receive()
     let data: Data
     switch message {
     case .data(let value): data = value
@@ -280,9 +428,12 @@ final class CompanionTransport {
     @unknown default: throw CompanionNativeError.invalidData("The relay frame is invalid.")
     }
     let envelope = try JSONDecoder().decode(RelayEnvelope.self, from: data)
+    let now = currentMilliseconds()
     guard envelope.version == 1,
-          envelope.senderDeviceId == desktopDeviceID,
-          envelope.recipientDeviceId == ownDeviceID,
+          envelope.senderDeviceId == sender,
+          envelope.recipientDeviceId == recipient,
+          envelope.createdAtMs <= now + 30_000,
+          now <= envelope.createdAtMs + 30_000,
           !envelope.ciphertext.isEmpty,
           envelope.ciphertext.count <= 45 * 1024 else {
       throw CompanionNativeError.invalidData("The relay frame failed validation.")
@@ -290,31 +441,48 @@ final class CompanionTransport {
     return envelope
   }
 
-  private func receiveLoop() async {
+  private func receiveLoop(
+    socket: URLSessionWebSocketTask,
+    connectionID: UUID,
+    sender: UUID,
+    recipient: UUID
+  ) async {
     do {
-      while task != nil {
-        let envelope = try await receiveEnvelope()
+      while self.connectionID == connectionID {
+        let envelope = try await receiveEnvelope(
+          from: socket,
+          sender: sender,
+          recipient: recipient
+        )
         guard let crypto else { break }
         let plaintext = try crypto.read([UInt8](envelope.ciphertext))
         let data = Data(plaintext)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
           throw CompanionNativeError.invalidData("The encrypted companion frame is invalid.")
         }
-        if let operation = (object["operationId"] as? String).flatMap(UUID.init(uuidString:)),
-           let continuation = pending.removeValue(forKey: operation) {
-          continuation.resume(returning: data)
-        } else {
+        let validated = try CompanionWireValidation.frame(data, after: inboundSequence)
+        inboundSequence = validated.sequence
+        if validated.bodyType == "response" {
+          guard let request = pending[validated.operationID] else { continue }
+          guard request.capability == validated.capability else {
+            throw CompanionNativeError.invalidData("The Mac response did not match the request capability.")
+          }
+          pending.removeValue(forKey: validated.operationID)
+          request.continuation.resume(returning: data)
+        } else if validated.bodyType == "event" {
           eventHandler?(object)
         }
       }
     } catch {
-      disconnect()
-      eventHandler?(["type": "transportError", "message": "Your Mac disconnected."])
+      if self.connectionID == connectionID {
+        disconnect()
+        eventHandler?(["type": "transportError", "message": "Your Mac disconnected."])
+      }
     }
   }
 
   private func failPending(_ operationID: UUID, error: Error) {
-    pending.removeValue(forKey: operationID)?.resume(throwing: error)
+    pending.removeValue(forKey: operationID)?.continuation.resume(throwing: error)
   }
 }
 

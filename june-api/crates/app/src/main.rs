@@ -103,7 +103,24 @@ async fn serve() -> anyhow::Result<()> {
                 }
             },
         };
-    let (companion_store, companion_snapshot): (
+    let companion = load_companion_runtime(&config).await;
+    let app = build_router(
+        &config,
+        clients,
+        pricing,
+        RuntimeStores {
+            share: share_store,
+            companion,
+        },
+    );
+    let listener = tokio::net::TcpListener::bind(address).await?;
+    tracing::info!(%address, "june-api listening");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn load_companion_runtime(config: &AppConfig) -> CompanionRuntime {
+    let (store, snapshot): (
         Option<Arc<dyn june_domain::CompanionStore>>,
         june_domain::CompanionSnapshot,
     ) = match config.companion.database_url.trim() {
@@ -136,8 +153,8 @@ async fn serve() -> anyhow::Result<()> {
             }
         },
     };
-    let companion_enabled = config.local_dev.enabled || companion_store.is_some();
-    let companion_push = if config.companion.apns_team_id.trim().is_empty()
+    let enabled = config.local_dev.enabled || store.is_some();
+    let push = if config.companion.apns_team_id.trim().is_empty()
         || config.companion.apns_key_id.trim().is_empty()
         || config.companion.apns_private_key_pem.trim().is_empty()
         || config.companion.apns_bundle_id.trim().is_empty()
@@ -153,20 +170,12 @@ async fn serve() -> anyhow::Result<()> {
             production: config.companion.apns_production,
         })
     };
-    let app = build_router(
-        &config,
-        clients,
-        pricing,
-        share_store,
-        companion_store,
-        companion_snapshot,
-        companion_enabled,
-        companion_push,
-    );
-    let listener = tokio::net::TcpListener::bind(address).await?;
-    tracing::info!(%address, "june-api listening");
-    axum::serve(listener, app).await?;
-    Ok(())
+    CompanionRuntime {
+        store,
+        snapshot,
+        enabled,
+        push,
+    }
 }
 
 async fn load_pricing(
@@ -234,11 +243,7 @@ fn build_router(
     config: &AppConfig,
     clients: HttpClients<'_>,
     mut pricing_config: BTreeMap<String, ModelPriceConfig>,
-    share_store: Option<Arc<dyn june_domain::ShareStore>>,
-    companion_store: Option<Arc<dyn june_domain::CompanionStore>>,
-    companion_snapshot: june_domain::CompanionSnapshot,
-    companion_enabled: bool,
-    companion_push: Option<june_api::CompanionPushConfig>,
+    stores: RuntimeStores,
 ) -> axum::Router {
     if config.local_dev.enabled {
         pricing_config = filter_unconfigured_provider_models(config, pricing_config);
@@ -401,7 +406,7 @@ fn build_router(
         flat_estimate_credits,
     }));
 
-    let share = share_store.map(|store| {
+    let share = stores.share.map(|store| {
         Arc::new(june_services::ShareService::new(
             june_services::ShareServiceDeps {
                 store,
@@ -436,10 +441,10 @@ fn build_router(
         pricing,
         local_dev_enabled: config.local_dev.enabled,
         token_verifier,
-        companion_store,
-        companion_snapshot,
-        companion_enabled,
-        companion_push,
+        companion_store: stores.companion.store,
+        companion_snapshot: stores.companion.snapshot,
+        companion_enabled: stores.companion.enabled,
+        companion_push: stores.companion.push,
         note_transcribe,
         note_generate,
         agent_chat,
@@ -473,6 +478,18 @@ fn build_router(
         },
     });
     june_api::router(state)
+}
+
+struct CompanionRuntime {
+    store: Option<Arc<dyn june_domain::CompanionStore>>,
+    snapshot: june_domain::CompanionSnapshot,
+    enabled: bool,
+    push: Option<june_api::CompanionPushConfig>,
+}
+
+struct RuntimeStores {
+    share: Option<Arc<dyn june_domain::ShareStore>>,
+    companion: CompanionRuntime,
 }
 
 #[derive(Clone, Copy)]

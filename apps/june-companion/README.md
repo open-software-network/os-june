@@ -11,6 +11,6 @@ presentation, never tokens, private/session keys, APNs tokens, QR secrets, or
 raw protocol frames.
 
 June Desktop owns OS Accounts authentication. The companion scans a pairing
-code and receives its own revocable device credential only after the signed-in
-desktop approves it. No desktop token, mobile OAuth client, or debug bearer
-fallback is used.
+code, generates its own revocable device credential, and can use it only after
+the signed-in desktop approves its hash and device identity. No desktop token,
+mobile OAuth client, or debug bearer fallback is used.

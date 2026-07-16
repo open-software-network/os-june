@@ -36,8 +36,16 @@ Accounts session.
 
 Rust owns the shared Noise state machine, the versioned protocol, the closed
 desktop allowlist, note compare-and-swap, durable linked-device metadata, and
-the blind relay. June API stores a hash of the mobile device credential, never
-the credential or QR secret.
+the blind relay. The companion generates its device credential and sends only
+its hash during pairing. June API stores that hash; it receives the credential
+only when verifying a `Device` authorization header and never stores the
+credential or QR secret.
+
+The always-mounted desktop app shell handles sanitized agent session and
+message reads without changing the visible Mac view. Agent send and cancel
+requests are queued briefly while the existing Agent workspace mounts, so the
+companion reuses June's normal session, model, and transcript behavior rather
+than creating a second agent control path.
 
 ## Authority and availability
 
@@ -55,12 +63,14 @@ application protocol.
 
 Phala's current networking documentation explicitly supports WebSocket ports
 and states that a WebSocket stays on one instance for its connection lifetime,
-while reconnects can land on another instance. There is no session affinity,
-so durable trust state is Postgres-backed and live connection state remains
-per-process. Official troubleshooting documents an outbound-connectivity test,
-but does not promise APNs egress or publish a maximum WebSocket lifetime.
-Production promotion therefore requires live canaries for WebSocket idle
-duration, connection limits, reconnect distribution, and APNs HTTP/2 egress.
+while reconnects can land on another instance. There is no session affinity.
+Durable trust state is Postgres-backed, while pairing and live connection state
+remain per-process. The MVP must therefore run as exactly one relay replica;
+multiple replicas require a shared pairing store and cross-instance ciphertext
+router first. Official troubleshooting documents an outbound-connectivity
+test, but does not promise APNs egress or publish a maximum WebSocket lifetime.
+Production promotion requires live canaries for WebSocket idle duration,
+connection limits, reconnect behavior, and APNs HTTP/2 egress.
 
 ## Native UI exception
 

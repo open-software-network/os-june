@@ -48,6 +48,8 @@ const HERO_GREETING = new RegExp(
 const mocks = vi.hoisted(() => ({
   cancelAgentRunMonitoring: vi.fn(),
   cancelAgentTask: vi.fn(),
+  companionCompleteFrontendRequest: vi.fn(),
+  companionPublishAgentEvent: vi.fn(),
   createAgentTask: vi.fn(),
   editImage: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
@@ -138,6 +140,8 @@ vi.mock("../lib/tauri", () => ({
   // `invoke`. A quiet stub keeps these workspace tests off that path.
   invoke: vi.fn(async () => []),
   cancelAgentTask: mocks.cancelAgentTask,
+  companionCompleteFrontendRequest: mocks.companionCompleteFrontendRequest,
+  companionPublishAgentEvent: mocks.companionPublishAgentEvent,
   createAgentTask: mocks.createAgentTask,
   editImage: mocks.editImage,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
@@ -489,6 +493,8 @@ describe("AgentWorkspace", () => {
     window.localStorage.clear();
     resetAgentSessionTitleVolatileStoreForTest();
     mocks.openFileDialog.mockResolvedValue(null);
+    mocks.companionCompleteFrontendRequest.mockResolvedValue(undefined);
+    mocks.companionPublishAgentEvent.mockResolvedValue(undefined);
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
     mocks.providerModelSettings.mockResolvedValue({
       settings: {

@@ -370,6 +370,11 @@ import {
   type AgentChatPart,
   type AgentChatTurn,
 } from "../../lib/agent-chat-runtime";
+import {
+  COMPANION_FRONTEND_QUEUE_EVENT,
+  registerCompanionFrontendConsumer,
+  takeCompanionFrontendRequests,
+} from "../../lib/companion-frontend-router";
 import { toolActivitySentence } from "../../lib/agent-tool-labels";
 import {
   COMPACTED_CONTEXT_SIGNATURE,
@@ -3087,9 +3092,13 @@ export function AgentWorkspace({
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen<CompanionFrontendRequest>("june://companion-request", async ({ payload }) => {
+    const unregisterConsumer = registerCompanionFrontendConsumer();
+    async function handleCompanionRequest(payload: CompanionFrontendRequest) {
       try {
         switch (payload.intent.type) {
+          case "agentSessionsList":
+          case "agentMessagesList":
+            return;
           case "agentSend": {
             const { sessionId: requestedSessionId, message } = payload.intent.data;
             const explicitSession = requestedSessionId
@@ -3123,6 +3132,18 @@ export function AgentWorkspace({
           },
         }).catch(() => undefined);
       }
+    }
+
+    function consumeQueuedRequests() {
+      for (const request of takeCompanionFrontendRequests()) {
+        void handleCompanionRequest(request);
+      }
+    }
+
+    window.addEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
+    consumeQueuedRequests();
+    void listen<CompanionFrontendRequest>("june://companion-request", ({ payload }) => {
+      void handleCompanionRequest(payload);
     }).then((remove) => {
       if (disposed) remove();
       else unlisten = remove;
@@ -3130,6 +3151,8 @@ export function AgentWorkspace({
     return () => {
       disposed = true;
       unlisten?.();
+      unregisterConsumer();
+      window.removeEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
     };
   }, []);
 
