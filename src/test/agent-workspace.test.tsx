@@ -6075,6 +6075,66 @@ describe("AgentWorkspace", () => {
     }
   });
 
+  it("copies live media prose without its transport reference", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "a1",
+        role: "assistant",
+        content: "Earlier answer.",
+        timestamp: "2026-06-12T10:00:05Z",
+      },
+    ]);
+    const mediaPath = "/tmp/copied-image.png";
+    const rawText = `Here is the image.\n\nMEDIA:${mediaPath}`;
+
+    try {
+      render(<AgentWorkspace initialSession={existingSession} />);
+      expect(await screen.findByText("Earlier answer.")).toBeInTheDocument();
+      await user.type(screen.getByRole("textbox"), "Make an image");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "Make an image",
+        }),
+      );
+
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "message.start",
+            session_id: "runtime-session-1",
+            payload: { message_id: "m1" },
+          });
+          handler({
+            type: "message.delta",
+            session_id: "runtime-session-1",
+            payload: { message_id: "m1", delta: rawText },
+          });
+          handler({
+            type: "message.complete",
+            session_id: "runtime-session-1",
+            payload: { message_id: "m1", text: rawText },
+          });
+        }
+      });
+
+      const liveTurn = (await screen.findByText("Here is the image.")).closest("article");
+      expect(liveTurn).not.toBeNull();
+      await user.click(
+        within(liveTurn as HTMLElement).getByRole("button", {
+          name: "Copy message",
+        }),
+      );
+
+      expect(writeText).toHaveBeenLastCalledWith("Here is the image.");
+    } finally {
+      writeText.mockRestore();
+    }
+  });
+
   it("keeps turn actions inside the message row so hover reveal cannot move the transcript", async () => {
     mocks.listHermesSessionMessages.mockResolvedValue([
       {
@@ -7518,11 +7578,29 @@ describe("AgentWorkspace", () => {
       const firstMarkdown = screen.getByText("Stable answer").closest(".agent-markdown");
       expect(firstMarkdown).not.toBeNull();
 
+      act(() => {
+        for (const handler of mocks.gatewayEventHandlers) {
+          handler({
+            type: "message.complete",
+            session_id: "runtime-session-2",
+            payload: { message_id: "m1", text: "Stable answer complete" },
+          });
+        }
+      });
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByText("Stable answer complete")).toBeInTheDocument(),
+      );
+      const completedMarkdown = screen
+        .getByText("Stable answer complete")
+        .closest(".agent-markdown");
+      expect(completedMarkdown).toBe(firstMarkdown);
+      expect(completedMarkdown?.closest("article")).toHaveAttribute("data-status", "complete");
+
       persistedMessages = [
         {
           id: "m1",
           role: "assistant",
-          content: "Stable answer plus",
+          content: "Stable answer complete plus",
           reasoning: "Checked the persisted result.",
           timestamp: "2026-06-04T10:00:01.000Z",
         },
@@ -7531,10 +7609,12 @@ describe("AgentWorkspace", () => {
         await vi.advanceTimersByTimeAsync(2500);
       });
       await settleUnderFakeTimers(() =>
-        expect(screen.getByText("Stable answer plus")).toBeInTheDocument(),
+        expect(screen.getByText("Stable answer complete plus")).toBeInTheDocument(),
       );
 
-      expect(screen.getByText("Stable answer plus").closest(".agent-markdown")).toBe(firstMarkdown);
+      expect(screen.getByText("Stable answer complete plus").closest(".agent-markdown")).toBe(
+        firstMarkdown,
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -7861,6 +7941,11 @@ describe("AgentWorkspace", () => {
     // A terminal frame without message.complete must not reveal the raw delta
     // when it flips the accumulated text part from running to complete.
     expect(screen.queryByText(/MEDIA:/)).not.toBeInTheDocument();
+    const mediaTurn = Array.from(document.querySelectorAll<HTMLElement>("article")).at(-1);
+    expect(mediaTurn).toBeDefined();
+    expect(
+      within(mediaTurn as HTMLElement).queryByRole("button", { name: "Copy message" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps one placeholder per concurrent or subsequent image generation", async () => {

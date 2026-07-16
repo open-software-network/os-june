@@ -13,7 +13,11 @@ import { IconStop } from "central-icons/IconStop";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 
-import type { AgentChatPart, AgentChatTurn } from "../../lib/agent-chat-runtime";
+import {
+  stripRenderedMediaReferences,
+  type AgentChatPart,
+  type AgentChatTurn,
+} from "../../lib/agent-chat-runtime";
 import { messageFromError } from "../../lib/errors";
 import { attachmentStateFrom } from "../../lib/hermes-image-attach";
 import {
@@ -141,10 +145,32 @@ function userTurnText(turn: AgentChatTurn) {
     .join("\n");
 }
 
-function assistantPartNode(part: AgentChatPart, index: number) {
+function turnContainsMediaStructure(turn: Pick<AgentChatTurn, "parts">) {
+  return turn.parts.some(
+    (part) =>
+      part.type === "image" ||
+      part.type === "video" ||
+      (part.type === "tool" && part.media !== undefined),
+  );
+}
+
+function assistantPartNode(
+  part: AgentChatPart,
+  index: number,
+  holdTrailingMediaTransport: boolean,
+) {
   switch (part.type) {
     case "text":
-      return <MarkdownContent key={part.renderKey ?? index} markdown={part.text} repairProse />;
+      return (
+        <MarkdownContent
+          key={part.renderKey ?? index}
+          markdown={stripRenderedMediaReferences(
+            part.text,
+            part.status === "running" || holdTrailingMediaTransport,
+          )}
+          repairProse
+        />
+      );
     case "notice":
       return <MarkdownContent key={index} markdown={part.text} />;
     case "tool":
@@ -633,7 +659,9 @@ export function NoteChatPanel({
                   </div>
                 ) : (
                   <div key={turn.id} className="note-chat-turn-assistant">
-                    {turn.parts.map(assistantPartNode)}
+                    {turn.parts.map((part, index) =>
+                      assistantPartNode(part, index, turnContainsMediaStructure(turn)),
+                    )}
                   </div>
                 ),
               )}

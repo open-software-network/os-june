@@ -12882,6 +12882,7 @@ function AgentChatTurnRow({
     (part): part is Extract<AgentChatPart, { type: "context" }> => part.type === "context",
   );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
+  const holdTrailingMediaTransport = turnContainsMediaStructure(turn);
   const concreteResponse = turnIsConcreteResponse(turn);
   const copyText = copyableTextForTurn(turn);
 
@@ -13058,7 +13059,10 @@ function AgentChatTurnRow({
                     a terminal/error event arrives without message.complete.
                     Those transport references never belong in assistant prose. */}
                 <SmoothedStreamingMarkdown
-                  markdown={stripRenderedMediaReferences(part.text, part.status === "running")}
+                  markdown={stripRenderedMediaReferences(
+                    part.text,
+                    part.status === "running" || holdTrailingMediaTransport,
+                  )}
                   running={part.status === "running"}
                   repairProse
                   onVisibleMarkdownChange={onVisibleMarkdownChange}
@@ -13148,12 +13152,26 @@ function AgentChatTurnRow({
 function copyableTextForTurn(turn: AgentChatTurn): string {
   if (turn.role === "user") return userPromptTextForTurn(turn);
   if (turn.role !== "assistant") return "";
+  const holdTrailingMediaTransport = turnContainsMediaStructure(turn);
   return turn.parts
     .filter((part): part is Extract<AgentChatPart, { type: "text" }> => part.type === "text")
-    .map((part) => stripAgentCliAccessRequest(part.text).trim())
+    .map((part) =>
+      stripAgentCliAccessRequest(
+        stripRenderedMediaReferences(part.text, holdTrailingMediaTransport),
+      ).trim(),
+    )
     .filter(Boolean)
     .join("\n\n")
     .trim();
+}
+
+function turnContainsMediaStructure(turn: Pick<AgentChatTurn, "parts">) {
+  return turn.parts.some(
+    (part) =>
+      part.type === "image" ||
+      part.type === "video" ||
+      (part.type === "tool" && part.media !== undefined),
+  );
 }
 
 function userPromptTextForTurn(turn: AgentChatTurn): string {

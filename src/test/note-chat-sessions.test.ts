@@ -416,16 +416,21 @@ describe("note chat session map", () => {
   it("keeps a keyed assistant markdown node mounted when earlier activity appears", () => {
     const textPart = {
       type: "text" as const,
-      text: "Stable answer",
+      text: "Stable answer\n\nMEDIA:/tmp/keyed-ima",
       status: "running" as const,
       renderKey: "m1:text:0",
+    };
+    const imagePart = {
+      type: "image" as const,
+      status: "running" as const,
+      prompt: "Keyed image",
     };
     const turn = {
       id: "m1",
       role: "assistant" as const,
       createdAt: "2026-06-04T10:00:00.000Z",
       status: "running" as const,
-      parts: [textPart],
+      parts: [textPart, imagePart],
     };
     const panelProps = {
       note: { id: "note-1", title: "Launch planning" },
@@ -440,6 +445,8 @@ describe("note chat session map", () => {
     );
     const firstNode = view.container.querySelector(".agent-markdown");
     expect(firstNode).not.toBeNull();
+    expect(firstNode).toHaveTextContent("Stable answer");
+    expect(firstNode).not.toHaveTextContent("MEDIA:");
 
     view.rerender(
       createElement(NoteChatPanel, {
@@ -458,6 +465,7 @@ describe("note chat session map", () => {
                   status: "complete",
                 },
                 { ...textPart, status: "complete" },
+                { ...imagePart, status: "complete" },
               ],
             },
           ],
@@ -466,6 +474,7 @@ describe("note chat session map", () => {
     );
 
     expect(view.container.querySelector(".agent-markdown")).toBe(firstNode);
+    expect(firstNode).not.toHaveTextContent("MEDIA:");
   });
 
   it("shows the Auto billing note in the picker while a Venice key is saved", async () => {

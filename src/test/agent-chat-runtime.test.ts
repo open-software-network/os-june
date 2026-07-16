@@ -218,11 +218,14 @@ describe("terminal media reference cleanup", () => {
     )[0];
   }
 
-  it("hides an unfinished media path without deleting completed prose", () => {
-    const partialPath = terminalMediaTurn(
-      "MEDIA:/Users/alex/Library/Application Support/June/generated-images/generated-ima",
-    );
-    expect(partialPath?.parts.find((part) => part.type === "text")).toMatchObject({ text: "" });
+  it("retains unfinished media transport text without changing completed prose", () => {
+    const partialText =
+      "MEDIA:/Users/alex/Library/Application Support/June/generated-images/generated-ima";
+    const partialPath = terminalMediaTurn(partialText);
+    expect(partialPath?.parts.find((part) => part.type === "text")).toMatchObject({
+      text: partialText,
+      status: "complete",
+    });
 
     const ordinaryProse = terminalMediaTurn("MEDIA: prefix marks a file");
     expect(ordinaryProse?.parts.find((part) => part.type === "text")).toMatchObject({
@@ -1199,6 +1202,25 @@ describe("Agent chat runtime", () => {
     expect(text).toBe("Yes.\n\nYes.");
   });
 
+  it("excludes a trailing partial media transport line from completed text extraction", () => {
+    const text = completedHermesMessageText([
+      transcriptEvent({ messageId: "m1" }),
+      toolEvent({
+        key: "image-tool",
+        name: "generate_image",
+        phase: "start",
+        sanitizedPayload: { tool_id: "image-tool", name: "generate_image" },
+      }),
+      transcriptEvent({
+        messageId: "m1",
+        delta: "Here it is.\n\nMEDIA:/tmp/generated-ima",
+      }),
+      lifecycleEvent({ flavor: "terminal", status: "lifecycle.complete" }),
+    ]);
+
+    expect(text).toBe("Here it is.");
+  });
+
   it("uses the Hermes message id as live render identity without making it branchable", () => {
     const turns = buildHermesSessionChatTurns(
       [],
@@ -1243,14 +1265,14 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
-  it("keeps the active message identity when continuation frames omit it", () => {
+  it("ignores an idless late delta owned by a completed identified message", () => {
     const turns = buildHermesSessionChatTurns(
       [],
       [
         transcriptEvent({ messageId: "m1" }),
         transcriptEvent({ delta: "Hello" }),
         transcriptEvent({ complete: true, delta: "Hello" }),
-        transcriptEvent({ messageId: "m1", delta: " late" }),
+        transcriptEvent({ delta: " late" }),
       ],
     );
 
@@ -1264,6 +1286,47 @@ describe("Agent chat runtime", () => {
         renderKey: "m1:text:0",
       },
     ]);
+  });
+
+  it("ignores an idless duplicate complete owned by a completed identified message", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({ messageId: "m1" }),
+        transcriptEvent({ delta: "Hello" }),
+        transcriptEvent({ complete: true, delta: "Hello" }),
+        transcriptEvent({ complete: true, delta: "Hello" }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ id: "m1", status: "complete" });
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Hello",
+        status: "complete",
+        renderKey: "m1:text:0",
+      },
+    ]);
+  });
+
+  it("clears identified ownership when an idless start begins a new message", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({ messageId: "m1" }),
+        transcriptEvent({ delta: "First" }),
+        transcriptEvent({ complete: true, delta: "First" }),
+        transcriptEvent({}),
+        transcriptEvent({ delta: "Second" }),
+        transcriptEvent({ complete: true, delta: "Second" }),
+      ],
+    );
+
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toMatchObject({ id: "m1", status: "complete" });
+    expect(turns[1]?.parts).toEqual([{ type: "text", text: "Second", status: "complete" }]);
   });
 
   it("appends only a verified final snapshot suffix", () => {
@@ -1378,6 +1441,159 @@ describe("Agent chat runtime", () => {
         renderKey: "m1:text:1",
       },
     ]);
+  });
+
+  it("inserts persisted reasoning and tools before their canonical live text anchor", () => {
+    const turns = buildHermesSessionChatTurns(
+      [
+        {
+          id: "m1",
+          role: "assistant",
+          content: "Answer",
+          reasoning: "Checked first.",
+          tool_calls: JSON.stringify([
+            {
+              id: "tool-1",
+              function: { name: "search", arguments: { query: "June" } },
+            },
+          ]),
+          timestamp: "2026-06-04T10:00:02.000Z",
+        },
+      ],
+      [transcriptEvent({ messageId: "m1" }), transcriptEvent({ messageId: "m1", delta: "Answer" })],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "reasoning",
+        text: "Checked first.",
+        status: "complete",
+        renderKey: "m1:reasoning:0",
+      },
+      expect.objectContaining({ type: "tool", id: "tool-1", status: "complete" }),
+      {
+        type: "text",
+        text: "Answer",
+        status: "complete",
+        renderKey: "m1:text:0",
+      },
+    ]);
+  });
+
+  it("inserts persisted media immediately after the canonical live text range", () => {
+    const mediaPath = "/tmp/ordered-image.png";
+    const turns = buildHermesSessionChatTurns(
+      [
+        {
+          id: "m1",
+          role: "assistant",
+          content: `Answer\n\nMEDIA:${mediaPath}`,
+          timestamp: "2026-06-04T10:00:02.000Z",
+        },
+      ],
+      [
+        transcriptEvent({ messageId: "m1" }),
+        transcriptEvent({ messageId: "m1", delta: "Answer" }),
+        toolEvent({
+          key: "live-tool",
+          phase: "complete",
+          name: "search",
+          sanitizedPayload: { tool_id: "live-tool", name: "search" },
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts.map((part) => part.type)).toEqual(["text", "image", "tool"]);
+    expect(turns[0]?.parts[0]).toMatchObject({
+      text: "Answer",
+      renderKey: "m1:text:0",
+    });
+    expect(turns[0]?.parts[1]).toMatchObject({ type: "image", path: mediaPath });
+    expect(turns[0]?.parts[2]).toMatchObject({ type: "tool", id: "live-tool" });
+  });
+
+  it("preserves a keyed whitespace segment through media completion and persisted merge", () => {
+    const mediaPath = "/tmp/persisted-image.png";
+    const turns = buildHermesSessionChatTurns(
+      [
+        {
+          id: "m1",
+          role: "assistant",
+          content: `Answer\n\nMEDIA:${mediaPath}`,
+          timestamp: "2026-06-04T10:00:02.000Z",
+        },
+      ],
+      [
+        transcriptEvent({ messageId: "m1" }),
+        transcriptEvent({ messageId: "m1", delta: "Answer" }),
+        toolEvent({
+          key: "tool-1",
+          phase: "complete",
+          name: "search",
+          sanitizedPayload: { tool_id: "tool-1", name: "search" },
+        }),
+        transcriptEvent({ messageId: "m1", delta: "\n\n" }),
+        transcriptEvent({
+          messageId: "m1",
+          complete: true,
+          delta: `Answer\n\nMEDIA:${mediaPath}`,
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.parts.filter((part) => part.type === "text")).toEqual([
+      {
+        type: "text",
+        text: "Answer",
+        status: "complete",
+        renderKey: "m1:text:0",
+      },
+      {
+        type: "text",
+        text: "\n\n",
+        status: "complete",
+        renderKey: "m1:text:1",
+      },
+    ]);
+  });
+
+  it("appends a verified visible suffix without mutating a raw media segment", () => {
+    const mediaPath = "/tmp/streamed-image.png";
+    const rawSegment = `Here you go:\n\nMEDIA:${mediaPath}`;
+    const events = [
+      transcriptEvent({ messageId: "m1" }),
+      transcriptEvent({ messageId: "m1", delta: rawSegment }),
+      transcriptEvent({
+        messageId: "m1",
+        complete: true,
+        delta: `${rawSegment}\n\nAfter the image.`,
+      }),
+    ];
+    const turns = buildHermesSessionChatTurns([], events);
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: rawSegment,
+        status: "complete",
+        renderKey: "m1:text:0",
+      },
+      {
+        type: "text",
+        text: "After the image.",
+        status: "complete",
+        renderKey: "m1:text:1",
+      },
+      {
+        type: "image",
+        status: "complete",
+        prompt: "Generated image",
+        path: mediaPath,
+        name: "streamed-image.png",
+      },
+    ]);
+    expect(completedHermesMessageText(events)).toBe("Here you go:\n\nAfter the image.");
   });
 
   it("does not attach identified transcript prose to a tool-created turn", () => {
@@ -2716,7 +2932,7 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
-  it("normalizes live complete messages that contain Hermes MEDIA image references", () => {
+  it("retains raw MEDIA text in live complete messages for display-time stripping", () => {
     const mediaPath =
       "/Users/alex/Library/Application Support/co.opensoftware.june-dev/hermes/image_cache/img_live.png";
     const turns = buildHermesSessionChatTurns(
@@ -2739,6 +2955,11 @@ describe("Agent chat runtime", () => {
 
     expect(turns[0]?.parts).toEqual([
       {
+        type: "text",
+        text: `MEDIA:${mediaPath}`,
+        status: "complete",
+      },
+      {
         type: "image",
         status: "complete",
         prompt: "Generated image",
@@ -2748,7 +2969,7 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
-  it("strips a streamed MEDIA reference from the completed live turn text", () => {
+  it("retains a streamed MEDIA segment for display-time stripping", () => {
     // Regression: prose + MEDIA arrive as streamed deltas, then a complete
     // event with the full text. The streamed parts hold the raw MEDIA line, and
     // completeAssistantTextPart would keep them as a prefix of the stripped
@@ -2773,7 +2994,7 @@ describe("Agent chat runtime", () => {
     );
 
     expect(turns[0]?.parts).toEqual([
-      { type: "text", text: "Here you go:\n\n", status: "complete" },
+      { type: "text", text: `Here you go:\n\nMEDIA:${mediaPath}`, status: "complete" },
       {
         type: "image",
         status: "complete",

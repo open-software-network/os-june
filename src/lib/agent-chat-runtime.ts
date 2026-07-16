@@ -405,9 +405,17 @@ export function completedHermesMessageText(events: JuneHermesEvent[]) {
   const turn = buildAgentChatTurns([], [], events)
     .filter((item) => item.role === "assistant")
     .at(-1);
+  const holdTrailingMediaTransport = Boolean(
+    turn?.parts.some(
+      (part) =>
+        part.type === "image" ||
+        part.type === "video" ||
+        (part.type === "tool" && part.media !== undefined),
+    ),
+  );
   const text = turn?.parts
     .filter((part): part is AgentChatTextPart => part.type === "text")
-    .map((part) => part.text)
+    .map((part) => stripRenderedMediaReferences(part.text, holdTrailingMediaTransport))
     .join("")
     .trim();
   return turn?.status === "complete" ? (text ?? "") : "";
@@ -522,6 +530,7 @@ function appendLiveHermesEvents(
   persistedToolResultIds: ReadonlySet<string> = new Set(),
 ) {
   let currentAssistant: AgentChatTurn | null = null;
+  let transcriptOwnerMessageId: string | undefined;
   let idlessToolSequence = 0;
   const toolCreatedTurns = new Set<AgentChatTurn>();
   const completedMessageIds = new Set<string>();
@@ -612,9 +621,17 @@ function appendLiveHermesEvents(
       case "transcript": {
         const explicitMessageId = event.messageId?.trim() || undefined;
         const isStart = !event.complete && event.delta === undefined;
+        if (explicitMessageId) {
+          transcriptOwnerMessageId = explicitMessageId;
+        } else if (isStart) {
+          transcriptOwnerMessageId = undefined;
+        }
         const messageId: string | undefined =
           explicitMessageId ??
-          (!isStart && currentAssistant ? messageIdByTurn.get(currentAssistant) : undefined);
+          (!isStart
+            ? ((currentAssistant ? messageIdByTurn.get(currentAssistant) : undefined) ??
+              transcriptOwnerMessageId)
+            : undefined);
         if (messageId && completedMessageIds.has(messageId)) break;
 
         if (isStart) {
@@ -660,7 +677,6 @@ function appendLiveHermesEvents(
         }
         currentAssistant.status = "complete";
         completeRunningParts(currentAssistant.parts);
-        removeEmptyMediaTransportTextParts(currentAssistant.parts);
         if (messageId) completedMessageIds.add(messageId);
         currentAssistant = null;
         break;
@@ -986,12 +1002,28 @@ function appendAssistantTextPart(
     last.status = status;
     return;
   }
-  parts.push({
+  pushAssistantTextPart(parts, delta, status, renderIdentity);
+}
+
+function pushAssistantTextPart(
+  parts: AgentChatPart[],
+  text: string,
+  status: "running" | "complete",
+  renderIdentity?: string,
+  insertAfter?: AgentChatPart,
+) {
+  const part: AgentChatTextPart = {
     type: "text",
-    text: delta,
+    text,
     status,
     ...(renderIdentity ? { renderKey: semanticPartRenderKey(parts, renderIdentity, "text") } : {}),
-  });
+  };
+  const anchorIndex = insertAfter ? parts.indexOf(insertAfter) : -1;
+  if (anchorIndex >= 0) {
+    parts.splice(anchorIndex + 1, 0, part);
+  } else {
+    parts.push(part);
+  }
 }
 
 // Reconcile the final snapshot against every streamed text segment. A verified
@@ -1006,16 +1038,20 @@ function completeAssistantTextPart(parts: AgentChatPart[], text: string, renderI
   }
   const last = textParts[textParts.length - 1] as AgentChatTextPart;
   const streamed = textParts.map((part) => part.text).join("");
-  if (text.startsWith(streamed)) last.text += text.slice(streamed.length);
-  for (const part of textParts) part.status = "complete";
-}
-
-function removeEmptyMediaTransportTextParts(parts: AgentChatPart[]) {
-  if (!parts.some((part) => part.type === "image" || part.type === "video")) return;
-  for (let index = parts.length - 1; index >= 0; index -= 1) {
-    const part = parts[index];
-    if (part?.type === "text" && !part.text.trim()) parts.splice(index, 1);
+  if (text.startsWith(streamed)) {
+    last.text += text.slice(streamed.length);
+  } else {
+    const visibleStreamed = textParts
+      .map((part) => stripRenderedMediaReferences(part.text, part.status === "running"))
+      .join("");
+    if (text.startsWith(visibleStreamed)) {
+      const visibleSuffix = text.slice(visibleStreamed.length);
+      if (visibleSuffix) {
+        pushAssistantTextPart(parts, visibleSuffix, "complete", renderIdentity, last);
+      }
+    }
   }
+  for (const part of textParts) part.status = "complete";
 }
 
 function semanticPartRenderKey(
@@ -1038,49 +1074,169 @@ function reconcilePersistedAssistantTurn(
     .join("");
   if (persistedText) completeAssistantTextPart(liveTurn.parts, persistedText, messageId);
 
-  const persistedReasoning = persistedTurn.parts
-    .filter((part): part is AgentChatReasoningPart => part.type === "reasoning")
-    .map((part) => part.text)
-    .join("\n\n");
-  const liveReasoningParts = liveTurn.parts.filter(
-    (part): part is AgentChatReasoningPart => part.type === "reasoning",
-  );
-  if (persistedReasoning && liveReasoningParts.length === 0) {
-    liveTurn.parts.unshift({
-      type: "reasoning",
-      text: persistedReasoning,
-      status: "complete",
-      renderKey: `${messageId}:reasoning:0`,
-    });
-  } else if (persistedReasoning && liveReasoningParts.length > 0) {
-    const liveReasoning = liveReasoningParts.map((part) => part.text).join("\n\n");
-    if (persistedReasoning.startsWith(liveReasoning)) {
-      const last = liveReasoningParts[liveReasoningParts.length - 1] as AgentChatReasoningPart;
-      last.text += persistedReasoning.slice(liveReasoning.length);
-    }
-  }
-
-  for (const part of persistedTurn.parts) {
-    if (part.type === "tool") {
-      upsertToolPart(liveTurn.parts, part);
-    } else if (part.type === "image") {
-      appendImageParts(liveTurn.parts, [{ ...part }]);
-    } else if (part.type === "video") {
-      appendVideoParts(liveTurn.parts, [{ ...part }]);
-    } else if (
-      part.type === "notice" &&
-      !liveTurn.parts.some(
-        (candidate) => candidate.type === "notice" && candidate.kind === part.kind,
-      )
-    ) {
-      liveTurn.parts.push({ ...part });
-    }
-  }
+  reconcilePersistedPartOrder(liveTurn.parts, persistedTurn.parts, messageId);
 
   liveTurn.branchMessageId = messageId;
   liveTurn.status = "complete";
   completeRunningParts(liveTurn.parts);
-  removeEmptyMediaTransportTextParts(liveTurn.parts);
+}
+
+type PersistedReconciliationPart =
+  | AgentChatTextPart
+  | AgentChatReasoningPart
+  | AgentChatToolPart
+  | AgentChatImagePart
+  | AgentChatVideoPart
+  | AgentChatNoticePart;
+
+type PersistedPartAnchor = {
+  persisted: PersistedReconciliationPart;
+  start?: AgentChatPart;
+  end?: AgentChatPart;
+  reasoningOrdinal?: number;
+};
+
+function reconcilePersistedPartOrder(
+  liveParts: AgentChatPart[],
+  persistedParts: AgentChatPart[],
+  messageId: string,
+) {
+  const liveTextParts = liveParts.filter((part): part is AgentChatTextPart => part.type === "text");
+  const liveReasoningParts = liveParts.filter(
+    (part): part is AgentChatReasoningPart => part.type === "reasoning",
+  );
+  const usedLiveParts = new Set<AgentChatPart>();
+  const anchors: PersistedPartAnchor[] = [];
+  let claimedLiveReasoning = false;
+  let reasoningOrdinal = 0;
+
+  for (const persisted of persistedParts) {
+    if (!isPersistedReconciliationPart(persisted)) continue;
+    if (persisted.type === "text") {
+      anchors.push({
+        persisted,
+        start: liveTextParts[0],
+        end: liveTextParts[liveTextParts.length - 1],
+      });
+      continue;
+    }
+    if (persisted.type === "reasoning") {
+      const ordinal = reasoningOrdinal;
+      reasoningOrdinal += 1;
+      if (!claimedLiveReasoning && liveReasoningParts.length > 0) {
+        claimedLiveReasoning = true;
+        for (const part of liveReasoningParts) usedLiveParts.add(part);
+        const liveReasoning = liveReasoningParts.map((part) => part.text).join("\n\n");
+        if (persisted.text.startsWith(liveReasoning)) {
+          const last = liveReasoningParts[liveReasoningParts.length - 1] as AgentChatReasoningPart;
+          last.text += persisted.text.slice(liveReasoning.length);
+        }
+        for (const part of liveReasoningParts) part.status = "complete";
+        anchors.push({
+          persisted,
+          start: liveReasoningParts[0],
+          end: liveReasoningParts[liveReasoningParts.length - 1],
+          reasoningOrdinal: ordinal,
+        });
+      } else {
+        anchors.push({ persisted, reasoningOrdinal: ordinal });
+      }
+      continue;
+    }
+
+    const existing = findPersistedStructuredPartMatch(liveParts, persisted, usedLiveParts);
+    if (existing) {
+      usedLiveParts.add(existing);
+      reconcilePersistedStructuredPartInPlace(existing, persisted);
+    }
+    anchors.push({ persisted, start: existing, end: existing });
+  }
+
+  for (let index = 0; index < anchors.length; index += 1) {
+    const anchor = anchors[index] as PersistedPartAnchor;
+    if (anchor.start) continue;
+    const inserted = clonePersistedStructuredPart(
+      anchor.persisted,
+      messageId,
+      anchor.reasoningOrdinal,
+    );
+    let preceding: AgentChatPart | undefined;
+    for (let previous = index - 1; previous >= 0; previous -= 1) {
+      preceding = anchors[previous]?.end;
+      if (preceding) break;
+    }
+    let following: AgentChatPart | undefined;
+    for (let next = index + 1; next < anchors.length; next += 1) {
+      following = anchors[next]?.start;
+      if (following) break;
+    }
+
+    const precedingIndex = preceding ? liveParts.indexOf(preceding) : -1;
+    const followingIndex = following ? liveParts.indexOf(following) : -1;
+    if (precedingIndex >= 0) {
+      liveParts.splice(precedingIndex + 1, 0, inserted);
+    } else if (followingIndex >= 0) {
+      liveParts.splice(followingIndex, 0, inserted);
+    } else {
+      liveParts.push(inserted);
+    }
+    anchor.start = inserted;
+    anchor.end = inserted;
+  }
+}
+
+function isPersistedReconciliationPart(part: AgentChatPart): part is PersistedReconciliationPart {
+  return (
+    part.type === "text" ||
+    part.type === "reasoning" ||
+    part.type === "tool" ||
+    part.type === "image" ||
+    part.type === "video" ||
+    part.type === "notice"
+  );
+}
+
+function findPersistedStructuredPartMatch(
+  liveParts: AgentChatPart[],
+  persisted: Exclude<PersistedReconciliationPart, AgentChatTextPart | AgentChatReasoningPart>,
+  usedLiveParts: ReadonlySet<AgentChatPart>,
+) {
+  return liveParts.find((live) => {
+    if (usedLiveParts.has(live)) return false;
+    if (persisted.type === "tool") return live.type === "tool" && live.id === persisted.id;
+    if (persisted.type === "image") return live.type === "image" && sameImagePart(live, persisted);
+    if (persisted.type === "video") return live.type === "video" && sameVideoPart(live, persisted);
+    return live.type === "notice" && live.kind === persisted.kind;
+  });
+}
+
+function reconcilePersistedStructuredPartInPlace(
+  live: AgentChatPart,
+  persisted: Exclude<PersistedReconciliationPart, AgentChatTextPart | AgentChatReasoningPart>,
+) {
+  if (live.type === "tool" && persisted.type === "tool") {
+    upsertToolPart([live], persisted);
+  } else if (live.type === "image" && persisted.type === "image") {
+    Object.assign(live, persisted);
+  } else if (live.type === "video" && persisted.type === "video") {
+    Object.assign(live, persisted);
+  } else if (live.type === "notice" && persisted.type === "notice") {
+    Object.assign(live, persisted);
+  }
+}
+
+function clonePersistedStructuredPart(
+  persisted: PersistedReconciliationPart,
+  messageId: string,
+  reasoningOrdinal?: number,
+): AgentChatPart {
+  if (persisted.type === "reasoning") {
+    return {
+      ...persisted,
+      renderKey: persisted.renderKey ?? `${messageId}:reasoning:${reasoningOrdinal ?? 0}`,
+    };
+  }
+  return { ...persisted };
 }
 
 function appendImageParts(parts: AgentChatPart[], images: AgentChatImagePart[]) {
@@ -1189,17 +1345,9 @@ function replaceReasoningPart(parts: AgentChatPart[], text: string, renderIdenti
 }
 
 function completeRunningParts(parts: AgentChatPart[]) {
-  const hasMediaTool = parts.some((part) => part.type === "tool" && part.media !== undefined);
   for (const part of parts) {
     if (part.type === "reasoning") part.status = "complete";
     if (part.type === "text") {
-      // Scrub terminal MEDIA transport refs when a media tool ran (fast path) or
-      // when the text itself still carries a real `MEDIA:<path|filename>` ref —
-      // a media-producing tool that wasn't classified as media leaves the gate
-      // shut otherwise, stranding a trailing MEDIA line on the final message.
-      if (hasMediaTool || containsMediaReference(part.text)) {
-        part.text = stripTerminalMediaReferences(part.text);
-      }
       part.status = "complete";
     }
     if (part.type === "tool" && part.status === "running") part.status = "complete";
@@ -1653,27 +1801,11 @@ function stripMediaReferences(value: string) {
 /** Pure display-time scrub for assistant text that still contains media
  * transport references. Complete references are removed in every state. While
  * streaming, also hold back a final line that is a split `MEDIA:` prefix or a
- * still-arriving reference (absolute paths can contain spaces). Terminal paths
- * normalize media turns before changing status, so completed ordinary prose
- * such as "Media" remains untouched. */
+ * still-arriving reference (absolute paths can contain spaces). */
 export function stripRenderedMediaReferences(value: string, holdTrailingPartial = false): string {
   const stripped = stripMediaReferences(value);
   if (!holdTrailingPartial) return stripped;
   return stripped.replace(/(^|\r?\n)[ \t]*(?:M|ME|MED|MEDI|MEDIA|MEDIA:.*)$/i, "$1");
-}
-
-/** True when the text carries a real `MEDIA:<path|filename>` transport ref. The
- * patterns are anchored to `MEDIA:` plus a path/filename, so ordinary prose that
- * merely contains the word "media" doesn't match. */
-function containsMediaReference(value: string): boolean {
-  return mediaImageReferencePattern().test(value) || mediaVideoReferencePattern().test(value);
-}
-
-function stripTerminalMediaReferences(value: string): string {
-  return stripMediaReferences(value).replace(
-    /(^|\r?\n)[ \t]*MEDIA:(?:[ \t]*|\/.*|[A-Za-z0-9._-]*[._-][A-Za-z0-9._-]*)$/i,
-    "$1",
-  );
 }
 
 function mediaImageReferences(value: unknown, depth = 0): string[] {
