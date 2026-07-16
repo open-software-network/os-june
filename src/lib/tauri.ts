@@ -2095,6 +2095,21 @@ export type NotionConnection = {
   selectedResourceScopingVerified: boolean;
 };
 
+export type NotionToolSummary = {
+  name: string;
+  description?: string;
+  writeClass: string;
+};
+
+export type NotionToolInventory = {
+  endpoint: string;
+  protocolVersion: string;
+  toolCount: number;
+  tools: NotionToolSummary[];
+  sessionEstablished: boolean;
+  inventoryBytes: number;
+};
+
 export async function notionConnectorStatus() {
   return invoke<NotionConnectionStatus>("notion_connector_status");
 }
@@ -2109,6 +2124,10 @@ export async function notionConnectorCancelConnect() {
 
 export async function notionConnectorDisconnect() {
   return invoke<void>("notion_connector_disconnect");
+}
+
+export async function notionConnectorListTools() {
+  return invoke<NotionToolInventory>("notion_connector_list_tools");
 }
 
 /** Removes a connected account. With `revoke`, also revokes June's grant with

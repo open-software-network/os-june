@@ -303,6 +303,7 @@ pub fn run() {
             connectors::commands::notion_connector_connect,
             connectors::commands::notion_connector_cancel_connect,
             connectors::commands::notion_connector_disconnect,
+            connectors::commands::notion_connector_list_tools,
             connectors::commands::routine_trust_get,
             connectors::commands::routine_trust_set,
             connectors::commands::routine_trust_record_run,

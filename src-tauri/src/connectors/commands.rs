@@ -127,6 +127,11 @@ pub async fn notion_connector_disconnect() -> Result<(), AppError> {
     notion::disconnect().await
 }
 
+#[tauri::command]
+pub async fn notion_connector_list_tools() -> Result<notion::NotionToolInventory, AppError> {
+    notion::list_tools().await
+}
+
 // --- Routine trust modes -----------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]

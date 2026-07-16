@@ -32,6 +32,9 @@ const NOTION_ACCOUNT_EMAIL: &str = "Notion hosted MCP preview";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+const MCP_RESPONSE_MAX_BYTES: usize = 512 * 1024;
+const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
@@ -85,6 +88,26 @@ pub struct NotionConnection {
     pub endpoint: String,
     pub preview: bool,
     pub selected_resource_scoping_verified: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionToolInventory {
+    pub endpoint: String,
+    pub protocol_version: String,
+    pub tool_count: usize,
+    pub tools: Vec<NotionToolSummary>,
+    pub session_established: bool,
+    pub inventory_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionToolSummary {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub write_class: String,
 }
 
 #[derive(Deserialize)]
@@ -256,6 +279,26 @@ pub async fn connect(flow: &NotionConnectFlow) -> Result<NotionConnection, AppEr
 
 pub async fn disconnect() -> Result<(), AppError> {
     store::delete().await
+}
+
+pub async fn list_tools() -> Result<NotionToolInventory, AppError> {
+    let stored = store::load().await?.ok_or_else(|| {
+        AppError::new(
+            "notion_not_connected",
+            "Connect Notion before discovering tools.",
+        )
+    })?;
+    let client = McpHttpClient::new(stored.access_token.clone());
+    client.initialize().await?;
+    let (tools, bytes) = client.tools_list().await?;
+    Ok(NotionToolInventory {
+        endpoint: MCP_ENDPOINT.to_string(),
+        protocol_version: MCP_PROTOCOL_VERSION.to_string(),
+        tool_count: tools.len(),
+        tools,
+        session_established: client.session_id().is_some(),
+        inventory_bytes: bytes,
+    })
 }
 
 fn connection() -> NotionConnection {
@@ -434,6 +477,221 @@ fn token_exchange_failed(error_code: Option<String>) -> AppError {
         None => "Could not complete the Notion connection.".to_string(),
     };
     AppError::new("notion_token_exchange_failed", message)
+}
+
+struct McpHttpClient {
+    access_token: String,
+    session_id: std::sync::Mutex<Option<String>>,
+}
+
+impl McpHttpClient {
+    fn new(access_token: String) -> Self {
+        Self {
+            access_token,
+            session_id: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn session_id(&self) -> Option<String> {
+        self.session_id
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    async fn initialize(&self) -> Result<(), AppError> {
+        let response = self
+            .post_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "June",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    },
+                },
+            }))
+            .await?;
+        self.capture_session_id(&response);
+        let value = read_mcp_json(response).await?;
+        ensure_jsonrpc_ok(&value, "notion_mcp_initialize_failed")?;
+        self
+            .post_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {},
+            }))
+            .await?;
+        Ok(())
+    }
+
+    async fn tools_list(&self) -> Result<(Vec<NotionToolSummary>, usize), AppError> {
+        let response = self
+            .post_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+                "params": {},
+            }))
+            .await?;
+        self.capture_session_id(&response);
+        let bytes = response.content_length().unwrap_or(0) as usize;
+        let value = read_mcp_json(response).await?;
+        ensure_jsonrpc_ok(&value, "notion_mcp_tools_list_failed")?;
+        let tools = value
+            .get("result")
+            .and_then(|result| result.get("tools"))
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                AppError::new(
+                    "notion_mcp_tools_list_failed",
+                    "Notion returned an unexpected tool inventory.",
+                )
+            })?
+            .iter()
+            .filter_map(summarize_tool)
+            .collect();
+        let inventory_bytes = serde_json::to_vec(&value).map(|body| body.len()).unwrap_or(bytes);
+        Ok((tools, inventory_bytes))
+    }
+
+    async fn post_json(&self, body: serde_json::Value) -> Result<reqwest::Response, AppError> {
+        let mut request = http_client()
+            .post(MCP_ENDPOINT)
+            .bearer_auth(&self.access_token)
+            .header("accept", "application/json, text/event-stream")
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", MCP_PROTOCOL_VERSION)
+            .json(&body);
+        if let Some(session_id) = self.session_id() {
+            request = request.header(MCP_SESSION_ID_HEADER, session_id);
+        }
+        let response = request.send().await.map_err(|_| {
+            AppError::new(
+                "notion_mcp_request_failed",
+                "Could not reach Notion hosted MCP.",
+            )
+        })?;
+        if !response.status().is_success() {
+            tracing::warn!(status = response.status().as_u16(), "notion MCP request failed");
+            return Err(AppError::new(
+                "notion_mcp_request_failed",
+                "Notion hosted MCP did not accept the request.",
+            ));
+        }
+        Ok(response)
+    }
+
+    fn capture_session_id(&self, response: &reqwest::Response) {
+        let Some(session_id) = response
+            .headers()
+            .get(MCP_SESSION_ID_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+        if let Ok(mut slot) = self.session_id.lock() {
+            *slot = Some(session_id.to_string());
+        }
+    }
+}
+
+async fn read_mcp_json(response: reqwest::Response) -> Result<serde_json::Value, AppError> {
+    let bytes = response.bytes().await.map_err(|_| {
+        AppError::new(
+            "notion_mcp_response_failed",
+            "Could not read Notion hosted MCP's response.",
+        )
+    })?;
+    if bytes.len() > MCP_RESPONSE_MAX_BYTES {
+        return Err(AppError::new(
+            "notion_mcp_response_too_large",
+            "Notion hosted MCP returned more metadata than June will accept.",
+        ));
+    }
+    let raw = std::str::from_utf8(&bytes).map_err(|_| {
+        AppError::new(
+            "notion_mcp_response_failed",
+            "Notion hosted MCP returned an unreadable response.",
+        )
+    })?;
+    parse_json_or_sse_json(raw).ok_or_else(|| {
+        AppError::new(
+            "notion_mcp_response_failed",
+            "Notion hosted MCP returned an unexpected response.",
+        )
+    })
+}
+
+fn parse_json_or_sse_json(raw: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(raw).ok().or_else(|| {
+        raw.lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && *line != "[DONE]")
+            .find_map(|line| serde_json::from_str(line).ok())
+    })
+}
+
+fn ensure_jsonrpc_ok(value: &serde_json::Value, code: &'static str) -> Result<(), AppError> {
+    if value.get("error").is_some() {
+        return Err(AppError::new(
+            code,
+            "Notion hosted MCP returned an error for this request.",
+        ));
+    }
+    if value.get("result").is_none() {
+        return Err(AppError::new(
+            code,
+            "Notion hosted MCP returned an incomplete response.",
+        ));
+    }
+    Ok(())
+}
+
+fn summarize_tool(value: &serde_json::Value) -> Option<NotionToolSummary> {
+    let name = value.get("name")?.as_str()?.to_string();
+    let description = value
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .map(truncate_description);
+    Some(NotionToolSummary {
+        write_class: classify_tool(&name).to_string(),
+        name,
+        description,
+    })
+}
+
+fn truncate_description(description: &str) -> String {
+    const MAX_DESCRIPTION_CHARS: usize = 240;
+    let mut truncated: String = description.chars().take(MAX_DESCRIPTION_CHARS).collect();
+    if description.chars().count() > MAX_DESCRIPTION_CHARS {
+        truncated.push_str("...");
+    }
+    truncated
+}
+
+fn classify_tool(name: &str) -> &'static str {
+    let lowered = name.to_ascii_lowercase();
+    if lowered.contains("create")
+        || lowered.contains("update")
+        || lowered.contains("delete")
+        || lowered.contains("move")
+        || lowered.contains("duplicate")
+        || lowered.contains("comment")
+        || lowered.contains("attachment")
+    {
+        "write_or_action"
+    } else {
+        "read_or_unknown"
+    }
 }
 
 const SUCCESS_BODY: &str = r##"<!doctype html>

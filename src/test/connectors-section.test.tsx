@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   connectorsApplyRuntime: vi.fn(),
   notionConnectorConnect: vi.fn(),
   notionConnectorDisconnect: vi.fn(),
+  notionConnectorListTools: vi.fn(),
   listen: vi.fn(),
 }));
 
@@ -22,6 +23,7 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   connectorsApplyRuntime: mocks.connectorsApplyRuntime,
   notionConnectorConnect: mocks.notionConnectorConnect,
   notionConnectorDisconnect: mocks.notionConnectorDisconnect,
+  notionConnectorListTools: mocks.notionConnectorListTools,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -56,6 +58,14 @@ beforeEach(() => {
     selectedResourceScopingVerified: false,
   });
   mocks.notionConnectorDisconnect.mockResolvedValue(undefined);
+  mocks.notionConnectorListTools.mockResolvedValue({
+    endpoint: "https://mcp.notion.com/mcp",
+    protocolVersion: "2025-06-18",
+    toolCount: 20,
+    tools: [],
+    sessionEstablished: true,
+    inventoryBytes: 1024,
+  });
   mocks.listen.mockResolvedValue(() => {});
 });
 
@@ -87,6 +97,24 @@ describe("ConnectorsSection", () => {
 
     await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
     expect(mocks.connectorsConnect).not.toHaveBeenCalled();
+  });
+
+  it("discovers Notion hosted MCP tools after connection", async () => {
+    mocks.connectorsList.mockResolvedValue([
+      {
+        accountId: "notion-hosted-mcp",
+        provider: "notion",
+        email: "Notion hosted MCP preview",
+        scopes: [],
+        status: "connected",
+      },
+    ]);
+    render(<ConnectorsSection />);
+    await screen.findByText("Preview connected");
+
+    await userEvent.click(screen.getByRole("button", { name: "Discover Notion tools" }));
+
+    await waitFor(() => expect(mocks.notionConnectorListTools).toHaveBeenCalled());
   });
 
   it("shows connected Notion preview state and disconnects locally", async () => {
