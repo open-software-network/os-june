@@ -107,9 +107,9 @@ export function MonitorDashboard({
         {error ? <div className="inline-error">{error}. Showing the last successful check.</div> : null}
 
         <section className="metric-strip" aria-label="Current service metrics">
-          <Metric label="Healthy checks" value={`${healthyCount}/${snapshot.checks.length}`} detail="Across core, product APIs, and identity" />
+          <Metric label="Healthy checks" value={`${healthyCount}/${snapshot.checks.length}`} detail="Across production services and portals" />
           <Metric label="Average response" value={`${averageLatency} ms`} detail="Latest probe cycle" />
-          <Metric label="Service" value={snapshot.service} detail={snapshot.version ? `Version ${snapshot.version}` : "Version unavailable"} mono />
+          <Metric label="Environment" value="Production" detail="Open Software" mono />
           <Metric label="Last check" value={formatUtc(snapshot.checkedAt, false)} detail="UTC" mono />
         </section>
 
@@ -213,9 +213,9 @@ function statusTitle(status: OverallState): string {
 }
 
 function statusDescription(status: OverallState): string {
-  if (status === "operational") return "June is ready and its required services are responding normally.";
-  if (status === "degraded") return "June is serving traffic, but a supporting check needs attention.";
-  return "A critical June API check is failing. Investigate before relying on the service.";
+  if (status === "operational") return "Open Software services are responding normally.";
+  if (status === "degraded") return "Core services are available, but a supporting check needs attention.";
+  return "A critical production check is failing. Investigation is required.";
 }
 
 function statusLabel(status: OverallState): string {

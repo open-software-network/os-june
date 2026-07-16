@@ -1,10 +1,10 @@
 export function Brand() {
   return (
-    <div className="brand" aria-label="June">
+    <div className="brand" aria-label="Open Software health">
       <span className="brand-mark" aria-hidden="true">
-        J
+        OS
       </span>
-      <span className="brand-name">June</span>
+      <span className="brand-name">Open Software health</span>
     </div>
   );
 }

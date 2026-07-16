@@ -18,6 +18,7 @@ test("a failed critical check is an outage", () => {
 function check(critical: boolean, state: HealthCheck["state"]): HealthCheck {
   return {
     id: critical ? "june-live" : "accounts-ready",
+    group: "Test",
     label: "Check",
     description: "Check",
     state,

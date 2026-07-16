@@ -1,5 +1,6 @@
 import "server-only";
 
+import checkDefinitions from "@/checks.json";
 import { matchesContractResponse } from "@/lib/contract-probe";
 import { getServerEnv } from "@/lib/env/server";
 import { deriveOverallState } from "@/lib/health-state";
@@ -8,14 +9,8 @@ export type CheckState = "healthy" | "unhealthy";
 export type OverallState = "operational" | "degraded" | "outage";
 
 export type HealthCheck = {
-  id:
-    | "june-live"
-    | "june-ready"
-    | "june-health"
-    | "dictation-api"
-    | "notes-api"
-    | "agent-api"
-    | "accounts-ready";
+  id: string;
+  group: string;
   label: string;
   description: string;
   state: CheckState;
@@ -39,121 +34,56 @@ type HealthEnvelope = {
   data?: { status?: string; service?: string; version?: string } | null;
 };
 
-export async function collectHealthSnapshot(): Promise<HealthSnapshot> {
-  const env = getServerEnv();
-  const [live, ready, summary, dictation, notes, agent, accounts] = await Promise.all([
-    probe({
-      id: "june-live",
-      label: "API process",
-      description: "June API liveness",
-      url: `${env.JUNE_API_URL}/livez`,
-      critical: true,
-      healthyDetail: "Process is accepting connections",
-      timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
-    }),
-    probe({
-      id: "june-ready",
-      label: "Request readiness",
-      description: "June API traffic gate",
-      url: `${env.JUNE_API_URL}/readyz`,
-      critical: true,
-      healthyDetail: "Ready to serve requests",
-      timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
-    }),
-    probe({
-      id: "june-health",
-      label: "Deployment",
-      description: "Service identity and build",
-      url: `${env.JUNE_API_URL}/healthz`,
-      critical: false,
-      healthyDetail: "Build metadata is available",
-      timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
-      parseHealth: true,
-    }),
-    probe({
-      id: "dictation-api",
-      label: "Dictation API",
-      description: "Cleanup route and auth contract",
-      url: `${env.JUNE_API_URL}/v1/dictate/cleanup`,
-      method: "POST",
-      body: JSON.stringify({ text: "", style: "", model: null }),
-      expectedStatusCode: 401,
-      expectedErrorCode: 3001,
-      critical: true,
-      healthyDetail: "Route and authentication boundary are ready",
-      timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
-    }),
-    probe({
-      id: "notes-api",
-      label: "Notes API",
-      description: "Generation route and auth contract",
-      url: `${env.JUNE_API_URL}/v1/notes/generate`,
-      method: "POST",
-      body: JSON.stringify({ title: "", transcript: "" }),
-      expectedStatusCode: 401,
-      expectedErrorCode: 3001,
-      critical: true,
-      healthyDetail: "Route and authentication boundary are ready",
-      timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
-    }),
-    probe({
-      id: "agent-api",
-      label: "Agent API",
-      description: "Chat route and auth contract",
-      url: `${env.JUNE_API_URL}/v1/chat/completions`,
-      method: "POST",
-      body: "{}",
-      expectedStatusCode: 401,
-      expectedErrorCode: 3001,
-      critical: true,
-      healthyDetail: "Route and authentication boundary are ready",
-      timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
-    }),
-    probe({
-      id: "accounts-ready",
-      label: "Identity dependency",
-      description: "OS Accounts readiness",
-      url: `${env.OS_ACCOUNTS_API_URL}/ready`,
-      critical: false,
-      healthyDetail: "Login dependency is ready",
-      timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
-    }),
-  ]);
-  const checks = [
-    live.check,
-    ready.check,
-    summary.check,
-    dictation.check,
-    notes.check,
-    agent.check,
-    accounts.check,
-  ];
-  return {
-    status: deriveOverallState(checks),
-    checkedAt: new Date().toISOString(),
-    target: env.JUNE_API_URL,
-    service: summary.metadata?.service ?? "june-api",
-    version: summary.metadata?.version ?? null,
-    checks,
-  };
-}
-
-type ProbeInput = {
-  id: HealthCheck["id"];
+type CheckDefinition = {
+  id: string;
+  group: string;
   label: string;
   description: string;
-  url: string;
+  envVar: string;
+  defaultOrigin: string;
+  path: string;
   critical: boolean;
   healthyDetail: string;
-  timeoutMs: number;
   parseHealth?: boolean;
   method?: "GET" | "POST";
-  body?: string;
+  body?: unknown;
   expectedStatusCode?: number;
   expectedErrorCode?: number;
 };
 
+export async function collectHealthSnapshot(): Promise<HealthSnapshot> {
+  const env = getServerEnv();
+  const results = await Promise.all(
+    (checkDefinitions as CheckDefinition[]).map((definition) =>
+      probe({
+        ...definition,
+        url: `${env.serviceOrigins[definition.envVar] ?? definition.defaultOrigin}${definition.path}`,
+        body: definition.body === undefined ? undefined : JSON.stringify(definition.body),
+        timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
+      }),
+    ),
+  );
+  const checks = results.map((result) => result.check);
+  const juneMetadata = results.find((result) => result.definitionId === "june-health")?.metadata;
+
+  return {
+    status: deriveOverallState(checks),
+    checkedAt: new Date().toISOString(),
+    target: env.APP_ORIGIN,
+    service: "Open Software production",
+    version: juneMetadata?.version ?? null,
+    checks,
+  };
+}
+
+type ProbeInput = CheckDefinition & {
+  url: string;
+  timeoutMs: number;
+  body?: string;
+};
+
 async function probe(input: ProbeInput): Promise<{
+  definitionId: string;
   check: HealthCheck;
   metadata?: { service?: string; version?: string };
 }> {
@@ -172,6 +102,7 @@ async function probe(input: ProbeInput): Promise<{
     const latencyMs = Math.max(1, Math.round(performance.now() - startedAt));
     let metadata: { service?: string; version?: string } | undefined;
     let detail = input.healthyDetail;
+
     if (input.expectedStatusCode !== undefined) {
       let body: unknown;
       try {
@@ -186,6 +117,7 @@ async function probe(input: ProbeInput): Promise<{
         input.expectedErrorCode,
       );
       return {
+        definitionId: input.id,
         check: makeCheck(
           input,
           healthy ? "healthy" : "unhealthy",
@@ -195,11 +127,13 @@ async function probe(input: ProbeInput): Promise<{
         ),
       };
     }
+
     if (input.parseHealth && response.ok) {
       const body = (await response.json()) as HealthEnvelope;
       metadata = body.data ?? undefined;
       if (!body.success || body.data?.status !== "healthy") {
         return {
+          definitionId: input.id,
           check: makeCheck(input, "unhealthy", latencyMs, response.status, "Invalid health response"),
           metadata,
         };
@@ -208,7 +142,9 @@ async function probe(input: ProbeInput): Promise<{
         .filter(Boolean)
         .join(" ");
     }
+
     return {
+      definitionId: input.id,
       check: makeCheck(
         input,
         response.ok ? "healthy" : "unhealthy",
@@ -221,7 +157,10 @@ async function probe(input: ProbeInput): Promise<{
   } catch (error) {
     const latencyMs = Math.max(1, Math.round(performance.now() - startedAt));
     const detail = error instanceof Error && error.name === "TimeoutError" ? "Probe timed out" : "Unreachable";
-    return { check: makeCheck(input, "unhealthy", latencyMs, null, detail) };
+    return {
+      definitionId: input.id,
+      check: makeCheck(input, "unhealthy", latencyMs, null, detail),
+    };
   }
 }
 
@@ -234,6 +173,7 @@ function makeCheck(
 ): HealthCheck {
   return {
     id: input.id,
+    group: input.group,
     label: input.label,
     description: input.description,
     state,

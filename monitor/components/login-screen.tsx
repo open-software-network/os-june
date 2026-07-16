@@ -15,14 +15,14 @@ export function LoginScreen({ authMessage }: { authMessage?: string }) {
       <section className="auth-card">
         <div className="auth-orbit" aria-hidden="true">
           <span className="orbit-ring" />
-          <span className="orbit-core">J</span>
+          <span className="orbit-core">OS</span>
           <span className="orbit-dot orbit-dot-one" />
           <span className="orbit-dot orbit-dot-two" />
         </div>
-        <p className="eyebrow">June infrastructure</p>
+        <p className="eyebrow">Production infrastructure</p>
         <h1>Health, without the noise.</h1>
         <p className="auth-copy">
-          A focused view of API availability, readiness, deployment identity, and the login dependency.
+          One view of production availability across Open Software services and product APIs.
         </p>
         {message ? <p className="auth-message">{message}</p> : null}
         <a className="primary-button" href="/auth/start">

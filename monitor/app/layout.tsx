@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "June health monitor",
-  description: "Private service health monitor for June",
+  title: "Open Software health",
+  description: "Private production health monitor for Open Software",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
