@@ -40,7 +40,7 @@ targets:
           - "$(SRCROOT)/../../../crates/june-companion-crypto/Cargo.toml"
           - "$(SRCROOT)/../../../crates/june-companion-crypto/src/lib.rs"
         outputFiles:
-          - "$(SRCROOT)/CompanionCrypto/lib/libjune_companion_crypto.a"
+          - "$(SRCROOT)/CompanionCrypto/lib/$(PLATFORM_NAME)/libjune_companion_crypto.a"
         basedOnDependencyAnalysis: true
     settings:
       base:
@@ -55,7 +55,7 @@ targets:
           - "$(SRCROOT)/CompanionCrypto/include"
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
-          - "$(SRCROOT)/CompanionCrypto/lib"
+          - "$(SRCROOT)/CompanionCrypto/lib/$(PLATFORM_NAME)"
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-ljune_companion_crypto"

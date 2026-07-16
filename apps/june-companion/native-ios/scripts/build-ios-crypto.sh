@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../../../.." && pwd)"
 CRATE="$ROOT/crates/june-companion-crypto/Cargo.toml"
 OUT="$ROOT/apps/june-companion/native-ios/CompanionCrypto"
 
-mkdir -p "$OUT/include" "$OUT/lib"
+mkdir -p "$OUT/include"
 cp "$ROOT/crates/june-companion-crypto/include/june_companion_crypto.h" "$OUT/include/"
 
 case "${PLATFORM_NAME:-}" in
@@ -16,6 +16,8 @@ case "${PLATFORM_NAME:-}" in
   *) TARGET="aarch64-apple-ios" ;;
 esac
 
+LIB_DIR="$OUT/lib/${PLATFORM_NAME:-iphoneos}"
+mkdir -p "$LIB_DIR"
 rustup target add "$TARGET"
 cargo build --release --manifest-path "$CRATE" --target "$TARGET"
-cp "$ROOT/crates/june-companion-crypto/target/$TARGET/release/libjune_companion_crypto.a" "$OUT/lib/libjune_companion_crypto.a"
+cp "$ROOT/crates/june-companion-crypto/target/$TARGET/release/libjune_companion_crypto.a" "$LIB_DIR/libjune_companion_crypto.a"

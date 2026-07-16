@@ -318,7 +318,7 @@
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(SRCROOT)/CompanionCrypto/lib/libjune_companion_crypto.a",
+				"$(SRCROOT)/CompanionCrypto/lib/$(PLATFORM_NAME)/libjune_companion_crypto.a",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -450,7 +450,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(SRCROOT)/CompanionCrypto/lib",
+					"$(SRCROOT)/CompanionCrypto/lib/$(PLATFORM_NAME)",
 				);
 				MARKETING_VERSION = 0.1.0;
 				OTHER_LDFLAGS = (
@@ -561,7 +561,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(SRCROOT)/CompanionCrypto/lib",
+					"$(SRCROOT)/CompanionCrypto/lib/$(PLATFORM_NAME)",
 				);
 				MARKETING_VERSION = 0.1.0;
 				OTHER_LDFLAGS = (
