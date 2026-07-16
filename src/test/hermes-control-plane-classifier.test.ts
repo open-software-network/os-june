@@ -658,6 +658,21 @@ describe("classifyHermesEvent — background activity", () => {
 });
 
 describe("classifyHermesEvent — lifecycle", () => {
+  it("keeps transcript completion message-terminal rather than run-terminal", () => {
+    for (const status of ["success", "error"]) {
+      const result = classifyHermesEvent(
+        event("message.complete", {
+          message_id: `message-${status}`,
+          text: "Visible answer",
+          status,
+        }),
+      );
+
+      expect(result.kind).toBe("transcript");
+      expect(isTerminalHermesEvent(result)).toBe(false);
+    }
+  });
+
   it("maps gateway.ready, session.info, status.update, lifecycle.* to lifecycle", () => {
     for (const name of [
       "gateway.ready",

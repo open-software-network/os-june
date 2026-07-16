@@ -179,15 +179,27 @@ describe("createHermesActivityStore", () => {
     expect(store.activeCount()).toBe(1);
   });
 
-  it("message completion flips the session to phase 'complete'", () => {
+  it("keeps the run active after message completion until a lifecycle terminal", () => {
     const store = createHermesActivityStore();
     store.record(classified("message.start", "s1"), "sandboxed");
     expect(store.getRecord("s1")?.phase).toBe("running");
 
     store.record(classified("message.complete", "s1", { text: "Done" }), "sandboxed");
 
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
+
+    store.record(classified("tool.start", "s1", { tool_name: "read_file" }), "sandboxed");
+    expect(store.getRecord("s1")?.currentTool).toBe("read_file");
+
+    store.record(classified("turn.completed", "s1", { status: "success" }), "sandboxed");
     expect(store.getRecord("s1")?.phase).toBe("complete");
+    expect(store.getRecord("s1")?.currentTool).toBeUndefined();
     expect(store.activeCount()).toBe(0);
+
+    store.record(classified("status.update", "s1", { status: "working" }), "sandboxed");
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.getRecord("s1")?.currentTool).toBeUndefined();
   });
 
   it("an error frame moves the session to phase 'error'", () => {
@@ -195,6 +207,7 @@ describe("createHermesActivityStore", () => {
     store.record(classified("tool.start", "s1", { tool_name: "bash" }), "sandboxed");
     store.record(classified("error", "s1", { message: "boom" }), "sandboxed");
     expect(store.getRecord("s1")?.phase).toBe("error");
+    expect(store.getRecord("s1")?.currentTool).toBeUndefined();
   });
 
   it("background subagent activity sets phase 'background' and counts distinct subagents", () => {

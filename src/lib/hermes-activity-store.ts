@@ -309,7 +309,7 @@ type InternalRecord = {
  * - `error`                   -> error.
  * - `lifecycle`               -> complete when the flavor is terminal, running when
  *                                the flavor is running, no-op when informational.
- * - `transcript`              -> complete on message completion, else running.
+ * - `transcript`              -> running; message completion is not run completion.
  * - `reasoning`               -> running (the agent is producing output).
  * - `steering`                -> no phase change (local transcript marker).
  * - `unsupported`             -> no phase change (don't let an unknown frame
@@ -335,6 +335,7 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       return;
     case "error":
       row.phase = "error";
+      row.currentTool = undefined;
       return;
     case "lifecycle":
       // Genuine completions arrive as terminal-flavored frames (lifecycle.complete(d),
@@ -342,17 +343,18 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       // write). An info frame's status text must never retire a live row, and info
       // frames must not flip idle rows to running; this matches main's event-driven
       // spinner semantics.
-      if (event.flavor === "terminal") row.phase = "complete";
+      if (event.flavor === "terminal") {
+        row.phase = "complete";
+        row.currentTool = undefined;
+      }
       if (event.flavor === "running") row.phase = "running";
       return;
     case "transcript":
-      if (event.complete) {
-        row.phase = "complete";
-        row.currentTool = undefined;
-        return;
-      }
       // The agent is actively producing output — running, unless it has already
-      // reached a terminal state this turn (a late delta shouldn't un-complete).
+      // reached a completed state this turn (a late frame shouldn't
+      // un-complete). A message.complete frame closes only that assistant
+      // message; the lifecycle terminal closes the run. Transcript activity
+      // can recover a parent row after a subagent error.
       if (row.phase !== "complete") row.phase = "running";
       return;
     case "reasoning":

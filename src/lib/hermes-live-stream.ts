@@ -3,7 +3,7 @@ import type { JuneHermesEvent } from "./hermes-control-plane";
 export type HermesLiveStream = {
   revision: number;
   entries: Array<{ event: JuneHermesEvent; revision: number }>;
-  seenDeliveries: string[];
+  seenDeliveries: HermesDeliveryLedger;
   transcriptByMessageId: Record<
     string,
     {
@@ -18,6 +18,16 @@ export type HermesLiveStream = {
   persistedMessageIds: Record<string, true>;
 };
 
+type HermesDeliveryLedger = {
+  root: DeliveryTrieNode;
+  size: number;
+};
+
+type DeliveryTrieNode = {
+  children?: Readonly<Record<number, DeliveryTrieNode>>;
+  keys?: readonly string[];
+};
+
 type TranscriptEvent = Extract<JuneHermesEvent, { kind: "transcript" }>;
 type TranscriptState = HermesLiveStream["transcriptByMessageId"][string];
 type StreamEntry = HermesLiveStream["entries"][number];
@@ -26,7 +36,7 @@ export function createHermesLiveStream(): HermesLiveStream {
   return {
     revision: 0,
     entries: [],
-    seenDeliveries: [],
+    seenDeliveries: { root: {}, size: 0 },
     transcriptByMessageId: {},
     persistedMessageIds: {},
   };
@@ -37,12 +47,17 @@ export function appendHermesLiveEvent(
   event: JuneHermesEvent,
 ): HermesLiveStream {
   const deliveryKey = stableDeliveryKey(event);
-  if (deliveryKey && current.seenDeliveries.includes(deliveryKey)) return current;
+  if (deliveryKey && deliveryLedgerHas(current.seenDeliveries, deliveryKey)) return current;
 
   const next: HermesLiveStream = {
     revision: current.revision + 1,
     entries: [...current.entries],
-    seenDeliveries: deliveryKey ? [...current.seenDeliveries, deliveryKey] : current.seenDeliveries,
+    // A fixed-depth persistent hash trie keeps reducer snapshots immutable and
+    // exact while adding/looking up delivery identities in effectively O(1).
+    // Only the seven-node hash path is copied for an accepted delivery.
+    seenDeliveries: deliveryKey
+      ? addDeliveryKey(current.seenDeliveries, deliveryKey)
+      : current.seenDeliveries,
     transcriptByMessageId: { ...current.transcriptByMessageId },
     persistedMessageIds: current.persistedMessageIds,
   };
@@ -337,6 +352,56 @@ function stableDeliveryKey(event: JuneHermesEvent): string | undefined {
     return `connection:${delivery.connectionId}:${delivery.sequence}`;
   }
   return undefined;
+}
+
+function deliveryLedgerHas(ledger: HermesDeliveryLedger, key: string) {
+  const hash = stableStringHash(key);
+  let node: DeliveryTrieNode | undefined = ledger.root;
+  for (let depth = 0; depth < 7; depth += 1) {
+    node = node.children?.[deliveryTrieSlot(hash, depth)];
+    if (!node) return false;
+  }
+  return node.keys?.includes(key) === true;
+}
+
+function addDeliveryKey(ledger: HermesDeliveryLedger, key: string): HermesDeliveryLedger {
+  return {
+    root: addDeliveryTrieKey(ledger.root, stableStringHash(key), key, 0),
+    size: ledger.size + 1,
+  };
+}
+
+function addDeliveryTrieKey(
+  node: DeliveryTrieNode,
+  hash: number,
+  key: string,
+  depth: number,
+): DeliveryTrieNode {
+  if (depth === 7) {
+    return { ...node, keys: [...(node.keys ?? []), key] };
+  }
+  const slot = deliveryTrieSlot(hash, depth);
+  const child = node.children?.[slot] ?? {};
+  return {
+    ...node,
+    children: {
+      ...node.children,
+      [slot]: addDeliveryTrieKey(child, hash, key, depth + 1),
+    },
+  };
+}
+
+function deliveryTrieSlot(hash: number, depth: number) {
+  return (hash >>> (depth * 5)) & 31;
+}
+
+function stableStringHash(value: string) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
 }
 
 function emptyTranscriptState(): TranscriptState {

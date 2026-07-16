@@ -102,6 +102,7 @@ const mocks = vi.hoisted(() => ({
   releaseAgentRunSettlement: vi.fn(),
   startAgentRunMonitoring: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
+  gatewayCloseHandlers: new Set<() => void>(),
   gatewayInstances: [] as Array<{
     connect: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
@@ -224,7 +225,10 @@ vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
       mocks.gatewayEventHandlers.add(handler);
       return () => mocks.gatewayEventHandlers.delete(handler);
     });
-    onClose = vi.fn(() => vi.fn());
+    onClose = vi.fn((handler: () => void) => {
+      mocks.gatewayCloseHandlers.add(handler);
+      return () => mocks.gatewayCloseHandlers.delete(handler);
+    });
     request = mocks.gatewayRequest;
   },
 }));
@@ -462,6 +466,7 @@ describe("AgentWorkspace", () => {
     vi.clearAllMocks();
     mocks.suggestAgentSessionTitle.mockReset();
     mocks.gatewayEventHandlers.clear();
+    mocks.gatewayCloseHandlers.clear();
     mocks.gatewayInstances.length = 0;
     // Auto-cleanup unmounts the workspace after each test, which snapshots
     // any still-working session for the next mount — across tests that would
@@ -1796,6 +1801,12 @@ describe("AgentWorkspace", () => {
   });
 
   it("advances a completed turn once and keeps attachment follow-ups behind undrained steers", async () => {
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
     const user = userEvent.setup();
     render(<AgentWorkspace initialSession={existingSession} />);
 
@@ -1825,15 +1836,14 @@ describe("AgentWorkspace", () => {
     await user.type(composer, "review the brief after that");
     await user.click(screen.getByRole("button", { name: "Queue next message" }));
 
+    const firstRunCompleted = {
+      type: "lifecycle.complete",
+      session_id: "runtime-session-1",
+      payload: { status: "success" },
+    };
     act(() => {
-      for (const handler of mocks.gatewayEventHandlers) {
-        const completed = {
-          type: "lifecycle.complete",
-          session_id: "runtime-session-1",
-          payload: { status: "success" },
-        };
-        handler(completed);
-        handler(completed);
+      for (const handler of [...mocks.gatewayEventHandlers]) {
+        handler(firstRunCompleted);
       }
     });
 
@@ -1853,11 +1863,27 @@ describe("AgentWorkspace", () => {
     ).toBe(false);
     expect(screen.getByText("review the brief after that")).toBeInTheDocument();
 
+    // The gateway can replay the previous run's terminal after the steer has
+    // installed its next listener. It must not terminate that new run.
     act(() => {
-      for (const handler of mocks.gatewayEventHandlers) {
+      for (const handler of [...mocks.gatewayEventHandlers]) {
+        handler(firstRunCompleted);
+      }
+    });
+    await act(async () => Promise.resolve());
+    expect(
+      mocks.gatewayRequest.mock.calls.some(
+        ([method, params]) =>
+          method === "prompt.submit" && params?.text?.includes("review the brief after that"),
+      ),
+    ).toBe(false);
+
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) {
         handler({
           type: "lifecycle.complete",
           session_id: "runtime-session-1",
+          event_id: "current-follow-up-terminal",
           payload: { status: "success" },
         });
       }
@@ -1871,6 +1897,27 @@ describe("AgentWorkspace", () => {
   });
 
   it("keeps a later steer fallback behind an earlier attachment follow-up", async () => {
+    let activeStatus: "absent" | "working" | "idle" = "absent";
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions:
+            activeStatus === "absent"
+              ? []
+              : [
+                  {
+                    id: "runtime-session-1",
+                    session_key: "session-1",
+                    status: activeStatus,
+                  },
+                ],
+        });
+      }
+      return Promise.resolve({});
+    });
     const user = userEvent.setup();
     render(<AgentWorkspace initialSession={existingSession} />);
 
@@ -1914,7 +1961,61 @@ describe("AgentWorkspace", () => {
       session_id: "runtime-session-1",
       text: "then check the API boundary",
     });
+    const acceptedFollowUpText = mocks.gatewayRequest.mock.calls.find(
+      ([method, params]) =>
+        method === "prompt.submit" && params?.text?.includes("review the brief first"),
+    )?.[1]?.text;
+    expect(acceptedFollowUpText).toEqual(expect.any(String));
+    mocks.listHermesSessionMessages.mockClear();
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "persisted-follow-up-user",
+        role: "user",
+        content: acceptedFollowUpText,
+      },
+      {
+        id: "persisted-follow-up-assistant",
+        role: "assistant",
+        content: "The brief review is complete.",
+      },
+    ]);
 
+    const activeListCallCount = () =>
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.active_list").length;
+    const activeListCallsBeforeReplay = activeListCallCount();
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    await waitFor(() => expect(mocks.listHermesSessionMessages).toHaveBeenCalled());
+    await waitFor(() => expect(activeListCallCount()).toBe(activeListCallsBeforeReplay + 1));
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-1",
+      text: "then check the API boundary",
+    });
+
+    activeStatus = "working";
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+    await waitFor(() => expect(activeListCallCount()).toBe(activeListCallsBeforeReplay + 2));
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-1",
+      text: "then check the API boundary",
+    });
+
+    activeStatus = "idle";
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
         handler({
@@ -1933,18 +2034,23 @@ describe("AgentWorkspace", () => {
   });
 
   it("advances the remaining follow-up queue when the submitted item completes immediately", async () => {
+    let immediateTerminalWasDeferred = false;
     mocks.gatewayRequest.mockImplementation((method: string, params?: { text?: string }) => {
       if (method === "session.resume") {
         return Promise.resolve({ session_id: "runtime-session-1" });
       }
       if (method === "prompt.submit" && params?.text?.includes("first queued message")) {
+        const succeededBeforeTerminal = mocks.markAgentRunSucceeded.mock.calls.length;
         for (const handler of [...mocks.gatewayEventHandlers]) {
           handler({
             type: "lifecycle.complete",
             session_id: "runtime-session-1",
+            event_id: "first-queued-terminal",
             payload: { status: "success" },
           });
         }
+        immediateTerminalWasDeferred =
+          mocks.markAgentRunSucceeded.mock.calls.length === succeededBeforeTerminal;
       }
       return Promise.resolve({});
     });
@@ -1990,7 +2096,1337 @@ describe("AgentWorkspace", () => {
         text: expect.stringContaining("second queued message"),
       }),
     );
+    expect(immediateTerminalWasDeferred).toBe(true);
     await waitFor(() => expect(screen.queryByRole("region", { name: "Up next" })).toBeNull());
+  });
+
+  it("advances the queue when polling settles a follow-up during the prior continuation", async () => {
+    type PersistedMessage = {
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      timestamp: string;
+    };
+    let persistedMessages: PersistedMessage[] = [];
+    let deferFirstFollowUpLoad = false;
+    let resolveFirstFollowUpLoad: ((sessions: (typeof existingSession)[]) => void) | undefined;
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.listHermesSessions.mockImplementation(() => {
+      if (!deferFirstFollowUpLoad) return Promise.resolve([existingSession]);
+      deferFirstFollowUpLoad = false;
+      return new Promise<(typeof existingSession)[]>((resolve) => {
+        resolveFirstFollowUpLoad = resolve;
+      });
+    });
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { text?: string }) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit" && params?.text?.includes("first queued message")) {
+        deferFirstFollowUpLoad = true;
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({ sessions: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace initialSession={existingSession} />);
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByRole("textbox", { name: "Message June" })).toBeInTheDocument(),
+      );
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      fireEvent.paste(composer, {
+        clipboardData: { getData: () => "start the audit" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "start the audit",
+        }),
+      );
+
+      for (const [path, message] of [
+        ["/Users/alex/Desktop/first.pdf", "first queued message"],
+        ["/Users/alex/Desktop/second.pdf", "second queued message"],
+      ] as const) {
+        mocks.eventHandlers.get("tauri://drag-drop")?.({ payload: { paths: [path] } });
+        await settleUnderFakeTimers(() =>
+          expect(screen.getByText(path.split("/").at(-1) ?? path)).toBeInTheDocument(),
+        );
+        fireEvent.paste(composer, {
+          clipboardData: { getData: () => message },
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Queue next message" }));
+        await settleUnderFakeTimers(() => expect(screen.getByText(message)).toBeInTheDocument());
+      }
+
+      persistedMessages = [
+        {
+          id: "initial-run-user",
+          role: "user",
+          content: "start the audit",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "initial-run-assistant",
+          role: "assistant",
+          content: "The initial run is complete.",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-1",
+            event_id: "initial-run-terminal",
+            payload: { status: "success" },
+          });
+        }
+      });
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: expect.stringContaining("first queued message"),
+        }),
+      );
+      expect(resolveFirstFollowUpLoad).toBeTypeOf("function");
+      const firstFollowUpText = mocks.gatewayRequest.mock.calls.find(
+        ([method, params]) =>
+          method === "prompt.submit" && params?.text?.includes("first queued message"),
+      )?.[1]?.text;
+      expect(firstFollowUpText).toEqual(expect.any(String));
+      persistedMessages = [
+        ...persistedMessages,
+        {
+          id: "first-follow-up-user",
+          role: "user",
+          content: "first queued message",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "first-follow-up-assistant",
+          role: "assistant",
+          content: "The first queued message is complete.",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      mocks.markAgentRunSucceeded.mockClear();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.active_list"),
+      ).toHaveLength(2);
+      await settleUnderFakeTimers(() =>
+        expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-1"),
+      );
+      expect(
+        mocks.gatewayRequest.mock.calls.some(
+          ([method, params]) =>
+            method === "prompt.submit" && params?.text?.includes("second queued message"),
+        ),
+      ).toBe(false);
+
+      await act(async () => {
+        resolveFirstFollowUpLoad?.([existingSession]);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: expect.stringContaining("second queued message"),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a real pre-ack terminal behind a stale replay candidate", async () => {
+    let promptSubmitCount = 0;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        promptSubmitCount += 1;
+        if (promptSubmitCount === 2) {
+          for (const handler of [...mocks.gatewayEventHandlers]) {
+            handler({
+              type: "lifecycle.complete",
+              session_id: "runtime-session-1",
+              event_id: "old-pre-ack-terminal",
+              payload: { status: "success" },
+            });
+            handler({
+              type: "lifecycle.complete",
+              session_id: "runtime-session-1",
+              event_id: "current-pre-ack-terminal",
+              payload: { status: "success" },
+            });
+          }
+        }
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "finish the first run");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(promptSubmitCount).toBe(1));
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          event_id: "old-pre-ack-terminal",
+          payload: { status: "success" },
+        });
+      }
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
+    mocks.markAgentRunSucceeded.mockClear();
+
+    await user.type(composer, "finish the second run immediately");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(promptSubmitCount).toBe(2));
+    await waitFor(() => expect(mocks.markAgentRunSucceeded).toHaveBeenCalledTimes(1));
+    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-1");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument();
+  });
+
+  it("requires current authority for a non-consecutive no-id terminal replay", async () => {
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-1",
+              session_key: "session-1",
+              status: "working",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    const submit = async (text: string) => {
+      await user.type(composer, text);
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text,
+        }),
+      );
+    };
+    const firstSuccess = {
+      type: "lifecycle.complete",
+      session_id: "runtime-session-1",
+      payload: { status: "success" },
+    };
+
+    await submit("finish run one");
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) handler(firstSuccess);
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
+
+    await submit("fail run two");
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "timeout" },
+        });
+      }
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
+
+    await submit("keep run three working");
+    mocks.listHermesSessionMessages.mockClear();
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      { id: "run-three-user", role: "user", content: "keep run three working" },
+      { id: "run-three-assistant", role: "assistant", content: "Still working." },
+    ]);
+    mocks.markAgentRunSucceeded.mockClear();
+
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) handler(firstSuccess);
+    });
+
+    await waitFor(() => expect(mocks.listHermesSessionMessages).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.active_list", {}),
+    );
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
+  });
+
+  it.each([
+    { terminalStatus: "timeout", expectedStatus: "failed" as const },
+    { terminalStatus: "cancelled", expectedStatus: "cancelled" as const },
+  ])("settles a repeated no-id $terminalStatus terminal only after current-user and idle authority", async ({
+    terminalStatus,
+    expectedStatus,
+  }) => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    let persistedMessages: Array<{
+      id: string;
+      role: "user";
+      content: string;
+      timestamp: string;
+    }> = [];
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-1",
+              session_key: "session-1",
+              status: "idle",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    const terminal = {
+      type: "lifecycle.complete",
+      session_id: "runtime-session-1",
+      payload: { status: terminalStatus },
+    };
+
+    await user.type(composer, "repeat the failing action");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "repeat the failing action",
+      }),
+    );
+    persistedMessages = [
+      {
+        id: "first-failed-user",
+        role: "user",
+        content: "repeat the failing action",
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    const refreshesBeforeFirstTerminal = mocks.listHermesSessionMessages.mock.calls.length;
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) handler(terminal);
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+        refreshesBeforeFirstTerminal,
+      ),
+    );
+
+    await user.type(composer, "repeat the failing action");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+      ).toHaveLength(2),
+    );
+    persistedMessages = [
+      ...persistedMessages,
+      {
+        id: "second-failed-user",
+        role: "user",
+        content: "repeat the failing action",
+        timestamp: new Date().toISOString(),
+      },
+    ];
+
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) handler(terminal);
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.active_list", {}),
+    );
+    await waitFor(() =>
+      expect(
+        statusDetails.filter(
+          (detail) => detail.sessionId === "session-1" && detail.status === expectedStatus,
+        ),
+      ).toHaveLength(2),
+    );
+    expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull();
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it("does not use old timestamp-less identical history as current success authority", async () => {
+    let persistedMessages: Array<{
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+    }> = [];
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-1",
+              session_key: "session-1",
+              status: "idle",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace initialSession={existingSession} />);
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByRole("textbox", { name: "Message June" })).toBeInTheDocument(),
+      );
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      await settleUnderFakeTimers(() => expect(mocks.listHermesSessionMessages).toHaveBeenCalled());
+      const noIdSuccess = {
+        type: "lifecycle.complete",
+        session_id: "runtime-session-1",
+        payload: { status: "success" },
+      };
+
+      fireEvent.paste(composer, { clipboardData: { getData: () => "continue" } });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "continue",
+        }),
+      );
+      persistedMessages = [
+        { id: "old-identical-user", role: "user", content: "continue" },
+        { id: "old-identical-assistant", role: "assistant", content: "Old answer." },
+      ];
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) handler(noIdSuccess);
+      });
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(300);
+      });
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByText("Old answer.")).toBeInTheDocument(),
+      );
+
+      fireEvent.paste(composer, { clipboardData: { getData: () => "continue" } });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() =>
+        expect(
+          mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+        ).toHaveLength(2),
+      );
+      mocks.markAgentRunSucceeded.mockClear();
+      const messageLoadsBeforeReplay = mocks.listHermesSessionMessages.mock.calls.length;
+      const activeListCallsBeforeReplay = mocks.gatewayRequest.mock.calls.filter(
+        ([method]) => method === "session.active_list",
+      ).length;
+
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) handler(noIdSuccess);
+      });
+
+      await settleUnderFakeTimers(() =>
+        expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+          messageLoadsBeforeReplay,
+        ),
+      );
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.active_list"),
+      ).toHaveLength(activeListCallsBeforeReplay);
+
+      // The same generic persisted refresh is used after two authoritative
+      // runtime misses. It must honor the run's persistence boundary too,
+      // instead of treating the old identical exchange as the current reply.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a conflicting real terminal behind an ambiguous stale proof check", async () => {
+    type PersistedMessage = {
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      timestamp: string;
+    };
+    let persistedMessages: PersistedMessage[] = [];
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-1",
+              session_key: "session-1",
+              status: "idle",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const success = {
+      type: "lifecycle.complete",
+      session_id: "runtime-session-1",
+      payload: { status: "success" },
+    };
+    const timeout = {
+      type: "lifecycle.complete",
+      session_id: "runtime-session-1",
+      payload: { status: "timeout" },
+    };
+
+    try {
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      const submit = async (text: string) => {
+        await user.type(composer, text);
+        await user.click(screen.getByRole("button", { name: "Send message" }));
+        await waitFor(() =>
+          expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+            session_id: "runtime-session-1",
+            text,
+          }),
+        );
+      };
+      const emit = (terminal: typeof success) => {
+        act(() => {
+          for (const handler of [...mocks.gatewayEventHandlers]) handler(terminal);
+        });
+      };
+
+      await submit("seed repeated success");
+      persistedMessages = [
+        {
+          id: "seed-success-user",
+          role: "user",
+          content: "seed repeated success",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "seed-success-assistant",
+          role: "assistant",
+          content: "Seed success complete.",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      const refreshesBeforeSuccess = mocks.listHermesSessionMessages.mock.calls.length;
+      emit(success);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+      );
+      await waitFor(() =>
+        expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+          refreshesBeforeSuccess,
+        ),
+      );
+
+      await submit("seed repeated timeout");
+      persistedMessages = [
+        ...persistedMessages,
+        {
+          id: "seed-timeout-user",
+          role: "user",
+          content: "seed repeated timeout",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      const refreshesBeforeTimeout = mocks.listHermesSessionMessages.mock.calls.length;
+      emit(timeout);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+      );
+      await waitFor(() =>
+        expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+          refreshesBeforeTimeout,
+        ),
+      );
+
+      await submit("run the current action");
+      persistedMessages = [
+        ...persistedMessages,
+        {
+          id: "current-conflict-user",
+          role: "user",
+          content: "run the current action",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      mocks.markAgentRunSucceeded.mockClear();
+      mocks.cancelAgentRunMonitoring.mockClear();
+      const failedStatusesBefore = statusDetails.filter(
+        (detail) => detail.sessionId === "session-1" && detail.status === "failed",
+      ).length;
+
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) {
+          handler(success);
+          handler(timeout);
+        }
+      });
+
+      await waitFor(() =>
+        expect(
+          statusDetails.filter(
+            (detail) => detail.sessionId === "session-1" && detail.status === "failed",
+          ),
+        ).toHaveLength(failedStatusesBefore + 1),
+      );
+      expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+      expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledWith("session-1");
+      expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull();
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    }
+  });
+
+  it("invalidates an old listener's ambiguous proof when recovery installs a newer listener", async () => {
+    type PersistedMessage = {
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      timestamp: string;
+    };
+    type ActiveListResponse = {
+      sessions: Array<{ id: string; session_key: string; status: string }>;
+    };
+    let persistedMessages: PersistedMessage[] = [];
+    let resumeCalls = 0;
+    let activeListCalls = 0;
+    let resolveOldProof: ((response: ActiveListResponse) => void) | undefined;
+    let resolveNewProof: ((response: ActiveListResponse) => void) | undefined;
+    const oldProof = new Promise<ActiveListResponse>((resolve) => {
+      resolveOldProof = resolve;
+    });
+    const newProof = new Promise<ActiveListResponse>((resolve) => {
+      resolveNewProof = resolve;
+    });
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        resumeCalls += 1;
+        return Promise.resolve({
+          session_id: resumeCalls === 1 ? "runtime-session-1" : "runtime-session-recovered",
+        });
+      }
+      if (method === "session.active_list") {
+        activeListCalls += 1;
+        return activeListCalls === 1 ? oldProof : newProof;
+      }
+      return Promise.resolve({});
+    });
+    const success = {
+      type: "lifecycle.complete",
+      session_id: "runtime-session-1",
+      payload: { status: "success" },
+    };
+    const timeout = {
+      type: "lifecycle.complete",
+      session_id: "runtime-session-1",
+      payload: { status: "timeout" },
+    };
+
+    try {
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      const submit = async (text: string) => {
+        await user.type(composer, text);
+        await user.click(screen.getByRole("button", { name: "Send message" }));
+        await waitFor(() =>
+          expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+            session_id: expect.any(String),
+            text,
+          }),
+        );
+      };
+      const emit = (terminal: typeof success) => {
+        act(() => {
+          for (const handler of [...mocks.gatewayEventHandlers]) handler(terminal);
+        });
+      };
+
+      await submit("seed listener success");
+      persistedMessages = [
+        {
+          id: "listener-success-user",
+          role: "user",
+          content: "seed listener success",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "listener-success-assistant",
+          role: "assistant",
+          content: "Success seeded.",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      emit(success);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+      );
+
+      await submit("seed listener timeout");
+      persistedMessages = [
+        ...persistedMessages,
+        {
+          id: "listener-timeout-user",
+          role: "user",
+          content: "seed listener timeout",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      emit(timeout);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+      );
+
+      await submit("current listener run");
+      persistedMessages = [
+        ...persistedMessages,
+        {
+          id: "listener-current-user",
+          role: "user",
+          content: "current listener run",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "listener-current-assistant",
+          role: "assistant",
+          content: "Current response persisted.",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      mocks.markAgentRunSucceeded.mockClear();
+      const failedStatusesBefore = statusDetails.filter(
+        (detail) => detail.sessionId === "session-1" && detail.status === "failed",
+      ).length;
+
+      emit(success);
+      await waitFor(() => expect(activeListCalls).toBe(1));
+      act(() => {
+        for (const close of mocks.gatewayCloseHandlers) close();
+      });
+      await waitFor(() => expect(resumeCalls).toBe(2));
+      expect(mocks.gatewayEventHandlers.size).toBe(1);
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) {
+          handler({ ...timeout, session_id: "runtime-session-recovered" });
+        }
+      });
+      await waitFor(() => expect(activeListCalls).toBe(2));
+
+      await act(async () => {
+        resolveOldProof?.({
+          sessions: [
+            {
+              id: "runtime-session-1",
+              session_key: "session-1",
+              status: "idle",
+            },
+          ],
+        });
+        await Promise.resolve();
+      });
+      expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+
+      await act(async () => {
+        resolveNewProof?.({
+          sessions: [
+            {
+              id: "runtime-session-recovered",
+              session_key: "session-1",
+              status: "idle",
+            },
+          ],
+        });
+      });
+      await waitFor(() =>
+        expect(
+          statusDetails.filter(
+            (detail) => detail.sessionId === "session-1" && detail.status === "failed",
+          ),
+        ).toHaveLength(failedStatusesBefore + 1),
+      );
+      expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull();
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    }
+  });
+
+  it("preserves repeated-success authority when recovery replaces the listener", async () => {
+    type PersistedMessage = {
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      timestamp: string;
+    };
+    let persistedMessages: PersistedMessage[] = [];
+    let resumeCalls = 0;
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        resumeCalls += 1;
+        return Promise.resolve({
+          session_id: resumeCalls === 1 ? "runtime-session-1" : "runtime-session-recovered",
+        });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-recovered",
+              session_key: "session-1",
+              status: "idle",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const repeatedSuccess = {
+      type: "lifecycle.complete",
+      payload: { status: "success" },
+    };
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "seed reconnect success");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "seed reconnect success",
+      }),
+    );
+    persistedMessages = [
+      {
+        id: "reconnect-seed-user",
+        role: "user",
+        content: "seed reconnect success",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "reconnect-seed-assistant",
+        role: "assistant",
+        content: "Reconnect seed complete.",
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    const refreshesBeforeSeed = mocks.listHermesSessionMessages.mock.calls.length;
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) {
+        handler({ ...repeatedSuccess, session_id: "runtime-session-1" });
+      }
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+        refreshesBeforeSeed,
+      ),
+    );
+
+    await user.type(composer, "finish after reconnect");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "finish after reconnect",
+      }),
+    );
+    persistedMessages = [
+      ...persistedMessages,
+      {
+        id: "reconnect-current-user",
+        role: "user",
+        content: "finish after reconnect",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "reconnect-current-assistant",
+        role: "assistant",
+        content: "The recovered run is complete.",
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    mocks.markAgentRunSucceeded.mockClear();
+
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+    await waitFor(() => expect(resumeCalls).toBe(2));
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) {
+        handler({ ...repeatedSuccess, session_id: "runtime-session-recovered" });
+      }
+    });
+
+    await waitFor(() => expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-1"));
+    expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull();
+  });
+
+  it.each([
+    { terminalStatus: "timeout", expectedStatus: "failed" as const },
+    { terminalStatus: "cancelled", expectedStatus: "cancelled" as const },
+  ])("preserves repeated $terminalStatus authority when a remount replaces the listener", async ({
+    terminalStatus,
+    expectedStatus,
+  }) => {
+    type PersistedMessage = {
+      id: string;
+      role: "user";
+      content: string;
+      timestamp: string;
+    };
+    let persistedMessages: PersistedMessage[] = [];
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-1",
+              session_key: "session-1",
+              status: "idle",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const repeatedTerminal = {
+      type: "lifecycle.complete",
+      session_id: "runtime-session-1",
+      payload: { status: terminalStatus },
+    };
+
+    try {
+      const user = userEvent.setup();
+      const first = render(<AgentWorkspace initialSession={existingSession} />);
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await user.type(composer, `seed remount ${terminalStatus}`);
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: `seed remount ${terminalStatus}`,
+        }),
+      );
+      persistedMessages = [
+        {
+          id: `remount-${terminalStatus}-seed-user`,
+          role: "user",
+          content: `seed remount ${terminalStatus}`,
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      const refreshesBeforeSeed = mocks.listHermesSessionMessages.mock.calls.length;
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) handler(repeatedTerminal);
+      });
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+      );
+      await waitFor(() =>
+        expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+          refreshesBeforeSeed,
+        ),
+      );
+
+      await user.type(composer, `current remount ${terminalStatus}`);
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: `current remount ${terminalStatus}`,
+        }),
+      );
+      persistedMessages = [
+        ...persistedMessages,
+        {
+          id: `remount-${terminalStatus}-current-user`,
+          role: "user",
+          content: `current remount ${terminalStatus}`,
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      first.unmount();
+      mocks.gatewayEventHandlers.clear();
+      render(<AgentWorkspace initialSession={existingSession} />);
+      await waitFor(() => expect(mocks.gatewayEventHandlers.size).toBe(1));
+      await screen.findByRole("button", { name: "Stop June" });
+      const matchingStatusesBefore = statusDetails.filter(
+        (detail) => detail.sessionId === "session-1" && detail.status === expectedStatus,
+      ).length;
+      mocks.cancelAgentRunMonitoring.mockClear();
+
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) handler(repeatedTerminal);
+      });
+
+      await waitFor(() =>
+        expect(
+          statusDetails.filter(
+            (detail) => detail.sessionId === "session-1" && detail.status === expectedStatus,
+          ),
+        ).toHaveLength(matchingStatusesBefore + 1),
+      );
+      expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledWith("session-1");
+      expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull();
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    }
+  });
+
+  it.each([
+    { replayKind: "no-id fingerprint", eventId: undefined },
+    { replayKind: "delivery-id", eventId: "compacted-terminal-delivery" },
+  ])("preserves $replayKind terminal replay history across a settled remount", async ({
+    eventId,
+  }) => {
+    type PersistedMessage = {
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      timestamp: string;
+    };
+    let persistedMessages: PersistedMessage[] = [];
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-1",
+              session_key: "session-1",
+              status: "working",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const repeatedSuccess = {
+      type: "lifecycle.complete",
+      session_id: "runtime-session-1",
+      ...(eventId ? { event_id: eventId } : {}),
+      payload: { status: "success" },
+    };
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace initialSession={existingSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "seed compacted replay history");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "seed compacted replay history",
+      }),
+    );
+    persistedMessages = [
+      {
+        id: "compacted-replay-user",
+        role: "user",
+        content: "seed compacted replay history",
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: "compacted-replay-assistant",
+        role: "assistant",
+        content: "Persisted result.",
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    const refreshesBeforeTerminal = mocks.listHermesSessionMessages.mock.calls.length;
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) {
+        handler({
+          type: "message.start",
+          session_id: "runtime-session-1",
+          payload: { message_id: "compacted-replay-assistant" },
+        });
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-1",
+          payload: {
+            message_id: "compacted-replay-assistant",
+            delta: "Persisted result.",
+          },
+        });
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-1",
+          payload: {
+            message_id: "compacted-replay-assistant",
+            text: "Persisted result.",
+          },
+        });
+        handler(repeatedSuccess);
+      }
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+        refreshesBeforeTerminal,
+      ),
+    );
+
+    first.unmount();
+    mocks.gatewayEventHandlers.clear();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    const remountedComposer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(remountedComposer, "keep the remounted run working");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "keep the remounted run working",
+      }),
+    );
+    mocks.markAgentRunSucceeded.mockClear();
+
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) handler(repeatedSuccess);
+    });
+    await act(async () => Promise.resolve());
+
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
+  });
+
+  it("preserves a structured-only tool response across a lagging-persistence remount", async () => {
+    type PersistedMessage = {
+      id: string;
+      role: "user";
+      content: string;
+      timestamp: string;
+    };
+    let persistedMessages: PersistedMessage[] = [];
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace initialSession={existingSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "inspect the workspace");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "inspect the workspace",
+      }),
+    );
+    persistedMessages = [
+      {
+        id: "structured-only-user",
+        role: "user",
+        content: "inspect the workspace",
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    const refreshesBeforeTerminal = mocks.listHermesSessionMessages.mock.calls.length;
+
+    act(() => {
+      for (const handler of [...mocks.gatewayEventHandlers]) {
+        handler({
+          type: "tool.start",
+          event_id: "structured-only-tool-start",
+          session_id: "runtime-session-1",
+          payload: {
+            tool_id: "structured-only-tool",
+            tool_name: "read_file",
+            path: "src/components/agent/AgentWorkspace.tsx",
+          },
+        });
+        handler({
+          type: "tool.complete",
+          event_id: "structured-only-tool-complete",
+          session_id: "runtime-session-1",
+          payload: {
+            tool_id: "structured-only-tool",
+            tool_name: "read_file",
+            path: "src/components/agent/AgentWorkspace.tsx",
+          },
+        });
+        handler({
+          type: "lifecycle.complete",
+          event_id: "structured-only-terminal",
+          session_id: "runtime-session-1",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    await waitFor(() => expect(document.querySelectorAll(".agent-tool-stack")).toHaveLength(1));
+    expect(document.querySelector(".agent-tool-stack")).toHaveTextContent(/files/i);
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+        refreshesBeforeTerminal,
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
+
+    first.unmount();
+    mocks.gatewayEventHandlers.clear();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    await screen.findByRole("textbox", { name: "Message June" });
+
+    await waitFor(() => expect(document.querySelectorAll(".agent-tool-stack")).toHaveLength(1));
+    expect(document.querySelector(".agent-tool-stack")).toHaveTextContent(/files/i);
+  });
+
+  it("ignores every event from a retired listener after a newer run starts", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "finish the old run");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "finish the old run",
+      }),
+    );
+    const retiredHandler = [...mocks.gatewayEventHandlers][0];
+    expect(retiredHandler).toBeDefined();
+    act(() => {
+      retiredHandler?.({
+        type: "lifecycle.complete",
+        event_id: "old-run-terminal",
+        session_id: "runtime-session-1",
+        payload: { status: "success" },
+      });
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
+
+    await user.type(composer, "keep the new run active");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "keep the new run active",
+      }),
+    );
+    mocks.markAgentRunSucceeded.mockClear();
+
+    act(() => {
+      retiredHandler?.({
+        type: "message.complete",
+        event_id: "late-old-message",
+        session_id: "runtime-session-1",
+        payload: { message_id: "old-answer", text: "Late text from the old run." },
+      });
+      retiredHandler?.({
+        type: "lifecycle.complete",
+        event_id: "late-old-terminal",
+        session_id: "runtime-session-1",
+        payload: { status: "success" },
+      });
+    });
+
+    expect(screen.queryByText("Late text from the old run.")).toBeNull();
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
   });
 
   it("attaches a queued image only after the current turn completes", async () => {
@@ -2142,6 +3578,7 @@ describe("AgentWorkspace", () => {
         handler({
           type: "lifecycle.complete",
           session_id: "runtime-session-1",
+          event_id: "failed-queue-delivery-trigger",
           payload: { status: "success" },
         });
       }
@@ -2165,6 +3602,7 @@ describe("AgentWorkspace", () => {
         handler({
           type: "lifecycle.complete",
           session_id: "runtime-session-1",
+          event_id: "failed-queue-later-run-complete",
           payload: { status: "success" },
         });
       }
@@ -2390,7 +3828,10 @@ describe("AgentWorkspace", () => {
     ]);
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+        });
       }
     });
 
@@ -2668,7 +4109,10 @@ describe("AgentWorkspace", () => {
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+        });
       }
     });
 
@@ -2722,7 +4166,11 @@ describe("AgentWorkspace", () => {
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+          event_id: "report-initial-diagnosis-complete",
+        });
       }
     });
 
@@ -2750,7 +4198,11 @@ describe("AgentWorkspace", () => {
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+          event_id: "report-follow-up-diagnosis-complete",
+        });
       }
     });
 
@@ -2918,7 +4370,11 @@ describe("AgentWorkspace", () => {
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+          event_id: "restored-report-initial-diagnosis-complete",
+        });
       }
     });
 
@@ -2956,6 +4412,18 @@ describe("AgentWorkspace", () => {
     ]);
     first.unmount();
     render(<AgentWorkspace />);
+
+    await waitFor(() => expect(mocks.gatewayEventHandlers.size).toBe(1));
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+          event_id: "restored-report-follow-up-complete",
+          payload: { status: "success" },
+        });
+      }
+    });
 
     expect(await screen.findByText(/Follow-up added/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Send report" }));
@@ -3006,7 +4474,10 @@ describe("AgentWorkspace", () => {
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+        });
       }
     });
 
@@ -3063,7 +4534,10 @@ describe("AgentWorkspace", () => {
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+        });
       }
     });
 
@@ -3123,7 +4597,11 @@ describe("AgentWorkspace", () => {
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+          event_id: "newer-draft-diagnosis-complete",
+        });
       }
     });
 
@@ -3151,7 +4629,11 @@ describe("AgentWorkspace", () => {
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+          event_id: "newer-draft-follow-up-complete",
+        });
       }
     });
 
@@ -3221,7 +4703,11 @@ describe("AgentWorkspace", () => {
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+          event_id: "stale-report-diagnosis-complete",
+        });
       }
     });
 
@@ -3249,7 +4735,11 @@ describe("AgentWorkspace", () => {
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
-        handler({ type: "turn.completed", session_id: "runtime-session-2" });
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+          event_id: "stale-report-follow-up-complete",
+        });
       }
     });
 
@@ -7687,6 +9177,16 @@ describe("AgentWorkspace", () => {
     expect(screen.getByText("Thought").closest("summary")).toHaveAttribute("aria-label", "Thought");
     expect(screen.getByText("Thought").closest("details")).toHaveAttribute("open");
 
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+          payload: { status: "success" },
+        });
+      }
+    });
+
     await user.type(screen.getByRole("textbox"), "next request");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() =>
@@ -7770,6 +9270,118 @@ describe("AgentWorkspace", () => {
     expect(thoughtDetails).toHaveClass("agent-reasoning");
     expect(thoughtDetails).not.toContainElement(toolLabel);
     expect(await screen.findByText("Done.")).toBeInTheDocument();
+  });
+
+  it("renders assistant text, tools, and reasoning in their canonical event order", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "inspect the project in order",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "inspect the project in order",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.start",
+          session_id: "runtime-session-2",
+          payload: { message_id: "m1" },
+        });
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-2",
+          payload: { message_id: "m1", delta: "Opening result." },
+        });
+        handler({
+          type: "tool.start",
+          session_id: "runtime-session-2",
+          payload: {
+            tool_id: "tool-1",
+            tool_name: "read_file",
+            path: "src/components/agent/AgentWorkspace.tsx",
+          },
+        });
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Checking the project state." },
+        });
+        handler({
+          type: "tool.start",
+          session_id: "runtime-session-2",
+          payload: {
+            tool_id: "tool-2",
+            tool_name: "bash",
+            command: "pnpm test",
+          },
+        });
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-2",
+          payload: { message_id: "m1", delta: "Middle result." },
+        });
+        handler({
+          type: "thinking.delta",
+          session_id: "runtime-session-2",
+          payload: { delta: "Verifying the final state." },
+        });
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-2",
+          payload: { message_id: "m1", delta: "Closing result." },
+        });
+      }
+    });
+
+    const opening = await screen.findByText("Opening result.");
+    const middle = await screen.findByText("Middle result.");
+    const closing = await screen.findByText("Closing result.");
+    await waitFor(() => expect(document.querySelectorAll(".agent-tool-stack")).toHaveLength(2));
+    await waitFor(() => expect(document.querySelectorAll(".agent-reasoning")).toHaveLength(2));
+    const [firstTool, secondTool] = Array.from(
+      document.querySelectorAll<HTMLElement>(".agent-tool-stack"),
+    );
+    const [firstThinking, secondThinking] = Array.from(
+      document.querySelectorAll<HTMLElement>(".agent-reasoning"),
+    );
+
+    expect(firstTool).toHaveTextContent("Reading files");
+    expect(secondTool).toHaveTextContent(/Running/);
+    expect(firstThinking).toHaveTextContent("Checking the project state.");
+    expect(secondThinking).toHaveTextContent("Verifying the final state.");
+    expect(
+      opening.compareDocumentPosition(firstTool as HTMLElement) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      (firstTool as HTMLElement).compareDocumentPosition(firstThinking as HTMLElement) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      (firstThinking as HTMLElement).compareDocumentPosition(secondTool) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      (secondTool as HTMLElement).compareDocumentPosition(middle) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      middle.compareDocumentPosition(secondThinking as HTMLElement) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      (secondThinking as HTMLElement).compareDocumentPosition(closing) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("condenses long tool runs behind a count line while running rows stay visible (JUN-326)", async () => {
@@ -8404,6 +10016,242 @@ describe("AgentWorkspace", () => {
     expect(traceEntry?.runtimeSessionId).toBe("runtime-diagnostics-session");
   });
 
+  it("keeps the opening text after more than 200 streamed deltas", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "stream a long answer" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "stream a long answer",
+      }),
+    );
+
+    const chunks = Array.from({ length: 205 }, (_, index) => `chunk-${index}|`);
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.start",
+          session_id: "runtime-session-2",
+          payload: { message_id: "long-message" },
+        });
+        for (const chunk of chunks) {
+          handler({
+            type: "message.delta",
+            session_id: "runtime-session-2",
+            payload: { message_id: "long-message", delta: chunk },
+          });
+        }
+      }
+    });
+
+    expect(await screen.findByText(chunks.join(""))).toBeInTheDocument();
+  });
+
+  it("keeps listening after message completion until one lifecycle terminal", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "finish the whole run" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "finish the whole run",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.start",
+          session_id: "runtime-session-2",
+          payload: { message_id: "m1" },
+        });
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-2",
+          payload: { message_id: "m1", delta: "First answer." },
+        });
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: { message_id: "m1", text: "First answer." },
+        });
+      }
+    });
+
+    expect(await screen.findByText("First answer.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalledWith("session-2");
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "tool.start",
+          session_id: "runtime-session-2",
+          payload: { tool_id: "read-1", tool_name: "read_file", path: "README.md" },
+        });
+        handler({
+          type: "message.start",
+          session_id: "runtime-session-2",
+          payload: { message_id: "m2" },
+        });
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-2",
+          payload: { message_id: "m2", delta: "Continuation after the tool." },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Reading files")).toBeInTheDocument();
+    expect(await screen.findByText("Continuation after the tool.")).toBeInTheDocument();
+    const retainedHandlers = [...mocks.gatewayEventHandlers];
+    act(() => {
+      for (const handler of retainedHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
+    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledTimes(1);
+    act(() => {
+      for (const handler of retainedHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-session-2",
+          payload: { status: "success" },
+        });
+      }
+    });
+    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it("rebinds a recovered runtime listener without replaying its prefix", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "survive reconnect" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "survive reconnect",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.start",
+          session_id: "runtime-session-2",
+          payload: { message_id: "m1" },
+        });
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-2",
+          payload: { message_id: "m1", delta: "Hello " },
+        });
+      }
+    });
+    expect(await screen.findByText("Hello")).toBeInTheDocument();
+
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+        session_id: "session-2",
+        cols: 96,
+      }),
+    );
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.start",
+          session_id: "runtime-session-1",
+          payload: { message_id: "m1" },
+        });
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-1",
+          payload: { message_id: "m1", delta: "Hello " },
+        });
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-1",
+          payload: { message_id: "m1", text: "Hello world" },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Hello world")).toBeInTheDocument();
+    expect(screen.queryByText("Hello Hello world")).toBeNull();
+  });
+
+  it("does not resurrect a stopped run when gateway recovery resumes late", async () => {
+    let resolveRecoveryResume: ((value: { session_id: string }) => void) | undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return new Promise<{ session_id: string }>((resolve) => {
+          resolveRecoveryResume = resolve;
+        });
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "survive a delayed recovery" }),
+    );
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "survive a delayed recovery",
+      }),
+    );
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+    await waitFor(() => expect(resolveRecoveryResume).toBeTypeOf("function"));
+
+    await userEvent.click(screen.getByRole("button", { name: "Stop June" }));
+    await waitFor(() => expect(mocks.gatewayEventHandlers.size).toBe(0));
+    mocks.markAgentRunSucceeded.mockClear();
+
+    await act(async () => {
+      resolveRecoveryResume?.({ session_id: "runtime-recovered-after-stop" });
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.interrupt", {
+        session_id: "runtime-recovered-after-stop",
+      }),
+    );
+    expect(mocks.gatewayEventHandlers.size).toBe(0);
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull();
+  });
+
   it("treats lifecycle.complete as a terminal workspace edge", async () => {
     const statusDetails: AgentSessionStatusDetail[] = [];
     const handleStatus = (event: Event) => {
@@ -9019,6 +10867,363 @@ describe("AgentWorkspace", () => {
       expect(terminal[0]).toMatchObject({ status: "completed", summary: "June finished." });
     } finally {
       window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not turn a failed message completion into idle-reconciled success", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    let persistedMessages: Array<{
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      timestamp: string;
+    }> = [];
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({ sessions: [] });
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "run the failing task" }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-2",
+          text: "run the failing task",
+        }),
+      );
+
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) {
+          handler({
+            type: "message.start",
+            session_id: "runtime-session-2",
+            payload: { message_id: "failed-answer" },
+          });
+          handler({
+            type: "message.complete",
+            session_id: "runtime-session-2",
+            payload: {
+              message_id: "failed-answer",
+              text: "Partial answer before failure.",
+              status: "ERROR",
+            },
+          });
+        }
+      });
+      persistedMessages = [
+        {
+          id: "user-message",
+          role: "user",
+          content: "run the failing task",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "failed-answer",
+          role: "assistant",
+          content: "Partial answer before failure.",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalledWith("session-2");
+      expect(mocks.releaseAgentRunSettlement).not.toHaveBeenCalledWith("session-2");
+      expect(statusDetails).toContainEqual(
+        expect.objectContaining({
+          sessionId: "session-2",
+          status: "failed",
+        }),
+      );
+
+      mocks.markAgentRunSucceeded.mockClear();
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      fireEvent.paste(composer, {
+        clipboardData: {
+          getData: () => "run the succeeding task",
+        },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-2",
+          text: "run the succeeding task",
+        }),
+      );
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) {
+          handler({
+            type: "message.start",
+            session_id: "runtime-session-2",
+            payload: { message_id: "successful-answer" },
+          });
+          handler({
+            type: "message.complete",
+            session_id: "runtime-session-2",
+            payload: {
+              message_id: "successful-answer",
+              text: "The second run succeeded.",
+            },
+          });
+        }
+      });
+      persistedMessages = [
+        ...persistedMessages,
+        {
+          id: "second-user-message",
+          role: "user",
+          content: "run the succeeding task",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "successful-answer",
+          role: "assistant",
+          content: "The second run succeeded.",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledTimes(1);
+      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-2");
+      expect(statusDetails.at(-1)).toMatchObject({
+        sessionId: "session-2",
+        status: "completed",
+      });
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not carry a runtime miss from a completed run into the next run", async () => {
+    let persistedMessages: Array<{
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      timestamp: string;
+    }> = [];
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({ sessions: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace initialSession={existingSession} />);
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByRole("textbox", { name: "Message June" })).toBeInTheDocument(),
+      );
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      fireEvent.paste(composer, {
+        clipboardData: { getData: () => "finish run A" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "finish run A",
+        }),
+      );
+      persistedMessages = [
+        {
+          id: "run-a-user",
+          role: "user",
+          content: "finish run A",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.active_list"),
+      ).toHaveLength(1);
+
+      persistedMessages = [
+        ...persistedMessages,
+        {
+          id: "run-a-assistant",
+          role: "assistant",
+          content: "Run A finished.",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-1",
+            event_id: "run-a-terminal",
+            payload: { status: "success" },
+          });
+        }
+      });
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+      );
+
+      fireEvent.paste(composer, {
+        clipboardData: { getData: () => "keep run B working" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "keep run B working",
+        }),
+      );
+      mocks.cancelAgentRunMonitoring.mockClear();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalledWith("session-1");
+      expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a delayed run-A reconcile refresh settle run B", async () => {
+    type PersistedMessage = {
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      timestamp: string;
+    };
+    const runAUser: PersistedMessage = {
+      id: "delayed-run-a-user",
+      role: "user",
+      content: "start delayed run A",
+      timestamp: new Date().toISOString(),
+    };
+    const runAAssistant: PersistedMessage = {
+      id: "delayed-run-a-assistant",
+      role: "assistant",
+      content: "Run A eventually persisted.",
+      timestamp: new Date().toISOString(),
+    };
+    let persistedMessages: PersistedMessage[] = [];
+    let activeListCalls = 0;
+    let staleRefreshWasIssued = false;
+    let resolveStaleRefresh: ((messages: PersistedMessage[]) => void) | undefined;
+    mocks.listHermesSessionMessages.mockImplementation(async () => {
+      if (activeListCalls >= 2 && !staleRefreshWasIssued) {
+        staleRefreshWasIssued = true;
+        return new Promise<PersistedMessage[]>((resolve) => {
+          resolveStaleRefresh = resolve;
+        });
+      }
+      return persistedMessages;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        activeListCalls += 1;
+        return Promise.resolve({ sessions: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace initialSession={existingSession} />);
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByRole("textbox", { name: "Message June" })).toBeInTheDocument(),
+      );
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+      fireEvent.paste(composer, {
+        clipboardData: { getData: () => "start delayed run A" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "start delayed run A",
+        }),
+      );
+      persistedMessages = [runAUser];
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(resolveStaleRefresh).toBeTypeOf("function");
+
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) {
+          handler({
+            type: "lifecycle.complete",
+            session_id: "runtime-session-1",
+            event_id: "delayed-run-a-terminal",
+            payload: { status: "success" },
+          });
+        }
+      });
+      await act(async () => Promise.resolve());
+      persistedMessages = [runAUser, runAAssistant];
+      fireEvent.paste(composer, {
+        clipboardData: { getData: () => "keep run B current" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "keep run B current",
+        }),
+      );
+      mocks.markAgentRunSucceeded.mockClear();
+
+      await act(async () => {
+        resolveStaleRefresh?.([runAUser, runAAssistant]);
+      });
+
+      expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalledWith("session-1");
+      expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
+    } finally {
       vi.useRealTimers();
     }
   });
@@ -13459,6 +15664,11 @@ describe("AgentWorkspace", () => {
             session_id: "runtime-session-1",
             payload: { text: "Current response finished." },
           });
+          handler({
+            type: "turn.completed",
+            session_id: "runtime-session-1",
+            payload: { status: "success" },
+          });
         }
       });
 
@@ -13527,6 +15737,7 @@ describe("AgentWorkspace", () => {
           handler({
             type: "lifecycle.complete",
             session_id: "runtime-session-1",
+            event_id: "steer-model-active-run-complete",
             payload: { status: "success" },
           });
         }
@@ -13549,6 +15760,7 @@ describe("AgentWorkspace", () => {
           handler({
             type: "lifecycle.complete",
             session_id: "runtime-session-1",
+            event_id: "steer-model-fallback-complete",
             payload: { status: "success" },
           });
         }
@@ -13613,6 +15825,7 @@ describe("AgentWorkspace", () => {
           handler({
             type: "lifecycle.complete",
             session_id: "runtime-session-1",
+            event_id: "multi-model-active-run-complete",
             payload: { status: "success" },
           });
         }
@@ -13633,6 +15846,7 @@ describe("AgentWorkspace", () => {
           handler({
             type: "lifecycle.complete",
             session_id: "runtime-session-1",
+            event_id: "multi-model-first-fallback-complete",
             payload: { status: "success" },
           });
         }

@@ -163,7 +163,41 @@ describe("Hermes live stream", () => {
 
     expect(transcriptDeltas(stream, "m1")).toBe("ha");
     expect(stream.revision).toBe(2);
-    expect(stream.seenDeliveries).toHaveLength(2);
+    expect(stream.seenDeliveries.size).toBe(2);
+  });
+
+  it("retains old delivery identities while their semantic entries remain", () => {
+    let stream = createHermesLiveStream();
+    for (let index = 0; index < 2_100; index += 1) {
+      stream = appendHermesLiveEvent(stream, reasoningEvent("x", `reasoning-${index}`));
+    }
+
+    expect(stream.seenDeliveries.size).toBe(2_100);
+    const revision = stream.revision;
+    const replayedOld = appendHermesLiveEvent(stream, reasoningEvent("x", "reasoning-0"));
+    expect(replayedOld).toBe(stream);
+    expect(replayedOld.revision).toBe(revision);
+  });
+
+  it("keeps delivery ledgers isolated across branches from the same snapshot", () => {
+    const base = createHermesLiveStream();
+    const firstBranch = appendHermesLiveEvent(base, reasoningEvent("first", "reasoning-1"));
+    const secondBranch = appendHermesLiveEvent(base, reasoningEvent("second", "reasoning-2"));
+
+    expect(base.seenDeliveries.size).toBe(0);
+    expect(hermesLiveEvents(firstBranch)).toHaveLength(1);
+    expect(hermesLiveEvents(secondBranch)).toHaveLength(1);
+    expect(hermesLiveEvents(secondBranch)[0]).toMatchObject({ delta: "second" });
+
+    const combinedBranch = appendHermesLiveEvent(
+      secondBranch,
+      reasoningEvent("first", "reasoning-1"),
+    );
+    expect(combinedBranch.revision).toBe(2);
+    expect(combinedBranch.seenDeliveries.size).toBe(2);
+    expect(hermesLiveEvents(combinedBranch)).toEqual([
+      expect.objectContaining({ delta: "secondfirst" }),
+    ]);
   });
 
   it("withholds an offset-free reconnect replay until the final snapshot proves a suffix", () => {

@@ -219,6 +219,13 @@ import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
 import { hermesActivityStore, type AgentActivityRecord } from "../../lib/hermes-activity-store";
 import {
+  appendHermesLiveEvent,
+  createHermesLiveStream,
+  hermesLiveEvents,
+  reconcileHermesLiveStream,
+  type HermesLiveStream,
+} from "../../lib/hermes-live-stream";
+import {
   hermesArtifactStore,
   // The store's record shape collides by name with this file's local
   // `AgentArtifact` (the file-viewer card), so alias it.
@@ -1818,7 +1825,10 @@ type AgentSessionContinuity = {
   sessionItems: HermesSessionInfo[];
   pendingMessages: Record<string, HermesSessionMessage[]>;
   runtimeSessionIds: Record<string, string>;
-  liveEvents: Record<string, JuneHermesEvent[]>;
+  liveEvents: Record<string, HermesLiveStream>;
+  runStartRevisions: Record<string, number>;
+  runAuthorityProofs: Record<string, AgentRunAuthorityProof>;
+  terminalFingerprints: Record<string, string[]>;
   titleOverrides: Record<string, string>;
   titleSources: Record<string, AgentSessionTitleSource>;
   pendingIssueReports: Record<string, PendingIssueReport>;
@@ -1826,6 +1836,23 @@ type AgentSessionContinuity = {
   diagnosisRefreshIssueReportSessionIds: string[];
   submittingIssueReportSessionIds: string[];
   queuedAttachmentFollowUps: Record<string, QueuedAttachmentFollowUp[]>;
+};
+
+type AgentRunPersistenceBoundary = {
+  persistedUserIds: Set<string>;
+  persistedUserCount: number;
+  historyWasHydrated: boolean;
+  submittedAtMs: number;
+};
+
+type AgentRunAuthorityProof = {
+  persistenceBoundary: AgentRunPersistenceBoundary;
+  submittedUserMessage: HermesSessionMessage;
+};
+
+type WorkingReconcileMiss = {
+  completionSource: symbol | undefined;
+  count: number;
 };
 
 type AgentSessionTitleSource = "prompt" | "exchange" | "manual" | "rejected" | "rejected-final";
@@ -1973,6 +2000,35 @@ function activeHermesActivitySessionIds() {
   return activeIds;
 }
 
+function hermesLiveStreamNeedsContinuity(stream: HermesLiveStream) {
+  for (const { event } of stream.entries) {
+    if (event.kind === "transcript") {
+      if (event.complete && event.failed) return true;
+      if (!event.messageId || !stream.persistedMessageIds[event.messageId]) return true;
+      continue;
+    }
+    if (event.kind === "lifecycle" || event.kind === "unsupported") continue;
+    // Persisted message reconciliation can prove ownership only for transcript
+    // entries. Keep every renderable structured entry until June has an
+    // equivalent persisted authority, otherwise a settled remount can erase a
+    // tool-only, reasoning-only, media, or action response.
+    return true;
+  }
+  return false;
+}
+
+function hermesLiveStreamHasReplayLedger(stream: HermesLiveStream) {
+  return stream.seenDeliveries.size > 0;
+}
+
+function compactHermesLiveStreamToReplayLedger(stream: HermesLiveStream): HermesLiveStream {
+  return {
+    ...createHermesLiveStream(),
+    revision: stream.revision,
+    seenDeliveries: stream.seenDeliveries,
+  };
+}
+
 function shouldOpenNewSessionOnMount() {
   return hasPendingNewSessionRequest() || hasNewSessionComposerDraft();
 }
@@ -1981,7 +2037,10 @@ function captureSessionContinuity(state: {
   sessionItems: HermesSessionInfo[];
   pendingMessages: Record<string, HermesSessionMessage[]>;
   runtimeSessionIds: Record<string, string>;
-  liveEvents: Record<string, JuneHermesEvent[]>;
+  liveEvents: Record<string, HermesLiveStream>;
+  runStartRevisions: Record<string, number>;
+  runAuthorityProofs: Record<string, AgentRunAuthorityProof>;
+  terminalFingerprints: Record<string, string[]>;
   titleOverrides: Record<string, string>;
   titleSources: Record<string, AgentSessionTitleSource>;
   pendingIssueReports: Record<string, PendingIssueReport>;
@@ -2009,14 +2068,43 @@ function captureSessionContinuity(state: {
   for (const [sessionId, queued] of Object.entries(state.queuedAttachmentFollowUps)) {
     if (queued.length > 0) activeIds.add(sessionId);
   }
-  if (activeIds.size === 0) return null;
+  for (const sessionId of Object.keys(state.runStartRevisions)) {
+    activeIds.add(sessionId);
+  }
+  for (const sessionId of Object.keys(state.runAuthorityProofs)) {
+    activeIds.add(sessionId);
+  }
+  for (const [sessionId, stream] of Object.entries(state.liveEvents)) {
+    if (hermesLiveStreamNeedsContinuity(stream)) activeIds.add(sessionId);
+  }
+  const hasReplayContinuity =
+    Object.keys(state.terminalFingerprints).length > 0 ||
+    Object.values(state.liveEvents).some(hermesLiveStreamHasReplayLedger);
+  if (activeIds.size === 0 && !hasReplayContinuity) return null;
   const pick = <T,>(record: Record<string, T>) =>
     Object.fromEntries(Object.entries(record).filter(([sessionId]) => activeIds.has(sessionId)));
+  const liveEvents = Object.fromEntries(
+    Object.entries(state.liveEvents).flatMap(([sessionId, stream]) => {
+      if (
+        activeIds.has(sessionId) &&
+        (hermesLiveStreamNeedsContinuity(stream) ||
+          state.runStartRevisions[sessionId] !== undefined)
+      ) {
+        return [[sessionId, stream] as const];
+      }
+      return hermesLiveStreamHasReplayLedger(stream)
+        ? [[sessionId, compactHermesLiveStreamToReplayLedger(stream)] as const]
+        : [];
+    }),
+  );
   return {
     sessionItems: state.sessionItems.filter((session) => activeIds.has(session.id)),
     pendingMessages: pick(state.pendingMessages),
     runtimeSessionIds: pick(state.runtimeSessionIds),
-    liveEvents: pick(state.liveEvents),
+    liveEvents,
+    runStartRevisions: pick(state.runStartRevisions),
+    runAuthorityProofs: pick(state.runAuthorityProofs),
+    terminalFingerprints: { ...state.terminalFingerprints },
     titleOverrides: pick(state.titleOverrides),
     titleSources: pick(state.titleSources),
     pendingIssueReports: pick(state.pendingIssueReports),
@@ -2125,6 +2213,9 @@ function updateContinuityAfterIssueReportDelivery(detail: IssueReportDeliverySet
     pendingMessages: sessionContinuity.pendingMessages,
     runtimeSessionIds: sessionContinuity.runtimeSessionIds,
     liveEvents: sessionContinuity.liveEvents,
+    runStartRevisions: sessionContinuity.runStartRevisions,
+    runAuthorityProofs: sessionContinuity.runAuthorityProofs,
+    terminalFingerprints: sessionContinuity.terminalFingerprints,
     titleOverrides: sessionContinuity.titleOverrides,
     titleSources: sessionContinuity.titleSources,
     pendingIssueReports,
@@ -2159,6 +2250,9 @@ function updateContinuityAfterIssueReportFollowUpSubmitFailed(
     pendingMessages: sessionContinuity.pendingMessages,
     runtimeSessionIds: sessionContinuity.runtimeSessionIds,
     liveEvents: sessionContinuity.liveEvents,
+    runStartRevisions: sessionContinuity.runStartRevisions,
+    runAuthorityProofs: sessionContinuity.runAuthorityProofs,
+    terminalFingerprints: sessionContinuity.terminalFingerprints,
     titleOverrides: sessionContinuity.titleOverrides,
     titleSources: sessionContinuity.titleSources,
     pendingIssueReports,
@@ -2181,6 +2275,9 @@ export function recordManualAgentSessionTitle(sessionId: string, title: string) 
     pendingMessages: sessionContinuity.pendingMessages,
     runtimeSessionIds: sessionContinuity.runtimeSessionIds,
     liveEvents: sessionContinuity.liveEvents,
+    runStartRevisions: sessionContinuity.runStartRevisions,
+    runAuthorityProofs: sessionContinuity.runAuthorityProofs,
+    terminalFingerprints: sessionContinuity.terminalFingerprints,
     titleOverrides: {
       ...sessionContinuity.titleOverrides,
       [sessionId]: title,
@@ -2523,7 +2620,7 @@ export function AgentWorkspace({
   const sessionMessagesFetchSeqRef = useRef<Map<string, number>>(new Map());
   const sessionMessagesAppliedSeqRef = useRef<Map<string, number>>(new Map());
   const [hermesSessionsLoading, setHermesSessionsLoading] = useState(false);
-  const [liveEvents, setLiveEvents] = useState<Record<string, JuneHermesEvent[]>>(
+  const [liveEvents, setLiveEvents] = useState<Record<string, HermesLiveStream>>(
     () => continuity?.liveEvents ?? {},
   );
   const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
@@ -2640,7 +2737,7 @@ export function AgentWorkspace({
   const runtimeSessionIdsRef = useRef(runtimeSessionIds);
   // Consecutive runtime-reconcile polls in which a locally-working session was
   // absent from the gateway's live list. Cleared the moment it's seen live.
-  const workingReconcileMissesRef = useRef(new Map<string, number>());
+  const workingReconcileMissesRef = useRef(new Map<string, WorkingReconcileMiss>());
   const [stoppingSessionIds, setStoppingSessionIds] = useState<ReadonlySet<string>>(new Set());
   const [skills, setSkills] = useState<HermesSkillInfo[] | null>(null);
   const skillCommandsLoadRef = useRef<Promise<HermesSkillInfo[]> | null>(null);
@@ -2787,7 +2884,41 @@ export function AgentWorkspace({
   // the previous turn is still streaming must replace the old handler, not
   // stack a second one — otherwise every event lands twice in liveEvents.
   const sessionGatewayUnlistenRef = useRef<Map<string, () => void>>(new Map());
-  const liveEventsRef = useRef<Record<string, JuneHermesEvent[]>>(liveEvents);
+  // Completion source identity spans reconnects for one run, but async replay
+  // checks belong to the listener that started them. A fresh epoch invalidates
+  // proof work left behind by the listener recovery just replaced.
+  const agentRunListenerEpochsRef = useRef<Map<string, symbol>>(new Map());
+  // Listener replacement during reconnect must keep one run-level completion
+  // identity so a replayed terminal cannot advance queued follow-ups twice.
+  const agentRunCompletionSourcesRef = useRef<Map<string, symbol>>(new Map());
+  // Retain only the latest handled source for each session. Active-source
+  // identity checks below reject callbacks older than that bounded history.
+  const handledAgentRunCompletionSourcesRef = useRef<Map<string, symbol>>(new Map());
+  const acceptedAgentRunCompletionSourcesRef = useRef<Set<symbol>>(new Set());
+  // The retained stream spans multiple prompts. Record the revision at which
+  // each current run began so a failed message boundary from an older run
+  // cannot poison authoritative idle settlement for a later one.
+  const agentRunStartRevisionsRef = useRef<Map<string, number>>(
+    new Map(Object.entries(continuity?.runStartRevisions ?? {})),
+  );
+  // Current-run persistence proof is needed by every terminal authority path,
+  // including polling and listeners replaced after reconnect/remount.
+  const agentRunAuthorityProofsRef = useRef<Map<string, AgentRunAuthorityProof>>(
+    new Map(Object.entries(continuity?.runAuthorityProofs ?? {})),
+  );
+  const liveEventsRef = useRef<Record<string, HermesLiveStream>>(liveEvents);
+  // Hermes does not always attach a replay-stable event id. Remember a bounded
+  // history of accepted terminal shapes so an older no-id terminal replay can
+  // be checked against runtime authority before it advances local queues.
+  const agentRunTerminalFingerprintsRef = useRef<Map<string, string[]>>(
+    new Map([
+      ...Object.entries(continuity?.liveEvents ?? {}).flatMap(([sessionId, stream]) => {
+        const fingerprints = hermesTerminalFingerprints(stream);
+        return fingerprints.length > 0 ? [[sessionId, fingerprints] as const] : [];
+      }),
+      ...Object.entries(continuity?.terminalFingerprints ?? {}),
+    ]),
+  );
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
   // Tasks whose hydration fetch has resolved (hydratedTaskIdsRef only says
   // the fetch *started*) — the scroll-settling logic needs the landing.
@@ -2992,6 +3123,7 @@ export function AgentWorkspace({
           }
           attachHermesSessionEventListener({
             gateway,
+            runAlreadyAccepted: true,
             runtimeSessionId,
             sessionDisplayTitle:
               hermesSessionItemsRef.current.find((session) => session.id === sessionId)?.title ??
@@ -3089,6 +3221,16 @@ export function AgentWorkspace({
     // Feature 14: likewise drop its artifact timeline.
     hermesArtifactStore.clearSession(sessionId);
     sessionGatewayUnlistenRef.current.get(sessionId)?.();
+    const completionSource = agentRunCompletionSourcesRef.current.get(sessionId);
+    if (completionSource) {
+      acceptedAgentRunCompletionSourcesRef.current.delete(completionSource);
+    }
+    agentRunCompletionSourcesRef.current.delete(sessionId);
+    handledAgentRunCompletionSourcesRef.current.delete(sessionId);
+    workingReconcileMissesRef.current.delete(sessionId);
+    agentRunStartRevisionsRef.current.delete(sessionId);
+    agentRunAuthorityProofsRef.current.delete(sessionId);
+    agentRunTerminalFingerprintsRef.current.delete(sessionId);
     liveEventsRef.current = omitRecordKey(liveEventsRef.current, sessionId);
     setLiveEvents(liveEventsRef.current);
     // A deleted session must not be the restore target on the next mount.
@@ -4294,6 +4436,7 @@ export function AgentWorkspace({
     if (!bridge.running || !selectedHermesSessionId) return;
     if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
     let cancelled = false;
+    const throughRevision = liveEventsRef.current[selectedHermesSessionId]?.revision ?? 0;
     listSessionMessagesOrdered(selectedHermesSessionId)
       .then((messages) => {
         if (cancelled || !messages) return;
@@ -4319,6 +4462,7 @@ export function AgentWorkspace({
         });
         void suggestTitleForUntitledSession(selectedHermesSessionId, messages);
         const combined = [...messages, ...retainedPending];
+        reconcilePersistedHermesLiveEvents(selectedHermesSessionId, messages, throughRevision);
         if (
           shouldResumeSessionActivity(combined) &&
           !waitingSessionIdsRef.current.has(selectedHermesSessionId)
@@ -4328,35 +4472,6 @@ export function AgentWorkspace({
           // working-gated poll below picks the session back up and
           // reconciles it from persisted messages.
           recordSessionRunningActivity(selectedHermesSessionId);
-        }
-        if (sessionHasAssistantAfterLatestUser(combined)) {
-          promotePendingIssueReportToReview(selectedHermesSessionId, {
-            queueDiagnosisRefresh: false,
-          });
-          const wasActive = sessionHasActiveWork(
-            selectedHermesSessionId,
-            workingSessionIdsRef.current,
-            waitingSessionIdsRef.current,
-            liveEventsRef.current,
-          );
-          const activityCounts = clearSessionActivity(selectedHermesSessionId);
-          if (wasActive) {
-            dispatchAgentSessionStatus({
-              sessionId: selectedHermesSessionId,
-              title:
-                hermesSessionItems.find((session) => session.id === selectedHermesSessionId)
-                  ?.title ?? "Agent session",
-              status: "completed",
-              summary: "June finished.",
-              ...activityCounts,
-            });
-            continueAfterCompletedAgentRun(selectedHermesSessionId);
-          }
-          liveEventsRef.current = {
-            ...liveEventsRef.current,
-            [selectedHermesSessionId]: [],
-          };
-          setLiveEvents(liveEventsRef.current);
         }
       })
       .catch((err: unknown) => {
@@ -4454,6 +4569,9 @@ export function AgentWorkspace({
         pendingMessages: pendingHermesMessagesRef.current,
         runtimeSessionIds: runtimeSessionIdsRef.current,
         liveEvents: liveEventsRef.current,
+        runStartRevisions: Object.fromEntries(agentRunStartRevisionsRef.current),
+        runAuthorityProofs: Object.fromEntries(agentRunAuthorityProofsRef.current),
+        terminalFingerprints: Object.fromEntries(agentRunTerminalFingerprintsRef.current),
         titleOverrides: sessionTitleOverridesRef.current,
         titleSources: sessionTitleSourceRef.current,
         pendingIssueReports: Object.fromEntries(pendingIssueReportsRef.current),
@@ -6581,7 +6699,11 @@ export function AgentWorkspace({
       pendingHermesMessagesRef.current = next;
       return next;
     });
-    liveEventsRef.current = moveRecordKey(liveEventsRef.current, fromSessionId, toSessionId);
+    liveEventsRef.current = moveHermesLiveStreamKey(
+      liveEventsRef.current,
+      fromSessionId,
+      toSessionId,
+    );
     setLiveEvents(liveEventsRef.current);
     hermesActivityStore.clearSession(fromSessionId);
     recordSessionRunningActivity(toSessionId);
@@ -6616,7 +6738,18 @@ export function AgentWorkspace({
     for (const id of ids) nextLiveEvents = omitRecordKey(nextLiveEvents, id);
     liveEventsRef.current = nextLiveEvents;
     setLiveEvents(nextLiveEvents);
-    for (const id of ids) hermesActivityStore.clearSession(id);
+    for (const id of ids) {
+      sessionGatewayUnlistenRef.current.get(id)?.();
+      const completionSource = agentRunCompletionSourcesRef.current.get(id);
+      if (completionSource) acceptedAgentRunCompletionSourcesRef.current.delete(completionSource);
+      agentRunCompletionSourcesRef.current.delete(id);
+      handledAgentRunCompletionSourcesRef.current.delete(id);
+      workingReconcileMissesRef.current.delete(id);
+      agentRunStartRevisionsRef.current.delete(id);
+      agentRunAuthorityProofsRef.current.delete(id);
+      agentRunTerminalFingerprintsRef.current.delete(id);
+      hermesActivityStore.clearSession(id);
+    }
     const retrySelection = [...ids]
       .map((id) => sessionModelSelectionsRef.current[id]?.selection)
       .find((selection): selection is SessionModelSelection => Boolean(selection));
@@ -6673,26 +6806,155 @@ export function AgentWorkspace({
 
   function attachHermesSessionEventListener({
     gateway,
+    persistenceBoundary,
+    runAlreadyAccepted = false,
     runtimeSessionId,
     sessionDisplayTitle,
     storedSessionId,
+    submittedUserMessage,
   }: {
     gateway: HermesGatewayClient;
+    persistenceBoundary?: AgentRunPersistenceBoundary;
+    runAlreadyAccepted?: boolean;
     runtimeSessionId: string;
     sessionDisplayTitle: string;
     storedSessionId: string;
+    submittedUserMessage?: HermesSessionMessage;
   }) {
     sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
-    const agentRunCompletionSource = Symbol(storedSessionId);
+    const agentRunListenerEpoch = Symbol(storedSessionId);
+    agentRunListenerEpochsRef.current.set(storedSessionId, agentRunListenerEpoch);
+    const providedAuthorityProof =
+      persistenceBoundary && submittedUserMessage
+        ? { persistenceBoundary, submittedUserMessage }
+        : undefined;
+    if (providedAuthorityProof) {
+      agentRunAuthorityProofsRef.current.set(storedSessionId, providedAuthorityProof);
+    }
+    const runAuthorityProof =
+      providedAuthorityProof ?? agentRunAuthorityProofsRef.current.get(storedSessionId);
+    const existingCompletionSource = agentRunCompletionSourcesRef.current.get(storedSessionId);
+    const agentRunCompletionSource = existingCompletionSource ?? Symbol(storedSessionId);
+    // A newly attached listener is fresh evidence that this run has a live
+    // runtime route. Do not carry an earlier absence observation across the
+    // reconnect or listener replacement boundary.
+    workingReconcileMissesRef.current.delete(storedSessionId);
+    if (!existingCompletionSource) {
+      agentRunCompletionSourcesRef.current.set(storedSessionId, agentRunCompletionSource);
+      if (!agentRunStartRevisionsRef.current.has(storedSessionId)) {
+        agentRunStartRevisionsRef.current.set(
+          storedSessionId,
+          liveEventsRef.current[storedSessionId]?.revision ?? 0,
+        );
+      }
+    }
+    if (runAlreadyAccepted) {
+      acceptedAgentRunCompletionSourcesRef.current.add(agentRunCompletionSource);
+    }
     let unlisten = () => {};
-    const removeListener = gateway.onEvent((event) => {
+    let deferredPreAcceptanceTerminals: HermesGatewayEvent[] = [];
+    let ambiguousTerminalGeneration = 0;
+    let ambiguousTerminalDrainPending = false;
+    let ambiguousTerminalCandidates: Array<{
+      event: HermesGatewayEvent;
+      classified: JuneHermesEvent;
+      generation: number;
+    }> = [];
+    const sourceIsCurrent = () =>
+      agentRunCompletionSourcesRef.current.get(storedSessionId) === agentRunCompletionSource &&
+      agentRunListenerEpochsRef.current.get(storedSessionId) === agentRunListenerEpoch;
+    const sourceWasHandled = () =>
+      handledAgentRunCompletionSourcesRef.current.get(storedSessionId) === agentRunCompletionSource;
+    const confirmRunAccepted = () => {
+      if (!sourceIsCurrent() || sourceWasHandled()) return false;
+      acceptedAgentRunCompletionSourcesRef.current.add(agentRunCompletionSource);
+      const deferred = deferredPreAcceptanceTerminals;
+      deferredPreAcceptanceTerminals = [];
+      for (const terminal of deferred) {
+        if (!sourceIsCurrent() || sourceWasHandled()) break;
+        handleGatewayEvent(terminal);
+      }
+      return sourceIsCurrent() && !sourceWasHandled();
+    };
+    function handleGatewayEvent(event: HermesGatewayEvent, ambiguityResolved = false) {
       if (event.session_id !== runtimeSessionId && event.session_id !== storedSessionId) return;
+      // A removed listener can still have a copied callback or an async caller
+      // in flight. Its source must never append into, or settle, a newer run.
+      if (!sourceIsCurrent()) return;
       const liveEvent = { ...event, receivedAt: new Date().toISOString() };
       // Classify the raw frame once at ingress. Stores and transcript rendering
       // consume the typed event; the raw frame remains only for trace capture
       // and the Stage B status helpers below.
       const classified = classifyHermesEvent(liveEvent);
       const storedClassified = withStoredHermesSessionId(classified, storedSessionId);
+      const terminal = isTerminalHermesEvent(classified);
+      if (terminal && sourceWasHandled()) return;
+      if (terminal && !acceptedAgentRunCompletionSourcesRef.current.has(agentRunCompletionSource)) {
+        // Hermes may emit a fast terminal from inside prompt.submit before the
+        // RPC acknowledgement reaches June. Retain a bounded candidate queue:
+        // an old replay can arrive first, and must not displace the real terminal
+        // that follows it before the acknowledgement. Once accepted, each
+        // candidate still routes through delivery/fingerprint authority below.
+        deferredPreAcceptanceTerminals = [...deferredPreAcceptanceTerminals, event].slice(-64);
+        return;
+      }
+      const terminalFingerprint = terminal ? hermesTerminalFingerprint(classified) : undefined;
+      if (
+        terminal &&
+        terminalFingerprint &&
+        !classified.delivery?.eventId &&
+        !ambiguityResolved &&
+        agentRunTerminalFingerprintsRef.current
+          .get(storedSessionId)
+          ?.includes(terminalFingerprint) === true
+      ) {
+        // A byte-identical lifecycle frame with no replay-stable id is
+        // indistinguishable from the prior run's replay. Confirm both a
+        // current-run persistence and runtime idleness before using it to settle
+        // the run. Success requires the assistant response; failure/cancellation
+        // requires the persisted current user prompt so a repeated terminal can
+        // still settle without pretending an older replay belongs to this run.
+        if (agentStatusFromHermesEvent(classified)) {
+          ambiguousTerminalGeneration += 1;
+          ambiguousTerminalCandidates = [
+            ...ambiguousTerminalCandidates,
+            { event, classified, generation: ambiguousTerminalGeneration },
+          ].slice(-64);
+          void drainAmbiguousTerminalCandidates();
+        }
+        return;
+      }
+      const currentSessionEvents =
+        liveEventsRef.current[storedSessionId] ?? createHermesLiveStream();
+      const nextSessionEvents = appendHermesLiveEvent(currentSessionEvents, storedClassified);
+      // Delivery identity is replay-stable when Hermes provides an event id.
+      // Reject a replay before it can touch activity, status, or follow-up
+      // settlement. A new listener for the next run must not reinterpret the
+      // previous run's replayed terminal as its own terminal.
+      if (nextSessionEvents === currentSessionEvents) return;
+      liveEventsRef.current = {
+        ...liveEventsRef.current,
+        [storedSessionId]: nextSessionEvents,
+      };
+      setLiveEvents(liveEventsRef.current);
+      if (terminal) {
+        handledAgentRunCompletionSourcesRef.current.set(storedSessionId, agentRunCompletionSource);
+        acceptedAgentRunCompletionSourcesRef.current.delete(agentRunCompletionSource);
+        deferredPreAcceptanceTerminals = [];
+        ambiguousTerminalCandidates = [];
+        workingReconcileMissesRef.current.delete(storedSessionId);
+        agentRunStartRevisionsRef.current.delete(storedSessionId);
+        agentRunAuthorityProofsRef.current.delete(storedSessionId);
+        if (terminalFingerprint) {
+          agentRunTerminalFingerprintsRef.current.set(
+            storedSessionId,
+            appendAgentRunTerminalFingerprint(
+              agentRunTerminalFingerprintsRef.current.get(storedSessionId) ?? [],
+              terminalFingerprint,
+            ),
+          );
+        }
+      }
       // Feature 15: record every inbound frame (raw type + the kind it
       // classified to) into the bounded, sanitized trace buffer so the dev/debug
       // trace panel can reconstruct the session. recordInbound re-classifies and
@@ -6734,15 +6996,13 @@ export function AgentWorkspace({
       // unconditional call is safe for every kind. Mode rides along so each
       // artifact can show its blast radius (sandboxed copy vs unrestricted path).
       hermesArtifactStore.record(storedClassified, hermesModeFor(storedSessionId));
-      const nextSessionEvents = [
-        ...(liveEventsRef.current[storedSessionId] ?? []),
-        classified,
-      ].slice(-200);
-      liveEventsRef.current = {
-        ...liveEventsRef.current,
-        [storedSessionId]: nextSessionEvents,
-      };
-      setLiveEvents(liveEventsRef.current);
+      if (storedClassified.kind === "transcript" && storedClassified.complete) {
+        // Hydrate persistence at the message boundary without treating it as
+        // the run boundary. Later tool/continuation frames stay subscribed.
+        window.setTimeout(() => {
+          void refreshHermesSession(storedSessionId);
+        }, 300);
+      }
       const toolEventPhase = classified.kind === "tool" ? classified.phase : undefined;
       if (toolEventPhase === "complete") {
         // The classifier treats any tool.*complete* subtype as complete, a
@@ -6787,8 +7047,13 @@ export function AgentWorkspace({
           ...activityCounts,
         });
       }
-      if (isTerminalHermesEvent(classified)) {
+      if (terminal) {
         unlisten();
+        if (
+          agentRunCompletionSourcesRef.current.get(storedSessionId) === agentRunCompletionSource
+        ) {
+          agentRunCompletionSourcesRef.current.delete(storedSessionId);
+        }
         if (!activityCounts) {
           clearSessionActivity(storedSessionId);
         }
@@ -6815,15 +7080,103 @@ export function AgentWorkspace({
           }, 300);
         }
       }
-    });
+    }
+    async function drainAmbiguousTerminalCandidates() {
+      if (ambiguousTerminalDrainPending) return;
+      ambiguousTerminalDrainPending = true;
+      try {
+        while (sourceIsCurrent() && !sourceWasHandled() && ambiguousTerminalCandidates.length) {
+          const candidate = ambiguousTerminalCandidates.shift();
+          if (!candidate) continue;
+          await confirmAmbiguousTerminal(
+            candidate.event,
+            candidate.classified,
+            candidate.generation,
+          );
+        }
+      } finally {
+        ambiguousTerminalDrainPending = false;
+        if (sourceIsCurrent() && !sourceWasHandled() && ambiguousTerminalCandidates.length) {
+          void drainAmbiguousTerminalCandidates();
+        }
+      }
+    }
+    async function confirmAmbiguousTerminal(
+      event: HermesGatewayEvent,
+      classified: JuneHermesEvent,
+      candidateGeneration: number,
+    ) {
+      const freshMessages = await listSessionMessagesOrdered(storedSessionId);
+      const terminalStatus = agentStatusFromHermesEvent(classified);
+      const hasCurrentRunPersistence =
+        terminalStatus === "completed"
+          ? Boolean(
+              runAuthorityProof &&
+                persistedAssistantAfterPendingUser(
+                  freshMessages ?? [],
+                  runAuthorityProof.submittedUserMessage,
+                  runAuthorityProof.persistenceBoundary,
+                ),
+            )
+          : Boolean(
+              runAuthorityProof &&
+                persistedPendingUserIndex(
+                  freshMessages ?? [],
+                  runAuthorityProof.submittedUserMessage,
+                  runAuthorityProof.persistenceBoundary,
+                ) >= 0,
+            );
+      if (
+        !freshMessages ||
+        !runAuthorityProof ||
+        !hasCurrentRunPersistence ||
+        candidateGeneration !== ambiguousTerminalGeneration ||
+        hermesLiveStreamHasFailedCurrentRun(
+          liveEventsRef.current[storedSessionId],
+          agentRunStartRevisionsRef.current.get(storedSessionId) ?? 0,
+        ) ||
+        sourceWasHandled() ||
+        !sourceIsCurrent()
+      ) {
+        return;
+      }
+      let response: {
+        sessions?: Array<{ id?: string; session_key?: string; status?: string }>;
+      };
+      try {
+        response = await gateway.request("session.active_list", {});
+      } catch {
+        return;
+      }
+      const matchingRows = (response.sessions ?? []).filter(
+        (row) =>
+          row.id === runtimeSessionId ||
+          row.id === storedSessionId ||
+          row.session_key === runtimeSessionId ||
+          row.session_key === storedSessionId,
+      );
+      if (matchingRows.length === 0 || matchingRows.some((row) => row.status !== "idle")) return;
+      if (
+        candidateGeneration !== ambiguousTerminalGeneration ||
+        sourceWasHandled() ||
+        !sourceIsCurrent()
+      ) {
+        return;
+      }
+      handleGatewayEvent(event, true);
+    }
+    const removeListener = gateway.onEvent(handleGatewayEvent);
     unlisten = () => {
       removeListener();
+      if (agentRunListenerEpochsRef.current.get(storedSessionId) === agentRunListenerEpoch) {
+        agentRunListenerEpochsRef.current.delete(storedSessionId);
+      }
       if (sessionGatewayUnlistenRef.current.get(storedSessionId) === unlisten) {
         sessionGatewayUnlistenRef.current.delete(storedSessionId);
       }
     };
     sessionGatewayUnlistenRef.current.set(storedSessionId, unlisten);
-    return unlisten;
+    return { completionSource: agentRunCompletionSource, confirmRunAccepted, unlisten };
   }
 
   async function submitHermesSession(
@@ -7268,6 +7621,11 @@ export function AgentWorkspace({
           return [optimisticSessionItem, ...current];
         });
       }
+      const persistenceBoundary = agentRunPersistenceBoundary(
+        hermesSessionMessagesRef.current[storedSessionId] ?? [],
+        !targetStoredSessionId || sessionMessagesAppliedSeqRef.current.has(storedSessionId),
+        Date.parse(createdAt),
+      );
       const pendingUserMessage: HermesSessionMessage = {
         id: optimisticSession?.userMessage.id ?? `pending:user:${Date.now()}`,
         role: "user",
@@ -7297,11 +7655,13 @@ export function AgentWorkspace({
         status: "running",
         summary: "June is working.",
       });
-      attachHermesSessionEventListener({
+      const { completionSource, confirmRunAccepted } = attachHermesSessionEventListener({
         gateway,
+        persistenceBoundary,
         runtimeSessionId,
         sessionDisplayTitle,
         storedSessionId,
+        submittedUserMessage: pendingUserMessage,
       });
       try {
         // Feature 15: record the outbound prompt.submit in the trace buffer. Its
@@ -7318,13 +7678,15 @@ export function AgentWorkspace({
           session_id: runtimeSessionId,
           text: promptSubmitContent,
         });
-        startAgentRunMonitoring({
-          storedSessionId,
-          runtimeSessionId,
-          title: sessionDisplayTitle,
-          fullMode: sessionUnrestricted(storedSessionId),
-          settlementHeld: true,
-        });
+        if (confirmRunAccepted()) {
+          startAgentRunMonitoring({
+            storedSessionId,
+            runtimeSessionId,
+            title: sessionDisplayTitle,
+            fullMode: sessionUnrestricted(storedSessionId),
+            settlementHeld: true,
+          });
+        }
         // JUN-171 (Phase A): the held fast-path images have now ridden along
         // with a successful follow-up prompt, either as structured image bytes or
         // in the non-vision path fallback. Clear only after prompt.submit accepts
@@ -7368,9 +7730,18 @@ export function AgentWorkspace({
           // The gateway rejected this prompt because the previous agent run is still
           // running — the session itself is healthy, so keep the listener and
           // working state. Callers translate this into the composer notice.
+          confirmRunAccepted();
           throw err;
         }
         sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
+        handledAgentRunCompletionSourcesRef.current.set(storedSessionId, completionSource);
+        acceptedAgentRunCompletionSourcesRef.current.delete(completionSource);
+        if (agentRunCompletionSourcesRef.current.get(storedSessionId) === completionSource) {
+          agentRunCompletionSourcesRef.current.delete(storedSessionId);
+          agentRunStartRevisionsRef.current.delete(storedSessionId);
+        }
+        agentRunAuthorityProofsRef.current.delete(storedSessionId);
+        workingReconcileMissesRef.current.delete(storedSessionId);
         recordSessionErrorActivity(storedSessionId, messageFromError(err));
         dispatchAgentSessionStatus({
           sessionId: storedSessionId,
@@ -7509,22 +7880,53 @@ export function AgentWorkspace({
       ),
     );
     if (!activeSessionIds.size) return;
+    const recoverySources = new Map(
+      Array.from(activeSessionIds).flatMap((sessionId) => {
+        const source = agentRunCompletionSourcesRef.current.get(sessionId);
+        return source ? ([[sessionId, source]] as const) : [];
+      }),
+    );
     gatewayRecoveringRef.current.add(fullMode);
     try {
       const gateway = await ensureHermesGateway(fullMode);
       await Promise.all(
-        Array.from(activeSessionIds).map(async (sessionId) => {
+        Array.from(recoverySources).map(async ([sessionId, recoverySource]) => {
           try {
+            if (agentRunCompletionSourcesRef.current.get(sessionId) !== recoverySource) return;
             const resumed = await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
               session_id: sessionId,
               cols: 96,
             });
             const runtimeSessionId = resumed.session_id;
+            if (agentRunCompletionSourcesRef.current.get(sessionId) !== recoverySource) {
+              if (
+                runtimeSessionId &&
+                runtimeSessionId !== runtimeSessionIdsRef.current[sessionId]
+              ) {
+                await gateway
+                  .request("session.interrupt", { session_id: runtimeSessionId })
+                  .catch(() => undefined);
+              }
+              return;
+            }
             if (runtimeSessionId) {
-              setRuntimeSessionIds((current) => ({
-                ...current,
-                [sessionId]: runtimeSessionId,
-              }));
+              setRuntimeSessionIds((current) => {
+                const next = {
+                  ...current,
+                  [sessionId]: runtimeSessionId,
+                };
+                runtimeSessionIdsRef.current = next;
+                return next;
+              });
+              attachHermesSessionEventListener({
+                gateway,
+                runAlreadyAccepted: true,
+                runtimeSessionId,
+                sessionDisplayTitle:
+                  hermesSessionItemsRef.current.find((session) => session.id === sessionId)
+                    ?.title ?? "Agent session",
+                storedSessionId: sessionId,
+              });
             }
           } catch {
             // The runtime session may be gone; the poll reconciles it.
@@ -7629,6 +8031,12 @@ export function AgentWorkspace({
 
   async function reconcileWorkingSessionsAgainstRuntime() {
     const working = Array.from(workingSessionIdsRef.current);
+    const expectedCompletionSources = new Map(
+      working.map((sessionId) => [sessionId, agentRunCompletionSourcesRef.current.get(sessionId)]),
+    );
+    const expectedAuthorityProofs = new Map(
+      working.map((sessionId) => [sessionId, agentRunAuthorityProofsRef.current.get(sessionId)]),
+    );
     const misses = workingReconcileMissesRef.current;
     for (const sessionId of misses.keys()) {
       if (!working.includes(sessionId)) misses.delete(sessionId);
@@ -7642,6 +8050,18 @@ export function AgentWorkspace({
     const snapshot = await liveRuntimeSessionsForModes(modes);
     if (snapshot.reachableModes.size === 0) return;
     for (const sessionId of working) {
+      const expectedCompletionSource = expectedCompletionSources.get(sessionId);
+      const expectedAuthorityProof = expectedAuthorityProofs.get(sessionId);
+      const runIsCurrent = () =>
+        workingSessionIdsRef.current.has(sessionId) &&
+        agentRunCompletionSourcesRef.current.get(sessionId) === expectedCompletionSource &&
+        agentRunAuthorityProofsRef.current.get(sessionId) === expectedAuthorityProof &&
+        (!expectedCompletionSource ||
+          handledAgentRunCompletionSourcesRef.current.get(sessionId) !== expectedCompletionSource);
+      if (!runIsCurrent()) {
+        misses.delete(sessionId);
+        continue;
+      }
       // Sessions of an unreachable mode were not in any answer we got;
       // counting them as misses would mark live work dead.
       if (!snapshot.reachableModes.has(sessionUnrestricted(sessionId))) continue;
@@ -7649,24 +8069,89 @@ export function AgentWorkspace({
         misses.delete(sessionId);
         continue;
       }
-      const seen = (misses.get(sessionId) ?? 0) + 1;
+      const previousMiss = misses.get(sessionId);
+      const seen =
+        (previousMiss && previousMiss.completionSource === expectedCompletionSource
+          ? previousMiss.count
+          : 0) + 1;
       if (seen < 2) {
-        misses.set(sessionId, seen);
+        misses.set(sessionId, { completionSource: expectedCompletionSource, count: seen });
         continue;
       }
       misses.delete(sessionId);
       const freshMessages = await refreshHermesSession(sessionId);
-      if (!freshMessages) continue;
-      if (sessionHasAssistantAfterLatestUser(freshMessages)) {
-        // refreshHermesSession already saw the assistant reply while this
-        // session still counted as active, so it dispatched the terminal
-        // "June finished." status and cleared activity — dispatching a
-        // second completed status here would overwrite that summary.
+      if (!freshMessages || !runIsCurrent()) continue;
+      const failedMessageCompletion = hermesLiveStreamHasFailedCurrentRun(
+        liveEventsRef.current[sessionId],
+        agentRunStartRevisionsRef.current.get(sessionId) ?? 0,
+      );
+      const persistedCurrentUserIndex = expectedAuthorityProof
+        ? persistedPendingUserIndex(
+            freshMessages,
+            expectedAuthorityProof.submittedUserMessage,
+            expectedAuthorityProof.persistenceBoundary,
+          )
+        : undefined;
+      if (expectedAuthorityProof && persistedCurrentUserIndex === -1) {
+        // Runtime absence cannot settle a run until persistence proves the
+        // current user turn. Otherwise an older identical exchange can be
+        // mistaken for this run after a reconnect loses its final event.
+        continue;
+      }
+      const hasAuthoritativeAssistant = expectedAuthorityProof
+        ? persistedAssistantAfterPendingUser(
+            freshMessages,
+            expectedAuthorityProof.submittedUserMessage,
+            expectedAuthorityProof.persistenceBoundary,
+          )
+        : sessionHasAssistantAfterLatestUser(freshMessages);
+      if (hasAuthoritativeAssistant && !failedMessageCompletion) {
+        // Persisted assistant text is not itself a run terminal. At this
+        // point the runtime has also authoritatively reported the session idle
+        // twice, so it is safe to settle the run even if its final lifecycle
+        // frame was lost during a gateway drop.
+        sessionGatewayUnlistenRef.current.get(sessionId)?.();
+        if (expectedCompletionSource) {
+          handledAgentRunCompletionSourcesRef.current.set(sessionId, expectedCompletionSource);
+          acceptedAgentRunCompletionSourcesRef.current.delete(expectedCompletionSource);
+        }
+        if (agentRunCompletionSourcesRef.current.get(sessionId) === expectedCompletionSource) {
+          agentRunCompletionSourcesRef.current.delete(sessionId);
+        }
+        agentRunStartRevisionsRef.current.delete(sessionId);
+        agentRunAuthorityProofsRef.current.delete(sessionId);
+        promotePendingIssueReportToReview(sessionId, {
+          queueDiagnosisRefresh: false,
+        });
+        const activityCounts = clearSessionActivity(sessionId);
+        markAgentRunSucceeded(sessionId);
+        dispatchAgentSessionStatus({
+          sessionId,
+          title:
+            hermesSessionItems.find((session) => session.id === sessionId)?.title ??
+            "Agent session",
+          status: "completed",
+          summary: "June finished.",
+          ...activityCounts,
+        });
+        continueAfterCompletedAgentRun(sessionId, expectedCompletionSource);
         continue;
       }
       const title =
         hermesSessionItems.find((session) => session.id === sessionId)?.title ?? "Agent session";
       const summary = "June stopped before replying.";
+      sessionGatewayUnlistenRef.current.get(sessionId)?.();
+      if (expectedCompletionSource) {
+        handledAgentRunCompletionSourcesRef.current.set(sessionId, expectedCompletionSource);
+        acceptedAgentRunCompletionSourcesRef.current.delete(expectedCompletionSource);
+      }
+      if (agentRunCompletionSourcesRef.current.get(sessionId) === expectedCompletionSource) {
+        agentRunCompletionSourcesRef.current.delete(sessionId);
+      }
+      agentRunStartRevisionsRef.current.delete(sessionId);
+      agentRunAuthorityProofsRef.current.delete(sessionId);
+      cancelAgentRunSettlement(sessionId);
+      clearSubmittedSteers(sessionId);
       recordSessionErrorActivity(sessionId, summary);
       setError(summary, { sessionId });
       dispatchAgentSessionStatus({
@@ -7699,8 +8184,28 @@ export function AgentWorkspace({
     return messages;
   }
 
+  function reconcilePersistedHermesLiveEvents(
+    sessionId: string,
+    messages: HermesSessionMessage[],
+    throughRevision: number,
+  ) {
+    const current = liveEventsRef.current[sessionId];
+    if (!current) return;
+    const reconciled = reconcileHermesLiveStream(current, {
+      throughRevision,
+      persistedMessages: persistedAssistantMessagesById(messages),
+    });
+    if (reconciled === current) return;
+    liveEventsRef.current = {
+      ...liveEventsRef.current,
+      [sessionId]: reconciled,
+    };
+    setLiveEvents(liveEventsRef.current);
+  }
+
   async function refreshHermesSession(sessionId: string) {
     try {
+      const throughRevision = liveEventsRef.current[sessionId]?.revision ?? 0;
       const messages = await listSessionMessagesOrdered(sessionId);
       if (!messages) return undefined;
       const retainedPending = retainUnpersistedPendingMessages(
@@ -7725,33 +8230,7 @@ export function AgentWorkspace({
         return next;
       });
       void suggestTitleForUntitledSession(sessionId, messages);
-      if (sessionHasAssistantAfterLatestUser(combined)) {
-        promotePendingIssueReportToReview(sessionId, {
-          queueDiagnosisRefresh: false,
-        });
-        const wasActive = sessionHasActiveWork(
-          sessionId,
-          workingSessionIdsRef.current,
-          waitingSessionIdsRef.current,
-          liveEventsRef.current,
-        );
-        const activityCounts = clearSessionActivity(sessionId);
-        if (wasActive) {
-          markAgentRunSucceeded(sessionId);
-          dispatchAgentSessionStatus({
-            sessionId,
-            title:
-              hermesSessionItems.find((session) => session.id === sessionId)?.title ??
-              "Agent session",
-            status: "completed",
-            summary: "June finished.",
-            ...activityCounts,
-          });
-          continueAfterCompletedAgentRun(sessionId);
-        }
-        liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
-        setLiveEvents(liveEventsRef.current);
-      }
+      reconcilePersistedHermesLiveEvents(sessionId, messages, throughRevision);
       await loadHermesSessions();
       return combined;
     } catch (err) {
@@ -8198,7 +8677,7 @@ export function AgentWorkspace({
       });
       liveEventsRef.current = {
         ...liveEventsRef.current,
-        [result.sessionId]: [],
+        [result.sessionId]: createHermesLiveStream(),
       };
       setLiveEvents(liveEventsRef.current);
       // Open the fork. Selecting it triggers the message-fetch effect, which
@@ -8251,7 +8730,10 @@ export function AgentWorkspace({
   }
 
   function pushLiveEvent(key: string, event: JuneHermesEvent) {
-    const nextEvents = [...(liveEventsRef.current[key] ?? []), event].slice(-200);
+    const nextEvents = appendHermesLiveEvent(
+      liveEventsRef.current[key] ?? createHermesLiveStream(),
+      withStoredHermesSessionId(event, key),
+    );
     liveEventsRef.current = {
       ...liveEventsRef.current,
       [key]: nextEvents,
@@ -9079,6 +9561,15 @@ export function AgentWorkspace({
     // to working (and on a gateway drop no terminal event ever comes to do
     // it). The interrupt then fires below to actually halt the runtime agent.
     sessionGatewayUnlistenRef.current.get(sessionId)?.();
+    const completionSource = agentRunCompletionSourcesRef.current.get(sessionId);
+    if (completionSource) {
+      handledAgentRunCompletionSourcesRef.current.set(sessionId, completionSource);
+      acceptedAgentRunCompletionSourcesRef.current.delete(completionSource);
+      agentRunCompletionSourcesRef.current.delete(sessionId);
+    }
+    workingReconcileMissesRef.current.delete(sessionId);
+    agentRunStartRevisionsRef.current.delete(sessionId);
+    agentRunAuthorityProofsRef.current.delete(sessionId);
     // Interrupting tears the listener down before any cancelled terminal event
     // reaches the terminal handler, so clear the delivery-guarantee steers here
     // too -- otherwise a steer typed-then-stopped lingers and could auto-submit
@@ -9759,7 +10250,7 @@ export function AgentWorkspace({
         ...mergeThinkingTurns(
           buildHermesSessionChatTurns(
             selectedHermesMessages,
-            liveEvents[selectedHermesSessionId] ?? [],
+            hermesLiveEvents(liveEvents[selectedHermesSessionId] ?? createHermesLiveStream()),
           ),
         ),
         ...(imageTurnsBySession[selectedHermesSessionId] ?? []),
@@ -9771,7 +10262,7 @@ export function AgentWorkspace({
         buildAgentChatTurns(
           selectedTask.messages,
           selectedTask.toolEvents,
-          liveEvents[selectedTask.id] ?? [],
+          hermesLiveEvents(liveEvents[selectedTask.id] ?? createHermesLiveStream()),
         ),
       )
     : [];
@@ -10851,7 +11342,9 @@ export function AgentWorkspace({
           onApproval={(part, choice) =>
             void respondToApproval(
               selectedHermesSessionId,
-              part.sessionId ?? selectedHermesSessionId,
+              runtimeSessionIds[selectedHermesSessionId] ??
+                part.sessionId ??
+                selectedHermesSessionId,
               part.id,
               choice,
               sessionUnrestricted(selectedHermesSessionId),
@@ -10871,7 +11364,9 @@ export function AgentWorkspace({
           onSudo={(part, approved) =>
             void respondToSudo(
               selectedHermesSessionId,
-              part.sessionId ?? selectedHermesSessionId,
+              runtimeSessionIds[selectedHermesSessionId] ??
+                part.sessionId ??
+                selectedHermesSessionId,
               part.id,
               approved,
               part.mode,
@@ -10881,7 +11376,9 @@ export function AgentWorkspace({
           onSecret={(part, value) =>
             void respondToSecret(
               selectedHermesSessionId,
-              part.sessionId ?? selectedHermesSessionId,
+              runtimeSessionIds[selectedHermesSessionId] ??
+                part.sessionId ??
+                selectedHermesSessionId,
               part.id,
               value,
               sessionUnrestricted(selectedHermesSessionId),
@@ -12810,13 +13307,6 @@ function AgentChatTurnRow({
   const toolParts = turn.parts.filter(
     (part): part is Extract<AgentChatPart, { type: "tool" }> => part.type === "tool",
   );
-  // A running generation tool holds space with the same placeholder the /image
-  // fast path uses, so the result doesn't pop in from nothing when the tool
-  // completes and its real image/video part takes over the slot.
-  const runningMediaTools = toolParts.filter(
-    (part): part is Extract<AgentChatPart, { type: "tool" }> & { media: "image" | "video" } =>
-      part.status === "running" && part.media !== undefined,
-  );
   const hasGeneratedImage = turn.parts.some((part) => part.type === "image");
   const hasGeneratedVideo = turn.parts.some((part) => part.type === "video");
   // The media canvas owns successful generation from start through result.
@@ -12828,20 +13318,54 @@ function AgentChatTurnRow({
     if (part.status === "running") return false;
     return part.media === "image" ? !hasGeneratedImage : !hasGeneratedVideo;
   });
+  type ReasoningPart = Extract<AgentChatPart, { type: "reasoning" }>;
+  type ReasoningRun = { key: string; parts: ReasoningPart[] };
+  const reasoningRuns: ReasoningRun[] = [];
+  const reasoningRunByFirstPart = new Map<ReasoningPart, ReasoningRun>();
+  let currentReasoningRun: ReasoningRun | undefined;
+  for (const [index, part] of turn.parts.entries()) {
+    if (part.type !== "reasoning") {
+      currentReasoningRun = undefined;
+      continue;
+    }
+    if (!currentReasoningRun) {
+      currentReasoningRun = {
+        key: `turn:${turn.id}:thinking:${part.renderKey ?? index}`,
+        parts: [],
+      };
+      reasoningRuns.push(currentReasoningRun);
+      reasoningRunByFirstPart.set(part, currentReasoningRun);
+    }
+    currentReasoningRun.parts.push(part);
+  }
+  type ToolPart = Extract<AgentChatPart, { type: "tool" }>;
+  type ToolRun = { key: string; parts: ToolPart[] };
+  const visibleToolPartSet = new Set(visibleToolParts);
+  const toolRunByFirstPart = new Map<ToolPart, ToolRun>();
+  let currentToolRun: ToolRun | undefined;
+  for (const part of turn.parts) {
+    if (part.type !== "tool" || !visibleToolPartSet.has(part)) {
+      currentToolRun = undefined;
+      continue;
+    }
+    if (!currentToolRun) {
+      currentToolRun = { key: `${turn.id}:tool-stack:${part.id}`, parts: [] };
+      toolRunByFirstPart.set(part, currentToolRun);
+    }
+    currentToolRun.parts.push(part);
+  }
   // The disclosure owns internal reasoning only. Tool/action rows stay visible
   // outside it so users can see what June is doing without expanding Thought;
   // a running media tool is represented by its canvas instead, just above.
   const thinkingRunning = reasoningParts.some((part) => part.status === "running");
-  const completedThinkingKey = `turn:${turn.id}:thinking`;
-  const thinkingKey =
-    thinkingRunning && activeThinkingKey ? activeThinkingKey : completedThinkingKey;
+  const latestReasoningRun = reasoningRuns.at(-1);
+  const completedThinkingKey = latestReasoningRun?.key ?? `turn:${turn.id}:thinking`;
   const wasThinkingRunningRef = useRef(thinkingRunning);
   const carriedOpen =
     !thinkingRunning &&
     wasThinkingRunningRef.current &&
     activeThinkingKey !== undefined &&
     thinkingOpen(activeThinkingKey);
-  const thinkingIsOpen = thinkingOpen(thinkingKey) || carriedOpen;
   const [copied, setCopied] = useState(false);
   const copyResetTimerRef = useRef<number | undefined>(undefined);
 
@@ -13019,28 +13543,6 @@ function AgentChatTurnRow({
   return (
     <article className="agent-assistant-turn" data-status={turn.status}>
       <div className="agent-assistant-turn-body">
-        {reasoningParts.length > 0 ? (
-          <AgentThinkingGroup
-            reasoning={reasoningParts}
-            running={thinkingRunning}
-            open={thinkingIsOpen}
-            onOpenChange={(open) => onThinkingOpenChange(thinkingKey, open)}
-          />
-        ) : null}
-        {visibleToolParts.length > 0 ? <AgentToolStack parts={visibleToolParts} /> : null}
-        {runningMediaTools.map((tool) =>
-          tool.media === "image" ? (
-            <AgentGeneratedImage
-              key={`generating:${tool.id}`}
-              part={{ type: "image", status: "running", prompt: "" }}
-            />
-          ) : (
-            <AgentGeneratedVideo
-              key={`generating:${tool.id}`}
-              part={{ type: "video", status: "running", prompt: "" }}
-            />
-          ),
-        )}
         {turn.parts.map((part, index) =>
           part.type === "text" ? (
             hasAgentCliAccessRequest(part.text) ? (
@@ -13069,6 +13571,53 @@ function AgentChatTurnRow({
                 />
               </div>
             )
+          ) : part.type === "reasoning" ? (
+            reasoningRunByFirstPart.has(part) ? (
+              <AgentThinkingGroup
+                key={reasoningRunByFirstPart.get(part)?.key}
+                reasoning={reasoningRunByFirstPart.get(part)?.parts ?? []}
+                running={
+                  reasoningRunByFirstPart.get(part) === latestReasoningRun && thinkingRunning
+                }
+                open={
+                  thinkingOpen(
+                    reasoningRunByFirstPart.get(part) === latestReasoningRun &&
+                      thinkingRunning &&
+                      activeThinkingKey
+                      ? activeThinkingKey
+                      : (reasoningRunByFirstPart.get(part)?.key ?? completedThinkingKey),
+                  ) ||
+                  (reasoningRunByFirstPart.get(part) === latestReasoningRun && carriedOpen)
+                }
+                onOpenChange={(open) =>
+                  onThinkingOpenChange(
+                    reasoningRunByFirstPart.get(part) === latestReasoningRun &&
+                      thinkingRunning &&
+                      activeThinkingKey
+                      ? activeThinkingKey
+                      : (reasoningRunByFirstPart.get(part)?.key ?? completedThinkingKey),
+                    open,
+                  )
+                }
+              />
+            ) : null
+          ) : part.type === "tool" ? (
+            part.status === "running" && part.media === "image" ? (
+              <AgentGeneratedImage
+                key={`generating:${part.id}`}
+                part={{ type: "image", status: "running", prompt: "" }}
+              />
+            ) : part.status === "running" && part.media === "video" ? (
+              <AgentGeneratedVideo
+                key={`generating:${part.id}`}
+                part={{ type: "video", status: "running", prompt: "" }}
+              />
+            ) : toolRunByFirstPart.has(part) ? (
+              <AgentToolStack
+                key={toolRunByFirstPart.get(part)?.key}
+                parts={toolRunByFirstPart.get(part)?.parts ?? []}
+              />
+            ) : null
           ) : part.type === "context" ? (
             <ContextCompactionPart key={`${turn.id}:context:${index}`} part={part} />
           ) : part.type === "approval" ? (
@@ -16149,26 +16698,101 @@ function retainUnpersistedPendingMessages(
   pending: HermesSessionMessage[],
   persisted: HermesSessionMessage[],
 ) {
-  return pending.filter((pendingMessage) => {
-    const pendingAt = hermesMessageTimestampMs(pendingMessage);
-    return !persisted.some((message) => {
-      if (message.role !== pendingMessage.role) return false;
-      if (
-        !sameVisibleMessageText(
-          visibleHermesMessageText(message),
-          visibleHermesMessageText(pendingMessage),
-        )
-      ) {
-        return false;
-      }
-      if (pendingAt === undefined) return true;
-      // Only a message persisted at/after the pending send can be its stored
-      // copy — an older identical message (e.g. a re-sent "continue") must
-      // not swallow the new pending entry and fake a completed turn.
-      const persistedAt = hermesMessageTimestampMs(message);
-      return persistedAt === undefined || persistedAt >= pendingAt - PENDING_MATCH_SKEW_MS;
-    });
-  });
+  return pending.filter(
+    (pendingMessage) =>
+      !persisted.some((message) => persistedMessageMatchesPending(message, pendingMessage)),
+  );
+}
+
+function persistedMessageMatchesPending(
+  persistedMessage: HermesSessionMessage,
+  pendingMessage: HermesSessionMessage,
+) {
+  if (persistedMessage.role !== pendingMessage.role) return false;
+  if (
+    !sameVisibleMessageText(
+      visibleHermesMessageText(persistedMessage),
+      visibleHermesMessageText(pendingMessage),
+    )
+  ) {
+    return false;
+  }
+  const pendingAt = hermesMessageTimestampMs(pendingMessage);
+  if (pendingAt === undefined) return true;
+  // Only a message persisted at/after the pending send can be its stored
+  // copy - an older identical message (e.g. a re-sent "continue") must not
+  // swallow the new pending entry and fake a completed turn.
+  const persistedAt = hermesMessageTimestampMs(persistedMessage);
+  return persistedAt === undefined || persistedAt >= pendingAt - PENDING_MATCH_SKEW_MS;
+}
+
+function agentRunPersistenceBoundary(
+  persistedMessages: HermesSessionMessage[],
+  historyWasHydrated: boolean,
+  submittedAtMs: number,
+): AgentRunPersistenceBoundary {
+  const persistedUsers = persistedMessages.filter((message) => message.role === "user");
+  return {
+    persistedUserIds: new Set(
+      persistedUsers.flatMap((message) => (message.id ? [message.id] : [])),
+    ),
+    persistedUserCount: persistedUsers.length,
+    historyWasHydrated,
+    submittedAtMs,
+  };
+}
+
+function persistedUserIsAfterAgentRunBoundary(
+  persistedMessage: HermesSessionMessage,
+  persistedUserIndex: number,
+  boundary: AgentRunPersistenceBoundary | undefined,
+) {
+  if (!boundary) return true;
+  if (persistedMessage.id && boundary.persistedUserIds.has(persistedMessage.id)) return false;
+  if (boundary.historyWasHydrated) return persistedUserIndex >= boundary.persistedUserCount;
+  const persistedAt = hermesMessageTimestampMs(persistedMessage);
+  return persistedAt !== undefined && persistedAt >= boundary.submittedAtMs;
+}
+
+function persistedAssistantAfterPendingUser(
+  persistedMessages: HermesSessionMessage[],
+  pendingUserMessage: HermesSessionMessage,
+  persistenceBoundary?: AgentRunPersistenceBoundary,
+) {
+  const persistedUserIndex = persistedPendingUserIndex(
+    persistedMessages,
+    pendingUserMessage,
+    persistenceBoundary,
+  );
+  return (
+    persistedUserIndex >= 0 &&
+    persistedMessages.slice(persistedUserIndex + 1).some((message) => message.role === "assistant")
+  );
+}
+
+function persistedPendingUserIndex(
+  persistedMessages: HermesSessionMessage[],
+  pendingUserMessage: HermesSessionMessage,
+  persistenceBoundary?: AgentRunPersistenceBoundary,
+) {
+  let persistedUserIndex = -1;
+  let persistedUserOrdinal = 0;
+  for (let index = 0; index < persistedMessages.length; index += 1) {
+    const persistedMessage = persistedMessages[index];
+    if (persistedMessage.role !== "user") continue;
+    if (
+      persistedMessageMatchesPending(persistedMessage, pendingUserMessage) &&
+      persistedUserIsAfterAgentRunBoundary(
+        persistedMessage,
+        persistedUserOrdinal,
+        persistenceBoundary,
+      )
+    ) {
+      persistedUserIndex = index;
+    }
+    persistedUserOrdinal += 1;
+  }
+  return persistedUserIndex;
 }
 
 function hermesMessageTimestampMs(message: HermesSessionMessage) {
@@ -16216,13 +16840,71 @@ function sessionHasActiveWork(
   sessionId: string,
   workingSessionIds: Set<string>,
   waitingSessionIds: Set<string>,
-  liveEvents: Record<string, JuneHermesEvent[]>,
+  liveEvents: Record<string, HermesLiveStream>,
 ) {
   return (
     workingSessionIds.has(sessionId) ||
     waitingSessionIds.has(sessionId) ||
-    (liveEvents[sessionId]?.length ?? 0) > 0
+    (liveEvents[sessionId]?.entries.length ?? 0) > 0
   );
+}
+
+function persistedAssistantMessagesById(messages: HermesSessionMessage[]) {
+  const persisted = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== "assistant" || !message.id) continue;
+    const text =
+      textFromHermesContent(message.content) ??
+      textFromHermesContent(message.text) ??
+      textFromHermesContent(message.context) ??
+      "";
+    persisted.set(message.id, text);
+  }
+  return persisted;
+}
+
+function hermesTerminalFingerprint(event: JuneHermesEvent): string | undefined {
+  if (event.kind === "error") {
+    return JSON.stringify(["error", event.code ?? null, event.message, event.recoverable ?? null]);
+  }
+  if (event.kind === "lifecycle" && event.flavor === "terminal") {
+    return JSON.stringify(["lifecycle", event.status, event.text]);
+  }
+  return undefined;
+}
+
+const MAX_AGENT_RUN_TERMINAL_FINGERPRINTS = 64;
+
+function appendAgentRunTerminalFingerprint(fingerprints: string[], fingerprint: string) {
+  if (fingerprints.includes(fingerprint)) return fingerprints;
+  return [...fingerprints, fingerprint].slice(-MAX_AGENT_RUN_TERMINAL_FINGERPRINTS);
+}
+
+function hermesTerminalFingerprints(stream: HermesLiveStream): string[] {
+  let fingerprints: string[] = [];
+  for (const { event } of stream.entries) {
+    if (!isTerminalHermesEvent(event)) continue;
+    const fingerprint = hermesTerminalFingerprint(event);
+    if (fingerprint) {
+      fingerprints = appendAgentRunTerminalFingerprint(fingerprints, fingerprint);
+    }
+  }
+  return fingerprints;
+}
+
+function hermesLiveStreamHasFailedCurrentRun(
+  stream: HermesLiveStream | undefined,
+  afterRevision: number,
+) {
+  if (!stream) return false;
+  for (let index = stream.entries.length - 1; index >= 0; index -= 1) {
+    const entry = stream.entries[index];
+    if (!entry || entry.revision <= afterRevision) continue;
+    const event = entry.event;
+    if (!event) continue;
+    if (event.kind === "transcript" && event.complete) return event.failed;
+  }
+  return false;
 }
 
 export type AgentActivityLevelProjection = {
@@ -16279,9 +16961,6 @@ function agentStatusFromHermesEvent(event: JuneHermesEvent): AgentSessionStatusK
   if (event.kind === "error") return "failed";
   if (event.kind === "pending_action") return "waitingForUser";
   if (event.kind === "pending_action_resolution") return "running";
-  if (event.kind === "transcript" && event.complete) {
-    return event.failed ? "failed" : "completed";
-  }
   if (event.kind === "lifecycle" && event.flavor === "terminal") {
     const status = event.status.toLowerCase();
     if (/(?:cancel|stop|interrupt|abort)/.test(status)) return "cancelled";
@@ -16598,6 +17277,27 @@ function moveRecordKey<T>(record: Record<string, T[]>, from: string, to: string)
   } else {
     delete next[to];
   }
+  return next;
+}
+
+function moveHermesLiveStreamKey(
+  record: Record<string, HermesLiveStream>,
+  from: string,
+  to: string,
+) {
+  const next = { ...record };
+  const moved = record[from];
+  delete next[from];
+  if (!moved) return next;
+
+  let combined = record[to] ?? createHermesLiveStream();
+  for (const event of hermesLiveEvents(moved)) {
+    combined = appendHermesLiveEvent(combined, {
+      ...event,
+      sessionId: to,
+    } as JuneHermesEvent);
+  }
+  next[to] = combined;
   return next;
 }
 

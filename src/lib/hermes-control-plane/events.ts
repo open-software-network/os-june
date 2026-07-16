@@ -258,7 +258,10 @@ export function isTerminalHermesEvent(event: JuneHermesEvent): boolean {
     case "error":
       return true;
     case "transcript":
-      return event.complete === true;
+      // A completed assistant message is only a transcript boundary. Hermes
+      // may still emit tools, continuation text, or a later lifecycle frame
+      // for the same run.
+      return false;
     case "lifecycle":
       return event.flavor === "terminal";
     default:
