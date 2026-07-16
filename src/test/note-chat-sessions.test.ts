@@ -3159,7 +3159,7 @@ describe("note chat session map", () => {
     await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(1));
   });
 
-  it("ignores a prior run monitor settlement before the current submit is accepted", async () => {
+  it("ignores a prior Agent run monitor settlement before the current submit is accepted", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     let acceptPrompt: (() => void) | undefined;
     const promptAccepted = new Promise<void>((resolve) => {
@@ -3547,6 +3547,177 @@ describe("note chat session map", () => {
     await waitFor(() => expect(result.current.working).toBe(false));
     expect(result.current.error).toBe("Upstream failed");
     expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a repeated no-id failure override a persisted successful reply", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-note-chat",
+              session_key: "stored-note-chat",
+              status: "idle",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const staleFailure = {
+      type: "error",
+      session_id: "runtime-note-chat",
+      payload: { message: "Prior upstream failure", code: 500, recoverable: false },
+    };
+
+    await act(async () => {
+      expect(await result.current.submit("Seed the prior failure.")).toBe(true);
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(staleFailure);
+    });
+    expect(result.current.working).toBe(false);
+
+    await act(async () => {
+      expect(await result.current.submit("Complete the current run successfully.")).toBe(true);
+    });
+    let releaseAuthorityProbe: ((value: { messages: HermesSessionMessage[] }) => void) | undefined;
+    const authorityProbe = new Promise<{ messages: HermesSessionMessage[] }>((resolve) => {
+      releaseAuthorityProbe = resolve;
+    });
+    mocks.hermesBridgeSessionMessages.mockClear();
+    mocks.hermesBridgeSessionMessages.mockReturnValue(authorityProbe);
+    mocks.cancelAgentRunMonitoring.mockClear();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(staleFailure);
+    });
+    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(1));
+    await act(async () =>
+      releaseAuthorityProbe?.({
+        messages: [
+          {
+            id: "current-user",
+            role: "user",
+            content: "Complete the current run successfully.",
+            timestamp: new Date().toISOString(),
+          },
+          {
+            id: "current-assistant",
+            role: "assistant",
+            content: "The current run completed successfully.",
+            timestamp: new Date(Date.now() + 1_000).toISOString(),
+          },
+        ],
+      }),
+    );
+
+    expect(result.current.working).toBe(true);
+    expect(result.current.error).toBeNull();
+    expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalled();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-note-chat",
+          event_id: "current-success",
+          payload: { status: "success" },
+        });
+      }
+    });
+    expect(result.current.working).toBe(false);
+    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat");
+  });
+
+  it("drains a newer repeated terminal after a lagging authority probe", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-note-chat",
+              session_key: "stored-note-chat",
+              status: "idle",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const staleFailure = {
+      type: "error",
+      session_id: "runtime-note-chat",
+      payload: { message: "Stale replay failure", code: 500, recoverable: false },
+    };
+    const currentFailure = {
+      type: "error",
+      session_id: "runtime-note-chat",
+      payload: { message: "Current run failure", code: 503, recoverable: false },
+    };
+
+    await act(async () => {
+      expect(await result.current.submit("Seed stale replay authority.")).toBe(true);
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(staleFailure);
+    });
+    await act(async () => {
+      expect(await result.current.submit("Seed current failure authority.")).toBe(true);
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(currentFailure);
+    });
+
+    await act(async () => {
+      expect(await result.current.submit("Fail the current run after replay.")).toBe(true);
+    });
+    let releaseLaggingProbe: ((value: { messages: HermesSessionMessage[] }) => void) | undefined;
+    const laggingProbe = new Promise<{ messages: HermesSessionMessage[] }>((resolve) => {
+      releaseLaggingProbe = resolve;
+    });
+    let authorityReads = 0;
+    mocks.hermesBridgeSessionMessages.mockImplementation(() => {
+      authorityReads += 1;
+      if (authorityReads === 1) return laggingProbe;
+      return Promise.resolve({
+        messages: [
+          {
+            id: "current-failed-user",
+            role: "user",
+            content: "Fail the current run after replay.",
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      });
+    });
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(staleFailure);
+    });
+    await waitFor(() => expect(authorityReads).toBe(1));
+    act(() => {
+      for (let duplicate = 0; duplicate < 3; duplicate += 1) {
+        for (const handler of mocks.gatewayEventHandlers) handler(currentFailure);
+      }
+    });
+    await act(async () => releaseLaggingProbe?.({ messages: [] }));
+
+    await waitFor(() => expect(result.current.working).toBe(false));
+    expect(authorityReads).toBe(2);
+    expect(result.current.error).toBe("Current run failure");
   });
 
   it("cancels an in-flight submit when stopped during gateway connection", async () => {

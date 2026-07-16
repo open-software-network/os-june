@@ -1863,7 +1863,7 @@ describe("AgentWorkspace", () => {
     ).toBe(false);
     expect(screen.getByText("review the brief after that")).toBeInTheDocument();
 
-    // The gateway can replay the previous run's terminal after the steer has
+    // The gateway can replay the previous Agent run's terminal after the steer has
     // installed its next listener. It must not terminate that new run.
     act(() => {
       for (const handler of [...mocks.gatewayEventHandlers]) {
@@ -2499,6 +2499,142 @@ describe("AgentWorkspace", () => {
     window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
   });
 
+  it.each([
+    "timeout",
+    "cancelled",
+  ])("does not let a repeated no-id %s terminal fail a later persisted reply", async (terminalStatus) => {
+    type PersistedMessage = {
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      timestamp: string;
+    };
+    let persistedMessages: PersistedMessage[] = [];
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-session-1",
+              session_key: "session-1",
+              status: "idle",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const terminal = {
+      type: "lifecycle.complete",
+      session_id: "runtime-session-1",
+      payload: { status: terminalStatus },
+    };
+
+    try {
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+      await user.type(composer, "seed the repeated failure");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "seed the repeated failure",
+        }),
+      );
+      persistedMessages = [
+        {
+          id: "seed-failure-user",
+          role: "user",
+          content: "seed the repeated failure",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      const refreshesBeforeSeedTerminal = mocks.listHermesSessionMessages.mock.calls.length;
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) handler(terminal);
+      });
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+      );
+      await waitFor(() =>
+        expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+          refreshesBeforeSeedTerminal,
+        ),
+      );
+
+      await user.type(composer, "complete the later run");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "complete the later run",
+        }),
+      );
+      persistedMessages = [
+        ...persistedMessages,
+        {
+          id: "later-run-user",
+          role: "user",
+          content: "complete the later run",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "later-run-assistant",
+          role: "assistant",
+          content: "The later run completed successfully.",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+      await user.type(composer, "retain this submitted steer");
+      await user.click(screen.getByRole("button", { name: "Send to steer June" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.steer", {
+          session_id: "session-1",
+          text: "retain this submitted steer",
+        }),
+      );
+      expect(screen.getByText("retain this submitted steer")).toBeInTheDocument();
+      const terminalStatusesBeforeReplay = statusDetails.filter(
+        (detail) =>
+          detail.sessionId === "session-1" &&
+          (detail.status === "failed" || detail.status === "cancelled"),
+      ).length;
+      mocks.cancelAgentRunMonitoring.mockClear();
+
+      act(() => {
+        for (const handler of [...mocks.gatewayEventHandlers]) handler(terminal);
+      });
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.active_list", {}),
+      );
+      await act(async () => Promise.resolve());
+
+      expect(
+        statusDetails.filter(
+          (detail) =>
+            detail.sessionId === "session-1" &&
+            (detail.status === "failed" || detail.status === "cancelled"),
+        ),
+      ).toHaveLength(terminalStatusesBeforeReplay);
+      expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalledWith("session-1");
+      expect(screen.getByText("retain this submitted steer")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
+    } finally {
+      window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    }
+  });
+
   it("does not use old timestamp-less identical history as current success authority", async () => {
     let persistedMessages: Array<{
       id: string;
@@ -2875,6 +3011,7 @@ describe("AgentWorkspace", () => {
         },
       ];
       mocks.markAgentRunSucceeded.mockClear();
+      mocks.cancelAgentRunMonitoring.mockClear();
       const failedStatusesBefore = statusDetails.filter(
         (detail) => detail.sessionId === "session-1" && detail.status === "failed",
       ).length;
@@ -2917,15 +3054,15 @@ describe("AgentWorkspace", () => {
             },
           ],
         });
+        await Promise.resolve();
       });
-      await waitFor(() =>
-        expect(
-          statusDetails.filter(
-            (detail) => detail.sessionId === "session-1" && detail.status === "failed",
-          ),
-        ).toHaveLength(failedStatusesBefore + 1),
-      );
-      expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull();
+      expect(
+        statusDetails.filter(
+          (detail) => detail.sessionId === "session-1" && detail.status === "failed",
+        ),
+      ).toHaveLength(failedStatusesBefore);
+      expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalledWith("session-1");
+      expect(screen.getByRole("button", { name: "Stop June" })).toBeInTheDocument();
     } finally {
       window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
     }
@@ -3372,7 +3509,7 @@ describe("AgentWorkspace", () => {
     expect(document.querySelector(".agent-tool-stack")).toHaveTextContent(/files/i);
   });
 
-  it("ignores every event from a retired listener after a newer run starts", async () => {
+  it("ignores every event from a retired listener after a newer Agent run starts", async () => {
     const user = userEvent.setup();
     render(<AgentWorkspace initialSession={existingSession} />);
     const composer = await screen.findByRole("textbox", { name: "Message June" });
@@ -11026,7 +11163,7 @@ describe("AgentWorkspace", () => {
     }
   });
 
-  it("does not carry a runtime miss from a completed run into the next run", async () => {
+  it("does not carry a runtime miss from a completed Agent run into the next Agent run", async () => {
     let persistedMessages: Array<{
       id: string;
       role: "user" | "assistant";
@@ -15160,6 +15297,123 @@ describe("AgentWorkspace", () => {
     expect(composer).toHaveTextContent("are the subagents using my CLI?");
     // The previous turn is still running, so the live listener stays attached.
     expect(mocks.gatewayEventHandlers.size).toBe(1);
+  });
+
+  it("keeps the prior run authority when a later prompt is rejected as busy", async () => {
+    type PersistedMessage = {
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      timestamp: string;
+    };
+    let persistedMessages: PersistedMessage[] = [];
+    let promptSubmitCount = 0;
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        promptSubmitCount += 1;
+        return promptSubmitCount === 2
+          ? Promise.reject(new HermesGatewayError("session busy", 4009))
+          : Promise.resolve({});
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({ sessions: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace initialSession={existingSession} />);
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByRole("textbox", { name: "Message June" })).toBeInTheDocument(),
+      );
+      const composer = screen.getByRole("textbox", { name: "Message June" });
+
+      fireEvent.paste(composer, {
+        clipboardData: { getData: () => "finish the accepted run" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+          session_id: "runtime-session-1",
+          text: "finish the accepted run",
+        }),
+      );
+      expect([...mocks.gatewayEventHandlers][0]).toBeTypeOf("function");
+      persistedMessages = [
+        {
+          id: "accepted-run-user",
+          role: "user",
+          content: "finish the accepted run",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "accepted-run-assistant",
+          role: "assistant",
+          content: "The accepted run finished.",
+          timestamp: new Date().toISOString(),
+        },
+      ];
+
+      // Simulate a status projection that briefly looks settled while the
+      // accepted runtime run and its listener are still authoritative.
+      act(() => {
+        hermesActivityStore.record(
+          {
+            kind: "lifecycle",
+            sessionId: "session-1",
+            flavor: "terminal",
+            status: "completed",
+            text: "",
+            receivedAt: new Date().toISOString(),
+          },
+          "sandboxed",
+        );
+      });
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+      );
+
+      fireEvent.paste(composer, {
+        clipboardData: { getData: () => "this prompt must be rejected" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() => expect(promptSubmitCount).toBe(2));
+      await settleUnderFakeTimers(() =>
+        expect(
+          screen.getByText(/June is still working on the previous message/),
+        ).toBeInTheDocument(),
+      );
+
+      const userTurns = Array.from(document.querySelectorAll(".agent-user-turn"));
+      expect(
+        userTurns.some((turn) => turn.textContent?.includes("this prompt must be rejected")),
+      ).toBe(false);
+      expect(composer).toHaveTextContent("this prompt must be rejected");
+      expect(mocks.gatewayEventHandlers.size).toBe(1);
+      mocks.markAgentRunSucceeded.mockClear();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+
+      await settleUnderFakeTimers(() =>
+        expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-1"),
+      );
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument();
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+      ).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("offers retry and dismiss on a connection-shaped error banner", async () => {

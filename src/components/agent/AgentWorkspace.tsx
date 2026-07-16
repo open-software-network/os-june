@@ -2011,7 +2011,7 @@ function hermesLiveStreamNeedsContinuity(stream: HermesLiveStream) {
     // Persisted message reconciliation can prove ownership only for transcript
     // entries. Keep every renderable structured entry until June has an
     // equivalent persisted authority, otherwise a settled remount can erase a
-    // tool-only, reasoning-only, media, or action response.
+    // tool-only, reasoning-only, media, or action output.
     return true;
   }
   return false;
@@ -2884,11 +2884,11 @@ export function AgentWorkspace({
   // the previous turn is still streaming must replace the old handler, not
   // stack a second one — otherwise every event lands twice in liveEvents.
   const sessionGatewayUnlistenRef = useRef<Map<string, () => void>>(new Map());
-  // Completion source identity spans reconnects for one run, but async replay
+  // Completion source identity spans reconnects for one Agent run, but async replay
   // checks belong to the listener that started them. A fresh epoch invalidates
   // proof work left behind by the listener recovery just replaced.
   const agentRunListenerEpochsRef = useRef<Map<string, symbol>>(new Map());
-  // Listener replacement during reconnect must keep one run-level completion
+  // Listener replacement during reconnect must keep one Agent-run-level completion
   // identity so a replayed terminal cannot advance queued follow-ups twice.
   const agentRunCompletionSourcesRef = useRef<Map<string, symbol>>(new Map());
   // Retain only the latest handled source for each session. Active-source
@@ -2896,12 +2896,12 @@ export function AgentWorkspace({
   const handledAgentRunCompletionSourcesRef = useRef<Map<string, symbol>>(new Map());
   const acceptedAgentRunCompletionSourcesRef = useRef<Set<symbol>>(new Set());
   // The retained stream spans multiple prompts. Record the revision at which
-  // each current run began so a failed message boundary from an older run
-  // cannot poison authoritative idle settlement for a later one.
+  // each current Agent run began so a failed message boundary from an older
+  // Agent run cannot poison authoritative idle settlement for a later one.
   const agentRunStartRevisionsRef = useRef<Map<string, number>>(
     new Map(Object.entries(continuity?.runStartRevisions ?? {})),
   );
-  // Current-run persistence proof is needed by every terminal authority path,
+  // Current Agent run persistence proof is needed by every terminal authority path,
   // including polling and listeners replaced after reconnect/remount.
   const agentRunAuthorityProofsRef = useRef<Map<string, AgentRunAuthorityProof>>(
     new Map(Object.entries(continuity?.runAuthorityProofs ?? {})),
@@ -6821,7 +6821,12 @@ export function AgentWorkspace({
     storedSessionId: string;
     submittedUserMessage?: HermesSessionMessage;
   }) {
-    sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
+    const previousUnlisten = sessionGatewayUnlistenRef.current.get(storedSessionId);
+    const previousAuthorityProof = agentRunAuthorityProofsRef.current.get(storedSessionId);
+    const previousRunStartRevision = agentRunStartRevisionsRef.current.get(storedSessionId);
+    const previousReconcileMiss = workingReconcileMissesRef.current.get(storedSessionId);
+    const existingCompletionSource = agentRunCompletionSourcesRef.current.get(storedSessionId);
+    if (runAlreadyAccepted) previousUnlisten?.();
     const agentRunListenerEpoch = Symbol(storedSessionId);
     agentRunListenerEpochsRef.current.set(storedSessionId, agentRunListenerEpoch);
     const providedAuthorityProof =
@@ -6831,11 +6836,10 @@ export function AgentWorkspace({
     if (providedAuthorityProof) {
       agentRunAuthorityProofsRef.current.set(storedSessionId, providedAuthorityProof);
     }
-    const runAuthorityProof =
+    let runAuthorityProof =
       providedAuthorityProof ?? agentRunAuthorityProofsRef.current.get(storedSessionId);
-    const existingCompletionSource = agentRunCompletionSourcesRef.current.get(storedSessionId);
     const agentRunCompletionSource = existingCompletionSource ?? Symbol(storedSessionId);
-    // A newly attached listener is fresh evidence that this run has a live
+    // A newly attached listener is fresh evidence that this Agent run has a live
     // runtime route. Do not carry an earlier absence observation across the
     // reconnect or listener replacement boundary.
     workingReconcileMissesRef.current.delete(storedSessionId);
@@ -6860,6 +6864,12 @@ export function AgentWorkspace({
       classified: JuneHermesEvent;
       generation: number;
     }> = [];
+    let previousListenerRetired = runAlreadyAccepted || !previousUnlisten;
+    const retirePreviousListener = () => {
+      if (previousListenerRetired) return;
+      previousListenerRetired = true;
+      previousUnlisten?.();
+    };
     const sourceIsCurrent = () =>
       agentRunCompletionSourcesRef.current.get(storedSessionId) === agentRunCompletionSource &&
       agentRunListenerEpochsRef.current.get(storedSessionId) === agentRunListenerEpoch;
@@ -6867,6 +6877,7 @@ export function AgentWorkspace({
       handledAgentRunCompletionSourcesRef.current.get(storedSessionId) === agentRunCompletionSource;
     const confirmRunAccepted = () => {
       if (!sourceIsCurrent() || sourceWasHandled()) return false;
+      retirePreviousListener();
       acceptedAgentRunCompletionSourcesRef.current.add(agentRunCompletionSource);
       const deferred = deferredPreAcceptanceTerminals;
       deferredPreAcceptanceTerminals = [];
@@ -6876,10 +6887,38 @@ export function AgentWorkspace({
       }
       return sourceIsCurrent() && !sourceWasHandled();
     };
+    const restoreRunAfterBusyRejection = () => {
+      if (!sourceIsCurrent() || sourceWasHandled()) return false;
+      if (existingCompletionSource) {
+        runAuthorityProof = previousAuthorityProof;
+        if (previousAuthorityProof) {
+          agentRunAuthorityProofsRef.current.set(storedSessionId, previousAuthorityProof);
+        } else {
+          agentRunAuthorityProofsRef.current.delete(storedSessionId);
+        }
+        if (previousRunStartRevision === undefined) {
+          agentRunStartRevisionsRef.current.delete(storedSessionId);
+        } else {
+          agentRunStartRevisionsRef.current.set(storedSessionId, previousRunStartRevision);
+        }
+        if (previousReconcileMiss) {
+          workingReconcileMissesRef.current.set(storedSessionId, previousReconcileMiss);
+        } else {
+          workingReconcileMissesRef.current.delete(storedSessionId);
+        }
+      } else {
+        // A 4009 proves some runtime work exists, but not that Hermes accepted
+        // this prompt. Keep listening to the busy runtime without letting the
+        // rejected optimistic message become persistence authority for it.
+        runAuthorityProof = undefined;
+        agentRunAuthorityProofsRef.current.delete(storedSessionId);
+      }
+      return confirmRunAccepted();
+    };
     function handleGatewayEvent(event: HermesGatewayEvent, ambiguityResolved = false) {
       if (event.session_id !== runtimeSessionId && event.session_id !== storedSessionId) return;
       // A removed listener can still have a copied callback or an async caller
-      // in flight. Its source must never append into, or settle, a newer run.
+      // in flight. Its source must never append into, or settle, a newer Agent run.
       if (!sourceIsCurrent()) return;
       const liveEvent = { ...event, receivedAt: new Date().toISOString() };
       // Classify the raw frame once at ingress. Stores and transcript rendering
@@ -6909,11 +6948,12 @@ export function AgentWorkspace({
           ?.includes(terminalFingerprint) === true
       ) {
         // A byte-identical lifecycle frame with no replay-stable id is
-        // indistinguishable from the prior run's replay. Confirm both a
-        // current-run persistence and runtime idleness before using it to settle
-        // the run. Success requires the assistant response; failure/cancellation
-        // requires the persisted current user prompt so a repeated terminal can
-        // still settle without pretending an older replay belongs to this run.
+        // indistinguishable from the prior Agent run's replay. Confirm both
+        // current Agent run persistence and runtime idleness before using it to
+        // settle the Agent run. Success requires the persisted assistant message;
+        // failure/cancellation requires the persisted current user prompt so a
+        // repeated terminal can still settle without pretending an older replay
+        // belongs to this Agent run.
         if (agentStatusFromHermesEvent(classified)) {
           ambiguousTerminalGeneration += 1;
           ambiguousTerminalCandidates = [
@@ -6929,8 +6969,8 @@ export function AgentWorkspace({
       const nextSessionEvents = appendHermesLiveEvent(currentSessionEvents, storedClassified);
       // Delivery identity is replay-stable when Hermes provides an event id.
       // Reject a replay before it can touch activity, status, or follow-up
-      // settlement. A new listener for the next run must not reinterpret the
-      // previous run's replayed terminal as its own terminal.
+      // settlement. A new listener for the next Agent run must not reinterpret
+      // the previous Agent run's replayed terminal as its own terminal.
       if (nextSessionEvents === currentSessionEvents) return;
       liveEventsRef.current = {
         ...liveEventsRef.current,
@@ -6998,7 +7038,7 @@ export function AgentWorkspace({
       hermesArtifactStore.record(storedClassified, hermesModeFor(storedSessionId));
       if (storedClassified.kind === "transcript" && storedClassified.complete) {
         // Hydrate persistence at the message boundary without treating it as
-        // the run boundary. Later tool/continuation frames stay subscribed.
+        // the Agent run boundary. Later tool/continuation frames stay subscribed.
         window.setTimeout(() => {
           void refreshHermesSession(storedSessionId);
         }, 300);
@@ -7108,24 +7148,24 @@ export function AgentWorkspace({
     ) {
       const freshMessages = await listSessionMessagesOrdered(storedSessionId);
       const terminalStatus = agentStatusFromHermesEvent(classified);
+      const hasPersistedCurrentUser = Boolean(
+        runAuthorityProof &&
+          persistedPendingUserIndex(
+            freshMessages ?? [],
+            runAuthorityProof.submittedUserMessage,
+            runAuthorityProof.persistenceBoundary,
+          ) >= 0,
+      );
+      const hasAuthoritativeAssistant = Boolean(
+        runAuthorityProof &&
+          persistedAssistantAfterPendingUser(
+            freshMessages ?? [],
+            runAuthorityProof.submittedUserMessage,
+            runAuthorityProof.persistenceBoundary,
+          ),
+      );
       const hasCurrentRunPersistence =
-        terminalStatus === "completed"
-          ? Boolean(
-              runAuthorityProof &&
-                persistedAssistantAfterPendingUser(
-                  freshMessages ?? [],
-                  runAuthorityProof.submittedUserMessage,
-                  runAuthorityProof.persistenceBoundary,
-                ),
-            )
-          : Boolean(
-              runAuthorityProof &&
-                persistedPendingUserIndex(
-                  freshMessages ?? [],
-                  runAuthorityProof.submittedUserMessage,
-                  runAuthorityProof.persistenceBoundary,
-                ) >= 0,
-            );
+        terminalStatus === "completed" ? hasAuthoritativeAssistant : hasPersistedCurrentUser;
       if (
         !freshMessages ||
         !runAuthorityProof ||
@@ -7157,6 +7197,16 @@ export function AgentWorkspace({
       );
       if (matchingRows.length === 0 || matchingRows.some((row) => row.status !== "idle")) return;
       if (
+        (terminalStatus === "failed" || terminalStatus === "cancelled") &&
+        hasAuthoritativeAssistant
+      ) {
+        // An anonymous terminal shape reused by an earlier run cannot override
+        // the current run's persisted assistant reply. Leave settlement to the
+        // run-scoped idle reconciler instead of converting contradictory replay
+        // evidence into a failure or clearing its queued continuations.
+        return;
+      }
+      if (
         candidateGeneration !== ambiguousTerminalGeneration ||
         sourceWasHandled() ||
         !sourceIsCurrent()
@@ -7167,6 +7217,7 @@ export function AgentWorkspace({
     }
     const removeListener = gateway.onEvent(handleGatewayEvent);
     unlisten = () => {
+      retirePreviousListener();
       removeListener();
       if (agentRunListenerEpochsRef.current.get(storedSessionId) === agentRunListenerEpoch) {
         agentRunListenerEpochsRef.current.delete(storedSessionId);
@@ -7176,7 +7227,12 @@ export function AgentWorkspace({
       }
     };
     sessionGatewayUnlistenRef.current.set(storedSessionId, unlisten);
-    return { completionSource: agentRunCompletionSource, confirmRunAccepted, unlisten };
+    return {
+      completionSource: agentRunCompletionSource,
+      confirmRunAccepted,
+      restoreRunAfterBusyRejection,
+      unlisten,
+    };
   }
 
   async function submitHermesSession(
@@ -7655,14 +7711,15 @@ export function AgentWorkspace({
         status: "running",
         summary: "June is working.",
       });
-      const { completionSource, confirmRunAccepted } = attachHermesSessionEventListener({
-        gateway,
-        persistenceBoundary,
-        runtimeSessionId,
-        sessionDisplayTitle,
-        storedSessionId,
-        submittedUserMessage: pendingUserMessage,
-      });
+      const { completionSource, confirmRunAccepted, restoreRunAfterBusyRejection } =
+        attachHermesSessionEventListener({
+          gateway,
+          persistenceBoundary,
+          runtimeSessionId,
+          sessionDisplayTitle,
+          storedSessionId,
+          submittedUserMessage: pendingUserMessage,
+        });
       try {
         // Feature 15: record the outbound prompt.submit in the trace buffer. Its
         // params are sanitized before storage (the text is the user's own prompt,
@@ -7730,7 +7787,7 @@ export function AgentWorkspace({
           // The gateway rejected this prompt because the previous agent run is still
           // running — the session itself is healthy, so keep the listener and
           // working state. Callers translate this into the composer notice.
-          confirmRunAccepted();
+          restoreRunAfterBusyRejection();
           throw err;
         }
         sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
@@ -8093,9 +8150,9 @@ export function AgentWorkspace({
           )
         : undefined;
       if (expectedAuthorityProof && persistedCurrentUserIndex === -1) {
-        // Runtime absence cannot settle a run until persistence proves the
-        // current user turn. Otherwise an older identical exchange can be
-        // mistaken for this run after a reconnect loses its final event.
+        // Runtime absence cannot settle an Agent run until persistence proves
+        // its current user prompt. Otherwise an older identical exchange can be
+        // mistaken for this Agent run after a reconnect loses its final event.
         continue;
       }
       const hasAuthoritativeAssistant = expectedAuthorityProof
@@ -8106,9 +8163,9 @@ export function AgentWorkspace({
           )
         : sessionHasAssistantAfterLatestUser(freshMessages);
       if (hasAuthoritativeAssistant && !failedMessageCompletion) {
-        // Persisted assistant text is not itself a run terminal. At this
+        // Persisted assistant text is not itself an Agent run terminal. At this
         // point the runtime has also authoritatively reported the session idle
-        // twice, so it is safe to settle the run even if its final lifecycle
+        // twice, so it is safe to settle the Agent run even if its final lifecycle
         // frame was lost during a gateway drop.
         sessionGatewayUnlistenRef.current.get(sessionId)?.();
         if (expectedCompletionSource) {
@@ -8185,11 +8242,11 @@ export function AgentWorkspace({
   }
 
   function reconcilePersistedHermesLiveEvents(
-    sessionId: string,
+    storedSessionId: string,
     messages: HermesSessionMessage[],
     throughRevision: number,
   ) {
-    const current = liveEventsRef.current[sessionId];
+    const current = liveEventsRef.current[storedSessionId];
     if (!current) return;
     const reconciled = reconcileHermesLiveStream(current, {
       throughRevision,
@@ -8198,7 +8255,7 @@ export function AgentWorkspace({
     if (reconciled === current) return;
     liveEventsRef.current = {
       ...liveEventsRef.current,
-      [sessionId]: reconciled,
+      [storedSessionId]: reconciled,
     };
     setLiveEvents(liveEventsRef.current);
   }
@@ -16721,7 +16778,7 @@ function persistedMessageMatchesPending(
   if (pendingAt === undefined) return true;
   // Only a message persisted at/after the pending send can be its stored
   // copy - an older identical message (e.g. a re-sent "continue") must not
-  // swallow the new pending entry and fake a completed turn.
+  // swallow the new pending entry and fake persistence for the current Agent run.
   const persistedAt = hermesMessageTimestampMs(persistedMessage);
   return persistedAt === undefined || persistedAt >= pendingAt - PENDING_MATCH_SKEW_MS;
 }
