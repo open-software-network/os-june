@@ -3049,6 +3049,14 @@ export function AgentWorkspace({
     );
   }
 
+  function recordHermesActivityAndDeriveStatus(event: JuneHermesEvent, storedSessionId: string) {
+    hermesActivityStore.record(event, hermesModeFor(storedSessionId));
+    const hasOpenPendingAction = pendingActionStore
+      .openRecords()
+      .some((record) => record.sessionId === storedSessionId);
+    return agentStatusFromHermesEvent(event, hasOpenPendingAction);
+  }
+
   function recordSessionErrorActivity(sessionId: string, message: string) {
     cancelAgentRunSettlement(sessionId);
     hermesActivityStore.record(
@@ -6726,6 +6734,12 @@ export function AgentWorkspace({
         // fresh event for a known request also re-confirms a row that went
         // stale across a reconnect (see the store's reconcile logic).
         pendingActionStore.record(storedClassified, hermesModeFor(storedSessionId));
+      } else if (storedClassified.kind === "pending_action_resolution") {
+        // Resolution events can arrive independently of this surface's local
+        // response promise (for example after reconnect). Reconcile the exact
+        // logical request before deriving the session status so another
+        // distinct pending action keeps the session in "Needs you".
+        pendingActionStore.resolveRequest(storedSessionId, storedClassified.action.requestId);
       } else if (storedClassified.kind === "pending_action_expiration") {
         pendingActionStore.expireRequest(
           storedSessionId,
@@ -6739,7 +6753,7 @@ export function AgentWorkspace({
       // derives the session's phase (running/waiting/background/error/complete),
       // current tool, and subagent count from the normalized event — never from
       // the raw frame (raw JSON belongs to feature 15's trace panel).
-      hermesActivityStore.record(storedClassified, hermesModeFor(storedSessionId));
+      const status = recordHermesActivityAndDeriveStatus(storedClassified, storedSessionId);
       // Feature 14: extract any file/artifact reference this event carries into
       // the per-session artifact timeline behind the drawer's "Artifacts"
       // section. The store is total and only acts on `tool` completions that
@@ -6773,7 +6787,6 @@ export function AgentWorkspace({
           for (const entry of list) entry.toolDrained = true;
         }
       }
-      const status = agentStatusFromHermesEvent(classified);
       const activityCounts =
         status === "completed" || status === "failed" || status === "cancelled"
           ? agentActivityCountsFromStore()
@@ -7530,6 +7543,10 @@ export function AgentWorkspace({
     // keep their existing stale/reannounce reconciliation contract.
     let retiredApprovalEvents = liveEventsRef.current;
     let retiredApprovalChanged = false;
+    const retiredApprovalStatuses = new Map<
+      string,
+      { event: JuneHermesEvent; status: AgentSessionStatusKind }
+    >();
     const retiredAt = new Date().toISOString();
     for (const record of pendingActionStore.openRecords()) {
       if (!activeSessionIds.has(record.sessionId) || record.action.kind !== "approval") continue;
@@ -7553,6 +7570,10 @@ export function AgentWorkspace({
         },
         receivedAt: retiredAt,
       };
+      const status = recordHermesActivityAndDeriveStatus(expiration, record.sessionId);
+      if (status) {
+        retiredApprovalStatuses.set(record.sessionId, { event: expiration, status });
+      }
       retiredApprovalEvents = {
         ...retiredApprovalEvents,
         [record.sessionId]: [...(retiredApprovalEvents[record.sessionId] ?? []), expiration].slice(
@@ -7564,6 +7585,16 @@ export function AgentWorkspace({
     if (retiredApprovalChanged) {
       liveEventsRef.current = retiredApprovalEvents;
       setLiveEvents(retiredApprovalEvents);
+    }
+    for (const [sessionId, { event, status }] of retiredApprovalStatuses) {
+      dispatchAgentSessionStatus({
+        sessionId,
+        title:
+          hermesSessionItemsRef.current.find((session) => session.id === sessionId)?.title ??
+          "Agent session",
+        status,
+        summary: agentStatusSummaryFromHermesEvent(event, status),
+      });
     }
     try {
       const gateway = await ensureHermesGateway(fullMode);
@@ -16354,10 +16385,10 @@ export function projectAgentActivityLevels(
   const waitingSessionIds = new Set<string>();
   const toolCallSessionIds = new Set<string>();
   for (const record of records) {
-    if (record.phase === "running" || record.phase === "background") {
-      workingSessionIds.add(record.sessionId);
-    } else if (record.phase === "waiting") {
+    if (record.pendingActionCount > 0 || record.phase === "waiting") {
       waitingSessionIds.add(record.sessionId);
+    } else if (record.phase === "running" || record.phase === "background") {
+      workingSessionIds.add(record.sessionId);
     }
     if (record.currentTool) {
       toolCallSessionIds.add(record.sessionId);
@@ -16390,11 +16421,14 @@ function lifecycleStatusLooksRunning(event: Extract<JuneHermesEvent, { kind: "li
   return event.flavor === "running";
 }
 
-function agentStatusFromHermesEvent(event: JuneHermesEvent): AgentSessionStatusKind | undefined {
+function agentStatusFromHermesEvent(
+  event: JuneHermesEvent,
+  hasOpenPendingAction = false,
+): AgentSessionStatusKind | undefined {
   if (event.kind === "error") return "failed";
   if (event.kind === "pending_action") return "waitingForUser";
   if (event.kind === "pending_action_resolution" || event.kind === "pending_action_expiration") {
-    return "running";
+    return hasOpenPendingAction ? "waitingForUser" : "running";
   }
   if (event.kind === "transcript" && event.complete) {
     return event.failed ? "failed" : "completed";
