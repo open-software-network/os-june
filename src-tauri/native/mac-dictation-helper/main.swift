@@ -1767,14 +1767,14 @@ final class DictationController {
         resetRecordingState()
     }
 
-    func copyForReview(text: String, keepRecordingFile: Bool, historySaved: Bool) {
+    func copyForRecovery(text: String, keepRecordingFile: Bool) {
         let text = dictationPasteText(text)
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             fail(DictationError.missingTranscript)
             return
         }
 
-        PasteboardInserter.copyForReview(text, historySaved: historySaved)
+        PasteboardInserter.copyForRecovery(text)
         resetRecordingState(keepRecordingFile: keepRecordingFile)
     }
 
@@ -2275,29 +2275,26 @@ enum PasteboardInserter {
         }
     }
 
-    /// Keeps an uncertain transcript recoverable without typing it into the
-    /// user's active app. Unlike a normal paste, the clipboard is deliberately
-    /// not restored after a successful write.
-    static func copyForReview(_ text: String, historySaved: Bool) {
+    /// Last-resort recovery when Dictation history could not save a transcript.
+    /// Unlike a normal paste, the clipboard is deliberately not restored after
+    /// a successful write.
+    static func copyForRecovery(_ text: String) {
         let pasteboard = NSPasteboard.general
         let snapshot = capture(pasteboard)
 
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
             restore(snapshot, to: pasteboard)
-            let message = historySaved
-                ? "Could not write transcript to the clipboard. Find it in Dictation history."
-                : "Could not save or copy this dictation. The recording was kept for recovery."
-            emit("error", ["code": "pasteboard_write_failed", "message": message])
+            emit("error", [
+                "code": "pasteboard_write_failed",
+                "message": "Could not save or copy this dictation. The recording was kept for recovery.",
+            ])
             return
         }
 
-        let message = historySaved
-            ? "Speech was unclear. Use Cmd+V to paste the transcript."
-            : "Could not save this dictation. Use Cmd+V to keep the transcript."
         emit("error", [
-            "code": "dictation_low_speech_evidence",
-            "message": message,
+            "code": "dictation_recovery_clipboard",
+            "message": "Could not save this dictation. Use Cmd+V to keep the transcript.",
         ])
     }
 
@@ -2458,15 +2455,13 @@ func handleCommandLine(_ line: String) {
         runOnMain {
             dictation.paste(text: text)
         }
-    case "copy_text_for_review":
+    case "copy_text_for_recovery":
         let text = command?["text"] as? String ?? ""
         let keepRecordingFile = command?["keepRecordingFile"] as? Bool ?? false
-        let historySaved = command?["historySaved"] as? Bool ?? true
         runOnMain {
-            dictation.copyForReview(
+            dictation.copyForRecovery(
                 text: text,
-                keepRecordingFile: keepRecordingFile,
-                historySaved: historySaved
+                keepRecordingFile: keepRecordingFile
             )
         }
     case "discard_recording":

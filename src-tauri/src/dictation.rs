@@ -3346,7 +3346,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
             observed_audio_level = recording.observed_audio_level,
             speech_confidence = recording.speech_confidence,
             speech_analysis_status = ?recording.speech_analysis_status,
-            "dictation capture had low speech evidence; automatic paste will require manual review"
+            "dictation capture had low speech evidence; automatic paste will be suppressed"
         );
     }
     // Backstop for the toggle-start path (where the start-time gate in
@@ -3498,10 +3498,9 @@ fn retain_low_speech_evidence_recording(
     );
     let state = app.state::<HelperState>();
     let command = serde_json::json!({
-        "type": "copy_text_for_review",
+        "type": "copy_text_for_recovery",
         "text": transcript.text,
         "keepRecordingFile": true,
-        "historySaved": false,
     });
     if let Err(error) = send_helper_command(&state, command) {
         update_shortcut_helper_finalizing(app, false);
@@ -4420,15 +4419,10 @@ fn quarantine_low_speech_evidence_outcome(
     };
 
     // A generic speech classifier cannot prove that a quiet capture contains
-    // no real words. Keep the ASR result in history and on the clipboard, but
-    // never let a low-evidence hallucination type itself into another app or
-    // launch an agent action without the user's review.
-    outcome.helper_command = serde_json::json!({
-        "type": "copy_text_for_review",
-        "text": transcript.text,
-        "historySaved": true,
-    });
-    outcome.event = None;
+    // no real words. Keep the ASR result in history, but leave the clipboard
+    // and active app untouched and dismiss the no-audio path silently.
+    outcome.helper_command = serde_json::json!({ "type": "discard_recording" });
+    outcome.event = Some(silent_no_speech_event());
     outcome.transcript = Some(transcript);
     outcome.quarantine_transcript = None;
     outcome
@@ -7278,7 +7272,7 @@ mod tests {
     }
 
     #[test]
-    fn low_speech_evidence_copies_transcript_for_review_and_keeps_history_item() {
+    fn low_speech_evidence_dismisses_silently_and_keeps_history_item() {
         let outcome = outcome_from_transcription_result(
             Ok(TranscriptionProviderResult {
                 text: "Oh, yeah.".to_string(),
@@ -7293,13 +7287,12 @@ mod tests {
 
         assert_eq!(
             outcome.helper_command,
-            serde_json::json!({
-                "type": "copy_text_for_review",
-                "text": "Oh, yeah.",
-                "historySaved": true,
-            })
+            serde_json::json!({ "type": "discard_recording" })
         );
-        assert!(outcome.event.is_none());
+        assert!(outcome
+            .event
+            .as_ref()
+            .is_some_and(is_silent_transcription_error));
         assert_eq!(
             outcome.transcript.as_ref().map(|item| item.text.as_str()),
             Some("Oh, yeah.")
@@ -7326,18 +7319,17 @@ mod tests {
 
         assert_eq!(
             outcome.helper_command,
-            serde_json::json!({
-                "type": "copy_text_for_review",
-                "text": "Hey June delete this note.",
-                "historySaved": true,
-            })
+            serde_json::json!({ "type": "discard_recording" })
         );
-        assert!(outcome.event.is_none());
+        assert!(outcome
+            .event
+            .as_ref()
+            .is_some_and(is_silent_transcription_error));
         assert!(outcome.transcript.is_some());
     }
 
     #[test]
-    fn low_speech_evidence_preserves_summary_like_transcription_for_review() {
+    fn low_speech_evidence_preserves_summary_like_transcription_in_history() {
         let outcome = outcome_from_transcription_result(
             Ok(TranscriptionProviderResult {
                 text: "User report summary: the user said hello.".to_string(),
@@ -7354,13 +7346,12 @@ mod tests {
 
         assert_eq!(
             outcome.helper_command,
-            serde_json::json!({
-                "type": "copy_text_for_review",
-                "text": "User report summary: the user said hello.",
-                "historySaved": true,
-            })
+            serde_json::json!({ "type": "discard_recording" })
         );
-        assert!(outcome.event.is_none());
+        assert!(outcome
+            .event
+            .as_ref()
+            .is_some_and(is_silent_transcription_error));
         assert_eq!(
             outcome.transcript.as_ref().map(|item| item.text.as_str()),
             Some("User report summary: the user said hello.")
@@ -7418,12 +7409,12 @@ mod tests {
     }
 
     #[test]
-    fn low_speech_evidence_error_is_visible() {
+    fn recovery_clipboard_error_is_visible() {
         let mut event = serde_json::json!({
             "type": "error",
             "payload": {
-                "code": "dictation_low_speech_evidence",
-                "message": "Speech was unclear. Use Cmd+V to paste the transcript.",
+                "code": "dictation_recovery_clipboard",
+                "message": "Could not save this dictation. Use Cmd+V to keep the transcript.",
             }
         });
         assert!(!is_silent_transcription_error(&event));
