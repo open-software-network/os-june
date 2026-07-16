@@ -107,7 +107,7 @@ export function MonitorDashboard({
         {error ? <div className="inline-error">{error}. Showing the last successful check.</div> : null}
 
         <section className="metric-strip" aria-label="Current service metrics">
-          <Metric label="Healthy checks" value={`${healthyCount}/${snapshot.checks.length}`} detail="Across service and identity" />
+          <Metric label="Healthy checks" value={`${healthyCount}/${snapshot.checks.length}`} detail="Across core, product APIs, and identity" />
           <Metric label="Average response" value={`${averageLatency} ms`} detail="Latest probe cycle" />
           <Metric label="Service" value={snapshot.service} detail={snapshot.version ? `Version ${snapshot.version}` : "Version unavailable"} mono />
           <Metric label="Last check" value={formatUtc(snapshot.checkedAt, false)} detail="UTC" mono />

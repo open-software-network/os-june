@@ -1,5 +1,6 @@
 import "server-only";
 
+import { matchesContractResponse } from "@/lib/contract-probe";
 import { getServerEnv } from "@/lib/env/server";
 import { deriveOverallState } from "@/lib/health-state";
 
@@ -7,7 +8,14 @@ export type CheckState = "healthy" | "unhealthy";
 export type OverallState = "operational" | "degraded" | "outage";
 
 export type HealthCheck = {
-  id: "june-live" | "june-ready" | "june-health" | "accounts-ready";
+  id:
+    | "june-live"
+    | "june-ready"
+    | "june-health"
+    | "dictation-api"
+    | "notes-api"
+    | "agent-api"
+    | "accounts-ready";
   label: string;
   description: string;
   state: CheckState;
@@ -33,7 +41,7 @@ type HealthEnvelope = {
 
 export async function collectHealthSnapshot(): Promise<HealthSnapshot> {
   const env = getServerEnv();
-  const [live, ready, summary, accounts] = await Promise.all([
+  const [live, ready, summary, dictation, notes, agent, accounts] = await Promise.all([
     probe({
       id: "june-live",
       label: "API process",
@@ -63,6 +71,45 @@ export async function collectHealthSnapshot(): Promise<HealthSnapshot> {
       parseHealth: true,
     }),
     probe({
+      id: "dictation-api",
+      label: "Dictation API",
+      description: "Cleanup route and auth contract",
+      url: `${env.JUNE_API_URL}/v1/dictate/cleanup`,
+      method: "POST",
+      body: JSON.stringify({ text: "", style: "", model: null }),
+      expectedStatusCode: 401,
+      expectedErrorCode: 3001,
+      critical: true,
+      healthyDetail: "Route and authentication boundary are ready",
+      timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
+    }),
+    probe({
+      id: "notes-api",
+      label: "Notes API",
+      description: "Generation route and auth contract",
+      url: `${env.JUNE_API_URL}/v1/notes/generate`,
+      method: "POST",
+      body: JSON.stringify({ title: "", transcript: "" }),
+      expectedStatusCode: 401,
+      expectedErrorCode: 3001,
+      critical: true,
+      healthyDetail: "Route and authentication boundary are ready",
+      timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
+    }),
+    probe({
+      id: "agent-api",
+      label: "Agent API",
+      description: "Chat route and auth contract",
+      url: `${env.JUNE_API_URL}/v1/chat/completions`,
+      method: "POST",
+      body: "{}",
+      expectedStatusCode: 401,
+      expectedErrorCode: 3001,
+      critical: true,
+      healthyDetail: "Route and authentication boundary are ready",
+      timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
+    }),
+    probe({
       id: "accounts-ready",
       label: "Identity dependency",
       description: "OS Accounts readiness",
@@ -72,7 +119,15 @@ export async function collectHealthSnapshot(): Promise<HealthSnapshot> {
       timeoutMs: env.HEALTH_PROBE_TIMEOUT_MS,
     }),
   ]);
-  const checks = [live.check, ready.check, summary.check, accounts.check];
+  const checks = [
+    live.check,
+    ready.check,
+    summary.check,
+    dictation.check,
+    notes.check,
+    agent.check,
+    accounts.check,
+  ];
   return {
     status: deriveOverallState(checks),
     checkedAt: new Date().toISOString(),
@@ -92,6 +147,10 @@ type ProbeInput = {
   healthyDetail: string;
   timeoutMs: number;
   parseHealth?: boolean;
+  method?: "GET" | "POST";
+  body?: string;
+  expectedStatusCode?: number;
+  expectedErrorCode?: number;
 };
 
 async function probe(input: ProbeInput): Promise<{
@@ -102,12 +161,40 @@ async function probe(input: ProbeInput): Promise<{
   try {
     const response = await fetch(input.url, {
       cache: "no-store",
-      headers: { accept: input.parseHealth ? "application/json" : "text/plain" },
+      method: input.method ?? "GET",
+      headers: {
+        accept: input.parseHealth || input.expectedErrorCode ? "application/json" : "text/plain",
+        ...(input.body ? { "content-type": "application/json" } : {}),
+      },
+      body: input.body,
       signal: AbortSignal.timeout(input.timeoutMs),
     });
     const latencyMs = Math.max(1, Math.round(performance.now() - startedAt));
     let metadata: { service?: string; version?: string } | undefined;
     let detail = input.healthyDetail;
+    if (input.expectedStatusCode !== undefined) {
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+      const healthy = matchesContractResponse(
+        response.status,
+        body,
+        input.expectedStatusCode,
+        input.expectedErrorCode,
+      );
+      return {
+        check: makeCheck(
+          input,
+          healthy ? "healthy" : "unhealthy",
+          latencyMs,
+          response.status,
+          healthy ? input.healthyDetail : "Unexpected API contract response",
+        ),
+      };
+    }
     if (input.parseHealth && response.ok) {
       const body = (await response.json()) as HealthEnvelope;
       metadata = body.data ?? undefined;

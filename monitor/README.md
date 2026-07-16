@@ -5,9 +5,14 @@ A private Next.js dashboard for June service health. It probes:
 - `GET {JUNE_API_URL}/livez` for process liveness
 - `GET {JUNE_API_URL}/readyz` for traffic readiness
 - `GET {JUNE_API_URL}/healthz` for service and build metadata
+- `POST {JUNE_API_URL}/v1/dictate/cleanup` for the dictation route and auth contract
+- `POST {JUNE_API_URL}/v1/notes/generate` for the notes route and auth contract
+- `POST {JUNE_API_URL}/v1/chat/completions` for the agent route and auth contract
 - `GET {OS_ACCOUNTS_API_URL}/ready` for the login dependency
 
 The page refreshes every 30 seconds and keeps the latest 24 probe cycles in the browser for a short latency timeline.
+
+The product API checks use valid minimal request shapes without a bearer token and require the expected `401` / `missing_bearer_token` response. This verifies route wiring and the authentication boundary without invoking an AI provider, mutating user data, or consuming credits.
 
 ## Access control
 
