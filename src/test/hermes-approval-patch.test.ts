@@ -32,7 +32,17 @@ describe("June Hermes approval patch", () => {
   it("pins managed installs to the patch set and verifies them before launch", () => {
     expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v1"');
     expect(bridge).toContain('include_str!("hermes/apply_june_patches.py")');
-    expect(bridge).toContain("verify_managed_hermes_runtime_patch(app, &managed_install_dir)?");
+    expect(bridge).toContain("verify_managed_hermes_runtime_patch(&managed_install_dir)?");
+    const patchedHashes = patcher
+      .match(/PATCHED_SHA256: Dict\[str, str\] = \{([\s\S]*?)\n\}/)?.[1]
+      ?.matchAll(/"([^"]+)": "([a-f0-9]{64})"/g);
+    expect(patchedHashes).toBeDefined();
+    for (const [, path, hash] of patchedHashes ?? []) {
+      expect(bridge).toContain(`"${path}",`);
+      expect(bridge).toContain(`"${hash}"`);
+    }
+    expect(bridge).toContain("verify_hermes_runtime_source_hashes");
+    expect(bridge).not.toContain('.arg("--verify")\n        .stdin(Stdio::null())');
     expect(bridge).toContain('.env("JUNE_HERMES_PATCH_SET", HERMES_RUNTIME_PATCH_SET)');
     expect(bridge).toContain('r#""patchSet":"{HERMES_RUNTIME_PATCH_SET}""#');
     expect(bridge).not.toContain("UserLocalFallback");

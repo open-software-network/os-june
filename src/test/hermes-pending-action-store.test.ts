@@ -259,4 +259,31 @@ describe("createPendingActionStore", () => {
     expect(store.getRecords().length).toBeLessThanOrEqual(PENDING_ACTIONS_CAP);
     expect(store.openRecords().map((r) => r.sessionId)).toContain("live");
   });
+
+  it("evicts expired history before an older unanswered action", () => {
+    const store = createPendingActionStore();
+    store.record(
+      pendingClassified("approval.request", "old-live", { request_id: "old-live" }),
+      "unrestricted",
+    );
+    for (let i = 0; i < PENDING_ACTIONS_CAP - 1; i += 1) {
+      const sessionId = `expired-${i}`;
+      const requestId = `expired-request-${i}`;
+      store.record(
+        pendingClassified("approval.request", sessionId, { request_id: requestId }),
+        "unrestricted",
+      );
+      store.expireRequest(sessionId, requestId, "timeout");
+    }
+
+    store.record(
+      pendingClassified("approval.request", "new-live", { request_id: "new-live" }),
+      "unrestricted",
+    );
+
+    expect(store.getRecords()).toHaveLength(PENDING_ACTIONS_CAP);
+    expect(store.openRecords().map((record) => record.sessionId)).toEqual(
+      expect.arrayContaining(["old-live", "new-live"]),
+    );
+  });
 });

@@ -35,6 +35,20 @@ const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
 const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v1";
+const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
+    (
+        "tools/approval.py",
+        "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
+    ),
+    (
+        "tools/mcp_tool.py",
+        "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
+    ),
+    (
+        "tui_gateway/server.py",
+        "41197c75c3aee760a05a8ecdce4daa3d0ca7f62b34486f29a21f097086a4ef4e",
+    ),
+];
 const HERMES_SOURCE_TARBALL_URL: &str =
     "https://github.com/NousResearch/hermes-agent/archive/2bd1977d8fad185c9b4be47884f7e87f1add0ce3.tar.gz";
 const HERMES_SOURCE_TARBALL_SHA256: &str =
@@ -5974,7 +5988,7 @@ async fn resolve_hermes_command(
     let managed_install_dir = managed_hermes_runtime_dir(app)?.join("hermes-agent");
     let managed_command = hermes_venv_command(&managed_install_dir.join("venv"));
     if managed_command.exists() && managed_hermes_runtime_current(app)? {
-        verify_managed_hermes_runtime_patch(app, &managed_install_dir)?;
+        verify_managed_hermes_runtime_patch(&managed_install_dir)?;
         ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
         return Ok(HermesCommandResolution {
             command: managed_command.to_string_lossy().into_owned(),
@@ -5985,7 +5999,7 @@ async fn resolve_hermes_command(
     install_managed_hermes_runtime(app, hermes_home).await?;
 
     if managed_command.exists() {
-        verify_managed_hermes_runtime_patch(app, &managed_install_dir)?;
+        verify_managed_hermes_runtime_patch(&managed_install_dir)?;
         ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
         return Ok(HermesCommandResolution {
             command: managed_command.to_string_lossy().into_owned(),
@@ -6066,31 +6080,35 @@ fn write_managed_hermes_patch_script(runtime_dir: &Path) -> Result<PathBuf, AppE
     Ok(path)
 }
 
-fn verify_managed_hermes_runtime_patch(
-    app: &AppHandle,
+fn verify_managed_hermes_runtime_patch(install_dir: &Path) -> Result<(), AppError> {
+    verify_hermes_runtime_source_hashes(install_dir, HERMES_RUNTIME_PATCHED_SOURCE_HASHES)
+}
+
+fn verify_hermes_runtime_source_hashes(
     install_dir: &Path,
+    expected_sources: &[(&str, &str)],
 ) -> Result<(), AppError> {
-    let runtime_dir = managed_hermes_runtime_dir(app)?;
-    let script = write_managed_hermes_patch_script(&runtime_dir)?;
-    let python = if cfg!(target_os = "windows") {
-        install_dir.join("venv").join("Scripts").join("python.exe")
-    } else {
-        install_dir.join("venv").join("bin").join("python")
-    };
-    let status = Command::new(&python)
-        .arg(&script)
-        .arg(install_dir)
-        .arg("--verify")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|error| AppError::new("hermes_runtime_patch_failed", error.to_string()))?;
-    if !status.success() {
-        return Err(AppError::new(
-            "hermes_runtime_patch_failed",
-            "The managed Hermes runtime failed its June patch checksum verification.",
-        ));
+    for (relative_path, expected_hash) in expected_sources {
+        let path = install_dir.join(relative_path);
+        let bytes = fs::read(&path).map_err(|error| {
+            AppError::new(
+                "hermes_runtime_patch_failed",
+                format!(
+                    "Could not verify managed Hermes source {}: {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        let actual_hash = hex_encode(&sha256_bytes(&bytes));
+        if actual_hash != *expected_hash {
+            return Err(AppError::new(
+                "hermes_runtime_patch_failed",
+                format!(
+                    "Managed Hermes source {} failed checksum verification: expected {expected_hash}, got {actual_hash}",
+                    path.display()
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -13499,6 +13517,32 @@ mcp_servers:
                     .join("hermes")
             ));
         }
+    }
+
+    #[test]
+    fn managed_runtime_source_verification_is_native_and_fail_closed() {
+        let install_dir = tempfile::tempdir().expect("tempdir");
+        let source_path = install_dir.path().join("tools").join("approval.py");
+        std::fs::create_dir_all(source_path.parent().expect("parent")).expect("source dir");
+        std::fs::write(&source_path, b"patched source").expect("source");
+        let expected_hash = hex_encode(&sha256_bytes(b"patched source"));
+
+        verify_hermes_runtime_source_hashes(
+            install_dir.path(),
+            &[("tools/approval.py", expected_hash.as_str())],
+        )
+        .expect("matching source hash");
+
+        std::fs::write(&source_path, b"tampered source").expect("tampered source");
+        let error = verify_hermes_runtime_source_hashes(
+            install_dir.path(),
+            &[("tools/approval.py", expected_hash.as_str())],
+        )
+        .expect_err("tampered source must fail closed");
+        assert_eq!(error.code, "hermes_runtime_patch_failed");
+        assert!(error.message.contains("tools/approval.py"));
+        assert!(error.message.contains("expected"));
+        assert!(error.message.contains("got"));
     }
 
     #[test]

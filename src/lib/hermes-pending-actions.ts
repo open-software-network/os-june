@@ -274,17 +274,17 @@ export function createPendingActionStore(): PendingActionStore {
   }
 
   /**
-   * Keep the map within the cap. Evict already-resolved history first (oldest by
-   * insertion order), and only touch still-open rows if resolved history alone
+   * Keep the map within the cap. Evict terminal history first (oldest by
+   * insertion order), and only touch still-open rows if terminal history alone
    * can't get us under the cap — a blocker the user hasn't answered is the last
    * thing we want to silently drop.
    */
   function evict(): void {
     if (byKey.size <= PENDING_ACTIONS_CAP) return;
-    // First pass: drop oldest resolved.
+    // First pass: drop oldest terminal history.
     for (const [key, record] of byKey) {
       if (byKey.size <= PENDING_ACTIONS_CAP) break;
-      if (record.status === "resolved") byKey.delete(key);
+      if (record.status === "resolved" || record.status === "expired") byKey.delete(key);
     }
     // Second pass (rare): still over cap with only open rows — drop oldest.
     for (const key of byKey.keys()) {

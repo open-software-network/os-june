@@ -1188,6 +1188,48 @@ describe("Agent chat runtime", () => {
     );
   });
 
+  it("does not let a replayed expiration overwrite a resolved approval", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        pendingActionEvent({
+          action: {
+            kind: "approval",
+            requestId: "approval-resolved-before-expire",
+            description: "Connect Todoist?",
+            allowPermanent: false,
+          },
+        }),
+        pendingActionResolutionEvent({
+          action: {
+            kind: "approval",
+            requestId: "approval-resolved-before-expire",
+            command: "",
+            description: "",
+            allowPermanent: false,
+            choice: "once",
+          },
+        }),
+        pendingActionExpirationEvent({
+          action: {
+            kind: "approval",
+            requestId: "approval-resolved-before-expire",
+            reason: "disconnect",
+          },
+        }),
+      ],
+    );
+    expect(turns[0]?.parts).toContainEqual(
+      expect.objectContaining({
+        type: "approval",
+        id: "approval-resolved-before-expire",
+        status: "resolved",
+        choice: "once",
+      }),
+    );
+  });
+
   it("preserves whitespace-only message deltas", () => {
     const turns = buildAgentChatTurns(
       [],

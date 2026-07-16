@@ -1242,6 +1242,8 @@ function upsertApprovalPart(
     // Resolution and expiration are sticky. A delayed replay must not reopen a
     // card the user already answered or Hermes already retired.
     if (next.status === "pending" && existing.status !== "pending") return;
+    // A late expiration must not hide the decision the user already made.
+    if (next.status === "expired" && existing.status === "resolved") return;
     existing.command = next.command || existing.command;
     existing.description = next.description || existing.description;
     existing.sessionId = next.sessionId || existing.sessionId;
