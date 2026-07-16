@@ -35,6 +35,7 @@ export const INTERNAL_MCP_SERVER_NAMES = [
   "june_gcal",
   "june_gcal_actions",
   "june_notion",
+  "june_notion_actions",
 ] as const;
 
 const INTERNAL_MCP_SERVER_NAME_SET = new Set<string>(INTERNAL_MCP_SERVER_NAMES);

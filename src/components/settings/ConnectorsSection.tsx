@@ -45,10 +45,10 @@ const PROVIDER_BLURBS = {
 } as const;
 
 const NOTION_CONNECTOR_BLURB =
-  "Hosted read-only preview. Notion may allow access beyond selected pages.";
+  "Hosted preview. Create pages with approval. Notion may allow access beyond selected pages.";
 
 const NOTION_CONNECTED_BLURB =
-  "Read-only preview connected. Notion may allow access beyond selected pages.";
+  "Preview connected. Create pages with approval. Notion may allow access beyond selected pages.";
 
 function featureSummary(account: ConnectorAccount): string {
   const features = grantedFeatureLabels(account.scopes);

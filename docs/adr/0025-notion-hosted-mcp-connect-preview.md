@@ -89,3 +89,44 @@ satisfied:
    boundary is provider-enforced or Rust-enforced before Hermes receives any
    provider result.
 5. Add writes only with an explicit approval surface and preflight model.
+
+## Addendum: approved create-page action in the preview
+
+Notion's hosted MCP documentation describes the hosted MCP server as read/write,
+and direct MCP clients such as Pi can expose page-creation tools when connected
+to the same Notion hosted MCP endpoint. June should not present the Notion
+connector as permanently read-only when the provider-supported MCP capability is
+available.
+
+This addendum narrows and supersedes the original decision's blanket
+"does not enable Notion write/action tools" statement for one action: June may
+add a Notion page-creation capability to the hosted MCP preview. The existing
+`june_notion` bridge remains the read-tool surface. Page creation must be
+exposed through a separate action path, preferably `june_notion_actions`, so the
+trust meaning of `june_notion` does not change.
+
+The preview may initially allow only the provider's page-create hosted MCP tool.
+Other write or action tools remain disabled unless a later ADR or addendum
+approves them. In particular, update, delete, move, duplicate, comment, and
+attachment tools remain out of scope for this addendum.
+
+Every page-create call must be gated by June before it reaches Notion:
+
+- Hermes and React never receive raw Notion tokens or dynamic-registration
+  secrets.
+- Rust continues to resolve Notion credentials from Keychain and proxy the
+  hosted MCP call.
+- The requested hosted MCP tool must match an explicit Notion action allowlist.
+- The user must approve the write before June calls Notion. The approval should
+  show the operation, destination or parent when available, title, and a content
+  preview.
+- Rust should preflight the request before commit: verify Notion is connected,
+  validate the required arguments, and reject malformed or ambiguous writes.
+- Logs must not include tokens, dynamic client material, raw private page
+  bodies, or full hosted MCP payloads.
+
+Settings copy must also change when this capability ships. It must no longer say
+"read-only preview" as the complete connector state. It should remain honest
+that selected-resource scoping is not verified and that Notion may allow access
+beyond selected pages, while making clear that page creation requires explicit
+approval.

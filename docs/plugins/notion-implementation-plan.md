@@ -12,8 +12,11 @@ Ship a Notion hosted MCP connector preview. Clicking **Connect** opens Notion's
 hosted MCP OAuth flow in the default browser, stores the returned OAuth material
 in the OS Keychain, and lets the user disconnect locally. When connected, June
 registers a read-only `june_notion` MCP bridge with Hermes so the agent can
-discover the hosted MCP read tools. This slice intentionally does not test or
-enforce selected-resource scoping and does not expose write/action tools.
+discover the hosted MCP read tools. This slice also registers a narrow
+`june_notion_actions` bridge for approved page creation through Notion's hosted
+MCP `notion-create-pages` tool. This slice intentionally does not test or
+enforce selected-resource scoping and does not expose update, delete, move,
+duplicate, comment, or attachment action tools.
 
 The broader PRD still targets selected Notion content through read and action
 MCP servers, with the authorized page boundary proven at the provider or
@@ -74,8 +77,11 @@ allowlist:
 - `notion-query-database-view`
 - `notion-get-comments`
 
-Deny all write/action hosted tools, including create, update, move, duplicate,
-comment, and attachment tools. Keep the command out of production UX.
+Deny all write/action hosted tools in the scoping probe command, including
+create, update, move, duplicate, comment, and attachment tools. Keep the command
+out of production UX. The production preview may separately expose approved page
+creation through `june_notion_actions`; that action path is not evidence for the
+selected-resource read boundary.
 
 Test with a non-sensitive Notion workspace matrix that uses unique canary
 titles and body snippets for selected and unselected resources. Record returned
@@ -136,7 +142,7 @@ selected-resource proof, and an honest privacy claim.
 | Server | Tools |
 | --- | --- |
 | `june_notion` | `search_pages`, `get_page`, `list_data_source`, `query_data_source`, `list_comments` |
-| `june_notion_actions` | `create_page`, `update_page_properties`, `append_blocks`, `update_block` |
+| `june_notion_actions` | `notion-create-pages` initially; later `update_page_properties`, `append_blocks`, `update_block` only after separate approval |
 
 Tool results preserve page/block/data-source ids, parent ids, canonical URLs,
 last-edited time, property schema, pagination cursor, and a compact content
@@ -186,9 +192,11 @@ graph.
 0. **Hosted MCP connector preview (current slice):** add a Notion row to
    Connectors with privacy-accurate copy. The primary Connect action opens the
    hosted MCP OAuth flow, stores credentials only in the Notion Keychain
-   service, reports local connection state, supports local disconnect, and
-   registers a read-only `june_notion` MCP bridge with Hermes. It does not run
-   selected-resource scoping probes or expose write/action tools.
+   service, reports local connection state, supports local disconnect, registers
+   a read-only `june_notion` MCP bridge with Hermes, and registers
+   `june_notion_actions` for approved page creation. It does not run
+   selected-resource scoping probes or expose update, delete, move, duplicate,
+   comment, or attachment action tools.
 1. **Connector page shell:** keep the Notion row visible and label the connected
    state as preview/unverified until selected-resource scoping is proven. The
    subtitle must not promise selected-page-only access.
@@ -224,7 +232,8 @@ implementation slice so users and reviewers can see the intended account path.
 - **Connecting:** show a waiting state while the browser flow is active.
 - **Connected preview:** show that Notion is connected locally for hosted MCP
   auth, with unverified-access copy. Apply the runtime so Hermes can discover
-  the read-only `june_notion` bridge. Do not show workspace/account content or a
+  the read-only `june_notion` bridge and the approved-create
+  `june_notion_actions` bridge. Do not show workspace/account content or a
   selected-resource privacy claim in this slice.
 - **Connected verified:** show workspace/account metadata and the exact
   selected-resource privacy claim proven by Phase 0B. Under the current content

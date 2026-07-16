@@ -1,7 +1,8 @@
 //! Notion hosted MCP connector preview.
 //!
-//! This module owns Notion's hosted MCP OAuth flow plus a read-only hosted MCP
-//! bridge for the `june_notion` Hermes toolset. Write/action tools stay denied;
+//! This module owns Notion's hosted MCP OAuth flow, a read-only hosted MCP
+//! bridge for the `june_notion` Hermes toolset, and a narrow approved action
+//! bridge for Notion page creation. Other write/action tools stay denied;
 //! selected-resource scoping is not verified in this preview. See ADR 0025.
 
 use crate::domain::types::AppError;
@@ -10,6 +11,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{sync::OnceLock, time::Duration};
+use tauri::AppHandle;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -42,6 +44,8 @@ const NOTION_READ_TOOL_ALLOWLIST: &[&str] = &[
     "notion-query-database-view",
     "notion-get-comments",
 ];
+const NOTION_ACTION_TOOL_ALLOWLIST: &[&str] = &["notion-create-pages"];
+const NOTION_ACTIONS_SERVER_NAME: &str = "june_notion_actions";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
@@ -374,10 +378,47 @@ pub async fn call_hosted_tool(
             "That Notion hosted MCP tool is not enabled in June yet.",
         ));
     }
+    call_hosted_tool_unchecked(tool_name, request.arguments).await
+}
+
+pub async fn call_hosted_action_tool(
+    app: &AppHandle,
+    request: NotionHostedToolCallRequest,
+) -> Result<NotionHostedToolCallResult, AppError> {
+    let tool_name = request.tool_name.trim();
+    if !action_tool_allowed_for_hermes(tool_name) {
+        return Err(AppError::new(
+            "notion_tool_not_allowed",
+            "That Notion hosted MCP action is not enabled in June yet.",
+        ));
+    }
+    preflight_create_pages_arguments(&request.arguments)?;
+    let summary = summarize_create_pages_action(&request.arguments);
+    let args_preview = preview_create_pages_action(&request.arguments);
+    let approval = crate::connectors::approvals::ActionRequest {
+        grant_token: None,
+        account_id: notion_account_email(),
+        server: NOTION_ACTIONS_SERVER_NAME,
+        tool: tool_name,
+        summary,
+        args_preview,
+    };
+    if let crate::connectors::approvals::ActionDecision::Deny(reason) =
+        crate::connectors::approvals::gate_action(app, approval).await
+    {
+        return Err(AppError::new("connector_action_denied", reason));
+    }
+    call_hosted_tool_unchecked(tool_name, request.arguments).await
+}
+
+async fn call_hosted_tool_unchecked(
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Result<NotionHostedToolCallResult, AppError> {
     let stored = load_connected().await?;
     let client = McpHttpClient::new(stored.access_token.clone());
     client.initialize().await?;
-    let result = client.call_tool(tool_name, request.arguments).await?;
+    let result = client.call_tool(tool_name, arguments).await?;
     Ok(NotionHostedToolCallResult {
         tool_name: tool_name.to_string(),
         result,
@@ -834,6 +875,84 @@ fn tool_allowed_for_hermes(name: &str) -> bool {
     NOTION_READ_TOOL_ALLOWLIST
         .iter()
         .any(|allowed| allowed.eq_ignore_ascii_case(name))
+}
+
+fn action_tool_allowed_for_hermes(name: &str) -> bool {
+    NOTION_ACTION_TOOL_ALLOWLIST
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(name))
+}
+
+fn preflight_create_pages_arguments(arguments: &serde_json::Value) -> Result<(), AppError> {
+    if !arguments.is_object() {
+        return Err(AppError::new(
+            "notion_create_pages_invalid_args",
+            "Notion page creation requires object arguments.",
+        ));
+    }
+    Ok(())
+}
+
+fn summarize_create_pages_action(arguments: &serde_json::Value) -> String {
+    let count = create_pages_count(arguments).unwrap_or(1);
+    if count == 1 {
+        "Create a Notion page".to_string()
+    } else {
+        format!("Create {count} Notion pages")
+    }
+}
+
+fn preview_create_pages_action(arguments: &serde_json::Value) -> String {
+    let title = find_first_string_by_key(arguments, &["title", "name"])
+        .unwrap_or_else(|| "(title not specified)".to_string());
+    let parent = find_first_string_by_key(arguments, &["parent", "parent_id", "parentId"])
+        .unwrap_or_else(|| "Not specified".to_string());
+    let count = create_pages_count(arguments).unwrap_or(1);
+    format!(
+        "Operation: create Notion page | Pages: {count} | Title: {} | Parent: {}",
+        truncate_approval_value(&title),
+        truncate_approval_value(&parent)
+    )
+}
+
+fn create_pages_count(arguments: &serde_json::Value) -> Option<usize> {
+    arguments
+        .get("pages")
+        .and_then(serde_json::Value::as_array)
+        .map(|pages| pages.len().max(1))
+}
+
+fn find_first_string_by_key(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if keys.iter().any(|candidate| key.eq_ignore_ascii_case(candidate)) {
+                    if let Some(text) = child.as_str().filter(|text| !text.trim().is_empty()) {
+                        return Some(text.trim().to_string());
+                    }
+                }
+                if let Some(found) = find_first_string_by_key(child, keys) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .find_map(|item| find_first_string_by_key(item, keys)),
+        _ => None,
+    }
+}
+
+fn truncate_approval_value(value: &str) -> String {
+    const MAX_CHARS: usize = 160;
+    let cleaned = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.chars().count() <= MAX_CHARS {
+        return cleaned;
+    }
+    let mut truncated: String = cleaned.chars().take(MAX_CHARS).collect();
+    truncated.push_str("...");
+    truncated
 }
 
 fn classify_tool(name: &str) -> &'static str {
