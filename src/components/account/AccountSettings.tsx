@@ -86,13 +86,22 @@ export function AccountSettingsSection({ account, loading, onAccountChanged }: P
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [accountStatus, setAccountStatus] = useState<string>();
   const accountRef = useRef(account);
+  const mountedRef = useRef(true);
   accountRef.current = account;
   const { refresh: refreshAvatar } = useAccountAvatar(account);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   async function handleRefreshAvatar() {
     setAvatarBusy(true);
     try {
       const user = await refreshAvatar();
+      if (!mountedRef.current) return;
       if (user) {
         const currentAccount = accountRef.current;
         if (!currentAccount.signedIn || currentAccount.user?.id !== user.id) return;
@@ -105,11 +114,11 @@ export function AccountSettingsSection({ account, loading, onAccountChanged }: P
           : "Avatar synced with your OpenSoftware account.",
       );
     } catch (error) {
-      if (accountRef.current.signedIn || accountRef.current.localDev) {
+      if (mountedRef.current && (accountRef.current.signedIn || accountRef.current.localDev)) {
         setAccountStatus(messageFromError(error));
       }
     } finally {
-      setAvatarBusy(false);
+      if (mountedRef.current) setAvatarBusy(false);
     }
   }
 
