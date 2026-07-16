@@ -14306,10 +14306,13 @@ function AgentGeneratedVideo({
   retryDisabledReason?: string;
 }) {
   const src = part.status === "complete" && part.path ? localVideoFileSrc(part.path) : undefined;
+  const [capturedPoster, setCapturedPoster] = useState<{ src: string; dataUrl: string }>();
+  const poster =
+    part.posterDataUrl ??
+    (capturedPoster && capturedPoster.src === src ? capturedPoster.dataUrl : undefined);
   const revealing = useGeneratedMediaReveal(part.status, Boolean(src));
 
   if (part.status === "running") {
-    const progress = videoProgressLabel(part);
     return (
       <div
         className="agent-generated-video"
@@ -14319,9 +14322,6 @@ function AgentGeneratedVideo({
         aria-live="polite"
       >
         <AgentGeneratedMediaPlaceholder kind="video" />
-        <div className="agent-generated-media-caption">
-          <span className="agent-generated-media-note">{progress ?? "This can take a minute"}</span>
-        </div>
       </div>
     );
   }
@@ -14356,7 +14356,18 @@ function AgentGeneratedVideo({
     >
       <div className="agent-generated-video-frame">
         {src ? (
-          <video controls src={src} poster={part.posterDataUrl} preload="metadata" />
+          <video
+            controls
+            crossOrigin="anonymous"
+            src={part.posterDataUrl ? src : firstFrameVideoSource(src)}
+            poster={poster}
+            preload="metadata"
+            onLoadedData={(event) => {
+              if (poster) return;
+              const dataUrl = firstFramePosterDataUrl(event.currentTarget);
+              if (dataUrl) setCapturedPoster({ src, dataUrl });
+            }}
+          />
         ) : (
           <span className="agent-generated-image-loading text-shimmer shimmer">
             Loading video...
@@ -14389,14 +14400,25 @@ function AgentGeneratedVideo({
   );
 }
 
-function videoProgressLabel(part: Extract<AgentChatPart, { type: "video" }>) {
-  if (typeof part.executionMs !== "number" || part.executionMs <= 0) return undefined;
-  const elapsed = Math.max(1, Math.round(part.executionMs / 1000));
-  if (typeof part.averageExecutionMs !== "number" || part.averageExecutionMs <= 0) {
-    return `${elapsed}s elapsed`;
+function firstFrameVideoSource(src: string) {
+  return src.includes("#") ? src : `${src}#t=0.001`;
+}
+
+function firstFramePosterDataUrl(video: HTMLVideoElement): string | undefined {
+  if (!video.videoWidth || !video.videoHeight) return undefined;
+  const scale = Math.min(1, 960 / Math.max(video.videoWidth, video.videoHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+  canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) return undefined;
+  try {
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.82);
+  } catch {
+    // Asset-protocol or codec restrictions should never block video playback.
+    return undefined;
   }
-  const total = Math.max(elapsed, Math.round(part.averageExecutionMs / 1000));
-  return `${elapsed}s of about ${total}s`;
 }
 
 /** A resolved action card renders as a quiet, expandable one-line row instead
@@ -16355,11 +16377,10 @@ function assignArtifactsToTurns(
   return byTurn;
 }
 
-// The inline media renderer owns generated-image cards, so
+// The inline media renderer owns generated image and video cards, so
 // assignArtifactsToTurns deliberately excludes their workspace files. The
-// Files panel still needs those path-backed images: collect them beside the
-// ordinary per-turn artifacts, preserving conversation order and listing each
-// file once.
+// Files panel still needs that path-backed media: collect it beside the ordinary
+// per-turn artifacts, preserving conversation order and listing each file once.
 function surfacedArtifactsFromTurns(
   turns: AgentChatTurn[],
   artifactsByTurn: Map<string, AgentArtifact[]>,
@@ -16367,7 +16388,7 @@ function surfacedArtifactsFromTurns(
 ): AgentArtifact[] {
   const surfaced: AgentArtifact[] = [];
   const surfacedPaths = new Set<string>();
-  const surfacedImageAliases = new Set<string>();
+  const surfacedMediaAliases = new Map<string, string>();
 
   function addArtifact(artifact: AgentArtifact) {
     if (surfacedPaths.has(artifact.path)) return;
@@ -16378,29 +16399,66 @@ function surfacedArtifactsFromTurns(
   for (const turn of turns) {
     for (const artifact of artifactsByTurn.get(turn.id) ?? []) addArtifact(artifact);
     for (const part of turn.parts) {
-      if (part.type !== "image" || part.status !== "complete") continue;
-      const imagePath = part.path?.trim();
-      if (!imagePath) continue;
-      const aliases = generatedImagePathAliases(imagePath, part.name);
-      if (aliases.some((alias) => surfacedImageAliases.has(alias))) continue;
-      const matchingArtifacts = availableArtifacts.filter(
-        (artifact) => artifact.path === imagePath,
-      );
-      const matchedArtifact = matchingArtifacts.length === 1 ? matchingArtifacts[0] : undefined;
-      if (matchedArtifact) {
-        addArtifact(matchedArtifact);
-      } else {
-        addArtifact({
-          name: part.name?.trim() || "Generated image",
-          path: imagePath,
-          rootLabel: "Workspace",
-        });
+      if ((part.type !== "image" && part.type !== "video") || part.status !== "complete") {
+        continue;
       }
-      for (const alias of aliases) surfacedImageAliases.add(alias);
+      const mediaPath = part.path?.trim();
+      if (!mediaPath) continue;
+      const aliases =
+        part.type === "image"
+          ? generatedImagePathAliases(mediaPath, part.name)
+          : generatedVideoPathAliases(mediaPath);
+      const matchingArtifacts = availableArtifacts.filter(
+        (artifact) => artifact.path === mediaPath,
+      );
+      let matchedArtifact = matchingArtifacts.length === 1 ? matchingArtifacts[0] : undefined;
+      if (!matchedArtifact && part.type === "video" && isBareMediaPath(mediaPath)) {
+        const aliasMatches = availableArtifacts.filter((artifact) =>
+          generatedVideoPathAliases(artifact.path).some((alias) => aliases.includes(alias)),
+        );
+        if (aliasMatches.length === 1) matchedArtifact = aliasMatches[0];
+      }
+      const artifact =
+        matchedArtifact ??
+        ({
+          name:
+            part.name?.trim() || (part.type === "image" ? "Generated image" : "Generated video"),
+          path: mediaPath,
+          rootLabel: "Workspace",
+        } satisfies AgentArtifact);
+      const existingPath = aliases
+        .map((alias) => surfacedMediaAliases.get(alias))
+        .find((path) => path !== undefined);
+      if (existingPath) {
+        // A bare MEDIA reference can arrive before the filesystem snapshot or
+        // a later absolute MEDIA reference. Keep the canonical path so Files
+        // preview/download actions reach the native validator successfully.
+        if (isBareMediaPath(existingPath) && !isBareMediaPath(artifact.path)) {
+          const index = surfaced.findIndex((item) => item.path === existingPath);
+          if (index >= 0) {
+            if (surfacedPaths.has(artifact.path)) surfaced.splice(index, 1);
+            else {
+              surfaced[index] = artifact;
+              surfacedPaths.add(artifact.path);
+            }
+            surfacedPaths.delete(existingPath);
+            for (const [alias, path] of surfacedMediaAliases) {
+              if (path === existingPath) surfacedMediaAliases.set(alias, artifact.path);
+            }
+          }
+        }
+        continue;
+      }
+      addArtifact(artifact);
+      for (const alias of aliases) surfacedMediaAliases.set(alias, artifact.path);
     }
   }
 
   return surfaced;
+}
+
+function isBareMediaPath(path: string): boolean {
+  return !path.replaceAll("\\", "/").includes("/");
 }
 
 export function generatedImagePathAliases(path: string, displayName?: string): string[] {
@@ -16419,6 +16477,16 @@ export function generatedImagePathAliases(path: string, displayName?: string): s
 
 function normalizedGeneratedImageName(name: string): string {
   return name.replace(/\.june-source-[^.]+(?=\.[^.]+$)/i, "").toLowerCase();
+}
+
+function generatedVideoPathAliases(path: string): string[] {
+  const normalized = path.replaceAll("\\", "/");
+  const isBare = !normalized.includes("/");
+  if (!isBare && !/\/(?:generated-videos|video_cache|videos)\//i.test(normalized)) return [];
+  const name = normalized.split("/").at(-1);
+  return name && /^generated-video-[0-9a-f]+\.(?:m4v|mov|mp4|webm)$/i.test(name)
+    ? [name.toLowerCase()]
+    : [];
 }
 
 function includesQuery(value: unknown, query: string) {

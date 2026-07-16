@@ -3203,16 +3203,6 @@ input:focus-visible,
   font-size: var(--fs-lg);
 }
 
-/* Caption under a generating frame (video's elapsed-time note). */
-.agent-generated-media-caption {
-  margin-top: var(--sp-2);
-}
-
-.agent-generated-media-note {
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-}
-
 .agent-generated-image-error {
   margin: 0;
   border: 1px solid var(--border-subtle);

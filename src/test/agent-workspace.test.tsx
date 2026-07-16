@@ -10414,6 +10414,126 @@ describe("AgentWorkspace", () => {
     expect(within(panel).getByText(mediaName)).toBeInTheDocument();
   });
 
+  it("registers a generated video in the session Files panel", async () => {
+    const user = userEvent.setup();
+    const mediaPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/videos/generated-video-ab12.mp4";
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: `MEDIA:${mediaPath}`,
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByRole("button", { name: "Download video" })).toBeInTheDocument();
+    const video = document.querySelector<HTMLVideoElement>(".agent-generated-video video");
+    expect(video).not.toBeNull();
+    expect(video).toHaveAttribute("crossorigin", "anonymous");
+    expect(video).toHaveAttribute("preload", "metadata");
+    expect(video?.getAttribute("src")).toMatch(/#t=0\.001$/);
+    const drawImage = vi.fn();
+    const getContext = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue({ drawImage } as unknown as CanvasRenderingContext2D);
+    const toDataUrl = vi
+      .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockReturnValue("data:image/jpeg;base64,cG9zdGVy");
+    Object.defineProperties(video, {
+      videoWidth: { configurable: true, value: 1280 },
+      videoHeight: { configurable: true, value: 720 },
+    });
+    fireEvent.loadedData(video as HTMLVideoElement);
+    getContext.mockRestore();
+    toDataUrl.mockRestore();
+    await waitFor(() => expect(video).toHaveAttribute("poster", "data:image/jpeg;base64,cG9zdGVy"));
+    expect(drawImage).toHaveBeenCalledWith(video, 0, 0, 960, 540);
+
+    await user.click(screen.getByRole("button", { name: "View files (1)" }));
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    expect(within(panel).getByText("generated-video-ab12.mp4")).toBeInTheDocument();
+  });
+
+  it("lists bare and absolute references to the same generated video once", async () => {
+    const user = userEvent.setup();
+    const mediaName = "generated-video-ab12.mp4";
+    const mediaPath =
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/videos/generated-video-ab12.mp4";
+    mocks.hermesBridgeFileText.mockResolvedValue(null);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: `MEDIA:${mediaName}`,
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+      {
+        id: "message-2",
+        role: "assistant",
+        content: `MEDIA:${mediaPath}`,
+        timestamp: "2026-06-04T18:39:01Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByRole("button", { name: "View files (1)" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "View files (1)" }));
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    const fileRow = within(panel).getByText(mediaName).closest("button");
+    expect(fileRow).not.toBeNull();
+    await user.click(fileRow as HTMLButtonElement);
+    await waitFor(() => expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(mediaName));
+    await user.click(within(panel).getByRole("button", { name: `Download ${mediaName}` }));
+    expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(mediaName);
+  });
+
+  it("keeps a bare-only generated video usable in Files", async () => {
+    const user = userEvent.setup();
+    const mediaName = "generated-video-ab12.mp4";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [],
+        },
+        {
+          id: "memory",
+          label: "Memory",
+          path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/memories",
+          description: "Persistent Hermes memory files and stores.",
+          entries: [],
+        },
+      ],
+    });
+    mocks.hermesBridgeFileText.mockResolvedValue(null);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: `MEDIA:${mediaName}`,
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    await user.click(await screen.findByRole("button", { name: "View files (1)" }));
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    const fileRow = within(panel).getByText(mediaName).closest("button");
+    expect(fileRow).not.toBeNull();
+    await user.click(fileRow as HTMLButtonElement);
+    await waitFor(() => expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(mediaName));
+    await user.click(within(panel).getByRole("button", { name: `Download ${mediaName}` }));
+    expect(mocks.downloadHermesBridgeFile).toHaveBeenCalledWith(mediaName);
+  });
+
   it("does not remap a bare-filename MEDIA image to a same-named Workspace file", async () => {
     const user = userEvent.setup();
     const mediaName = "img_ae9ed1ffc669.png";
@@ -11689,6 +11809,7 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByRole("dialog", { name: "Safe mode is on" })).not.toBeInTheDocument();
     expect(mocks.imagePromptMayBeExplicit).toHaveBeenCalledWith("a red bicycle");
     expect(mocks.videoGenerate).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "View files (1)" })).toBeInTheDocument();
   });
 
   it("removes the persisted /video pending turn after a terminal submit failure", async () => {
@@ -11767,9 +11888,8 @@ describe("AgentWorkspace", () => {
       await settleUnderFakeTimers(() =>
         expect(screen.getByText("Generating video…")).toHaveClass("text-shimmer", "shimmer"),
       );
-      // The note under the frame carries either the fallback copy or, once the
-      // first status poll lands, the elapsed-time progress.
-      expect(document.querySelector(".agent-generated-media-note")).not.toBeNull();
+      expect(screen.queryByText("This can take a minute")).not.toBeInTheDocument();
+      expect(document.querySelector(".agent-generated-media-caption")).toBeNull();
       await act(async () => {
         await vi.advanceTimersByTimeAsync(900_000);
       });

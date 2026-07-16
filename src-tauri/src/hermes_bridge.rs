@@ -3321,14 +3321,15 @@ fn validate_dropped_file_name(raw: &str) -> Result<String, AppError> {
 
 fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, AppError> {
     let hermes_home = resolve_june_hermes_home(app)?;
-    // The assistant often references a generated image by its bare filename
-    // (`MEDIA:img_ae9ed1ffc669.png`) rather than its absolute path: the
-    // june_image tool returns a `filename`, and the model echoes that. Resolve a
-    // bare name against the generated-image roots so those references load; a
-    // path with directory components falls through unchanged and the allow-list
-    // check below still gates whatever we end up with.
-    let resolved =
-        resolve_bare_image_filename(&hermes_home, path).unwrap_or_else(|| PathBuf::from(path));
+    // The assistant often references generated media by its bare filename
+    // rather than its absolute path: the generation tools return a `filename`,
+    // and the model echoes that. Resolve a bare name against the generated-media
+    // roots so those references load; a path with directory components falls
+    // through unchanged and the allow-list check below still gates whatever we
+    // end up with.
+    let resolved = resolve_bare_image_filename(&hermes_home, path)
+        .or_else(|| resolve_bare_video_filename(&hermes_home, path))
+        .unwrap_or_else(|| PathBuf::from(path));
     let requested = resolved.canonicalize().map_err(|error| {
         tracing::warn!(requested_path = %path, %error, "validate_hermes_file_path failed to canonicalize path");
         AppError::new("hermes_file_download_failed", error.to_string())
@@ -8426,6 +8427,28 @@ fn resolve_bare_image_filename(hermes_home: &Path, path: &str) -> Option<PathBuf
         .find(|candidate| candidate.is_file())
 }
 
+/// Resolve a strict generated-video filename to the native video roots. Keeping
+/// this lookup beside `validate_hermes_file_path` lets Files preview/download
+/// use the same bare `MEDIA:<filename>` reference that inline playback accepts,
+/// while the downstream canonical-path allow-list remains authoritative.
+fn resolve_bare_video_filename(hermes_home: &Path, path: &str) -> Option<PathBuf> {
+    let name = bare_filename(path.trim())?;
+    let normalized = name.to_ascii_lowercase();
+    let (id, extension) = normalized
+        .strip_prefix("generated-video-")?
+        .rsplit_once('.')?;
+    if id.is_empty()
+        || !id.chars().all(|character| character.is_ascii_hexdigit())
+        || !matches!(extension, "m4v" | "mov" | "mp4" | "webm")
+    {
+        return None;
+    }
+    ["video_cache", "videos"]
+        .into_iter()
+        .map(|relative| hermes_home.join(relative).join(name))
+        .find(|candidate| candidate.is_file())
+}
+
 fn filesystem_roots(hermes_home: &Path) -> Result<Vec<FilesystemRootCandidate>, AppError> {
     let mut roots = Vec::new();
     for (id, label, relative, description) in [
@@ -12859,6 +12882,41 @@ assert capped["has_more"] is True, capped
         assert_eq!(
             resolve_bare_image_filename(hermes_home, "../secrets.png"),
             None
+        );
+    }
+
+    #[test]
+    fn resolve_bare_video_filename_maps_only_generated_names_to_video_roots() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let hermes_home = temp.path();
+        let cache_path = hermes_home
+            .join("video_cache")
+            .join("generated-video-ab12.webm");
+        let videos_path = hermes_home.join("videos").join("generated-video-cd34.mp4");
+        fs::create_dir_all(cache_path.parent().expect("cache parent")).expect("cache dir");
+        fs::create_dir_all(videos_path.parent().expect("videos parent")).expect("videos dir");
+        fs::write(&cache_path, b"cache").expect("cache video");
+        fs::write(&videos_path, b"video").expect("generated video");
+
+        assert_eq!(
+            resolve_bare_video_filename(hermes_home, "generated-video-ab12.webm"),
+            Some(cache_path),
+        );
+        assert_eq!(
+            resolve_bare_video_filename(hermes_home, "generated-video-cd34.mp4"),
+            Some(videos_path),
+        );
+        assert_eq!(
+            resolve_bare_video_filename(hermes_home, "generated-video-not-hex.mp4"),
+            None,
+        );
+        assert_eq!(
+            resolve_bare_video_filename(hermes_home, "../generated-video-cd34.mp4"),
+            None,
+        );
+        assert_eq!(
+            resolve_bare_video_filename(hermes_home, "generated-video-cd34.txt"),
+            None,
         );
     }
 
