@@ -174,16 +174,17 @@
     "envVar": "CHAT_WEB_URL",
     "defaultOrigin": "https://chat.opensoftware.co",
     "path": "/",
+    "expectedStatusCode": 401,
     "critical": false,
-    "healthyDetail": "Portal is reachable"
+    "healthyDetail": "Authentication boundary is reachable"
   },
   {
     "id": "health-dashboard",
     "group": "Health",
     "label": "Health dashboard",
     "description": "Private health dashboard",
-    "envVar": "HEALTH_DASHBOARD_URL",
-    "defaultOrigin": "https://health.opensoftware.co",
+    "envVar": "HEALTH_DASHBOARD_PROBE_URL",
+    "defaultOrigin": "https://os-june-monitor-production.up.railway.app",
     "path": "/",
     "critical": true,
     "healthyDetail": "Dashboard is reachable"

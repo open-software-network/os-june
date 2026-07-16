@@ -31,9 +31,9 @@ export function getServerEnv(): ServerEnv {
     OS_APP_URL: serviceOrigin("OS_APP_URL", "https://app.opensoftware.co"),
     OS_ACCOUNTS_URL: serviceOrigin("OS_ACCOUNTS_URL", "https://accounts.opensoftware.co"),
     CHAT_WEB_URL: serviceOrigin("CHAT_WEB_URL", "https://chat.opensoftware.co"),
-    HEALTH_DASHBOARD_URL: serviceOrigin(
-      "HEALTH_DASHBOARD_URL",
-      "https://health.opensoftware.co",
+    HEALTH_DASHBOARD_PROBE_URL: serviceOrigin(
+      "HEALTH_DASHBOARD_PROBE_URL",
+      "https://os-june-monitor-production.up.railway.app",
     ),
   };
   return {
