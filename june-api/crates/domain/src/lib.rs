@@ -159,6 +159,15 @@ impl ProviderCredentials {
     }
 }
 
+/// Privacy class advertised by the selected upstream model. This controls
+/// which model-routing-service policy is requested for service-managed calls.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InferencePrivacy {
+    #[default]
+    Private,
+    Anonymized,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Authorization {
@@ -239,6 +248,7 @@ pub struct GenerationRequest {
     pub system_prompt: String,
     pub cost_quality: Option<f64>,
     pub provider_credentials: ProviderCredentials,
+    pub inference_privacy: InferencePrivacy,
     /// See `AgentChatRequest::unmetered`.
     pub unmetered: bool,
 }
@@ -253,6 +263,7 @@ pub struct CleanupRequest {
     pub model: ModelId,
     pub system_prompt: String,
     pub provider_credentials: ProviderCredentials,
+    pub inference_privacy: InferencePrivacy,
 }
 
 #[derive(Clone, Debug)]
@@ -260,6 +271,7 @@ pub struct AgentChatRequest {
     pub body: serde_json::Value,
     pub model: ModelId,
     pub provider_credentials: ProviderCredentials,
+    pub inference_privacy: InferencePrivacy,
     /// True when the caller settles no OS Accounts charge for this request
     /// (user-supplied upstream key). Providers may then use their full-route
     /// client: the shortened metered window exists only to keep settlement
@@ -752,6 +764,11 @@ pub struct ViewRequest<'a> {
 /// `add_invites` calls cannot grow a share's ACL without bound.
 pub const MAX_INVITES_PER_SHARE: usize = 50;
 
+/// Reserved ACL row used by the anonymous bearer-link flow. Stores must only
+/// serve unauthenticated link views from this address so legacy email invites
+/// cannot be downgraded into public links.
+pub const SHARE_LINK_EMAIL: &str = "link@share.invalid";
+
 #[derive(Debug, Error)]
 pub enum ShareStoreError {
     /// Unknown share, unknown invite, revoked, or not owned by the caller.
@@ -811,6 +828,14 @@ pub trait ShareStore: Send + Sync {
     async fn fetch_view(
         &self,
         request: ViewRequest<'_>,
+    ) -> Result<ShareViewRecord, ShareStoreError>;
+    /// Anonymous bearer-link fetch. The implementation must require both the
+    /// opaque share id and invite id, and must only match the reserved
+    /// [`SHARE_LINK_EMAIL`] ACL row.
+    async fn fetch_link_view(
+        &self,
+        share_id: &str,
+        invite_id: &str,
     ) -> Result<ShareViewRecord, ShareStoreError>;
 }
 

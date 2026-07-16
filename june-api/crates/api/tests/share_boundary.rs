@@ -17,8 +17,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use june_api::ShareViewerInfo;
 use june_domain::{
-    DomainError, MAX_INVITES_PER_SHARE, NewShare, NewShareInvite, ShareInviteRecord, ShareKind,
-    ShareRecord, ShareStore, ShareStoreError, ShareViewRecord, ViewRequest, ViewerIdentity,
+    DomainError, MAX_INVITES_PER_SHARE, NewShare, NewShareInvite, SHARE_LINK_EMAIL,
+    ShareInviteRecord, ShareKind, ShareRecord, ShareStore, ShareStoreError, ShareViewRecord,
+    ViewRequest, ViewerIdentity,
 };
 use june_services::{ShareService, ShareServiceDeps};
 use pretty_assertions::assert_eq;
@@ -252,6 +253,32 @@ impl ShareStore for MemoryShareStore {
             envelope: Some((invite.envelope.clone(), invite.envelope_iv.clone())),
         })
     }
+
+    async fn fetch_link_view(
+        &self,
+        share_id: &str,
+        invite_id: &str,
+    ) -> Result<ShareViewRecord, ShareStoreError> {
+        let shares = self.shares.lock().expect("lock");
+        let share = shares
+            .get(share_id)
+            .filter(|share| !share.deleted)
+            .ok_or(ShareStoreError::NotFound)?;
+        let invite = share
+            .invites
+            .iter()
+            .find(|invite| {
+                !invite.revoked && invite.invite_id == invite_id && invite.email == SHARE_LINK_EMAIL
+            })
+            .ok_or(ShareStoreError::NotFound)?;
+        Ok(ShareViewRecord {
+            kind: share.kind,
+            owner_user_id: share.owner.clone(),
+            ciphertext: share.ciphertext.clone(),
+            iv: share.iv.clone(),
+            envelope: Some((invite.envelope.clone(), invite.envelope_iv.clone())),
+        })
+    }
 }
 
 /// Emails come from the fake bearer token itself: `user:usr_x|a@b.c,d@e.f`.
@@ -357,6 +384,59 @@ async fn viewer_shell_fails_closed_when_sharing_disabled() {
     let (status, body) = call(&router, request).await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     assert_eq!(body["message"], "sharing_unavailable");
+}
+
+#[tokio::test]
+async fn anonymous_link_view_only_serves_the_reserved_link_acl() {
+    let router = share_router();
+    let (status, body) = call(
+        &router,
+        create_request(OWNER, &[invite_wire(SHARE_LINK_EMAIL)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let share_id = body["data"]["shareId"].as_str().expect("share id");
+    let invite_id = body["data"]["invites"][0]["inviteId"]
+        .as_str()
+        .expect("invite id");
+    let (status, body) = call(
+        &router,
+        Request::builder()
+            .method("GET")
+            .uri(format!("/v1/shares/{share_id}/link-view?link={invite_id}"))
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["data"]["ciphertextB64"],
+        BASE64.encode(b"opaque-ciphertext")
+    );
+
+    let (status, email_body) = call(
+        &router,
+        create_request(OWNER, &[invite_wire("friend@example.com")]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let email_share = email_body["data"]["shareId"].as_str().expect("share id");
+    let email_invite = email_body["data"]["invites"][0]["inviteId"]
+        .as_str()
+        .expect("invite id");
+    let (status, body) = call(
+        &router,
+        Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/v1/shares/{email_share}/link-view?link={email_invite}"
+            ))
+            .body(Body::empty())
+            .expect("request builds"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["message"], "share_not_found");
 }
 
 #[tokio::test]
@@ -797,6 +877,13 @@ async fn viewer_shell_is_static_noindex_and_identical_for_any_id() {
     }
     // Same bytes for every id: the shell reveals nothing about existence.
     assert_eq!(pages[0], pages[1]);
+    let shell = std::str::from_utf8(&pages[0]).expect("viewer shell is utf-8");
+    assert!(shell.contains("[hidden] { display: none !important; }"));
+    assert!(shell.contains("Passcode required"));
+    assert!(shell.contains(
+        "<a id=\"download-cta\" href=\"https://opensoftware.co/june\" rel=\"noreferrer\">Get June</a>"
+    ));
+    assert!(!shell.contains("Maybe later"));
 }
 
 #[tokio::test]

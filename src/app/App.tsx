@@ -34,6 +34,9 @@ import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
 import { exportNoteAsPdf } from "../lib/note-pdf";
 import { NoteChatPanel } from "../components/note-chat/NoteChatPanel";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
+import { ShareDialog } from "../components/share/ShareDialog";
+import { ShareLinkCopyAction } from "../components/share/ShareLinkCopyAction";
+import { buildNotePayload, noteReadyToShare } from "../lib/share-payload";
 import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
 import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
 import type { RecordNoticesDemoApi } from "../lib/record-notices-demo";
@@ -1009,9 +1012,13 @@ export function App() {
   const noteChatOpenRef = useRef(noteChatOpen);
   noteChatOpenRef.current = noteChatOpen;
   const [confirmDeleteNote, setConfirmDeleteNote] = useState(false);
+  const [shareNoteOpen, setShareNoteOpen] = useState(false);
+  const [noteShareUrl, setNoteShareUrl] = useState<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset note-scoped UI on selection change
   useEffect(() => {
     setNoteChatOpen(false);
     setConfirmDeleteNote(false);
+    setShareNoteOpen(false);
   }, [selectedNoteId]);
   // The note's Ask June chat is owned here, not inside the panel, so its
   // session and working state survive the panel closing: a fired-off question
@@ -1041,6 +1048,9 @@ export function App() {
       askJuneOpen={noteChatOpen}
       askJuneWorking={noteChat.working}
       onAskJune={() => setNoteChatOpen((open) => !open)}
+      onShare={
+        noteReadyToShare(selectedNote.processingStatus) ? () => setShareNoteOpen(true) : undefined
+      }
       onExportPdf={() => void handleExportNotePdf()}
       onDelete={() => setConfirmDeleteNote(true)}
     />
@@ -4114,6 +4124,7 @@ export function App() {
                         },
                         {
                           label: selectedNote.title.trim() || "New note",
+                          action: noteShareUrl ? <ShareLinkCopyAction url={noteShareUrl} /> : null,
                         },
                       ]}
                       actions={noteToolbarActions}
@@ -4135,6 +4146,7 @@ export function App() {
                         },
                         {
                           label: selectedNote.title.trim() || "New note",
+                          action: noteShareUrl ? <ShareLinkCopyAction url={noteShareUrl} /> : null,
                         },
                       ]}
                       actions={noteToolbarActions}
@@ -4143,7 +4155,10 @@ export function App() {
                     <BreadcrumbBar
                       items={[
                         { label: "Notes", onClick: () => setActiveView("all-notes") },
-                        { label: selectedNote.title.trim() || "New note" },
+                        {
+                          label: selectedNote.title.trim() || "New note",
+                          action: noteShareUrl ? <ShareLinkCopyAction url={noteShareUrl} /> : null,
+                        },
                       ]}
                       actions={noteToolbarActions}
                     />
@@ -4335,6 +4350,26 @@ export function App() {
           confirmLabel="Delete note"
           destructive
         />
+        {selectedNote ? (
+          <ShareDialog
+            key={selectedNote.id}
+            open={shareNoteOpen}
+            onClose={() => setShareNoteOpen(false)}
+            onLinkChange={setNoteShareUrl}
+            item={{
+              kind: "note",
+              itemId: selectedNote.id,
+              title: selectedNote.title,
+              // Notes share the rendered markdown: edited content when
+              // present, generated otherwise. Snapshot at share time.
+              buildPayload: () =>
+                buildNotePayload({
+                  title: selectedNote.title,
+                  markdown: selectedNote.editedContent ?? selectedNote.generatedContent ?? "",
+                }),
+            }}
+          />
+        ) : null}
       </div>
       <Dialog
         open={recordingInactivityPrompt !== null}

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HermesTracePanel } from "../components/agent/HermesTracePanel";
@@ -25,6 +25,7 @@ function seedBuffer() {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
@@ -90,13 +91,21 @@ describe("HermesTracePanel", () => {
   });
 
   it("copies a sanitized export to the clipboard with NO secret values", async () => {
-    const user = userEvent.setup();
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
 
     const buffer = seedBuffer();
     render(<HermesTracePanel buffer={buffer} open sessionId="s1" onClose={vi.fn()} />);
-    await user.click(screen.getByRole("button", { name: "Copy trace" }));
+    const copyButton = screen.getByRole("button", { name: "Copy trace" });
+    fireEvent.focus(copyButton);
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(copyButton);
+      await Promise.resolve();
+    });
     expect(writeText).toHaveBeenCalledTimes(1);
+    expect(copyButton).toHaveAccessibleName("Trace copied");
+    expect(copyButton.querySelector(".t-icon-swap")).toHaveAttribute("data-state", "b");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
     const copied = writeText.mock.calls[0][0] as string;
     // The export carries raw type + normalized kind ...
     expect(copied).toContain("future.unknown");
@@ -104,6 +113,21 @@ describe("HermesTracePanel", () => {
     // ... but never the secret value the inbound frame carried.
     expect(copied).not.toContain("sk-abcdef0123456789abcdef0123456789");
     expect(copied).toContain("[redacted]");
+
+    act(() => vi.advanceTimersByTime(1200));
+    await act(async () => {
+      fireEvent.click(copyButton);
+      await Promise.resolve();
+    });
+    expect(writeText).toHaveBeenCalledTimes(2);
+
+    act(() => vi.advanceTimersByTime(401));
+    expect(copyButton).toHaveAccessibleName("Trace copied");
+    expect(copyButton.querySelector(".t-icon-swap")).toHaveAttribute("data-state", "b");
+
+    act(() => vi.advanceTimersByTime(1199));
+    expect(copyButton).toHaveAccessibleName("Copy trace");
+    expect(copyButton.querySelector(".t-icon-swap")).toHaveAttribute("data-state", "a");
   });
 
   it("invokes onClose from the close button", async () => {

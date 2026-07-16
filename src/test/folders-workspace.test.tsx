@@ -578,16 +578,24 @@ describe("Sidebar primary navigation", () => {
     expect(screen.getByLabelText("Invite link")).toHaveValue(
       "https://accounts.opensoftware.co/join?ref=JUNE-ALEX",
     );
+    expect(screen.getByLabelText("Invite link").closest(".copy-link-field")).not.toBeNull();
     expect(screen.getByText("Friends referred")).toBeInTheDocument();
     expect(screen.getByText("1 invited friend is waiting to subscribe.")).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Copy" }));
+    const copyButton = within(dialog).getByRole("button", { name: "Copy link" });
+    const iconSwap = copyButton.querySelector(".t-icon-swap");
+    expect(iconSwap).toHaveAttribute("data-state", "a");
+    expect(iconSwap?.querySelectorAll(".t-icon")).toHaveLength(2);
+
+    await user.click(copyButton);
     await waitFor(() =>
       expect(clipboardWrite).toHaveBeenCalledWith(
         "https://accounts.opensoftware.co/join?ref=JUNE-ALEX",
       ),
     );
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Link copied" })).toBeEnabled();
+    expect(iconSwap).toHaveAttribute("data-state", "b");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
   });
 
   it("handles unavailable referral links without retry noise", async () => {

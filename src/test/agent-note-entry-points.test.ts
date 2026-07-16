@@ -154,18 +154,19 @@ describe("note header actions", () => {
     expect(container.querySelector(".note-header-ask-dot")).not.toBeNull();
   });
 
-  it("copies the exact note reference token", async () => {
+  it("copies a portable reference for June", async () => {
     const user = userEvent.setup();
     const writeText = installClipboard();
     render(createElement(NoteHeaderActions, { noteId: "note-1", noteTitle: "Launch plan" }));
 
-    const copyButton = screen.getByRole("button", { name: "Copy note reference" });
-    await user.click(copyButton);
+    await user.click(screen.getByRole("button", { name: "Note actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Copy reference for June" }));
 
-    expect(writeText).toHaveBeenCalledWith(
-      noteReferenceToken({ id: "note-1", title: "Launch plan" }),
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        noteReferenceToken({ id: "note-1", title: "Launch plan" }),
+      ),
     );
-    await waitFor(() => expect(copyButton).toHaveAttribute("data-copied", "true"));
   });
 
   it("exports the note from the actions menu", async () => {

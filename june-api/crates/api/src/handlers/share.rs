@@ -266,6 +266,40 @@ pub(crate) async fn view(
     })))
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct LinkViewQuery {
+    /// Opaque ACL row id carried in the URL fragment. Key material never
+    /// reaches the server.
+    link: String,
+}
+
+/// Anonymous bearer-link view. The persistence boundary only matches the
+/// reserved link-only ACL row, so legacy email invites cannot use this route
+/// to bypass OS Accounts authentication.
+pub(crate) async fn link_view(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(share_id): Path<String>,
+    Query(query): Query<LinkViewQuery>,
+) -> Result<Json<ApiResponse<ShareViewResponse>>, ApiError> {
+    let service = state.share().ok_or(ApiError::SharingUnavailable)?;
+    let client_key = format!("link-ip:{}", client_address(&headers));
+    if !state.share_rate().allow(&client_key) {
+        return Err(ApiError::AuthorizationDenied);
+    }
+    let record = service.view_link(&share_id, &query.link).await?;
+    let (envelope, envelope_iv) = record
+        .envelope
+        .ok_or_else(|| ApiError::not_found("share_not_found"))?;
+    Ok(Json(ApiResponse::ok(ShareViewResponse {
+        kind: record.kind.as_str().to_string(),
+        ciphertext_b64: BASE64.encode(record.ciphertext),
+        iv_b64: BASE64.encode(record.iv),
+        envelope_b64: Some(BASE64.encode(envelope)),
+        envelope_iv_b64: Some(BASE64.encode(envelope_iv)),
+    })))
+}
+
 /// Shared preamble: sharing must be configured, the caller authenticated,
 /// and inside the per-user rate budget.
 async fn share_context<'a>(

@@ -476,6 +476,54 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
     parse_response("/v1/models", response).await
 }
 
+// ---- Private sharing (JUN-308) -------------------------------------------
+// Owner-side proxy for the /v1/shares endpoints. The client only ever moves
+// ciphertext, IVs, envelopes, and metadata here; plaintext and keys stay in
+// the webview (src/lib/share-crypto.ts).
+
+use crate::domain::types::{
+    ShareCreateRequest, ShareCreatedDto, ShareDto, ShareInvitePayload, ShareInvitesAddedDto,
+    ShareSummaryDto,
+};
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareAddInvitesBody<'a> {
+    invites: &'a [ShareInvitePayload],
+}
+
+pub async fn share_create(request: &ShareCreateRequest) -> Result<ShareCreatedDto, AppError> {
+    post_json("/v1/shares", request, false).await
+}
+
+pub async fn share_list() -> Result<Vec<ShareSummaryDto>, AppError> {
+    get_json("/v1/shares").await
+}
+
+pub async fn share_get(share_id: &str) -> Result<ShareDto, AppError> {
+    get_json(&format!("/v1/shares/{share_id}")).await
+}
+
+pub async fn share_add_invites(
+    share_id: &str,
+    invites: &[ShareInvitePayload],
+) -> Result<ShareInvitesAddedDto, AppError> {
+    post_json(
+        &format!("/v1/shares/{share_id}/invites"),
+        &ShareAddInvitesBody { invites },
+        false,
+    )
+    .await
+}
+
+pub async fn share_revoke_invite(share_id: &str, invite_id: &str) -> Result<(), AppError> {
+    delete_expect_success(&format!("/v1/shares/{share_id}/invites/{invite_id}")).await
+}
+
+pub async fn share_delete(share_id: &str) -> Result<(), AppError> {
+    delete_expect_success(&format!("/v1/shares/{share_id}")).await
+}
+
 /// One generated image from the June API `/v1/image/generate` endpoint. The
 /// bytes arrive base64-encoded so the frontend can wrap them in a data URL for
 /// the existing inline image display path.
@@ -1863,6 +1911,13 @@ pub fn verify_url() -> String {
     format!("{}/verify", june_api_url())
 }
 
+/// Origin that share links point at (`{origin}/s/{share_id}#…`). The viewer
+/// is served by june-api, so this is the same base every metered request
+/// already goes to.
+pub fn share_base_url() -> String {
+    june_api_url()
+}
+
 /// Final assistant text from a chat completion, normalized for reasoning
 /// models: inline `<think>` blocks are stripped, and when generation stopped
 /// at the token cap (`finish_reason: "length"`) the text is cut back to its
@@ -2248,6 +2303,36 @@ where
     })
     .await?;
     parse_response(path, response).await
+}
+
+async fn get_json<T>(path: &str) -> Result<T, AppError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let response = authed_send(path, false, |client, url, token| {
+        client.get(url).bearer_auth(token)
+    })
+    .await?;
+    parse_response(path, response).await
+}
+
+/// Sends an authenticated DELETE and accepts any success envelope, with or
+/// without a `data` payload. Failure envelopes map through the same error
+/// handling as every other June API call.
+async fn delete_expect_success(path: &str) -> Result<(), AppError> {
+    let response = authed_send(path, false, |client, url, token| {
+        client.delete(url).bearer_auth(token)
+    })
+    .await?;
+    let status = response.status();
+    let retry_after_ms = response_retry_after_ms(&response);
+    let body = response.text().await.map_err(network_error)?;
+    match parse_response_body::<serde_json::Value>(path, status, retry_after_ms, &body) {
+        Ok(_) => Ok(()),
+        // `success: true` with no `data` is still a success for a DELETE.
+        Err(error) if error.code == "empty_response" => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 async fn post_generate_note<B>(
@@ -2858,12 +2943,177 @@ mod tests {
     }
 
     #[test]
+    fn share_create_body_serializes_camel_case() {
+        let request = ShareCreateRequest {
+            kind: "note".to_string(),
+            ciphertext_b64: "Y2lwaGVy".to_string(),
+            iv_b64: "aXY".to_string(),
+            invites: vec![ShareInvitePayload {
+                email: "friend@example.com".to_string(),
+                envelope_b64: "ZW52".to_string(),
+                envelope_iv_b64: "ZW52aXY".to_string(),
+            }],
+        };
+        let body = serde_json::to_value(&request).expect("serialize");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "kind": "note",
+                "ciphertextB64": "Y2lwaGVy",
+                "ivB64": "aXY",
+                "invites": [{
+                    "email": "friend@example.com",
+                    "envelopeB64": "ZW52",
+                    "envelopeIvB64": "ZW52aXY",
+                }]
+            })
+        );
+    }
+
+    #[test]
     fn june_api_operation_id_preserves_ids_within_the_wire_limit() {
         assert_eq!(june_api_operation_id("note-1"), "note-1");
         assert_eq!(
             june_api_operation_id(&"a".repeat(JUNE_API_MAX_ID_CHARS)),
             "a".repeat(JUNE_API_MAX_ID_CHARS)
         );
+    }
+
+    #[test]
+    fn share_created_response_parses_from_envelope() {
+        let body = serde_json::json!({
+            "success": true,
+            "data": {
+                "shareId": "shr_abc",
+                "invites": [
+                    { "inviteId": "shi_1", "email": "friend@example.com" }
+                ]
+            }
+        })
+        .to_string();
+        let parsed: ShareCreatedDto =
+            parse_response_body("/v1/shares", reqwest::StatusCode::OK, None, &body)
+                .expect("parse share created");
+        assert_eq!(parsed.share_id, "shr_abc");
+        assert_eq!(parsed.invites.len(), 1);
+        assert_eq!(parsed.invites[0].invite_id, "shi_1");
+        assert_eq!(parsed.invites[0].email, "friend@example.com");
+    }
+
+    #[test]
+    fn share_invites_added_response_parses_without_share_id() {
+        // POST /v1/shares/{id}/invites returns only `{ invites }`; parsing it
+        // as ShareCreatedDto (which requires shareId) would fail.
+        let body = serde_json::json!({
+            "success": true,
+            "data": { "invites": [{ "inviteId": "shi_9", "email": "new@example.com" }] }
+        })
+        .to_string();
+        let parsed: ShareInvitesAddedDto = parse_response_body(
+            "/v1/shares/shr_abc/invites",
+            reqwest::StatusCode::OK,
+            None,
+            &body,
+        )
+        .expect("parse add-invites response");
+        assert_eq!(parsed.invites.len(), 1);
+        assert_eq!(parsed.invites[0].invite_id, "shi_9");
+        assert_eq!(parsed.invites[0].email, "new@example.com");
+    }
+
+    #[test]
+    fn share_list_response_parses_summaries() {
+        // GET /v1/shares returns summaries with no invite list.
+        let body = serde_json::json!({
+            "success": true,
+            "data": [
+                { "shareId": "shr_a", "kind": "note", "createdAt": "2026-07-14T00:00:00Z" },
+                { "shareId": "shr_b", "kind": "session" }
+            ]
+        })
+        .to_string();
+        let parsed: Vec<ShareSummaryDto> =
+            parse_response_body("/v1/shares", reqwest::StatusCode::OK, None, &body)
+                .expect("parse share list");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].share_id, "shr_a");
+        assert_eq!(
+            parsed[0].created_at.as_deref(),
+            Some("2026-07-14T00:00:00Z")
+        );
+        assert_eq!(parsed[1].kind, "session");
+        assert_eq!(parsed[1].created_at, None);
+    }
+
+    #[test]
+    fn share_detail_response_parses_invite_states() {
+        let body = serde_json::json!({
+            "success": true,
+            "data": {
+                "shareId": "shr_abc",
+                "kind": "session",
+                "createdAt": "2026-07-14T00:00:00Z",
+                "invites": [
+                    { "inviteId": "shi_1", "email": "a@example.com", "state": "pending" },
+                    {
+                        "inviteId": "shi_2",
+                        "email": "b@example.com",
+                        "state": "accepted",
+                        "lastAccessAt": "2026-07-14T01:00:00Z"
+                    },
+                    { "inviteId": "shi_3", "email": "c@example.com", "state": "revoked" }
+                ]
+            }
+        })
+        .to_string();
+        let parsed: ShareDto =
+            parse_response_body("/v1/shares/shr_abc", reqwest::StatusCode::OK, None, &body)
+                .expect("parse share detail");
+        assert_eq!(parsed.share_id, "shr_abc");
+        assert_eq!(parsed.kind, "session");
+        let states: Vec<&str> = parsed
+            .invites
+            .iter()
+            .map(|invite| invite.state.as_str())
+            .collect();
+        assert_eq!(states, vec!["pending", "accepted", "revoked"]);
+        assert_eq!(
+            parsed.invites[1].last_access_at.as_deref(),
+            Some("2026-07-14T01:00:00Z")
+        );
+    }
+
+    #[test]
+    fn share_not_found_maps_to_request_failed_with_message() {
+        let body = serde_json::json!({
+            "success": false,
+            "message": "share_not_found"
+        })
+        .to_string();
+        let error = parse_response_body::<ShareDto>(
+            "/v1/shares/shr_missing",
+            reqwest::StatusCode::NOT_FOUND,
+            None,
+            &body,
+        )
+        .expect_err("share_not_found should error");
+        assert_eq!(error.code, "june_request_failed");
+        assert_eq!(error.message, "share_not_found");
+    }
+
+    #[test]
+    fn success_envelope_without_data_is_empty_response() {
+        // delete_expect_success treats this as success; everything else
+        // surfaces it as an error. Pin the code it keys on.
+        let body = serde_json::json!({ "success": true }).to_string();
+        let error = parse_response_body::<serde_json::Value>(
+            "/v1/shares/shr_abc",
+            reqwest::StatusCode::OK,
+            None,
+            &body,
+        )
+        .expect_err("no data should error");
+        assert_eq!(error.code, "empty_response");
     }
 
     #[test]

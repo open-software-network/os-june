@@ -72,6 +72,28 @@ pub struct ConnectorTriggerRecord {
     pub created_at: String,
 }
 
+/// Locally retained content key for a private share (JUN-308). The content
+/// key must stay on the owner's device so later invites can wrap the same key
+/// without re-encrypting; it never leaves the device except wrapped inside
+/// per-recipient envelopes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareKeyRecord {
+    pub share_id: String,
+    /// "note" | "session".
+    pub item_kind: String,
+    pub item_id: String,
+    pub content_key: Vec<u8>,
+}
+
+/// Locally retained invite key so "copy link" keeps working across app
+/// restarts (invite keys are not re-derivable from anything the server has).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareInviteKeyRecord {
+    pub invite_id: String,
+    pub share_id: String,
+    pub invite_key: Vec<u8>,
+}
+
 /// Per-job, per-provider autonomy grant. Minted when a routine is set to
 /// `autonomous`: the bridge registers a per-job auto MCP server carrying the
 /// `token` in its env, and the provider proxy authorizes a tool call by
@@ -4124,6 +4146,115 @@ impl Repositories {
         .await?;
         Ok(rows.into_iter().map(|row| row.get("folder_id")).collect())
     }
+
+    // ---- Private share keys (JUN-308) ----------------------------------
+
+    pub async fn save_share_key(&self, record: &ShareKeyRecord) -> Result<(), sqlx::error::Error> {
+        // The store holds at most one share per item (the `idx_share_keys_item`
+        // unique index). Upsert on that item key so a fresh share for an
+        // already-mapped item *replaces* the stale mapping instead of failing
+        // the insert. This is what lets an item be shared again after its old
+        // share is gone, or is owned by a different account now signed in on the
+        // same local notes: the owner dialog resets to the unshared view on the
+        // ambiguous share_not_found without purging keys (the store is not
+        // account-scoped, so it must never delete another owner's live keys),
+        // and the eventual re-share lands here to replace the row.
+        query(
+            "INSERT INTO share_keys (share_id, item_kind, item_id, content_key, created_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(item_kind, item_id) DO UPDATE SET
+               share_id = excluded.share_id,
+               content_key = excluded.content_key,
+               created_at = excluded.created_at",
+        )
+        .bind(&record.share_id)
+        .bind(&record.item_kind)
+        .bind(&record.item_id)
+        .bind(&record.content_key)
+        .bind(timestamp())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn share_key_for_item(
+        &self,
+        item_kind: &str,
+        item_id: &str,
+    ) -> Result<Option<ShareKeyRecord>, sqlx::error::Error> {
+        let row = query(
+            "SELECT share_id, item_kind, item_id, content_key
+             FROM share_keys WHERE item_kind = ? AND item_id = ?",
+        )
+        .bind(item_kind)
+        .bind(item_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(share_key_from_row))
+    }
+
+    pub async fn save_share_invite_key(
+        &self,
+        record: &ShareInviteKeyRecord,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "INSERT INTO share_invite_keys (invite_id, share_id, invite_key, created_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(invite_id) DO UPDATE SET
+               share_id = excluded.share_id,
+               invite_key = excluded.invite_key",
+        )
+        .bind(&record.invite_id)
+        .bind(&record.share_id)
+        .bind(&record.invite_key)
+        .bind(timestamp())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn share_invite_keys(
+        &self,
+        share_id: &str,
+    ) -> Result<Vec<ShareInviteKeyRecord>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT invite_id, share_id, invite_key
+             FROM share_invite_keys WHERE share_id = ? ORDER BY created_at ASC",
+        )
+        .bind(share_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| ShareInviteKeyRecord {
+                invite_id: row.get("invite_id"),
+                share_id: row.get("share_id"),
+                invite_key: row.get("invite_key"),
+            })
+            .collect())
+    }
+
+    /// Purges every locally stored key for a share (used on unshare).
+    pub async fn delete_share_keys(&self, share_id: &str) -> Result<(), sqlx::error::Error> {
+        query("DELETE FROM share_invite_keys WHERE share_id = ?")
+            .bind(share_id)
+            .execute(&self.pool)
+            .await?;
+        query("DELETE FROM share_keys WHERE share_id = ?")
+            .bind(share_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+}
+
+fn share_key_from_row(row: sqlx_sqlite::SqliteRow) -> ShareKeyRecord {
+    ShareKeyRecord {
+        share_id: row.get("share_id"),
+        item_kind: row.get("item_kind"),
+        item_id: row.get("item_id"),
+        content_key: row.get("content_key"),
+    }
 }
 
 async fn delete_note_records(
@@ -6330,5 +6461,112 @@ mod tests {
             .clear_trigger_cursor("user@example.com", "email_received")
             .await
             .expect("clear idempotent");
+    }
+
+    #[tokio::test]
+    async fn share_keys_round_trip_and_purge() {
+        use super::{ShareInviteKeyRecord, ShareKeyRecord};
+
+        let repos = test_repositories().await;
+        let share_key = ShareKeyRecord {
+            share_id: "shr_1".to_string(),
+            item_kind: "note".to_string(),
+            item_id: "note_1".to_string(),
+            content_key: vec![1u8; 32],
+        };
+        repos.save_share_key(&share_key).await.expect("save key");
+        // Saving again for the same share replaces rather than duplicating.
+        let replacement = ShareKeyRecord {
+            content_key: vec![2u8; 32],
+            ..share_key.clone()
+        };
+        repos
+            .save_share_key(&replacement)
+            .await
+            .expect("upsert key");
+        assert_eq!(
+            repos
+                .share_key_for_item("note", "note_1")
+                .await
+                .expect("get key"),
+            Some(replacement)
+        );
+        assert_eq!(
+            repos
+                .share_key_for_item("note", "missing")
+                .await
+                .expect("get missing"),
+            None
+        );
+
+        let invite_key = ShareInviteKeyRecord {
+            invite_id: "shi_1".to_string(),
+            share_id: "shr_1".to_string(),
+            invite_key: vec![3u8; 32],
+        };
+        repos
+            .save_share_invite_key(&invite_key)
+            .await
+            .expect("save invite key");
+        repos
+            .save_share_invite_key(&ShareInviteKeyRecord {
+                invite_id: "shi_2".to_string(),
+                share_id: "shr_1".to_string(),
+                invite_key: vec![4u8; 32],
+            })
+            .await
+            .expect("save second invite key");
+        let keys = repos.share_invite_keys("shr_1").await.expect("list");
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].invite_id, "shi_1");
+        assert_eq!(keys[0].invite_key, vec![3u8; 32]);
+
+        repos.delete_share_keys("shr_1").await.expect("purge");
+        assert!(repos
+            .share_key_for_item("note", "note_1")
+            .await
+            .expect("get after purge")
+            .is_none());
+        assert!(repos
+            .share_invite_keys("shr_1")
+            .await
+            .expect("list after purge")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn save_share_key_replaces_a_different_share_for_the_same_item() {
+        use super::ShareKeyRecord;
+
+        let repos = test_repositories().await;
+        repos
+            .save_share_key(&ShareKeyRecord {
+                share_id: "shr_old".to_string(),
+                item_kind: "note".to_string(),
+                item_id: "note_1".to_string(),
+                content_key: vec![1u8; 32],
+            })
+            .await
+            .expect("save first");
+        // A fresh share for the same item (re-sharing after the old share is
+        // gone, or owned by a different signed-in account) replaces the stale
+        // mapping rather than colliding on the item unique index.
+        let replacement = ShareKeyRecord {
+            share_id: "shr_new".to_string(),
+            item_kind: "note".to_string(),
+            item_id: "note_1".to_string(),
+            content_key: vec![2u8; 32],
+        };
+        repos
+            .save_share_key(&replacement)
+            .await
+            .expect("replace by item");
+        assert_eq!(
+            repos
+                .share_key_for_item("note", "note_1")
+                .await
+                .expect("get key"),
+            Some(replacement)
+        );
     }
 }

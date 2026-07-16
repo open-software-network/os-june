@@ -41,6 +41,30 @@ function numericErrorCode(err: unknown): number | undefined {
   return undefined;
 }
 
+/** Whether a share request failed because the share is unknown, revoked, or
+ * not owned by the caller. The June API collapses all of these to a 404 whose
+ * message is `share_not_found` (non-enumeration); the structured code is the
+ * generic `june_request_failed`, so we match the message. Lets the owner
+ * dialog treat a definitively-gone share differently from a transient error. */
+export function isShareNotFoundError(err: unknown): boolean {
+  return messageFromError(err) === "share_not_found";
+}
+
+/** Human-readable share command error. The June API's share endpoints answer
+ * with bare machine codes as messages (`sharing_unavailable` when the server
+ * has no share database configured, `share_not_found` for unknown or revoked
+ * shares); user-facing surfaces must not leak those raw codes. */
+export function describeShareError(err: unknown): string {
+  const message = messageFromError(err);
+  if (message === "sharing_unavailable") {
+    return "Sharing isn't available on this June server yet. Try again after the next update.";
+  }
+  if (message === "share_not_found") {
+    return "This share no longer exists. It may have been stopped.";
+  }
+  return message;
+}
+
 export function isHermesSessionsStartupRequestError(err: unknown) {
   return /error sending request for url \(http:\/\/127\.0\.0\.1:\d+\/api\/sessions(?:\?|[)/])/i.test(
     messageFromError(err),

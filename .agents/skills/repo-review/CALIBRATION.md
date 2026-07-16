@@ -103,6 +103,10 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | JUN-324 (pre-PR) | Standards (codex, r1+final) | 1 | 1 | caught the ambiguous bare “transcription” term in the new regression test; renamed it to canonical note transcription wording, final clean |
 | JUN-324 (pre-PR) | Spec (codex, r1+final) | 0 | — | clean against the chevron visibility, enabled-state, open/close interaction, and regression-coverage acceptance criteria |
 | JUN-324 (pre-PR) | Adversarial (codex, r1+convergence) | 0 | — | approved after tracing the persisted recording source mode and confirming the newly reachable options affect only the next recording |
+| #798 | Standards (codex, r1+final) | 3 | 3 | all three findings qualified the overloaded “channel” term with the canonical RC release channel vocabulary; final clean |
+| #798 | Spec (codex, r1+final) | 0 | — | clean against the RC Slack announcement contract and documented amendments |
+| #798 | Adversarial (codex, r1-r5) | 5 | 3.5 | found mutable historical download links, fail-open provenance guards, and duplicate non-idempotent webhook retries; the notification-only recovery request was partly deliberate, and fixed-alias atomicity was verified as origin/main parity; final approve |
+| #798 | Cross-harness convergence (claude + codex CLI) | — | — | both runner attempts produced no usable verdict; the cycle continued with fresh read-only reviewers rather than treating missing output as approval |
 | JUN-335 (pre-PR) | Standards (codex, r1-r3) | 3 | 3 | caught stored-vs-runtime session-id ambiguity in new app-lifetime contracts/helpers and ambiguous turn terminology; final clean after a full added-line rescan |
 | JUN-335 (pre-PR) | Spec (codex, final) | 0 | — | clean with explicit coverage mapping for delta, replacement, out-of-order, duplicate, reconnect, finalization, and canonical-source ownership |
 | JUN-335 (pre-PR) | Adversarial (codex, iterative) | 21 | 21 | found cross-note acknowledgement/Stop ownership, pre-ACK terminal, remount continuation, delivery replay, late-gateway, generation retagging, and issue-report publication-gap races; final 8-case convergence battery clean |

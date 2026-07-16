@@ -9,9 +9,7 @@ import { IconBolt } from "central-icons/IconBolt";
 import { IconBranchSimple } from "central-icons/IconBranchSimple";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
-import { IconCheckmark2Medium } from "central-icons/IconCheckmark2Medium";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
-import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
@@ -53,6 +51,7 @@ import { IconPageTextSearch } from "central-icons/IconPageTextSearch";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconPieChart1 } from "central-icons/IconPieChart1";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
+import { IconShareOs } from "central-icons/IconShareOs";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconStop } from "central-icons/IconStop";
 import { DotSpinner } from "../DotSpinner";
@@ -78,6 +77,7 @@ import { BackButton } from "../ui/BackButton";
 import { TierMiniCard } from "../account/FundingNotice";
 import type { FundingTier } from "../account/FundingNotice";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { CopyStateIcon } from "../ui/CopyStateIcon";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
 import { HoverTip } from "../ui/HoverTip";
@@ -226,6 +226,9 @@ import {
   type BranchSessionResult,
 } from "../../lib/hermes-session-branch";
 import { normalizeSteerText } from "../../lib/hermes-session-steer";
+import { buildSessionPayload } from "../../lib/share-payload";
+import { ShareDialog } from "../share/ShareDialog";
+import { ShareLinkCopyAction } from "../share/ShareLinkCopyAction";
 import { recordPositiveFeedbackSent } from "../../lib/referral-nudge";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
@@ -2949,6 +2952,22 @@ export function composerInSteerStateFor(input: {
   );
 }
 
+export function canShareAgentSession(input: {
+  selectedSessionId?: string;
+  newSessionMode: boolean;
+  provisional: boolean;
+  historyLoaded: boolean;
+  working: boolean;
+}): boolean {
+  return Boolean(
+    input.selectedSessionId &&
+      !input.newSessionMode &&
+      !input.provisional &&
+      input.historyLoaded &&
+      !input.working,
+  );
+}
+
 export function AgentWorkspace({
   initialSession,
   initialSessionId: initialSessionIdProp,
@@ -3477,6 +3496,16 @@ export function AgentWorkspace({
   const usageDemo = useUsagePanelDemo();
   // The session whose context-compaction dialog is open, or null (feature 08).
   const [compactSessionId, setCompactSessionId] = useState<string | null>(null);
+  // Session currently being shared through the private-sharing dialog
+  // (JUN-308); only ever the selected session, set from the session bar menu.
+  const [shareSessionId, setShareSessionId] = useState<string | null>(null);
+  const [sessionShareUrl, setSessionShareUrl] = useState<string | null>(null);
+  // The share payload snapshots the selected session's visible transcript,
+  // so the dialog must never outlive its selection.
+  useEffect(() => {
+    setShareSessionId(null);
+    setSessionShareUrl(null);
+  }, [selectedHermesSessionId]);
   // Dev-only sample files seeded by window.__agentFiles — surfaced alongside
   // the conversation's own artifacts so the viewer can be exercised at will.
   const [devArtifacts, setDevArtifacts] = useState<AgentArtifact[]>([]);
@@ -13694,9 +13723,31 @@ export function AgentWorkspace({
               ? (selectedHermesSession?.title ?? "")
               : undefined
           }
+          shareUrl={
+            !newSessionMode && selectedHermesSessionId && !selectedHermesSessionIsProvisional
+              ? (sessionShareUrl ?? undefined)
+              : undefined
+          }
           onRename={
             !newSessionMode && selectedHermesSessionId && !selectedHermesSessionIsProvisional
               ? (title) => renameHermesSession(selectedHermesSessionId, title)
+              : undefined
+          }
+          onShare={
+            // Gate on loaded history: sharing snapshots the transcript, and
+            // hermesTurns is empty until the selected session hydrates. Sharing
+            // early or while a response is streaming would persist an
+            // empty/partial session permanently.
+            canShareAgentSession({
+              selectedSessionId: selectedHermesSessionId,
+              newSessionMode,
+              provisional: selectedHermesSessionIsProvisional,
+              historyLoaded: selectedHistoryLoaded,
+              working: selectedHermesSessionId
+                ? workingSessionIds.has(selectedHermesSessionId)
+                : false,
+            }) && selectedHermesSessionId
+              ? () => setShareSessionId(selectedHermesSessionId)
               : undefined
           }
           inProject={sessionInProject}
@@ -13923,6 +13974,33 @@ export function AgentWorkspace({
               onClose={() => setCompactSessionId(null)}
             />
           ) : null}
+          {!newSessionMode && selectedHermesSessionId && !selectedHermesSessionIsProvisional ? (
+            <ShareDialog
+              key={selectedHermesSessionId}
+              open={shareSessionId === selectedHermesSessionId}
+              onClose={() => setShareSessionId(null)}
+              onLinkChange={setSessionShareUrl}
+              item={{
+                kind: "session",
+                itemId: selectedHermesSessionId,
+                title: selectedHermesSession?.title ?? "",
+                // Sessions share the visible user/assistant transcript only:
+                // tool events, reasoning, and hidden context never enter the
+                // payload. Snapshot at share time.
+                buildPayload: () =>
+                  buildSessionPayload({
+                    title: selectedHermesSession?.title ?? "",
+                    messages: hermesTurns
+                      .filter((turn) => turn.role === "user" || turn.role === "assistant")
+                      .map((turn) => ({
+                        role: turn.role as "user" | "assistant",
+                        content: copyableTextForTurn(turn),
+                      }))
+                      .filter((message) => message.content.length > 0),
+                  }),
+              }}
+            />
+          ) : null}
         </>
       )}
       {imageSafeModeConsentRequest ? (
@@ -13963,12 +14041,14 @@ function AgentSessionBar({
   privacyBadge,
   fullMode,
   title,
+  shareUrl,
   artifactCount = 0,
   artifactsOpen = false,
   inProject = false,
   projectContext,
   onToggleArtifacts,
   onRename,
+  onShare,
   onMoveToProject,
   onDelete,
   onShowUsage,
@@ -13979,12 +14059,15 @@ function AgentSessionBar({
   privacyBadge?: ModelPrivacyBadge;
   fullMode?: boolean;
   title?: string;
+  shareUrl?: string;
   artifactCount?: number;
   artifactsOpen?: boolean;
   inProject?: boolean;
   projectContext?: AgentProjectContext;
   onToggleArtifacts?: () => void;
   onRename?: (title: string) => void;
+  /** Opens the private-sharing dialog for this session (JUN-308). */
+  onShare?: () => void;
   /** Opens the change-project dialog (which also owns removal). */
   onMoveToProject?: () => void;
   onDelete?: () => void;
@@ -14024,7 +14107,13 @@ function AgentSessionBar({
   }
 
   const hasMenu = Boolean(
-    onRename || onMoveToProject || onDelete || onShowUsage || onCompactContext || onOpenTuiDebug,
+    onRename ||
+      onShare ||
+      onMoveToProject ||
+      onDelete ||
+      onShowUsage ||
+      onCompactContext ||
+      onOpenTuiDebug,
   );
 
   return (
@@ -14080,7 +14169,10 @@ function AgentSessionBar({
                   }}
                 />
               ) : (
-                <span className="detail-breadcrumb-current">{title || "Untitled session"}</span>
+                <span className="detail-breadcrumb-current-group">
+                  <span className="detail-breadcrumb-current">{title || "Untitled session"}</span>
+                  {shareUrl ? <ShareLinkCopyAction url={shareUrl} /> : null}
+                </span>
               )}
             </li>
           ) : origin ? (
@@ -14146,6 +14238,19 @@ function AgentSessionBar({
                     Rename
                   </button>
                 ) : null}
+                {onShare ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onShare();
+                    }}
+                  >
+                    <IconShareOs size={14} />
+                    Share
+                  </button>
+                ) : null}
                 {onMoveToProject ? (
                   <button
                     type="button"
@@ -14159,7 +14264,7 @@ function AgentSessionBar({
                     {inProject ? "Change project" : "Add to project"}
                   </button>
                 ) : null}
-                {(onRename || onMoveToProject) && (onShowUsage || onCompactContext) ? (
+                {(onRename || onShare || onMoveToProject) && (onShowUsage || onCompactContext) ? (
                   <div className="context-menu-separator" role="separator" />
                 ) : null}
                 {onShowUsage ? (
@@ -15567,7 +15672,7 @@ function AgentChatTurnRow({
       copyResetTimerRef.current = window.setTimeout(() => {
         setCopied(false);
         copyResetTimerRef.current = undefined;
-      }, 1400);
+      }, 1600);
     } catch {
       // Clipboard can fail in restricted contexts; leave the transcript alone.
     }
@@ -15598,6 +15703,7 @@ function AgentChatTurnRow({
       width={104}
       delay={TURN_ACTION_TIP_DELAY_MS}
       tip={copied ? "Copied" : "Copy message"}
+      forceOpen={copied}
       className="agent-turn-action-tip"
     >
       <button
@@ -15607,13 +15713,7 @@ function AgentChatTurnRow({
         data-copied={copied ? "true" : undefined}
         onClick={() => void copyTurn()}
       >
-        {copied ? (
-          // Medium checkmark: the small variant reads too slight as the only
-          // confirmation left now that the label is gone.
-          <IconCheckmark2Medium size={14} aria-hidden />
-        ) : (
-          <IconClipboard size={14} aria-hidden />
-        )}
+        <CopyStateIcon copied={copied} />
       </button>
     </HoverTip>
   ) : null;

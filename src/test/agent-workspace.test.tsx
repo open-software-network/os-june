@@ -11,6 +11,7 @@ import {
   AgentWorkspace,
   HERO_GREETINGS,
   SkillsToolsPanel,
+  canShareAgentSession,
   composerInSteerStateFor,
   dispatchIssueReportDeliverySettledForTest,
   dispatchIssueReportFollowUpSubmitFailedForTest,
@@ -732,6 +733,19 @@ describe("AgentWorkspace", () => {
 
     expect(composerInSteerStateFor({ ...base, selectedSessionId: "session-1" })).toBe(true);
     expect(composerInSteerStateFor({ ...base, selectedSessionId: "session-2" })).toBe(false);
+  });
+
+  it("allows sharing only after a selected session has finished working", () => {
+    const readySession = {
+      selectedSessionId: "session-1",
+      newSessionMode: false,
+      provisional: false,
+      historyLoaded: true,
+      working: false,
+    };
+
+    expect(canShareAgentSession(readySession)).toBe(true);
+    expect(canShareAgentSession({ ...readySession, working: true })).toBe(false);
   });
 
   it("lets users cancel a clean skill editor without making changes", async () => {
@@ -10246,12 +10260,26 @@ describe("AgentWorkspace", () => {
       expect(userTurn).not.toBeNull();
       expect(assistantTurn).not.toBeNull();
 
-      await user.click(
-        within(assistantTurn as HTMLElement).getByRole("button", {
-          name: "Copy message",
-        }),
-      );
+      const assistantCopy = within(assistantTurn as HTMLElement).getByRole("button", {
+        name: "Copy message",
+      });
+      const iconSwap = assistantCopy.querySelector(".t-icon-swap");
+      const idleIcon = iconSwap?.querySelector('[data-icon="a"]');
+      const copiedIcon = iconSwap?.querySelector('[data-icon="b"]');
+
+      expect(iconSwap).toHaveAttribute("data-state", "a");
+      expect(idleIcon).toBeInTheDocument();
+      expect(copiedIcon).toBeInTheDocument();
+      fireEvent.focus(assistantCopy);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copy message");
+
+      await user.click(assistantCopy);
       expect(writeText).toHaveBeenLastCalledWith("Here is the launch plan.");
+      expect(assistantCopy).toHaveAccessibleName("Copied message");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+      expect(iconSwap?.querySelector('[data-icon="a"]')).toBe(idleIcon);
+      expect(iconSwap?.querySelector('[data-icon="b"]')).toBe(copiedIcon);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
 
       await user.click(
         within(userTurn as HTMLElement).getByRole("button", {

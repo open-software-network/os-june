@@ -36,7 +36,11 @@ use crate::{
             RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
             RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
             SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
-            SessionRequest, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
+            SessionRequest, ShareAddInvitesRequest, ShareCreateRequest, ShareCreatedDto,
+            ShareDeleteRequest, ShareDto, ShareGetRequest, ShareInviteKeyDto,
+            ShareInviteKeySaveRequest, ShareInviteKeysGetRequest, ShareInvitesAddedDto,
+            ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest, ShareRevokeInviteRequest,
+            ShareSummaryDto, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
             SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
             SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
@@ -150,10 +154,45 @@ pub async fn update_note(app: AppHandle, request: UpdateNoteRequest) -> Result<N
         .await?)
 }
 
+/// Revoke the remote share for an item and drop its local keys, if the item is
+/// shared. Called before deleting a shared item so its server-side ciphertext
+/// and invite ACL don't outlive it: once the source note/session is gone the
+/// owner has no Share dialog left to revoke from, and existing recipient links
+/// would keep opening forever. Fail closed - if the revoke can't be confirmed
+/// the caller keeps the item rather than orphaning a live share.
+async fn revoke_item_share(
+    repos: &Repositories,
+    item_kind: &str,
+    item_id: &str,
+) -> Result<(), AppError> {
+    if let Some(record) = repos.share_key_for_item(item_kind, item_id).await? {
+        delete_remote_share_or_accept_missing(&record.share_id).await?;
+        repos.delete_share_keys(&record.share_id).await?;
+    }
+    Ok(())
+}
+
+async fn delete_remote_share_or_accept_missing(share_id: &str) -> Result<(), AppError> {
+    match crate::june_api::share_delete(share_id).await {
+        Ok(()) => Ok(()),
+        // `share_not_found` is deliberately ambiguous for non-enumeration. For
+        // deletion, either meaning is terminal for this local profile: the
+        // remote share is already absent or cannot be managed by this account,
+        // so retaining the stale key would permanently block item deletion.
+        Err(error) if is_share_not_found(&error) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_share_not_found(error: &AppError) -> bool {
+    error.code == "june_request_failed" && error.message == "share_not_found"
+}
+
 #[tauri::command]
 pub async fn delete_note(app: AppHandle, request: DeleteNoteRequest) -> Result<(), AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
+    revoke_item_share(&repos, "note", &request.note_id).await?;
     let audio_paths = repos
         .audio_artifact_paths_for_note(&request.note_id)
         .await?;
@@ -187,6 +226,9 @@ pub async fn delete_notes(app: AppHandle, request: DeleteNotesRequest) -> Result
 
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
+    for note_id in &note_ids {
+        revoke_item_share(&repos, "note", note_id).await?;
+    }
     let audio_paths = repos.audio_artifact_paths_for_notes(&note_ids).await?;
     repos.delete_notes(&note_ids).await?;
     for path in audio_paths {
@@ -2675,6 +2717,134 @@ fn unix_timestamp_to_rfc3339(timestamp: f64) -> String {
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+// ---- Private sharing (JUN-308) -----------------------------------------
+// Thin proxies to the june-api /v1/shares endpoints plus the local key
+// store. All crypto happens in the webview; these commands only move
+// ciphertext, envelopes, metadata, and locally persisted key bytes.
+
+#[tauri::command]
+pub async fn share_create(request: ShareCreateRequest) -> Result<ShareCreatedDto, AppError> {
+    crate::june_api::share_create(&request).await
+}
+
+#[tauri::command]
+pub async fn share_list() -> Result<Vec<ShareSummaryDto>, AppError> {
+    crate::june_api::share_list().await
+}
+
+#[tauri::command]
+pub async fn share_get(request: ShareGetRequest) -> Result<ShareDto, AppError> {
+    crate::june_api::share_get(&request.share_id).await
+}
+
+#[tauri::command]
+pub async fn share_add_invites(
+    request: ShareAddInvitesRequest,
+) -> Result<ShareInvitesAddedDto, AppError> {
+    crate::june_api::share_add_invites(&request.share_id, &request.invites).await
+}
+
+#[tauri::command]
+pub async fn share_revoke_invite(request: ShareRevokeInviteRequest) -> Result<(), AppError> {
+    crate::june_api::share_revoke_invite(&request.share_id, &request.invite_id).await
+}
+
+#[tauri::command]
+pub async fn share_delete(app: AppHandle, request: ShareDeleteRequest) -> Result<(), AppError> {
+    delete_remote_share_or_accept_missing(&request.share_id).await?;
+    // The share is gone server-side; its locally retained keys are useless
+    // and should not outlive it.
+    repositories(&app)
+        .await?
+        .delete_share_keys(&request.share_id)
+        .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn share_key_save(app: AppHandle, request: ShareKeySaveRequest) -> Result<(), AppError> {
+    let content_key = decode_share_key_b64(&request.content_key_b64)?;
+    repositories(&app)
+        .await?
+        .save_share_key(&crate::db::repositories::ShareKeyRecord {
+            share_id: request.share_id,
+            item_kind: request.item_kind,
+            item_id: request.item_id,
+            content_key,
+        })
+        .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn share_key_get(
+    app: AppHandle,
+    request: ShareKeyGetRequest,
+) -> Result<Option<ShareKeyDto>, AppError> {
+    let record = repositories(&app)
+        .await?
+        .share_key_for_item(&request.item_kind, &request.item_id)
+        .await?;
+    Ok(record.map(|record| ShareKeyDto {
+        share_id: record.share_id,
+        content_key_b64: encode_share_key_b64(&record.content_key),
+    }))
+}
+
+#[tauri::command]
+pub async fn share_invite_key_save(
+    app: AppHandle,
+    request: ShareInviteKeySaveRequest,
+) -> Result<(), AppError> {
+    let invite_key = decode_share_key_b64(&request.invite_key_b64)?;
+    repositories(&app)
+        .await?
+        .save_share_invite_key(&crate::db::repositories::ShareInviteKeyRecord {
+            invite_id: request.invite_id,
+            share_id: request.share_id,
+            invite_key,
+        })
+        .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn share_invite_keys_get(
+    app: AppHandle,
+    request: ShareInviteKeysGetRequest,
+) -> Result<Vec<ShareInviteKeyDto>, AppError> {
+    let records = repositories(&app)
+        .await?
+        .share_invite_keys(&request.share_id)
+        .await?;
+    Ok(records
+        .into_iter()
+        .map(|record| ShareInviteKeyDto {
+            invite_id: record.invite_id,
+            invite_key_b64: encode_share_key_b64(&record.invite_key),
+        })
+        .collect())
+}
+
+/// Origin share links point at; the webview assembles the full link
+/// (including the key-carrying fragment, which must never reach Rust logs).
+#[tauri::command]
+pub fn get_share_base_url() -> Result<String, AppError> {
+    Ok(crate::june_api::share_base_url())
+}
+
+fn decode_share_key_b64(value: &str) -> Result<Vec<u8>, AppError> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value.trim())
+        .map_err(|_| AppError::new("share_key_invalid", "Share key is not valid base64url."))
+}
+
+fn encode_share_key_b64(value: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value)
+}
+
 /// Cached app repositories pool. The database path is derived from the app
 /// data dir and never changes within a process, so the pool (and its
 /// migrations) are initialized once instead of on every Tauri command.
@@ -2806,11 +2976,27 @@ mod note_transcription_timing_tests;
 mod tests {
     use super::{
         apply_system_audio_permission_probe_result, assemble_recording_source_readiness,
-        capture_start_timeout_error, create_memory_with_settings, load_memory_settings,
-        persist_memory_settings, recovery_validation_expected_duration_ms,
+        capture_start_timeout_error, create_memory_with_settings, is_share_not_found,
+        load_memory_settings, persist_memory_settings, recovery_validation_expected_duration_ms,
         should_probe_system_audio_permission, start_capture_with_timeout_and_cleanup,
         update_memory_with_settings, validated_folder_instructions,
     };
+
+    #[test]
+    fn recognizes_only_the_ambiguous_share_not_found_error() {
+        assert!(is_share_not_found(&AppError::new(
+            "june_request_failed",
+            "share_not_found"
+        )));
+        assert!(!is_share_not_found(&AppError::new(
+            "june_request_failed",
+            "network error"
+        )));
+        assert!(!is_share_not_found(&AppError::new(
+            "storage_unavailable",
+            "share_not_found"
+        )));
+    }
     use crate::{
         audio::capture::{is_capture_active, CaptureStartState, StartedRecording, StartedSource},
         db::repositories::Repositories,
