@@ -1596,6 +1596,70 @@ describe("Agent chat runtime", () => {
     expect(completedHermesMessageText(events)).toBe("Here you go:\n\nAfter the image.");
   });
 
+  it("extends persisted prose past a completed raw media segment with media structure", () => {
+    const mediaPath = "/tmp/final-image.png";
+    const rawSegment = "MEDIA:/tmp/generated-ima";
+    const events = [
+      transcriptEvent({ messageId: "m1" }),
+      transcriptEvent({ messageId: "m1", delta: "Here it is." }),
+      toolEvent({
+        key: "search-1",
+        phase: "complete",
+        name: "search",
+        sanitizedPayload: { tool_id: "search-1", name: "search" },
+      }),
+      transcriptEvent({ messageId: "m1", delta: rawSegment }),
+      transcriptEvent({
+        messageId: "m1",
+        complete: true,
+        delta: `Here it is.\n\nMEDIA:${mediaPath}`,
+      }),
+    ];
+    const turns = buildHermesSessionChatTurns(
+      [
+        {
+          id: "m1",
+          role: "assistant",
+          content: `Here it is. Finished.\n\nMEDIA:${mediaPath}`,
+          timestamp: "2026-06-04T10:00:02.000Z",
+        },
+      ],
+      events,
+    );
+
+    const turn = turns[0];
+    const textParts = turn?.parts.filter((part) => part.type === "text");
+    expect(textParts).toEqual([
+      {
+        type: "text",
+        text: "Here it is.",
+        status: "complete",
+        renderKey: "m1:text:0",
+      },
+      {
+        type: "text",
+        text: rawSegment,
+        status: "complete",
+        renderKey: "m1:text:1",
+      },
+      {
+        type: "text",
+        text: " Finished.",
+        status: "complete",
+        renderKey: "m1:text:2",
+      },
+    ]);
+    expect(turn?.parts).toContainEqual(expect.objectContaining({ type: "image", path: mediaPath }));
+
+    const renderedText = textParts
+      ?.map((part) => stripRenderedMediaReferences(part.text, true))
+      .join("");
+    expect(renderedText).toBe("Here it is. Finished.");
+    expect(renderedText).not.toContain("MEDIA:");
+    expect(completedHermesMessageText(events)).toBe("Here it is.");
+    expect(completedHermesMessageText(events)).not.toContain("MEDIA:");
+  });
+
   it("does not attach identified transcript prose to a tool-created turn", () => {
     const turns = buildHermesSessionChatTurns(
       [],

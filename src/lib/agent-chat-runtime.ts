@@ -670,7 +670,14 @@ function appendLiveHermesEvents(
           }
         } else if (text) {
           if (displayText) {
-            completeAssistantTextPart(currentAssistant.parts, displayText, messageId);
+            completeAssistantTextPart(
+              currentAssistant.parts,
+              displayText,
+              messageId,
+              imageParts.length > 0 ||
+                videoParts.length > 0 ||
+                partsContainMediaStructure(currentAssistant.parts),
+            );
           }
           appendImageParts(currentAssistant.parts, imageParts);
           appendVideoParts(currentAssistant.parts, videoParts);
@@ -1029,7 +1036,12 @@ function pushAssistantTextPart(
 // Reconcile the final snapshot against every streamed text segment. A verified
 // extension may append to the last segment; every other snapshot is retained
 // only as transport evidence and cannot rewrite prose already painted.
-function completeAssistantTextPart(parts: AgentChatPart[], text: string, renderIdentity?: string) {
+function completeAssistantTextPart(
+  parts: AgentChatPart[],
+  text: string,
+  renderIdentity?: string,
+  holdTrailingMediaTransport = false,
+) {
   const textParts = parts.filter((part): part is AgentChatTextPart => part.type === "text");
   if (textParts.length === 0) {
     if (!text.trim()) return;
@@ -1042,7 +1054,12 @@ function completeAssistantTextPart(parts: AgentChatPart[], text: string, renderI
     last.text += text.slice(streamed.length);
   } else {
     const visibleStreamed = textParts
-      .map((part) => stripRenderedMediaReferences(part.text, part.status === "running"))
+      .map((part) =>
+        stripRenderedMediaReferences(
+          part.text,
+          part.status === "running" || holdTrailingMediaTransport,
+        ),
+      )
       .join("");
     if (text.startsWith(visibleStreamed)) {
       const visibleSuffix = text.slice(visibleStreamed.length);
@@ -1072,13 +1089,29 @@ function reconcilePersistedAssistantTurn(
     .filter((part): part is AgentChatTextPart => part.type === "text")
     .map((part) => part.text)
     .join("");
-  if (persistedText) completeAssistantTextPart(liveTurn.parts, persistedText, messageId);
+  if (persistedText) {
+    completeAssistantTextPart(
+      liveTurn.parts,
+      persistedText,
+      messageId,
+      partsContainMediaStructure(liveTurn.parts) || partsContainMediaStructure(persistedTurn.parts),
+    );
+  }
 
   reconcilePersistedPartOrder(liveTurn.parts, persistedTurn.parts, messageId);
 
   liveTurn.branchMessageId = messageId;
   liveTurn.status = "complete";
   completeRunningParts(liveTurn.parts);
+}
+
+function partsContainMediaStructure(parts: AgentChatPart[]) {
+  return parts.some(
+    (part) =>
+      part.type === "image" ||
+      part.type === "video" ||
+      (part.type === "tool" && part.media !== undefined),
+  );
 }
 
 type PersistedReconciliationPart =
