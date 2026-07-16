@@ -445,6 +445,92 @@ jobs:
             --repo open-software-network/os-june-releases \
             --clobber
 
+      - name: Notify Slack about rc build
+        if: ${{ success() }}
+        continue-on-error: true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret is not configured; skipping Slack notification."
+            exit 0
+          fi
+
+          payload_file="$RUNNER_TEMP/rc-slack-payload.json"
+          SLACK_PAYLOAD_PATH="$payload_file" node <<'NODE'
+          const fs = require("node:fs");
+
+          const version = process.env.VERSION;
+          const commit = process.env.BUILD_COMMIT;
+          const shortCommit = commit.slice(0, 7);
+          const releaseUrl =
+            "https://github.com/open-software-network/os-june-releases/releases/tag/rc";
+          const downloadUrl =
+            "https://github.com/open-software-network/os-june-releases/releases/download/rc/June_universal.dmg";
+          const commitUrl = `https://github.com/open-software-network/os-june/commit/${commit}`;
+
+          const payload = {
+            text: `June v${version} release candidate is ready for testing`,
+            blocks: [
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `:test_tube: *June v${version} release candidate is ready for testing*`,
+                },
+              },
+              {
+                type: "section",
+                fields: [
+                  {
+                    type: "mrkdwn",
+                    text: `*Version:*\nv${version}`,
+                  },
+                  {
+                    type: "mrkdwn",
+                    text: `*Source:*\n<${commitUrl}|${shortCommit}>`,
+                  },
+                ],
+              },
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `*Download:*\n<${downloadUrl}|macOS DMG (Apple Silicon and Intel)>`,
+                },
+              },
+              {
+                type: "actions",
+                elements: [
+                  {
+                    type: "button",
+                    text: {
+                      type: "plain_text",
+                      text: "View release candidate",
+                    },
+                    url: releaseUrl,
+                  },
+                ],
+              },
+            ],
+          };
+
+          fs.writeFileSync(
+            process.env.SLACK_PAYLOAD_PATH,
+            `${JSON.stringify(payload)}\n`,
+          );
+          NODE
+
+          response=$(curl -sS -f -X POST \
+            -H "Content-Type: application/json" \
+            --data-binary "@$payload_file" \
+            "$SLACK_WEBHOOK_URL" 2>&1) || {
+            echo "::warning::Slack notification failed: $response"
+            exit 0
+          }
+          echo "Slack notification sent successfully."
+
       - name: Summary
         run: |
           {

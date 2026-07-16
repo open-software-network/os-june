@@ -36,6 +36,9 @@ Create or confirm these before cutting the first updater release:
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
   `PRODUCTION_JUNE_API_URL`.
+- Slack incoming-webhook secret: `SLACK_WEBHOOK_URL`, configured for the release
+  announcements channel. An absent or failing webhook warns but does not fail an
+  otherwise successful RC build.
 - Optional fast release runner: a dedicated self-hosted Mac Studio runner with
   the `desktop-release` label. See
   [desktop-release-runner.md](desktop-release-runner.md).
@@ -116,16 +119,20 @@ it does not depend on the bump and can run as soon as promote finishes (see
 
 ## Release notifications
 
-Stable releases are announced in Slack by the org's GitHub Slack app. Subscribe a
-channel once with:
+Stable releases are announced in Slack by the org's GitHub Slack app. Subscribe
+the release announcements channel once with:
 
 ```text
 /github subscribe open-software-network/os-june-releases releases
 ```
 
 It posts when a `vX.Y.Z` stable release is published. RC builds reuse the fixed
-`rc` release tag and are edited in place rather than re-published, so they do not
-reliably trigger a Slack post; watch the `rc` release page for candidates.
+`rc` release tag and are edited in place rather than re-published, so the
+`rc-desktop-release` workflow posts each successful candidate through
+`SLACK_WEBHOOK_URL` after its release assets are available. The webhook message
+links the source commit, macOS DMG, and fixed `rc` release page. Notification
+delivery is best effort and never turns a successfully published candidate into
+a failed release run.
 
 The app polls:
 
