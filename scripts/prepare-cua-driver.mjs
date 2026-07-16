@@ -46,6 +46,12 @@ if (preparedBundleMatches()) {
   process.exit(0);
 }
 
+// Cargo runs this package's build.rs even when only the helper binary is
+// requested. Remove a stale real bundle before that build so build.rs creates
+// its non-packaging placeholder instead of rejecting the old source stamp.
+// The newly compiled helper replaces the placeholder below.
+rmSync(bundleDir, { recursive: true, force: true });
+
 const developerDir = existsSync("/Applications/Xcode.app/Contents/Developer")
   ? "/Applications/Xcode.app/Contents/Developer"
   : process.env.DEVELOPER_DIR;
