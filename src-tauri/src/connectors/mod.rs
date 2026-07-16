@@ -351,14 +351,23 @@ pub async fn list_google_accounts(
     let records = repos.list_connector_accounts().await?;
     Ok(records
         .into_iter()
-        .map(|record| ConnectorAccount {
-            account_id: record.account_id,
-            provider: ConnectorProvider::Google,
-            email: record.email,
-            scopes: record.scopes,
-            status: ConnectorAccountStatus::from_db(&record.status),
-        })
+        .filter_map(google_account_from_record)
         .collect())
+}
+
+fn google_account_from_record(
+    record: crate::db::repositories::ConnectorAccountRecord,
+) -> Option<ConnectorAccount> {
+    if record.provider != ConnectorProvider::Google.as_str() {
+        return None;
+    }
+    Some(ConnectorAccount {
+        account_id: record.account_id,
+        provider: ConnectorProvider::Google,
+        email: record.email,
+        scopes: record.scopes,
+        status: ConnectorAccountStatus::from_db(&record.status),
+    })
 }
 
 /// Enumerate connected accounts for shared API consumers.
@@ -659,6 +668,36 @@ mod tests {
         assert_eq!(json["email"], "Notion hosted MCP preview");
         assert_eq!(json["scopes"].as_array().unwrap().len(), 0);
         assert_eq!(json["status"], "connected");
+    }
+
+    #[test]
+    fn google_account_mapping_ignores_non_google_records() {
+        let google = crate::db::repositories::ConnectorAccountRecord {
+            account_id: "user@example.com".to_string(),
+            provider: "google".to_string(),
+            email: "user@example.com".to_string(),
+            scopes: vec!["openid".to_string()],
+            status: "connected".to_string(),
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+        };
+        let notion = crate::db::repositories::ConnectorAccountRecord {
+            account_id: "notion-hosted-mcp".to_string(),
+            provider: "notion".to_string(),
+            email: "Notion hosted MCP preview".to_string(),
+            scopes: Vec::new(),
+            status: "connected".to_string(),
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+        };
+
+        let mapped: Vec<_> = vec![google, notion]
+            .into_iter()
+            .filter_map(google_account_from_record)
+            .collect();
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].provider, ConnectorProvider::Google);
+        assert_eq!(mapped[0].email, "user@example.com");
     }
 
     #[test]
