@@ -78,8 +78,11 @@ version `X.Y.Z-rc.N` (bundling the Hermes runtime), and publishes it to a fixed
 `rc` prerelease in `open-software-network/os-june-releases` with `latest-rc.json`.
 The fixed `June_universal.dmg` asset follows the current RC for the updater, while
 an immutable versioned DMG remains available for each Slack announcement. The
-workflow records the source commit in `rc-build.json` (so promote can rebuild the
-same tree) and does NOT touch `main`.
+versioned asset is uploaded without replacement before the fixed channel aliases;
+reuse a higher RC number if that append-only upload already exists. The workflow
+records the source commit in `rc-build.json` (so promote can rebuild the same
+tree) and does NOT touch `main`. It also fails closed if it cannot read the
+current RC metadata, preserving the channel's forward-only ordering.
 
 ### 2. Test the candidate
 

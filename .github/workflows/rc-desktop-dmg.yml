@@ -201,10 +201,18 @@ jobs:
           dir="$RUNNER_TEMP/rc-guard"
           rm -rf "$dir"
           mkdir -p "$dir"
-          if gh release view rc --repo open-software-network/os-june-releases >/dev/null 2>&1; then
+          lookup_error=""
+          if lookup_error=$(gh api --silent \
+            repos/open-software-network/os-june-releases/releases/tags/rc 2>&1); then
             gh release download rc \
               --repo open-software-network/os-june-releases \
               --pattern "rc-build.json" --dir "$dir"
+          elif grep -q 'HTTP 404' <<< "$lookup_error"; then
+            echo "No existing rc release was found."
+          else
+            echo "::error::Could not determine the current rc release; refusing to publish without the forward-only guard."
+            printf '%s\n' "$lookup_error" >&2
+            exit 1
           fi
           RC_GUARD_DIR="$dir" node --input-type=module <<'NODE'
           import { existsSync, readFileSync } from "node:fs";
@@ -438,9 +446,14 @@ jobs:
               --target main
           fi
 
+          # The candidate-specific DMG is append-only: an existing name means
+          # this version was already attempted and must never be replaced.
+          gh release upload rc "$versioned_dmg" \
+            --repo open-software-network/os-june-releases
+
+          # Fixed channel assets intentionally follow the newest candidate.
           gh release upload rc \
             "$stable_dmg" \
-            "$versioned_dmg" \
             "$app_archive" \
             "$app_signature" \
             "$latest_rc_json" \

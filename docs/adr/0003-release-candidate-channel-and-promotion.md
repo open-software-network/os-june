@@ -167,5 +167,7 @@ changing the fixed-tag update-channel contract. A missing or failing webhook
 warns but does not fail the release after signed artifacts have published. The
 fixed DMG asset continues to follow the update channel, while Slack links an
 additional versioned DMG that remains immutable for the candidate named in the
-announcement. Delivery uses bounded retries; manual posting is the recovery path
-for a notification that still fails.
+announcement. The versioned asset is uploaded without replacement, and the RC
+version guard fails closed unless GitHub explicitly reports that the fixed
+release does not exist. Delivery uses bounded retries; manual posting is the
+recovery path for a notification that still fails.
