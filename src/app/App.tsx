@@ -225,9 +225,12 @@ import { createInitialState, notesReducer } from "./state/app-state";
 import { handleSidebarResizeStart } from "./sidebar-resize";
 import {
   checkForJuneUpdate,
+  INITIAL_UPDATE_STATUS_DISPLAY,
   prepareJuneUpdate,
   startPeriodicJuneUpdateChecks,
   UP_TO_DATE_STATUS,
+  updateCheckShowsStatus,
+  updateStatusDisplayReducer,
   type UpdateCheckMode,
   type UpdateInstallProgress,
   type UpdatePromptPayload,
@@ -501,14 +504,18 @@ export function App() {
   const [systemAudioRefreshRequest, setSystemAudioRefreshRequest] = useState(0);
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
   const [readyUpdate, setReadyUpdate] = useState<UpdatePromptPayload<JuneUpdate> | null>(null);
-  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
-  // True while the up-to-date status plays its timed soft exit (see the
-  // auto-dismiss effect next to runUpdateCheck).
-  const [updateStatusLeaving, setUpdateStatusLeaving] = useState(false);
+  const [updateStatusDisplay, dispatchUpdateStatusDisplay] = useReducer(
+    updateStatusDisplayReducer,
+    INITIAL_UPDATE_STATUS_DISPLAY,
+  );
+  const updateStatus = updateStatusDisplay.status;
+  const updateStatusLeaving = updateStatusDisplay.leaving;
+  const setUpdateStatus = useCallback((status: string | null) => {
+    dispatchUpdateStatusDisplay({ type: "show", status });
+  }, []);
   const [preparingUpdate, setPreparingUpdate] = useState(false);
-  // Mirrors checkingUpdateRef for render: drives the status card's busy spinner
-  // while a manual "Checking for updates..." round-trip is in flight. The ref
-  // stays the source of truth for the re-entrancy guards in runUpdateCheck.
+  // Render-only flag for a visible manual check. checkingUpdateRef separately
+  // guards every check mode, including silent launch and periodic checks.
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [relaunchingUpdate, setRelaunchingUpdate] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<UpdateInstallProgress | null>(null);
@@ -698,7 +705,7 @@ export function App() {
       updateCardDemoRef.current?.dispose();
       updateCardDemoRef.current = null;
     };
-  }, []);
+  }, [setUpdateStatus]);
   // Dev console driver (window.__toastDemo) that fires each toast variant so
   // the toast styling can be inspected without walking a real flow.
   useEffect(() => {
@@ -1608,7 +1615,7 @@ export function App() {
         },
       });
     },
-    [],
+    [setUpdateStatus],
   );
 
   const runUpdateCheck = useCallback(
@@ -1625,9 +1632,11 @@ export function App() {
         return;
       }
       checkingUpdateRef.current = true;
-      setCheckingUpdate(true);
-      if (mode === "manual") setUpdateStatus("Checking for updates...");
-      else if (mode === "launch") setUpdateStatus(null);
+      const showsStatus = updateCheckShowsStatus(mode);
+      if (showsStatus) {
+        setCheckingUpdate(true);
+        setUpdateStatus("Checking for updates...");
+      } else if (mode === "launch") setUpdateStatus(null);
       void checkForJuneUpdate(
         {
           check,
@@ -1644,10 +1653,10 @@ export function App() {
         mode,
       ).finally(() => {
         checkingUpdateRef.current = false;
-        setCheckingUpdate(false);
+        if (showsStatus) setCheckingUpdate(false);
       });
     },
-    [prepareUpdate],
+    [prepareUpdate, setUpdateStatus],
   );
 
   // Auto-dismiss ONLY the up-to-date confirmation: linger, play the soft exit,
@@ -1655,16 +1664,12 @@ export function App() {
   // or unmount runs the cleanup, cancelling the pending hide; failures and
   // busy statuses never match, so they persist until the user dismisses them.
   useEffect(() => {
-    if (updateStatus !== UP_TO_DATE_STATUS) {
-      setUpdateStatusLeaving(false);
-      return;
-    }
+    if (updateStatus !== UP_TO_DATE_STATUS) return;
     const leaveTimer = window.setTimeout(() => {
-      setUpdateStatusLeaving(true);
+      dispatchUpdateStatusDisplay({ type: "beginUpToDateExit" });
     }, UP_TO_DATE_DISMISS_MS);
     const clearTimer = window.setTimeout(() => {
-      setUpdateStatusLeaving(false);
-      setUpdateStatus(null);
+      dispatchUpdateStatusDisplay({ type: "clearUpToDate" });
     }, UP_TO_DATE_DISMISS_MS + UP_TO_DATE_EXIT_MS);
     return () => {
       window.clearTimeout(leaveTimer);
@@ -1690,7 +1695,7 @@ export function App() {
       setRelaunchingUpdate(false);
       setUpdateStatus(`Relaunch failed: ${messageFromError(error)}`);
     });
-  }, []);
+  }, [setUpdateStatus]);
 
   // Launch check: silent by design — a "no update" result shows nothing so it
   // never interrupts the user (PRD user story 7) — and fired at most once per

@@ -21938,22 +21938,21 @@ button.memory-project:hover {
   cursor: default;
 }
 
-/* Bare June mark, no tile: faint at rest, warms to brand on hover. Fixed 10px
- * box (mirroring .update-status-mark) so swapping to the dot spinner while
- * relaunching never reflows the copy; the spinner ignores this faint tint and
- * keeps its darker --spinner-neutral default. */
+/* Bare June mark, no tile: faint at rest, warms to brand on hover. The fixed
+ * mark-sized box mirrors .update-status-mark, so swapping to the dot spinner
+ * never reflows the copy; the spinner keeps its darker --spinner-neutral. */
 .update-relaunch-mark {
   display: inline-grid;
   place-items: center;
-  width: 10px;
-  height: 10px;
+  width: var(--sp-4);
+  height: var(--sp-4);
   margin-top: 2px;
   color: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
   transition: color var(--t-slow) var(--ease-spring);
 }
 
 .update-relaunch-mark svg {
-  width: 10px;
+  width: var(--sp-4);
   height: auto;
 }
 
@@ -22023,20 +22022,19 @@ button.memory-project:hover {
   gap: var(--sp-3);
 }
 
-/* Fixed 10px box so the busy dot spinner and the settled June mark occupy the
- * exact same footprint — swapping them never reflows the status text. The
- * static mark takes the muted tint matching .update-relaunch-mark; the spinner
- * keeps its darker --spinner-neutral default so the busy state reads clearly. */
+/* The fixed mark-sized box gives the busy dot spinner and settled June mark
+ * the same footprint, so swapping them never reflows the status text. The
+ * static mark is muted; the spinner keeps its darker --spinner-neutral. */
 .update-status-mark {
   display: inline-grid;
   place-items: center;
-  width: 10px;
-  height: 10px;
+  width: var(--sp-4);
+  height: var(--sp-4);
   color: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
 }
 
 .update-status-mark svg {
-  width: 10px;
+  width: var(--sp-4);
   height: auto;
 }
 
@@ -22080,9 +22078,9 @@ button.memory-project:hover {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-3);
-  /* Start the track under the copy column (10px mark slot + row gap) so it
+  /* Start the track under the copy column (mark slot + row gap) so it
    * lines up with the status text rather than the mark. */
-  padding-left: calc(10px + var(--sp-3));
+  padding-left: calc(var(--sp-4) + var(--sp-3));
 }
 
 .update-progress-track {
@@ -22114,10 +22112,10 @@ button.memory-project:hover {
  * Vars are scoped here (flat global stylesheet), tuned short for a 1%-per-tick
  * counter but kept tunable. */
 .update-digit-group {
-  --update-digit-dur: 320ms;
-  --update-digit-distance: 8px;
-  --update-digit-blur: 2px;
-  --update-digit-ease: cubic-bezier(0.34, 1.45, 0.64, 1);
+  --update-digit-dur: calc(var(--t-med) + var(--t-med));
+  --update-digit-distance: var(--sp-3);
+  --update-digit-blur: var(--sp-px);
+  --update-digit-ease: var(--ease-pop);
 
   display: inline-flex;
   align-items: baseline;
@@ -22145,7 +22143,7 @@ button.memory-project:hover {
 @keyframes update-popover-in {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.98);
+    transform: translateY(var(--sp-2)) scale(0.98);
   }
   to {
     opacity: 1;
@@ -22168,7 +22166,7 @@ button.memory-project:hover {
   }
   to {
     opacity: 0;
-    transform: translateY(6px) scale(0.98);
+    transform: translateY(var(--sp-2)) scale(0.98);
   }
 }
 
@@ -22178,6 +22176,10 @@ button.memory-project:hover {
   .update-popover,
   .update-popover[data-leaving="true"] {
     animation: none;
+  }
+
+  .update-popover[data-leaving="true"] {
+    visibility: hidden;
   }
 
   .update-digit {

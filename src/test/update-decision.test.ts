@@ -1,12 +1,40 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  INITIAL_UPDATE_STATUS_DISPLAY,
+  UP_TO_DATE_STATUS,
   UPDATE_CHECK_INTERVAL_MS,
   checkForJuneUpdate,
   installJuneUpdate,
   prepareJuneUpdate,
   startPeriodicJuneUpdateChecks,
+  updateCheckShowsStatus,
+  updateStatusDisplayReducer,
   type UpdaterUpdate,
 } from "../app/update-decision";
+
+describe("update status display", () => {
+  it("only exposes manual checks as visible busy statuses", () => {
+    expect(updateCheckShowsStatus("manual")).toBe(true);
+    expect(updateCheckShowsStatus("launch")).toBe(false);
+    expect(updateCheckShowsStatus("periodic")).toBe(false);
+  });
+
+  it("does not let stale success timers fade or clear a newer status", () => {
+    const success = updateStatusDisplayReducer(INITIAL_UPDATE_STATUS_DISPLAY, {
+      type: "show",
+      status: UP_TO_DATE_STATUS,
+    });
+    const leaving = updateStatusDisplayReducer(success, { type: "beginUpToDateExit" });
+    expect(leaving.leaving).toBe(true);
+
+    const checking = updateStatusDisplayReducer(leaving, {
+      type: "show",
+      status: "Checking for updates...",
+    });
+    expect(checking).toEqual({ status: "Checking for updates...", leaving: false });
+    expect(updateStatusDisplayReducer(checking, { type: "clearUpToDate" })).toBe(checking);
+  });
+});
 
 function update(body?: string): UpdaterUpdate {
   return {
