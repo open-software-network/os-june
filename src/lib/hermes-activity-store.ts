@@ -9,11 +9,10 @@
  * many subagents are working, and when it last did anything. The drawer renders
  * these rows; it does not re-derive them from raw frames.
  *
- * Fed ONLY from the normalized {@link JuneHermesEvent} stream (the classifier's
- * output), never from raw gateway frames — raw JSON belongs to feature 15's
- * trace panel, not here. AgentWorkspace owns the single write path: it calls
- * `record(event, mode)` at the existing `classifyHermesEvent` site, exactly
- * where it already feeds the pending-action and unsupported stores.
+ * Fed ONLY with normalized {@link JuneHermesEvent} values, never raw gateway
+ * frames — raw JSON belongs to feature 15's trace panel, not here.
+ * AgentWorkspace records classified gateway events and synthesizes normalized
+ * lifecycle/error events for app-lifetime run-monitor start and terminal state.
  *
  * Pending-action counts are NOT counted here — they are the authority of feature
  * 04's store. The factory takes a `pendingCountFor(sessionId)` resolver (wired to

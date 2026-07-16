@@ -131,6 +131,7 @@ describe("agent notifications", () => {
       notifyAgentRunSettled(
         {
           sessionId: "session-2",
+          runMonitorGeneration: 1,
           title: "Make a PDF",
           summary: "June finished.",
         },
@@ -149,6 +150,7 @@ describe("agent notifications", () => {
       notifyAgentRunSettled(
         {
           sessionId: "session-3",
+          runMonitorGeneration: 1,
           title: "Make a PDF",
           summary: "June finished.",
         },
@@ -174,6 +176,7 @@ describe("agent notifications", () => {
       notifyAgentRunSettled(
         {
           sessionId: "session-fallback",
+          runMonitorGeneration: 1,
           title: "Make a PDF",
           summary: "June finished.",
         },
@@ -229,11 +232,21 @@ describe("agent notifications", () => {
 
   it("dedupes duplicate attention events", async () => {
     await notifyAgentRunSettled(
-      { sessionId: "session-6", title: "Make a PDF", summary: "June finished." },
+      {
+        sessionId: "session-6",
+        runMonitorGeneration: 1,
+        title: "Make a PDF",
+        summary: "June finished.",
+      },
       FOCUSED_ELSEWHERE,
     );
     await notifyAgentRunSettled(
-      { sessionId: "session-6", title: "Make a PDF", summary: "June finished." },
+      {
+        sessionId: "session-6",
+        runMonitorGeneration: 1,
+        title: "Make a PDF",
+        summary: "June finished.",
+      },
       FOCUSED_ELSEWHERE,
     );
 
@@ -251,6 +264,7 @@ describe("agent notifications", () => {
     tauriMocks.sendAppNotification.mockResolvedValue(undefined);
     const detail = {
       sessionId: "session-concurrent",
+      runMonitorGeneration: 1,
       title: "Make a PDF",
       summary: "June finished.",
     };
@@ -270,6 +284,7 @@ describe("agent notifications", () => {
     tauriMocks.sendAppNotification.mockResolvedValue(undefined);
     const detail = {
       sessionId: "session-retry",
+      runMonitorGeneration: 1,
       title: "Make a PDF",
       summary: "June finished.",
     };
@@ -292,12 +307,22 @@ describe("agent notifications", () => {
       const context = { ...FOCUSED_ELSEWHERE, away: true, captureActive: true };
 
       await notifyAgentRunSettled(
-        { sessionId: "session-old", title: "First", summary: "First" },
+        {
+          sessionId: "session-old",
+          runMonitorGeneration: 1,
+          title: "First",
+          summary: "First",
+        },
         context,
       );
       vi.advanceTimersByTime(20_000);
       await notifyAgentRunSettled(
-        { sessionId: "session-new", title: "Second", summary: "Second" },
+        {
+          sessionId: "session-new",
+          runMonitorGeneration: 1,
+          title: "Second",
+          summary: "Second",
+        },
         context,
       );
 
@@ -322,7 +347,12 @@ describe("agent notifications", () => {
 
     await expect(
       notifyAgentRunSettled(
-        { sessionId: "session-7", title: "Make a PDF", summary: "June finished." },
+        {
+          sessionId: "session-7",
+          runMonitorGeneration: 1,
+          title: "Make a PDF",
+          summary: "June finished.",
+        },
         { ...FOCUSED_ELSEWHERE, away: true },
       ),
     ).resolves.toBe(true);

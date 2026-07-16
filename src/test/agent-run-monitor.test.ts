@@ -15,6 +15,7 @@ const monitorMocks = vi.hoisted(() => {
   const sessions = vi.fn();
   const sessionMessages = vi.fn();
   const dispatchSettled = vi.fn();
+  const dispatchStarted = vi.fn();
   const dispatchStatus = vi.fn();
   const instances: MockGateway[] = [];
 
@@ -51,6 +52,7 @@ const monitorMocks = vi.hoisted(() => {
     MockGateway,
     bridgeStatus,
     dispatchSettled,
+    dispatchStarted,
     dispatchStatus,
     instances,
     request,
@@ -71,18 +73,27 @@ vi.mock("../lib/tauri", () => ({
 
 vi.mock("../lib/agent-events", () => ({
   dispatchAgentRunSettled: monitorMocks.dispatchSettled,
+  dispatchAgentRunStarted: monitorMocks.dispatchStarted,
   dispatchAgentSessionStatus: monitorMocks.dispatchStatus,
 }));
 
 import {
+  agentRunMonitorSnapshot,
   canAttributeUntaggedAgentRun,
   cancelAgentRunMonitoring,
+  isAgentRunMonitorGenerationCurrent,
   markAgentRunFailed,
   markAgentRunSucceeded,
+  preserveAgentRunTerminalEvidence,
   releaseAgentRunSettlement,
   resetAgentRunMonitoringForTests,
   startAgentRunMonitoring,
+  stopAgentRunMonitoring,
 } from "../lib/agent-run-monitor";
+import {
+  holdHermesSessionDispatch,
+  withHermesSessionDispatchLock,
+} from "../lib/hermes-session-dispatch-mutex";
 
 const SANDBOXED_CONNECTION = {
   baseUrl: "http://127.0.0.1:9000",
@@ -107,15 +118,32 @@ const UNRESTRICTED_CONNECTION = {
   fullMode: true,
 };
 
+let latestGeneration = 0;
+const ACCEPTED_PROMPT_DISPATCHED_AT_MS = Date.parse("2026-07-14T12:00:00Z");
+
 function startRun(overrides: Partial<Parameters<typeof startAgentRunMonitoring>[0]> = {}) {
-  return startAgentRunMonitoring({
+  latestGeneration = startAgentRunMonitoring({
     storedSessionId: "stored-1",
     runtimeSessionId: "runtime-1",
     title: "Prepare launch notes",
     fullMode: false,
     settlementHeld: false,
+    acceptedPrompt: {
+      dispatchedAtMs: ACCEPTED_PROMPT_DISPATCHED_AT_MS,
+      findPersistedUserIndex: (messages) =>
+        messages.findIndex((message) => message.role === "user" && message.id === "user-1"),
+    },
     ...overrides,
   });
+  return latestGeneration;
+}
+
+function preserveTerminalEvidence(input: {
+  status: "completed" | "failed" | "cancelled";
+  summary: string;
+  notBeforeMs: number;
+}) {
+  expect(preserveAgentRunTerminalEvidence("stored-1", input, latestGeneration)).toBe(true);
 }
 
 async function flush() {
@@ -140,6 +168,7 @@ function activeRuntime(runtimeSessionId = "runtime-1") {
 describe("agent run monitor", () => {
   beforeEach(() => {
     resetAgentRunMonitoringForTests();
+    latestGeneration = 0;
     vi.useFakeTimers();
     monitorMocks.instances.length = 0;
     monitorMocks.bridgeStatus.mockReset().mockResolvedValue({
@@ -152,12 +181,22 @@ describe("agent run monitor", () => {
         {
           id: "stored-1",
           status: "completed",
-          ended_at: "2026-07-14T12:00:00Z",
+          ended_at: "2026-07-14T12:01:00Z",
         },
       ],
     });
-    monitorMocks.sessionMessages.mockReset().mockResolvedValue({ messages: [] });
+    monitorMocks.sessionMessages.mockReset().mockResolvedValue({
+      messages: [
+        {
+          id: "user-1",
+          role: "user",
+          content: "Do the work",
+          timestamp: "2026-07-14T12:00:00Z",
+        },
+      ],
+    });
     monitorMocks.dispatchSettled.mockReset();
+    monitorMocks.dispatchStarted.mockReset();
     monitorMocks.dispatchStatus.mockReset();
   });
 
@@ -180,6 +219,7 @@ describe("agent run monitor", () => {
     expect(monitorMocks.dispatchSettled).toHaveBeenCalledWith({
       sessionId: "stored-1",
       title: "Prepare launch notes",
+      runMonitorGeneration: 1,
       summary: "June finished.",
     });
   });
@@ -196,6 +236,184 @@ describe("agent run monitor", () => {
     expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1_000);
     expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
+  });
+
+  it("settles a fast accepted reply retained as an idle active-list row", async () => {
+    monitorMocks.request.mockResolvedValue({
+      sessions: [{ id: "runtime-1", status: "idle" }],
+    });
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [{ id: "stored-1", status: "idle" }],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "user-1", role: "user", content: "Do the work" },
+        { id: "assistant-1", role: "assistant", content: "Finished reply" },
+      ],
+    });
+
+    startRun();
+    await observeTwoIdleSnapshots();
+
+    expect(monitorMocks.dispatchSettled).toHaveBeenCalledWith({
+      sessionId: "stored-1",
+      title: "Prepare launch notes",
+      runMonitorGeneration: 1,
+      summary: "June finished.",
+    });
+  });
+
+  it("probes a retained idle row for a replacement generation", async () => {
+    monitorMocks.request.mockResolvedValue({
+      sessions: [{ id: "runtime-1", status: "idle" }],
+    });
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [{ id: "stored-1", status: "idle" }],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "user-1", role: "user", content: "Do the work" },
+        { id: "assistant-1", role: "assistant", content: "Replacement reply" },
+      ],
+    });
+    startRun({ runtimeSessionId: "runtime-old" });
+    const replacementGeneration = startRun();
+
+    await observeTwoIdleSnapshots();
+
+    expect(monitorMocks.dispatchSettled).toHaveBeenCalledWith({
+      sessionId: "stored-1",
+      title: "Prepare launch notes",
+      runMonitorGeneration: replacementGeneration,
+      summary: "June finished.",
+    });
+  });
+
+  it.each([
+    "completed",
+    "failed",
+  ])("does not consume a stale prior %s outcome before the current prompt persists", async (status) => {
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "stored-1",
+          status,
+          ended_at: "2026-07-14T11:59:00Z",
+        },
+      ],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "prior-user", role: "user", content: "Do the work" },
+        { id: "prior-assistant", role: "assistant", content: "Prior result" },
+      ],
+    });
+
+    startRun();
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "completed",
+    "failed",
+  ])("does not consume a stale prior %s outcome after observing current activity", async (status) => {
+    const finishRuntime = activeRuntime();
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "stored-1",
+          status,
+          ended_at: "2026-07-14T11:59:00Z",
+        },
+      ],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "prior-user", role: "user", content: "Do the work" },
+        { id: "prior-assistant", role: "assistant", content: "Prior result" },
+      ],
+    });
+
+    startRun();
+    await flush();
+    finishRuntime();
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "completed",
+    "failed",
+  ])("does not consume stale %s metadata after the current prompt persists", async (status) => {
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "stored-1",
+          status,
+          ended_at: "2026-07-14T11:59:00Z",
+        },
+      ],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        {
+          id: "user-1",
+          role: "user",
+          content: "Do the work",
+          timestamp: "2026-07-14T12:00:00Z",
+        },
+      ],
+    });
+
+    startRun();
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a terminal marker equal to dispatch time as current", async () => {
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "stored-1",
+          status: "failed",
+          ended_at: "2026-07-14T12:00:00Z",
+        },
+      ],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [{ id: "user-1", role: "user", content: "Do the work" }],
+    });
+
+    startRun();
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+  });
+
+  it("does not use an assistant reply from a later Agent run", async () => {
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [{ id: "stored-1", status: "idle" }],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "user-1", role: "user", content: "Do the work" },
+        { id: "later-user", role: "user", content: "Different run" },
+        { id: "later-assistant", role: "assistant", content: "Later result" },
+      ],
+    });
+
+    startRun();
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
   });
 
   it("uses the persisted reply when the session status only reaches idle", async () => {
@@ -218,10 +436,322 @@ describe("agent run monitor", () => {
     expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
   });
 
+  it("keeps ambiguous failure evidence unresolved without a fresh terminal marker", async () => {
+    const submittedAtMs = Date.parse("2026-07-14T12:00:00Z");
+    const finishRuntime = activeRuntime();
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [{ id: "stored-1", status: "idle" }],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "user-1", role: "user", content: "Do the work" },
+        { id: "assistant-1", role: "assistant", content: "Partial prose" },
+      ],
+    });
+    startRun();
+    preserveTerminalEvidence({
+      status: "failed",
+      summary: "The current run timed out.",
+      notBeforeMs: submittedAtMs,
+    });
+    await flush();
+
+    finishRuntime();
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+  });
+
+  it("probes fresh terminal metadata when ambiguity starts on a retained idle row", async () => {
+    monitorMocks.request.mockResolvedValue({
+      sessions: [{ id: "runtime-1", session_key: "stored-1", status: "idle" }],
+    });
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "stored-1",
+          status: "failed",
+          ended_at: "2026-07-14T12:01:00Z",
+        },
+      ],
+    });
+
+    startRun();
+    preserveTerminalEvidence({
+      status: "failed",
+      summary: "The retained run timed out.",
+      notBeforeMs: Date.parse("2026-07-14T12:00:00Z"),
+    });
+    await flush();
+
+    expect(monitorMocks.sessions).toHaveBeenCalledOnce();
+    expect(monitorMocks.dispatchStatus).toHaveBeenCalledWith({
+      sessionId: "stored-1",
+      title: "Prepare launch notes",
+      status: "failed",
+      runMonitorGeneration: 1,
+      summary: "June hit a problem.",
+    });
+  });
+
+  it("revokes assistant-fallback success when ambiguity arrives before settlement", async () => {
+    const finishRuntime = activeRuntime();
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [{ id: "stored-1", status: "idle" }],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "user-1", role: "user", content: "Do the work" },
+        { id: "assistant-1", role: "assistant", content: "Partial prose" },
+      ],
+    });
+    startRun();
+    await flush();
+
+    finishRuntime();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+
+    preserveTerminalEvidence({
+      status: "failed",
+      summary: "The run failed after partial prose.",
+      notBeforeMs: Date.parse("2026-07-14T12:00:00Z"),
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch a terminal result from a monitor generation replaced during persistence", async () => {
+    let resolveOldSessions:
+      | ((value: { sessions: Array<{ id: string; status: string; ended_at: string }> }) => void)
+      | undefined;
+    monitorMocks.request.mockResolvedValue({ sessions: [] });
+    monitorMocks.sessions.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOldSessions = resolve;
+        }),
+    );
+    startRun();
+    preserveTerminalEvidence({
+      status: "failed",
+      summary: "Old generation failed.",
+      notBeforeMs: Date.parse("2026-07-14T12:00:00Z"),
+    });
+    await flush();
+    expect(resolveOldSessions).toBeTypeOf("function");
+
+    startRun({ runtimeSessionId: "runtime-2" });
+    await Promise.resolve();
+    resolveOldSessions?.({
+      sessions: [
+        {
+          id: "stored-1",
+          status: "failed",
+          ended_at: "2026-07-14T12:01:00Z",
+        },
+      ],
+    });
+    await flush();
+
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+  });
+
+  it("resolves ambiguous failure evidence only from a run-fresh failed marker", async () => {
+    const submittedAtMs = Date.parse("2026-07-14T12:00:00Z");
+    const finishRuntime = activeRuntime();
+    let session = {
+      id: "stored-1",
+      status: "failed",
+      ended_at: "2026-07-14T11:59:00Z",
+    };
+    monitorMocks.sessions.mockImplementation(async () => ({ sessions: [session] }));
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "user-1", role: "user", content: "Do the work" },
+        { id: "assistant-1", role: "assistant", content: "Partial prose" },
+      ],
+    });
+    startRun();
+    preserveTerminalEvidence({
+      status: "failed",
+      summary: "The current run timed out.",
+      notBeforeMs: submittedAtMs,
+    });
+    await flush();
+
+    finishRuntime();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+
+    session = {
+      ...session,
+      ended_at: "2026-07-14T12:01:00Z",
+    };
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(monitorMocks.dispatchStatus).toHaveBeenCalledOnce();
+    expect(monitorMocks.dispatchStatus).toHaveBeenCalledWith({
+      sessionId: "stored-1",
+      title: "Prepare launch notes",
+      status: "failed",
+      runMonitorGeneration: 1,
+      summary: "June hit a problem.",
+    });
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+  });
+
+  it("resolves ambiguous cancellation evidence only from a run-fresh cancelled marker", async () => {
+    const submittedAtMs = Date.parse("2026-07-14T12:00:00Z");
+    const finishRuntime = activeRuntime();
+    let session = {
+      id: "stored-1",
+      status: "cancelled",
+      ended_at: "2026-07-14T11:59:00Z",
+    };
+    monitorMocks.sessions.mockImplementation(async () => ({ sessions: [session] }));
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "user-1", role: "user", content: "Do the work" },
+        { id: "assistant-1", role: "assistant", content: "Partial prose" },
+      ],
+    });
+    startRun();
+    preserveTerminalEvidence({
+      status: "cancelled",
+      summary: "The current run was cancelled.",
+      notBeforeMs: submittedAtMs,
+    });
+    await flush();
+
+    finishRuntime();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+
+    session = {
+      ...session,
+      ended_at: "2026-07-14T12:01:00Z",
+    };
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(monitorMocks.dispatchStatus).toHaveBeenCalledOnce();
+    expect(monitorMocks.dispatchStatus).toHaveBeenCalledWith({
+      sessionId: "stored-1",
+      title: "Prepare launch notes",
+      status: "cancelled",
+      runMonitorGeneration: 1,
+      summary: "Stopped.",
+    });
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+  });
+
+  it("lets a run-fresh completed marker override ambiguous failure evidence", async () => {
+    const submittedAtMs = Date.parse("2026-07-14T12:00:00Z");
+    const finishRuntime = activeRuntime();
+    let session = {
+      id: "stored-1",
+      status: "completed",
+      ended_at: "2026-07-14T11:59:00Z",
+    };
+    monitorMocks.sessions.mockImplementation(async () => ({ sessions: [session] }));
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "user-1", role: "user", content: "Do the work" },
+        { id: "assistant-1", role: "assistant", content: "Finished reply" },
+      ],
+    });
+    startRun();
+    preserveTerminalEvidence({
+      status: "failed",
+      summary: "A stale timeout replayed.",
+      notBeforeMs: submittedAtMs,
+    });
+    await flush();
+
+    finishRuntime();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+
+    session = {
+      ...session,
+      ended_at: "2026-07-14T12:01:00Z",
+    };
+    await observeTwoIdleSnapshots();
+
+    expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+  });
+
+  it("lets a run-fresh failed marker override ambiguous completion evidence", async () => {
+    const submittedAtMs = Date.parse("2026-07-14T12:00:00Z");
+    const finishRuntime = activeRuntime();
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "stored-1",
+          status: "failed",
+          ended_at: "2026-07-14T12:01:00Z",
+        },
+      ],
+    });
+    startRun();
+    preserveTerminalEvidence({
+      status: "completed",
+      summary: "A stale completion replayed.",
+      notBeforeMs: submittedAtMs,
+    });
+    await flush();
+
+    finishRuntime();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(monitorMocks.dispatchStatus).toHaveBeenCalledOnce();
+    expect(monitorMocks.dispatchStatus).toHaveBeenCalledWith({
+      sessionId: "stored-1",
+      title: "Prepare launch notes",
+      status: "failed",
+      runMonitorGeneration: 1,
+      summary: "June hit a problem.",
+    });
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+  });
+
+  it("keeps ambiguity unresolved when fresh metadata has an end time but no outcome", async () => {
+    const finishRuntime = activeRuntime();
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [{ id: "stored-1", ended_at: "2026-07-14T12:01:00Z" }],
+    });
+    startRun();
+    preserveTerminalEvidence({
+      status: "completed",
+      summary: "A stale completion replayed.",
+      notBeforeMs: Date.parse("2026-07-14T12:00:00Z"),
+    });
+    await flush();
+
+    finishRuntime();
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+    expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
+  });
+
   it("does not treat a waiting session's assistant question as completion", async () => {
     const finishRuntime = activeRuntime();
     monitorMocks.sessions.mockResolvedValue({
-      sessions: [{ id: "stored-1", status: "waiting_for_input" }],
+      sessions: [
+        {
+          id: "stored-1",
+          status: "waiting_for_input",
+          last_active: "2026-07-14T12:01:00Z",
+        },
+      ],
     });
     monitorMocks.sessionMessages.mockResolvedValue({
       messages: [
@@ -236,7 +766,30 @@ describe("agent run monitor", () => {
     await vi.advanceTimersByTimeAsync(2_000);
 
     expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
-    expect(monitorMocks.sessionMessages).not.toHaveBeenCalled();
+    expect(monitorMocks.sessionMessages).toHaveBeenCalled();
+  });
+
+  it("does not let a stale waiting marker hide the accepted prompt's reply", async () => {
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "stored-1",
+          status: "waiting_for_input",
+          last_active: "2026-07-14T11:59:00Z",
+        },
+      ],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "user-1", role: "user", content: "Do the work" },
+        { id: "assistant-1", role: "assistant", content: "Current answer" },
+      ],
+    });
+
+    startRun();
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
   });
 
   it("holds a successful run until automatic continuation work is released", async () => {
@@ -249,7 +802,7 @@ describe("agent run monitor", () => {
     expect(monitorMocks.request).toHaveBeenCalled();
     expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
 
-    expect(releaseAgentRunSettlement("stored-1")).toBe(true);
+    expect(releaseAgentRunSettlement("stored-1", latestGeneration)).toBe(true);
     await observeTwoIdleSnapshots();
     expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
   });
@@ -258,8 +811,8 @@ describe("agent run monitor", () => {
     startRun({ settlementHeld: true });
     await flush();
 
-    expect(markAgentRunSucceeded("stored-1")).toBe(true);
-    expect(releaseAgentRunSettlement("stored-1")).toBe(true);
+    expect(markAgentRunSucceeded("stored-1", latestGeneration)).toBe(true);
+    expect(releaseAgentRunSettlement("stored-1", latestGeneration)).toBe(true);
     await observeTwoIdleSnapshots();
 
     expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
@@ -268,7 +821,7 @@ describe("agent run monitor", () => {
   it("dispatches one failed status when only persisted runtime state reports failure", async () => {
     const finishRuntime = activeRuntime();
     monitorMocks.sessions.mockResolvedValue({
-      sessions: [{ id: "stored-1", status: "failed", ended_at: "2026-07-14T12:00:00Z" }],
+      sessions: [{ id: "stored-1", status: "failed", ended_at: "2026-07-14T12:01:00Z" }],
     });
     startRun();
     await flush();
@@ -280,6 +833,7 @@ describe("agent run monitor", () => {
       sessionId: "stored-1",
       title: "Prepare launch notes",
       status: "failed",
+      runMonitorGeneration: 1,
       summary: "June hit a problem.",
     });
     expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
@@ -289,24 +843,31 @@ describe("agent run monitor", () => {
     startRun();
     await flush();
 
-    expect(markAgentRunFailed("stored-1", "Already shown")).toBe(true);
+    expect(markAgentRunFailed("stored-1", latestGeneration, "Already shown")).toBe(true);
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
     expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
   });
 
-  it("retires a persisted cancellation without settling", async () => {
+  it("dispatches a run-fresh persisted cancellation without settling", async () => {
     const finishRuntime = activeRuntime();
     monitorMocks.sessions.mockResolvedValue({
-      sessions: [{ id: "stored-1", status: "cancelled", ended_at: "2026-07-14T12:00:00Z" }],
+      sessions: [{ id: "stored-1", status: "cancelled", ended_at: "2026-07-14T12:01:00Z" }],
     });
     startRun();
     await flush();
     finishRuntime();
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(monitorMocks.dispatchStatus).not.toHaveBeenCalled();
+    expect(monitorMocks.dispatchStatus).toHaveBeenCalledOnce();
+    expect(monitorMocks.dispatchStatus).toHaveBeenCalledWith({
+      sessionId: "stored-1",
+      title: "Prepare launch notes",
+      status: "cancelled",
+      runMonitorGeneration: 1,
+      summary: "Stopped.",
+    });
     expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
     expect(monitorMocks.request).toHaveBeenCalled();
   });
@@ -316,7 +877,7 @@ describe("agent run monitor", () => {
     await flush();
     const requestsBeforeStop = monitorMocks.request.mock.calls.length;
 
-    expect(cancelAgentRunMonitoring("stored-1")).toBe(true);
+    expect(cancelAgentRunMonitoring("stored-1", latestGeneration)).toBe(true);
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
@@ -326,6 +887,12 @@ describe("agent run monitor", () => {
   it("ignores terminal frames from an older runtime generation", async () => {
     let rows = [{ id: "runtime-old", status: "working" }];
     monitorMocks.request.mockImplementation(async () => ({ sessions: rows }));
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [{ id: "stored-1", status: "completed", ended_at: "2026-07-14T11:59:00Z" }],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [{ id: "prior-user", role: "user", content: "Prior work" }],
+    });
     const oldGeneration = startRun({ runtimeSessionId: "runtime-old" });
     await flush();
     const newGeneration = startRun({ runtimeSessionId: "runtime-new", title: "New run" });
@@ -337,14 +904,184 @@ describe("agent run monitor", () => {
 
     rows = [{ id: "runtime-new", status: "working" }];
     await vi.advanceTimersByTimeAsync(500);
+    monitorMocks.sessions.mockResolvedValue({
+      sessions: [{ id: "stored-1", status: "completed", ended_at: "2026-07-14T12:01:00Z" }],
+    });
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "user-1", role: "user", content: "Do the work" },
+        { id: "assistant-1", role: "assistant", content: "Current result" },
+      ],
+    });
     rows = [];
     await observeTwoIdleSnapshots();
 
     expect(monitorMocks.dispatchSettled).toHaveBeenCalledWith({
       sessionId: "stored-1",
       title: "New run",
+      runMonitorGeneration: newGeneration,
       summary: "June finished.",
     });
+  });
+
+  it("rejects every monitor mutation from a replaced generation", async () => {
+    const oldGeneration = startRun({ runtimeSessionId: "runtime-old" });
+    const newGeneration = startRun({ runtimeSessionId: "runtime-new" });
+
+    expect(isAgentRunMonitorGenerationCurrent("stored-1", oldGeneration)).toBe(false);
+    expect(isAgentRunMonitorGenerationCurrent("stored-1", newGeneration)).toBe(true);
+    expect(markAgentRunSucceeded("stored-1", oldGeneration)).toBe(false);
+    expect(
+      preserveAgentRunTerminalEvidence(
+        "stored-1",
+        {
+          status: "failed",
+          summary: "Old generation failed.",
+          notBeforeMs: Date.parse("2026-07-14T12:00:00Z"),
+        },
+        oldGeneration,
+      ),
+    ).toBe(false);
+    expect(releaseAgentRunSettlement("stored-1", oldGeneration)).toBe(false);
+    expect(markAgentRunFailed("stored-1", oldGeneration, "Old generation failed.")).toBe(false);
+    expect(cancelAgentRunMonitoring("stored-1", oldGeneration)).toBe(false);
+    expect(isAgentRunMonitorGenerationCurrent("stored-1", newGeneration)).toBe(true);
+  });
+
+  it("publishes every new generation after the caller can record it", async () => {
+    const firstGeneration = startRun();
+    expect(monitorMocks.dispatchStarted).not.toHaveBeenCalled();
+    await flush();
+    expect(monitorMocks.dispatchStarted).toHaveBeenLastCalledWith({
+      storedSessionId: "stored-1",
+      runMonitorGeneration: firstGeneration,
+      runtimeSessionId: "runtime-1",
+      fullMode: false,
+    });
+
+    expect(markAgentRunFailed("stored-1", firstGeneration)).toBe(true);
+    const replacementGeneration = startRun();
+    expect(monitorMocks.dispatchStarted).toHaveBeenCalledTimes(1);
+    await flush();
+    expect(monitorMocks.dispatchStarted).toHaveBeenLastCalledWith({
+      storedSessionId: "stored-1",
+      runMonitorGeneration: replacementGeneration,
+      runtimeSessionId: "runtime-1",
+      fullMode: false,
+    });
+  });
+
+  it("keeps a reconnecting exact-mode observer alive until Stop is sent", async () => {
+    let resolveBridgeStatus:
+      | ((value: { running: boolean; connections: Array<typeof SANDBOXED_CONNECTION> }) => void)
+      | undefined;
+    monitorMocks.bridgeStatus.mockReturnValue(
+      new Promise((resolve) => {
+        resolveBridgeStatus = resolve;
+      }),
+    );
+    const generation = startRun({
+      runtimeSessionId: "runtime-full-stop",
+      fullMode: true,
+    });
+    const onStopped = vi.fn();
+
+    expect(stopAgentRunMonitoring("stored-1", generation, onStopped)).toBe(true);
+    expect(isAgentRunMonitorGenerationCurrent("stored-1", generation)).toBe(true);
+    expect(onStopped).not.toHaveBeenCalled();
+    resolveBridgeStatus?.({
+      running: true,
+      connections: [SANDBOXED_CONNECTION, UNRESTRICTED_CONNECTION],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(monitorMocks.request).toHaveBeenCalledWith("session.interrupt", {
+      session_id: "runtime-full-stop",
+    });
+    expect(monitorMocks.instances).toHaveLength(1);
+    expect(monitorMocks.instances[0]?.connect).toHaveBeenCalledWith(UNRESTRICTED_CONNECTION.wsUrl);
+    expect(isAgentRunMonitorGenerationCurrent("stored-1", generation)).toBe(false);
+    expect(onStopped).toHaveBeenCalledOnce();
+  });
+
+  it("holds replacement dispatch behind an accepted reconnecting Stop", async () => {
+    let resolveInterrupt: (() => void) | undefined;
+    const interrupt = new Promise<void>((resolve) => {
+      resolveInterrupt = resolve;
+    });
+    monitorMocks.request.mockImplementation((method: string) => {
+      if (method === "session.interrupt") return interrupt;
+      return Promise.resolve({ sessions: [{ id: "runtime-1", status: "working" }] });
+    });
+    const generation = startRun();
+    await flush();
+
+    const stopHold = holdHermesSessionDispatch("stored-1");
+    expect(stopAgentRunMonitoring("stored-1", generation, () => stopHold.release())).toBe(true);
+    expect(agentRunMonitorSnapshot("stored-1")).toMatchObject({
+      generation,
+      runtimeSessionId: "runtime-1",
+      phase: "stopping",
+    });
+    let replacementDispatched = false;
+    const replacement = withHermesSessionDispatchLock("stored-1", async () => {
+      replacementDispatched = true;
+    });
+    await flush();
+    expect(monitorMocks.request).toHaveBeenCalledWith("session.interrupt", {
+      session_id: "runtime-1",
+    });
+    expect(replacementDispatched).toBe(false);
+
+    resolveInterrupt?.();
+    await flush();
+    await replacement;
+    expect(replacementDispatched).toBe(true);
+    expect(agentRunMonitorSnapshot("stored-1")).toMatchObject({
+      generation,
+      runtimeSessionId: "runtime-1",
+      phase: "terminal",
+    });
+  });
+
+  it("retains a finished tombstone independently of the live-run count", () => {
+    for (let index = 0; index < 101; index += 1) {
+      startRun({
+        storedSessionId: `stored-live-${index}`,
+        runtimeSessionId: `runtime-live-${index}`,
+        settlementHeld: true,
+      });
+    }
+    const terminalGeneration = startRun({
+      storedSessionId: "stored-terminal",
+      runtimeSessionId: "runtime-terminal",
+      settlementHeld: true,
+    });
+
+    expect(markAgentRunFailed("stored-terminal", terminalGeneration)).toBe(true);
+    expect(agentRunMonitorSnapshot("stored-terminal")).toMatchObject({
+      generation: terminalGeneration,
+      phase: "terminal",
+    });
+    expect(agentRunMonitorSnapshot("stored-live-0")).toMatchObject({ phase: "active" });
+  });
+
+  it("dispatches a generation-tagged failure when the monitor budget expires", async () => {
+    monitorMocks.request.mockImplementation(() => new Promise(() => {}));
+    startRun();
+    await flush();
+
+    await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1_000 + 1);
+
+    expect(monitorMocks.dispatchStatus).toHaveBeenCalledOnce();
+    expect(monitorMocks.dispatchStatus).toHaveBeenCalledWith({
+      sessionId: "stored-1",
+      title: "Prepare launch notes",
+      status: "failed",
+      runMonitorGeneration: 1,
+      summary: "June stopped responding.",
+    });
+    expect(isAgentRunMonitorGenerationCurrent("stored-1", latestGeneration)).toBe(false);
   });
 
   it("retries an active-session error without counting it as idle", async () => {
@@ -352,7 +1089,7 @@ describe("agent run monitor", () => {
       .mockRejectedValueOnce(new Error("gateway unavailable"))
       .mockResolvedValue({ sessions: [] });
     startRun();
-    markAgentRunSucceeded("stored-1");
+    markAgentRunSucceeded("stored-1", latestGeneration);
     await flush();
     expect(monitorMocks.dispatchSettled).not.toHaveBeenCalled();
 

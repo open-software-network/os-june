@@ -14,7 +14,10 @@ import {
   resetNoteChatContinuityForTest,
   useNoteChat,
 } from "../components/note-chat/useNoteChat";
-import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
+import {
+  reserveHermesSessionDispatch,
+  resetHermesSessionDispatchForTests,
+} from "../lib/hermes-session-dispatch-mutex";
 import {
   rememberAppliedSessionModelSelection,
   stageSessionModelSelection,
@@ -22,14 +25,22 @@ import {
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import {
   AGENT_RUN_SETTLED_EVENT,
+  AGENT_RUN_STARTED_EVENT,
   AGENT_SESSION_STATUS_EVENT,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
 import type { HermesSessionMessage } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
+  agentRunMonitorSnapshot: vi.fn(),
   canAttributeUntaggedAgentRun: vi.fn(() => true),
   cancelAgentRunMonitoring: vi.fn(),
+  stopAgentRunMonitoring: vi.fn(
+    (_storedSessionId: string, _generation: number, onStopped?: () => void) => {
+      queueMicrotask(() => onStopped?.());
+      return true;
+    },
+  ),
   gatewayRequest: vi.fn(),
   gatewayConnect: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
@@ -38,8 +49,10 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeSessionMessages: vi.fn(),
   listHermesSessions: vi.fn(),
   hermesBridgeStatus: vi.fn(),
+  isAgentRunMonitorGenerationCurrent: vi.fn(() => true),
   listVeniceModels: vi.fn(),
   markAgentRunSucceeded: vi.fn(),
+  preserveAgentRunTerminalEvidence: vi.fn(),
   providerModelSettings: vi.fn(),
   setCostQuality: vi.fn(),
   setLocalGenerationEnabled: vi.fn(),
@@ -49,9 +62,13 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../lib/agent-run-monitor", () => ({
+  agentRunMonitorSnapshot: mocks.agentRunMonitorSnapshot,
   canAttributeUntaggedAgentRun: mocks.canAttributeUntaggedAgentRun,
   cancelAgentRunMonitoring: mocks.cancelAgentRunMonitoring,
+  stopAgentRunMonitoring: mocks.stopAgentRunMonitoring,
+  isAgentRunMonitorGenerationCurrent: mocks.isAgentRunMonitorGenerationCurrent,
   markAgentRunSucceeded: mocks.markAgentRunSucceeded,
+  preserveAgentRunTerminalEvidence: mocks.preserveAgentRunTerminalEvidence,
   startAgentRunMonitoring: mocks.startAgentRunMonitoring,
 }));
 
@@ -156,6 +173,7 @@ function noteChatText(chat: NoteChat, role: AgentChatTurn["role"]) {
 describe("note chat session map", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetHermesSessionDispatchForTests();
     resetNoteChatContinuityForTest();
     window.localStorage.clear();
     mocks.hermesBridgeStatus.mockResolvedValue({
@@ -201,6 +219,15 @@ describe("note chat session map", () => {
     });
     mocks.gatewayConnect.mockResolvedValue(undefined);
     mocks.canAttributeUntaggedAgentRun.mockReturnValue(true);
+    mocks.agentRunMonitorSnapshot.mockReturnValue(undefined);
+    mocks.stopAgentRunMonitoring.mockImplementation(
+      (_storedSessionId: string, _generation: number, onStopped?: () => void) => {
+        queueMicrotask(() => onStopped?.());
+        return true;
+      },
+    );
+    mocks.isAgentRunMonitorGenerationCurrent.mockReturnValue(true);
+    mocks.startAgentRunMonitoring.mockReturnValue(1);
   });
 
   it("remembers and recalls the session for a note", () => {
@@ -480,7 +507,44 @@ describe("note chat session map", () => {
     act(() => first.result.current.stop());
     expect(first.result.current.working).toBe(false);
     expect(second.result.current.working).toBe(false);
-    expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledTimes(1);
+    expect(mocks.stopAgentRunMonitoring).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds a replacement Send behind an accepted central Stop", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let finishStop: (() => void) | undefined;
+    mocks.stopAgentRunMonitoring.mockImplementation(
+      (_storedSessionId: string, _generation: number, onStopped?: () => void) => {
+        finishStop = onStopped;
+        return true;
+      },
+    );
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Run before central Stop.")).toBe(true);
+    });
+
+    act(() => result.current.stop());
+    let replacement: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      replacement = result.current.submit("Run after central Stop.");
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+    ).toHaveLength(1);
+
+    await act(async () => finishStop?.());
+    await act(async () => {
+      expect(await replacement).toBe(true);
+    });
+    expect(
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+    ).toHaveLength(2);
   });
 
   it("synchronizes an out-of-order transcript refresh across same-note views", async () => {
@@ -1060,7 +1124,7 @@ describe("note chat session map", () => {
     await act(async () => acceptPrompt?.());
     await expect(submission).resolves.toBe(true);
     await waitFor(() => expect(result.current.working).toBe(false));
-    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat");
+    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat", 1);
     expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith(
       expect.objectContaining({ storedSessionId: "stored-note-chat" }),
     );
@@ -1209,7 +1273,7 @@ describe("note chat session map", () => {
     await expect(submission).resolves.toBe(true);
     await waitFor(() => expect(result.current.working).toBe(false));
     expect(result.current.error).toBeNull();
-    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat");
+    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat", 1);
   });
 
   it.each([
@@ -1590,6 +1654,7 @@ describe("note chat session map", () => {
 
   it("waits for Stop to interrupt an existing runtime before resuming Submit", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.stopAgentRunMonitoring.mockReturnValue(false);
     let resumeCount = 0;
     let finishStoppedInterrupt: (() => void) | undefined;
     const stoppedInterrupt = new Promise<void>((resolve) => {
@@ -1861,7 +1926,7 @@ describe("note chat session map", () => {
     });
     expect(result.current.working).toBe(false);
     await waitFor(() =>
-      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat"),
+      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat", 1),
     );
     mocks.gatewayRequest.mockClear();
 
@@ -1891,6 +1956,21 @@ describe("note chat session map", () => {
 
   it("hands a completed note chat to app-lifetime settlement monitoring", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
+    const priorMessages = [
+      {
+        id: "prior-identical-user",
+        role: "user" as const,
+        content: "Summarize the current plan.",
+        timestamp: "2026-07-14T11:59:00Z",
+      },
+      {
+        id: "prior-identical-assistant",
+        role: "assistant" as const,
+        content: "Prior summary.",
+        timestamp: "2026-07-14T11:59:01Z",
+      },
+    ];
+    mocks.hermesBridgeSessionMessages.mockResolvedValue({ messages: priorMessages });
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.resume") {
         return Promise.resolve({ session_id: "runtime-note-chat" });
@@ -1902,13 +1982,32 @@ describe("note chat session map", () => {
     await act(async () => {
       expect(await result.current.submit("Summarize the current plan.")).toBe(true);
     });
-    expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith({
-      storedSessionId: "stored-note-chat",
-      runtimeSessionId: "runtime-note-chat",
-      title: "Launch planning",
-      fullMode: false,
-      settlementHeld: false,
-    });
+    expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storedSessionId: "stored-note-chat",
+        runtimeSessionId: "runtime-note-chat",
+        title: "Launch planning",
+        fullMode: false,
+        settlementHeld: false,
+        acceptedPrompt: {
+          dispatchedAtMs: expect.any(Number),
+          findPersistedUserIndex: expect.any(Function),
+        },
+      }),
+    );
+    const acceptedPrompt = mocks.startAgentRunMonitoring.mock.calls[0]?.[0]?.acceptedPrompt;
+    expect(acceptedPrompt?.findPersistedUserIndex(priorMessages)).toBe(-1);
+    expect(
+      acceptedPrompt?.findPersistedUserIndex([
+        ...priorMessages,
+        {
+          id: "current-identical-user",
+          role: "user",
+          content: "Summarize the current plan.",
+          timestamp: new Date().toISOString(),
+        },
+      ]),
+    ).toBe(2);
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
@@ -1919,7 +2018,7 @@ describe("note chat session map", () => {
         });
       }
     });
-    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat");
+    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat", 1);
   });
 
   it("keeps monitoring a note-chat run after its panel unmounts", async () => {
@@ -2770,7 +2869,10 @@ describe("note chat session map", () => {
     const newer = new Promise<{ messages: HermesSessionMessage[] }>((resolve) => {
       resolveNewer = resolve;
     });
-    mocks.hermesBridgeSessionMessages.mockReturnValueOnce(older).mockReturnValueOnce(newer);
+    mocks.hermesBridgeSessionMessages
+      .mockResolvedValueOnce({ messages: [] })
+      .mockReturnValueOnce(older)
+      .mockReturnValueOnce(newer);
     await act(async () => {
       expect(await result.current.submit("Still pending question.")).toBe(true);
     });
@@ -2784,7 +2886,7 @@ describe("note chat session map", () => {
         });
       }
     });
-    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(2));
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
         handler({
@@ -2794,7 +2896,7 @@ describe("note chat session map", () => {
         });
       }
     });
-    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(3));
 
     await act(async () => {
       resolveNewer({
@@ -3138,7 +3240,12 @@ describe("note chat session map", () => {
     act(() => {
       window.dispatchEvent(
         new CustomEvent(AGENT_RUN_SETTLED_EVENT, {
-          detail: { sessionId: "another-session", title: "Other", summary: "June finished." },
+          detail: {
+            sessionId: "another-session",
+            runMonitorGeneration: 1,
+            title: "Other",
+            summary: "June finished.",
+          },
         }),
       );
     });
@@ -3149,6 +3256,7 @@ describe("note chat session map", () => {
         new CustomEvent(AGENT_RUN_SETTLED_EVENT, {
           detail: {
             sessionId: "stored-note-chat",
+            runMonitorGeneration: 1,
             title: "Launch planning",
             summary: "June finished.",
           },
@@ -3156,7 +3264,419 @@ describe("note chat session map", () => {
       );
     });
     expect(result.current.working).toBe(false);
-    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(2));
+  });
+
+  it("keeps a newer external run working when its old local gateway terminal arrives", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.startAgentRunMonitoring.mockReturnValueOnce(41).mockReturnValueOnce(42);
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+
+    await act(async () => {
+      expect(await result.current.submit("Finish the first generation.")).toBe(true);
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-note-chat",
+          event_id: "first-generation-terminal",
+          payload: { status: "success" },
+        });
+      }
+    });
+    expect(result.current.working).toBe(false);
+    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat", 41);
+
+    await act(async () => {
+      expect(await result.current.submit("Keep the second generation working.")).toBe(true);
+    });
+    expect(result.current.working).toBe(true);
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_STARTED_EVENT, {
+          detail: {
+            storedSessionId: "stored-note-chat",
+            runMonitorGeneration: 43,
+            runtimeSessionId: "runtime-note-chat",
+            fullMode: false,
+          },
+        }),
+      );
+    });
+    expect(result.current.working).toBe(true);
+    expect(result.current.error).toBeNull();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "error",
+          session_id: "runtime-note-chat",
+          event_id: "terminal-after-monitor-replacement",
+          payload: {
+            message: "The local run failed after replacement",
+            code: 500,
+            recoverable: false,
+          },
+        });
+      }
+    });
+    expect(mocks.isAgentRunMonitorGenerationCurrent).not.toHaveBeenCalledWith(
+      "stored-note-chat",
+      42,
+    );
+    expect(result.current.working).toBe(true);
+    expect(result.current.error).toBeNull();
+    expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalledWith("stored-note-chat", 42);
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            runMonitorGeneration: 43,
+            title: "Launch planning",
+            status: "failed",
+            summary: "The newer external run failed",
+          },
+        }),
+      );
+    });
+    expect(result.current.working).toBe(false);
+    expect(result.current.error).toBe("The newer external run failed");
+  });
+
+  it("shows an externally started run in an otherwise idle note chat", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    expect(result.current.working).toBe(false);
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_STARTED_EVENT, {
+          detail: {
+            storedSessionId: "stored-note-chat",
+            runMonitorGeneration: 7,
+            runtimeSessionId: "runtime-workspace",
+            fullMode: false,
+          },
+        }),
+      );
+    });
+    expect(result.current.working).toBe(true);
+    await act(async () => {
+      expect(await result.current.submit("Do not overlap the external run.")).toBe(false);
+    });
+    const turnsBeforeStaleFrames = result.current.turns;
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.delta",
+          session_id: "runtime-workspace",
+          payload: { message_id: "stale-message", delta: "Stale external text" },
+        });
+        handler({
+          type: "error",
+          session_id: "runtime-workspace",
+          event_id: "unowned-external-terminal",
+          payload: { message: "External gateway failed", code: 500, recoverable: false },
+        });
+      }
+    });
+    expect(result.current.working).toBe(true);
+    expect(result.current.error).toBeNull();
+    expect(result.current.turns).toEqual(turnsBeforeStaleFrames);
+    expect(noteChatText(result.current, "assistant")).not.toContain("Stale external text");
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_SETTLED_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            runMonitorGeneration: 7,
+            title: "Launch planning",
+            summary: "June finished.",
+          },
+        }),
+      );
+    });
+    expect(result.current.working).toBe(false);
+  });
+
+  it("hydrates a note chat that mounts after an external monitor started", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.agentRunMonitorSnapshot.mockReturnValue({
+      generation: 8,
+      runtimeSessionId: "runtime-workspace",
+      fullMode: false,
+      phase: "active",
+    });
+
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    expect(result.current.working).toBe(true);
+    await act(async () => {
+      expect(await result.current.submit("Do not overlap the late-mounted run.")).toBe(false);
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_SETTLED_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            runMonitorGeneration: 8,
+            title: "Launch planning",
+            summary: "June finished.",
+          },
+        }),
+      );
+    });
+    expect(result.current.working).toBe(false);
+  });
+
+  it.each([
+    "stopping",
+    "succeeded",
+    "terminal",
+  ] as const)("keeps a late-mounted %s monitor snapshot idle", async (phase) => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.agentRunMonitorSnapshot.mockReturnValue({
+      generation: 9,
+      runtimeSessionId: "runtime-old",
+      fullMode: false,
+      phase,
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    expect(result.current.working).toBe(false);
+
+    if (phase === "stopping") {
+      await act(async () => {
+        expect(await result.current.submit("Resume only after Stop.")).toBe(true);
+      });
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+        session_id: "stored-note-chat",
+        cols: 96,
+      });
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-old",
+        text: "Resume only after Stop.",
+      });
+    }
+  });
+
+  it("preserves a failure that arrives before its queued same-generation start", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.agentRunMonitorSnapshot.mockReturnValue({
+      generation: 12,
+      runtimeSessionId: "runtime-workspace",
+      fullMode: false,
+      phase: "terminal",
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            runMonitorGeneration: 12,
+            status: "failed",
+            summary: "Fast failure.",
+          },
+        }),
+      );
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_STARTED_EVENT, {
+          detail: {
+            storedSessionId: "stored-note-chat",
+            runMonitorGeneration: 12,
+            runtimeSessionId: "runtime-workspace",
+            fullMode: false,
+          },
+        }),
+      );
+    });
+
+    expect(result.current.working).toBe(false);
+    expect(result.current.error).toBe("Fast failure.");
+  });
+
+  it("lets a newer terminal supersede an older stopped generation before its queued start", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    await act(async () => {
+      expect(await result.current.submit("Start generation one.")).toBe(true);
+    });
+    act(() => result.current.stop());
+    expect(result.current.working).toBe(false);
+
+    mocks.agentRunMonitorSnapshot.mockReturnValue({
+      generation: 2,
+      runtimeSessionId: "runtime-workspace",
+      fullMode: false,
+      phase: "terminal",
+    });
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            runMonitorGeneration: 2,
+            status: "failed",
+            summary: "Generation two failed fast.",
+          },
+        }),
+      );
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_STARTED_EVENT, {
+          detail: {
+            storedSessionId: "stored-note-chat",
+            runMonitorGeneration: 2,
+            runtimeSessionId: "runtime-workspace",
+            fullMode: false,
+          },
+        }),
+      );
+    });
+
+    expect(result.current.working).toBe(false);
+    expect(result.current.error).toBe("Generation two failed fast.");
+  });
+
+  it.each([
+    "resolve",
+    "reject",
+  ] as const)("preserves a newer external run when an older in-flight NoteChat submit %s", async (outcome) => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let resolvePrompt: (() => void) | undefined;
+    let rejectPrompt: ((error: Error) => void) | undefined;
+    const heldPrompt = new Promise<void>((resolve, reject) => {
+      resolvePrompt = resolve;
+      rejectPrompt = reject;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "prompt.submit") return heldPrompt;
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+
+    let submission = Promise.resolve(true);
+    act(() => {
+      submission = result.current.submit("Older in-flight prompt.");
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-note-chat",
+        text: "Older in-flight prompt.",
+      }),
+    );
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_STARTED_EVENT, {
+          detail: {
+            storedSessionId: "stored-note-chat",
+            runMonitorGeneration: 9,
+            runtimeSessionId: "runtime-workspace",
+            fullMode: false,
+          },
+        }),
+      );
+    });
+    await act(async () => {
+      if (outcome === "resolve") resolvePrompt?.();
+      else rejectPrompt?.(new Error("Older prompt failed."));
+      await submission;
+    });
+
+    await expect(submission).resolves.toBe(false);
+    expect(result.current.working).toBe(true);
+    expect(result.current.error).toBeNull();
+    expect(mocks.startAgentRunMonitoring).not.toHaveBeenCalled();
+    expect(mocks.cancelAgentRunMonitoring).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "resolve",
+    "reject",
+  ] as const)("keeps a newer fast terminal authoritative when an older pre-ACK NoteChat submit %s", async (outcome) => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let resolvePrompt: (() => void) | undefined;
+    let rejectPrompt: ((error: Error) => void) | undefined;
+    const heldPrompt = new Promise<void>((resolve, reject) => {
+      resolvePrompt = resolve;
+      rejectPrompt = reject;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "prompt.submit") return heldPrompt;
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    let submission = Promise.resolve(true);
+    act(() => {
+      submission = result.current.submit("Older pre-ACK prompt.");
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-note-chat",
+        text: "Older pre-ACK prompt.",
+      }),
+    );
+
+    mocks.agentRunMonitorSnapshot.mockReturnValue({
+      generation: 9,
+      runtimeSessionId: "runtime-workspace",
+      fullMode: false,
+      phase: "terminal",
+    });
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            runMonitorGeneration: 9,
+            status: "failed",
+            summary: "Newer run failed before start delivery.",
+          },
+        }),
+      );
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_STARTED_EVENT, {
+          detail: {
+            storedSessionId: "stored-note-chat",
+            runMonitorGeneration: 9,
+            runtimeSessionId: "runtime-workspace",
+            fullMode: false,
+          },
+        }),
+      );
+    });
+    expect(result.current.working).toBe(false);
+    expect(result.current.error).toBe("Newer run failed before start delivery.");
+
+    await act(async () => {
+      if (outcome === "resolve") resolvePrompt?.();
+      else rejectPrompt?.(new Error("Older prompt failed."));
+      await submission;
+    });
+    await expect(submission).resolves.toBe(false);
+    expect(result.current.working).toBe(false);
+    expect(result.current.error).toBe("Newer run failed before start delivery.");
+    expect(mocks.startAgentRunMonitoring).not.toHaveBeenCalled();
   });
 
   it("ignores a prior Agent run monitor settlement before the current submit is accepted", async () => {
@@ -3187,6 +3707,7 @@ describe("note chat session map", () => {
         new CustomEvent(AGENT_RUN_SETTLED_EVENT, {
           detail: {
             sessionId: "stored-note-chat",
+            runMonitorGeneration: 1,
             title: "Launch planning",
             summary: "June finished.",
           },
@@ -3261,7 +3782,7 @@ describe("note chat session map", () => {
     await expect(submission).resolves.toBe(true);
 
     await waitFor(() => expect(result.current.working).toBe(false));
-    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat");
+    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat", 1);
   });
 
   it("does not let a replayed terminal settle a later note-chat run", async () => {
@@ -3330,7 +3851,7 @@ describe("note chat session map", () => {
     expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
   });
 
-  it("settles a consecutive identical no-id terminal only with current idle authority", async () => {
+  it("does not let a repeated no-id completion plus partial prose beat a current failure", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     let activeStatus: "working" | "idle" = "working";
     mocks.gatewayRequest.mockImplementation((method: string) => {
@@ -3381,7 +3902,7 @@ describe("note chat session map", () => {
         {
           id: "second-assistant",
           role: "assistant",
-          content: "Done again.",
+          content: "I only wrote part of the answer.",
           timestamp: new Date(Date.now() + 1_000).toISOString(),
         },
       ],
@@ -3400,13 +3921,45 @@ describe("note chat session map", () => {
     );
     expect(result.current.working).toBe(true);
     expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+    expect(mocks.preserveAgentRunTerminalEvidence).toHaveBeenCalledWith(
+      "stored-note-chat",
+      expect.objectContaining({
+        status: "completed",
+        summary: "June finished.",
+        notBeforeMs: expect.any(Number),
+      }),
+      1,
+    );
 
     activeStatus = "idle";
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) handler(terminal);
     });
-    await waitFor(() => expect(result.current.working).toBe(false));
-    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat");
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.active_list"),
+      ).toHaveLength(activeListCallsBefore + 2),
+    );
+    expect(result.current.working).toBe(true);
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "error",
+          session_id: "runtime-note-chat",
+          event_id: "current-run-failure",
+          payload: {
+            message: "The current run failed after partial output",
+            code: 500,
+            recoverable: false,
+          },
+        });
+      }
+    });
+    expect(result.current.working).toBe(false);
+    expect(result.current.error).toBe("The current run failed after partial output");
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
   });
 
   it("requires current authority for a non-consecutive replayed no-id terminal", async () => {
@@ -3492,7 +4045,7 @@ describe("note chat session map", () => {
     expect(result.current.working).toBe(false);
   });
 
-  it("settles a consecutive identical no-id failure without requiring an assistant reply", async () => {
+  it("preserves a consecutive identical no-id failure until monitoring resolves it", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.resume") {
@@ -3544,9 +4097,35 @@ describe("note chat session map", () => {
       for (const handler of mocks.gatewayEventHandlers) handler(terminal);
     });
 
+    await waitFor(() =>
+      expect(mocks.preserveAgentRunTerminalEvidence).toHaveBeenCalledWith(
+        "stored-note-chat",
+        expect.objectContaining({
+          status: "failed",
+          summary: "Upstream failed",
+          notBeforeMs: expect.any(Number),
+        }),
+        1,
+      ),
+    );
+    expect(result.current.working).toBe(true);
+    expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            runMonitorGeneration: 1,
+            title: "Launch planning",
+            status: "failed",
+            summary: "Upstream failed",
+          },
+        }),
+      );
+    });
     await waitFor(() => expect(result.current.working).toBe(false));
     expect(result.current.error).toBe("Upstream failed");
-    expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledTimes(2);
   });
 
   it("does not let a repeated no-id failure override a persisted successful reply", async () => {
@@ -3633,7 +4212,289 @@ describe("note chat session map", () => {
       }
     });
     expect(result.current.working).toBe(false);
-    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat");
+    expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("stored-note-chat", 1);
+  });
+
+  it("preserves a repeated pre-ack failure when the failed run persisted partial prose", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let holdPrompt = false;
+    let acceptPrompt: (() => void) | undefined;
+    const heldPrompt = new Promise<void>((resolve) => {
+      acceptPrompt = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "prompt.submit") return holdPrompt ? heldPrompt : Promise.resolve({});
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-note-chat",
+              session_key: "stored-note-chat",
+              status: "idle",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const failure = {
+      type: "error",
+      session_id: "runtime-note-chat",
+      payload: {
+        message: "Pre-ack failure after partial reply",
+        code: 504,
+        recoverable: false,
+      },
+    };
+
+    await act(async () => {
+      expect(await result.current.submit("Seed the repeated failure.")).toBe(true);
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(failure);
+    });
+
+    let releaseEarlierSend: () => void = () => undefined;
+    const earlierSend = reserveHermesSessionDispatch("stored-note-chat").run(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseEarlierSend = resolve;
+        }),
+    );
+    holdPrompt = true;
+    mocks.gatewayRequest.mockClear();
+    mocks.preserveAgentRunTerminalEvidence.mockClear();
+    mocks.startAgentRunMonitoring.mockClear();
+    const optimisticCreatedBeforeMs = Date.now();
+    let submission: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      submission = result.current.submit("Fail after writing partial prose.");
+    });
+    await waitFor(() => expect(result.current.working).toBe(true));
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const dispatchReleasedAtMs = Date.now();
+    releaseEarlierSend();
+    await earlierSend;
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", expect.anything()),
+    );
+    mocks.hermesBridgeSessionMessages.mockResolvedValue({
+      messages: [
+        {
+          id: "current-user",
+          role: "user",
+          content: "Fail after writing partial prose.",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "partial-assistant",
+          role: "assistant",
+          content: "I started the answer but could not finish.",
+          timestamp: new Date(Date.now() + 1_000).toISOString(),
+        },
+      ],
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(failure);
+    });
+    expect(mocks.preserveAgentRunTerminalEvidence).not.toHaveBeenCalled();
+
+    await act(async () => acceptPrompt?.());
+    await expect(submission).resolves.toBe(true);
+    expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storedSessionId: "stored-note-chat",
+        terminalEvidence: expect.objectContaining({
+          status: "failed",
+          summary: "Pre-ack failure after partial reply",
+          notBeforeMs: expect.any(Number),
+        }),
+      }),
+    );
+    const monitorInput = mocks.startAgentRunMonitoring.mock.calls[0]?.[0];
+    const initialEvidence = monitorInput?.terminalEvidence;
+    expect(initialEvidence?.notBeforeMs).toBeGreaterThan(optimisticCreatedBeforeMs);
+    expect(initialEvidence?.notBeforeMs).toBeGreaterThanOrEqual(dispatchReleasedAtMs);
+    expect(monitorInput?.acceptedPrompt.dispatchedAtMs).toBe(initialEvidence?.notBeforeMs);
+    expect(
+      monitorInput?.acceptedPrompt.findPersistedUserIndex([
+        {
+          id: "older-unrelated-user",
+          role: "user",
+          content: "A different question.",
+          timestamp: new Date(optimisticCreatedBeforeMs - 1_000).toISOString(),
+        },
+        {
+          id: "current-user",
+          role: "user",
+          content: "Fail after writing partial prose.",
+          timestamp: new Date().toISOString(),
+        },
+      ]),
+    ).toBe(1);
+    await waitFor(() =>
+      expect(mocks.preserveAgentRunTerminalEvidence).toHaveBeenCalledWith(
+        "stored-note-chat",
+        expect.objectContaining({
+          status: "failed",
+          summary: "Pre-ack failure after partial reply",
+          notBeforeMs: expect.any(Number),
+        }),
+        1,
+      ),
+    );
+    expect(result.current.working).toBe(true);
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            runMonitorGeneration: 1,
+            title: "Launch planning",
+            status: "failed",
+            summary: "Pre-ack failure after partial reply",
+          },
+        }),
+      );
+    });
+    await waitFor(() => expect(result.current.working).toBe(false));
+    await waitFor(() =>
+      expect(noteChatText(result.current, "assistant")).toContain(
+        "I started the answer but could not finish.",
+      ),
+    );
+    expect(result.current.error).toBe("Pre-ack failure after partial reply");
+  });
+
+  it("latches a unique pre-ack failure when its one-shot authority read fails", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let acceptPrompt: (() => void) | undefined;
+    const promptAccepted = new Promise<void>((resolve) => {
+      acceptPrompt = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "prompt.submit") return promptAccepted;
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [
+            {
+              id: "runtime-note-chat",
+              session_key: "stored-note-chat",
+              status: "idle",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let submission: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      submission = result.current.submit("Fail uniquely before acknowledgement.");
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", expect.anything()),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "error",
+          event_id: "unique-pre-ack-failure",
+          session_id: "runtime-note-chat",
+          payload: {
+            message: "Unique pre-ack failure",
+            code: 500,
+            recoverable: false,
+          },
+        });
+      }
+    });
+    mocks.hermesBridgeSessionMessages.mockRejectedValueOnce(
+      new Error("Transient persistence read failure"),
+    );
+
+    await act(async () => acceptPrompt?.());
+    await expect(submission).resolves.toBe(true);
+    await waitFor(() => expect(mocks.startAgentRunMonitoring).toHaveBeenCalledTimes(1));
+
+    expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storedSessionId: "stored-note-chat",
+        terminalEvidence: expect.objectContaining({
+          status: "failed",
+          summary: "Unique pre-ack failure",
+          notBeforeMs: expect.any(Number),
+        }),
+      }),
+    );
+    expect(result.current.working).toBe(true);
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalled();
+  });
+
+  it("discards buffered terminal ambiguity when prompt submission is rejected", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let rejectCurrentPrompt = false;
+    let rejectPrompt: ((reason: Error) => void) | undefined;
+    const rejectedPrompt = new Promise<void>((_resolve, reject) => {
+      rejectPrompt = reject;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-note-chat" });
+      }
+      if (method === "prompt.submit") {
+        return rejectCurrentPrompt ? rejectedPrompt : Promise.resolve({});
+      }
+      return Promise.resolve({});
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const failure = {
+      type: "error",
+      session_id: "runtime-note-chat",
+      payload: { message: "Buffered failure", code: 500, recoverable: false },
+    };
+
+    await act(async () => {
+      expect(await result.current.submit("Seed buffered failure.")).toBe(true);
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(failure);
+    });
+
+    rejectCurrentPrompt = true;
+    mocks.gatewayRequest.mockClear();
+    mocks.preserveAgentRunTerminalEvidence.mockClear();
+    mocks.startAgentRunMonitoring.mockClear();
+    let submission: Promise<boolean> = Promise.resolve(true);
+    act(() => {
+      submission = result.current.submit("Reject this prompt.");
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", expect.anything()),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) handler(failure);
+    });
+    await act(async () => rejectPrompt?.(new Error("Prompt rejected")));
+
+    await expect(submission).resolves.toBe(false);
+    expect(mocks.preserveAgentRunTerminalEvidence).not.toHaveBeenCalled();
+    expect(mocks.startAgentRunMonitoring).not.toHaveBeenCalled();
+    expect(result.current.working).toBe(false);
   });
 
   it("drains a newer repeated terminal after a lagging authority probe", async () => {
@@ -3715,8 +4576,34 @@ describe("note chat session map", () => {
     });
     await act(async () => releaseLaggingProbe?.({ messages: [] }));
 
-    await waitFor(() => expect(result.current.working).toBe(false));
+    await waitFor(() =>
+      expect(mocks.preserveAgentRunTerminalEvidence).toHaveBeenCalledWith(
+        "stored-note-chat",
+        expect.objectContaining({
+          status: "failed",
+          summary: "Current run failure",
+          notBeforeMs: expect.any(Number),
+        }),
+        1,
+      ),
+    );
+    expect(result.current.working).toBe(true);
     expect(authorityReads).toBe(2);
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            runMonitorGeneration: 1,
+            title: "Launch planning",
+            status: "failed",
+            summary: "Current run failure",
+          },
+        }),
+      );
+    });
+    await waitFor(() => expect(result.current.working).toBe(false));
     expect(result.current.error).toBe("Current run failure");
   });
 
@@ -3793,7 +4680,11 @@ describe("note chat session map", () => {
     });
 
     act(() => result.current.stop());
-    expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledWith("stored-note-chat");
+    expect(mocks.stopAgentRunMonitoring).toHaveBeenCalledWith(
+      "stored-note-chat",
+      1,
+      expect.any(Function),
+    );
     mocks.markAgentRunSucceeded.mockClear();
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
@@ -3875,7 +4766,7 @@ describe("note chat session map", () => {
           summary: "June stopped before replying.",
         }),
       );
-      expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledWith("stored-note-chat");
+      expect(mocks.cancelAgentRunMonitoring).toHaveBeenCalledWith("stored-note-chat", 1);
     } finally {
       window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
     }
@@ -3943,6 +4834,230 @@ describe("note chat session map", () => {
         },
       ],
     ]);
+  });
+
+  it("snapshots persisted users after the dispatch lock before matching an identical prompt", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let releaseEarlierSend: () => void = () => undefined;
+    const earlierSend = reserveHermesSessionDispatch("stored-note-chat").run(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseEarlierSend = resolve;
+        }),
+    );
+    let submission: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      submission = result.current.submit("Repeat the queued prompt.");
+    });
+    await waitFor(() => expect(result.current.working).toBe(true));
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+    const earlierPersistedRun: HermesSessionMessage[] = [
+      {
+        id: "earlier-identical-user",
+        role: "user",
+        content: "Repeat the queued prompt.",
+        timestamp: "2026-07-16T12:00:00Z",
+      },
+      {
+        id: "earlier-identical-assistant",
+        role: "assistant",
+        content: "Earlier queued answer.",
+        timestamp: "2026-07-16T12:00:00Z",
+      },
+    ];
+    mocks.hermesBridgeSessionMessages.mockResolvedValue({ messages: earlierPersistedRun });
+    releaseEarlierSend();
+    await earlierSend;
+    await act(async () => expect(await submission).toBe(true));
+
+    const monitorInput = mocks.startAgentRunMonitoring.mock.calls[0]?.[0];
+    expect(monitorInput?.acceptedPrompt.findPersistedUserIndex(earlierPersistedRun)).toBe(-1);
+    expect(
+      monitorInput?.acceptedPrompt.findPersistedUserIndex([
+        ...earlierPersistedRun,
+        {
+          id: "current-identical-user",
+          role: "user",
+          content: "Repeat the queued prompt.",
+          // Hermes can truncate the current row to second precision. Its
+          // post-lock ordinal still proves it was not in the baseline.
+          timestamp: new Date(
+            Math.floor(monitorInput.acceptedPrompt.dispatchedAtMs / 1_000) * 1_000,
+          ).toISOString(),
+        },
+      ]),
+    ).toBe(2);
+  });
+
+  it("falls back without blocking Send when the dispatch snapshot read hangs", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mocks.hermesBridgeSessionMessages.mockImplementation(() => new Promise(() => {}));
+
+    vi.useFakeTimers();
+    try {
+      let submission: Promise<boolean> = Promise.resolve(false);
+      act(() => {
+        submission = result.current.submit("Send despite the hung snapshot.");
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      await expect(submission).resolves.toBe(true);
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-note-chat",
+        text: "Send despite the hung snapshot.",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("finalizes a dispatched note run without clearing the new note's Stop fence", async () => {
+    rememberNoteChatSession("note-a", "stored-a");
+    rememberNoteChatSession("note-b", "stored-b");
+    let acceptPrompt: (() => void) | undefined;
+    const promptAccepted = new Promise<void>((resolve) => {
+      acceptPrompt = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { session_id?: string }) => {
+      if (method === "session.resume") {
+        return Promise.resolve({
+          session_id: params?.session_id === "stored-a" ? "runtime-a" : "runtime-b",
+        });
+      }
+      if (method === "prompt.submit" && params?.session_id === "runtime-a") {
+        return promptAccepted;
+      }
+      return Promise.resolve({});
+    });
+
+    const sending = renderHook(
+      ({ id }) => useNoteChat({ id, title: id === "note-a" ? "Note A" : "Note B" }),
+      { initialProps: { id: "note-a" } },
+    );
+    await waitFor(() => expect(sending.result.current.loading).toBe(false));
+
+    let noteASubmit: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      noteASubmit = sending.result.current.submit("Question for A");
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-a",
+        text: "Question for A",
+      }),
+    );
+
+    sending.rerender({ id: "note-b" });
+    await waitFor(() => expect(sending.result.current.loading).toBe(false));
+    expect(sending.result.current.storedSessionId).toBe("stored-b");
+    expect(sending.result.current.working).toBe(false);
+    expect(sending.result.current.turns).toEqual([]);
+
+    await act(async () => {
+      expect(await sending.result.current.submit("Question for B")).toBe(true);
+    });
+    expect(sending.result.current.working).toBe(true);
+    act(() => sending.result.current.stop());
+    expect(mocks.stopAgentRunMonitoring).toHaveBeenCalledWith("stored-b", 1, expect.any(Function));
+    expect(sending.result.current.working).toBe(false);
+    expect(noteChatText(sending.result.current, "user")).toContain("Question for B");
+    mocks.markAgentRunSucceeded.mockClear();
+
+    await act(async () => acceptPrompt?.());
+    await expect(noteASubmit).resolves.toBe(false);
+    expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith(
+      expect.objectContaining({
+        storedSessionId: "stored-a",
+        runtimeSessionId: "runtime-a",
+      }),
+    );
+    expect(sending.result.current.storedSessionId).toBe("stored-b");
+    expect(sending.result.current.working).toBe(false);
+    expect(noteChatText(sending.result.current, "user")).toContain("Question for B");
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-b",
+          payload: { status: "success" },
+        });
+      }
+    });
+    expect(mocks.markAgentRunSucceeded).not.toHaveBeenCalledWith("stored-b", 1);
+    expect(sending.result.current.working).toBe(false);
+
+    const noteAWhileWorking = renderHook(() => useNoteChat({ id: "note-a", title: "Note A" }));
+    await waitFor(() => expect(noteAWhileWorking.result.current.loading).toBe(false));
+    expect(noteAWhileWorking.result.current.working).toBe(true);
+    noteAWhileWorking.unmount();
+
+    const noteARefreshesBefore = mocks.hermesBridgeSessionMessages.mock.calls.filter(
+      ([sessionId]) => sessionId === "stored-a",
+    ).length;
+    mocks.hermesBridgeSessionMessages.mockImplementation((sessionId: string) =>
+      Promise.resolve({
+        messages:
+          sessionId === "stored-a"
+            ? [
+                {
+                  id: "note-a-user",
+                  role: "user",
+                  content: "Question for A",
+                  timestamp: new Date(Date.now() + 1_000).toISOString(),
+                },
+                {
+                  id: "note-a-assistant",
+                  role: "assistant",
+                  content: "Answer for A",
+                  timestamp: new Date(Date.now() + 2_000).toISOString(),
+                },
+              ]
+            : [],
+      }),
+    );
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_SETTLED_EVENT, {
+          detail: {
+            sessionId: "stored-a",
+            runMonitorGeneration: 1,
+            title: "Note A",
+            summary: "June finished.",
+          },
+        }),
+      );
+    });
+    await waitFor(() =>
+      expect(
+        mocks.hermesBridgeSessionMessages.mock.calls.filter(
+          ([sessionId]) => sessionId === "stored-a",
+        ).length,
+      ).toBeGreaterThan(noteARefreshesBefore),
+    );
+    expect(sending.result.current.storedSessionId).toBe("stored-b");
+    expect(sending.result.current.working).toBe(false);
+    expect(noteChatText(sending.result.current, "user")).toContain("Question for B");
+
+    const noteAAfterSettlement = renderHook(() => useNoteChat({ id: "note-a", title: "Note A" }));
+    await waitFor(() =>
+      expect(noteChatText(noteAAfterSettlement.result.current, "assistant")).toContain(
+        "Answer for A",
+      ),
+    );
+    expect(noteAAfterSettlement.result.current.working).toBe(false);
   });
 
   it("cancels an in-flight send instead of retargeting it after switching notes", async () => {
@@ -4028,15 +5143,10 @@ describe("note chat session map", () => {
   it("keeps a delayed Stop refresh scoped to the note that was stopped", async () => {
     rememberNoteChatSession("note-a", "stored-a");
     rememberNoteChatSession("note-b", "stored-b");
-    let finishInterrupt: (() => void) | undefined;
+    mocks.stopAgentRunMonitoring.mockImplementation(() => true);
     mocks.gatewayRequest.mockImplementation((method: string, params?: { session_id?: string }) => {
       if (method === "session.resume") {
         return Promise.resolve({ session_id: `runtime-${params?.session_id}` });
-      }
-      if (method === "session.interrupt") {
-        return new Promise<void>((resolve) => {
-          finishInterrupt = resolve;
-        });
       }
       return Promise.resolve({});
     });
@@ -4052,15 +5162,15 @@ describe("note chat session map", () => {
     });
 
     act(() => sending.result.current.stop());
-    await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.interrupt", {
-        session_id: "runtime-stored-a",
-      }),
-    );
+    expect(mocks.stopAgentRunMonitoring).toHaveBeenCalledWith("stored-a", 1, expect.any(Function));
+    const stopCalls = mocks.stopAgentRunMonitoring.mock.calls as unknown as Array<
+      [string, number, () => void]
+    >;
+    const onStopped = stopCalls.at(-1)?.[2];
     sending.rerender({ id: "note-b" });
     await waitFor(() => expect(sending.result.current.loading).toBe(false));
     const refreshCountBefore = mocks.hermesBridgeSessionMessages.mock.calls.length;
-    await act(async () => finishInterrupt?.());
+    await act(async () => onStopped?.());
     await waitFor(() =>
       expect(mocks.hermesBridgeSessionMessages.mock.calls.length).toBeGreaterThan(
         refreshCountBefore,

@@ -93,3 +93,6 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | JUN-349 (pre-PR) | Standards (codex) | 0 | — | clean on the runtime startup guard and focused relaunch regression coverage |
 | JUN-349 (pre-PR) | Spec (codex) | 0 | — | clean against the immediate relaunch-history restoration contract and explicit non-goals |
 | JUN-349 (pre-PR) | Adversarial (claude) | 0 | — | approved after tracing double-start locking, shared session storage across runtime modes, and the canonical message read path |
+| JUN-335 (pre-PR) | Standards (codex, r1-r3) | 3 | 3 | caught stored-vs-runtime session-id ambiguity in new app-lifetime contracts/helpers and ambiguous turn terminology; final clean after a full added-line rescan |
+| JUN-335 (pre-PR) | Spec (codex, final) | 0 | — | clean with explicit coverage mapping for delta, replacement, out-of-order, duplicate, reconnect, finalization, and canonical-source ownership |
+| JUN-335 (pre-PR) | Adversarial (codex, iterative) | 21 | 21 | found cross-note acknowledgement/Stop ownership, pre-ACK terminal, remount continuation, delivery replay, late-gateway, generation retagging, and issue-report publication-gap races; final 8-case convergence battery clean |
