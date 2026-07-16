@@ -16,6 +16,8 @@ import {
   connectorsConnect,
   connectorsDisconnect,
   connectorsList,
+  notionConnectorConnect,
+  notionConnectorDisconnect,
   type ConnectorAccount,
   type ConnectorScopeBundle,
 } from "../../lib/tauri";
@@ -43,7 +45,10 @@ const PROVIDER_BLURBS = {
 } as const;
 
 const NOTION_CONNECTOR_BLURB =
-  "We're verifying that June can access only the Notion pages you choose. Connect will be available when that check is complete.";
+  "Connect Notion through its hosted MCP preview. June stores the credential in your Keychain but will not read pages or expose Notion tools to the agent yet.";
+
+const NOTION_CONNECTED_BLURB =
+  "Connected for hosted MCP auth preview. Selected-page access is not verified, and June is not reading Notion content yet.";
 
 function featureSummary(account: ConnectorAccount): string {
   const features = grantedFeatureLabels(account.scopes);
@@ -78,6 +83,8 @@ export function ConnectorsSection() {
   const [disconnectTarget, setDisconnectTarget] = useState<ConnectorAccount | null>(null);
   const [revoke, setRevoke] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [notionConnecting, setNotionConnecting] = useState(false);
+  const [notionDisconnecting, setNotionDisconnecting] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -153,6 +160,34 @@ export function ConnectorsSection() {
     }
   }
 
+  async function connectNotion() {
+    if (notionConnecting) return;
+    setNotionConnecting(true);
+    try {
+      await notionConnectorConnect();
+      await refresh();
+      toast.success("Notion connected");
+    } catch (err) {
+      toast.error(messageFromError(err));
+    } finally {
+      setNotionConnecting(false);
+    }
+  }
+
+  async function disconnectNotion() {
+    if (notionDisconnecting) return;
+    setNotionDisconnecting(true);
+    try {
+      await notionConnectorDisconnect();
+      await refresh();
+      toast.success("Notion disconnected");
+    } catch (err) {
+      toast.error(messageFromError(err));
+    } finally {
+      setNotionDisconnecting(false);
+    }
+  }
+
   async function reconnect(account: ConnectorAccount) {
     setNotConfigured(null);
     setReconnectingId(account.accountId);
@@ -218,7 +253,7 @@ export function ConnectorsSection() {
       <div className="settings-card connectors-card">
         <ul className="connectors-list">
           {PROVIDER_ORDER.map((provider) => {
-            const account = accounts?.[0] ?? null;
+            const account = accounts?.find((entry) => entry.provider === provider) ?? null;
             const name = PROVIDER_NAMES[provider];
             const status = account ? accountStatusMeta(account.status) : null;
             const subtitle = account ? accountSubtitle(account) : PROVIDER_BLURBS[provider];
@@ -293,30 +328,51 @@ export function ConnectorsSection() {
               </li>
             );
           })}
-          <li className="connector-row">
-            <span className="connector-logo" aria-hidden>
-              <ConnectorProviderIcon provider="notion" />
-            </span>
-            <div className="connector-main">
-              <span className="connector-name">Notion</span>
-              <p className="connector-subtitle" title={NOTION_CONNECTOR_BLURB}>
-                {NOTION_CONNECTOR_BLURB}
-              </p>
-            </div>
-            <div className="connector-actions">
-              <span className="status-pill" data-tone="warning">
-                Verifying access
-              </span>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                aria-label="Connect Notion"
-                disabled
-              >
-                Connect
-              </button>
-            </div>
-          </li>
+          {(() => {
+            const account = accounts?.find((entry) => entry.provider === "notion") ?? null;
+            const subtitle = account ? NOTION_CONNECTED_BLURB : NOTION_CONNECTOR_BLURB;
+            return (
+              <li className="connector-row">
+                <span className="connector-logo" aria-hidden>
+                  <ConnectorProviderIcon provider="notion" />
+                </span>
+                <div className="connector-main">
+                  <span className="connector-name">Notion</span>
+                  <p className="connector-subtitle" title={subtitle}>
+                    {subtitle}
+                  </p>
+                </div>
+                <div className="connector-actions">
+                  <span className="status-pill" data-tone={account ? "ok" : "warning"}>
+                    {account ? "Preview connected" : "Preview"}
+                  </span>
+                  {account ? (
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      aria-label="Disconnect Notion"
+                      disabled={notionDisconnecting}
+                      aria-busy={notionDisconnecting || undefined}
+                      onClick={() => void disconnectNotion()}
+                    >
+                      {notionDisconnecting ? "Disconnecting…" : "Disconnect"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      aria-label="Connect Notion"
+                      disabled={accounts === null || notionConnecting}
+                      aria-busy={notionConnecting || undefined}
+                      onClick={() => void connectNotion()}
+                    >
+                      {notionConnecting ? "Waiting for browser…" : "Connect"}
+                    </button>
+                  )}
+                </div>
+              </li>
+            );
+          })()}
         </ul>
       </div>
 

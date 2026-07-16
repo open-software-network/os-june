@@ -14,6 +14,7 @@
 pub mod approvals;
 pub mod commands;
 pub mod google;
+pub mod notion;
 pub mod oauth;
 pub mod scopes;
 pub mod store;
@@ -29,6 +30,7 @@ use std::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 
+pub use notion::NotionConnectFlow;
 pub use oauth::ConnectFlow;
 
 /// Access tokens within this many seconds of expiry are refreshed instead of
@@ -41,12 +43,14 @@ const GOOGLE_OAUTH_CLIENT_SECRET_ENV: &str = "GOOGLE_OAUTH_CLIENT_SECRET";
 #[serde(rename_all = "snake_case")]
 pub enum ConnectorProvider {
     Google,
+    Notion,
 }
 
 impl ConnectorProvider {
     pub fn as_str(&self) -> &'static str {
         match self {
             ConnectorProvider::Google => "google",
+            ConnectorProvider::Notion => "notion",
         }
     }
 }
@@ -340,7 +344,7 @@ async fn mark_reconnect_required(app: &tauri::AppHandle, account_id: &str) {
 pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccount>, AppError> {
     let repos = crate::commands::repositories(app).await?;
     let records = repos.list_connector_accounts().await?;
-    Ok(records
+    let mut accounts: Vec<ConnectorAccount> = records
         .into_iter()
         .map(|record| ConnectorAccount {
             account_id: record.account_id,
@@ -349,7 +353,17 @@ pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccoun
             scopes: record.scopes,
             status: ConnectorAccountStatus::from_db(&record.status),
         })
-        .collect())
+        .collect();
+    if notion::status().await?.connected {
+        accounts.push(ConnectorAccount {
+            account_id: notion::notion_account_id().to_string(),
+            provider: ConnectorProvider::Notion,
+            email: notion::notion_account_email().to_string(),
+            scopes: Vec::new(),
+            status: ConnectorAccountStatus::Connected,
+        });
+    }
+    Ok(accounts)
 }
 
 /// The email of an already-stored account that differs from the one being

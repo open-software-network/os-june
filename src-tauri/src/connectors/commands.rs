@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 use super::{
-    begin_connect, disconnect, list_accounts, scopes::ScopeBundle, ConnectFlow, ConnectorAccount,
-    ConnectorAccountStatus,
+    begin_connect, disconnect, list_accounts, notion, scopes::ScopeBundle, ConnectFlow,
+    ConnectorAccount, ConnectorAccountStatus, NotionConnectFlow,
 };
 
 /// A routine earns autonomy only after this many completed approval-mode
@@ -100,6 +100,31 @@ pub async fn connectors_disconnect(
     request: ConnectorsDisconnectRequest,
 ) -> Result<(), AppError> {
     disconnect(&app, &request.account_id, request.revoke).await
+}
+
+#[tauri::command]
+pub async fn notion_connector_status() -> Result<notion::NotionConnectionStatus, AppError> {
+    notion::status().await
+}
+
+#[tauri::command]
+pub async fn notion_connector_connect(
+    flow: tauri::State<'_, NotionConnectFlow>,
+) -> Result<notion::NotionConnection, AppError> {
+    notion::connect(&flow).await
+}
+
+#[tauri::command]
+pub fn notion_connector_cancel_connect(
+    flow: tauri::State<'_, NotionConnectFlow>,
+) -> Result<(), AppError> {
+    flow.cancel();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn notion_connector_disconnect() -> Result<(), AppError> {
+    notion::disconnect().await
 }
 
 // --- Routine trust modes -----------------------------------------------------

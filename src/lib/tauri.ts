@@ -1995,13 +1995,13 @@ export type ConnectorScopeBundle =
 
 export type ConnectorAccountStatus = "connected" | "reconnect_required";
 
-/** One connected Google account, as the connectors module reports it. Carries
- * only metadata (email, granted scope URLs, health) — never a token. */
+/** One connected account, as the connectors module reports it. Carries only
+ * metadata (display email/label, granted scope URLs, health), never a token. */
 export type ConnectorAccount = {
   accountId: string;
-  provider: "google";
+  provider: "google" | "notion";
   email: string;
-  /** Granted Google scope URLs (not bundle names). */
+  /** Granted Google scope URLs (not bundle names). Empty for Notion preview. */
   scopes: string[];
   status: ConnectorAccountStatus;
 };
@@ -2074,6 +2074,41 @@ export async function connectorsConnect(input: {
 
 export async function connectorsCancelConnect() {
   return invoke<void>("connectors_cancel_connect");
+}
+
+export type NotionConnectionStatus = {
+  connected: boolean;
+  accountId: string;
+  endpoint: string;
+  preview: boolean;
+  selectedResourceScopingVerified: boolean;
+  accessTokenPresent: boolean;
+  refreshTokenPresent: boolean;
+  clientIdPresent: boolean;
+  keychainOnly: boolean;
+};
+
+export type NotionConnection = {
+  accountId: string;
+  endpoint: string;
+  preview: boolean;
+  selectedResourceScopingVerified: boolean;
+};
+
+export async function notionConnectorStatus() {
+  return invoke<NotionConnectionStatus>("notion_connector_status");
+}
+
+export async function notionConnectorConnect() {
+  return invoke<NotionConnection>("notion_connector_connect");
+}
+
+export async function notionConnectorCancelConnect() {
+  return invoke<void>("notion_connector_cancel_connect");
+}
+
+export async function notionConnectorDisconnect() {
+  return invoke<void>("notion_connector_disconnect");
 }
 
 /** Removes a connected account. With `revoke`, also revokes June's grant with

@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   connectorsConnect: vi.fn(),
   connectorsDisconnect: vi.fn(),
   connectorsApplyRuntime: vi.fn(),
+  notionConnectorConnect: vi.fn(),
+  notionConnectorDisconnect: vi.fn(),
   listen: vi.fn(),
 }));
 
@@ -18,6 +20,8 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   connectorsConnect: mocks.connectorsConnect,
   connectorsDisconnect: mocks.connectorsDisconnect,
   connectorsApplyRuntime: mocks.connectorsApplyRuntime,
+  notionConnectorConnect: mocks.notionConnectorConnect,
+  notionConnectorDisconnect: mocks.notionConnectorDisconnect,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -45,6 +49,13 @@ beforeEach(() => {
   mocks.connectorsConnect.mockResolvedValue(account());
   mocks.connectorsDisconnect.mockResolvedValue(undefined);
   mocks.connectorsApplyRuntime.mockResolvedValue(undefined);
+  mocks.notionConnectorConnect.mockResolvedValue({
+    accountId: "notion-hosted-mcp",
+    endpoint: "https://mcp.notion.com/mcp",
+    preview: true,
+    selectedResourceScopingVerified: false,
+  });
+  mocks.notionConnectorDisconnect.mockResolvedValue(undefined);
   mocks.listen.mockResolvedValue(() => {});
 });
 
@@ -64,15 +75,40 @@ describe("ConnectorsSection", () => {
     expect(screen.getByText(/mail and calendar for briefings/i)).toBeInTheDocument();
   });
 
-  it("lists Notion as blocked until selected-resource access is verified", async () => {
+  it("lists Notion as a connectable hosted MCP preview", async () => {
     render(<ConnectorsSection />);
 
-    const connect = await screen.findByRole("button", { name: "Connect Notion" });
+    const connect = await findEnabledConnect("Connect Notion");
     expect(screen.getByText("Notion")).toBeInTheDocument();
-    expect(screen.getByText("Verifying access")).toBeInTheDocument();
-    expect(screen.getByText(/verifying that June can access only/i)).toBeInTheDocument();
-    expect(connect).toBeDisabled();
+    expect(screen.getByText("Preview")).toBeInTheDocument();
+    expect(screen.getByText(/hosted MCP preview/i)).toBeInTheDocument();
+
+    await userEvent.click(connect);
+
+    await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
     expect(mocks.connectorsConnect).not.toHaveBeenCalled();
+  });
+
+  it("shows connected Notion preview state and disconnects locally", async () => {
+    mocks.connectorsList.mockResolvedValue([
+      {
+        accountId: "notion-hosted-mcp",
+        provider: "notion",
+        email: "Notion hosted MCP preview",
+        scopes: [],
+        status: "connected",
+      },
+    ]);
+    render(<ConnectorsSection />);
+
+    expect(await screen.findByText("Preview connected")).toBeInTheDocument();
+    expect(screen.getByText(/selected-page access is not verified/i)).toBeInTheDocument();
+
+    mocks.connectorsList.mockResolvedValue([]);
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
+
+    await waitFor(() => expect(mocks.notionConnectorDisconnect).toHaveBeenCalled());
+    expect(await findEnabledConnect("Connect Notion")).toBeInTheDocument();
   });
 
   it("lists connected accounts with feature labels and status", async () => {

@@ -299,6 +299,10 @@ pub fn run() {
             connectors::commands::connectors_connect,
             connectors::commands::connectors_cancel_connect,
             connectors::commands::connectors_disconnect,
+            connectors::commands::notion_connector_status,
+            connectors::commands::notion_connector_connect,
+            connectors::commands::notion_connector_cancel_connect,
+            connectors::commands::notion_connector_disconnect,
             connectors::commands::routine_trust_get,
             connectors::commands::routine_trust_set,
             connectors::commands::routine_trust_record_run,
@@ -319,6 +323,7 @@ pub fn run() {
         .manage(hermes_bridge::HermesBridge::default())
         .manage(os_accounts::LoginFlow::default())
         .manage(connectors::ConnectFlow::default())
+        .manage(connectors::NotionConnectFlow::default())
         .setup(|app| {
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
