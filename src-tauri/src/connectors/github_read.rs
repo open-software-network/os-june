@@ -808,6 +808,9 @@ fn trim_list_envelope(
         .and_then(serde_json::Value::as_array)
         .map(Vec::len)
         .ok_or_else(read_unavailable)?;
+    if kept == 0 {
+        return Err(response_too_large());
+    }
     envelope.continuation_cursor = Some(
         capabilities
             .issue_cursor(resume_after_prefix[kept].clone())
@@ -847,6 +850,9 @@ fn trim_patch_envelope(
     let mut selected = None;
     for checkpoint in resume_after_prefix.iter().rev() {
         let end = checkpoint.output_prefix_bytes;
+        if end == 0 {
+            continue;
+        }
         if !patch.is_char_boundary(end) {
             return Err(read_unavailable());
         }
@@ -1063,6 +1069,7 @@ mod tests {
         connectors::{
             github::{GitHubTokenVault, GitHubVaultFuture},
             github_auth::tests::{scripted_server, RequestExpectations, ResponseFixture},
+            github_capabilities::PullFileScope,
             github_store::StoredGitHubTokens,
         },
         db::repositories::{
@@ -1241,6 +1248,76 @@ mod tests {
 
     fn repository_response() -> &'static str {
         r#"{"id":789,"archived":false,"default_branch":"main","description":"Fixture repository","language":"Rust","topics":[],"license":null,"stargazers_count":1,"watchers_count":1,"forks_count":0,"open_issues_count":2}"#
+    }
+
+    fn issue_response() -> String {
+        serde_json::json!({
+            "id": 1007,
+            "number": 7,
+            "title": "Issue 7",
+            "body": "Issue body",
+            "user": {"id": 42, "login": "octocat", "type": "User"},
+            "labels": [],
+            "milestone": null,
+            "state": "open",
+            "state_reason": null,
+            "locked": false,
+            "comments": 0,
+            "created_at": "2026-07-10T00:00:00Z",
+            "updated_at": "2026-07-11T00:00:00Z",
+            "closed_at": null,
+        })
+        .to_string()
+    }
+
+    fn pull_response() -> String {
+        serde_json::json!({
+            "id": 9007,
+            "number": 7,
+            "title": "Fix connector behavior",
+            "state": "open",
+            "draft": false,
+            "body": "Pull body",
+            "user": {"id": 17, "login": "contributor"},
+            "created_at": "2026-07-16T00:00:00Z",
+            "updated_at": "2026-07-16T01:00:00Z",
+            "closed_at": null,
+            "merged_at": null,
+            "mergeable_state": "clean",
+            "changed_files": 1,
+            "commits": 1,
+            "additions": 1,
+            "deletions": 0,
+            "comments": 0,
+            "review_comments": 0,
+            "head": {
+                "label": "contributor:feature",
+                "ref": "feature",
+                "sha": "0123456789abcdef0123456789abcdef01234567",
+                "repo": {"id": 88, "full_name": "contributor/test-repo"}
+            },
+            "base": {
+                "label": "open-software-network:main",
+                "ref": "main",
+                "sha": "1111111111111111111111111111111111111111",
+                "repo": {"id": 789, "full_name": "open-software-network/test-repo"}
+            }
+        })
+        .to_string()
+    }
+
+    fn pull_file_response() -> String {
+        serde_json::json!([{
+            "sha": "2222222222222222222222222222222222222222",
+            "filename": "src/lib.rs",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 0,
+            "changes": 1,
+            "previous_filename": null,
+            "patch": "+hello\n"
+        }])
+        .to_string()
     }
 
     fn provider_expectation(token: &'static str) -> RequestExpectations {
@@ -1430,6 +1507,200 @@ mod tests {
 
     #[tokio::test]
     async fn dispatches_exactly_the_sixteen_read_variants() {
+        let head_sha = "0123456789abcdef0123456789abcdef01234567";
+        let file_sha = "2222222222222222222222222222222222222222";
+        let commit_sha = "3333333333333333333333333333333333333333";
+        let issue = issue_response();
+        let pull = pull_response();
+        let pull_file = pull_file_response();
+        let directory = serde_json::json!([{
+            "name": "lib.rs",
+            "path": "src/lib.rs",
+            "sha": file_sha,
+            "size": 6,
+            "type": "file"
+        }])
+        .to_string();
+        let file = serde_json::json!({
+            "type": "file",
+            "size": 6,
+            "encoding": "base64",
+            "content": "aGVsbG8K",
+            "sha": file_sha
+        })
+        .to_string();
+        let search = serde_json::json!({
+            "total_count": 1,
+            "incomplete_results": false,
+            "items": [{
+                "path": "src/lib.rs",
+                "sha": file_sha,
+                "repository": {
+                    "id": 789,
+                    "name": "test-repo",
+                    "full_name": "open-software-network/test-repo",
+                    "owner": {"login": "open-software-network"}
+                },
+                "text_matches": [{"fragment": "hello"}]
+            }]
+        })
+        .to_string();
+        let issue_comment = serde_json::json!([{
+            "id": 2007,
+            "body": "Comment body",
+            "user": {"id": 42, "login": "octocat", "type": "User"},
+            "created_at": "2026-07-12T00:00:00Z",
+            "updated_at": "2026-07-12T00:00:00Z"
+        }])
+        .to_string();
+        let commit = serde_json::json!([{
+            "sha": commit_sha,
+            "commit": {
+                "message": "Commit marker",
+                "author": {"name": "Author", "date": "2026-07-16T00:00:00Z"},
+                "committer": {"name": "Committer", "date": "2026-07-16T00:00:00Z"}
+            },
+            "author": {"id": 17, "login": "author"},
+            "committer": {"id": 18, "login": "committer"}
+        }])
+        .to_string();
+        let review = serde_json::json!([{
+            "id": 501,
+            "user": {"id": 19, "login": "reviewer"},
+            "body": "Review body",
+            "state": "APPROVED",
+            "submitted_at": "2026-07-16T00:00:00Z",
+            "commit_id": head_sha
+        }])
+        .to_string();
+        let review_comment = serde_json::json!([{
+            "id": 700,
+            "user": {"id": 20, "login": "reviewer"},
+            "body": "Review comment marker",
+            "path": "src/lib.rs",
+            "line": 9,
+            "side": "RIGHT",
+            "start_line": null,
+            "start_side": null,
+            "commit_id": head_sha,
+            "original_commit_id": head_sha,
+            "created_at": "2026-07-16T00:00:00Z",
+            "updated_at": "2026-07-16T00:00:00Z"
+        }])
+        .to_string();
+        let check_runs = serde_json::json!({
+            "total_count": 1,
+            "check_runs": [{
+                "id": 801,
+                "name": "CI marker",
+                "head_sha": head_sha,
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": "2026-07-16T00:00:00Z",
+                "completed_at": "2026-07-16T00:01:00Z",
+                "app": {"id": 91, "name": "Checks app"},
+                "output": {"title": "Passed", "summary": "All good", "text": "Complete"}
+            }]
+        })
+        .to_string();
+        let (base_url, server) = scripted_server(vec![
+            (
+                ResponseFixture::json(200, repository_response()),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, directory),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, file),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, search),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, format!("[{issue}]")),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, issue),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, issue_comment),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, format!("[{pull}]")),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, pull.clone()),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, pull.clone()),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, pull_file.clone()),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, pull.clone()),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, pull.clone()),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, pull_file),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, pull.clone()),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, commit),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, review),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, review_comment),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, pull.clone()),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, check_runs),
+                provider_expectation("access-one"),
+            ),
+            (
+                ResponseFixture::json(200, pull),
+                provider_expectation("access-one"),
+            ),
+        ])
+        .await;
+        let service = service(&base_url);
+        let file_ref = service
+            .capabilities
+            .issue_pull_file(PullFileScope {
+                repository_id: "789".to_owned(),
+                pull_number: 7,
+                head_sha: head_sha.to_owned(),
+                absolute_index: 0,
+                expected_path: "src/lib.rs".to_owned(),
+            })
+            .expect("bound pull file reference");
         let operations = [
             GitHubReadRequest::ListRepositories {
                 cursor: None,
@@ -1440,27 +1711,27 @@ mod tests {
             },
             GitHubReadRequest::ListDirectory {
                 repository_id: "789".to_owned(),
-                path: "../outside".to_owned(),
-                git_ref: None,
+                path: "src".to_owned(),
+                git_ref: Some("main".to_owned()),
                 cursor: None,
                 limit: None,
             },
             GitHubReadRequest::ReadFile {
                 repository_id: "789".to_owned(),
-                path: ".env".to_owned(),
-                git_ref: None,
+                path: "src/lib.rs".to_owned(),
+                git_ref: Some("main".to_owned()),
                 start_line: None,
                 line_count: None,
             },
             GitHubReadRequest::SearchCode {
                 repository_id: "789".to_owned(),
-                query: "repo:another/repository".to_owned(),
+                query: "hello".to_owned(),
                 cursor: None,
                 limit: None,
             },
             GitHubReadRequest::ListIssues {
                 repository_id: "789".to_owned(),
-                state: Some("invalid".to_owned()),
+                state: Some("open".to_owned()),
                 query: None,
                 labels: None,
                 cursor: None,
@@ -1468,17 +1739,17 @@ mod tests {
             },
             GitHubReadRequest::GetIssue {
                 repository_id: "789".to_owned(),
-                number: 0,
+                number: 7,
             },
             GitHubReadRequest::ListIssueComments {
                 repository_id: "789".to_owned(),
-                number: 0,
+                number: 7,
                 cursor: None,
                 limit: None,
             },
             GitHubReadRequest::ListPullRequests {
                 repository_id: "789".to_owned(),
-                state: Some("invalid".to_owned()),
+                state: Some("open".to_owned()),
                 query: None,
                 base: None,
                 head: None,
@@ -1487,41 +1758,41 @@ mod tests {
             },
             GitHubReadRequest::GetPullRequest {
                 repository_id: "789".to_owned(),
-                number: 0,
+                number: 7,
             },
             GitHubReadRequest::ListPullRequestFiles {
                 repository_id: "789".to_owned(),
-                number: 0,
+                number: 7,
                 cursor: None,
                 limit: None,
             },
             GitHubReadRequest::ReadPullRequestFileDiff {
                 repository_id: "789".to_owned(),
-                number: 0,
-                file_ref: "opaque".to_owned(),
+                number: 7,
+                file_ref,
                 cursor: None,
             },
             GitHubReadRequest::ListPullRequestCommits {
                 repository_id: "789".to_owned(),
-                number: 0,
+                number: 7,
                 cursor: None,
                 limit: None,
             },
             GitHubReadRequest::ListPullRequestReviews {
                 repository_id: "789".to_owned(),
-                number: 0,
+                number: 7,
                 cursor: None,
                 limit: None,
             },
             GitHubReadRequest::ListPullRequestReviewComments {
                 repository_id: "789".to_owned(),
-                number: 0,
+                number: 7,
                 cursor: None,
                 limit: None,
             },
             GitHubReadRequest::ListPullRequestChecks {
                 repository_id: "789".to_owned(),
-                number: 0,
+                number: 7,
                 cursor: None,
                 limit: None,
             },
@@ -1548,54 +1819,73 @@ mod tests {
                 "list_pull_request_checks",
             ]
         );
-
-        let (base_url, server) = scripted_server(vec![(
-            ResponseFixture::json(200, repository_response()),
-            provider_expectation("access-one"),
-        )])
-        .await;
-        let service = service(&base_url);
         let eligibility = github_tool_eligibility_from_snapshot(&snapshot("2026-07-16"), "123")
             .expect("eligible fixture");
         let credential = GitHubReadCredential {
             github_user_id: "123".to_owned(),
             access_token: "access-one".to_owned(),
         };
-        let mut codes = Vec::new();
+        let mut outputs = Vec::new();
         for operation in operations {
-            codes.push(
+            outputs.push(
                 service
                     .dispatch(&operation, &credential, &eligibility)
                     .await
-                    .map(|_| "ok".to_owned())
-                    .unwrap_or_else(|failure| match failure {
-                        GitHubReadFailure::Input(error) => error.code,
-                        GitHubReadFailure::Provider(_) => "provider".to_owned(),
-                    }),
+                    .expect("valid operation must reach its fixed implementation"),
             );
         }
+        assert_eq!(outputs[0].data["items"][0]["repositoryId"], "789");
+        assert_eq!(outputs[1].data["defaultBranch"], "main");
+        assert_eq!(outputs[2].data["entries"][0]["path"], "src/lib.rs");
+        assert_eq!(outputs[3].data["text"], "hello");
+        assert_eq!(outputs[4].data["items"][0]["path"], "src/lib.rs");
+        assert_eq!(outputs[5].data["items"][0]["number"], 7);
+        assert_eq!(outputs[6].data["title"], "Issue 7");
+        assert_eq!(outputs[7].data["items"][0]["body"], "Comment body");
+        assert_eq!(outputs[8].data["items"][0]["number"], 7);
+        assert_eq!(outputs[9].data["title"], "Fix connector behavior");
+        assert_eq!(outputs[10].data["items"][0]["filename"], "src/lib.rs");
+        assert_eq!(outputs[11].data["patch"], "+hello\n");
+        assert_eq!(outputs[12].data["items"][0]["sha"], commit_sha);
+        assert_eq!(outputs[13].data["items"][0]["state"], "APPROVED");
+        assert_eq!(outputs[14].data["items"][0]["path"], "src/lib.rs");
+        assert_eq!(outputs[15].data["phase"], "check_runs");
+        assert_eq!(outputs[15].data["items"][0]["name"], "CI marker");
+
+        let captures = server.await.expect("dispatch server");
+        assert!(captures.iter().all(|capture| capture.method == "GET"));
+        assert!(captures
+            .iter()
+            .all(|capture| capture.has_expected_bearer_token));
         assert_eq!(
-            codes,
+            captures
+                .iter()
+                .map(|capture| capture.path.as_str())
+                .collect::<Vec<_>>(),
             [
-                "ok",
-                "ok",
-                "github_input_invalid",
-                "github_sensitive_path_blocked",
-                "github_input_invalid",
-                "github_input_invalid",
-                "github_input_invalid",
-                "github_input_invalid",
-                "github_input_invalid",
-                "github_input_invalid",
-                "github_input_invalid",
-                "github_input_invalid",
-                "github_input_invalid",
-                "github_input_invalid",
-                "github_input_invalid",
-                "github_input_invalid",
+                "/repos/open-software-network/test-repo",
+                "/repos/open-software-network/test-repo/contents/src?ref=main",
+                "/repos/open-software-network/test-repo/contents/src/lib.rs?ref=main",
+                "/search/code?q=hello+repo%3Aopen-software-network%2Ftest-repo&per_page=30&page=1",
+                "/repos/open-software-network/test-repo/issues?state=open&per_page=30&page=1",
+                "/repos/open-software-network/test-repo/issues/7",
+                "/repos/open-software-network/test-repo/issues/7/comments?per_page=30&page=1",
+                "/repos/open-software-network/test-repo/pulls?state=open&per_page=30&page=1",
+                "/repos/open-software-network/test-repo/pulls/7",
+                "/repos/open-software-network/test-repo/pulls/7",
+                "/repos/open-software-network/test-repo/pulls/7/files?per_page=30&page=1",
+                "/repos/open-software-network/test-repo/pulls/7",
+                "/repos/open-software-network/test-repo/pulls/7",
+                "/repos/open-software-network/test-repo/pulls/7/files?per_page=1&page=1",
+                "/repos/open-software-network/test-repo/pulls/7",
+                "/repos/open-software-network/test-repo/pulls/7/commits?per_page=30&page=1",
+                "/repos/open-software-network/test-repo/pulls/7/reviews?per_page=30&page=1",
+                "/repos/open-software-network/test-repo/pulls/7/comments?per_page=30&page=1",
+                "/repos/open-software-network/test-repo/pulls/7",
+                "/repos/open-software-network/test-repo/commits/0123456789abcdef0123456789abcdef01234567/check-runs?per_page=30&page=1",
+                "/repos/open-software-network/test-repo/pulls/7",
             ]
         );
-        assert_eq!(server.await.expect("dispatch server").len(), 1);
     }
 
     #[tokio::test]
@@ -2033,6 +2323,126 @@ mod tests {
             .resolve_cursor(&cursor, "list_issues", Some("789"), &fingerprint)
             .expect("resolve exact checkpoint");
         assert_eq!((resolved.provider_page, resolved.raw_offset), (1, 2));
+    }
+
+    #[test]
+    fn oversize_single_item_list_never_returns_same_scope_empty_success() {
+        let capabilities = CapabilityRegistry::new();
+        let fingerprint = crate::connectors::github_capabilities::filter_fingerprint(
+            &serde_json::json!({"state":"open","query":null,"labels":[],"limit":1}),
+        );
+        let scope = CursorScope {
+            operation: "list_issues",
+            repository_id: Some("789".to_owned()),
+            filter_fingerprint: fingerprint,
+            provider_page: 1,
+            raw_offset: 0,
+            phase: None,
+        };
+        let output = GitHubOperationOutput {
+            data: serde_json::json!({"items": [{"number": 1, "body": "\t".repeat(170 * 1024)}]}),
+            truncated: false,
+            continuation_cursor: None,
+            redactions_applied: false,
+            sources: vec![GitHubSource {
+                repository_id: "789".to_owned(),
+                repository_full_name: "open-software-network/test-repo".to_owned(),
+                url: "https://github.com/open-software-network/test-repo/issues/1".to_owned(),
+                object_id: "1".to_owned(),
+                path: None,
+                git_ref: None,
+            }],
+            finalization_checkpoints: Some(GitHubFinalizationCheckpoints::List {
+                data_field: "items",
+                sources_per_item: true,
+                resume_after_prefix: vec![
+                    scope.clone(),
+                    CursorScope {
+                        raw_offset: 1,
+                        ..scope
+                    },
+                ],
+            }),
+        };
+
+        let error = finalize_output(
+            &GitHubReadRequest::ListIssues {
+                repository_id: "789".to_owned(),
+                state: None,
+                query: None,
+                labels: None,
+                cursor: None,
+                limit: Some(1),
+            },
+            output,
+            &capabilities,
+        )
+        .expect_err("zero-item same-scope success must be rejected");
+
+        assert_eq!(error.code, "github_response_too_large");
+    }
+
+    #[test]
+    fn oversize_single_line_diff_never_returns_same_scope_empty_success() {
+        let capabilities = CapabilityRegistry::new();
+        let fingerprint = crate::connectors::github_capabilities::filter_fingerprint(
+            &serde_json::json!({"patch":"single-line"}),
+        );
+        let scope = |provider_page| CursorScope {
+            operation: "read_pull_request_file_diff",
+            repository_id: Some("789".to_owned()),
+            filter_fingerprint: fingerprint,
+            provider_page,
+            raw_offset: 0,
+            phase: Some("patch".to_owned()),
+        };
+        let patch = format!("+{}", "\t".repeat(170 * 1024));
+        assert!(patch.len() < 256 * 1024);
+        let output = GitHubOperationOutput {
+            data: serde_json::json!({
+                "pullNumber": 7,
+                "patchState": "provider_supplied",
+                "patch": patch,
+                "patchTruncated": false,
+            }),
+            truncated: false,
+            continuation_cursor: None,
+            redactions_applied: false,
+            sources: vec![GitHubSource {
+                repository_id: "789".to_owned(),
+                repository_full_name: "open-software-network/test-repo".to_owned(),
+                url: "https://github.com/open-software-network/test-repo/pull/7/files".to_owned(),
+                object_id: "7:src/lib.rs".to_owned(),
+                path: Some("src/lib.rs".to_owned()),
+                git_ref: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+            }],
+            finalization_checkpoints: Some(GitHubFinalizationCheckpoints::Patch {
+                resume_after_prefix: vec![
+                    GitHubPatchCheckpoint {
+                        output_prefix_bytes: 0,
+                        resume: scope(17),
+                    },
+                    GitHubPatchCheckpoint {
+                        output_prefix_bytes: patch.len(),
+                        resume: scope(u32::try_from(patch.len()).expect("patch bytes")),
+                    },
+                ],
+            }),
+        };
+
+        let error = finalize_output(
+            &GitHubReadRequest::ReadPullRequestFileDiff {
+                repository_id: "789".to_owned(),
+                number: 7,
+                file_ref: "opaque".to_owned(),
+                cursor: None,
+            },
+            output,
+            &capabilities,
+        )
+        .expect_err("zero-byte same-scope success must be rejected");
+
+        assert_eq!(error.code, "github_response_too_large");
     }
 
     #[test]
