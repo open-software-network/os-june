@@ -113,7 +113,7 @@ export type PendingHermesActionResolution =
 export type PendingHermesActionExpiration = {
   kind: "approval";
   requestId: string;
-  reason: "timeout" | "disconnect" | "overflow" | "stale" | "unknown";
+  reason: "timeout" | "disconnect" | "overflow" | "stale" | "unconfirmed" | "unknown";
 };
 
 /** The lifecycle phase a background subagent is reporting. */

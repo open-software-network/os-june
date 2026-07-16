@@ -404,6 +404,10 @@ const SESSION_GONE_MESSAGE = "This session has ended, so the request can no long
 const SESSION_NOT_AVAILABLE_MESSAGE =
   "This session is no longer available. Open another conversation or start a new one.";
 
+function approvalResponseKey(sessionId: string, requestId: string): string {
+  return `${sessionId}\u0000${requestId}`;
+}
+
 // A stable id for the "June is still working" nudge (fired when a send is
 // rejected mid-turn), so repeated send attempts refresh one toast instead of
 // stacking.
@@ -2740,6 +2744,10 @@ export function AgentWorkspace({
   const [approvalSubmitting, setApprovalSubmitting] = useState<
     Partial<Record<string, AgentApprovalChoice>>
   >({});
+  // Synchronous transport state for disconnect reconciliation. React state can
+  // lag behind the socket close callback by one render, so it cannot tell us
+  // reliably whether Hermes may already have accepted a response.
+  const approvalResponsesInFlightRef = useRef(new Map<string, AgentApprovalChoice>());
   const [clarifySubmitting, setClarifySubmitting] = useState<Record<string, string>>({});
   // Sudo records which choice (approve/deny) is in flight per request id;
   // secret records only that a submit is in flight (NEVER the value).
@@ -7525,14 +7533,23 @@ export function AgentWorkspace({
     const retiredAt = new Date().toISOString();
     for (const record of pendingActionStore.openRecords()) {
       if (!activeSessionIds.has(record.sessionId) || record.action.kind !== "approval") continue;
-      pendingActionStore.expireRequest(record.sessionId, record.requestId, "disconnect");
+      // The socket rejects pending RPCs immediately before this close handler
+      // runs. A response that was already processed upstream may therefore be
+      // unacknowledged locally. Retire it so it cannot be sent twice, but do not
+      // claim that nothing was approved when the outcome is unknowable.
+      const reason = approvalResponsesInFlightRef.current.has(
+        approvalResponseKey(record.sessionId, record.requestId),
+      )
+        ? "unconfirmed"
+        : "disconnect";
+      pendingActionStore.expireRequest(record.sessionId, record.requestId, reason);
       const expiration: JuneHermesEvent = {
         kind: "pending_action_expiration",
         sessionId: record.sessionId,
         action: {
           kind: "approval",
           requestId: record.requestId,
-          reason: "disconnect",
+          reason,
         },
         receivedAt: retiredAt,
       };
@@ -7818,6 +7835,11 @@ export function AgentWorkspace({
     choice: AgentApprovalChoice,
     unrestricted = false,
   ) {
+    const responseKey = approvalResponseKey(liveEventKey, requestId);
+    // The card disables on the next render; guard synchronously too so a rapid
+    // second activation cannot target the same logical approval twice.
+    if (approvalResponsesInFlightRef.current.has(responseKey)) return;
+    approvalResponsesInFlightRef.current.set(responseKey, choice);
     setApprovalSubmitting((current) => ({ ...current, [requestId]: choice }));
     try {
       // The approval lives in the runtime process that asked, so the
@@ -7898,6 +7920,7 @@ export function AgentWorkspace({
         setError(message, { sessionId });
       }
     } finally {
+      approvalResponsesInFlightRef.current.delete(responseKey);
       setApprovalSubmitting((current) => {
         const next = { ...current };
         delete next[requestId];
@@ -14154,19 +14177,23 @@ function videoProgressLabel(part: Extract<AgentChatPart, { type: "video" }>) {
 
 /** A resolved action card renders as a quiet, expandable one-line row instead
  * of a full card — a receipt in the transcript rather than a prompt. The row
- * mirrors {@link ContextCompactionPart}: an outcome glyph (checkmark / cross)
+ * mirrors {@link ContextCompactionPart}: an outcome glyph (checkmark / cross /
+ * warning)
  * that cross-fades to a plain-text "+"/"−" on hover (pure opacity — no layout
  * shift, a WKWebView compositing constraint), a short outcome label, and a
  * truncated one-line detail. Expanding reveals the full detail body (the
  * `children`) minus the action buttons. */
 function ResolvedActionRow({
   denied = false,
+  unknown = false,
   label,
   detail,
   children,
 }: {
   /** Renders the cross glyph and destructive tint instead of the checkmark. */
   denied?: boolean;
+  /** Renders a neutral warning glyph when the transport lost the outcome. */
+  unknown?: boolean;
   /** Short outcome word(s), e.g. "Approved once" / "Answered" / "Denied". */
   label: string;
   /** One-line truncated detail shown inline on the collapsed row. */
@@ -14177,11 +14204,16 @@ function ResolvedActionRow({
   return (
     <details
       className="agent-tool-disclosure agent-resolved-row"
-      data-choice={denied ? "deny" : "done"}
+      data-choice={unknown ? "unknown" : denied ? "deny" : "done"}
     >
       <summary>
         <span className="agent-tool-icon">
-          {denied ? (
+          {unknown ? (
+            <IconExclamationTriangle
+              size={15}
+              className="agent-tool-icon-glyph agent-resolved-icon-glyph"
+            />
+          ) : denied ? (
             <IconCrossSmall size={15} className="agent-tool-icon-glyph agent-resolved-icon-glyph" />
           ) : (
             <IconCheckmark2Small
@@ -14646,10 +14678,12 @@ export function ApprovalPart({
   // description and command — no action buttons.
   if (resolved) {
     if (part.status === "expired") {
+      const outcomeUnconfirmed = part.retiredReason === "unconfirmed";
       return (
         <ResolvedActionRow
-          denied
-          label="Approval expired"
+          denied={!outcomeUnconfirmed}
+          unknown={outcomeUnconfirmed}
+          label={outcomeUnconfirmed ? "Approval outcome unknown" : "Approval expired"}
           detail={
             part.command ? (
               <span className="agent-resolved-mono">{part.command}</span>
@@ -14658,7 +14692,15 @@ export function ApprovalPart({
             )
           }
         >
-          <p>This approval is no longer pending. June did not approve anything.</p>
+          {outcomeUnconfirmed ? (
+            <p>
+              The connection closed before June could confirm the response. This approval is no
+              longer actionable, but it may have already been applied. Check the agent activity
+              before retrying.
+            </p>
+          ) : (
+            <p>This approval is no longer pending. June did not approve anything.</p>
+          )}
           {part.command ? <pre>{part.command}</pre> : null}
         </ResolvedActionRow>
       );

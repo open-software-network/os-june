@@ -8466,6 +8466,82 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("approval.respond", expect.anything());
   });
 
+  it("retires an in-flight approval response without claiming its outcome after disconnect", async () => {
+    const user = userEvent.setup();
+    let rejectApproval: ((error: Error) => void) | undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "approval.respond") {
+        return new Promise((_resolve, reject) => {
+          rejectApproval = reject;
+        });
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "mcp-in-flight",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("approval.respond", {
+        session_id: "runtime-session-2",
+        request_id: "mcp-in-flight",
+        choice: "once",
+      }),
+    );
+
+    // The real gateway rejects pending RPCs immediately before invoking its
+    // close handlers. The response may nevertheless have reached Hermes.
+    act(() => {
+      rejectApproval?.(new Error("Hermes gateway connection closed."));
+      for (const handler of [...mocks.gatewayCloseHandlers]) handler();
+    });
+
+    expect(await screen.findByText("Approval outcome unknown")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /This approval is no longer actionable, but it may have already been applied/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Approval expired")).not.toBeInTheDocument();
+    expect(screen.queryByText(/June did not approve anything/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-in-flight")).toBe(
+      false,
+    );
+  });
+
   it("keys inbound diagnostics by the stored session id", async () => {
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.create") {

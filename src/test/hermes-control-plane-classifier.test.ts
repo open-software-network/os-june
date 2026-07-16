@@ -432,6 +432,14 @@ describe("classifyHermesEvent — pending actions", () => {
       action: { kind: "approval", requestId: "a-expired", reason: "timeout" },
     });
 
+    const unconfirmed = classifyHermesEvent(
+      event("approval.expire", { request_id: "a-unconfirmed", reason: "unconfirmed" }),
+    );
+    expect(unconfirmed).toMatchObject({
+      kind: "pending_action_expiration",
+      action: { kind: "approval", requestId: "a-unconfirmed", reason: "unconfirmed" },
+    });
+
     const malformed = classifyHermesEvent(event("approval.expire", { reason: "timeout" }));
     expect(malformed.kind).toBe("unsupported");
   });

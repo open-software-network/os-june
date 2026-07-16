@@ -429,7 +429,8 @@ function classifyPendingActionExpiration(
     rawReason === "timeout" ||
     rawReason === "disconnect" ||
     rawReason === "overflow" ||
-    rawReason === "stale"
+    rawReason === "stale" ||
+    rawReason === "unconfirmed"
       ? rawReason
       : "unknown";
   return { kind: "approval", requestId, reason };
