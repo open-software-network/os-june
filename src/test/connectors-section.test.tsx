@@ -64,6 +64,17 @@ describe("ConnectorsSection", () => {
     expect(screen.getByText(/mail and calendar for briefings/i)).toBeInTheDocument();
   });
 
+  it("lists Notion as blocked until selected-resource access is verified", async () => {
+    render(<ConnectorsSection />);
+
+    const connect = await screen.findByRole("button", { name: "Connect Notion" });
+    expect(screen.getByText("Notion")).toBeInTheDocument();
+    expect(screen.getByText("Verifying access")).toBeInTheDocument();
+    expect(screen.getByText(/verifying that June can access only/i)).toBeInTheDocument();
+    expect(connect).toBeDisabled();
+    expect(mocks.connectorsConnect).not.toHaveBeenCalled();
+  });
+
   it("lists connected accounts with feature labels and status", async () => {
     mocks.connectorsList.mockResolvedValue([account()]);
     render(<ConnectorsSection />);

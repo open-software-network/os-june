@@ -1,8 +1,16 @@
+import { IconFileText } from "central-icons/IconFileText";
 import { IconGoogle } from "central-icons/IconGoogle";
 
-/** The monochrome brand mark for a connector provider (central-icons,
- * currentColor). Shared by the Connectors settings directory and the
- * approvals tray so provider identity renders the same everywhere. */
-export function ConnectorProviderIcon({ size = 18 }: { provider: "google"; size?: number }) {
+/** The monochrome provider icon (central-icons, currentColor). Shared by the
+ * Connectors settings directory and approvals tray so provider identity renders
+ * the same everywhere. */
+export function ConnectorProviderIcon({
+  provider,
+  size = 18,
+}: {
+  provider: "google" | "notion";
+  size?: number;
+}) {
+  if (provider === "notion") return <IconFileText size={size} aria-hidden />;
   return <IconGoogle size={size} aria-hidden />;
 }

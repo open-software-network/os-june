@@ -42,6 +42,9 @@ const PROVIDER_BLURBS = {
   google: "Mail and calendar for briefings, triage, and meeting prep.",
 } as const;
 
+const NOTION_CONNECTOR_BLURB =
+  "We're verifying that June can access only the Notion pages you choose. Connect will be available when that check is complete.";
+
 function featureSummary(account: ConnectorAccount): string {
   const features = grantedFeatureLabels(account.scopes);
   return features.length > 0 ? `Can ${features.join(", ").toLowerCase()}.` : "";
@@ -290,6 +293,30 @@ export function ConnectorsSection() {
               </li>
             );
           })}
+          <li className="connector-row">
+            <span className="connector-logo" aria-hidden>
+              <ConnectorProviderIcon provider="notion" />
+            </span>
+            <div className="connector-main">
+              <span className="connector-name">Notion</span>
+              <p className="connector-subtitle" title={NOTION_CONNECTOR_BLURB}>
+                {NOTION_CONNECTOR_BLURB}
+              </p>
+            </div>
+            <div className="connector-actions">
+              <span className="status-pill" data-tone="warning">
+                Verifying access
+              </span>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                aria-label="Connect Notion"
+                disabled
+              >
+                Connect
+              </button>
+            </div>
+          </li>
         </ul>
       </div>
 
