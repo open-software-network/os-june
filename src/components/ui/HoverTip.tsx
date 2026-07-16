@@ -106,6 +106,8 @@ type HoverTipProps = HTMLAttributes<HTMLSpanElement> & {
    * trigger's own picker popover is open, so the hover callout never fights the
    * popover for the same anchor. */
   suppressed?: boolean;
+  /** Keeps transient feedback visible without requiring hover or focus. */
+  forceOpen?: boolean;
   /** Keeps the callout alive while the pointer moves onto it. Use only for
    * rich, card-like tips with controls inside. */
   interactive?: boolean;
@@ -129,6 +131,7 @@ export function HoverTip({
   compact = false,
   delay = HOVER_INTENT_MS,
   suppressed = false,
+  forceOpen = false,
   interactive = false,
   children,
   ...spanProps
@@ -147,6 +150,7 @@ export function HoverTip({
   const hoverTimerRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
+  const forcedOpenRef = useRef(false);
   // The side committed by the first measure pass, held for the tip's whole
   // mounted lifetime: a re-hover or a content swap (e.g. "Copy message" →
   // "Copied") re-measures, and re-deciding the side then would visibly
@@ -353,6 +357,31 @@ export function HoverTip({
     [cancelHoverIntent, cancelClose, cancelResizeMeasure],
   );
 
+  useEffect(() => {
+    if (forceOpen && !suppressed) {
+      forcedOpenRef.current = true;
+      cancelClose();
+      const rect = anchorRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setAnchor({
+        centerX: rect.left + rect.width / 2,
+        bottom: rect.bottom + TIP_GAP,
+        top: rect.top - TIP_GAP,
+        spaceBelow: window.innerHeight - rect.bottom,
+      });
+      setPhase("open");
+      return;
+    }
+    if (forcedOpenRef.current) {
+      forcedOpenRef.current = false;
+      const anchorNode = anchorRef.current;
+      if (anchorNode?.matches(":hover") || anchorNode?.contains(document.activeElement)) {
+        return;
+      }
+      unmount();
+    }
+  }, [forceOpen, suppressed, cancelClose, unmount]);
+
   // Force-close the moment suppression turns on (the picker popover opened over
   // this anchor). Cancel any pending hover-intent and tear a shown tip down at
   // once rather than fading, so the callout never overlaps the popover.
@@ -393,6 +422,7 @@ export function HoverTip({
       }}
       onMouseLeave={(event) => {
         onMouseLeave?.(event);
+        if (forceOpen) return;
         if (interactive) hideAfterInteractiveGrace();
         else hide();
       }}
@@ -402,6 +432,7 @@ export function HoverTip({
       }}
       onBlur={(event) => {
         onBlur?.(event);
+        if (forceOpen) return;
         if (
           interactive &&
           (elementInsideAnchor(event.relatedTarget) ||

@@ -5762,6 +5762,10 @@ input:focus-visible,
   outline-offset: 1px;
 }
 
+.hermes-trace-copy-tip {
+  display: inline-flex;
+}
+
 .hermes-trace-panel-close {
   padding: var(--sp-1) var(--sp-2);
 }
@@ -10294,8 +10298,7 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-.note-header-ask,
-.note-reference-copy {
+.note-header-ask {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -10316,11 +10319,6 @@ input:focus-visible,
   padding: 0 var(--sp-2);
   font-size: var(--fs-sm);
   font-weight: 400;
-}
-
-.note-reference-copy {
-  width: var(--control-sm);
-  padding: 0;
 }
 
 .note-header-ask:hover,
@@ -10357,12 +10355,6 @@ input:focus-visible,
   }
 }
 
-.note-reference-copy:hover,
-.note-reference-copy[data-copied="true"] {
-  background: color-mix(in oklch, var(--muted) 55%, transparent);
-  color: var(--foreground);
-}
-
 /* Note toolbar overflow menu — mirrors the agent session bar's menu (same
    base .sidebar-identity-menu popover) so both detail-bar menus read alike. */
 .note-actions-menu-wrap {
@@ -10370,6 +10362,9 @@ input:focus-visible,
   display: inline-flex;
 }
 
+/* Both icon buttons share the toolbar's compact control size so share and
+ * the overflow trigger read as one consistent row. */
+.note-header-share,
 .note-actions-menu-trigger {
   width: var(--control-sm);
   height: var(--control-sm);
@@ -18179,6 +18174,50 @@ button.memory-project:hover {
   font-weight: 400;
 }
 
+.detail-breadcrumb-current-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.detail-breadcrumb-share-tip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.detail-breadcrumb-current-group:hover .detail-breadcrumb-share-tip,
+.detail-breadcrumb-current-group:focus-within .detail-breadcrumb-share-tip {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.detail-breadcrumb-share {
+  display: inline-grid;
+  place-items: center;
+  inline-size: var(--control-xs);
+  block-size: var(--control-xs);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.detail-breadcrumb-share:hover,
+.detail-breadcrumb-share[data-copied] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
 .detail-breadcrumb-separator {
   flex: 0 0 auto;
   color: var(--muted-foreground);
@@ -21473,59 +21512,114 @@ button.memory-project:hover {
   font-weight: 400;
 }
 
-/* Borderless filled field with the Copy button inset on the right. */
-.referral-link-field {
+/* Shared borderless URL field with an inset Copy action. Referral and private
+ * sharing use the same component so typography and feedback cannot drift. */
+.copy-link-field {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+  min-height: var(--control-lg);
   padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
   border-radius: var(--r-md);
   background: var(--surface-subtle);
 }
 
-.referral-link-url {
+.copy-link-url {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: var(--fs-sm);
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.referral-link-url:focus {
+.copy-link-url:focus {
   outline: none;
 }
 
 /* Keep a visible ring for keyboard focus (clipped inside the field's
  * rounding) — only the mouse-focus outline is suppressed above. */
-.referral-link-url:focus-visible {
+.copy-link-url:focus-visible {
   outline: 2px solid var(--ring-focus);
   outline-offset: -2px;
   border-radius: var(--r-sm);
 }
 
-.referral-copy-inset {
+.copy-link-action-tip {
   flex: 0 0 auto;
   display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  min-height: var(--control-md);
-  padding: 0 var(--sp-3);
+}
+
+.copy-link-action {
+  display: inline-grid;
+  place-items: center;
+  inline-size: var(--control-md);
+  block-size: var(--control-md);
+  padding: 0;
   border: 0;
   border-radius: var(--r-sm);
   background: var(--primary);
   color: var(--primary-foreground);
-  font-size: var(--fs-sm);
-  font-weight: 400;
-  white-space: nowrap;
+  line-height: 1;
   cursor: pointer;
   transition: opacity var(--t-fast) var(--ease-out);
 }
 
-.referral-copy-inset:hover {
+.copy-link-action:hover:not(:disabled) {
   opacity: 0.9;
+}
+
+.copy-link-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Transitions.dev — Icon swap */
+.t-icon-swap {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  line-height: 0;
+}
+
+.t-icon-swap .t-icon {
+  grid-area: 1 / 1;
+  display: inline-grid;
+  place-items: center;
+  transition:
+    opacity var(--icon-swap-dur) var(--icon-swap-ease),
+    filter var(--icon-swap-dur) var(--icon-swap-ease),
+    transform var(--icon-swap-dur) var(--icon-swap-ease);
+  will-change: opacity, filter, transform;
+}
+
+.t-icon-swap svg {
+  display: block;
+}
+
+.t-icon-swap[data-state="a"] .t-icon[data-icon="a"],
+.t-icon-swap[data-state="b"] .t-icon[data-icon="b"] {
+  opacity: 1;
+  filter: blur(0);
+  transform: scale(1);
+}
+
+.t-icon-swap[data-state="a"] .t-icon[data-icon="b"],
+.t-icon-swap[data-state="b"] .t-icon[data-icon="a"] {
+  opacity: 0;
+  filter: blur(var(--icon-swap-blur));
+  transform: scale(var(--icon-swap-start-scale));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-icon-swap .t-icon {
+    transition: none !important;
+  }
 }
 
 .referral-copy-error,
@@ -26774,9 +26868,8 @@ button.connector-approvals-info {
 }
 
 /* ---- Share dialog (JUN-308) -------------------------------------------- */
-/* Owner-side private sharing: invite-by-email row, per-invite rows with a
- * quiet state chip, copy link, and revoke. Reuses the shared dialog recipes
- * (dialog-input, primary-action) so it reads like every other dialog. */
+/* Owner-side private sharing: a settings-style passcode option before the link
+ * exists, then one quiet link field directly in the dialog once it does. */
 
 .share-dialog-body {
   display: flex;
@@ -26784,99 +26877,116 @@ button.connector-approvals-info {
   gap: var(--sp-5);
 }
 
-.share-invite-row {
+/* Boxed option group inside the dialog body — same surface-in-card recipe as
+ * the app's other in-card boxes, so the passcode choice reads as one elevated
+ * section instead of loose lines under the description. */
+.share-dialog-section {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--surface);
 }
 
-.share-invite-controls {
-  display: flex;
-  gap: var(--sp-3);
+/* Option rows follow the settings-row recipe scaled to the dialog: title +
+ * muted description on the left (same size, color carries the hierarchy),
+ * control on the right, a hairline between stacked rows. */
+.share-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  gap: var(--sp-5);
 }
 
-.share-invite-controls .dialog-input {
-  flex: 1;
+.share-option-row + .share-option-row {
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.share-option-info {
+  display: grid;
+  gap: var(--sp-px);
   min-width: 0;
 }
 
-.share-invite-controls .primary-action {
-  flex-shrink: 0;
-}
-
-.share-invite-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.share-invite-item {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-3) 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.share-invite-item:last-child {
-  border-bottom: none;
-}
-
-.share-invite-email {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--fs-md);
+.share-option-title {
   color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 400;
 }
 
-.share-invite-state {
-  flex-shrink: 0;
-  font-size: var(--fs-xs);
-  line-height: 1;
-  padding: var(--sp-1) var(--sp-3);
-  border-radius: var(--r-pill);
-  background: var(--muted);
+.share-option-description {
   color: var(--muted-foreground);
+  font-size: var(--fs-md);
 }
 
-.share-invite-state[data-state="accepted"] {
-  color: var(--success);
-  background: color-mix(in oklch, var(--success) 12%, transparent);
+/* Passcode input with the reveal toggle tucked into its right edge. */
+.share-passcode-control {
+  position: relative;
+  width: min(240px, 100%);
 }
 
-.share-invite-state[data-state="revoked"] {
-  color: var(--destructive);
-  background: var(--destructive-soft);
+.share-passcode-control .dialog-input {
+  width: 100%;
+  padding-right: calc(var(--control-sm) + var(--sp-2));
 }
 
-.share-invite-copy,
-.share-invite-revoke {
-  flex-shrink: 0;
+.share-passcode-reveal {
+  position: absolute;
+  top: 50%;
+  right: var(--sp-1);
+  width: var(--control-sm);
+  height: var(--control-sm);
+  transform: translateY(-50%);
 }
 
-.share-invite-revoke {
-  color: var(--destructive);
+.share-link-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.share-link-copy-passcode-tip {
+  align-self: flex-start;
+  display: inline-flex;
+}
+
+.share-link-copy-passcode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--control-xs);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+
+.share-link-copy-passcode:hover {
+  background: var(--muted);
 }
 
 .share-unshare {
-  color: var(--destructive);
   margin-right: auto;
+  padding: 0 var(--sp-2);
+  border-color: transparent;
+  background: transparent;
+  color: var(--destructive);
+}
+
+.primary-action.share-unshare:hover {
+  border-color: transparent;
+  background: var(--destructive-soft);
 }
 
 .share-dialog-caption {
   margin: 0;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   color: var(--muted-foreground);
-}
-
-.share-dialog-error {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--destructive);
 }

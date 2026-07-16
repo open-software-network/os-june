@@ -7,10 +7,14 @@ Sharing is deliberately a bearer-link flow:
 1. The owner clicks **Share**.
 2. They may enable **Require a passcode** and choose a passcode of at least
    eight characters.
-3. **Copy link** creates one encrypted snapshot and copies its URL.
-4. Anyone with the link can view without an OS Accounts sign-in. A protected
+3. **Create link** creates one encrypted snapshot, reveals its URL, and copies
+   it to the clipboard.
+4. **Copy** copies the URL again.
+5. Once a link exists, a link action beside the current breadcrumb copies it
+   without reopening the Share dialog.
+6. Anyone with the link can view without an OS Accounts sign-in. A protected
    link also requires the separately shared passcode.
-5. **Stop sharing** revokes the link for everyone.
+7. **Stop sharing** revokes the link for everyone.
 
 The link and passcode are transferable. There is no recipient list,
 per-recipient audit, or per-recipient revocation. Stopping a share cannot erase

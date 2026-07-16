@@ -117,6 +117,110 @@ describe("NoteEditor", () => {
     expect(screen.getByText("Exact raw transcript")).toBeInTheDocument();
   });
 
+  it("copies a transcript turn with icon-swap feedback", async () => {
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+
+    try {
+      render(
+        <NoteEditor
+          {...props}
+          note={note({
+            activeTab: "transcription",
+            sourceTranscripts: [
+              {
+                id: "turn-1",
+                text: "System playback text",
+                source: "system",
+                startMs: 1000,
+                endMs: 2500,
+                turnIndex: 0,
+                status: "succeeded",
+              },
+            ],
+          })}
+        />,
+      );
+
+      const copyButton = screen.getByRole("button", { name: "Copy turn" });
+      const iconSwap = copyButton.querySelector(".t-icon-swap");
+      expect(iconSwap).toHaveAttribute("data-state", "a");
+      expect(iconSwap?.querySelectorAll(".t-icon")).toHaveLength(2);
+      expect(copyButton).not.toHaveAttribute("title");
+
+      fireEvent.focus(copyButton);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copy");
+
+      vi.useFakeTimers();
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+
+      expect(writeText).toHaveBeenCalledWith("System playback text");
+      expect(copyButton).toHaveAccessibleName("Copied");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
+
+      act(() => vi.advanceTimersByTime(1200));
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+      expect(writeText).toHaveBeenCalledTimes(2);
+
+      act(() => vi.advanceTimersByTime(401));
+      expect(copyButton).toHaveAccessibleName("Copied");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+
+      act(() => vi.advanceTimersByTime(1199));
+      expect(copyButton).toHaveAccessibleName("Copy turn");
+      expect(iconSwap).toHaveAttribute("data-state", "a");
+    } finally {
+      vi.useRealTimers();
+      writeText.mockRestore();
+    }
+  });
+
+  it("keeps the whole-transcript copy label stable while the icon swaps", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+
+    try {
+      render(
+        <NoteEditor
+          {...props}
+          note={note({
+            activeTab: "transcription",
+            transcript: {
+              id: "transcript-1",
+              text: "Exact raw transcript",
+              status: "succeeded",
+            },
+          })}
+        />,
+      );
+
+      const copyButton = screen.getByRole("button", { name: "Copy transcript" });
+      const iconSwap = copyButton.querySelector(".t-icon-swap");
+      expect(iconSwap).toHaveAttribute("data-state", "a");
+      expect(iconSwap?.querySelectorAll(".t-icon")).toHaveLength(2);
+      expect(copyButton).toHaveTextContent(/^Copy$/);
+      expect(copyButton).not.toHaveAttribute("title");
+
+      fireEvent.focus(copyButton);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copy");
+      await user.click(copyButton);
+
+      expect(writeText).toHaveBeenCalledWith("Exact raw transcript");
+      expect(copyButton).toHaveAccessibleName("Transcript copied");
+      expect(copyButton).toHaveTextContent(/^Copy$/);
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
+    } finally {
+      writeText.mockRestore();
+    }
+  });
+
   it("shows transcript coverage notice with whole-minute missing speech", () => {
     render(
       <NoteEditor

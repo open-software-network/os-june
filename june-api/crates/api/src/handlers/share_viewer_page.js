@@ -302,8 +302,21 @@
     var form = document.getElementById("passcode-form");
     var input = document.getElementById("passcode-input");
     var errorEl = document.getElementById("passcode-error");
+    var toggle = document.getElementById("passcode-toggle");
     panel.hidden = false;
     input.focus();
+    if (toggle) {
+      toggle.onclick = function () {
+        var reveal = input.type === "password";
+        input.type = reveal ? "text" : "password";
+        toggle.setAttribute("aria-pressed", reveal ? "true" : "false");
+        toggle.setAttribute(
+          "aria-label",
+          reveal ? "Hide passcode" : "Show passcode"
+        );
+        input.focus();
+      };
+    }
     form.onsubmit = async function (event) {
       event.preventDefault();
       errorEl.hidden = true;
