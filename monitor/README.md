@@ -59,6 +59,6 @@ npm run build
 Deploy the Docker image twice:
 
 - Web service: use the image default command and expose port `3010` at `health.opensoftware.co`.
-- Worker service: override the start command with `node worker/worker.mjs`, keep one replica, set `SLACK_HEALTH_WEBHOOK_URL` as a secret, and mount a persistent volume at `/data`.
+- Worker service: build with `Dockerfile.worker`, keep one replica, set `SLACK_HEALTH_WEBHOOK_URL` as a secret, and mount a persistent volume at `/data`.
 
 The old June-specific hostname may remain temporarily as a compatibility alias, but `APP_ORIGIN` and all Slack links should use `https://health.opensoftware.co`.
