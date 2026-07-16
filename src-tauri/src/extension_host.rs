@@ -5,8 +5,9 @@
 //! authenticated loopback listener this module runs. Chrome spawns the shim,
 //! so credentials cannot ride in its environment: the listener writes a
 //! connection descriptor (port + per-run token) to the selected app data dir.
-//! Native-host registration persists that selection in an owner-only pointer
-//! because Chrome does not inherit June's debug/prod environment choice.
+//! Listener startup persists that selection in an owner-only pointer because
+//! Chrome does not inherit June's debug/prod environment choice. Writing it on
+//! every start also migrates native-host registrations made by older builds.
 //!
 //! Wire format on both legs is Chrome's native messaging framing: a 4-byte
 //! little-endian length prefix followed by UTF-8 JSON. Every message carries
@@ -118,6 +119,21 @@ fn read_descriptor_pointer(pointer_path: &std::path::Path, allowed: &[PathBuf]) 
         .iter()
         .any(|path| path == &selected)
         .then_some(selected)
+}
+
+fn persist_descriptor_selection(
+    home: &std::path::Path,
+    data_dir: &std::path::Path,
+) -> std::io::Result<PathBuf> {
+    let selected_descriptor = descriptor_path(data_dir);
+    if !allowed_descriptor_paths(home).contains(&selected_descriptor) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "extension host descriptor is outside June's app data directories",
+        ));
+    }
+    write_descriptor_pointer(&descriptor_pointer_path(home), &selected_descriptor)?;
+    Ok(selected_descriptor)
 }
 
 /// Chrome caps extension -> host messages at 1 MiB; the contract keeps every
@@ -622,6 +638,14 @@ async fn start_listener(app: AppHandle) -> Result<(), AppError> {
         },
     )
     .map_err(|error| AppError::new("extension_host_descriptor_failed", error.to_string()))?;
+    let home = PathBuf::from(std::env::var_os("HOME").ok_or_else(|| {
+        AppError::new(
+            "extension_host_descriptor_failed",
+            "Could not resolve the user home directory.",
+        )
+    })?);
+    persist_descriptor_selection(&home, &data_dir)
+        .map_err(|error| AppError::new("extension_host_descriptor_failed", error.to_string()))?;
 
     let host = app.state::<ExtensionHost>().inner().clone();
     host.set_listener_running(true);
@@ -880,14 +904,7 @@ pub fn register_browser_extension_host(
             "Could not resolve the user home directory.",
         )
     })?);
-    let selected_descriptor = descriptor_path(&data_dir);
-    if !allowed_descriptor_paths(&home).contains(&selected_descriptor) {
-        return Err(AppError::new(
-            "extension_host_register_failed",
-            "The extension host descriptor is outside June's app data directories.",
-        ));
-    }
-    write_descriptor_pointer(&descriptor_pointer_path(&home), &selected_descriptor)
+    persist_descriptor_selection(&home, &data_dir)
         .map_err(|error| AppError::new("extension_host_register_failed", error.to_string()))?;
     let mut manifest_paths = Vec::with_capacity(hosts_dirs.len());
     for hosts_dir in hosts_dirs {
@@ -1207,6 +1224,24 @@ mod tests {
         assert_eq!(
             read_descriptor_pointer(&pointer, &allowed_descriptor_paths(temp.path())),
             None
+        );
+    }
+
+    #[test]
+    fn listener_startup_migrates_a_registration_without_a_descriptor_pointer() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path();
+        let production_data_dir = bundle_data_dir(home);
+        let pointer = descriptor_pointer_path(home);
+        assert!(!pointer.exists());
+
+        let selected = persist_descriptor_selection(home, &production_data_dir)
+            .expect("persist listener selection");
+
+        assert_eq!(selected, descriptor_path(&production_data_dir));
+        assert_eq!(
+            read_descriptor_pointer(&pointer, &allowed_descriptor_paths(home)),
+            Some(selected)
         );
     }
 
