@@ -72,6 +72,7 @@ const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 // pinned-value assert on each side; change BOTH or an in-window agent chat
 // request is rejected by the stricter gate again.
 const JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES: usize = 12 * 1024 * 1024;
+const JUNE_PROVIDER_PROXY_MAX_NOTION_BODY_BYTES: usize = 512 * 1024;
 // Compile-time half of that cross-workspace invariant: the june-api side mirrors
 // it against `DEFAULT_MAX_AGENT_CHAT_BYTES`.
 const _: () = assert!(JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES == 12 * 1024 * 1024);
@@ -9812,7 +9813,9 @@ fn provider_proxy_max_body_bytes(path: &str) -> usize {
         "/v1/image/generate" | "/v1/image/edit" => JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES,
         "/v1/video/animate" => JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES,
         "/v1/video/generate" => JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES,
-        path if provider_proxy_is_notion_connector_route(path) => 512 * 1024,
+        path if provider_proxy_is_notion_connector_route(path) => {
+            JUNE_PROVIDER_PROXY_MAX_NOTION_BODY_BYTES
+        }
         _ => JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES,
     }
 }
@@ -12148,7 +12151,7 @@ mod tests {
         );
         assert_eq!(
             provider_proxy_max_body_bytes("/v1/notion-actions/notion-create-pages"),
-            JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES
+            JUNE_PROVIDER_PROXY_MAX_NOTION_BODY_BYTES
         );
         assert_eq!(
             provider_proxy_max_body_bytes("/v1/image/edit"),
