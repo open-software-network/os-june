@@ -21,6 +21,13 @@ extension AudioObjectID {
     static let unknown = kAudioObjectUnknown
     var isValid: Bool { self != .unknown }
 
+    static func readDefaultSystemOutputDevice() throws -> AudioDeviceID {
+        try AudioObjectID.system.read(
+            kAudioHardwarePropertyDefaultSystemOutputDevice,
+            defaultValue: AudioDeviceID.unknown
+        )
+    }
+
     static func readAudioDevices() throws -> [AudioDeviceID] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -42,6 +49,10 @@ extension AudioObjectID {
 
     func readName() throws -> String {
         try readString(kAudioObjectPropertyName)
+    }
+
+    func readDeviceUID() throws -> String {
+        try readString(kAudioDevicePropertyDeviceUID)
     }
 
     func readAudioTapStreamBasicDescription() throws -> AudioStreamBasicDescription {
@@ -174,13 +185,27 @@ final class SystemAudioRecorder {
     private func startAudioGraph(checkOnly: Bool = false) throws {
         teardownAudioGraph()
 
-        // A global tap is itself an input stream source for an aggregate device.
-        // Do not add a physical output device to this aggregate: doing so can
-        // start an output-only IO cycle that never delivers tap input callbacks.
-        let tapDescription = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        // Bind the tap to the output stream the user is actually hearing. This
+        // removes global-tap ambiguity when apps or output routes select a
+        // concrete device stream. The tap remains the aggregate's only input
+        // source; the physical output device must not be added as a sub-device.
+        let systemOutputID = try AudioObjectID.readDefaultSystemOutputDevice()
+        guard systemOutputID.isValid else {
+            throw "The default system output device is unavailable."
+        }
+        let outputUID = try systemOutputID.readDeviceUID()
+        log("default output device id=\(systemOutputID) uid=\(outputUID)")
+
+        let tapDescription = CATapDescription(
+            excludingProcesses: [],
+            deviceUID: outputUID,
+            stream: 0
+        )
         tapDescription.uuid = UUID()
         tapDescription.isMixdown = true
         tapDescription.isMono = false
+        tapDescription.isExclusive = true
+        tapDescription.isPrivate = true
         tapDescription.muteBehavior = .unmuted
         tapDescription.name = "June System Audio"
 
@@ -417,6 +442,25 @@ final class SystemAudioRecorder {
         return nil
     }
 
+    /// After the one permitted graph rebuild, continued zero-filled buffers
+    /// are terminal for the system source even though CoreAudio is still
+    /// invoking the callback. Report that state instead of silently padding a
+    /// meeting-length WAV with zeroes.
+    private func terminalZeroSignalMessage() -> String? {
+        healthLock.lock()
+        defer { healthLock.unlock() }
+        guard attemptedGraphRecovery, !reportedTerminalInputStall else { return nil }
+        let now = Date()
+        let terminal = if !observedSignalSinceGraphStart {
+            now.timeIntervalSince(graphStartedAt) >= startupZeroSignalRecoverySeconds
+        } else {
+            now.timeIntervalSince(lastSignalAt) >= activeZeroSignalRecoverySeconds
+        }
+        guard terminal else { return nil }
+        reportedTerminalInputStall = true
+        return "System audio capture is still returning silence after one restart. Microphone recording can continue."
+    }
+
     private func secondsSinceLastInput() -> TimeInterval {
         healthLock.lock()
         let elapsed = Date().timeIntervalSince(lastInputAt)
@@ -468,6 +512,9 @@ final class SystemAudioRecorder {
                 self.log(message)
                 self.emit(["event": "stalled", "message": message])
                 self.rebuildAudioGraph(reason: message)
+            } else if let message = self.terminalZeroSignalMessage() {
+                self.log(message)
+                self.emit(["event": "error", "message": message])
             }
         }
         stallTimer = timer
