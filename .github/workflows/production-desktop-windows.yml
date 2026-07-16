@@ -7,9 +7,15 @@ on:
         description: "Existing semver release to attach Windows assets to (for example 0.2.0)"
         required: true
         type: string
+      publish:
+        description: "Final publish: upload Windows assets and update latest.json"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: production-desktop-windows
@@ -105,17 +111,66 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Windows packaging tools
+      - name: Install Windows packaging and signing tools
         shell: pwsh
         run: |
           choco install nsis 7zip -y --no-progress
           "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+          $nugetVersion = "6.14.0"
+          $nugetExpectedSha256 = "92DBED160DDEE0F64B901E907439E021211B428E57C089ECC12FC38DCC4BD9A5"
+          $windowsSdkBuildToolsVersion = "10.0.28000.2270"
+          $artifactSigningClientVersion = "1.0.128"
+
+          $nuget = Join-Path $env:RUNNER_TEMP "nuget.exe"
+          Invoke-WebRequest -Uri "https://dist.nuget.org/win-x86-commandline/v$nugetVersion/nuget.exe" -OutFile $nuget
+          $nugetActualSha256 = (Get-FileHash -LiteralPath $nuget -Algorithm SHA256).Hash.ToUpperInvariant()
+          if ($nugetActualSha256 -ne $nugetExpectedSha256) {
+            throw "nuget.exe checksum mismatch. Expected $nugetExpectedSha256, got $nugetActualSha256."
+          }
+
+          $sdkRoot = Join-Path $env:RUNNER_TEMP "windows-sdk-build-tools"
+          & $nuget install Microsoft.Windows.SDK.BuildTools -Version $windowsSdkBuildToolsVersion -x -OutputDirectory $sdkRoot
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install Microsoft.Windows.SDK.BuildTools $windowsSdkBuildToolsVersion."
+          }
+          $signTool = Get-ChildItem -Path $sdkRoot -Filter "signtool.exe" -Recurse -File |
+            Sort-Object `
+              @{ Expression = { if ($_.FullName -match "\\x64\\signtool\.exe$") { 0 } else { 1 } } },
+              FullName |
+            Select-Object -First 1
+          if ($null -eq $signTool) {
+            throw "signtool.exe was not found in Microsoft.Windows.SDK.BuildTools."
+          }
+          "WINDOWS_SIGNTOOL_PATH=$($signTool.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          $artifactClientRoot = Join-Path $env:RUNNER_TEMP "artifact-signing-client"
+          & $nuget install Microsoft.ArtifactSigning.Client -Version $artifactSigningClientVersion -x -OutputDirectory $artifactClientRoot
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install Microsoft.ArtifactSigning.Client $artifactSigningClientVersion."
+          }
+          $dlib = Get-ChildItem -Path $artifactClientRoot -Filter "Azure.CodeSigning.Dlib.dll" -Recurse -File |
+            Sort-Object `
+              @{ Expression = { if ($_.FullName -match "\\x64\\Azure\.CodeSigning\.Dlib\.dll$") { 0 } else { 1 } } },
+              FullName |
+            Select-Object -First 1
+          if ($null -eq $dlib) {
+            throw "Azure.CodeSigning.Dlib.dll was not found in Microsoft.ArtifactSigning.Client."
+          }
+          "ARTIFACT_SIGNING_DLIB_PATH=$($dlib.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Validate release secrets
+        id: signing
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
           RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -129,8 +184,6 @@ jobs:
         run: |
           $missing = 0
           $required = @(
-            "WINDOWS_CERTIFICATE",
-            "WINDOWS_CERTIFICATE_PASSWORD",
             "TAURI_SIGNING_PRIVATE_KEY",
             "RELEASE_APP_ID",
             "RELEASE_APP_PRIVATE_KEY",
@@ -151,7 +204,51 @@ jobs:
             }
           }
 
+          $pfxNames = @("WINDOWS_CERTIFICATE", "WINDOWS_CERTIFICATE_PASSWORD")
+          $artifactNames = @(
+            "AZURE_CLIENT_ID",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "ARTIFACT_SIGNING_ENDPOINT",
+            "ARTIFACT_SIGNING_ACCOUNT_NAME",
+            "ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME"
+          )
+          $pfxPresent = @($pfxNames | Where-Object { ![string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+          $artifactPresent = @($artifactNames | Where-Object { ![string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+
+          if ($pfxPresent.Count -eq $pfxNames.Count -and $artifactPresent.Count -eq 0) {
+            "WINDOWS_SIGNING_MODE=pfx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "mode=pfx" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } elseif ($artifactPresent.Count -eq $artifactNames.Count -and $pfxPresent.Count -eq 0) {
+            "WINDOWS_SIGNING_MODE=artifact" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "mode=artifact" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } elseif ($pfxPresent.Count -eq 0 -and $artifactPresent.Count -eq 0) {
+            Write-Host "::error::No Windows Authenticode signing credentials are configured. Configure either WINDOWS_CERTIFICATE/WINDOWS_CERTIFICATE_PASSWORD or all Azure Artifact Signing secrets."
+            $missing = 1
+          } else {
+            if ($pfxPresent.Count -eq $pfxNames.Count -and $artifactPresent.Count -eq $artifactNames.Count) {
+              Write-Host "::error::Both PFX signing and Azure Artifact Signing are fully configured. Configure exactly one Windows Authenticode signing mode."
+            } elseif ($pfxPresent.Count -gt 0 -and $pfxPresent.Count -lt $pfxNames.Count -and $artifactPresent.Count -eq 0) {
+              $missingPfx = @($pfxNames | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+              Write-Host "::error::PFX signing is partially configured. Missing: $($missingPfx -join ', ')."
+            } elseif ($artifactPresent.Count -gt 0 -and $artifactPresent.Count -lt $artifactNames.Count -and $pfxPresent.Count -eq 0) {
+              $missingArtifact = @($artifactNames | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) })
+              Write-Host "::error::Azure Artifact Signing is partially configured. Missing: $($missingArtifact -join ', ')."
+            } else {
+              Write-Host "::error::Windows Authenticode signing configuration mixes PFX and Azure Artifact Signing values. Configure exactly one complete signing mode."
+            }
+            $missing = 1
+          }
+
           exit $missing
+
+      - name: Azure login for Artifact Signing
+        if: steps.signing.outputs.mode == 'artifact'
+        uses: azure/login@2dd0bbf4064d5a1812889dc200bb8eed2597f82a # v3.0.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Stamp clean release version
         shell: pwsh
@@ -185,6 +282,7 @@ jobs:
           "RELEASE_MANIFEST_PATH=$manifestPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Write Windows signing certificate
+        if: steps.signing.outputs.mode == 'pfx'
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
@@ -207,6 +305,9 @@ jobs:
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
         run: |
           $binaries = Get-ChildItem ".tauri-hermes/hermes" -Recurse -File |
             Where-Object { $_.Extension -in @(".exe", ".dll", ".pyd") }
@@ -237,6 +338,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
+          ARTIFACT_SIGNING_ENDPOINT: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          ARTIFACT_SIGNING_ACCOUNT_NAME: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ secrets.ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
         run: pnpm tauri:build
 
       - name: Verify Windows signatures and payload
@@ -292,6 +396,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish Windows release assets
+        if: inputs.publish
         shell: pwsh
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -347,6 +452,7 @@ jobs:
             "### Production Windows release",
             "- Version: ``$env:VERSION``",
             "- Release repo: ``open-software-network/os-june-releases``",
-            "- Marketing download: ``https://github.com/open-software-network/os-june-releases/releases/latest/download/June_x64-setup.exe``",
-            "- Updater platform key: ``windows-x86_64``"
+            "- Published release assets: ${{ inputs.publish && 'yes' || 'no, dry run only' }}",
+            "- Marketing download: ``${{ inputs.publish && 'https://github.com/open-software-network/os-june-releases/releases/latest/download/June_x64-setup.exe' || 'not updated by this dry run' }}``",
+            "- Windows updater platform: windows-x86_64"
           ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

@@ -25,11 +25,17 @@ Create or confirm these before cutting the first Windows release:
 - Release GitHub App installed on `os-june` and `os-june-releases` with
   `contents:write`, exposed as `RELEASE_APP_ID` and
   `RELEASE_APP_PRIVATE_KEY`.
-- Authenticode signing certificate exported as a password-protected PFX. Store
-  the base64-encoded PFX in `WINDOWS_CERTIFICATE` and its password in
-  `WINDOWS_CERTIFICATE_PASSWORD`.
+- Windows Authenticode signing configured with one of:
+  - Azure Artifact Signing through OIDC. Store the Azure login values in
+    `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID`, and the
+    Artifact Signing profile values in `ARTIFACT_SIGNING_ENDPOINT`,
+    `ARTIFACT_SIGNING_ACCOUNT_NAME`, and
+    `ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME`.
+  - A password-protected PFX. Store the base64-encoded PFX in
+    `WINDOWS_CERTIFICATE` and its password in `WINDOWS_CERTIFICATE_PASSWORD`.
 - Optional `WINDOWS_SIGNING_TIMESTAMP_URL` if the default
-  `http://timestamp.digicert.com` should be overridden.
+  `http://timestamp.acs.microsoft.com` for Artifact Signing or
+  `http://timestamp.digicert.com` for PFX signing should be overridden.
 - Optional `WINDOWS_SIGNTOOL_PATH` if the runner cannot discover
   `signtool.exe` from `PATH` or the Windows SDK.
 - Updater signing secrets: `TAURI_SIGNING_PRIVATE_KEY` and, when the key is
@@ -38,9 +44,43 @@ Create or confirm these before cutting the first Windows release:
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
   `PRODUCTION_JUNE_API_URL`.
 
-Keep the Authenticode certificate separate from the Tauri updater key. The
-certificate establishes the Windows publisher signature. The updater key signs
-the update artifact that Tauri verifies before installation.
+Keep the Authenticode signing identity separate from the Tauri updater key. The
+Authenticode identity establishes the Windows publisher signature. The updater
+key signs the update artifact that Tauri verifies before installation.
+
+### Azure Artifact Signing setup
+
+Artifact Signing needs a paid Azure subscription. Free, trial, and sponsored
+subscriptions are not supported by the service. Public trust certificates are
+limited by Microsoft to supported countries and billing account types.
+
+Create or confirm these Azure resources:
+
+1. Register the `Microsoft.CodeSigning` resource provider in the target
+   subscription.
+2. Create an Artifact Signing account in a supported region.
+3. Complete identity validation in the Azure portal. This cannot be completed
+   through the Azure CLI.
+4. Create a `PublicTrust` certificate profile for the approved identity.
+5. Create a Microsoft Entra app registration or managed identity for GitHub
+   Actions, add a federated credential for
+   `open-software-network/os-june`, and grant it the
+   `Artifact Signing Certificate Profile Signer` role on the Artifact Signing
+   account or certificate profile scope.
+
+Then set these production environment secrets on `open-software-network/os-june`:
+
+```bash
+gh secret set AZURE_CLIENT_ID --repo open-software-network/os-june --env production --body "<app-client-id>"
+gh secret set AZURE_TENANT_ID --repo open-software-network/os-june --env production --body "<tenant-id>"
+gh secret set AZURE_SUBSCRIPTION_ID --repo open-software-network/os-june --env production --body "<subscription-id>"
+gh secret set ARTIFACT_SIGNING_ENDPOINT --repo open-software-network/os-june --env production --body "https://eus.codesigning.azure.net"
+gh secret set ARTIFACT_SIGNING_ACCOUNT_NAME --repo open-software-network/os-june --env production --body "<artifact-signing-account>"
+gh secret set ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME --repo open-software-network/os-june --env production --body "<certificate-profile>"
+```
+
+Use the endpoint that matches the Artifact Signing account region. A
+region/endpoint mismatch commonly fails with a 403 during signing.
 
 ## Cutting a production Windows release
 
@@ -58,11 +98,27 @@ and initial `latest.json`. It also records the source commit in a
 commit and rebuilds the same tree, so it does not depend on the bump and can run
 as soon as promote finishes.
 
-Once promote has published `vX.Y.Z`, run:
+Once promote has published `vX.Y.Z`, first run a non-publishing dry run:
 
 ```text
-GitHub Actions -> production-desktop-windows -> Run workflow -> version X.Y.Z
+GitHub Actions -> production-desktop-windows -> Run workflow -> version X.Y.Z, publish false
 ```
+
+Dry-run mode builds, signs, verifies, and uploads the NSIS output as a workflow
+artifact, but it does not upload release assets, clobber existing assets, or
+merge `windows-x86_64` into `latest.json`. Use the dry-run artifact for signing
+and payload inspection before the final publish.
+
+After the dry run passes and the artifact has been inspected, run the final
+publish explicitly:
+
+```text
+GitHub Actions -> production-desktop-windows -> Run workflow -> version X.Y.Z, publish true
+```
+
+The `publish` input defaults to `false`, so a completed workflow run is not a
+published Windows release unless the summary says `Published release assets:
+yes`.
 
 The Windows workflow performs the release steps in order:
 
@@ -89,15 +145,15 @@ The Windows workflow performs the release steps in order:
     updater signature file exists, and inspects the NSIS payload, including the
     bundled dictation helper, Hermes launcher, and Python runtime.
 11. Uploads the NSIS output as a workflow artifact.
-12. Uploads Windows release assets and merges `windows-x86_64` into
-    `latest.json` without removing macOS updater entries or the generated
-    release changelog.
+12. When `publish` is `true`, uploads Windows release assets and merges
+    `windows-x86_64` into `latest.json` without removing macOS updater entries
+    or the generated release changelog.
 
 ## Validation
 
-After the workflow publishes assets, download `June_x64-setup.exe` from
-`open-software-network/os-june-releases`, copy it to a clean Windows 11 VM, and
-run:
+After the workflow publishes assets with `publish` set to `true`, download
+`June_x64-setup.exe` from `open-software-network/os-june-releases`, copy it to a
+clean Windows 11 VM, and run:
 
 ```powershell
 $installer = "$env:USERPROFILE\Downloads\June_x64-setup.exe"

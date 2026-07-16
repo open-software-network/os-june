@@ -34,7 +34,7 @@ describe("feature user-story tracker", () => {
   let columnIndex;
 
   beforeAll(() => {
-    lines = readFileSync(TRACKER_PATH, "utf8").trimEnd().split("\n");
+    lines = readFileSync(TRACKER_PATH, "utf8").trimEnd().split(/\r?\n/);
     header = lines[0].split("\t");
     rows = lines.slice(1).map((line) => line.split("\t"));
     columnIndex = Object.fromEntries(header.map((column, index) => [column, index]));

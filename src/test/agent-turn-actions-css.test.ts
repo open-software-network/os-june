@@ -1,17 +1,19 @@
 import { describe, expect, it } from "vitest";
 import appCss from "../styles/app.css?raw";
 
+const normalizedAppCss = appCss.replace(/\r\n/g, "\n");
+
 function cssRuleFor(selector: string) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`${escaped}\\s*\\{`).exec(appCss);
+  const match = new RegExp(`${escaped}\\s*\\{`).exec(normalizedAppCss);
   if (!match) throw new Error(`Missing CSS rule for ${selector}`);
   const openIndex = match.index + match[0].length - 1;
   let depth = 0;
-  for (let index = openIndex; index < appCss.length; index += 1) {
-    if (appCss[index] === "{") depth += 1;
-    if (appCss[index] === "}") {
+  for (let index = openIndex; index < normalizedAppCss.length; index += 1) {
+    if (normalizedAppCss[index] === "{") depth += 1;
+    if (normalizedAppCss[index] === "}") {
       depth -= 1;
-      if (depth === 0) return appCss.slice(openIndex + 1, index);
+      if (depth === 0) return normalizedAppCss.slice(openIndex + 1, index);
     }
   }
   throw new Error(`Unclosed CSS rule for ${selector}`);
@@ -27,7 +29,7 @@ describe("agent turn action styles", () => {
     expect(actions).toContain("transition: none;");
     expect(actions).not.toContain("grid-template-rows");
 
-    expect(appCss).toContain(`.agent-user-turn:hover .agent-turn-actions,
+    expect(normalizedAppCss).toContain(`.agent-user-turn:hover .agent-turn-actions,
 .agent-user-turn:focus-within .agent-turn-actions,
 .agent-assistant-turn:hover .agent-turn-actions,
 .agent-assistant-turn:focus-within .agent-turn-actions,

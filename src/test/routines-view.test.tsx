@@ -91,6 +91,14 @@ function run(overrides: Partial<HermesSessionInfo> = {}): HermesSessionInfo {
   };
 }
 
+const normalizedAppCss = appCss.replace(/\r\n/g, "\n");
+
+const formatTime = (date: Date) =>
+  date.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
 function renderView(
   props: Partial<{
     onCreateRoutine: (prompt: string) => void;
@@ -215,11 +223,9 @@ describe("RoutinesView list", () => {
     ]);
     renderView();
 
-    const nine = new Date(2000, 0, 1, 9, 0).toLocaleTimeString(undefined, {
-      hour: "numeric",
-      minute: "2-digit",
-    });
-    expect(await screen.findByText(`Weekdays ${nine}`, { exact: false })).toBeInTheDocument();
+    const nine = formatTime(new Date(2000, 0, 1, 9, 0));
+    const schedulePattern = new RegExp(`Weekdays\\s+(?:at\\s+)?${nine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+    expect(await screen.findByText(schedulePattern)).toBeInTheDocument();
     expect(screen.queryByText("0 9 * * 1-5", { exact: false })).toBeNull();
 
     // The search box matches the displayed wording, not just the raw cron.
@@ -450,7 +456,7 @@ describe("RoutinesView templates and creation", () => {
       .closest(".routines-describe");
     expect(describeBar).not.toBeNull();
     expect(createPage.contains(describeBar)).toBe(false);
-    expect(appCss).toContain(
+    expect(normalizedAppCss).toContain(
       ".routines-workspace,\n.routine-detail,\n.routines-describe {\n  --routines-describe-input-max-h: 200px;",
     );
   });
