@@ -7828,12 +7828,24 @@ export function AgentWorkspace({
         method: "approval.respond",
         params: { session_id: sessionId, request_id: requestId, choice },
       });
-      const response = await gateway.request<{ resolved?: number }>("approval.respond", {
+      const response = await gateway.request<unknown>("approval.respond", {
         session_id: sessionId,
         request_id: requestId,
         choice,
       });
-      if (response?.resolved !== 1) {
+      if (
+        response === null ||
+        typeof response !== "object" ||
+        Array.isArray(response) ||
+        !("resolved" in response) ||
+        (response.resolved !== 0 && response.resolved !== 1)
+      ) {
+        setError("June could not confirm the approval outcome. Reconnect, then try again.", {
+          sessionId: liveEventKey,
+        });
+        return;
+      }
+      if (response.resolved === 0) {
         pushLiveEvent(
           liveEventKey,
           classifyOptimisticLiveEvent({

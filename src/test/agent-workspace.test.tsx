@@ -8302,6 +8302,61 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it.each([
+    ["null", null],
+    ["empty", {}],
+    ["invalid", { resolved: 2 }],
+  ])("keeps an approval pending when the gateway response is malformed: %s", async (responseKind, gatewayResponse) => {
+    const requestId = `mcp-indeterminate-${responseKind}`;
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "approval.respond") return Promise.resolve(gatewayResponse);
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: requestId,
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(
+      await screen.findByText(
+        "June could not confirm the approval outcome. Reconnect, then try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Approval expired")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled());
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === requestId)).toBe(true);
+  });
+
   it("retires a timed-out approval without approving it", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
