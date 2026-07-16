@@ -334,7 +334,7 @@ export function ConnectorsSection() {
             const account = accounts?.find((entry) => entry.provider === "notion") ?? null;
             const subtitle = account ? NOTION_CONNECTED_BLURB : NOTION_CONNECTOR_BLURB;
             return (
-              <li className="connector-row">
+              <li key="notion" className="connector-row">
                 <span className="connector-logo" aria-hidden>
                   <ConnectorProviderIcon provider="notion" />
                 </span>

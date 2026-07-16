@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 use super::{
-    begin_connect, disconnect, list_accounts_resilient, list_google_accounts, notion,
-    scopes::ScopeBundle, ConnectFlow, ConnectorAccount, ConnectorAccountStatus, ConnectorProvider,
-    NotionConnectFlow,
+    begin_connect, disconnect, emit_connectors_changed, list_accounts_resilient,
+    list_google_accounts, notion, scopes::ScopeBundle, ConnectFlow, ConnectorAccount,
+    ConnectorAccountStatus, ConnectorProvider, NotionConnectFlow,
 };
 
 /// A routine earns autonomy only after this many completed approval-mode
@@ -110,9 +110,12 @@ pub async fn notion_connector_status() -> Result<notion::NotionConnectionStatus,
 
 #[tauri::command]
 pub async fn notion_connector_connect(
+    app: tauri::AppHandle,
     flow: tauri::State<'_, NotionConnectFlow>,
 ) -> Result<notion::NotionConnection, AppError> {
-    notion::connect(&flow).await
+    let connection = notion::connect(&flow).await?;
+    emit_connectors_changed(&app);
+    Ok(connection)
 }
 
 #[tauri::command]
@@ -124,8 +127,10 @@ pub fn notion_connector_cancel_connect(
 }
 
 #[tauri::command]
-pub async fn notion_connector_disconnect() -> Result<(), AppError> {
-    notion::disconnect().await
+pub async fn notion_connector_disconnect(app: tauri::AppHandle) -> Result<(), AppError> {
+    notion::disconnect().await?;
+    emit_connectors_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]

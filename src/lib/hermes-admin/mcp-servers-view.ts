@@ -43,7 +43,7 @@ const INTERNAL_MCP_SERVER_NAME_SET = new Set<string>(INTERNAL_MCP_SERVER_NAMES);
 /** Per-routine autonomy grant servers are named `june_<provider>_auto_<jobid>`;
  * they are implementation details and must never appear on the user-managed
  * MCP admin page either. */
-const INTERNAL_MCP_SERVER_NAME_PATTERN = /^june_(gmail|gcal)_auto_/;
+const INTERNAL_MCP_SERVER_NAME_PATTERN = /^june_(gmail|gcal|notion)_auto_/;
 
 export function isInternalMcpServerName(name: string): boolean {
   return INTERNAL_MCP_SERVER_NAME_SET.has(name) || INTERNAL_MCP_SERVER_NAME_PATTERN.test(name);

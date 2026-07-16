@@ -35,6 +35,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const TOKEN_EXPIRY_BUFFER_SECS: i64 = 60;
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_RESPONSE_MAX_BYTES: usize = 512 * 1024;
 const MCP_TOOL_SCHEMA_MAX_BYTES: usize = 64 * 1024;
@@ -455,12 +456,25 @@ async fn call_hosted_tool_unchecked(
 }
 
 async fn load_connected() -> Result<StoredNotionConnection, AppError> {
-    store::load().await?.ok_or_else(|| {
+    let stored = store::load().await?.ok_or_else(|| {
         AppError::new(
             "notion_not_connected",
             "Connect Notion before using Notion tools.",
         )
-    })
+    })?;
+    if notion_token_expired_at(&stored, now_unix()) {
+        return Err(AppError::new(
+            "notion_token_expired",
+            "Reconnect Notion before using Notion tools.",
+        ));
+    }
+    Ok(stored)
+}
+
+fn notion_token_expired_at(stored: &StoredNotionConnection, now: i64) -> bool {
+    stored
+        .expires_at_unix
+        .is_some_and(|expires_at| expires_at <= now + TOKEN_EXPIRY_BUFFER_SECS)
 }
 
 fn connection() -> NotionConnection {
@@ -1502,6 +1516,28 @@ mod tests {
         assert_eq!(action_tool_allowed_for_hermes("Notion-update-page"), None);
         assert_eq!(action_tool_allowed_for_hermes("notion-move-pages"), None);
         assert_eq!(tool_allowed_for_hermes("notion-update-page"), None);
+    }
+
+    #[test]
+    fn token_expiry_uses_reconnect_buffer() {
+        let mut stored = StoredNotionConnection {
+            access_token: "token".to_string(),
+            refresh_token: Some("refresh".to_string()),
+            expires_at_unix: None,
+            client_id: "client".to_string(),
+            client_secret: None,
+            endpoint: MCP_ENDPOINT.to_string(),
+        };
+        assert!(!notion_token_expired_at(&stored, 1_000));
+
+        stored.expires_at_unix = Some(1_000 + TOKEN_EXPIRY_BUFFER_SECS + 1);
+        assert!(!notion_token_expired_at(&stored, 1_000));
+
+        stored.expires_at_unix = Some(1_000 + TOKEN_EXPIRY_BUFFER_SECS);
+        assert!(notion_token_expired_at(&stored, 1_000));
+
+        stored.expires_at_unix = Some(999);
+        assert!(notion_token_expired_at(&stored, 1_000));
     }
 
     #[test]
