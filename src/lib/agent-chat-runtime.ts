@@ -1837,9 +1837,18 @@ export function hasFinalContentBearingAssistantReply(
   return (
     finalAssistant !== undefined &&
     !hermesAssistantMessageHasToolCalls(finalAssistant) &&
-    [finalAssistant.content, finalAssistant.text, finalAssistant.context].some(
+    ([finalAssistant.content, finalAssistant.text, finalAssistant.context].some(
       (value) => textFromHermesContent(value) !== undefined,
-    )
+    ) ||
+      hasRenderableHermesMedia(finalAssistant.content))
+  );
+}
+
+function hasRenderableHermesMedia(value: unknown) {
+  return (
+    mcpImageContentBlocks(value).length > 0 ||
+    mediaImageReferences(value).length > 0 ||
+    mediaVideoReferences(value).length > 0
   );
 }
 

@@ -165,11 +165,15 @@ function isRecentPendingRun(session: HermesSessionInfo) {
 }
 
 function hasSessionEnded(session: HermesSessionInfo) {
-  return Boolean(
-    stringPresent(session.ended_at) ||
-      stringPresent(session.endedAt) ||
-      stringPresent(session.end_reason),
+  return (
+    timestampPresent(session.ended_at) ||
+    timestampPresent(session.endedAt) ||
+    stringPresent(session.end_reason)
   );
+}
+
+function timestampPresent(value: unknown) {
+  return stringPresent(value) || (typeof value === "number" && Number.isFinite(value));
 }
 
 function hasScheduledRunContent(session: HermesSessionInfo) {

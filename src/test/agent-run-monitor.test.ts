@@ -552,6 +552,49 @@ describe("agent run monitor", () => {
     expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    "MEDIA:generated-image-abc.png",
+    "MEDIA:generated-video-ab12.mp4",
+    [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }],
+  ])("settles from a media-only assistant reply after the last tool result", async (content) => {
+    const finishRuntime = activeRuntime();
+    monitorMocks.sessionMessages.mockResolvedValue({
+      messages: [
+        { id: "user-1", role: "user", content: "Create media" },
+        {
+          id: "assistant-tool-call",
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call-1",
+              type: "function",
+              function: { name: "generate_media", arguments: "{}" },
+            },
+          ],
+        },
+        {
+          id: "tool-1",
+          role: "tool",
+          content: "Media generated",
+          tool_call_id: "call-1",
+        },
+        {
+          id: "assistant-final",
+          role: "assistant",
+          content,
+        },
+      ],
+    });
+
+    startRun();
+    await flush();
+    finishRuntime();
+    await observeTwoIdleSnapshots();
+
+    expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
+  });
+
   it("does not infer success from a trailing assistant that starts another tool call", async () => {
     const finishRuntime = activeRuntime();
     monitorMocks.sessionMessages.mockResolvedValue({
