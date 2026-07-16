@@ -32,6 +32,10 @@
   --june-frame: calc((var(--t-fast) + var(--t-med)) / 2);
   --june-pulse: calc(var(--t-fast) + var(--t-med) + var(--t-slow));
   --june-pause: var(--t-fast);
+  /* The highest sweep order juneSpinnerGrid() emits for this grid, which paces
+   * the full cycle. For the bottom-left diagonal traversal it is (cols - 1) × 2,
+   * so the 3×3 sm/md grid tops out at 4. Keep this in lockstep with
+   * JUNE_SPINNER_COLS in lib/june-spinner-grid.ts if the grid is ever resized. */
   --june-max-order: 4;
   --june-dur: calc(
     var(--june-frame) *
@@ -53,9 +57,8 @@
 }
 
 .dot-spinner[data-size="md"] {
-  --june-off: 0.44;
-  --june-field-off: 0.14;
-  --june-field-peak: 0.26;
+  /* Shares the base tonal hierarchy; only the dot size grows for a slightly
+   * larger inline mark. */
   --june-dot: 3px;
   --june-gap: 2px;
 }
@@ -65,6 +68,9 @@
   --june-field-off: 0.15;
   --june-field-peak: 0.24;
   --june-frame: calc(var(--t-med) / 2);
+  /* Same (cols - 1) × 2 derivation as the base block, for the 5×5 lg grid: it
+   * tops out at 8. Kept in lockstep with JUNE_SPINNER_COLS / juneSpinnerGrid in
+   * lib/june-spinner-grid.ts. */
   --june-max-order: 8;
   --june-dot: 3px;
   --june-gap: 3px;
