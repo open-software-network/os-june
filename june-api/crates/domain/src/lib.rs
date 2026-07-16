@@ -159,6 +159,15 @@ impl ProviderCredentials {
     }
 }
 
+/// Privacy class advertised by the selected upstream model. This controls
+/// which model-routing-service policy is requested for service-managed calls.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InferencePrivacy {
+    #[default]
+    Private,
+    Anonymized,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Authorization {
@@ -239,6 +248,7 @@ pub struct GenerationRequest {
     pub system_prompt: String,
     pub cost_quality: Option<f64>,
     pub provider_credentials: ProviderCredentials,
+    pub inference_privacy: InferencePrivacy,
     /// See `AgentChatRequest::unmetered`.
     pub unmetered: bool,
 }
@@ -253,6 +263,7 @@ pub struct CleanupRequest {
     pub model: ModelId,
     pub system_prompt: String,
     pub provider_credentials: ProviderCredentials,
+    pub inference_privacy: InferencePrivacy,
 }
 
 #[derive(Clone, Debug)]
@@ -260,6 +271,7 @@ pub struct AgentChatRequest {
     pub body: serde_json::Value,
     pub model: ModelId,
     pub provider_credentials: ProviderCredentials,
+    pub inference_privacy: InferencePrivacy,
     /// True when the caller settles no OS Accounts charge for this request
     /// (user-supplied upstream key). Providers may then use their full-route
     /// client: the shortened metered window exists only to keep settlement

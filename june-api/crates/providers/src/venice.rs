@@ -5,8 +5,8 @@ use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit, Upstrea
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
     AgentChatStreamOutcome, CleanedText, Cleaner, CleanupRequest, DomainError, GeneratedNote,
-    GenerationRequest, Generator, ProviderCredentials, TokenUsage, Transcriber, Transcript,
-    TranscriptionRequest, UpstreamRouteMetadata,
+    GenerationRequest, Generator, InferencePrivacy, ProviderCredentials, TokenUsage, Transcriber,
+    Transcript, TranscriptionRequest, UpstreamRouteMetadata,
 };
 use reqwest::{
     RequestBuilder, StatusCode,
@@ -19,6 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 pub const PROVIDER_NAME: &str = "venice";
 const CONFIDENTIAL_COMPUTE_HEADER: &str = "X-Confidential-Compute";
 const PREFERRED_PRIVATE_ROUTING: &str = "preferred";
+const STANDARD_ANONYMIZED_ROUTING: &str = "disabled";
 const OS_PROVIDER_HEADER: &str = "X-OS-Provider";
 const OS_PRIVACY_LEVEL_HEADER: &str = "X-OS-Privacy-Level";
 const OS_ENDPOINT_HEADER: &str = "X-OS-Endpoint";
@@ -338,6 +339,7 @@ impl Generator for VeniceGenerator {
                 },
                 ChatCallAuth {
                     provider_credentials: &request.provider_credentials,
+                    inference_privacy: request.inference_privacy,
                     unmetered: request.unmetered,
                 },
             )
@@ -400,6 +402,7 @@ impl AgentChatCompleter for VeniceAgentChat {
                 request.model,
                 ChatCallAuth {
                     provider_credentials: &request.provider_credentials,
+                    inference_privacy: request.inference_privacy,
                     unmetered: request.unmetered,
                 },
             )
@@ -416,6 +419,7 @@ impl AgentChatCompleter for VeniceAgentChat {
                 request.model,
                 ChatCallAuth {
                     provider_credentials: &request.provider_credentials,
+                    inference_privacy: request.inference_privacy,
                     unmetered: request.unmetered,
                 },
             )
@@ -464,6 +468,7 @@ impl Cleaner for VeniceCleaner {
                 // it never gets the unmetered client.
                 ChatCallAuth {
                     provider_credentials: &request.provider_credentials,
+                    inference_privacy: request.inference_privacy,
                     unmetered: false,
                 },
             )
@@ -489,6 +494,7 @@ impl Cleaner for VeniceCleaner {
 #[derive(Clone, Copy)]
 struct ChatCallAuth<'a> {
     provider_credentials: &'a ProviderCredentials,
+    inference_privacy: InferencePrivacy,
     unmetered: bool,
 }
 
@@ -757,7 +763,11 @@ fn apply_private_routing(request: RequestBuilder, auth: ChatCallAuth<'_>) -> Req
     if auth.provider_credentials.has_venice_api_key() {
         request
     } else {
-        request.header(CONFIDENTIAL_COMPUTE_HEADER, PREFERRED_PRIVATE_ROUTING)
+        let routing = match auth.inference_privacy {
+            InferencePrivacy::Private => PREFERRED_PRIVATE_ROUTING,
+            InferencePrivacy::Anonymized => STANDARD_ANONYMIZED_ROUTING,
+        };
+        request.header(CONFIDENTIAL_COMPUTE_HEADER, routing)
     }
 }
 
@@ -1595,7 +1605,7 @@ mod tests {
     use june_config::UpstreamConfig;
     use june_domain::{
         AgentChatCompleter, AgentChatRequest, AgentChatStreamOutcome, DomainError,
-        GenerationRequest, Generator, ModelId, ProviderCredentials,
+        GenerationRequest, Generator, InferencePrivacy, ModelId, ProviderCredentials,
     };
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -1655,6 +1665,7 @@ mod tests {
                 system_prompt: "system".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await;
@@ -1724,6 +1735,7 @@ mod tests {
                 provider_credentials: ProviderCredentials {
                     venice_api_key: Some("user_venice_key".to_string()),
                 },
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: true,
             })
             .await;
@@ -1774,6 +1786,7 @@ mod tests {
                 system_prompt: "system".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await
@@ -1823,6 +1836,7 @@ mod tests {
                 system_prompt: "system".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await
@@ -1899,6 +1913,7 @@ mod tests {
                 system_prompt: "system".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await;
@@ -1940,6 +1955,7 @@ mod tests {
                 system_prompt: "system".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await;
@@ -2128,6 +2144,7 @@ mod tests {
                 }),
                 model: ModelId("text-model".to_string()),
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await
@@ -2139,6 +2156,46 @@ mod tests {
         assert_eq!(completion.route.provider.as_deref(), Some("phala"));
         assert_eq!(completion.route.privacy_level.as_deref(), Some("tee"));
         assert_eq!(completion.route.endpoint.as_deref(), Some("phala-glm-5.2"));
+    }
+
+    #[tokio::test]
+    async fn agent_chat_uses_standard_route_for_anonymized_model() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("x-confidential-compute", "disabled"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{ "message": { "content": "hi" } }],
+                "usage": { "prompt_tokens": 1, "completion_tokens": 2 }
+            })))
+            .mount(&server)
+            .await;
+        let agent = VeniceAgentChat::from_config(
+            http::default_client(),
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+                byok_base_url: None,
+            },
+        );
+
+        let completion = agent
+            .complete(AgentChatRequest {
+                body: json!({
+                    "model": "kimi-k3",
+                    "messages": [{ "role": "user", "content": "hi" }],
+                }),
+                model: ModelId("kimi-k3".to_string()),
+                provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Anonymized,
+                unmetered: false,
+            })
+            .await
+            .expect("completion succeeds");
+
+        assert_eq!(completion.usage.prompt_tokens, 1);
+        assert_eq!(completion.usage.completion_tokens, 2);
     }
 
     #[tokio::test]
@@ -2173,6 +2230,7 @@ mod tests {
                 provider_credentials: ProviderCredentials {
                     venice_api_key: Some("VENICE_INFERENCE_KEY_bad".to_string()),
                 },
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: true,
             })
             .await
@@ -2359,6 +2417,7 @@ mod tests {
                 system_prompt: "caller system prompt".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await
@@ -2406,6 +2465,7 @@ mod tests {
                 }),
                 model: ModelId("text-model".to_string()),
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await
@@ -2591,6 +2651,7 @@ mod tests {
             }),
             model: ModelId("text-model".to_string()),
             provider_credentials: ProviderCredentials::default(),
+            inference_privacy: InferencePrivacy::Private,
             unmetered: false,
         }
     }
