@@ -75,6 +75,7 @@ Per-repo config the engineering skills read before acting (see the
     - [Phase 0 authentication design](superpowers/specs/2026-07-14-github-connector-phase-0-design.md) — approved device flow, Keychain custody, installation discovery, and selected-repository binding
     - [Installation return refresh design](superpowers/specs/2026-07-15-github-install-return-refresh-design.md) — one-shot reconciliation after GitHub installation and repository-management browser handoffs
     - [Revocation reconnect design](superpowers/specs/2026-07-16-github-revocation-reconnect-design.md) — fail-closed token revocation classification and immediate reconnect-state synchronization
+    - [Agent reads design](superpowers/specs/2026-07-16-github-agent-reads-design.md) — read-only repository, issue, and pull request tools bound to selected repository IDs through the on-device Rust proxy
   - [Linear](plugins/linear-prd.md) — [implementation plan](plugins/linear-implementation-plan.md)
   - [Documents](plugins/documents-prd.md) — [implementation plan](plugins/documents-implementation-plan.md)
   - [Spreadsheets](plugins/spreadsheets-prd.md) — [implementation plan](plugins/spreadsheets-implementation-plan.md)
