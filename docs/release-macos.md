@@ -76,8 +76,10 @@ GitHub Actions -> rc-desktop-release -> Run workflow
 `rc-desktop-release` builds a signed + notarized `universal-apple-darwin` app at
 version `X.Y.Z-rc.N` (bundling the Hermes runtime), and publishes it to a fixed
 `rc` prerelease in `open-software-network/os-june-releases` with `latest-rc.json`.
-It records the source commit in `rc-build.json` (so promote can rebuild the same
-tree) and does NOT touch `main`.
+The fixed `June_universal.dmg` asset follows the current RC for the updater, while
+an immutable versioned DMG remains available for each Slack announcement. The
+workflow records the source commit in `rc-build.json` (so promote can rebuild the
+same tree) and does NOT touch `main`.
 
 ### 2. Test the candidate
 
@@ -130,9 +132,11 @@ It posts when a `vX.Y.Z` stable release is published. RC builds reuse the fixed
 `rc` release tag and are edited in place rather than re-published, so the
 `rc-desktop-release` workflow posts each successful candidate through
 `SLACK_WEBHOOK_URL` after its release assets are available. The webhook message
-links the source commit, macOS DMG, and fixed `rc` release page. Notification
-delivery is best effort and never turns a successfully published candidate into
-a failed release run.
+links the source commit, that candidate's immutable versioned macOS DMG, and the
+fixed `rc` release page. Delivery uses bounded retries and reports its result in
+the Actions summary. It remains best effort and never turns a successfully
+published candidate into a failed release run; a missed announcement is handled
+manually rather than rerunning or replacing the signed release.
 
 The app polls:
 

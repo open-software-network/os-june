@@ -377,10 +377,12 @@ jobs:
           rm -rf "$release_dir"
           mkdir -p "$release_dir"
           stable_dmg="$release_dir/June_universal.dmg"
+          versioned_dmg="$release_dir/June_v${VERSION}_universal.dmg"
           app_archive="$release_dir/June_universal.app.tar.gz"
           app_signature="$release_dir/June_universal.app.tar.gz.sig"
           latest_rc_json="$release_dir/latest-rc.json"
           cp "$dmg" "$stable_dmg"
+          cp "$dmg" "$versioned_dmg"
           cp "${app_archives[0]}" "$app_archive"
           cp "${app_signatures[0]}" "$app_signature"
 
@@ -438,6 +440,7 @@ jobs:
 
           gh release upload rc \
             "$stable_dmg" \
+            "$versioned_dmg" \
             "$app_archive" \
             "$app_signature" \
             "$latest_rc_json" \
@@ -454,6 +457,7 @@ jobs:
           set -euo pipefail
           if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
             echo "::warning::SLACK_WEBHOOK_URL secret is not configured; skipping Slack notification."
+            echo "- Slack notification: skipped (SLACK_WEBHOOK_URL is not configured)" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -467,7 +471,7 @@ jobs:
           const releaseUrl =
             "https://github.com/open-software-network/os-june-releases/releases/tag/rc";
           const downloadUrl =
-            "https://github.com/open-software-network/os-june-releases/releases/download/rc/June_universal.dmg";
+            `https://github.com/open-software-network/os-june-releases/releases/download/rc/June_v${version}_universal.dmg`;
           const commitUrl = `https://github.com/open-software-network/os-june/commit/${commit}`;
 
           const payload = {
@@ -523,13 +527,21 @@ jobs:
           NODE
 
           response=$(curl -sS -f -X POST \
+            --connect-timeout 5 \
+            --max-time 20 \
+            --retry 3 \
+            --retry-all-errors \
+            --retry-delay 2 \
+            --retry-max-time 60 \
             -H "Content-Type: application/json" \
             --data-binary "@$payload_file" \
             "$SLACK_WEBHOOK_URL" 2>&1) || {
             echo "::warning::Slack notification failed: $response"
+            echo "- Slack notification: failed after bounded retries (see step warning)" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           }
           echo "Slack notification sent successfully."
+          echo "- Slack notification: sent for v$VERSION" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summary
         run: |

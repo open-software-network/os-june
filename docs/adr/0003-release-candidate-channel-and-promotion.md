@@ -164,4 +164,8 @@ the fixed `rc` prerelease in place, so `rc-desktop-dmg.yml` now posts a
 best-effort incoming-webhook message after the candidate assets are published.
 The separate path is intentional: it announces every RC iteration without
 changing the fixed-tag update-channel contract. A missing or failing webhook
-warns but does not fail the release after signed artifacts have published.
+warns but does not fail the release after signed artifacts have published. The
+fixed DMG asset continues to follow the update channel, while Slack links an
+additional versioned DMG that remains immutable for the candidate named in the
+announcement. Delivery uses bounded retries; manual posting is the recovery path
+for a notification that still fails.
