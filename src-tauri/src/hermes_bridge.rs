@@ -1170,6 +1170,7 @@ async fn start_hermes_bridge_inner(
     let hermes_home = resolve_june_hermes_home(app)?;
     let command_resolution = resolve_hermes_command(app, &hermes_home).await?;
     let obsidian_vault_path = crate::obsidian::configured_vault_path(app);
+    crate::obsidian::sync_hermes_env_projection(&hermes_home, obsidian_vault_path.as_deref())?;
     let command = command_resolution.command;
     let _command_source = command_resolution.source;
     let default_cwd = hermes_home.join("workspace");
@@ -1660,6 +1661,9 @@ pub async fn obsidian_apply_runtime(
     app: AppHandle,
     bridge: State<'_, HermesBridge>,
 ) -> Result<(), AppError> {
+    let hermes_home = resolve_june_hermes_home(&app)?;
+    let vault_path = crate::obsidian::configured_vault_path(&app);
+    crate::obsidian::sync_hermes_env_projection(&hermes_home, vault_path.as_deref())?;
     reapply_hermes_runtime(&app, &bridge).await
 }
 
@@ -5873,6 +5877,7 @@ pub async fn open_hermes_tui_debug(
     let hermes_home = resolve_june_hermes_home(&app)?;
     let command_resolution = resolve_hermes_command(&app, &hermes_home).await?;
     let obsidian_vault_path = crate::obsidian::configured_vault_path(&app);
+    crate::obsidian::sync_hermes_env_projection(&hermes_home, obsidian_vault_path.as_deref())?;
     let command = command_resolution.command;
 
     // Mirror the dashboard spawn's mode resolution: unrestricted => no jail;
