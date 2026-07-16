@@ -11422,6 +11422,77 @@ mod tests {
     }
 
     #[test]
+    fn june_context_memory_recall_is_paginated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("june_context_mcp.py");
+        std::fs::write(&script_path, JUNE_CONTEXT_MCP_SCRIPT).expect("write script");
+        let db_path = dir.path().join("notes.sqlite3");
+        let settings_path = dir.path().join("memory-settings.json");
+
+        let test = r#"
+import importlib.util
+import json
+import sqlite3
+import sys
+
+script_path, db_path, settings_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("june_context_mcp", script_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+with sqlite3.connect(db_path) as conn:
+    conn.execute("""CREATE TABLE memories (
+        id TEXT PRIMARY KEY,
+        folder_id TEXT,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )""")
+    conn.executemany(
+        "INSERT INTO memories (id, folder_id, content, created_at) VALUES (?, NULL, ?, ?)",
+        [(f"memory-{index}", "x" * 4000, "2026-07-16T00:00:00Z") for index in range(25)],
+    )
+
+first = module.list_memories(module.Path(db_path), module.Path(settings_path), {})
+assert first["count"] == 8, first
+assert len(first["items"]) == 8, first
+assert first["items"][0]["id"] == "memory-24", first
+assert first["has_more"] is True, first
+assert first["next_offset"] == 8, first
+
+second = module.list_memories(
+    module.Path(db_path),
+    module.Path(settings_path),
+    {"limit": 20, "offset": first["next_offset"]},
+)
+assert second["count"] == 17, second
+assert second["items"][0]["id"] == "memory-16", second
+assert second["items"][-1]["id"] == "memory-0", second
+assert second["has_more"] is False, second
+assert second["next_offset"] is None, second
+
+capped = module.list_memories(
+    module.Path(db_path), module.Path(settings_path), {"limit": 100}
+)
+assert capped["count"] == 20, capped
+assert capped["has_more"] is True, capped
+"#;
+
+        let output = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(test)
+            .arg(&script_path)
+            .arg(&db_path)
+            .arg(&settings_path)
+            .output()
+            .expect("run python3");
+        assert!(
+            output.status.success(),
+            "pagination regression test failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn shutdown_waits_for_in_flight_start_to_register() {
         // Simulate a start that has spawned a child but not yet registered it:
         // the in-progress counter is held, then released 100ms later (as the

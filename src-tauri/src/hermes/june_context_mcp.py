@@ -235,13 +235,22 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Recall durable facts, preferences, and decisions from June's "
             "memory store. Pass the current project id to include that "
-            "project's memories; global memories are included by default."
+            "project's memories; global memories are included by default. "
+            "Results are newest-first and paginated; use next_offset to "
+            "request another page when has_more is true."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string"},
                 "include_global": {"type": "boolean", "default": True},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_LIMIT,
+                    "default": DEFAULT_LIMIT,
+                },
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
         },
     },
@@ -618,8 +627,10 @@ def list_memories(
         return memory_error(
             "memory_include_global_invalid", "include_global must be a boolean."
         )
+    limit = bounded_limit(arguments.get("limit"))
+    offset = nonnegative_offset(arguments.get("offset"))
     if not db_path.exists():
-        return {"count": 0, "items": []}
+        return memory_page([], limit, offset)
 
     with connect_readonly(db_path) as conn:
         conn.execute("BEGIN")
@@ -633,31 +644,49 @@ def list_memories(
                 """SELECT id, folder_id, content, created_at
                    FROM memories
                    WHERE folder_id IS NULL
-                   ORDER BY created_at DESC, rowid DESC"""
+                   ORDER BY created_at DESC, rowid DESC
+                   LIMIT ? OFFSET ?""",
+                [limit + 1, offset],
             ).fetchall()
         elif include_global:
             rows = conn.execute(
                 """SELECT id, folder_id, content, created_at
                    FROM memories
                    WHERE folder_id = ? OR folder_id IS NULL
-                   ORDER BY created_at DESC, rowid DESC""",
-                [project_id],
+                   ORDER BY created_at DESC, rowid DESC
+                   LIMIT ? OFFSET ?""",
+                [project_id, limit + 1, offset],
             ).fetchall()
         else:
             rows = conn.execute(
                 """SELECT id, folder_id, content, created_at
                    FROM memories
                    WHERE folder_id = ?
-                   ORDER BY created_at DESC, rowid DESC""",
-                [project_id],
+                   ORDER BY created_at DESC, rowid DESC
+                   LIMIT ? OFFSET ?""",
+                [project_id, limit + 1, offset],
             ).fetchall()
         conn.commit()
 
+    return memory_page(rows, limit, offset)
+
+
+def memory_page(
+    rows: list[sqlite3.Row], limit: int, offset: int
+) -> dict[str, Any]:
+    page_rows = rows[:limit]
     items = [
         memory_item(row["id"], row["folder_id"], row["content"], row["created_at"])
-        for row in rows
+        for row in page_rows
     ]
-    return {"count": len(items), "items": items}
+    has_more = len(rows) > limit
+    return {
+        "count": len(items),
+        "items": items,
+        "offset": offset,
+        "has_more": has_more,
+        "next_offset": offset + len(items) if has_more else None,
+    }
 
 
 def memory_project_id(
@@ -783,6 +812,14 @@ def bounded_limit(value: Any) -> int:
     except (TypeError, ValueError):
         limit = DEFAULT_LIMIT
     return max(1, min(MAX_LIMIT, limit))
+
+
+def nonnegative_offset(value: Any) -> int:
+    try:
+        offset = int(value)
+    except (TypeError, ValueError):
+        offset = 0
+    return max(0, offset)
 
 
 def capped_text(text: str) -> tuple[str, bool]:
