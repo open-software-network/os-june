@@ -359,10 +359,10 @@ export function HoverTip({
 
   useEffect(() => {
     if (forceOpen && !suppressed) {
-      forcedOpenRef.current = true;
       cancelClose();
       const rect = anchorRef.current?.getBoundingClientRect();
       if (!rect) return;
+      forcedOpenRef.current = true;
       setAnchor({
         centerX: rect.left + rect.width / 2,
         bottom: rect.bottom + TIP_GAP,

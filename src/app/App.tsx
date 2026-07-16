@@ -1014,11 +1014,11 @@ export function App() {
   const [confirmDeleteNote, setConfirmDeleteNote] = useState(false);
   const [shareNoteOpen, setShareNoteOpen] = useState(false);
   const [noteShareUrl, setNoteShareUrl] = useState<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset note-scoped UI on selection change
   useEffect(() => {
     setNoteChatOpen(false);
     setConfirmDeleteNote(false);
     setShareNoteOpen(false);
-    setNoteShareUrl(null);
   }, [selectedNoteId]);
   // The note's Ask June chat is owned here, not inside the panel, so its
   // session and working state survive the panel closing: a fired-off question
