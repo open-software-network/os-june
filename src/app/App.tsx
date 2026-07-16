@@ -1,4 +1,3 @@
-import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { listen } from "@tauri-apps/api/event";
@@ -62,6 +61,7 @@ import {
 import { markReferralNudgeClickedThrough, recordDictationFinished } from "../lib/referral-nudge";
 import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import { Dialog } from "../components/ui/Dialog";
+import { Spinner } from "../components/ui/Spinner";
 import {
   assignNoteToFolder,
   assignSessionToFolder,
@@ -227,10 +227,18 @@ import {
   checkForJuneUpdate,
   prepareJuneUpdate,
   startPeriodicJuneUpdateChecks,
+  UP_TO_DATE_STATUS,
   type UpdateCheckMode,
   type UpdateInstallProgress,
   type UpdatePromptPayload,
 } from "./update-decision";
+
+// "June is up to date." is a confirmation, not a call to action: linger, then
+// hide on its own. Failures and busy statuses persist until dismissed.
+const UP_TO_DATE_DISMISS_MS = 4000;
+// Soft-exit window: the update-popover-out animation runs var(--t-med) (160ms);
+// the status clears just after it finishes.
+const UP_TO_DATE_EXIT_MS = 220;
 
 const SIDEBAR_DEFAULT_WIDTH = 240;
 const SIDEBAR_MIN_WIDTH = 188;
@@ -494,7 +502,14 @@ export function App() {
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
   const [readyUpdate, setReadyUpdate] = useState<UpdatePromptPayload<JuneUpdate> | null>(null);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+  // True while the up-to-date status plays its timed soft exit (see the
+  // auto-dismiss effect next to runUpdateCheck).
+  const [updateStatusLeaving, setUpdateStatusLeaving] = useState(false);
   const [preparingUpdate, setPreparingUpdate] = useState(false);
+  // Mirrors checkingUpdateRef for render: drives the status card's busy spinner
+  // while a manual "Checking for updates..." round-trip is in flight. The ref
+  // stays the source of truth for the re-entrancy guards in runUpdateCheck.
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [relaunchingUpdate, setRelaunchingUpdate] = useState(false);
   const [updateProgress, setUpdateProgress] = useState<UpdateInstallProgress | null>(null);
   // `ready` only says this device is capable of system capture; the platform
@@ -673,6 +688,9 @@ export function App() {
         setReadyUpdate,
         setStatus: setUpdateStatus,
         setRelaunching: setRelaunchingUpdate,
+        setPreparing: setPreparingUpdate,
+        setChecking: setCheckingUpdate,
+        setProgress: setUpdateProgress,
       });
     });
     return () => {
@@ -1607,6 +1625,7 @@ export function App() {
         return;
       }
       checkingUpdateRef.current = true;
+      setCheckingUpdate(true);
       if (mode === "manual") setUpdateStatus("Checking for updates...");
       else if (mode === "launch") setUpdateStatus(null);
       void checkForJuneUpdate(
@@ -1615,7 +1634,7 @@ export function App() {
           prompt: (payload) => {
             prepareUpdate(payload, mode);
           },
-          reportNoUpdate: () => setUpdateStatus("June is up to date."),
+          reportNoUpdate: () => setUpdateStatus(UP_TO_DATE_STATUS),
           reportFailure: (message) => {
             if (mode !== "periodic") {
               setUpdateStatus(`Update check failed: ${message}`);
@@ -1625,10 +1644,33 @@ export function App() {
         mode,
       ).finally(() => {
         checkingUpdateRef.current = false;
+        setCheckingUpdate(false);
       });
     },
     [prepareUpdate],
   );
+
+  // Auto-dismiss ONLY the up-to-date confirmation: linger, play the soft exit,
+  // then clear. Any status change (a new check, a failure, a manual dismiss)
+  // or unmount runs the cleanup, cancelling the pending hide; failures and
+  // busy statuses never match, so they persist until the user dismisses them.
+  useEffect(() => {
+    if (updateStatus !== UP_TO_DATE_STATUS) {
+      setUpdateStatusLeaving(false);
+      return;
+    }
+    const leaveTimer = window.setTimeout(() => {
+      setUpdateStatusLeaving(true);
+    }, UP_TO_DATE_DISMISS_MS);
+    const clearTimer = window.setTimeout(() => {
+      setUpdateStatusLeaving(false);
+      setUpdateStatus(null);
+    }, UP_TO_DATE_DISMISS_MS + UP_TO_DATE_EXIT_MS);
+    return () => {
+      window.clearTimeout(leaveTimer);
+      window.clearTimeout(clearTimer);
+    };
+  }, [updateStatus]);
 
   // Confirmed in Settings after switching off the rc channel: re-check with
   // reconcile=true (which re-stashes the Rust-side pending update, so a periodic
@@ -3687,6 +3729,8 @@ export function App() {
             <UpdateHub
               readyUpdate={readyUpdate}
               status={updateStatus}
+              statusLeaving={updateStatusLeaving}
+              checking={checkingUpdate}
               preparing={preparingUpdate}
               relaunching={relaunchingUpdate}
               progress={updateProgress}
@@ -4493,6 +4537,8 @@ function updateMenuBarSessionStatus(
 function UpdateHub({
   readyUpdate,
   status,
+  statusLeaving,
+  checking,
   preparing,
   relaunching,
   progress,
@@ -4501,6 +4547,8 @@ function UpdateHub({
 }: {
   readyUpdate: UpdatePromptPayload<JuneUpdate> | null;
   status: string | null;
+  statusLeaving: boolean;
+  checking: boolean;
   preparing: boolean;
   relaunching: boolean;
   progress: UpdateInstallProgress | null;
@@ -4522,6 +4570,8 @@ function UpdateHub({
   return (
     <UpdateStatusCard
       status={status}
+      leaving={statusLeaving}
+      checking={checking}
       preparing={preparing}
       progress={progress}
       onDismiss={onDismissStatus}
@@ -4552,11 +4602,13 @@ function UpdateRelaunchCard({
         aria-label={`Relaunch to update to June ${payload.version}`}
         onClick={onRelaunch}
       >
+        {/* One motion cue per card: while relaunching the mark slot swaps to the
+         * dot spinner (no title shimmer) and the title stays plain text. */}
         <span className="update-relaunch-mark" aria-hidden>
-          <JuneMark />
+          {relaunching ? <Spinner size="sm" aria-hidden /> : <JuneMark />}
         </span>
         <span className="update-relaunch-copy">
-          <span className={relaunching ? "update-relaunch-title shimmer" : "update-relaunch-title"}>
+          <span className="update-relaunch-title">
             {relaunching ? "Relaunching..." : "Relaunch to update"}
           </span>
           <span className={status ? "update-relaunch-status" : undefined}>{meta}</span>
@@ -4571,11 +4623,15 @@ function UpdateRelaunchCard({
 
 function UpdateStatusCard({
   status,
+  leaving,
+  checking,
   preparing,
   progress,
   onDismiss,
 }: {
   status: string;
+  leaving: boolean;
+  checking: boolean;
   preparing: boolean;
   progress: UpdateInstallProgress | null;
   onDismiss: () => void;
@@ -4584,18 +4640,27 @@ function UpdateStatusCard({
   const progressWidth =
     progress?.state === "installing" && percent === undefined ? "100%" : `${percent ?? 0}%`;
   const failed = status.toLowerCase().includes("failed");
+  // Explicit flags, never string-sniffed: checking covers the manual
+  // "Checking for updates..." round-trip, preparing covers download + install.
+  // The spinner is decorative; the status text announces the state to AT.
+  const busy = checking || preparing;
 
   return (
     <aside
       className="update-popover update-status-card"
+      data-leaving={leaving || undefined}
       role={failed ? "alert" : "status"}
       aria-live="polite"
     >
       <div className="update-status-row">
-        <span className="update-status-icon" aria-hidden>
-          <IconArrowInbox size={15} />
+        <span className="update-status-mark" aria-hidden>
+          {busy ? <Spinner size="sm" aria-hidden /> : <JuneMark />}
         </span>
-        <span className="update-status-text">{status}</span>
+        <span
+          className={failed ? "update-status-text update-status-text-failed" : "update-status-text"}
+        >
+          {status}
+        </span>
         <button
           type="button"
           className="update-status-close"
@@ -4611,7 +4676,21 @@ function UpdateStatusCard({
             <div className="update-progress-fill" style={{ width: progressWidth }} />
           </div>
           {percent !== undefined ? (
-            <span className="update-progress-percent">{percent}%</span>
+            <span className="update-progress-percent update-digit-group">
+              {/* Each digit keyed by position+character: only a digit whose
+               * character changed remounts and replays the pop-in, so the ones
+               * digit ticks each percent while the tens digit only rolls over.
+               * The % sign stays static. */}
+              {String(percent)
+                .split("")
+                .map((char, i) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: the position-plus-character key is the mechanism — a changed digit remounts to replay the pop-in.
+                  <span key={`${i}-${char}`} className="update-digit">
+                    {char}
+                  </span>
+                ))}
+              <span>%</span>
+            </span>
           ) : null}
         </div>
       ) : null}
