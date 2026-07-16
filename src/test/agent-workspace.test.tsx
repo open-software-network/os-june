@@ -8226,6 +8226,7 @@ describe("AgentWorkspace", () => {
         pendingActionStore.openRecords().some((record) => record.requestId === "approval-runtime"),
       ).toBe(false),
     );
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
   });
 
   it("keeps the session waiting until every distinct inbound approval resolves", async () => {
@@ -8350,9 +8351,15 @@ describe("AgentWorkspace", () => {
     expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-deny")).toBe(
       false,
     );
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
   });
 
   it("fails closed when a targeted approval is no longer pending", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
     const user = userEvent.setup();
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.create") {
@@ -8390,6 +8397,7 @@ describe("AgentWorkspace", () => {
       }
     });
     expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("waiting");
     await user.click(screen.getByRole("button", { name: "Approve" }));
 
     expect(await screen.findByText("Approval expired")).toBeInTheDocument();
@@ -8399,6 +8407,15 @@ describe("AgentWorkspace", () => {
     expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-stale")).toBe(
       false,
     );
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
+    expect(statusDetails.at(-1)).toEqual(
+      expect.objectContaining({
+        sessionId: "session-2",
+        status: "running",
+        summary: "June is working.",
+      }),
+    );
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
   });
 
   it.each([

@@ -3057,6 +3057,23 @@ export function AgentWorkspace({
     return agentStatusFromHermesEvent(event, hasOpenPendingAction);
   }
 
+  function recordOptimisticHermesActivityAndDispatchStatus(
+    event: JuneHermesEvent,
+    storedSessionId: string,
+  ) {
+    const storedEvent = withStoredHermesSessionId(event, storedSessionId);
+    const status = recordHermesActivityAndDeriveStatus(storedEvent, storedSessionId);
+    if (!status) return;
+    dispatchAgentSessionStatus({
+      sessionId: storedSessionId,
+      title:
+        hermesSessionItemsRef.current.find((session) => session.id === storedSessionId)?.title ??
+        "Agent session",
+      status,
+      summary: agentStatusSummaryFromHermesEvent(storedEvent, status),
+    });
+  }
+
   function recordSessionErrorActivity(sessionId: string, message: string) {
     cancelAgentRunSettlement(sessionId);
     hermesActivityStore.record(
@@ -7899,29 +7916,27 @@ export function AgentWorkspace({
         return;
       }
       if (response.resolved === 0) {
-        pushLiveEvent(
-          liveEventKey,
-          classifyOptimisticLiveEvent({
-            type: "approval.expire",
-            session_id: sessionId,
-            payload: { request_id: requestId, reason: "stale" },
-          }),
-        );
+        const expiration = classifyOptimisticLiveEvent({
+          type: "approval.expire",
+          session_id: sessionId,
+          payload: { request_id: requestId, reason: "stale" },
+        });
+        pushLiveEvent(liveEventKey, expiration);
         pendingActionStore.expireRequest(liveEventKey, requestId, "stale");
+        recordOptimisticHermesActivityAndDispatchStatus(expiration, liveEventKey);
         setError("This approval is no longer pending. Nothing was approved.", { sessionId });
         return;
       }
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "approval.response",
-          session_id: sessionId,
-          payload: { request_id: requestId, choice },
-        }),
-      );
+      const resolution = classifyOptimisticLiveEvent({
+        type: "approval.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, choice },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user just answered this approval — clear its global
       // "Needs you" row immediately (the response itself is the resolution).
       pendingActionStore.resolveRequest(liveEventKey, requestId);
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -7973,15 +7988,14 @@ export function AgentWorkspace({
         request_id: requestId,
         answer,
       });
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "clarify.response",
-          payload: { request_id: requestId, answer },
-        }),
-      );
+      const resolution = classifyOptimisticLiveEvent({
+        type: "clarify.response",
+        payload: { request_id: requestId, answer },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user answered the clarification — clear its pending record.
       pendingActionStore.resolveRequest(liveEventKey, requestId);
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -8026,16 +8040,15 @@ export function AgentWorkspace({
         approved,
         mode,
       });
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "sudo.response",
-          session_id: sessionId,
-          payload: { request_id: requestId, granted: approved, mode },
-        }),
-      );
+      const resolution = classifyOptimisticLiveEvent({
+        type: "sudo.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, granted: approved, mode },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user resolved the sudo prompt — clear its pending record.
       pendingActionStore.resolveRequest(liveEventKey, requestId);
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
@@ -8074,16 +8087,15 @@ export function AgentWorkspace({
         requestId,
         value,
       });
-      pushLiveEvent(
-        liveEventKey,
-        classifyOptimisticLiveEvent({
-          type: "secret.response",
-          session_id: sessionId,
-          payload: { request_id: requestId, provided: true },
-        }),
-      );
+      const resolution = classifyOptimisticLiveEvent({
+        type: "secret.response",
+        session_id: sessionId,
+        payload: { request_id: requestId, provided: true },
+      });
+      pushLiveEvent(liveEventKey, resolution);
       // Feature 04: the user provided the secret — clear its pending record.
       pendingActionStore.resolveRequest(liveEventKey, requestId);
+      recordOptimisticHermesActivityAndDispatchStatus(resolution, liveEventKey);
       setError(null);
     } catch (err) {
       const message = messageFromError(err);
