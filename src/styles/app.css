@@ -6697,7 +6697,7 @@ input:focus-visible,
   /* Bleed past the surface padding so the hairline runs the panel's full
    * width; the widened padding keeps the label on the shared content gutter. */
   margin: 0 calc(-1 * var(--sp-1));
-  padding: 0 calc(var(--sp-1) + var(--sp-2));
+  padding: var(--sp-2) calc(var(--sp-1) + var(--sp-2));
   border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
   color: var(--popover-foreground);
   font-size: var(--fs-md);
