@@ -57,7 +57,8 @@ export type AgentChatApprovalPart = {
   description: string;
   allowPermanent: boolean;
   choice?: AgentApprovalChoice;
-  status: "pending" | "resolved";
+  status: "pending" | "resolved" | "expired";
+  retiredReason?: string;
 };
 
 export type AgentChatClarifyPart = {
@@ -844,6 +845,20 @@ function appendLiveHermesEvents(
         break;
       }
 
+      case "pending_action_expiration": {
+        const targetParts = (currentAssistant ?? lastAssistantTurn(turns))?.parts ?? [];
+        upsertApprovalPart(targetParts, {
+          id: event.action.requestId,
+          command: "",
+          description: "",
+          sessionId: optionalSessionId(event.sessionId),
+          allowPermanent: false,
+          status: "expired",
+          retiredReason: event.action.reason,
+        });
+        break;
+      }
+
       case "error": {
         currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
         const notice = event.message ? turnNotice(event.message) : undefined;
@@ -1113,7 +1128,10 @@ function completeRunningParts(parts: AgentChatPart[]) {
       part.status = "complete";
     }
     if (part.type === "tool" && part.status === "running") part.status = "complete";
-    if (part.type === "approval" && part.status === "pending") part.status = "resolved";
+    if (part.type === "approval" && part.status === "pending") {
+      part.status = "expired";
+      part.retiredReason = "session-complete";
+    }
     if (part.type === "clarify" && part.status === "pending") part.status = "resolved";
     if (part.type === "sudo" && part.status === "pending") part.status = "resolved";
     if (part.type === "secret" && part.status === "pending") part.status = "resolved";
@@ -1216,17 +1234,23 @@ function upsertApprovalPart(
     AgentChatApprovalPart,
     "id" | "command" | "description" | "allowPermanent" | "status"
   > &
-    Partial<Pick<AgentChatApprovalPart, "choice" | "sessionId">>,
+    Partial<Pick<AgentChatApprovalPart, "choice" | "sessionId" | "retiredReason">>,
 ) {
   const existing = parts.find(
     (part): part is AgentChatApprovalPart => part.type === "approval" && part.id === next.id,
   );
   if (existing) {
+    // Resolution and expiration are sticky. A delayed replay must not reopen a
+    // card the user already answered or Hermes already retired.
+    if (next.status === "pending" && existing.status !== "pending") return;
+    // A late expiration must not hide the decision the user already made.
+    if (next.status === "expired" && existing.status === "resolved") return;
     existing.command = next.command || existing.command;
     existing.description = next.description || existing.description;
     existing.sessionId = next.sessionId || existing.sessionId;
     existing.allowPermanent = next.allowPermanent;
     existing.choice = next.choice ?? existing.choice;
+    existing.retiredReason = next.retiredReason ?? existing.retiredReason;
     existing.status = next.status;
     return;
   }
@@ -1239,6 +1263,7 @@ function upsertApprovalPart(
     allowPermanent: next.allowPermanent,
     choice: next.choice,
     status: next.status,
+    retiredReason: next.retiredReason,
   });
 }
 

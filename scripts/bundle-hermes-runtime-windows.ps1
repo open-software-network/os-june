@@ -159,9 +159,11 @@ $work = Join-Path $outParent "work-windows"
 $bridgeRs = Join-Path $root "src-tauri\src\hermes_bridge.rs"
 
 $commit = Read-Pin $bridgeRs "HERMES_AGENT_INSTALL_COMMIT"
+$patchSet = Read-Pin $bridgeRs "HERMES_RUNTIME_PATCH_SET"
 $tarballUrl = Read-Pin $bridgeRs "HERMES_SOURCE_TARBALL_URL"
 $tarballSha256 = (Read-Pin $bridgeRs "HERMES_SOURCE_TARBALL_SHA256").ToLowerInvariant()
 Log "pin: $commit"
+Log "patch set: $patchSet"
 
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $out, $work
 New-Item -ItemType Directory -Force -Path $out, $work | Out-Null
@@ -267,6 +269,11 @@ if (!(Test-Path -LiteralPath $py -PathType Leaf)) {
   Fail "bundled python missing at $py."
 }
 
+Invoke-Native $py @(
+  (Join-Path $root "src-tauri\src\hermes\apply_june_patches.py"),
+  $agentDir
+)
+
 Log "installing python deps"
 $venvDir = Join-Path $agentDir "venv"
 $syncSucceeded = $true
@@ -371,6 +378,7 @@ fn main() {
 Invoke-Native "rustc" @($launcherSource, "-O", "-o", (Join-Path $binDir "hermes.exe"))
 
 [IO.File]::WriteAllText((Join-Path $out "PIN"), "$commit`n", [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $out "PATCHSET"), "$patchSet`n", [Text.UTF8Encoding]::new($false))
 
 if (!$SkipSelfTest) {
   Log "self-test: running the launcher from a relocated copy"
@@ -386,6 +394,15 @@ if (!$SkipSelfTest) {
       $env:HERMES_HOME = $testHome
       Invoke-Native (Join-Path $selftest "hermes\bin\hermes.exe") @("--version")
       Invoke-Native (Join-Path $selftest "hermes\python\current\python.exe") @("-c", "import hermes_cli.main")
+      Invoke-Native (Join-Path $selftest "hermes\python\current\python.exe") @(
+        (Join-Path $root "src-tauri\src\hermes\apply_june_patches.py"),
+        (Join-Path $selftest "hermes\hermes-agent"),
+        "--verify"
+      )
+      Invoke-Native (Join-Path $selftest "hermes\python\current\python.exe") @(
+        (Join-Path $root "scripts\hermes-approval-patch-smoke.py"),
+        (Join-Path $selftest "hermes\hermes-agent")
+      )
       $pluginRoot = Join-Path $selftest "hermes\hermes-agent\plugins"
       $previousPluginRoot = $env:HERMES_PLUGIN_ROOT
       try {

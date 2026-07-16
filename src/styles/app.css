@@ -12133,9 +12133,10 @@ input:focus-visible,
  * consumer class passed through via the InlineNotice `className` prop. */
 .inline-notice {
   display: flex;
-  /* Top-align so the leading icon lines up with the first line of the content,
-   * not the vertical middle of a multi-line body. */
-  align-items: flex-start;
+  /* Match the first text line across the message and any actions. This reads
+   * centered for a one-line notice while wrapped copy grows downward from the
+   * same top line, without measuring line count in JavaScript. */
+  align-items: first baseline;
   gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-subtle);
@@ -12150,6 +12151,9 @@ input:focus-visible,
 .inline-notice-icon {
   display: inline-flex;
   flex-shrink: 0;
+  /* Icons have no useful text baseline, so keep the glyph centered against
+   * the message's first line while the text and actions baseline-align. */
+  align-self: flex-start;
   align-items: center;
   height: calc(var(--fs-md) * 1.5);
   color: var(--muted-foreground);

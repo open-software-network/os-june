@@ -80,7 +80,7 @@ The user-written, per-project text (max 4000 chars, on the folder row) that
 June follows in sessions filed in that project. Delivered by injecting a
 delimited project-context block into the session's prompt text at run
 boundaries — never via the global SOUL.md (see
-[ADR-0025](docs/adr/0025-june-owned-project-memory-store.md)).
+[ADR-0026](docs/adr/0026-june-owned-project-memory-store.md)).
 _Avoid_: system prompt (that is SOUL territory), folder description (a
 separate, filing-help field).
 

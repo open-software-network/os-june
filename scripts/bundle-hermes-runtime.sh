@@ -83,6 +83,13 @@ run_self_test() {
   esac
   "$selftest/hermes/python/current/bin/python3.11" -c "import hermes_cli.main" \
     || die "self-test failed: bare interpreter cannot import hermes_cli (pth broken)"
+  /usr/bin/python3 "$root/src-tauri/src/hermes/apply_june_patches.py" \
+    "$selftest/hermes/hermes-agent" --verify \
+    || die "self-test failed: June Hermes patch checksums do not match"
+  "$selftest/hermes/python/current/bin/python3.11" \
+    "$root/scripts/hermes-approval-patch-smoke.py" \
+    "$selftest/hermes/hermes-agent" \
+    || die "self-test failed: June Hermes approval protocol"
   HERMES_PLUGIN_ROOT="$selftest/hermes/hermes-agent/plugins" \
     "$selftest/hermes/python/current/bin/python3.11" \
     -c "import os, sys; sys.path.insert(0, os.environ['HERMES_PLUGIN_ROOT']); from cron import jobs; assert '/hermes-agent/cron/jobs.py' in jobs.__file__.replace('\\\\', '/'), jobs.__file__" \
@@ -98,6 +105,8 @@ print_bundle_size() {
 bundle_is_reusable() {
   [ -f "$out/PIN" ] || return 1
   [ "$(cat "$out/PIN")" = "$commit" ] || return 1
+  [ -f "$out/PATCHSET" ] || return 1
+  [ "$(cat "$out/PATCHSET")" = "$patch_set" ] || return 1
   [ -x "$out/bin/hermes" ] || return 1
   [ -x "$out/python/current/bin/python3.11" ] || return 1
   [ -d "$out/hermes-agent" ] || return 1
@@ -121,12 +130,15 @@ pin() {
   ' "$bridge_rs"
 }
 commit="$(pin HERMES_AGENT_INSTALL_COMMIT)"
+patch_set="$(pin HERMES_RUNTIME_PATCH_SET)"
 tarball_sha256="$(pin HERMES_SOURCE_TARBALL_SHA256)"
 tarball_url="$(pin HERMES_SOURCE_TARBALL_URL)"
 [ -n "$commit" ] || die "could not read HERMES_AGENT_INSTALL_COMMIT from $bridge_rs"
+[ -n "$patch_set" ] || die "could not read HERMES_RUNTIME_PATCH_SET from $bridge_rs"
 [ -n "$tarball_sha256" ] || die "could not read HERMES_SOURCE_TARBALL_SHA256 from $bridge_rs"
 [ -n "$tarball_url" ] || die "could not read HERMES_SOURCE_TARBALL_URL from $bridge_rs"
 log "pin: $commit"
+log "patch set: $patch_set"
 
 work="$out_parent/work"
 if bundle_is_reusable; then
@@ -169,6 +181,10 @@ unpacked="$(find "$work" -maxdepth 1 -type d -name 'hermes-agent-*' | head -1)"
 [ -n "$unpacked" ] || die "tarball did not contain a hermes-agent directory"
 mkdir -p "$out"
 mv "$unpacked" "$out/hermes-agent"
+
+# Apply June's sealed compatibility patch to the exact pinned sources. The
+# patcher verifies each upstream and post-patch file hash and fails on drift.
+/usr/bin/python3 "$root/src-tauri/src/hermes/apply_june_patches.py" "$out/hermes-agent"
 
 # Dev-only weight the runtime never imports. Conservative on purpose: web/ and
 # ui-tui/ stay (hermes resolves them relative to its project root), and they
@@ -312,6 +328,7 @@ sign_macho_files
 # pins in hermes_bridge.rs and evicts a stale bundle (built before a pin
 # bump) instead of letting it ship silently from a developer machine.
 printf '%s\n' "$commit" > "$out/PIN"
+printf '%s\n' "$patch_set" > "$out/PATCHSET"
 
 # ---- self-test: prove relocatability from a moved path with a space -----------
 run_self_test

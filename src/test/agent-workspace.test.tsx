@@ -102,6 +102,7 @@ const mocks = vi.hoisted(() => ({
   releaseAgentRunSettlement: vi.fn(),
   startAgentRunMonitoring: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
+  gatewayCloseHandlers: new Set<() => void>(),
   gatewayInstances: [] as Array<{
     connect: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
@@ -224,7 +225,10 @@ vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
       mocks.gatewayEventHandlers.add(handler);
       return () => mocks.gatewayEventHandlers.delete(handler);
     });
-    onClose = vi.fn(() => vi.fn());
+    onClose = vi.fn((handler: () => void) => {
+      mocks.gatewayCloseHandlers.add(handler);
+      return () => mocks.gatewayCloseHandlers.delete(handler);
+    });
     request = mocks.gatewayRequest;
   },
 }));
@@ -462,6 +466,7 @@ describe("AgentWorkspace", () => {
     vi.clearAllMocks();
     mocks.suggestAgentSessionTitle.mockReset();
     mocks.gatewayEventHandlers.clear();
+    mocks.gatewayCloseHandlers.clear();
     mocks.gatewayInstances.length = 0;
     // Auto-cleanup unmounts the workspace after each test, which snapshots
     // any still-working session for the next mount — across tests that would
@@ -621,6 +626,9 @@ describe("AgentWorkspace", () => {
       if (method === "session.resume") {
         return Promise.resolve({ session_id: "runtime-session-1" });
       }
+      if (method === "approval.respond") {
+        return Promise.resolve({ resolved: 1 });
+      }
       return Promise.resolve({});
     });
   });
@@ -643,6 +651,24 @@ describe("AgentWorkspace", () => {
     expect(second.workingSessionIds).toBe(first.workingSessionIds);
     expect(second.waitingSessionIds).toBe(first.waitingSessionIds);
     expect(second.toolCallSessionIds).toBe(first.toolCallSessionIds);
+  });
+
+  it("keeps a session waiting while any distinct pending action remains", () => {
+    const projection = projectAgentActivityLevels([
+      {
+        id: "session-1",
+        mode: "sandboxed",
+        sessionId: "session-1",
+        phase: "running",
+        pendingActionCount: 1,
+        subagentCount: 0,
+        subagents: [],
+        lastEventAt: 1,
+      },
+    ]);
+
+    expect(projection.waitingSessionIds).toEqual(new Set(["session-1"]));
+    expect(projection.workingSessionIds).toEqual(new Set());
   });
 
   it("scopes an in-flight submit's steer state to its owning session", () => {
@@ -4467,6 +4493,36 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Newer session")).toBeNull();
   });
 
+  it("starts the runtime and restores messages after a full app relaunch", async () => {
+    window.localStorage.setItem("june:agent:last-open-session", "session-1");
+    mocks.hermesBridgeStatus.mockResolvedValue({ running: false });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "user",
+        content: "Keep this conversation visible after relaunch",
+        timestamp: "2026-06-05T12:00:00Z",
+      },
+      {
+        id: "message-2",
+        role: "assistant",
+        content: "The conversation will be ready when June reopens.",
+        timestamp: "2026-06-05T12:00:01Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(
+      await screen.findByText("Keep this conversation visible after relaunch"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("The conversation will be ready when June reopens."),
+    ).toBeInTheDocument();
+    expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, false);
+    expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1");
+  });
+
   it("honors an initial session id before session metadata is available", async () => {
     mocks.listHermesSessions.mockResolvedValue([
       {
@@ -8185,6 +8241,7 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("approval.respond", {
         session_id: "runtime-session-2",
+        request_id: "approval-runtime",
         choice: "once",
       }),
     );
@@ -8192,6 +8249,454 @@ describe("AgentWorkspace", () => {
       expect(
         pendingActionStore.openRecords().some((record) => record.requestId === "approval-runtime"),
       ).toBe(false),
+    );
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
+  });
+
+  it("keeps the session waiting until every distinct inbound approval resolves", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        for (const requestId of ["approval-a", "approval-b"]) {
+          handler({
+            type: "approval.request",
+            session_id: "runtime-session-2",
+            payload: {
+              request_id: requestId,
+              description: `Approve ${requestId}?`,
+              allow_permanent: false,
+            },
+          });
+        }
+      }
+    });
+
+    expect(
+      pendingActionStore
+        .openRecords()
+        .filter((record) => record.sessionId === "session-2" && record.action.kind === "approval"),
+    ).toHaveLength(2);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.response",
+          session_id: "runtime-session-2",
+          payload: { request_id: "approval-a", choice: "once" },
+        });
+      }
+    });
+
+    expect(pendingActionStore.openRecords().map((record) => record.requestId)).toContain(
+      "approval-b",
+    );
+    expect(pendingActionStore.openRecords().map((record) => record.requestId)).not.toContain(
+      "approval-a",
+    );
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("waiting");
+    expect(statusDetails.at(-1)).toEqual(
+      expect.objectContaining({ sessionId: "session-2", status: "waitingForUser" }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.response",
+          session_id: "runtime-session-2",
+          payload: { request_id: "approval-b", choice: "deny" },
+        });
+      }
+    });
+
+    expect(
+      pendingActionStore.openRecords().some((record) => record.sessionId === "session-2"),
+    ).toBe(false);
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
+    expect(statusDetails.at(-1)).toEqual(
+      expect.objectContaining({ sessionId: "session-2", status: "running" }),
+    );
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it("denies only the targeted approval and records the outcome", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "mcp-deny",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Deny" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("approval.respond", {
+        session_id: "runtime-session-2",
+        request_id: "mcp-deny",
+        choice: "deny",
+      }),
+    );
+    expect(await screen.findByText("Denied")).toBeInTheDocument();
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-deny")).toBe(
+      false,
+    );
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
+  });
+
+  it("fails closed when a targeted approval is no longer pending", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "approval.respond") return Promise.resolve({ resolved: 0 });
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "mcp-stale",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("waiting");
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByText("Approval expired")).toBeInTheDocument();
+    expect(
+      await screen.findByText("This approval is no longer pending. June did not approve anything."),
+    ).toBeInTheDocument();
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-stale")).toBe(
+      false,
+    );
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
+    expect(statusDetails.at(-1)).toEqual(
+      expect.objectContaining({
+        sessionId: "session-2",
+        status: "running",
+        summary: "June is working.",
+      }),
+    );
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it.each([
+    ["null", null],
+    ["empty", {}],
+    ["invalid", { resolved: 2 }],
+  ])("keeps an approval pending when the gateway response is malformed: %s", async (responseKind, gatewayResponse) => {
+    const requestId = `mcp-indeterminate-${responseKind}`;
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "approval.respond") return Promise.resolve(gatewayResponse);
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: requestId,
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(
+      await screen.findByText(
+        "June could not confirm the approval outcome. Reconnect, then try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Approval expired")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled());
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === requestId)).toBe(true);
+  });
+
+  it("retires a timed-out approval without approving it", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "mcp-expired",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.expire",
+          session_id: "runtime-session-2",
+          payload: { request_id: "mcp-expired", reason: "timeout" },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Approval expired")).toBeInTheDocument();
+    expect(screen.getByText(/June did not approve anything/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-expired")).toBe(
+      false,
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("approval.respond", expect.anything());
+  });
+
+  it("retires an approval across an unexpected close and does not reopen its replay", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "mcp-reconnect",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("waiting");
+
+    act(() => {
+      for (const handler of [...mocks.gatewayCloseHandlers]) handler();
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+        session_id: "session-2",
+        cols: 96,
+      }),
+    );
+    expect(await screen.findByText("Approval expired")).toBeInTheDocument();
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
+    expect(statusDetails).toContainEqual(
+      expect.objectContaining({
+        sessionId: "session-2",
+        status: "running",
+        summary: "June is working.",
+      }),
+    );
+    const activityProjection = projectAgentActivityLevels(hermesActivityStore.getRecords());
+    expect(activityProjection.waitingSessionIds.has("session-2")).toBe(false);
+    expect(activityProjection.workingSessionIds.has("session-2")).toBe(true);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-1",
+          payload: {
+            request_id: "mcp-reconnect",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+
+    expect(screen.getAllByText("Approval expired")).toHaveLength(1);
+    expect(screen.queryByText("Approval required")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-reconnect")).toBe(
+      false,
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("approval.respond", expect.anything());
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it("retires an in-flight approval response without claiming its outcome after disconnect", async () => {
+    const user = userEvent.setup();
+    let rejectApproval: ((error: Error) => void) | undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "approval.respond") {
+        return new Promise((_resolve, reject) => {
+          rejectApproval = reject;
+        });
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "mcp-in-flight",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("approval.respond", {
+        session_id: "runtime-session-2",
+        request_id: "mcp-in-flight",
+        choice: "once",
+      }),
+    );
+
+    // The real gateway rejects pending RPCs immediately before invoking its
+    // close handlers. The response may nevertheless have reached Hermes.
+    act(() => {
+      rejectApproval?.(new Error("Hermes gateway connection closed."));
+      for (const handler of [...mocks.gatewayCloseHandlers]) handler();
+    });
+
+    expect(await screen.findByText("Approval outcome unknown")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /This approval is no longer actionable, but it may have already been applied/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Approval expired")).not.toBeInTheDocument();
+    expect(screen.queryByText(/June did not approve anything/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-in-flight")).toBe(
+      false,
     );
   });
 
