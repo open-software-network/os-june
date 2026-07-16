@@ -675,10 +675,10 @@ describe("AppSettings", () => {
   it("refreshes and persists the account avatar from General settings", async () => {
     const user = userEvent.setup();
     const onAccountChanged = vi.fn();
-    const renderSettings = () =>
+    const renderSettings = (account: AccountStatus = signedInAccount) =>
       render(
         <AppSettings
-          account={signedInAccount}
+          account={account}
           accountLoading={false}
           sourceMode="microphoneOnly"
           checkingSourceReadiness={false}
@@ -711,11 +711,84 @@ describe("AppSettings", () => {
       user: { ...signedInAccount.user, avatarSeed: seed },
     });
     expect(screen.getByText("Avatar synced with your OpenSoftware account.")).toBeInTheDocument();
+    expect(
+      Object.keys(localStorage).some((key) => key.startsWith("june:account-avatar-pending:")),
+    ).toBe(true);
+    unmount();
+
+    const { unmount: unmountSynced } = renderSettings({
+      ...signedInAccount,
+      user: { ...signedInAccount.user, avatarSeed: seed ?? undefined },
+    });
+    expect(document.querySelector(".account-avatar-preview")?.getAttribute("style")).toBe(
+      refreshedStyle,
+    );
+    await waitFor(() =>
+      expect(
+        Object.keys(localStorage).some((key) => key.startsWith("june:account-avatar-pending:")),
+      ).toBe(false),
+    );
+    unmountSynced();
+
+    renderSettings({
+      ...signedInAccount,
+      user: {
+        ...signedInAccount.user,
+        avatarSeed: "v1:ffffffffffffffffffffffffffffffff",
+      },
+    });
+    expect(document.querySelector(".account-avatar-preview")?.getAttribute("style")).not.toBe(
+      refreshedStyle,
+    );
+  });
+
+  it("keeps a refreshed avatar locally when an existing synced seed cannot update", async () => {
+    const user = userEvent.setup();
+    const accountWithRemoteSeed = {
+      ...signedInAccount,
+      user: {
+        ...signedInAccount.user,
+        avatarSeed: "v1:00000000000000000000000000000000",
+      },
+    };
+    mocks.osAccountsSetAvatarSeed.mockRejectedValueOnce(
+      new Error("Sign in again to refresh your account permissions."),
+    );
+    const renderSettings = () =>
+      render(
+        <AppSettings
+          account={accountWithRemoteSeed}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+          activeTab="general"
+          onTabChange={vi.fn()}
+        />,
+      );
+
+    const { unmount } = renderSettings();
+    const avatar = document.querySelector(".account-avatar-preview");
+    const remoteStyle = avatar?.getAttribute("style");
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(
+      screen.getByText("Sign in again to refresh your account permissions."),
+    ).toBeInTheDocument();
+    expect(
+      Object.keys(localStorage).some((key) => key.startsWith("june:account-avatar-pending:")),
+    ).toBe(true);
+    const localStyle = avatar?.getAttribute("style");
+    expect(localStyle).not.toBe(remoteStyle);
     unmount();
 
     renderSettings();
     expect(document.querySelector(".account-avatar-preview")?.getAttribute("style")).toBe(
-      refreshedStyle,
+      localStyle,
     );
   });
 

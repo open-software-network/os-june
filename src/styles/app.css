@@ -8984,8 +8984,9 @@ input:focus-visible,
       color-mix(in oklch, var(--brand) var(--avatar-cloud-strength, 54%), var(--sidebar))
     );
   box-shadow:
-    inset 0 0 0 1px color-mix(in oklch, var(--on-solid) 24%, transparent),
-    inset 0 -4px 8px color-mix(in oklch, var(--foreground) 20%, transparent);
+    inset 0 0 0 var(--border-width) color-mix(in oklch, var(--on-solid) 24%, transparent),
+    inset 0 calc(-1 * var(--sp-1)) var(--sp-3)
+    color-mix(in oklch, var(--foreground) 20%, transparent);
 }
 
 .account-avatar::before {
@@ -9009,7 +9010,7 @@ input:focus-visible,
       color-mix(in oklch, var(--on-solid) 52%, transparent) 0 9%,
       transparent 28%
     );
-  filter: blur(3px);
+  filter: blur(var(--sp-1));
   opacity: 0.58;
   transform: translate3d(-4%, 3%, 0) rotate(var(--avatar-cloud-angle, -9deg));
 }

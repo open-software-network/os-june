@@ -729,14 +729,20 @@ pub async fn os_accounts_logout(request: Option<AccountsLogoutRequest>) -> Resul
         return Ok(());
     }
     let cfg = Config::load();
-    if let Some(pair) = load_tokens().await {
-        let _ = http_client()
-            .post(format!("{}/auth/logout", cfg.api_url.trim_end_matches('/')))
-            .json(&serde_json::json!({ "refresh_token": pair.refresh_token }))
-            .send()
-            .await;
+    {
+        // Serialize logout with token refreshes and detached snapshot writers.
+        // Otherwise a writer that loaded credentials before clear_tokens could
+        // restore the entire keychain entry after the User signed out.
+        let _guard = refresh_lock().lock().await;
+        if let Some(pair) = load_tokens().await {
+            let _ = http_client()
+                .post(format!("{}/auth/logout", cfg.api_url.trim_end_matches('/')))
+                .json(&serde_json::json!({ "refresh_token": pair.refresh_token }))
+                .send()
+                .await;
+        }
+        clear_tokens().await;
     }
-    clear_tokens().await;
     set_cached_signed_in(false);
     if request
         .map(|request| request.clear_browser_session)
@@ -2228,7 +2234,7 @@ mod tests {
     }
 
     #[test]
-    fn avatar_seed_request_matches_the_accounts_profile_contract() {
+    fn avatar_seed_request_matches_the_os_accounts_profile_contract() {
         assert_eq!(
             avatar_seed_request("v1:0123456789abcdef0123456789abcdef"),
             serde_json::json!({
@@ -2238,7 +2244,7 @@ mod tests {
     }
 
     #[test]
-    fn avatar_seed_validation_matches_the_accounts_contract() {
+    fn avatar_seed_validation_matches_the_os_accounts_contract() {
         assert!(validate_avatar_seed("v1:seed".to_string()).is_ok());
         assert!(validate_avatar_seed(String::new()).is_err());
         assert!(validate_avatar_seed("☁".to_string()).is_err());
