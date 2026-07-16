@@ -4488,6 +4488,36 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Newer session")).toBeNull();
   });
 
+  it("starts the runtime and restores messages after a full app relaunch", async () => {
+    window.localStorage.setItem("june:agent:last-open-session", "session-1");
+    mocks.hermesBridgeStatus.mockResolvedValue({ running: false });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "user",
+        content: "Keep this conversation visible after relaunch",
+        timestamp: "2026-06-05T12:00:00Z",
+      },
+      {
+        id: "message-2",
+        role: "assistant",
+        content: "The conversation will be ready when June reopens.",
+        timestamp: "2026-06-05T12:00:01Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(
+      await screen.findByText("Keep this conversation visible after relaunch"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("The conversation will be ready when June reopens."),
+    ).toBeInTheDocument();
+    expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, false);
+    expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1");
+  });
+
   it("honors an initial session id before session metadata is available", async () => {
     mocks.listHermesSessions.mockResolvedValue([
       {

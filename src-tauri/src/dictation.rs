@@ -3914,7 +3914,7 @@ fn looks_like_instruction_response(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase();
     looks_like_report_summary_response(&normalized)
         || normalized.starts_with("sure")
-        || normalized.starts_with("here")
+        || looks_like_here_prefaced_instruction_response(&normalized)
         || normalized.starts_with("summary:")
         || normalized.starts_with("the transcript ")
         || normalized.starts_with("the user expresses")
@@ -3936,6 +3936,179 @@ fn looks_like_instruction_response(value: &str) -> bool {
         || normalized.contains(" spelled correctly ")
         || normalized.contains("rewritten text")
         || normalized.contains("normalized transcript")
+}
+
+fn looks_like_here_prefaced_instruction_response(normalized: &str) -> bool {
+    let normalized = normalized.replace('’', "'");
+    let normalized = normalized.as_str();
+    let structural_preamble_end = [":", "\n", " - ", " — ", " – ", "—", "–"]
+        .iter()
+        .filter_map(|separator| normalized.find(separator))
+        .min();
+    if structural_preamble_end
+        .is_some_and(|end| is_terminal_here_instruction_preamble(&normalized[..end]))
+    {
+        return true;
+    }
+    let punctuation_preamble_end = [". ", "! ", "? "]
+        .iter()
+        .filter_map(|separator| normalized.find(separator))
+        .min();
+    if punctuation_preamble_end
+        .is_some_and(|end| is_terminal_here_instruction_preamble(&normalized[..end]))
+    {
+        return true;
+    }
+    if normalized
+        .find(", ")
+        .is_some_and(|end| is_terminal_here_instruction_preamble(&normalized[..end]))
+    {
+        return true;
+    }
+    is_terminal_here_instruction_preamble(normalized)
+}
+
+fn is_terminal_here_instruction_preamble(normalized: &str) -> bool {
+    let preamble = normalized.trim_end_matches(['.', '!', '?']).trim_end();
+    if is_generic_here_instruction_preamble(preamble) {
+        return true;
+    }
+    let Some(subject) = ["here is ", "here's ", "here are "]
+        .iter()
+        .find_map(|prefix| preamble.strip_prefix(prefix))
+    else {
+        return false;
+    };
+    let words: Vec<&str> = subject
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect();
+    words.iter().copied().any(|word| {
+        is_here_instruction_subject_marker(word) || is_here_instruction_cleanup_modifier(word)
+    }) && words.iter().all(|word| {
+        is_here_instruction_subject_marker(word)
+            || is_here_instruction_cleanup_modifier(word)
+            || matches!(
+                *word,
+                "a" | "an"
+                    | "and"
+                    | "as"
+                    | "below"
+                    | "for"
+                    | "per"
+                    | "request"
+                    | "requested"
+                    | "the"
+                    | "up"
+                    | "you"
+                    | "your"
+            )
+    })
+}
+
+fn is_here_instruction_subject_marker(word: &str) -> bool {
+    matches!(
+        word,
+        "transcript"
+            | "transcription"
+            | "correction"
+            | "corrections"
+            | "dictation"
+            | "text"
+            | "notes"
+            | "version"
+            | "result"
+            | "content"
+            | "output"
+            | "message"
+            | "email"
+            | "response"
+            | "copy"
+            | "draft"
+            | "improvements"
+            | "rewrite"
+            | "summary"
+    )
+}
+
+fn is_here_instruction_cleanup_modifier(word: &str) -> bool {
+    matches!(
+        word,
+        "clean"
+            | "cleaned"
+            | "corrected"
+            | "final"
+            | "normalized"
+            | "polished"
+            | "punctuated"
+            | "rewritten"
+    )
+}
+
+fn is_generic_here_instruction_preamble(preamble: &str) -> bool {
+    if matches!(
+        preamble,
+        "here you go"
+            | "here it is"
+            | "here you are"
+            | "here is what i heard"
+            | "here's what i heard"
+            | "here is what i got"
+            | "here's what i got"
+            | "here is what i have"
+            | "here's what i have"
+            | "here is what you said"
+            | "here's what you said"
+            | "here is what you asked for"
+            | "here's what you asked for"
+            | "here is what you requested"
+            | "here's what you requested"
+            | "here is what you dictated"
+            | "here's what you dictated"
+    ) {
+        return true;
+    }
+    if [
+        "here it is with ",
+        "here you go with ",
+        "here you are with ",
+    ]
+    .iter()
+    .any(|prefix| preamble.starts_with(prefix))
+    {
+        return true;
+    }
+    if let Some(subject) = preamble.strip_prefix("here it is ") {
+        let words: Vec<&str> = subject
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .collect();
+        if words
+            .iter()
+            .copied()
+            .any(is_here_instruction_cleanup_modifier)
+            && words.iter().all(|word| {
+                is_here_instruction_cleanup_modifier(word)
+                    || matches!(*word, "as" | "for" | "requested" | "up" | "you")
+            })
+        {
+            return true;
+        }
+    }
+    (preamble.starts_with("here, i") || preamble.starts_with("here i"))
+        && preamble
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|word| {
+                matches!(
+                    word,
+                    "cleaned"
+                        | "corrected"
+                        | "normalized"
+                        | "polished"
+                        | "punctuated"
+                        | "rewritten"
+                )
+            })
 }
 
 fn looks_like_report_summary_response(normalized: &str) -> bool {
@@ -6293,6 +6466,32 @@ mod tests {
     }
 
     #[test]
+    fn literal_dictation_starting_with_heres_maps_to_paste_command() {
+        let outcome = outcome_from_transcription_result(
+            Ok(TranscriptionProviderResult {
+                text: "Here's the API key to Poncho.".to_string(),
+                language: Some("en".to_string()),
+                provider: crate::providers::VENICE_PROVIDER.to_string(),
+            }),
+            None,
+            DictationStyle::Standard,
+        );
+
+        assert_eq!(
+            outcome.helper_command,
+            serde_json::json!({
+                "type": "paste_text",
+                "text": "Here's the API key to Poncho.",
+            })
+        );
+        assert!(outcome.event.is_none());
+        assert_eq!(
+            outcome.transcript.as_ref().map(|item| item.text.as_str()),
+            Some("Here's the API key to Poncho.")
+        );
+    }
+
+    #[test]
     fn summary_like_transcription_discards_with_visible_error() {
         let outcome = outcome_from_transcription_result(
             Ok(TranscriptionProviderResult {
@@ -6859,6 +7058,176 @@ mod tests {
             "Here is the normalized transcript: Hello."
         ));
         assert!(looks_like_instruction_response(
+            "Here is the corrected transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here’s the corrected transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response("Here you go: Hello."));
+        assert!(looks_like_instruction_response(
+            "Here is the transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here are the cleaned notes: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the cleaned-up version: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript. Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here are the cleaned notes - Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected text\nHello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript, Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected, punctuated transcript: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned and punctuated transcript. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here you go, Hello. World."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the cleaned-up version—Hello."
+        ));
+        assert!(looks_like_instruction_response("Here it is: Hello."));
+        assert!(looks_like_instruction_response("Here you are: Hello."));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned dictation: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the result: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned content: Hello."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned output: Hello."
+        ));
+        assert!(looks_like_instruction_response("Here is the transcript."));
+        assert!(looks_like_instruction_response("Here you go."));
+        assert!(looks_like_instruction_response("Here you go!"));
+        assert!(looks_like_instruction_response("Here is the transcript?"));
+        assert!(looks_like_instruction_response(
+            "Here's the cleaned-up message: Hello."
+        ));
+        assert!(looks_like_instruction_response("Here is the email: Hello."));
+        assert!(!looks_like_instruction_response(
+            "Here's your text message from John."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's your text message from John. Call him back."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's your text message from John, call him back."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's my email: jane@example.com"
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's the text message from John: call him back"
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's the result of the game."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here's my notes on the trip."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is what I heard: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the cleaned transcript below:\nSend it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is what I have:\nSend it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's what I got: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here, I've cleaned it up: Send it today."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here, I think we should send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's a cleaned-up copy: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the rewritten draft: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here are the improvements: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here are the corrections: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is what you said: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's what you asked for: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's what you dictated: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is a summary: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here it is with punctuation: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here it is, punctuated: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here it is cleaned up: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here it is punctuated. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the final transcript. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the polished version. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here I've cleaned it up: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's your corrected transcript. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript as requested."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript for your request. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here's the cleaned-up transcript for you. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the corrected transcript as you requested. Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the transcription: Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here you go! Send it today."
+        ));
+        assert!(looks_like_instruction_response(
+            "Here is the transcript? Send it today."
+        ));
+        assert!(looks_like_instruction_response(
             "The transcript ends here without additional context. The user did not ask a question."
         ));
         assert!(looks_like_instruction_response(
@@ -6874,6 +7243,13 @@ mod tests {
         assert!(!looks_like_instruction_response(
             "User reported the bug to support."
         ));
+        assert!(!looks_like_instruction_response(
+            "Here's the API key to Poncho."
+        ));
+        assert!(!looks_like_instruction_response(
+            "Here’s the API key to Poncho."
+        ));
+        assert!(!looks_like_instruction_response("I’ll send the agenda."));
     }
 
     #[test]

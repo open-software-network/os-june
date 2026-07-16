@@ -94,3 +94,6 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | os-api private routing (pre-PR) | Standards (codex, r1+final) | 3 | 3 | caught `/v1` provider-semantic drift, missing canonical glossary coverage, and stale response-shape wording; final clean |
 | os-api private routing (pre-PR) | Spec (codex, r1+final) | 0 | — | clean twice; verified deliberate Venice-private-first policy, BYOK isolation, additive metadata, compatibility, and pricing |
 | os-api private routing (pre-PR) | Adversarial (codex, r1-r3) | 2 | 2 | caught underpriced canonical Kimi first, then expanded the same billing invariant to all five multi-route preferred models; final approve |
+| JUN-349 (pre-PR) | Standards (codex) | 0 | — | clean on the runtime startup guard and focused relaunch regression coverage |
+| JUN-349 (pre-PR) | Spec (codex) | 0 | — | clean against the immediate relaunch-history restoration contract and explicit non-goals |
+| JUN-349 (pre-PR) | Adversarial (claude) | 0 | — | approved after tracing double-start locking, shared session storage across runtime modes, and the canonical message read path |
