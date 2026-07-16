@@ -1280,7 +1280,10 @@ use super::{
         normalize_untrusted_text, validate_git_ref, validate_repository_path,
         validate_search_literal,
     },
-    github_read::{GitHubOperationOutput, GitHubReadFailure, GitHubSource},
+    github_read::{
+        GitHubFinalizationCheckpoints, GitHubOperationOutput, GitHubPatchCheckpoint,
+        GitHubReadFailure, GitHubSource,
+    },
 };
 use crate::domain::types::AppError;
 use serde::Deserialize;
@@ -1860,6 +1863,33 @@ fn list_continuation(
     Ok(None)
 }
 
+fn list_finalization_checkpoints(
+    operation: &'static str,
+    repository: &EligibleGitHubRepository,
+    fingerprint: [u8; 32],
+    position: PagePosition,
+    accepted: usize,
+    phase: Option<&str>,
+) -> Result<GitHubFinalizationCheckpoints, GitHubReadFailure> {
+    let mut resume_after_prefix = Vec::with_capacity(accepted + 1);
+    for prefix in 0..=accepted {
+        resume_after_prefix.push(CursorScope {
+            operation,
+            repository_id: Some(repository.repository_id.clone()),
+            filter_fingerprint: fingerprint,
+            provider_page: position.provider_page,
+            raw_offset: u16::try_from(position.raw_offset.saturating_add(prefix))
+                .map_err(|_| input_invalid())?,
+            phase: phase.map(str::to_owned),
+        });
+    }
+    Ok(GitHubFinalizationCheckpoints::List {
+        data_field: "items",
+        sources_per_item: true,
+        resume_after_prefix,
+    })
+}
+
 async fn fetch_pull(
     client: &GitHubReadClient,
     access_token: &str,
@@ -2123,6 +2153,14 @@ pub(crate) async fn list_pull_requests(
         continuation_cursor,
         redactions_applied: selected.redactions_applied,
         sources: selected.sources,
+        finalization_checkpoints: Some(list_finalization_checkpoints(
+            "list_pull_requests",
+            repository,
+            fingerprint,
+            position,
+            selected.accepted,
+            None,
+        )?),
     })
 }
 
@@ -2155,6 +2193,7 @@ pub(crate) async fn get_pull_request(
         continuation_cursor: None,
         redactions_applied: normalized.redactions_applied,
         sources: vec![normalized.source],
+        finalization_checkpoints: None,
     })
 }
 
@@ -2319,6 +2358,14 @@ pub(crate) async fn list_pull_request_files(
         continuation_cursor,
         redactions_applied: selected.redactions_applied,
         sources: selected.sources,
+        finalization_checkpoints: Some(list_finalization_checkpoints(
+            "list_pull_request_files",
+            repository,
+            fingerprint,
+            position,
+            selected.accepted,
+            None,
+        )?),
     })
 }
 
@@ -2385,6 +2432,51 @@ fn patch_window(patch: &str, start: usize) -> Result<(String, usize, bool), GitH
     }
 }
 
+fn patch_finalization_checkpoints(
+    repository: &EligibleGitHubRepository,
+    fingerprint: [u8; 32],
+    patch: &str,
+    window: &str,
+    start: usize,
+    end: usize,
+) -> Result<GitHubFinalizationCheckpoints, GitHubReadFailure> {
+    let base_scope = |provider_page: usize| -> Result<CursorScope, GitHubReadFailure> {
+        Ok(CursorScope {
+            operation: "read_pull_request_file_diff",
+            repository_id: Some(repository.repository_id.clone()),
+            filter_fingerprint: fingerprint,
+            provider_page: u32::try_from(provider_page).map_err(|_| input_invalid())?,
+            raw_offset: 0,
+            phase: Some("patch".to_owned()),
+        })
+    };
+    let mut resume_after_prefix = vec![GitHubPatchCheckpoint {
+        output_prefix_bytes: 0,
+        resume: base_scope(start)?,
+    }];
+    let provider_lines = patch[start..end].split_inclusive('\n').collect::<Vec<_>>();
+    let output_lines = window.split_inclusive('\n').collect::<Vec<_>>();
+    if provider_lines.len() != output_lines.len() {
+        return Err(provider_malformed());
+    }
+    let mut provider_prefix = 0_usize;
+    let mut output_prefix = 0_usize;
+    for (provider_line, output_line) in provider_lines.into_iter().zip(output_lines) {
+        provider_prefix = provider_prefix.saturating_add(provider_line.len());
+        output_prefix = output_prefix.saturating_add(output_line.len());
+        let absolute_provider_end = start.saturating_add(provider_prefix);
+        if provider_line.ends_with('\n') || absolute_provider_end == patch.len() {
+            resume_after_prefix.push(GitHubPatchCheckpoint {
+                output_prefix_bytes: output_prefix,
+                resume: base_scope(absolute_provider_end)?,
+            });
+        }
+    }
+    Ok(GitHubFinalizationCheckpoints::Patch {
+        resume_after_prefix,
+    })
+}
+
 #[allow(clippy::too_many_arguments)] // Patch state and its source binding are finalized together.
 fn patch_output(
     repository: &EligibleGitHubRepository,
@@ -2396,6 +2488,7 @@ fn patch_output(
     patch: Option<String>,
     continuation_cursor: Option<String>,
     redactions_applied: bool,
+    finalization_checkpoints: Option<GitHubFinalizationCheckpoints>,
 ) -> Result<GitHubOperationOutput, GitHubReadFailure> {
     let url = github_url(repository, &["pull", &number.to_string(), "files"], None)?;
     let truncated = continuation_cursor.is_some();
@@ -2419,6 +2512,7 @@ fn patch_output(
             Some(path.to_owned()),
             Some(head_sha.to_owned()),
         )],
+        finalization_checkpoints,
     })
 }
 
@@ -2493,6 +2587,7 @@ pub(crate) async fn read_pull_request_file_diff(
                 None,
                 None,
                 false,
+                None,
             );
         }
         Err(error) => return Err(GitHubReadFailure::Provider(error)),
@@ -2520,6 +2615,7 @@ pub(crate) async fn read_pull_request_file_diff(
             None,
             None,
             false,
+            None,
         );
     };
     let fingerprint = patch_fingerprint(number, &request.file_ref, &scope, &patch);
@@ -2553,6 +2649,8 @@ pub(crate) async fn read_pull_request_file_diff(
     } else {
         None
     };
+    let finalization_checkpoints =
+        patch_finalization_checkpoints(repository, fingerprint, &patch, &window, start, end)?;
     patch_output(
         repository,
         number,
@@ -2563,6 +2661,7 @@ pub(crate) async fn read_pull_request_file_diff(
         Some(window),
         continuation_cursor,
         redactions_applied,
+        Some(finalization_checkpoints),
     )
 }
 
@@ -2600,6 +2699,14 @@ fn finish_paged_items(
         continuation_cursor,
         redactions_applied: selected.redactions_applied,
         sources: selected.sources,
+        finalization_checkpoints: Some(list_finalization_checkpoints(
+            operation,
+            repository,
+            fingerprint,
+            position,
+            selected.accepted,
+            None,
+        )?),
     })
 }
 
@@ -3205,5 +3312,13 @@ pub(crate) async fn list_pull_request_checks(
         continuation_cursor,
         redactions_applied: selected.redactions_applied || phase_metadata_redacted,
         sources: selected.sources,
+        finalization_checkpoints: Some(list_finalization_checkpoints(
+            "list_pull_request_checks",
+            repository,
+            fingerprint,
+            position,
+            selected.accepted,
+            Some(&phase),
+        )?),
     })
 }

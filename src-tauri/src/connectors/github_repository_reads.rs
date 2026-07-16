@@ -10,7 +10,9 @@ use crate::{
             normalize_untrusted_text, sensitive_path_blocked, validate_git_ref,
             validate_repository_path, validate_search_literal,
         },
-        github_read::{GitHubOperationOutput, GitHubReadFailure, GitHubSource},
+        github_read::{
+            GitHubFinalizationCheckpoints, GitHubOperationOutput, GitHubReadFailure, GitHubSource,
+        },
     },
     domain::types::AppError,
 };
@@ -76,6 +78,14 @@ pub(crate) async fn list_repositories(
 
     let mut items = Vec::new();
     let mut sources = Vec::new();
+    let mut resume_after_prefix = vec![CursorScope {
+        operation: "list_repositories",
+        repository_id: None,
+        filter_fingerprint: filters,
+        provider_page: 1,
+        raw_offset: u16::try_from(offset).map_err(|_| response_too_large())?,
+        phase: None,
+    }];
     let requested_end = offset
         .saturating_add(usize::from(limit))
         .min(eligibility.repositories.len());
@@ -96,6 +106,14 @@ pub(crate) async fn list_repositories(
         }
         sources.push(repository_source(repository).map_err(|_| read_unavailable())?);
         next_offset += 1;
+        resume_after_prefix.push(CursorScope {
+            operation: "list_repositories",
+            repository_id: None,
+            filter_fingerprint: filters,
+            provider_page: 1,
+            raw_offset: u16::try_from(next_offset).map_err(|_| response_too_large())?,
+            phase: None,
+        });
     }
     if next_offset == offset && offset < eligibility.repositories.len() {
         return Err(response_too_large());
@@ -119,6 +137,11 @@ pub(crate) async fn list_repositories(
         continuation_cursor,
         redactions_applied: false,
         sources,
+        finalization_checkpoints: Some(GitHubFinalizationCheckpoints::List {
+            data_field: "items",
+            sources_per_item: true,
+            resume_after_prefix,
+        }),
     })
 }
 
@@ -178,6 +201,7 @@ pub(crate) async fn get_repository(
         continuation_cursor: None,
         redactions_applied: description_redacted,
         sources: vec![repository_source(repository)?],
+        finalization_checkpoints: None,
     })
 }
 
@@ -241,6 +265,15 @@ pub(crate) async fn list_directory(
         .saturating_add(usize::from(limit))
         .min(provider_entries.len());
     let mut entries = Vec::new();
+    let mut resume_after_prefix = vec![CursorScope {
+        operation: "list_directory",
+        repository_id: Some(repository.repository_id.clone()),
+        filter_fingerprint: filters,
+        provider_page: 1,
+        raw_offset: u16::try_from(offset)
+            .map_err(|_| GitHubReadFailure::Input(response_too_large()))?,
+        phase: None,
+    }];
     let mut next_offset = offset;
     for provider_entry in &provider_entries[offset..requested_end] {
         let entry = normalize_directory_entry(provider_entry, &path)
@@ -257,6 +290,15 @@ pub(crate) async fn list_directory(
             break;
         }
         next_offset += 1;
+        resume_after_prefix.push(CursorScope {
+            operation: "list_directory",
+            repository_id: Some(repository.repository_id.clone()),
+            filter_fingerprint: filters,
+            provider_page: 1,
+            raw_offset: u16::try_from(next_offset)
+                .map_err(|_| GitHubReadFailure::Input(response_too_large()))?,
+            phase: None,
+        });
     }
     if next_offset == offset && offset < provider_entries.len() {
         return Err(GitHubReadFailure::Input(response_too_large()));
@@ -292,6 +334,11 @@ pub(crate) async fn list_directory(
         sources: vec![
             directory_source(repository, &path, &git_ref).map_err(GitHubReadFailure::Provider)?
         ],
+        finalization_checkpoints: Some(GitHubFinalizationCheckpoints::List {
+            data_field: "entries",
+            sources_per_item: false,
+            resume_after_prefix,
+        }),
     })
 }
 
@@ -401,6 +448,7 @@ pub(crate) async fn read_file(
         sources: vec![
             file_source(repository, &path, &git_ref, &sha).map_err(GitHubReadFailure::Provider)?
         ],
+        finalization_checkpoints: None,
     })
 }
 
@@ -466,6 +514,15 @@ pub(crate) async fn search_code(
         .min(provider_items.len());
     let mut items = Vec::new();
     let mut sources = Vec::new();
+    let mut resume_after_prefix = vec![CursorScope {
+        operation: "search_code",
+        repository_id: Some(repository.repository_id.clone()),
+        filter_fingerprint: filters,
+        provider_page: page,
+        raw_offset: u16::try_from(offset)
+            .map_err(|_| GitHubReadFailure::Input(response_too_large()))?,
+        phase: None,
+    }];
     let mut redactions_applied = false;
     let mut next_offset = offset;
     for provider_item in &provider_items[offset..requested_end] {
@@ -496,6 +553,15 @@ pub(crate) async fn search_code(
         sources.push(file_source(repository, path, sha, sha).map_err(GitHubReadFailure::Provider)?);
         redactions_applied |= item_redacted;
         next_offset += 1;
+        resume_after_prefix.push(CursorScope {
+            operation: "search_code",
+            repository_id: Some(repository.repository_id.clone()),
+            filter_fingerprint: filters,
+            provider_page: page,
+            raw_offset: u16::try_from(next_offset)
+                .map_err(|_| GitHubReadFailure::Input(response_too_large()))?,
+            phase: None,
+        });
     }
     if next_offset == offset && offset < provider_items.len() {
         return Err(GitHubReadFailure::Input(response_too_large()));
@@ -542,6 +608,11 @@ pub(crate) async fn search_code(
         continuation_cursor,
         redactions_applied,
         sources,
+        finalization_checkpoints: Some(GitHubFinalizationCheckpoints::List {
+            data_field: "items",
+            sources_per_item: true,
+            resume_after_prefix,
+        }),
     })
 }
 

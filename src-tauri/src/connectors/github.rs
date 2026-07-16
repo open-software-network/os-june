@@ -161,6 +161,23 @@ pub(crate) struct GitHubToolEligibility {
     pub repositories: Vec<EligibleGitHubRepository>,
 }
 
+#[derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
+#[allow(dead_code)] // Task 9 wires GitHubReadService into the provider proxy.
+pub(crate) struct GitHubReadCredential {
+    pub github_user_id: String,
+    pub access_token: String,
+}
+
+impl std::fmt::Debug for GitHubReadCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GitHubReadCredential")
+            .field("github_user_id", &self.github_user_id)
+            .field("access_token", &"[REDACTED]")
+            .finish()
+    }
+}
+
 pub type GitHubVaultFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'a>>;
 
 pub trait GitHubTokenVault: Send + Sync {
@@ -926,6 +943,75 @@ async fn usable_tokens_after_unauthorized(
         Some(rejected_access_token),
     )
     .await
+}
+
+#[allow(dead_code)] // Task 9 wires GitHubReadService into the provider proxy.
+pub(crate) async fn resolve_github_read_credential(
+    client: &GitHubAuthClient,
+    vault: &dyn GitHubTokenVault,
+    repositories: &Repositories,
+    config: &GitHubAppConfig,
+) -> Result<GitHubReadCredential, AppError> {
+    resolve_github_read_credential_inner(client, vault, repositories, config, None).await
+}
+
+#[allow(dead_code)] // Task 9 wires GitHubReadService into the provider proxy.
+pub(crate) async fn resolve_github_read_credential_after_unauthorized(
+    client: &GitHubAuthClient,
+    vault: &dyn GitHubTokenVault,
+    repositories: &Repositories,
+    config: &GitHubAppConfig,
+    github_user_id: &str,
+    rejected_access_token: &str,
+) -> Result<GitHubReadCredential, AppError> {
+    resolve_github_read_credential_inner(
+        client,
+        vault,
+        repositories,
+        config,
+        Some((github_user_id, rejected_access_token)),
+    )
+    .await
+}
+
+#[allow(dead_code)] // Task 9 wires GitHubReadService into the provider proxy.
+async fn resolve_github_read_credential_inner(
+    client: &GitHubAuthClient,
+    vault: &dyn GitHubTokenVault,
+    repositories: &Repositories,
+    config: &GitHubAppConfig,
+    rejected: Option<(&str, &str)>,
+) -> Result<GitHubReadCredential, AppError> {
+    let _authorization_guard = github_authorization_gate().write().await;
+    let _operation_guard = connection_operation_lock().lock().await;
+    let snapshot = repositories
+        .github_snapshot()
+        .await
+        .map_err(|_| github_storage_unavailable())?
+        .ok_or_else(github_not_connected)?;
+    let github_user_id = snapshot.connection.github_user_id.clone();
+    github_tool_eligibility_from_snapshot(&snapshot, &github_user_id)?;
+    if rejected.is_some_and(|(expected_user_id, _)| expected_user_id != github_user_id) {
+        return Err(github_reconnect_required());
+    }
+    let tokens = match rejected {
+        Some((_, rejected_access_token)) => {
+            usable_tokens_after_unauthorized(
+                client,
+                vault,
+                repositories,
+                config,
+                &github_user_id,
+                rejected_access_token,
+            )
+            .await?
+        }
+        None => usable_tokens(client, vault, repositories, config, &github_user_id, false).await?,
+    };
+    Ok(GitHubReadCredential {
+        github_user_id,
+        access_token: tokens.access_token.clone(),
+    })
 }
 
 async fn usable_tokens_inner(

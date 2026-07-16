@@ -10,7 +10,9 @@ use crate::{
         github_content_guard::{
             normalize_untrusted_text, validate_labels, validate_search_literal,
         },
-        github_read::{GitHubOperationOutput, GitHubReadFailure, GitHubSource},
+        github_read::{
+            GitHubFinalizationCheckpoints, GitHubOperationOutput, GitHubReadFailure, GitHubSource,
+        },
     },
     domain::types::AppError,
 };
@@ -168,6 +170,7 @@ pub(crate) async fn get_issue(
         continuation_cursor: None,
         redactions_applied: normalized.redactions_applied,
         sources: vec![normalized.source],
+        finalization_checkpoints: None,
     })
 }
 
@@ -356,6 +359,14 @@ fn normalize_issue_page(
     let mut redactions_applied = false;
     let mut content_truncated = false;
     let mut same_page_offset = None;
+    let mut resume_after_prefix = vec![CursorScope {
+        operation: LIST_ISSUES_OPERATION,
+        repository_id: Some(repository.repository_id.clone()),
+        filter_fingerprint: fingerprint,
+        provider_page,
+        raw_offset,
+        phase: None,
+    }];
 
     for (raw_index, issue) in provider_items
         .into_iter()
@@ -386,6 +397,15 @@ fn normalize_issue_page(
         content_truncated |= normalized.content_truncated;
         items.push(normalized.data);
         sources.push(normalized.source);
+        resume_after_prefix.push(CursorScope {
+            operation: LIST_ISSUES_OPERATION,
+            repository_id: Some(repository.repository_id.clone()),
+            filter_fingerprint: fingerprint,
+            provider_page,
+            raw_offset: u16::try_from(raw_index + 1)
+                .map_err(|_| GitHubReadFailure::Provider(GitHubApiError::ResponseTooLarge))?,
+            phase: None,
+        });
     }
 
     let continuation_cursor = if let Some(raw_offset) = same_page_offset {
@@ -419,6 +439,11 @@ fn normalize_issue_page(
         continuation_cursor,
         redactions_applied,
         sources,
+        finalization_checkpoints: Some(GitHubFinalizationCheckpoints::List {
+            data_field: "items",
+            sources_per_item: true,
+            resume_after_prefix,
+        }),
     })
 }
 
@@ -439,6 +464,14 @@ fn normalize_comment_page(
     let mut redactions_applied = false;
     let mut content_truncated = false;
     let mut same_page_offset = None;
+    let mut resume_after_prefix = vec![CursorScope {
+        operation: LIST_ISSUE_COMMENTS_OPERATION,
+        repository_id: Some(repository.repository_id.clone()),
+        filter_fingerprint: fingerprint,
+        provider_page,
+        raw_offset,
+        phase: None,
+    }];
 
     for (raw_index, comment) in provider_items
         .into_iter()
@@ -461,6 +494,15 @@ fn normalize_comment_page(
         content_truncated |= normalized.content_truncated;
         items.push(normalized.data);
         sources.push(normalized.source);
+        resume_after_prefix.push(CursorScope {
+            operation: LIST_ISSUE_COMMENTS_OPERATION,
+            repository_id: Some(repository.repository_id.clone()),
+            filter_fingerprint: fingerprint,
+            provider_page,
+            raw_offset: u16::try_from(raw_index + 1)
+                .map_err(|_| GitHubReadFailure::Provider(GitHubApiError::ResponseTooLarge))?,
+            phase: None,
+        });
     }
 
     let continuation_cursor = if let Some(raw_offset) = same_page_offset {
@@ -494,6 +536,11 @@ fn normalize_comment_page(
         continuation_cursor,
         redactions_applied,
         sources,
+        finalization_checkpoints: Some(GitHubFinalizationCheckpoints::List {
+            data_field: "items",
+            sources_per_item: true,
+            resume_after_prefix,
+        }),
     })
 }
 
