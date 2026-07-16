@@ -3980,7 +3980,7 @@ export function App() {
                   onSelectFolder={(folderId) => handleSelectFolder(folderId)}
                   onCreateFolder={(name, description) => handleCreateFolder(name, description)}
                   onRenameFolder={(folderId, name, description) =>
-                    void handleRenameFolder(folderId, name, description)
+                    handleRenameFolder(folderId, name, description)
                   }
                   onFolderUpdated={(folder) => dispatch({ type: "folderUpdated", folder })}
                   onDeleteFolder={(folderId) => handleDeleteFolder(folderId)}

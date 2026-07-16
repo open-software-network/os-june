@@ -56,7 +56,7 @@ type FoldersWorkspaceProps = {
   };
   onSelectFolder: (folderId?: string) => void;
   onCreateFolder: (name: string, description?: string) => Promise<FolderDto | undefined> | void;
-  onRenameFolder: (folderId: string, name: string, description?: string) => void;
+  onRenameFolder: (folderId: string, name: string, description?: string) => Promise<unknown> | void;
   onFolderUpdated: (folder: FolderDto) => void;
   onDeleteFolder: (folderId: string, deleteNotes: boolean) => Promise<unknown> | void;
   onCreateNote: (folderId?: string) => void;
