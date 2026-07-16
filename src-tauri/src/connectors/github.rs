@@ -25,6 +25,14 @@ use super::{
 
 const GITHUB_APP_CLIENT_ID_ENV: &str = "GITHUB_APP_CLIENT_ID";
 const GITHUB_APP_SLUG_ENV: &str = "GITHUB_APP_SLUG";
+const REQUIRED_GITHUB_READ_PERMISSIONS: [&str; 6] = [
+    "metadata",
+    "contents",
+    "issues",
+    "pull_requests",
+    "checks",
+    "statuses",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitHubAppConfig {
@@ -137,6 +145,22 @@ pub struct GitHubConnection {
     pub installations: Vec<GitHubInstallation>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EligibleGitHubRepository {
+    pub repository_id: String,
+    pub installation_id: String,
+    pub owner_login: String,
+    pub name: String,
+    pub full_name: String,
+    pub private: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GitHubToolEligibility {
+    pub github_user_id: String,
+    pub repositories: Vec<EligibleGitHubRepository>,
+}
+
 pub type GitHubVaultFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'a>>;
 
 pub trait GitHubTokenVault: Send + Sync {
@@ -185,6 +209,13 @@ fn connection_operation_lock() -> &'static tokio::sync::Mutex<()> {
     CONNECTION_OPERATION_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
+/// Binding lock order: flow-local completion guard, authorization gate,
+/// connection operation lock, per-user refresh lock, then storage/provider work.
+pub(crate) fn github_authorization_gate() -> &'static tokio::sync::RwLock<()> {
+    static GATE: OnceLock<tokio::sync::RwLock<()>> = OnceLock::new();
+    GATE.get_or_init(|| tokio::sync::RwLock::new(()))
+}
+
 fn refresh_lock_for(github_user_id: &str) -> Arc<tokio::sync::Mutex<()>> {
     let locks = REFRESH_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
     let mut locks = locks
@@ -228,6 +259,13 @@ fn github_reconnect_required() -> AppError {
     AppError::new(
         "github_reconnect_required",
         "GitHub access expired. Reconnect it in settings.",
+    )
+}
+
+fn github_setup_required() -> AppError {
+    AppError::new(
+        "github_setup_required",
+        "GitHub setup is incomplete. Refresh it in settings.",
     )
 }
 
@@ -383,10 +421,11 @@ pub async fn complete_connect(
     config: &GitHubAppConfig,
 ) -> Result<GitHubConnection, AppError> {
     let authorized = flow.wait(client, &config.client_id).await?;
-    // Lock order is flow-local completion, process-wide connection operation,
-    // then (for refresh paths) per-user token refresh. No code acquires the
-    // process-wide lock while holding a per-user lock.
+    // The device-flow wait stays outside the binding lock order. Once the
+    // flow-local completion guard is held, follow the order documented at the
+    // authorization gate definition.
     let _completion_guard = flow.completion_guard().await;
+    let _authorization_guard = github_authorization_gate().write().await;
     let _operation_guard = connection_operation_lock().lock().await;
     let attempt_id = authorized.attempt_id;
     let mut cancellation = authorized.cancellation;
@@ -742,6 +781,7 @@ pub async fn connection_get(
     vault: &dyn GitHubTokenVault,
     repositories: &Repositories,
 ) -> Result<Option<GitHubConnection>, AppError> {
+    let _authorization_guard = github_authorization_gate().write().await;
     let _operation_guard = connection_operation_lock().lock().await;
     let Some(snapshot) = repositories
         .github_snapshot()
@@ -793,6 +833,7 @@ async fn installations_refresh_with_force(
     config: &GitHubAppConfig,
     force_token_refresh: bool,
 ) -> Result<GitHubConnection, AppError> {
+    let _authorization_guard = github_authorization_gate().write().await;
     let _operation_guard = connection_operation_lock().lock().await;
     let snapshot = repositories
         .github_snapshot()
@@ -978,6 +1019,7 @@ pub async fn disconnect(
     vault: &dyn GitHubTokenVault,
     repositories: &Repositories,
 ) -> Result<(), AppError> {
+    let _authorization_guard = github_authorization_gate().write().await;
     let _operation_guard = connection_operation_lock().lock().await;
     let Some(snapshot) = repositories
         .github_snapshot()
@@ -1002,6 +1044,7 @@ fn status_for_discovery(
         installations.iter().any(|installation| {
             installation.installation_id == repository.installation_id
                 && installation.suspended_at.is_none()
+                && installation_has_required_read_permissions(&installation.permissions)
         })
     });
     if has_accessible_repository {
@@ -1009,6 +1052,123 @@ fn status_for_discovery(
     } else {
         GitHubConnectionStatus::SetupIncomplete
     }
+}
+
+fn permission_grants_read(value: Option<&String>) -> bool {
+    matches!(value.map(String::as_str), Some("read" | "write"))
+}
+
+pub(crate) fn installation_has_required_read_permissions(
+    permissions: &BTreeMap<String, String>,
+) -> bool {
+    REQUIRED_GITHUB_READ_PERMISSIONS
+        .iter()
+        .all(|key| permission_grants_read(permissions.get(*key)))
+}
+
+fn valid_numeric_github_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value.parse::<u64>().is_ok_and(|value| value > 0)
+}
+
+#[allow(dead_code)]
+pub(crate) async fn github_tool_eligibility(
+    vault: &dyn GitHubTokenVault,
+    repositories: &Repositories,
+) -> Result<GitHubToolEligibility, AppError> {
+    let _authorization_guard = github_authorization_gate().read().await;
+    let snapshot = repositories
+        .github_snapshot()
+        .await
+        .map_err(|_| github_storage_unavailable())?
+        .ok_or_else(github_not_connected)?;
+    let expected_user_id = snapshot.connection.github_user_id.clone();
+    let eligibility = github_tool_eligibility_from_snapshot(&snapshot, &expected_user_id)?;
+    match vault.load(&expected_user_id).await {
+        Ok(Some(tokens)) if tokens.github_user_id == expected_user_id => Ok(eligibility),
+        Ok(_) => Err(github_reconnect_required()),
+        Err(error) if error.code == "github_token_store_invalid" => {
+            Err(github_reconnect_required())
+        }
+        Err(_) => Err(github_storage_unavailable()),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn github_tool_eligibility_from_snapshot(
+    snapshot: &GitHubSnapshotRecord,
+    expected_user_id: &str,
+) -> Result<GitHubToolEligibility, AppError> {
+    if snapshot.connection.github_user_id != expected_user_id
+        || !valid_numeric_github_id(expected_user_id)
+    {
+        return Err(github_reconnect_required());
+    }
+    match GitHubConnectionStatus::from_db(&snapshot.connection.status)
+        .map_err(|_| github_storage_unavailable())?
+    {
+        GitHubConnectionStatus::Connected => {}
+        GitHubConnectionStatus::SetupIncomplete => return Err(github_setup_required()),
+        GitHubConnectionStatus::ReconnectRequired => return Err(github_reconnect_required()),
+    }
+
+    let mut installations = HashMap::with_capacity(snapshot.installations.len());
+    for installation in &snapshot.installations {
+        if installation.github_user_id != expected_user_id
+            || !valid_numeric_github_id(&installation.installation_id)
+            || !valid_numeric_github_id(&installation.owner_id)
+            || installation.owner_login.is_empty()
+            || installations.contains_key(&installation.installation_id)
+        {
+            return Err(github_storage_unavailable());
+        }
+        let permissions =
+            serde_json::from_str::<BTreeMap<String, String>>(&installation.permissions_json)
+                .map_err(|_| github_storage_unavailable())?;
+        installations.insert(&installation.installation_id, (installation, permissions));
+    }
+
+    let mut eligible_repositories = Vec::new();
+    let mut seen_repository_ids = std::collections::HashSet::new();
+    for repository in &snapshot.repositories {
+        if !valid_numeric_github_id(&repository.repository_id)
+            || !valid_numeric_github_id(&repository.installation_id)
+            || repository.owner_login.is_empty()
+            || repository.name.is_empty()
+            || repository.full_name != format!("{}/{}", repository.owner_login, repository.name)
+            || !seen_repository_ids.insert(&repository.repository_id)
+        {
+            return Err(github_storage_unavailable());
+        }
+        serde_json::from_str::<BTreeMap<String, bool>>(&repository.permissions_json)
+            .map_err(|_| github_storage_unavailable())?;
+        let Some((installation, permissions)) = installations.get(&repository.installation_id)
+        else {
+            return Err(github_storage_unavailable());
+        };
+        if installation.suspended_at.is_some()
+            || !installation_has_required_read_permissions(permissions)
+        {
+            continue;
+        }
+        eligible_repositories.push(EligibleGitHubRepository {
+            repository_id: repository.repository_id.clone(),
+            installation_id: repository.installation_id.clone(),
+            owner_login: repository.owner_login.clone(),
+            name: repository.name.clone(),
+            full_name: repository.full_name.clone(),
+            private: repository.is_private,
+        });
+    }
+
+    if eligible_repositories.is_empty() {
+        return Err(github_setup_required());
+    }
+    Ok(GitHubToolEligibility {
+        github_user_id: expected_user_id.to_owned(),
+        repositories: eligible_repositories,
+    })
 }
 
 fn discovery_records(
@@ -1168,6 +1328,12 @@ mod tests {
                 std::sync::Arc<tokio::sync::Notify>,
             )>,
         >,
+        delete_hook: Mutex<
+            Option<(
+                std::sync::Arc<tokio::sync::Notify>,
+                std::sync::Arc<tokio::sync::Notify>,
+            )>,
+        >,
     }
 
     impl InMemoryGitHubTokenVault {
@@ -1223,6 +1389,14 @@ mod tests {
             resume: std::sync::Arc<tokio::sync::Notify>,
         ) {
             *self.load_hook.lock().expect("load hook") = Some((reached, resume));
+        }
+
+        fn block_next_delete(
+            &self,
+            reached: std::sync::Arc<tokio::sync::Notify>,
+            resume: std::sync::Arc<tokio::sync::Notify>,
+        ) {
+            *self.delete_hook.lock().expect("delete hook") = Some((reached, resume));
         }
     }
 
@@ -1281,6 +1455,11 @@ mod tests {
                     .lock()
                     .expect("vault operations")
                     .push(format!("delete:{github_user_id}"));
+                let hook = self.delete_hook.lock().expect("delete hook").take();
+                if let Some((reached, resume)) = hook {
+                    reached.notify_one();
+                    resume.notified().await;
+                }
                 if self
                     .fail_delete_for
                     .lock()
@@ -1685,6 +1864,374 @@ mod tests {
         (connection, vault, repositories)
     }
 
+    fn read_permissions(value: &str) -> BTreeMap<String, String> {
+        [
+            "metadata",
+            "contents",
+            "issues",
+            "pull_requests",
+            "checks",
+            "statuses",
+        ]
+        .into_iter()
+        .map(|permission| (permission.to_owned(), value.to_owned()))
+        .collect()
+    }
+
+    fn required_read_permissions_json() -> &'static str {
+        r#"{"metadata":"read","contents":"read","issues":"read","pull_requests":"read","checks":"read","statuses":"read"}"#
+    }
+
+    fn discovered_installation(
+        installation_id: &str,
+        permissions: BTreeMap<String, String>,
+        suspended_at: Option<&str>,
+    ) -> DiscoveredGitHubInstallation {
+        DiscoveredGitHubInstallation {
+            installation_id: installation_id.to_owned(),
+            owner_id: "321".to_owned(),
+            owner_login: "open-software-network".to_owned(),
+            owner_type: "Organization".to_owned(),
+            management_url:
+                "https://github.com/organizations/open-software-network/settings/installations/456"
+                    .to_owned(),
+            repository_selection: "selected".to_owned(),
+            permissions,
+            suspended_at: suspended_at.map(str::to_owned),
+        }
+    }
+
+    fn discovered_repository(
+        repository_id: &str,
+        installation_id: &str,
+        name: &str,
+    ) -> DiscoveredGitHubRepository {
+        DiscoveredGitHubRepository {
+            repository_id: repository_id.to_owned(),
+            installation_id: installation_id.to_owned(),
+            owner_login: "open-software-network".to_owned(),
+            name: name.to_owned(),
+            full_name: format!("open-software-network/{name}"),
+            is_private: true,
+            is_archived: false,
+            permissions: BTreeMap::from([("pull".to_owned(), true)]),
+        }
+    }
+
+    #[test]
+    fn status_requires_every_github_read_permission() {
+        let repository = discovered_repository("789", "456", "test-repo");
+
+        for granted_level in ["read", "write"] {
+            let installations = [discovered_installation(
+                "456",
+                read_permissions(granted_level),
+                None,
+            )];
+            assert_eq!(
+                status_for_discovery(&installations, std::slice::from_ref(&repository)),
+                GitHubConnectionStatus::Connected,
+                "{granted_level} grants read eligibility"
+            );
+        }
+
+        for missing_permission in [
+            "metadata",
+            "contents",
+            "issues",
+            "pull_requests",
+            "checks",
+            "statuses",
+        ] {
+            let mut permissions = read_permissions("read");
+            permissions.remove(missing_permission);
+            let installations = [discovered_installation("456", permissions, None)];
+            assert_eq!(
+                status_for_discovery(&installations, std::slice::from_ref(&repository)),
+                GitHubConnectionStatus::SetupIncomplete,
+                "missing {missing_permission} must fail closed"
+            );
+        }
+
+        for denied_permission in [
+            "metadata",
+            "contents",
+            "issues",
+            "pull_requests",
+            "checks",
+            "statuses",
+        ] {
+            let mut permissions = read_permissions("read");
+            permissions.insert(denied_permission.to_owned(), "none".to_owned());
+            let installations = [discovered_installation("456", permissions, None)];
+            assert_eq!(
+                status_for_discovery(&installations, std::slice::from_ref(&repository)),
+                GitHubConnectionStatus::SetupIncomplete,
+                "none for {denied_permission} must fail closed"
+            );
+        }
+
+        let suspended = [discovered_installation(
+            "456",
+            read_permissions("read"),
+            Some("2026-07-16T00:00:00Z"),
+        )];
+        assert_eq!(
+            status_for_discovery(&suspended, std::slice::from_ref(&repository)),
+            GitHubConnectionStatus::SetupIncomplete
+        );
+
+        let eligible = discovered_installation("456", read_permissions("read"), None);
+        assert_eq!(
+            status_for_discovery(std::slice::from_ref(&eligible), &[]),
+            GitHubConnectionStatus::SetupIncomplete
+        );
+
+        let awaiting_approval = discovered_installation(
+            "999",
+            BTreeMap::from([("metadata".to_owned(), "read".to_owned())]),
+            None,
+        );
+        let repositories = [
+            repository,
+            discovered_repository("987", "999", "awaiting-approval"),
+        ];
+        assert_eq!(
+            status_for_discovery(&[eligible, awaiting_approval], &repositories),
+            GitHubConnectionStatus::Connected
+        );
+    }
+
+    fn installation_record(
+        installation_id: &str,
+        permissions: BTreeMap<String, String>,
+        suspended_at: Option<&str>,
+    ) -> GitHubInstallationRecord {
+        GitHubInstallationRecord {
+            installation_id: installation_id.to_owned(),
+            github_user_id: "123".to_owned(),
+            owner_id: "321".to_owned(),
+            owner_login: "open-software-network".to_owned(),
+            owner_type: "Organization".to_owned(),
+            management_url: format!(
+                "https://github.com/organizations/open-software-network/settings/installations/{installation_id}"
+            ),
+            repository_selection: "selected".to_owned(),
+            permissions_json: serde_json::to_string(&permissions).expect("permission JSON"),
+            suspended_at: suspended_at.map(str::to_owned),
+            last_refreshed_at: "2026-07-16T00:00:00Z".to_owned(),
+        }
+    }
+
+    fn repository_record(
+        repository_id: &str,
+        installation_id: &str,
+        name: &str,
+    ) -> GitHubRepositoryRecord {
+        GitHubRepositoryRecord {
+            repository_id: repository_id.to_owned(),
+            installation_id: installation_id.to_owned(),
+            owner_login: "open-software-network".to_owned(),
+            name: name.to_owned(),
+            full_name: format!("open-software-network/{name}"),
+            is_private: true,
+            is_archived: false,
+            permissions_json: r#"{"pull":true}"#.to_owned(),
+        }
+    }
+
+    fn eligibility_snapshot() -> GitHubSnapshotRecord {
+        GitHubSnapshotRecord {
+            connection: GitHubConnectionRecord {
+                github_user_id: "123".to_owned(),
+                login: "octocat".to_owned(),
+                avatar_url: None,
+                status: "connected".to_owned(),
+            },
+            installations: vec![
+                installation_record("456", read_permissions("read"), None),
+                installation_record(
+                    "654",
+                    read_permissions("read"),
+                    Some("2026-07-16T00:00:00Z"),
+                ),
+                installation_record("999", read_permissions("read"), None),
+            ],
+            repositories: vec![
+                repository_record("789", "456", "test-repo"),
+                repository_record("987", "654", "suspended-repo"),
+            ],
+        }
+    }
+
+    #[test]
+    fn tool_eligibility_excludes_suspended_and_unselected_repositories() {
+        let eligibility = github_tool_eligibility_from_snapshot(&eligibility_snapshot(), "123")
+            .expect("eligible snapshot");
+
+        assert_eq!(eligibility.github_user_id, "123");
+        assert_eq!(
+            eligibility.repositories,
+            vec![EligibleGitHubRepository {
+                repository_id: "789".to_owned(),
+                installation_id: "456".to_owned(),
+                owner_login: "open-software-network".to_owned(),
+                name: "test-repo".to_owned(),
+                full_name: "open-software-network/test-repo".to_owned(),
+                private: true,
+            }]
+        );
+
+        let mut no_eligible = eligibility_snapshot();
+        no_eligible.repositories.remove(0);
+        let error = github_tool_eligibility_from_snapshot(&no_eligible, "123")
+            .expect_err("suspended and unselected repositories fail closed");
+        assert_eq!(error.code, "github_setup_required");
+    }
+
+    #[tokio::test]
+    async fn tool_eligibility_requires_present_credential_and_valid_snapshot() {
+        let repositories = test_repositories().await;
+        let snapshot = eligibility_snapshot();
+        repositories
+            .replace_github_snapshot(
+                &snapshot.connection,
+                &snapshot.installations,
+                &snapshot.repositories,
+            )
+            .await
+            .expect("seed eligibility snapshot");
+        let vault = InMemoryGitHubTokenVault::default();
+
+        let missing = github_tool_eligibility(&vault, &repositories)
+            .await
+            .expect_err("missing custody must fail closed");
+        assert_eq!(missing.code, "github_reconnect_required");
+
+        vault
+            .insert(stored_tokens(
+                "123",
+                "fixture-access",
+                "fixture-refresh",
+                now_unix() + 3_600,
+            ))
+            .await;
+        let eligible = github_tool_eligibility(&vault, &repositories)
+            .await
+            .expect("present matching custody");
+        assert_eq!(eligible.repositories.len(), 1);
+
+        let mut invalid = snapshot;
+        invalid.repositories[0].full_name = "different-owner/test-repo".to_owned();
+        let error = github_tool_eligibility_from_snapshot(&invalid, "123")
+            .expect_err("mismatched repository identity must fail closed");
+        assert_eq!(error.code, "github_storage_unavailable");
+    }
+
+    #[tokio::test]
+    async fn disconnect_waits_for_an_inflight_github_read_lease() {
+        let repositories = test_repositories().await;
+        seed_snapshot(&repositories, "123", "connected", None, None).await;
+        let vault = std::sync::Arc::new(InMemoryGitHubTokenVault::default());
+        vault
+            .insert(stored_tokens(
+                "123",
+                "fixture-access",
+                "fixture-refresh",
+                now_unix() + 3_600,
+            ))
+            .await;
+        let delete_reached = std::sync::Arc::new(tokio::sync::Notify::new());
+        let release_delete = std::sync::Arc::new(tokio::sync::Notify::new());
+        vault.block_next_delete(delete_reached.clone(), release_delete.clone());
+
+        let read_lease = github_authorization_gate().read().await;
+        let repositories_for_disconnect = repositories.clone();
+        let vault_for_disconnect = vault.clone();
+        let disconnect_task = tokio::spawn(async move {
+            disconnect(vault_for_disconnect.as_ref(), &repositories_for_disconnect).await
+        });
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                delete_reached.notified()
+            )
+            .await
+            .is_err(),
+            "disconnect must remain behind the shared authorization lease"
+        );
+
+        drop(read_lease);
+        tokio::time::timeout(std::time::Duration::from_secs(1), delete_reached.notified())
+            .await
+            .expect("disconnect acquires the authorization writer");
+        release_delete.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), disconnect_task)
+            .await
+            .expect("disconnect completes after read lease release")
+            .expect("disconnect task")
+            .expect("disconnect succeeds");
+    }
+
+    #[tokio::test]
+    async fn queued_disconnect_prevents_a_later_github_read_lease() {
+        let repositories = test_repositories().await;
+        seed_snapshot(&repositories, "123", "connected", None, None).await;
+        let vault = std::sync::Arc::new(InMemoryGitHubTokenVault::default());
+        vault
+            .insert(stored_tokens(
+                "123",
+                "fixture-access",
+                "fixture-refresh",
+                now_unix() + 3_600,
+            ))
+            .await;
+        let delete_reached = std::sync::Arc::new(tokio::sync::Notify::new());
+        let release_delete = std::sync::Arc::new(tokio::sync::Notify::new());
+        vault.block_next_delete(delete_reached.clone(), release_delete.clone());
+
+        let first_read = github_authorization_gate().read().await;
+        let repositories_for_disconnect = repositories.clone();
+        let vault_for_disconnect = vault.clone();
+        let disconnect_task = tokio::spawn(async move {
+            disconnect(vault_for_disconnect.as_ref(), &repositories_for_disconnect).await
+        });
+        tokio::task::yield_now().await;
+
+        let (later_read_acquired, mut later_read_receiver) = tokio::sync::oneshot::channel();
+        let later_read = tokio::spawn(async move {
+            let _lease = github_authorization_gate().read().await;
+            let _ = later_read_acquired.send(());
+        });
+        drop(first_read);
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), delete_reached.notified())
+            .await
+            .expect("queued disconnect wins the authorization writer");
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                &mut later_read_receiver
+            )
+            .await
+            .is_err(),
+            "a later reader must not overtake the queued disconnect"
+        );
+
+        release_delete.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(1), disconnect_task)
+            .await
+            .expect("disconnect completes")
+            .expect("disconnect task")
+            .expect("disconnect succeeds");
+        tokio::time::timeout(std::time::Duration::from_secs(1), later_read_receiver)
+            .await
+            .expect("later read acquires after disconnect")
+            .expect("later read signal");
+        later_read.await.expect("later read task");
+    }
+
     #[test]
     fn config_requires_both_public_identifiers() {
         assert_eq!(
@@ -1723,7 +2270,7 @@ mod tests {
         let repository = repository_json(789, "test-repo", r#"{"pull":true}"#);
         let (connection, vault, repositories) = complete_fixture(vec![
             user_fixture("123", "octocat", "access-one"),
-            installations_fixture("access-one", None, r#"{"contents":"read"}"#),
+            installations_fixture("access-one", None, required_read_permissions_json()),
             repositories_fixture("access-one", &format!("[{repository}]")),
         ])
         .await;
@@ -1785,7 +2332,7 @@ mod tests {
             user_fixture("123", "octocat", "access-one"),
             unauthorized_fixture("access-one"),
             refresh_fixture("refresh-one", "access-two", "refresh-two"),
-            installations_fixture("access-two", None, r#"{"contents":"read"}"#),
+            installations_fixture("access-two", None, required_read_permissions_json()),
             repositories_fixture("access-two", &format!("[{repository}]")),
         ])
         .await;
@@ -1979,7 +2526,7 @@ mod tests {
             device_fixture(),
             blocked_token,
             blocked_user,
-            installations_fixture("access-one", None, r#"{"contents":"read"}"#),
+            installations_fixture("access-one", None, required_read_permissions_json()),
             repositories_fixture("access-one", &format!("[{repository}]")),
         ])
         .await;
@@ -2186,7 +2733,7 @@ mod tests {
         let repository = repository_json(789, "test-repo", r#"{"pull":true}"#);
         let (base_url, server) = scripted_server(vec![
             refresh_fixture("refresh-old", "access-new", "refresh-new"),
-            installations_fixture("access-new", None, r#"{"contents":"read"}"#),
+            installations_fixture("access-new", None, required_read_permissions_json()),
             repositories_fixture("access-new", &format!("[{repository}]")),
         ])
         .await;
