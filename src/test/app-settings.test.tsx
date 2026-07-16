@@ -754,6 +754,26 @@ describe("AppSettings", () => {
     );
   });
 
+  it("waits for the signed-in User before offering Avatar refresh", () => {
+    render(
+      <AppSettings
+        account={{ ...signedInAccount, user: undefined }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="general"
+        onTabChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("heading", { name: "Avatar" })).not.toBeInTheDocument();
+    expect(document.querySelector(".account-avatar-preview")).not.toBeInTheDocument();
+  });
+
   it("keeps a refreshed avatar locally when an existing synced seed cannot update", async () => {
     const user = userEvent.setup();
     const accountWithRemoteSeed = {

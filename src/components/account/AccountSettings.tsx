@@ -90,6 +90,7 @@ export function AccountSettingsSection({ account, loading, onAccountChanged }: P
   const mountedRef = useRef(true);
   accountRef.current = account;
   const { localOnly: avatarLocalOnly, refresh: refreshAvatar } = useAccountAvatar(account);
+  const canManageAvatar = account.localDev || Boolean(account.signedIn && account.user?.id?.trim());
 
   useEffect(() => {
     mountedRef.current = true;
@@ -228,7 +229,7 @@ export function AccountSettingsSection({ account, loading, onAccountChanged }: P
               )}
             </div>
           </div>
-          {account.signedIn || account.localDev ? (
+          {canManageAvatar ? (
             <div className="settings-row">
               <div className="settings-row-info">
                 <h3 className="settings-row-title">Avatar</h3>
