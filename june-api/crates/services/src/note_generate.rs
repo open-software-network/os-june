@@ -49,6 +49,7 @@ impl NoteGenerateService {
     ) -> Result<NoteGenerateOutput, ServiceError> {
         self.pricing
             .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        let inference_privacy = self.pricing.inference_privacy(&params.model_id.0);
         if uses_user_venice_key_for_model(
             &self.pricing,
             &params.model_id.0,
@@ -67,6 +68,7 @@ impl NoteGenerateService {
                     system_prompt: prompts::NOTE_GENERATE.to_string(),
                     cost_quality: params.cost_quality,
                     provider_credentials: params.provider_credentials.clone(),
+                    inference_privacy,
                     unmetered: true,
                 })
                 .await?;
@@ -75,14 +77,8 @@ impl NoteGenerateService {
                 &params.user_id,
                 &params.model_id.0,
             );
-            return Ok(NoteGenerateOutput {
-                generated,
-                receipt: zero_receipt(),
-                prompt_version: NOTE_GENERATE_PROMPT_VERSION.to_string(),
-            });
+            return Ok(note_generate_output(generated, zero_receipt()));
         }
-        // Flat-estimate mode — see note_transcribe.rs. The actual charge below
-        // is still computed from real token usage; only the Hold size changes.
         let estimate = Credits(self.flat_estimate_credits);
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
@@ -105,6 +101,7 @@ impl NoteGenerateService {
                 system_prompt: prompts::NOTE_GENERATE.to_string(),
                 cost_quality: params.cost_quality,
                 provider_credentials: params.provider_credentials.clone(),
+                inference_privacy,
                 unmetered: false,
             })
             .await
@@ -141,11 +138,15 @@ impl NoteGenerateService {
             &params.model_id.0,
             &receipt,
         );
-        Ok(NoteGenerateOutput {
-            generated,
-            receipt,
-            prompt_version: NOTE_GENERATE_PROMPT_VERSION.to_string(),
-        })
+        Ok(note_generate_output(generated, receipt))
+    }
+}
+
+fn note_generate_output(generated: GeneratedNote, receipt: Receipt) -> NoteGenerateOutput {
+    NoteGenerateOutput {
+        generated,
+        receipt,
+        prompt_version: NOTE_GENERATE_PROMPT_VERSION.to_string(),
     }
 }
 
