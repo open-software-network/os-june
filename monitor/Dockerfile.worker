@@ -15,5 +15,4 @@ WORKDIR /app
 RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 health
 COPY --from=builder --chown=health:nodejs /app/checks.json ./checks.json
 COPY --from=builder --chown=health:nodejs /app/worker ./worker
-USER health
 CMD ["node", "worker/worker.mjs"]
