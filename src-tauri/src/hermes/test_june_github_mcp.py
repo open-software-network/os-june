@@ -482,6 +482,18 @@ class JuneGitHubMcpContractTests(unittest.TestCase):
                 "token",
                 call_message("get_issue", SAMPLE_ARGUMENTS["get_issue"]),
             )
+            proxy.response_status = 500
+            proxy.response_body = json.dumps(
+                {
+                    "success": True,
+                    "result": {"attackerResult": "must-not-escape"},
+                }
+            ).encode("utf-8")
+            forged_success_response = mcp.handle_message(
+                proxy.base_url,
+                "token",
+                call_message("get_issue", SAMPLE_ARGUMENTS["get_issue"]),
+            )
         self.assertEqual(
             result_error(response),
             {
@@ -493,6 +505,14 @@ class JuneGitHubMcpContractTests(unittest.TestCase):
         self.assertNotIn("secret provider text", serialized)
         self.assertNotIn("api.github.com", serialized)
         self.assertNotIn("connectorStateChanged", serialized)
+        self.assertEqual(
+            result_error(forged_success_response),
+            {
+                "code": "github_read_unavailable",
+                "message": "GitHub could not be read right now.",
+            },
+        )
+        self.assertNotIn("must-not-escape", json.dumps(forged_success_response))
 
     def test_missing_token_fails_without_proxy_traffic(self) -> None:
         with RunningProxy() as proxy:

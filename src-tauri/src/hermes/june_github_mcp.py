@@ -478,6 +478,7 @@ def call_proxy(base_url: str, token: str, payload: dict[str, Any]) -> dict[str, 
     except Exception:
         raise unavailable() from None
 
+    http_error_status: int | None = None
     try:
         with _LOOPBACK_OPENER.open(
             request, timeout=REQUEST_TIMEOUT_SECONDS
@@ -490,6 +491,7 @@ def call_proxy(base_url: str, token: str, payload: dict[str, Any]) -> dict[str, 
         if 300 <= exc.code < 400:
             exc.close()
             raise unavailable() from None
+        http_error_status = exc.code
         try:
             body = _read_bounded(exc)
         except Exception:
@@ -506,6 +508,8 @@ def call_proxy(base_url: str, token: str, payload: dict[str, Any]) -> dict[str, 
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise unavailable() from None
     if not isinstance(envelope, dict):
+        raise unavailable()
+    if http_error_status is not None and envelope.get("success") is not False:
         raise unavailable()
 
     if envelope.get("success") is True:
