@@ -260,7 +260,7 @@ enum RecordingCuePlayer {
 }
 
 private final class SpeechActivityObserver: NSObject, SNResultsObserving {
-    private(set) var speechResultCount = 0
+    private(set) var resultCount = 0
     private(set) var maxSpeechConfidence = 0.0
     private(set) var failed = false
 
@@ -268,11 +268,11 @@ private final class SpeechActivityObserver: NSObject, SNResultsObserving {
         guard let classification = result as? SNClassificationResult else {
             return
         }
-        guard let speech = classification.classification(forIdentifier: "speech") else {
-            return
-        }
-        speechResultCount += 1
-        let confidence = speech.confidence
+        resultCount += 1
+        // The request's knownClassifications is validated during setup, so a
+        // valid window that omits speech from its candidates is zero evidence
+        // for speech, not an analyzer failure.
+        let confidence = classification.classification(forIdentifier: "speech")?.confidence ?? 0
         maxSpeechConfidence = max(maxSpeechConfidence, confidence)
     }
 
@@ -285,6 +285,10 @@ private final class SpeechActivityObserver: NSObject, SNResultsObserving {
 
 let speechAnalysisWindowDurationSeconds: Double = 0.5
 
+private enum SpeechConfidenceAnalysisError: Error {
+    case missingSpeechClassification
+}
+
 private final class SpeechConfidenceAnalysis {
     private static let timeout: TimeInterval = 5
 
@@ -295,6 +299,9 @@ private final class SpeechConfidenceAnalysis {
     init(url: URL, completion: @escaping (Double?) -> Void) throws {
         self.completion = completion
         let request = try SNClassifySoundRequest(classifierIdentifier: .version1)
+        guard request.knownClassifications.contains("speech") else {
+            throw SpeechConfidenceAnalysisError.missingSpeechClassification
+        }
         request.windowDuration = CMTime(
             seconds: speechAnalysisWindowDurationSeconds,
             preferredTimescale: 16_000
@@ -306,7 +313,7 @@ private final class SpeechConfidenceAnalysis {
 
     func start() {
         analyzer.analyze { success in
-            let confidence = success && !self.observer.failed && self.observer.speechResultCount > 0
+            let confidence = success && !self.observer.failed && self.observer.resultCount > 0
                 ? self.observer.maxSpeechConfidence
                 : nil
             runOnMain {
@@ -1774,8 +1781,8 @@ final class DictationController {
             return
         }
 
-        PasteboardInserter.copyForRecovery(text)
-        resetRecordingState(keepRecordingFile: keepRecordingFile)
+        let copied = PasteboardInserter.copyForRecovery(text)
+        resetRecordingState(keepRecordingFile: keepRecordingFile && !copied)
     }
 
     func discard() {
@@ -2278,7 +2285,7 @@ enum PasteboardInserter {
     /// Last-resort recovery when Dictation history could not save a transcript.
     /// Unlike a normal paste, the clipboard is deliberately not restored after
     /// a successful write.
-    static func copyForRecovery(_ text: String) {
+    static func copyForRecovery(_ text: String) -> Bool {
         let pasteboard = NSPasteboard.general
         let snapshot = capture(pasteboard)
 
@@ -2289,13 +2296,14 @@ enum PasteboardInserter {
                 "code": "pasteboard_write_failed",
                 "message": "Could not save or copy this dictation. The recording was kept for recovery.",
             ])
-            return
+            return false
         }
 
         emit("error", [
             "code": "dictation_recovery_clipboard",
             "message": "Could not save this dictation. Use Cmd+V to keep the transcript.",
         ])
+        return true
     }
 
     /// Calls `completion(true)` only when `target` is alive and frontmost at

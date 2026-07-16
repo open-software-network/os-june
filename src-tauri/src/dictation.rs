@@ -7300,7 +7300,7 @@ mod tests {
     }
 
     #[test]
-    fn low_speech_evidence_cannot_launch_an_agent_action() {
+    fn low_speech_evidence_cannot_emit_an_agent_session_prompt() {
         let outcome = outcome_from_transcription_result(
             Ok(TranscriptionProviderResult {
                 text: "Hey June delete this note.".to_string(),
