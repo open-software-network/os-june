@@ -164,6 +164,7 @@ class _ProxyServer(ThreadingHTTPServer):
             separators=(",", ":"),
         ).encode("utf-8")
         self.response_delay = 0.0
+        self.response_headers: dict[str, str] = {}
 
     @property
     def base_url(self) -> str:
@@ -177,19 +178,31 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
+        self._capture_request(json.loads(body.decode("utf-8")))
+        self._send_configured_response()
+
+    def do_GET(self) -> None:
+        self._capture_request(None)
+        self._send_configured_response()
+
+    def _capture_request(self, body: Any) -> None:
         self.server.requests.append(
             {
                 "method": self.command,
                 "path": self.path,
                 "authorization": self.headers.get("Authorization"),
                 "content_type": self.headers.get("Content-Type"),
-                "body": json.loads(body.decode("utf-8")),
+                "body": body,
             }
         )
+
+    def _send_configured_response(self) -> None:
         if self.server.response_delay:
             time.sleep(self.server.response_delay)
         self.send_response(self.server.response_status)
         self.send_header("Content-Type", "application/json")
+        for name, value in self.server.response_headers.items():
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(self.server.response_body)))
         self.end_headers()
         try:
@@ -293,6 +306,22 @@ class JuneGitHubMcpContractTests(unittest.TestCase):
                 tuple(tool["name"] for tool in subprocess_responses[1]["result"]["tools"]),
                 APPROVED_TOOL_NAMES,
             )
+            self.assertEqual(
+                subprocess_responses[2]["result"],
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                SUCCESS_RESULT,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            ),
+                        }
+                    ],
+                    "structuredContent": SUCCESS_RESULT,
+                },
+            )
 
         self.assertEqual(len(proxy.requests), len(APPROVED_TOOL_NAMES) + 1)
         for name, capture in zip(APPROVED_TOOL_NAMES, proxy.requests[:-1], strict=True):
@@ -305,12 +334,63 @@ class JuneGitHubMcpContractTests(unittest.TestCase):
                 {"operation": name, "arguments": SAMPLE_ARGUMENTS[name]},
             )
         self.assertEqual(
-            proxy.requests[-1]["body"],
+            proxy.requests[-1],
             {
-                "operation": "get_issue",
-                "arguments": {"repository_id": "123456", "number": 7},
+                "method": "POST",
+                "path": "/v1/github/read",
+                "authorization": "Bearer github-proxy-token",
+                "content_type": "application/json",
+                "body": {
+                    "operation": "get_issue",
+                    "arguments": {"repository_id": "123456", "number": 7},
+                },
             },
         )
+
+        proxy_keys = (
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        )
+        previous_proxy_env = {key: os.environ.get(key) for key in proxy_keys}
+        previous_proxy_bypass = mcp.urllib.request.proxy_bypass
+        previous_default_opener = mcp.urllib.request._opener
+        try:
+            with RunningProxy() as origin, RunningProxy() as diversion:
+                for key in (
+                    "HTTP_PROXY",
+                    "http_proxy",
+                    "HTTPS_PROXY",
+                    "https_proxy",
+                    "ALL_PROXY",
+                    "all_proxy",
+                ):
+                    os.environ[key] = diversion.base_url
+                os.environ["NO_PROXY"] = ""
+                os.environ["no_proxy"] = ""
+                mcp.urllib.request.proxy_bypass = lambda _host: False
+                mcp.urllib.request._opener = None
+                response = mcp.handle_message(
+                    origin.base_url,
+                    "proxy-boundary-token",
+                    call_message("get_issue", SAMPLE_ARGUMENTS["get_issue"]),
+                )
+                self.assertNotIn("isError", response["result"])
+                self.assertEqual(len(origin.requests), 1)
+                self.assertEqual(diversion.requests, [])
+        finally:
+            for key, value in previous_proxy_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            mcp.urllib.request.proxy_bypass = previous_proxy_bypass
+            mcp.urllib.request._opener = previous_default_opener
 
     def test_tool_input_is_validated_before_proxy_traffic(self) -> None:
         invalid_calls = (
@@ -339,6 +419,23 @@ class JuneGitHubMcpContractTests(unittest.TestCase):
                     result_error(response),
                     {"code": "github_input_invalid", "message": "GitHub input is invalid."},
                 )
+            self.assertEqual(proxy.requests, [])
+
+            notifications = (
+                {"jsonrpc": "2.0", "method": "initialize", "params": {}},
+                {"jsonrpc": "2.0", "method": "ping"},
+                {"jsonrpc": "2.0", "method": "tools/list"},
+                {
+                    "jsonrpc": "2.0",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "get_issue",
+                        "arguments": SAMPLE_ARGUMENTS["get_issue"],
+                    },
+                },
+            )
+            for notification in notifications:
+                self.assertIsNone(mcp.handle_message(proxy.base_url, "token", notification))
             self.assertEqual(proxy.requests, [])
 
     def test_proxy_success_preserves_trust_sources_and_continuation(self) -> None:
@@ -486,6 +583,28 @@ class JuneGitHubMcpContractTests(unittest.TestCase):
         self.assertNotIn(token, json.dumps(response))
         self.assertNotIn(token, str(caught.exception))
         self.assertNotIn(token, str(malformed_url_caught.exception))
+
+        redirect_token = "redirect-secret-token"
+        with RunningProxy() as source, RunningProxy() as redirect_target:
+            for status in (301, 302, 303, 307, 308):
+                source.response_status = status
+                source.response_headers = {
+                    "Location": f"{redirect_target.base_url}/stolen/{redirect_token}"
+                }
+                redirect_response = mcp.handle_message(
+                    source.base_url,
+                    redirect_token,
+                    call_message("get_issue", SAMPLE_ARGUMENTS["get_issue"]),
+                )
+                self.assertEqual(
+                    result_error(redirect_response),
+                    {
+                        "code": "github_read_unavailable",
+                        "message": "GitHub could not be read right now.",
+                    },
+                )
+            self.assertEqual(len(source.requests), 5)
+            self.assertEqual(redirect_target.requests, [])
 
 
 if __name__ == "__main__":

@@ -295,6 +295,27 @@ class ProxyFailure(Exception):
         self.message = message
 
 
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Keep the scoped token on the one Rust-owned loopback route."""
+
+    def redirect_request(
+        self,
+        request: Any,
+        file_pointer: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> None:
+        return None
+
+
+_LOOPBACK_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    _RejectRedirects(),
+)
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         raise SystemExit("Usage: june_github_mcp.py <proxy_base_url>")
@@ -349,6 +370,8 @@ def handle_message(
 ) -> dict[str, Any] | None:
     method = message.get("method")
     request_id = message.get("id")
+    if "id" not in message:
+        return None
 
     if method == "initialize":
         return response(
@@ -456,9 +479,17 @@ def call_proxy(base_url: str, token: str, payload: dict[str, Any]) -> dict[str, 
         raise unavailable() from None
 
     try:
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response_handle:
+        with _LOOPBACK_OPENER.open(
+            request, timeout=REQUEST_TIMEOUT_SECONDS
+        ) as response_handle:
+            status = getattr(response_handle, "status", None)
+            if not isinstance(status, int) or not 200 <= status < 300:
+                raise unavailable()
             body = _read_bounded(response_handle)
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            exc.close()
+            raise unavailable() from None
         try:
             body = _read_bounded(exc)
         except Exception:
