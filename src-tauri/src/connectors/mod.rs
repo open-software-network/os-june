@@ -339,12 +339,17 @@ async fn mark_reconnect_required(app: &tauri::AppHandle, account_id: &str) {
 
 // --- Account lifecycle -------------------------------------------------------------
 
-/// Enumerate connected accounts from the non-secret DB index (no keychain
-/// access, so listing never prompts).
-pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccount>, AppError> {
+/// Enumerate persisted Google accounts from the non-secret DB index.
+///
+/// This intentionally does not inspect Notion. Callers that need a real Google
+/// identity for grants or Google MCP registration must use this provider-scoped
+/// listing so the synthetic Notion preview row can never be treated as an email.
+pub async fn list_google_accounts(
+    app: &tauri::AppHandle,
+) -> Result<Vec<ConnectorAccount>, AppError> {
     let repos = crate::commands::repositories(app).await?;
     let records = repos.list_connector_accounts().await?;
-    let mut accounts: Vec<ConnectorAccount> = records
+    Ok(records
         .into_iter()
         .map(|record| ConnectorAccount {
             account_id: record.account_id,
@@ -353,15 +358,39 @@ pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccoun
             scopes: record.scopes,
             status: ConnectorAccountStatus::from_db(&record.status),
         })
-        .collect();
-    // `list_accounts` is a connected-account listing for user-facing account
-    // surfaces. The Connectors settings provider directory owns disconnected
-    // rows, so a disconnected or unreadable Notion preview is represented here
-    // by omission. Runtime sync checks Notion credentials independently so this
-    // resilient UI listing is not treated as authoritative for MCP registration.
-    // `Connected` means local Notion hosted MCP credential material is present;
-    // connect and tool use verify hosted-tool usability separately.
-    match notion::has_connection().await {
+        .collect())
+}
+
+/// Enumerate connected accounts for shared API consumers.
+///
+/// Unlike the settings-only resilient listing, this preserves Notion credential
+/// store errors so callers can distinguish a read failure from a genuinely
+/// disconnected Notion preview.
+pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccount>, AppError> {
+    let mut accounts = list_google_accounts(app).await?;
+    append_notion_account(&mut accounts, notion::has_connection().await, false)?;
+    Ok(accounts)
+}
+
+/// Enumerate accounts for the Connectors settings UI.
+///
+/// The settings provider directory owns disconnected rows, so an unreadable
+/// optional Notion preview is represented by omission here only. Shared API
+/// consumers should call [`list_accounts`] and receive the Notion read error.
+pub async fn list_accounts_resilient(
+    app: &tauri::AppHandle,
+) -> Result<Vec<ConnectorAccount>, AppError> {
+    let mut accounts = list_google_accounts(app).await?;
+    append_notion_account(&mut accounts, notion::has_connection().await, true)?;
+    Ok(accounts)
+}
+
+fn append_notion_account(
+    accounts: &mut Vec<ConnectorAccount>,
+    status: Result<bool, AppError>,
+    suppress_error: bool,
+) -> Result<(), AppError> {
+    match status {
         Ok(true) => accounts.push(ConnectorAccount {
             account_id: notion::notion_account_id().to_string(),
             provider: ConnectorProvider::Notion,
@@ -370,14 +399,15 @@ pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccoun
             status: ConnectorAccountStatus::Connected,
         }),
         Ok(false) => {}
-        Err(error) => {
+        Err(error) if suppress_error => {
             tracing::warn!(
                 error_code = %error.code,
-                "failed to read optional Notion connector status; omitting Notion from account listing"
+                "failed to read optional Notion connector status; omitting Notion from settings account listing"
             );
         }
+        Err(error) => return Err(error),
     }
-    Ok(accounts)
+    Ok(())
 }
 
 /// The email of an already-stored account that differs from the one being
@@ -629,6 +659,28 @@ mod tests {
         assert_eq!(json["email"], "Notion hosted MCP preview");
         assert_eq!(json["scopes"].as_array().unwrap().len(), 0);
         assert_eq!(json["status"], "connected");
+    }
+
+    #[test]
+    fn append_notion_account_preserves_errors_unless_resilient() {
+        let mut strict = Vec::new();
+        let error = AppError::new("notion_keychain_read_failed", "failed");
+        assert!(append_notion_account(&mut strict, Err(error.clone()), false).is_err());
+        assert!(strict.is_empty());
+
+        let mut resilient = Vec::new();
+        append_notion_account(&mut resilient, Err(error), true).unwrap();
+        assert!(resilient.is_empty());
+    }
+
+    #[test]
+    fn append_notion_account_adds_synthetic_connected_row() {
+        let mut accounts = Vec::new();
+        append_notion_account(&mut accounts, Ok(true), false).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].provider, ConnectorProvider::Notion);
+        assert_eq!(accounts[0].account_id, notion::notion_account_id());
+        assert_eq!(accounts[0].email, notion::notion_account_email());
     }
 
     #[test]

@@ -7138,12 +7138,14 @@ async fn sync_june_connector_mcps(
     app: &AppHandle,
     hermes_command: &str,
 ) -> Result<Option<ConnectorMcpConfigs>, AppError> {
-    // Listing reads the non-secret DB index only (no keychain prompt). v1 uses
-    // the first CONNECTED account for the base servers; multi-account is a
-    // documented follow-up. A `reconnect_required` account is skipped so a
-    // stale first account does not hand the base servers a dead email while a
-    // healthy account exists.
-    let account_email = match crate::connectors::list_accounts(app).await {
+    // Listing reads the Google non-secret DB index only (no keychain prompt).
+    // v1 uses the first CONNECTED Google account for the base Google servers;
+    // multi-account is a documented follow-up. A `reconnect_required` account
+    // is skipped so a stale first account does not hand the base servers a dead
+    // email while a healthy account exists. Notion MCP registration is checked
+    // independently below because its synthetic preview account is not a Google
+    // identity.
+    let account_email = match crate::connectors::list_google_accounts(app).await {
         Ok(accounts) => accounts
             .into_iter()
             .find(|account| {

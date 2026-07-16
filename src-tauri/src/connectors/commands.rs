@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 use super::{
-    begin_connect, disconnect, list_accounts, notion, scopes::ScopeBundle, ConnectFlow,
-    ConnectorAccount, ConnectorAccountStatus, ConnectorProvider, NotionConnectFlow,
+    begin_connect, disconnect, list_accounts_resilient, list_google_accounts, notion,
+    scopes::ScopeBundle, ConnectFlow, ConnectorAccount, ConnectorAccountStatus, ConnectorProvider,
+    NotionConnectFlow,
 };
 
 /// A routine earns autonomy only after this many completed approval-mode
@@ -29,7 +30,7 @@ const GCAL_AUTONOMOUS_TOOLS: &[&str] = &["create_event", "respond_to_invite"];
 
 #[tauri::command]
 pub async fn connectors_list(app: tauri::AppHandle) -> Result<Vec<ConnectorAccount>, AppError> {
-    list_accounts(&app).await
+    list_accounts_resilient(&app).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -322,17 +323,16 @@ fn tools_match(existing: &[String], wanted: &[String]) -> bool {
 /// tools actually change. Providers no longer granted are dropped. Returns
 /// the minted server names, sorted.
 ///
-/// Account resolution is best-effort: the first connected account's email.
-/// When none is connected the grant is still written with an empty
-/// `account_id` (the bridge simply will not spawn a usable server); this is
-/// not an error, so setting autonomy before connecting an account still
-/// succeeds.
+/// Account resolution is best-effort: the first connected Google account's
+/// email. When none is connected the grant is still written with an empty
+/// `account_id` (the bridge simply will not spawn a usable server); this is not
+/// an error, so setting autonomy before connecting an account still succeeds.
 async fn mint_autonomy_grants(
     app: &tauri::AppHandle,
     repos: &Repositories,
     record: &RoutineTrustRecord,
 ) -> Result<Vec<String>, AppError> {
-    let account_id = first_connected_account_email(app).await;
+    let account_id = first_connected_google_account_email(app).await;
     let job_suffix = job_server_suffix(&record.job_id);
 
     // Granted mutating tools grouped by provider (deduped, sorted, ordered).
@@ -384,20 +384,24 @@ async fn mint_autonomy_grants(
     Ok(server_names)
 }
 
-async fn first_connected_account_email(app: &tauri::AppHandle) -> String {
-    match list_accounts(app).await {
-        Ok(accounts) => accounts
-            .into_iter()
-            .find(|account| {
-                account.provider == ConnectorProvider::Google
-                    && account.status == ConnectorAccountStatus::Connected
-            })
-            .map(|account| account.email)
-            .unwrap_or_default(),
+async fn first_connected_google_account_email(app: &tauri::AppHandle) -> String {
+    match list_google_accounts(app).await {
+        Ok(accounts) => first_connected_google_account_email_from(accounts),
         // Never fail the trust change on an account-enumeration hiccup; the
         // grant is still written and can be re-minted once an account exists.
         Err(_) => String::new(),
     }
+}
+
+fn first_connected_google_account_email_from(accounts: Vec<ConnectorAccount>) -> String {
+    accounts
+        .into_iter()
+        .find(|account| {
+            account.provider == ConnectorProvider::Google
+                && account.status == ConnectorAccountStatus::Connected
+        })
+        .map(|account| account.email)
+        .unwrap_or_default()
 }
 
 // --- Connector triggers --------------------------------------------------------
@@ -624,6 +628,44 @@ mod tests {
         // Read-only or unknown tools need no grant.
         assert_eq!(provider_for_tool("read_thread"), None);
         assert_eq!(provider_for_tool("list_events"), None);
+    }
+
+    #[test]
+    fn google_identity_selection_ignores_synthetic_notion_account() {
+        let notion = ConnectorAccount {
+            account_id: notion::notion_account_id().to_string(),
+            provider: ConnectorProvider::Notion,
+            email: notion::notion_account_email().to_string(),
+            scopes: Vec::new(),
+            status: ConnectorAccountStatus::Connected,
+        };
+        let reconnecting_google = ConnectorAccount {
+            account_id: "stale@example.com".to_string(),
+            provider: ConnectorProvider::Google,
+            email: "stale@example.com".to_string(),
+            scopes: Vec::new(),
+            status: ConnectorAccountStatus::ReconnectRequired,
+        };
+        let connected_google = ConnectorAccount {
+            account_id: "user@example.com".to_string(),
+            provider: ConnectorProvider::Google,
+            email: "user@example.com".to_string(),
+            scopes: Vec::new(),
+            status: ConnectorAccountStatus::Connected,
+        };
+
+        assert_eq!(
+            first_connected_google_account_email_from(vec![notion.clone()]),
+            ""
+        );
+        assert_eq!(
+            first_connected_google_account_email_from(vec![
+                notion.clone(),
+                reconnecting_google,
+                connected_google,
+            ]),
+            "user@example.com"
+        );
     }
 
     #[test]
