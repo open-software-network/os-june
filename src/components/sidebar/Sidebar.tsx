@@ -9,6 +9,7 @@ import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
 import { IconBox2 } from "central-icons/IconBox2";
 import { IconBrain2 } from "central-icons/IconBrain2";
+import { IconBrainSideview } from "central-icons/IconBrainSideview";
 import { IconBuildingBlocks } from "central-icons/IconBuildingBlocks";
 import { IconElements } from "central-icons/IconElements";
 import { IconModelcontextprotocol } from "central-icons/IconModelcontextprotocol";
@@ -267,6 +268,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
       },
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
       { id: "agent", label: "Agent", icon: <IconRobot2 size={16} /> },
+      {
+        id: "memory",
+        label: "Memory",
+        icon: <IconBrainSideview size={16} />,
+      },
       {
         id: "connectors",
         label: "Connectors",

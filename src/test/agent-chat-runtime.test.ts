@@ -768,6 +768,28 @@ describe("Agent chat runtime", () => {
     ).toBe("wdyt?");
   });
 
+  it("hides injected project context from persisted user turns", () => {
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "project-prompt",
+        role: "user",
+        content: [
+          "[June project context]",
+          "project_id: project-1",
+          "project: Launch",
+          "instructions:",
+          "Prefer concise updates.",
+          "[/June project context]",
+          "",
+          "What changed?",
+        ].join("\n"),
+        timestamp: "2026-07-14T12:00:00.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: "What changed?", status: "complete" }]);
+  });
+
   it("keeps attachment paths in turn data but hides them from the rendered user bubble", () => {
     // The user bubble renders each part through displayedComposerUserMessageText
     // (AgentWorkspace), so it must show only the user's words. The built turn

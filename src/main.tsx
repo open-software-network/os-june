@@ -71,6 +71,11 @@ if (import.meta.env.DEV) {
   void import("./lib/usage-panel-demo").then(({ registerUsagePanelDemo }) =>
     registerUsagePanelDemo(),
   );
+  // __projectMemoryDemo() drops sample memories into an open Project settings
+  // dialog so the populated memory list can be designed; call again to reset.
+  void import("./lib/project-memory-demo").then(({ registerProjectMemoryDemo }) =>
+    registerProjectMemoryDemo(),
+  );
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

@@ -1,4 +1,4 @@
-use crate::domain::types::AppError;
+use crate::domain::types::{AppError, MemorySettingsDto};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rand::{distributions::Alphanumeric, Rng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -109,6 +109,9 @@ const JUNE_CONTEXT_MCP_SERVER_NAME: &str = "june_context";
 const JUNE_CONTEXT_MCP_DIR_NAME: &str = "hermes-mcp";
 const JUNE_CONTEXT_MCP_SCRIPT_NAME: &str = "june_context_mcp.py";
 const JUNE_CONTEXT_MCP_SCRIPT: &str = include_str!("hermes/june_context_mcp.py");
+/// Environment variable the `june_context` MCP reads its memory-write proxy
+/// token from. Kept out of argv so it does not appear in process listings.
+const JUNE_MEMORY_MCP_TOKEN_ENV: &str = "JUNE_MEMORY_PROXY_TOKEN";
 const JUNE_WEB_MCP_SERVER_NAME: &str = "june_web";
 const JUNE_WEB_MCP_SCRIPT_NAME: &str = "june_web_mcp.py";
 const JUNE_WEB_MCP_SCRIPT: &str = include_str!("hermes/june_web_mcp.py");
@@ -240,6 +243,12 @@ const JUNE_CHARACTER_MAX_CHARS: usize = 4000;
 const JUNE_SOUL_CONTEXT_MD: &str = r#"
 June context tools: you have access to a local `june_context` MCP toolset for searching the user's June meeting notes, saved note transcripts, and dictation history. Use it when the user asks about prior meetings, calls, recordings, notes, decisions, follow-ups, or dictated text. Query it on demand instead of assuming you already know those entries, and summarize only what the retrieved results support.
 Messages may reference a specific note as `@note:<id>`, usually followed by the note title in quotes. When you see such a reference, call the `june_context` tool `get_meeting_note` with that id to load the note before answering, and rely on what it returns. Ask for the transcript with `include_transcript` only when the note content is not enough. If the tool reports the note was not found, say so instead of guessing.
+"#;
+
+/// Appended only while the June memory store is globally enabled. Scope is
+/// supplied by the project context injected into the first relevant prompt.
+const JUNE_SOUL_MEMORY_MD: &str = r#"
+June memory tools: proactively save durable user facts, preferences, and decisions with the `june_context` tool `save_memory`. When a `[June project context]` block is present, pass its `project_id` so the memory stays with that project; otherwise save it globally. Before relying on remembered information, call `list_memories` with the current project id when present instead of assuming. When the user asks you to forget something, call `forget_memory`. Never save secrets, credentials, access tokens, or other authentication material.
 "#;
 
 /// Appended to `SOUL.md` for every runtime. This calibrates June's first-turn
@@ -501,6 +510,7 @@ struct HermesProcess {
 struct SharedProviderProxy {
     port: u16,
     token: String,
+    memory_token: String,
     recorder_token: String,
     connector_token: String,
     shutdown: Option<oneshot::Sender<()>>,
@@ -509,6 +519,9 @@ struct SharedProviderProxy {
 #[derive(Clone)]
 struct ProviderProxyState {
     token: String,
+    /// Memory-write routes require this dedicated secret, handed only to the
+    /// `june_context` MCP. Its read tools do not need proxy access.
+    memory_token: String,
     /// Recorder routes require this dedicated secret, handed only to the
     /// `june_recorder` MCP: microphone control must not be reachable with the
     /// general provider token every model call carries.
@@ -531,6 +544,13 @@ struct ProviderProxyState {
     /// disappear until the app restarts.
     model_catalog_cache: Arc<Mutex<Vec<crate::june_api::ModelDto>>>,
     recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
+    memory: Option<MemoryProxyContext>,
+}
+
+#[derive(Clone)]
+struct MemoryProxyContext {
+    repositories: crate::db::repositories::Repositories,
+    settings_path: PathBuf,
 }
 
 #[derive(Clone, Serialize)]
@@ -1174,6 +1194,7 @@ async fn start_hermes_bridge_inner(
         &hermes_home,
         provider_proxy.port,
         &provider_proxy.token,
+        &provider_proxy.memory_token,
         &provider_proxy.recorder_token,
         &provider_proxy.connector_token,
         supports_vision,
@@ -1209,6 +1230,7 @@ async fn start_hermes_bridge_inner(
         &hermes_home,
         sandbox_available,
         agent_cli_access,
+        june_memory_enabled(&june_context_mcp.memory_settings_path),
         video_generation_enabled,
         connectors_registered,
     )?;
@@ -1381,12 +1403,14 @@ async fn ensure_provider_proxy(
             return Ok(SharedProviderProxyInfo {
                 port: proxy.port,
                 token: proxy.token.clone(),
+                memory_token: proxy.memory_token.clone(),
                 recorder_token: proxy.recorder_token.clone(),
                 connector_token: proxy.connector_token.clone(),
             });
         }
     }
     let token = random_token();
+    let memory_token = random_token();
     let recorder_token = random_token();
     let connector_token = random_token();
     let app_data_dir = crate::app_paths::app_data_dir(app)
@@ -1398,6 +1422,7 @@ async fn ensure_provider_proxy(
     let videos_dir = hermes_home.join(JUNE_VIDEO_MCP_VIDEOS_DIR_NAME);
     let started = start_june_provider_proxy(
         token.clone(),
+        memory_token.clone(),
         recorder_token.clone(),
         connector_token.clone(),
         image_sources,
@@ -1416,6 +1441,7 @@ async fn ensure_provider_proxy(
     *guard = Some(SharedProviderProxy {
         port: started.port,
         token: token.clone(),
+        memory_token: memory_token.clone(),
         recorder_token: recorder_token.clone(),
         connector_token: connector_token.clone(),
         shutdown: Some(started.shutdown),
@@ -1423,6 +1449,7 @@ async fn ensure_provider_proxy(
     Ok(SharedProviderProxyInfo {
         port: started.port,
         token,
+        memory_token,
         recorder_token,
         connector_token,
     })
@@ -1431,6 +1458,7 @@ async fn ensure_provider_proxy(
 struct SharedProviderProxyInfo {
     port: u16,
     token: String,
+    memory_token: String,
     recorder_token: String,
     connector_token: String,
 }
@@ -1440,6 +1468,7 @@ struct JuneContextMcpConfig {
     command: String,
     script_path: PathBuf,
     database_path: PathBuf,
+    memory_settings_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -1586,31 +1615,85 @@ pub async fn connectors_apply_runtime(
     app: AppHandle,
     bridge: State<'_, HermesBridge>,
 ) -> Result<(), AppError> {
+    reapply_hermes_runtime(&app, &bridge).await
+}
+
+/// Serializes `reapply_hermes_runtime` so two rapid settings toggles cannot
+/// interleave their stop/restart cycles. Reapply stops live runtimes before
+/// restarting them; without this lock a later toggle could observe that
+/// transient "no live connections" window, no-op, and let the earlier restart
+/// finish with the now-stale setting. Because each reapply re-renders
+/// `config.yaml` from the persisted settings file, serializing also guarantees
+/// the last reapply to run reads the last-persisted value.
+static REAPPLY_RUNTIME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Re-render `config.yaml` for every live runtime and restart the routine
+/// gateway so a settings change that feeds the rendered config (connector MCP
+/// servers, the `platform_toolsets.cron` allowlist, SOUL.md) takes effect
+/// without waiting for the next natural spawn. A bare stop is not enough: the
+/// cron allowlist is recomputed only when `sync_hermes_config` runs on start,
+/// and the launchd routine gateway keeps serving the old `config.yaml` until
+/// it is restarted.
+pub(crate) async fn reapply_hermes_runtime(
+    app: &AppHandle,
+    bridge: &HermesBridge,
+) -> Result<(), AppError> {
+    // Serialize the whole stop/restart cycle: a concurrent reapply must wait
+    // rather than race through the window where this one has stopped runtimes
+    // but not yet restarted them. Each reapply re-reads the persisted settings
+    // when it re-renders config, so the last one to acquire the lock lands the
+    // last-persisted choice.
+    let _reapply_guard = REAPPLY_RUNTIME_LOCK.lock().await;
     // Capture each live runtime's working directory alongside its mode so the
     // restart lands in the same project the user was in. Restarting with
     // cwd: None would drop a custom cwd back to the default workspace, so a
-    // connector settings change would silently relocate the agent's files.
-    let connections: Vec<(bool, Option<String>)> = live_connections(&bridge)?
+    // settings change would silently relocate the agent's files.
+    let connections: Vec<(bool, Option<String>)> = live_connections(bridge)?
         .iter()
         .map(|connection| (connection.full_mode, connection.cwd.clone()))
         .collect();
+    // Reapply to EVERY captured mode even if one fails. A bare `?` here would
+    // abandon the remaining modes on the first error: with both sandboxed and
+    // unrestricted runtimes live, a failure restarting the first mode would
+    // leave the second running with its old SOUL and cron toolset — so after a
+    // memory-off toggle that mode keeps the native memory tool while the file
+    // and UI show memory disabled. Restart each mode best-effort, remember the
+    // first failure, and still fall through to the gateway restart; surface the
+    // first error only after every mode has been attempted.
+    let mut first_error: Option<AppError> = None;
     for (full_mode, cwd) in connections {
         // Mode-scoped restart (same path the MCP admin uses): stop that one
-        // runtime, then re-start it so `sync_hermes_config` re-renders the
-        // connector MCP servers into config.yaml.
-        stop_hermes_mode(&bridge, full_mode)?;
-        start_hermes_bridge_inner(
-            &app,
-            &bridge,
+        // runtime, then re-start it so `sync_hermes_config` re-renders
+        // config.yaml.
+        if let Err(error) = stop_hermes_mode(bridge, full_mode) {
+            tracing::warn!(
+                ?error,
+                full_mode,
+                "reapply: stopping a runtime mode failed; continuing with the other modes",
+            );
+            first_error.get_or_insert(error);
+            continue;
+        }
+        if let Err(error) = start_hermes_bridge_inner(
+            app,
+            bridge,
             StartHermesBridgeRequest {
                 cwd,
                 full_mode: Some(full_mode),
             },
         )
-        .await?;
+        .await
+        {
+            tracing::warn!(
+                ?error,
+                full_mode,
+                "reapply: restarting a runtime mode failed; continuing with the other modes",
+            );
+            first_error.get_or_insert(error);
+        }
     }
     // Best-effort gateway restart so scheduled routines pick up the new config.
-    if let Some(connection) = live_connections(&bridge)?.into_iter().next() {
+    if let Some(connection) = live_connections(bridge)?.into_iter().next() {
         let _ = hermes_connection_json(
             &connection,
             reqwest::Method::POST,
@@ -1619,7 +1702,10 @@ pub async fn connectors_apply_runtime(
         )
         .await;
     }
-    Ok(())
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 #[tauri::command]
@@ -2404,7 +2490,7 @@ fn write_managed_skill_file(
 }
 
 #[cfg(windows)]
-fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
+pub(crate) fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
     match fs::rename(temp_path, path) {
         Ok(()) => Ok(()),
         Err(error)
@@ -2421,7 +2507,7 @@ fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
+pub(crate) fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
     fs::rename(temp_path, path)
 }
 
@@ -7063,12 +7149,32 @@ fn sync_june_context_mcp(
 
     let paths = crate::app_paths::AppPaths::from_data_dir(data_dir)
         .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
+    let memory_settings_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?
+        .join("memory-settings.json");
 
     Ok(JuneContextMcpConfig {
         command: hermes_python_command(hermes_command),
         script_path,
         database_path: paths.database_path,
+        memory_settings_path,
     })
+}
+
+fn june_memory_enabled(path: &Path) -> bool {
+    match fs::read_to_string(path) {
+        Ok(settings) => {
+            serde_json::from_str::<MemorySettingsDto>(&settings)
+                .unwrap_or(MemorySettingsDto { enabled: false })
+                .enabled
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            MemorySettingsDto::default().enabled
+        }
+        Err(_) => false,
+    }
 }
 
 fn sync_june_web_mcp(app: &AppHandle, hermes_command: &str) -> Result<JuneWebMcpConfig, AppError> {
@@ -7320,6 +7426,7 @@ fn sync_hermes_config(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
     provider_proxy_token: &str,
+    memory_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
     supports_vision: bool,
@@ -7334,6 +7441,7 @@ fn sync_hermes_config(
         hermes_home,
         provider_proxy_port,
         provider_proxy_token,
+        memory_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
         supports_vision,
@@ -7352,6 +7460,7 @@ fn sync_hermes_config_with_external_dirs(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
     provider_proxy_token: &str,
+    memory_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
     supports_vision: bool,
@@ -7389,6 +7498,7 @@ fn sync_hermes_config_with_external_dirs(
         supports_vision,
         &base_url,
         provider_proxy_token,
+        memory_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
         &cron_toolsets,
@@ -7557,8 +7667,16 @@ struct BuiltinMcpConfigs<'a> {
 /// ACTION servers are deliberately excluded: they are added per job only when
 /// the user picks approval or autonomous trust for that routine.
 fn cron_platform_toolsets(configs: &BuiltinMcpConfigs<'_>) -> String {
+    // When the user turns Memory off, the native Hermes `memory` toolset must
+    // go too — not just June's SOUL guidance and the june_context memory
+    // tools. Otherwise a routine could still read/write Hermes' unscoped,
+    // uninspectable memory store, contradicting the global off switch.
+    let memory_enabled = configs.context.map_or(true, |context| {
+        june_memory_enabled(&context.memory_settings_path)
+    });
     let mut items: Vec<String> = CRON_SANDBOXED_TOOLSETS
         .iter()
+        .filter(|toolset| memory_enabled || **toolset != "memory")
         .map(|toolset| toolset.to_string())
         .collect();
     if configs.context.is_some() {
@@ -7703,6 +7821,7 @@ fn render_hermes_config(
     supports_vision: bool,
     base_url: &str,
     provider_proxy_token: &str,
+    memory_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
     cron_toolsets: &str,
@@ -7722,6 +7841,7 @@ fn render_hermes_config(
         mcp_configs,
         base_url,
         provider_proxy_token,
+        memory_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
     );
@@ -7753,12 +7873,17 @@ fn render_mcp_servers_config(
     configs: BuiltinMcpConfigs<'_>,
     base_url: &str,
     proxy_token: &str,
+    memory_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
 ) -> String {
     let mut entries = String::new();
     if let Some(config) = configs.context {
-        entries.push_str(&render_context_mcp_entry(config));
+        entries.push_str(&render_context_mcp_entry(
+            config,
+            base_url,
+            memory_proxy_token,
+        ));
     }
     if let Some(config) = configs.web {
         entries.push_str(&render_web_mcp_entry(config, base_url, proxy_token));
@@ -7830,7 +7955,11 @@ fn render_mcp_servers_config(
     format!("mcp_servers:\n{entries}")
 }
 
-fn render_context_mcp_entry(config: &JuneContextMcpConfig) -> String {
+fn render_context_mcp_entry(
+    config: &JuneContextMcpConfig,
+    base_url: &str,
+    memory_proxy_token: &str,
+) -> String {
     format!(
         r#"  {server_name}:
     enabled: true
@@ -7838,8 +7967,11 @@ fn render_context_mcp_entry(config: &JuneContextMcpConfig) -> String {
     args:
       - {script_path}
       - {database_path}
+      - {memory_settings_path}
+      - {base_url}
     env:
       PYTHONUNBUFFERED: "1"
+      {token_env}: {token}
     timeout: 30
     connect_timeout: 10
 "#,
@@ -7847,6 +7979,10 @@ fn render_context_mcp_entry(config: &JuneContextMcpConfig) -> String {
         command = yaml_string(&config.command),
         script_path = yaml_string(&config.script_path.to_string_lossy()),
         database_path = yaml_string(&config.database_path.to_string_lossy()),
+        memory_settings_path = yaml_string(&config.memory_settings_path.to_string_lossy()),
+        base_url = yaml_string(base_url),
+        token_env = JUNE_MEMORY_MCP_TOKEN_ENV,
+        token = yaml_string(memory_proxy_token),
     )
 }
 
@@ -8221,6 +8357,7 @@ fn sync_june_soul(
     hermes_home: &std::path::Path,
     sandbox_available: bool,
     agent_cli_access: bool,
+    memory_enabled: bool,
     video_generation_enabled: bool,
     connectors_registered: bool,
 ) -> Result<(), AppError> {
@@ -8230,6 +8367,11 @@ fn sync_june_soul(
     let base = format!("{JUNE_SOUL_IDENTITY_MD}\n{character}\n");
     let video_section = if video_generation_enabled {
         JUNE_SOUL_VIDEO_MD
+    } else {
+        ""
+    };
+    let memory_section = if memory_enabled {
+        JUNE_SOUL_MEMORY_MD
     } else {
         ""
     };
@@ -8245,10 +8387,10 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{base}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+            "{base}{JUNE_SOUL_CONTEXT_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{base}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}")
+        format!("{base}{JUNE_SOUL_CONTEXT_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -8430,6 +8572,7 @@ fn yaml_string(value: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 async fn start_june_provider_proxy(
     token: String,
+    memory_token: String,
     recorder_token: String,
     connector_token: String,
     image_sources: ImageSourceCapabilities,
@@ -8438,6 +8581,13 @@ async fn start_june_provider_proxy(
     app: Option<AppHandle>,
     recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
 ) -> Result<RunningJuneProviderProxy, AppError> {
+    let memory = match app.as_ref() {
+        Some(app) => Some(MemoryProxyContext {
+            repositories: crate::commands::repositories(app).await?,
+            settings_path: crate::commands::memory_settings_path(app)?,
+        }),
+        None => None,
+    };
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     listener
@@ -8454,6 +8604,7 @@ async fn start_june_provider_proxy(
         listener,
         Arc::new(ProviderProxyState {
             token,
+            memory_token,
             recorder_token,
             connector_token,
             image_sources,
@@ -8463,6 +8614,7 @@ async fn start_june_provider_proxy(
             image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
             model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
             recorder_requests,
+            memory,
         }),
         shutdown_rx,
     ));
@@ -8523,6 +8675,7 @@ async fn handle_june_provider_connection(
     let required_token = provider_proxy_required_token(
         &request.path,
         &state.token,
+        &state.memory_token,
         &state.recorder_token,
         &state.connector_token,
     );
@@ -8736,6 +8889,9 @@ async fn handle_june_provider_connection(
         ("GET", "/v1/recorder/status") => {
             write_json_response(&mut stream, 200, recorder_status_body()).await?;
         }
+        ("POST", path) if matches!(path, "/v1/memory/save" | "/v1/memory/forget") => {
+            handle_memory_route(&mut stream, &state, path, &request.body).await?;
+        }
         ("POST", path)
             if path.starts_with("/v1/gmail/")
                 || path.starts_with("/v1/gmail-actions/")
@@ -8758,6 +8914,107 @@ async fn write_not_found_response(stream: &mut tokio::net::TcpStream) -> io::Res
         serde_json::json!({ "error": { "message": "Not found" } }),
     )
     .await
+}
+
+async fn handle_memory_route(
+    stream: &mut tokio::net::TcpStream,
+    state: &ProviderProxyState,
+    path: &str,
+    request_body: &[u8],
+) -> io::Result<()> {
+    let (status, body) = dispatch_memory_route(state.memory.as_ref(), path, request_body).await;
+    write_json_response(stream, status, body).await
+}
+
+async fn dispatch_memory_route(
+    memory: Option<&MemoryProxyContext>,
+    path: &str,
+    request_body: &[u8],
+) -> (u16, serde_json::Value) {
+    let Some(memory) = memory else {
+        return (
+            503,
+            memory_error_body(&AppError::new(
+                "memory_store_unavailable",
+                "June's memory store is unavailable.",
+            )),
+        );
+    };
+    let body = serde_json::from_slice::<serde_json::Value>(request_body)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let result = match path {
+        "/v1/memory/save" => {
+            let content = body
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let project_id = match body.get("project_id") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(value)) => Some(value.as_str()),
+                Some(_) => {
+                    return (
+                        400,
+                        memory_error_body(&AppError::new(
+                            "folder_not_found",
+                            "Project was not found or has already been deleted.",
+                        )),
+                    );
+                }
+            };
+            crate::commands::create_memory_with_settings(
+                &memory.repositories,
+                &memory.settings_path,
+                project_id,
+                content,
+                "agent",
+            )
+            .await
+            .map(Some)
+        }
+        "/v1/memory/forget" => {
+            let id = body
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            if id.is_empty() {
+                Err(AppError::new(
+                    "memory_id_required",
+                    "Memory id is required.",
+                ))
+            } else {
+                memory.repositories.delete_memory(id).await.map(|()| None)
+            }
+        }
+        _ => unreachable!("memory route guard only passes known routes"),
+    };
+
+    match result {
+        Ok(Some(memory)) => (
+            200,
+            serde_json::json!({
+                "ok": true,
+                "message": "Memory saved.",
+                "memory": memory,
+            }),
+        ),
+        Ok(None) => (
+            200,
+            serde_json::json!({
+                "ok": true,
+                "message": "Memory forgotten.",
+            }),
+        ),
+        Err(error) => (400, memory_error_body(&error)),
+    }
+}
+
+fn memory_error_body(error: &AppError) -> serde_json::Value {
+    serde_json::json!({
+        "ok": false,
+        "error_code": error.code,
+        "message": error.message,
+    })
 }
 
 /// Dispatches a private-connector proxy route (`/v1/gmail*`, `/v1/gcal*`). The
@@ -9897,17 +10154,19 @@ fn model_catalog_with_fallback(
     }
 }
 
-/// Recorder mutations require the recorder-scoped secret; connector routes
-/// (mail/calendar) require the connector-scoped secret; every other route keeps
-/// the general provider token. Distinct secrets, so none authorizes another's
-/// surface.
+/// Memory writes, recorder mutations, and connector routes each require their
+/// own scoped secret; every other route keeps the general provider token.
+/// Distinct secrets, so none authorizes another's surface.
 fn provider_proxy_required_token<'a>(
     path: &str,
     provider_token: &'a str,
+    memory_token: &'a str,
     recorder_token: &'a str,
     connector_token: &'a str,
 ) -> &'a str {
-    if path.starts_with("/v1/recorder/") {
+    if path.starts_with("/v1/memory/") {
+        memory_token
+    } else if path.starts_with("/v1/recorder/") {
         recorder_token
     } else if path.starts_with("/v1/gmail/")
         || path.starts_with("/v1/gmail-actions/")
@@ -11125,6 +11384,114 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
+    // The bundled MCP scripts are written verbatim into the Hermes home and
+    // evaluated at import time by the runtime venv. A NameError in module
+    // scope (e.g. a tool schema referencing an undefined constant) silently
+    // kills the whole server for every session, and no other gate executes
+    // the scripts — so import each one here. Regression guard: PR #746's
+    // june_context memory tool schema referenced a constant the write-path
+    // rework had removed.
+    #[test]
+    fn bundled_mcp_scripts_import_cleanly() {
+        for (name, script) in [
+            ("june_context_mcp.py", JUNE_CONTEXT_MCP_SCRIPT),
+            ("june_web_mcp.py", JUNE_WEB_MCP_SCRIPT),
+            ("june_image_mcp.py", JUNE_IMAGE_MCP_SCRIPT),
+            ("june_video_mcp.py", JUNE_VIDEO_MCP_SCRIPT),
+            ("june_recorder_mcp.py", JUNE_RECORDER_MCP_SCRIPT),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join(name);
+            std::fs::write(&path, script).expect("write script");
+            // Import the module without running main(): runpy would execute
+            // argv handling; importlib exercises exactly the module scope.
+            let output = std::process::Command::new("python3")
+                .arg("-c")
+                .arg(format!(
+                    "import importlib.util; spec = importlib.util.spec_from_file_location('m', r'{}'); importlib.util.module_from_spec(spec); spec.loader.exec_module(importlib.util.module_from_spec(spec))",
+                    path.display()
+                ))
+                .output()
+                .expect("run python3");
+            assert!(
+                output.status.success(),
+                "{name} failed to import:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn june_context_memory_recall_is_paginated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("june_context_mcp.py");
+        std::fs::write(&script_path, JUNE_CONTEXT_MCP_SCRIPT).expect("write script");
+        let db_path = dir.path().join("notes.sqlite3");
+        let settings_path = dir.path().join("memory-settings.json");
+
+        let test = r#"
+import importlib.util
+import json
+import sqlite3
+import sys
+
+script_path, db_path, settings_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("june_context_mcp", script_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+with sqlite3.connect(db_path) as conn:
+    conn.execute("""CREATE TABLE memories (
+        id TEXT PRIMARY KEY,
+        folder_id TEXT,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )""")
+    conn.executemany(
+        "INSERT INTO memories (id, folder_id, content, created_at) VALUES (?, NULL, ?, ?)",
+        [(f"memory-{index}", "x" * 4000, "2026-07-16T00:00:00Z") for index in range(25)],
+    )
+
+first = module.list_memories(module.Path(db_path), module.Path(settings_path), {})
+assert first["count"] == 8, first
+assert len(first["items"]) == 8, first
+assert first["items"][0]["id"] == "memory-24", first
+assert first["has_more"] is True, first
+assert first["next_offset"] == 8, first
+
+second = module.list_memories(
+    module.Path(db_path),
+    module.Path(settings_path),
+    {"limit": 20, "offset": first["next_offset"]},
+)
+assert second["count"] == 17, second
+assert second["items"][0]["id"] == "memory-16", second
+assert second["items"][-1]["id"] == "memory-0", second
+assert second["has_more"] is False, second
+assert second["next_offset"] is None, second
+
+capped = module.list_memories(
+    module.Path(db_path), module.Path(settings_path), {"limit": 100}
+)
+assert capped["count"] == 20, capped
+assert capped["has_more"] is True, capped
+"#;
+
+        let output = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(test)
+            .arg(&script_path)
+            .arg(&db_path)
+            .arg(&settings_path)
+            .output()
+            .expect("run python3");
+        assert!(
+            output.status.success(),
+            "pagination regression test failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn shutdown_waits_for_in_flight_start_to_register() {
         // Simulate a start that has spawned a child but not yet registered it:
@@ -11307,6 +11674,7 @@ mod tests {
         let addr = listener.local_addr().expect("listener addr");
         let state = Arc::new(ProviderProxyState {
             token: "proxy-token".to_string(),
+            memory_token: "memory-token".to_string(),
             recorder_token: "recorder-token".to_string(),
             connector_token: "connector-token".to_string(),
             image_sources: ImageSourceCapabilities {
@@ -11319,6 +11687,7 @@ mod tests {
             image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
             model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
             recorder_requests: Arc::new(Mutex::new(HashMap::new())),
+            memory: None,
         });
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept connection");
@@ -11347,6 +11716,38 @@ mod tests {
         response
     }
 
+    async fn test_memory_proxy_context(
+        enabled: bool,
+    ) -> (
+        MemoryProxyContext,
+        sqlx_sqlite::SqlitePool,
+        tempfile::TempDir,
+    ) {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let settings_dir = tempfile::tempdir().expect("settings tempdir");
+        let settings_path = settings_dir.path().join("memory-settings.json");
+        std::fs::write(
+            &settings_path,
+            serde_json::json!({ "enabled": enabled }).to_string(),
+        )
+        .expect("write memory settings");
+        (
+            MemoryProxyContext {
+                repositories: crate::db::repositories::Repositories::new(pool.clone()),
+                settings_path,
+            },
+            pool,
+            settings_dir,
+        )
+    }
+
     #[tokio::test]
     async fn provider_proxy_rejects_unauthenticated_request_before_reading_body() {
         // The proxy authenticates on the parsed headers BEFORE reading the body,
@@ -11364,6 +11765,7 @@ mod tests {
             token: "proxy-token".to_string(),
             recorder_token: "recorder-token".to_string(),
             connector_token: "connector-token".to_string(),
+            memory_token: "memory-token".to_string(),
             image_sources: ImageSourceCapabilities {
                 images_dir: home.path().join("images"),
                 secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
@@ -11374,6 +11776,7 @@ mod tests {
             image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
             model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
             recorder_requests: Arc::new(Mutex::new(HashMap::new())),
+            memory: None,
         });
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept connection");
@@ -11815,6 +12218,7 @@ mod tests {
             command: "/tmp/hermes/venv/bin/python".to_string(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_context_mcp.py"),
             database_path: PathBuf::from("/tmp/june/notes.sqlite3"),
+            memory_settings_path: PathBuf::from("/tmp/june/config/memory-settings.json"),
         }
     }
 
@@ -11866,10 +12270,22 @@ mod tests {
     }
 
     #[test]
-    fn recorder_routes_require_the_recorder_scoped_token_and_vice_versa() {
+    fn sensitive_routes_require_their_scoped_token_and_vice_versa() {
         // The general provider token every model call carries must never
         // authorize microphone control, and the recorder secret must not
         // open the provider surface.
+        for path in ["/v1/memory/save", "/v1/memory/forget"] {
+            assert_eq!(
+                provider_proxy_required_token(
+                    path,
+                    "provider-tok",
+                    "memory-tok",
+                    "recorder-tok",
+                    "connector-tok"
+                ),
+                "memory-tok"
+            );
+        }
         for path in [
             "/v1/recorder/start",
             "/v1/recorder/stop",
@@ -11879,6 +12295,7 @@ mod tests {
                 provider_proxy_required_token(
                     path,
                     "provider-tok",
+                    "memory-tok",
                     "recorder-tok",
                     "connector-tok"
                 ),
@@ -11895,6 +12312,7 @@ mod tests {
                 provider_proxy_required_token(
                     path,
                     "provider-tok",
+                    "memory-tok",
                     "recorder-tok",
                     "connector-tok"
                 ),
@@ -11913,6 +12331,7 @@ mod tests {
                 provider_proxy_required_token(
                     path,
                     "provider-tok",
+                    "memory-tok",
                     "recorder-tok",
                     "connector-tok"
                 ),
@@ -11925,12 +12344,14 @@ mod tests {
         let recorder_required = provider_proxy_required_token(
             "/v1/recorder/start",
             "provider-tok",
+            "memory-tok",
             "recorder-tok",
             "connector-tok",
         );
         let provider_required = provider_proxy_required_token(
             "/v1/models",
             "provider-tok",
+            "memory-tok",
             "recorder-tok",
             "connector-tok",
         );
@@ -11966,6 +12387,132 @@ mod tests {
         assert!(!provider_proxy_authorized(&missing, "proxy-secret"));
         assert!(!provider_proxy_authorized(&basic, "proxy-secret"));
         assert!(!provider_proxy_authorized(&extra, "proxy-secret"));
+    }
+
+    #[test]
+    fn memory_proxy_routes_require_the_memory_scoped_token() {
+        let required = provider_proxy_required_token(
+            "/v1/memory/save",
+            "proxy-token",
+            "memory-token",
+            "recorder-token",
+            "connector-token",
+        );
+        assert!(!provider_proxy_authorized(
+            &request_with_authorization("Bearer proxy-token"),
+            required
+        ));
+        assert!(provider_proxy_authorized(
+            &request_with_authorization("Bearer memory-token"),
+            required
+        ));
+    }
+
+    #[tokio::test]
+    async fn memory_proxy_save_enforces_global_and_project_disable_rules() {
+        let (disabled_memory, _pool, _settings_dir) = test_memory_proxy_context(false).await;
+        let (_, global_response) = dispatch_memory_route(
+            Some(&disabled_memory),
+            "/v1/memory/save",
+            br#"{"content":"Remember this"}"#,
+        )
+        .await;
+        assert_eq!(global_response["error_code"], "memory_disabled");
+        std::fs::write(&disabled_memory.settings_path, "not json")
+            .expect("corrupt memory settings");
+        let (_, corrupt_response) = dispatch_memory_route(
+            Some(&disabled_memory),
+            "/v1/memory/save",
+            br#"{"content":"Remember this"}"#,
+        )
+        .await;
+        assert_eq!(corrupt_response["error_code"], "memory_disabled");
+
+        let (project_memory, _pool, _settings_dir) = test_memory_proxy_context(true).await;
+        let folder = project_memory
+            .repositories
+            .create_folder("Project", None)
+            .await
+            .expect("create folder");
+        project_memory
+            .repositories
+            .set_folder_memory_disabled(&folder.id, true)
+            .await
+            .expect("disable project memory");
+        let project_body = serde_json::json!({
+            "content": "Remember this",
+            "project_id": folder.id,
+        })
+        .to_string();
+        let (_, project_response) = dispatch_memory_route(
+            Some(&project_memory),
+            "/v1/memory/save",
+            project_body.as_bytes(),
+        )
+        .await;
+        assert_eq!(project_response["error_code"], "memory_disabled");
+    }
+
+    #[tokio::test]
+    async fn memory_proxy_save_validates_content_and_project_scope() {
+        let (memory, _pool, _settings_dir) = test_memory_proxy_context(true).await;
+        let too_long_body = serde_json::json!({ "content": "x".repeat(4_001) }).to_string();
+        let (_, too_long) =
+            dispatch_memory_route(Some(&memory), "/v1/memory/save", too_long_body.as_bytes()).await;
+        assert_eq!(too_long["error_code"], "memory_content_too_long");
+
+        let (_, missing_project) = dispatch_memory_route(
+            Some(&memory),
+            "/v1/memory/save",
+            br#"{"content":"Remember this","project_id":"missing"}"#,
+        )
+        .await;
+        assert_eq!(missing_project["error_code"], "folder_not_found");
+    }
+
+    #[tokio::test]
+    async fn memory_proxy_save_and_forget_use_agent_source_and_write_tombstone() {
+        let (memory, pool, _settings_dir) = test_memory_proxy_context(true).await;
+        let folder = memory
+            .repositories
+            .create_folder("Project", None)
+            .await
+            .expect("create folder");
+        let saved_body = serde_json::json!({
+            "content": "  Remember this  ",
+            "project_id": folder.id,
+        })
+        .to_string();
+        let (_, saved) =
+            dispatch_memory_route(Some(&memory), "/v1/memory/save", saved_body.as_bytes()).await;
+        assert_eq!(saved["ok"], true);
+        assert_eq!(saved["memory"]["content"], "Remember this");
+        assert_eq!(saved["memory"]["source"], "agent");
+        assert_eq!(saved["memory"]["folderId"], folder.id);
+        let memory_id = saved["memory"]["id"]
+            .as_str()
+            .expect("saved memory id")
+            .to_string();
+
+        let forget_body = serde_json::json!({ "id": memory_id }).to_string();
+        let (_, forgotten) =
+            dispatch_memory_route(Some(&memory), "/v1/memory/forget", forget_body.as_bytes()).await;
+        assert_eq!(forgotten["ok"], true);
+        use sqlx::row::Row;
+        let memories = sqlx::query::query("SELECT COUNT(*) AS count FROM memories")
+            .fetch_one(&pool)
+            .await
+            .expect("count memories")
+            .get::<i64, _>("count");
+        let tombstones =
+            sqlx::query::query("SELECT COUNT(*) AS count FROM memory_tombstones WHERE id = ?")
+                .bind(memory_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count tombstones")
+                .get::<i64, _>("count");
+        assert_eq!(memories, 0);
+        assert_eq!(tombstones, 1);
     }
 
     #[test]
@@ -12739,6 +13286,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "new-token",
+            "memory-token",
             "recorder-token",
             "connector-token",
             "web",
@@ -12828,6 +13376,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "t",
+            "memory",
             "recorder",
             "connector",
             "web",
@@ -13045,6 +13594,7 @@ mcp_servers:
             home.path(),
             4242,
             "proxy-token",
+            "memory-proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
             false,
@@ -13096,6 +13646,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "tok",
+            "memory-tok",
             "recorder-tok",
             "connector-tok",
             "web, memory",
@@ -13138,6 +13689,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "tok",
+            "memory-tok",
             "recorder-tok",
             "connector-tok",
             "web",
@@ -13222,6 +13774,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "proxy-tok",
+            "memory-proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
             "web",
@@ -13247,6 +13800,26 @@ mcp_servers:
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_context_mcp.py\"\n"));
         assert!(config.contains("      - \"/tmp/june/notes.sqlite3\"\n"));
+        assert!(config.contains("      - \"/tmp/june/config/memory-settings.json\"\n"));
+        // Context keeps its read-side database/settings argv and gains only
+        // the loopback URL plus the dedicated memory-write token.
+        assert!(config.contains("      JUNE_MEMORY_PROXY_TOKEN: \"memory-proxy-tok\"\n"));
+        assert!(!config.contains("      JUNE_MEMORY_PROXY_TOKEN: \"proxy-tok\"\n"));
+        let value: serde_yaml::Value = serde_yaml::from_str(&config).expect("config parses");
+        assert_eq!(
+            value["mcp_servers"]["june_context"]["args"],
+            serde_yaml::from_str::<serde_yaml::Value>(
+                r#"[
+  "/tmp/june/hermes-mcp/june_context_mcp.py",
+  "/tmp/june/notes.sqlite3",
+  "/tmp/june/config/memory-settings.json",
+  "http://127.0.0.1:9/v1"
+]"#,
+            )
+            .expect("expected args parse")
+        );
+        assert!(!JUNE_CONTEXT_MCP_SCRIPT.contains("INSERT INTO memories"));
+        assert!(!JUNE_CONTEXT_MCP_SCRIPT.contains("DELETE FROM memories"));
         // The web server gets the loopback proxy URL as an arg and the proxy
         // token via env, never as a direct credential the MCP must hold.
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_web_mcp.py\"\n"));
@@ -13322,6 +13895,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "proxy-tok",
+            "memory-proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
             "web",
@@ -13355,6 +13929,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "proxy-tok",
+            "memory-proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
             "web",
@@ -13388,6 +13963,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "tok",
+            "memory-tok",
             "recorder-tok",
             "connector-tok",
             "web",
@@ -13421,6 +13997,7 @@ mcp_servers:
             true,
             "http://127.0.0.1:9/v1",
             "proxy-token",
+            "memory-proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
             "web, memory",
@@ -13445,6 +14022,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "proxy-token",
+            "memory-proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
             "web, memory",
@@ -13875,6 +14453,7 @@ mcp_servers:
             home.path(),
             4242,
             "proxy-token",
+            "memory-proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
             false,
@@ -13929,6 +14508,79 @@ mcp_servers:
     }
 
     #[test]
+    fn cron_toolsets_drop_native_memory_when_memory_is_disabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = dir.path().join("memory-settings.json");
+        let mut context = test_june_context_mcp_config();
+        context.memory_settings_path = settings.clone();
+        let configs = BuiltinMcpConfigs {
+            context: Some(&context),
+            web: None,
+            image: None,
+            video: None,
+            recorder: None,
+            gmail: None,
+            gmail_actions: None,
+            gcal: None,
+            gcal_actions: None,
+            connector_autos: &[],
+        };
+
+        // Missing settings file = enabled by default: native memory stays.
+        assert!(cron_platform_toolsets(&configs)
+            .split(", ")
+            .any(|toolset| toolset == "memory"));
+
+        // Memory turned off: the native memory toolset must be gone so a
+        // routine can't write Hermes' unscoped store behind the off switch.
+        std::fs::write(&settings, r#"{"enabled":false}"#).expect("disable memory");
+        assert!(!cron_platform_toolsets(&configs)
+            .split(", ")
+            .any(|toolset| toolset == "memory"));
+
+        // Re-enabled: native memory returns.
+        std::fs::write(&settings, r#"{"enabled":true}"#).expect("enable memory");
+        assert!(cron_platform_toolsets(&configs)
+            .split(", ")
+            .any(|toolset| toolset == "memory"));
+    }
+
+    #[tokio::test]
+    async fn reapply_runtime_lock_serializes_concurrent_reapplies() {
+        // Regression for the rapid-toggle race: reapply stops live runtimes
+        // before restarting them, so two overlapping reapplies could let the
+        // later one observe the earlier one's "no live connections" window and
+        // no-op while the earlier restart finished with a stale setting.
+        // `REAPPLY_RUNTIME_LOCK` (held across the whole cycle) must make the
+        // critical sections mutually exclusive so the last-persisted setting is
+        // the one that lands.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let active = active.clone();
+            let max_seen = max_seen.clone();
+            handles.push(tokio::spawn(async move {
+                let _guard = REAPPLY_RUNTIME_LOCK.lock().await;
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_seen.fetch_max(now, Ordering::SeqCst);
+                // Yield across an await so a missing lock would interleave here.
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("reapply task");
+        }
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            1,
+            "reapply critical sections overlapped: lock is not serializing",
+        );
+    }
+
+    #[test]
     fn sync_june_soul_replaces_default_hermes_identity() {
         let home = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -13937,7 +14589,7 @@ mcp_servers:
         )
         .expect("seed default soul");
 
-        sync_june_soul(home.path(), true, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -13957,10 +14609,40 @@ mcp_servers:
     }
 
     #[test]
+    fn june_soul_includes_memory_guidance_only_while_globally_enabled() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false, true, false, false).expect("enabled soul");
+        let enabled = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(enabled.contains("June memory tools"));
+        assert!(enabled.contains("save_memory"));
+        assert!(enabled.contains("list_memories"));
+        assert!(enabled.contains("forget_memory"));
+        assert!(enabled.contains("Never save secrets, credentials"));
+
+        sync_june_soul(home.path(), false, false, false, false, false).expect("disabled soul");
+        let disabled = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(!disabled.contains("June memory tools"));
+        assert!(!disabled.contains("save_memory"));
+    }
+
+    #[test]
+    fn june_memory_settings_match_the_command_loader_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("memory-settings.json");
+
+        assert!(june_memory_enabled(&path));
+        std::fs::write(&path, r#"{"enabled":false}"#).expect("disable memory");
+        assert!(!june_memory_enabled(&path));
+        std::fs::write(&path, "not json").expect("corrupt settings");
+        assert!(!june_memory_enabled(&path));
+    }
+
+    #[test]
     fn sandboxed_soul_describes_the_write_jail() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Seatbelt"));
@@ -13985,7 +14667,7 @@ mcp_servers:
     fn june_soul_describes_local_context_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_context"));
@@ -14001,7 +14683,7 @@ mcp_servers:
     fn june_soul_asks_for_clarification_before_costly_ambiguous_work() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Clarifying questions"));
@@ -14015,7 +14697,7 @@ mcp_servers:
     fn june_soul_describes_web_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_web"));
@@ -14028,14 +14710,14 @@ mcp_servers:
         let home = tempfile::tempdir().expect("tempdir");
 
         // Not registered: no connector stanza.
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(!soul.contains("june_gmail"));
         assert!(!soul.contains("june_gcal"));
 
         // Registered: gmail/gcal toolsets, the untrusted-input warning, and the
         // approval note appear.
-        sync_june_soul(home.path(), false, false, true, true).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, true).expect("sync soul");
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_gmail"));
         assert!(soul.contains("june_gcal"));
@@ -14049,7 +14731,7 @@ mcp_servers:
     fn june_soul_uses_image_settings_instead_of_pre_refusing() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_image"));
@@ -14075,7 +14757,7 @@ mcp_servers:
     fn june_soul_describes_recorder_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_recorder"));
@@ -14089,7 +14771,7 @@ mcp_servers:
     fn sandboxed_soul_with_cli_access_describes_the_grant() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, true, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("the user enabled Agent CLI access"));
@@ -14105,7 +14787,7 @@ mcp_servers:
     fn unsandboxed_soul_makes_no_sandbox_claims() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -14117,7 +14799,7 @@ mcp_servers:
     fn june_soul_omits_video_tools_when_disabled() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -14131,7 +14813,7 @@ mcp_servers:
     fn sync_june_soul_seeds_character_file_and_uses_default() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are helpful, knowledgeable, and direct"));
@@ -14150,7 +14832,7 @@ mcp_servers:
         )
         .expect("seed character");
 
-        sync_june_soul(home.path(), true, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("cheerful pirate"));
@@ -14172,7 +14854,7 @@ mcp_servers:
         let home = tempfile::tempdir().expect("tempdir");
         std::fs::write(home.path().join("CHARACTER.md"), "   \n\n").expect("seed blank");
 
-        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are helpful, knowledgeable, and direct"));
@@ -14211,7 +14893,7 @@ mcp_servers:
     fn june_soul_includes_video_tools_when_enabled() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_video"));

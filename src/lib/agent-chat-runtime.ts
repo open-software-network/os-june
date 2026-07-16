@@ -14,6 +14,7 @@ import { displayedUserMessageText } from "./issue-report-prompt";
 import { displayedSkillInvocationText } from "./skill-slash-commands";
 import type { JuneHermesEvent } from "./hermes-control-plane";
 import { generatedMediaToolKind, toolActivityLabel } from "./agent-tool-labels";
+import { stripProjectContext } from "./agent-project-context";
 
 export type AgentChatTextPart = {
   type: "text";
@@ -1812,7 +1813,8 @@ export function videoPartsFromHermesContent(content: unknown): AgentChatVideoPar
 }
 
 function stripHermesContextMarkers(value: string) {
-  const withoutWarnings = value.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
+  const withoutProjectContext = stripProjectContext(value);
+  const withoutWarnings = withoutProjectContext.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
   const marker = withoutWarnings.search(/\n*--- Attached Context ---/m);
   const visible = marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;
   return visible.trim();

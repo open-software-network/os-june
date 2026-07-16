@@ -112,6 +112,7 @@ import {
   type AgentRunSettledDetail,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
+import { selectSessionProjectContext } from "../lib/agent-project-context";
 import {
   notifyAgentRunSettled,
   notifyAgentSessionStatus,
@@ -442,12 +443,33 @@ export function App() {
   // is opened so "back" lands the user where they were, not on Notes.
   const [settingsReturnView, setSettingsReturnView] = useState<SidebarView>("notes");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  // When the Memory tab is opened from a project ("Manage memories"), the
+  // manager pre-filters to that project. Cleared on any normal tab navigation.
+  const [memoryFolderFilter, setMemoryFolderFilter] = useState<string | undefined>();
   const openSettings = useCallback(() => {
     const returnView = activeViewRef.current;
     if (returnView !== "settings") {
       setSettingsReturnView(returnView);
     }
+    setMemoryFolderFilter(undefined);
     setActiveView("settings");
+  }, []);
+  // Deep-link into Settings > Memory filtered to a project (from the project
+  // settings dialog's "Manage memories").
+  const openMemorySettings = useCallback((folderId?: string) => {
+    const returnView = activeViewRef.current;
+    if (returnView !== "settings") {
+      setSettingsReturnView(returnView);
+    }
+    setMemoryFolderFilter(folderId);
+    setSettingsTab("memory");
+    setActiveView("settings");
+  }, []);
+  // Any deliberate tab change clears the project pre-filter so opening Memory
+  // from the settings nav shows all memories, not a stale project scope.
+  const changeSettingsTab = useCallback((tab: SettingsTab) => {
+    setMemoryFolderFilter(undefined);
+    setSettingsTab(tab);
   }, []);
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
   // Tracks that the open note was drilled into from the All notes view, so the
@@ -1030,13 +1052,19 @@ export function App() {
     agentOrigin?.kind === "project"
       ? state.folders.find((folder) => folder.id === agentOrigin.folderId)
       : undefined;
-  // The active session's own project. Sessions opened outside a project (the
-  // Sessions view, the sidebar) still crumb to the project they're filed in,
-  // so membership is visible wherever the session was entered from — same as
-  // meeting notes showing their project up top.
+  // The active session's project. Legacy sessions may have multiple project
+  // assignments, so an explicit project origin wins over assignment order;
+  // sessions opened elsewhere fall back to their first assignment.
   const activeAgentSessionFolder = activeAgentSessionId
-    ? state.folders.find((folder) => folder.id === sessionFolders[activeAgentSessionId]?.[0])
+    ? selectSessionProjectContext(
+        state.folders,
+        sessionFolders[activeAgentSessionId],
+        agentOrigin?.kind === "project" ? agentOrigin.folderId : undefined,
+      )
     : undefined;
+  const agentProjectContextFolder =
+    activeAgentSessionFolder ??
+    (!activeAgentSessionId && agentOrigin?.kind === "project" ? agentOriginFolder : undefined);
   const recoveriesByNote = useMemo(() => {
     const map = new Map<string, (typeof state.activeRecoveries)[number]>();
     for (const recovery of state.activeRecoveries) {
@@ -3583,7 +3611,7 @@ export function App() {
         activeView={activeView}
         account={account}
         settingsTab={settingsTab}
-        onSettingsTabChange={setSettingsTab}
+        onSettingsTabChange={changeSettingsTab}
         onChangeView={(view) => {
           if (takeNewTabIntent()) {
             openTab({ view });
@@ -3762,8 +3790,14 @@ export function App() {
                   onEnableMicrophone={handleEnableMicrophone}
                   onEnableAccessibility={handleEnableAccessibility}
                   onEnableSystemAudio={handleEnableSystemAudio}
+                  folders={state.folders}
+                  memoryFolderFilter={memoryFolderFilter}
+                  onOpenProject={(folderId) => {
+                    handleSelectFolder(folderId);
+                    setActiveView("folders");
+                  }}
                   activeTab={settingsTab}
-                  onTabChange={setSettingsTab}
+                  onTabChange={changeSettingsTab}
                   onDetailPinnedChange={setSettingsDetailPinned}
                   onCheckForUpdates={() => runUpdateCheck("manual")}
                   updateReadyToRelaunch={readyUpdate != null}
@@ -3833,6 +3867,28 @@ export function App() {
                   topUpLabel={topUpLabel}
                   onTopUp={handleTopUp}
                   sessionInProject={Boolean(activeAgentSessionFolder)}
+                  resolveSessionProjectContext={(sessionId) => {
+                    const folder =
+                      sessionId === activeAgentSessionId
+                        ? activeAgentSessionFolder
+                        : selectSessionProjectContext(state.folders, sessionFolders[sessionId]);
+                    return folder
+                      ? {
+                          id: folder.id,
+                          name: folder.name,
+                          instructions: folder.instructions,
+                        }
+                      : undefined;
+                  }}
+                  projectContext={
+                    agentProjectContextFolder
+                      ? {
+                          id: agentProjectContextFolder.id,
+                          name: agentProjectContextFolder.name,
+                          instructions: agentProjectContextFolder.instructions,
+                        }
+                      : undefined
+                  }
                   onMoveSessionToProject={(sessionId) => setMoveDialogSessionIds([sessionId])}
                   origin={
                     agentOriginFolder
@@ -3963,8 +4019,9 @@ export function App() {
                   onSelectFolder={(folderId) => handleSelectFolder(folderId)}
                   onCreateFolder={(name, description) => handleCreateFolder(name, description)}
                   onRenameFolder={(folderId, name, description) =>
-                    void handleRenameFolder(folderId, name, description)
+                    handleRenameFolder(folderId, name, description)
                   }
+                  onFolderUpdated={(folder) => dispatch({ type: "folderUpdated", folder })}
                   onDeleteFolder={(folderId) => handleDeleteFolder(folderId)}
                   onCreateNote={(folderId) => void handleCreateNote(folderId)}
                   onSelectNote={(noteId) => {
@@ -4022,6 +4079,7 @@ export function App() {
                     void handleRemoveSessionFromFolder(sessionId, folderId)
                   }
                   onOpenSessionMoveDialog={(sessionId) => setMoveDialogSessionIds([sessionId])}
+                  onManageProjectMemory={(folderId) => openMemorySettings(folderId)}
                 />
               ) : selectedNote ? (
                 <div className="note-shell">

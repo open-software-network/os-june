@@ -36,6 +36,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0024](adr/0024-independent-product-verification.md) - June, Open Software API, and Chat publish independent verification evidence without cross-product release pinning
 - [adr/0025](adr/0025-targeted-hermes-approval-protocol.md) - MCP approvals use stable request identity, targeted resolution, bounded queues, and fail-closed retirement
 - [adr/0026](adr/0026-durable-note-transcription-jobs.md) - saved-audio Source spans use durable, fingerprinted, idempotent note-transcription jobs
+- [adr/0027](adr/0027-june-owned-project-memory-store.md) — memory entries live in June's SQLite (not the Hermes memory toolset), scoped by project, agent writes via the loopback proxy, project context by prompt injection
 
 ## Enforceable rules (spec/)
 
