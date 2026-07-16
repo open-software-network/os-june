@@ -90,6 +90,7 @@ pub(crate) fn test_state_with_issue_sink_and_timeout(
         chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        share: None,
     })
 }
 
@@ -125,6 +126,7 @@ pub(crate) fn test_state_with_sinks_and_transcriber(
         chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs: 5,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        share: None,
     })
 }
 
@@ -142,6 +144,7 @@ pub(crate) fn test_state_with_generator_and_timeout(
         chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        share: None,
     })
 }
 
@@ -156,7 +159,28 @@ pub(crate) fn test_state_with_p3a_sink(p3a_sink: Arc<dyn P3aSink>) -> ApiState {
         chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs: 5,
         p3a_sink,
+        share: None,
     })
+}
+
+pub(crate) fn test_state_with_share(
+    share: Option<Arc<june_services::ShareService>>,
+    share_viewer: june_api::ShareViewerInfo,
+) -> ApiState {
+    let mut state = TestStateDeps {
+        pricing: models(),
+        local_dev_enabled: false,
+        issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
+        attestation: test_attestation(),
+        transcriber: Arc::new(FakeTranscriber),
+        generator: Arc::new(FakeGenerator),
+        chat_completer: Arc::new(FakeChatCompleter),
+        request_timeout_secs: 5,
+        p3a_sink: Arc::new(RecordingP3aSink::default()),
+        share,
+    };
+    let _ = &mut state;
+    test_state_from_deps_with_viewer(state, share_viewer)
 }
 
 pub(crate) fn test_state_with_local_text_pricing(
@@ -236,6 +260,7 @@ pub(crate) fn test_state_with_text_pricing_without_auto_and_kimi_capabilities(
         chat_completer,
         request_timeout_secs: 5,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        share: None,
     })
 }
 
@@ -249,9 +274,17 @@ pub(crate) struct TestStateDeps {
     pub(crate) chat_completer: Arc<dyn AgentChatCompleter>,
     pub(crate) request_timeout_secs: u64,
     pub(crate) p3a_sink: Arc<dyn P3aSink>,
+    pub(crate) share: Option<Arc<june_services::ShareService>>,
 }
 
 pub(crate) fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
+    test_state_from_deps_with_viewer(deps, june_api::ShareViewerInfo::default())
+}
+
+pub(crate) fn test_state_from_deps_with_viewer(
+    deps: TestStateDeps,
+    share_viewer: june_api::ShareViewerInfo,
+) -> ApiState {
     let pricing = Arc::new(PricingTable::new(deps.pricing));
     let os_accounts = Arc::new(FakeOsAccounts);
     let cleaner = Arc::new(FakeCleaner);
@@ -332,6 +365,8 @@ pub(crate) fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
         image,
         video,
         issue_reports: deps.issue_reports,
+        share: deps.share,
+        share_viewer,
         p3a_reports: Arc::new(P3aReportService::new(P3aReportServiceDeps {
             sink: deps.p3a_sink,
         })),
@@ -340,6 +375,7 @@ pub(crate) fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
             max_json_bytes: 1024 * 1024,
             max_issue_report_bytes: DEFAULT_MAX_ISSUE_REPORT_BYTES,
             max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
+            max_share_body_bytes: 4 * 1024 * 1024,
             max_agent_chat_bytes: DEFAULT_MAX_AGENT_CHAT_BYTES,
             max_agent_inflight_body_bytes: 1024 * 1024 * 1024,
             max_agent_concurrent_requests_per_user: 1024,
@@ -673,9 +709,23 @@ impl june_domain::TokenVerifier for FakeTokenVerifier {
     async fn verify(&self, access_jwt: &str) -> Result<UserId, AuthError> {
         if access_jwt == "valid-token" {
             Ok(UserId("usr_test".to_string()))
+        } else if let Some(user) = access_jwt.strip_prefix("user:") {
+            // Share tests need several distinct authenticated users. The token
+            // may carry fake profile emails after a `|` (consumed by the fake
+            // viewer identity, not by auth).
+            let user = user.split('|').next().unwrap_or(user);
+            Ok(UserId(user.to_string()))
         } else {
             Err(AuthError::InvalidToken)
         }
+    }
+
+    async fn verify_scope(
+        &self,
+        access_jwt: &str,
+        _required_scope: &str,
+    ) -> Result<UserId, AuthError> {
+        self.verify(access_jwt).await
     }
 }
 

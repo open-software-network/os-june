@@ -2,7 +2,8 @@ use crate::error::ApiError;
 use june_domain::{TokenVerifier, UserId};
 use june_services::{
     AgentChatService, DictateService, ImageService, IssueReportService, NoteGenerateService,
-    NoteTranscribeService, P3aReportService, PricingTable, VideoService, WebAugmentService,
+    NoteTranscribeService, P3aReportService, PricingTable, ShareService, VideoService,
+    WebAugmentService,
 };
 use std::{
     collections::HashMap,
@@ -138,6 +139,12 @@ struct ApiStateInner {
     video: Arc<VideoService>,
     issue_reports: Arc<IssueReportService>,
     issue_report_permits: Arc<Semaphore>,
+    // Private sharing (JUN-308). None until a share database is configured;
+    // handlers answer 501 sharing_unavailable in that state.
+    share: Option<Arc<ShareService>>,
+    share_viewer: ShareViewerInfo,
+    share_rate: ShareRateLimiter,
+    share_http: reqwest::Client,
     agent_admission: AgentAdmissionControl,
     p3a_reports: Arc<P3aReportService>,
     limits: ApiLimits,
@@ -150,6 +157,9 @@ pub struct ApiLimits {
     pub max_json_bytes: usize,
     pub max_issue_report_bytes: usize,
     pub max_image_edit_bytes: usize,
+    /// Body cap for share create/add-invites: the base64-encoded ciphertext
+    /// plus envelope/JSON overhead (~4/3 of `share.max_ciphertext_bytes`).
+    pub max_share_body_bytes: usize,
     pub max_agent_chat_bytes: usize,
     pub max_agent_inflight_body_bytes: usize,
     pub max_agent_concurrent_requests_per_user: usize,
@@ -167,6 +177,57 @@ pub struct AttestationInfo {
     pub trust_center_url: String,
 }
 
+/// Static facts the browser viewer page needs to run its PKCE sign-in.
+#[derive(Clone, Debug, Default)]
+pub struct ShareViewerInfo {
+    /// OS Accounts site origin (sign-in UI).
+    pub accounts_url: String,
+    /// OS Accounts API origin (token exchange proxy target).
+    pub accounts_api_url: String,
+    /// Public OAuth client id registered for the viewer.
+    pub client_id: String,
+}
+
+/// Minimal fixed-window limiter for share endpoints (JUN-308: rate-limit
+/// invite and access attempts). Single-instance CVM makes in-memory state
+/// sufficient; callers consume both a per-user and a per-address budget.
+pub(crate) struct ShareRateLimiter {
+    hits: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
+}
+
+impl Default for ShareRateLimiter {
+    fn default() -> Self {
+        Self {
+            hits: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
+impl ShareRateLimiter {
+    const WINDOW: std::time::Duration = std::time::Duration::from_mins(1);
+    const MAX_PER_WINDOW: u32 = 60;
+
+    /// Returns false when the caller is over budget for the current window.
+    pub(crate) fn allow(&self, key: &str) -> bool {
+        // A poisoned lock must not fail OPEN on a security gate: recover the
+        // inner map (the state is a counter table; a panicking writer cannot
+        // corrupt it in a way that matters more than losing the gate).
+        let mut hits = self
+            .hits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = std::time::Instant::now();
+        // Opportunistic cleanup keeps the map bounded by active users.
+        hits.retain(|_, (start, _)| now.duration_since(*start) < Self::WINDOW);
+        let entry = hits.entry(key.to_string()).or_insert((now, 0));
+        if now.duration_since(entry.0) >= Self::WINDOW {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+        entry.1 <= Self::MAX_PER_WINDOW
+    }
+}
+
 pub struct ApiStateParams {
     pub pricing: Arc<PricingTable>,
     pub local_dev_enabled: bool,
@@ -180,6 +241,8 @@ pub struct ApiStateParams {
     pub video: Arc<VideoService>,
     pub issue_reports: Arc<IssueReportService>,
     pub p3a_reports: Arc<P3aReportService>,
+    pub share: Option<Arc<ShareService>>,
+    pub share_viewer: ShareViewerInfo,
     pub limits: ApiLimits,
     pub attestation: AttestationInfo,
 }
@@ -200,6 +263,10 @@ impl ApiState {
                 video: params.video,
                 issue_reports: params.issue_reports,
                 issue_report_permits: Arc::new(Semaphore::new(ISSUE_REPORT_MAX_CONCURRENCY)),
+                share: params.share,
+                share_viewer: params.share_viewer,
+                share_rate: ShareRateLimiter::default(),
+                share_http: reqwest::Client::new(),
                 agent_admission: AgentAdmissionControl::new(
                     params.limits.max_agent_inflight_body_bytes,
                     params.limits.max_agent_concurrent_requests_per_user,
@@ -209,6 +276,30 @@ impl ApiState {
                 attestation: params.attestation,
             }),
         }
+    }
+
+    pub(crate) fn share(&self) -> Option<&ShareService> {
+        self.inner.share.as_deref()
+    }
+
+    pub(crate) fn share_viewer(&self) -> &ShareViewerInfo {
+        &self.inner.share_viewer
+    }
+
+    pub(crate) fn share_rate(&self) -> &ShareRateLimiter {
+        &self.inner.share_rate
+    }
+
+    pub(crate) fn share_viewer_accounts_api(&self) -> String {
+        self.inner
+            .share_viewer
+            .accounts_api_url
+            .trim_end_matches('/')
+            .to_string()
+    }
+
+    pub(crate) fn share_http(&self) -> &reqwest::Client {
+        &self.inner.share_http
     }
 
     pub(crate) fn pricing(&self) -> &PricingTable {

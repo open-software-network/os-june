@@ -633,6 +633,15 @@ pub trait OsAccountsClient: Send + Sync {
 #[async_trait]
 pub trait TokenVerifier: Send + Sync {
     async fn verify(&self, access_jwt: &str) -> Result<UserId, AuthError>;
+
+    /// Verify the token and require one exact OS Accounts OAuth scope.
+    /// Security-sensitive callers must use this instead of trusting that any
+    /// audience-valid token carries the authority needed for their endpoint.
+    async fn verify_scope(
+        &self,
+        access_jwt: &str,
+        required_scope: &str,
+    ) -> Result<UserId, AuthError>;
 }
 
 #[async_trait]
@@ -647,6 +656,169 @@ pub trait P3aSink: Send + Sync {
 
 pub trait AudioDurationProbe: Send + Sync {
     fn probe(&self, audio: &[u8]) -> Result<Duration, DomainError>;
+}
+
+// ── Private sharing (JUN-308) ─────────────────────────────────────────────
+// E2E-encrypted shares: the server stores ciphertext, per-recipient key
+// envelopes, and ACL metadata only. Plaintext and keys never reach this
+// layer by construction — see docs/private-sharing-design.md.
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareKind {
+    Note,
+    Session,
+}
+
+impl ShareKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Note => "note",
+            Self::Session => "session",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "note" => Some(Self::Note),
+            "session" => Some(Self::Session),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct NewShareInvite {
+    /// Lowercased at the service boundary before it reaches a store.
+    pub email: String,
+    pub envelope: Vec<u8>,
+    pub envelope_iv: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewShare {
+    pub share_id: String,
+    pub owner_user_id: UserId,
+    pub kind: ShareKind,
+    pub ciphertext: Vec<u8>,
+    pub iv: Vec<u8>,
+    pub invites: Vec<(String, NewShareInvite)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShareRecord {
+    pub share_id: String,
+    pub owner_user_id: String,
+    pub kind: ShareKind,
+    /// RFC 3339.
+    pub created_at: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShareInviteRecord {
+    pub invite_id: String,
+    pub email: String,
+    pub recipient_user_id: Option<String>,
+    /// RFC 3339 when set.
+    pub accepted_at: Option<String>,
+    pub revoked_at: Option<String>,
+    pub last_access_at: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShareViewRecord {
+    pub kind: ShareKind,
+    pub owner_user_id: String,
+    pub ciphertext: Vec<u8>,
+    pub iv: Vec<u8>,
+    /// The matched invite's envelope; None when the viewer is the owner.
+    pub envelope: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+/// Everything a store needs to resolve a recipient (or owner) view. See
+/// [`ShareStore::fetch_view`] for the matching and authorization rules.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewRequest<'a> {
+    pub share_id: &'a str,
+    pub viewer_user_id: &'a str,
+    /// Lowercased, verified-only emails on the caller's account.
+    pub viewer_emails: &'a [String],
+    /// Invite id from the link fragment (never the key). Pins selection to a
+    /// specific invite; `None` matches by binding-then-oldest.
+    pub invite_id: Option<&'a str>,
+}
+
+/// Hard ceiling on invites per share, enforced by every store so repeated
+/// `add_invites` calls cannot grow a share's ACL without bound.
+pub const MAX_INVITES_PER_SHARE: usize = 50;
+
+#[derive(Debug, Error)]
+pub enum ShareStoreError {
+    /// Unknown share, unknown invite, revoked, or not owned by the caller.
+    /// One variant on purpose: the API must not be able to tell callers
+    /// apart from this signal (non-enumeration).
+    #[error("share not found")]
+    NotFound,
+    /// The share already carries `MAX_INVITES_PER_SHARE` invites.
+    #[error("invite limit exceeded")]
+    InviteLimitExceeded,
+    /// One of the invited emails already holds a non-revoked invite on the
+    /// share. The viewer authorizes by any active invite for a verified email,
+    /// so a second active row would survive revoking the first.
+    #[error("duplicate active invite")]
+    DuplicateActiveInvite,
+    #[error("share store unavailable: {reason}")]
+    Unavailable { reason: String },
+}
+
+/// Persistence boundary for shares. Implementations must never log payload
+/// bytes; the payload is ciphertext but its size and timing are still
+/// user-correlated metadata.
+#[async_trait]
+pub trait ShareStore: Send + Sync {
+    async fn create_share(&self, share: NewShare) -> Result<(), ShareStoreError>;
+    async fn list_shares(&self, owner: &str) -> Result<Vec<ShareRecord>, ShareStoreError>;
+    async fn share_invites(
+        &self,
+        owner: &str,
+        share_id: &str,
+    ) -> Result<(ShareRecord, Vec<ShareInviteRecord>), ShareStoreError>;
+    async fn add_invites(
+        &self,
+        owner: &str,
+        share_id: &str,
+        invites: Vec<(String, NewShareInvite)>,
+    ) -> Result<(), ShareStoreError>;
+    async fn revoke_invite(
+        &self,
+        owner: &str,
+        share_id: &str,
+        invite_id: &str,
+    ) -> Result<(), ShareStoreError>;
+    async fn delete_share(&self, owner: &str, share_id: &str) -> Result<(), ShareStoreError>;
+    /// Recipient fetch: matches `viewer_emails` (already lowercased,
+    /// verified-only) against non-revoked invites, binds the recipient user
+    /// id on first access, stamps access, and returns the view. Owners are
+    /// served their own shares without an envelope.
+    ///
+    /// `ViewRequest::invite_id` pins selection to a specific invite (the id the
+    /// viewer carries in its link fragment). It is authorization-narrowing
+    /// only: the invite must still belong to the share, be non-revoked, and be
+    /// bound to the caller or match one of `viewer_emails`. Pinning matters
+    /// when an email holds more than one active invite (re-invite mints a fresh
+    /// envelope/key), so a link must resolve to *its* envelope, not an older
+    /// one. `None` falls back to matching by binding-then-oldest.
+    async fn fetch_view(
+        &self,
+        request: ViewRequest<'_>,
+    ) -> Result<ShareViewRecord, ShareStoreError>;
+}
+
+/// Resolves the verified emails on the caller's OS Accounts profile using
+/// the caller's own bearer token (the access JWT carries only `sub`).
+#[async_trait]
+pub trait ViewerIdentity: Send + Sync {
+    async fn verified_emails(&self, access_token: &str) -> Result<Vec<String>, DomainError>;
 }
 
 #[cfg(test)]

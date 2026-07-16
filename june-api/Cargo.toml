@@ -14,6 +14,7 @@ publish = false
 june-api = { path = "crates/api" }
 june-config = { path = "crates/config" }
 june-domain = { path = "crates/domain" }
+june-persistence = { path = "crates/persistence" }
 june-providers = { path = "crates/providers" }
 june-services = { path = "crates/services" }
 
@@ -27,6 +28,9 @@ figment = { version = "0.10", features = ["env", "toml"] }
 hound = "3.5"
 jsonwebtoken = "9"
 sha2 = "0.11"
+# Share store (JUN-308): the first persistent state in june-api. rustls only —
+# this binary runs inside a TEE with no OpenSSL.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "migrate", "macros"] }
 # Pure-Rust MP4/M4A parser used for duration probing on the /v1/dictate
 # path, where the desktop helper records AAC-in-MPEG-4. Hound is WAV-only.
 mp4 = "0.14"
@@ -41,7 +45,7 @@ tower-http = { version = "0.6", features = ["trace", "timeout", "limit", "cors"]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
-uuid = { version = "1", features = ["v7"] }
+uuid = { version = "1", features = ["v4", "v7"] }
 # Pure-Rust, offline trigram language detector used to fill in the transcript
 # language server-side (Venice ASR never returns one). No network or model
 # downloads, so it is safe to run inside the TEE.

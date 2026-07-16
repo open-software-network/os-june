@@ -10,5 +10,6 @@
   "upstream": 5001,
   "metering": 5031,
   "serviceOverloaded": 5032,
-  "timeout": 5041
+  "timeout": 5041,
+  "sharingUnavailable": 5011
 }

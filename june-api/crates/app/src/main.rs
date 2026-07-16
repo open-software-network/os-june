@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use june_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
+use june_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, ShareViewerInfo};
 use june_config::{
     AppConfig, ModelPriceConfig, ModelProvider, OPENAI_API_KEY_PLACEHOLDER,
     VENICE_API_KEY_PLACEHOLDER, image_client_timeout_secs,
@@ -69,7 +69,41 @@ async fn serve() -> anyhow::Result<()> {
         metered_inference: &metered_inference_http,
         issue_reports: &issue_report_http,
     };
-    let app = build_router(&config, clients, pricing);
+    // Private sharing (JUN-308): optional — the API runs share-less until a
+    // database is configured, so this cannot regress existing deployments.
+    let share_store: Option<Arc<dyn june_domain::ShareStore>> =
+        match config.share.database_url.trim() {
+            "" => {
+                tracing::info!("share store not configured; sharing endpoints disabled");
+                None
+            }
+            _ if !config.local_dev.enabled && config.share.viewer_client_id.trim().is_empty() => {
+                // The browser viewer signs recipients in with this OAuth client
+                // id; without it, links created here would be unusable (the
+                // viewer would redirect with an empty client_id). Fail closed to
+                // 501 rather than mint dead links. Local dev seeds the token
+                // directly and needs no client id.
+                tracing::warn!(
+                    "share database configured but JUNE__SHARE__VIEWER_CLIENT_ID is unset; \
+                     sharing endpoints disabled to avoid creating unusable links"
+                );
+                None
+            }
+            database_url => match june_persistence::PgShareStore::connect(database_url).await {
+                Ok(store) => {
+                    tracing::info!("share store connected");
+                    Some(Arc::new(store))
+                }
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        "share store connection failed; sharing endpoints disabled"
+                    );
+                    None
+                }
+            },
+        };
+    let app = build_router(&config, clients, pricing, share_store);
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "june-api listening");
     axum::serve(listener, app).await?;
@@ -141,6 +175,7 @@ fn build_router(
     config: &AppConfig,
     clients: HttpClients<'_>,
     mut pricing_config: BTreeMap<String, ModelPriceConfig>,
+    share_store: Option<Arc<dyn june_domain::ShareStore>>,
 ) -> axum::Router {
     if config.local_dev.enabled {
         pricing_config = filter_unconfigured_provider_models(config, pricing_config);
@@ -303,6 +338,37 @@ fn build_router(
         flat_estimate_credits,
     }));
 
+    let share = share_store.map(|store| {
+        Arc::new(june_services::ShareService::new(
+            june_services::ShareServiceDeps {
+                store,
+                identity: if config.local_dev.enabled {
+                    Arc::new(june_providers::local_dev::LocalDevViewerIdentity::new(
+                        config.local_dev.viewer_bearer_token.clone(),
+                        config.local_dev.viewer_email.clone(),
+                    )) as Arc<dyn june_domain::ViewerIdentity>
+                } else {
+                    Arc::new(
+                        june_providers::viewer_identity::OsAccountsViewerIdentity::new(
+                            clients.default.clone(),
+                            &config.os_accounts.api_url,
+                        ),
+                    )
+                },
+                max_ciphertext_bytes: config.share.max_ciphertext_bytes,
+            },
+        ))
+    });
+    let share_viewer = ShareViewerInfo {
+        accounts_url: if config.share.viewer_accounts_url.trim().is_empty() {
+            config.os_accounts.iss.clone()
+        } else {
+            config.share.viewer_accounts_url.clone()
+        },
+        accounts_api_url: config.os_accounts.api_url.clone(),
+        client_id: config.share.viewer_client_id.clone(),
+    };
+
     let state = ApiState::new(ApiStateParams {
         pricing,
         local_dev_enabled: config.local_dev.enabled,
@@ -316,11 +382,15 @@ fn build_router(
         video,
         issue_reports,
         p3a_reports,
+        share,
+        share_viewer,
         limits: ApiLimits {
             max_audio_bytes: config.server.max_audio_bytes,
             max_json_bytes: config.server.max_json_bytes,
             max_issue_report_bytes: config.server.max_issue_report_bytes,
             max_image_edit_bytes: config.server.max_image_edit_bytes,
+            // Base64 inflates by 4/3; leave headroom for envelopes + JSON.
+            max_share_body_bytes: config.share.max_ciphertext_bytes / 3 * 4 + 64 * 1024,
             max_agent_chat_bytes: config.server.max_agent_chat_bytes,
             max_agent_inflight_body_bytes: config.server.max_agent_inflight_body_bytes,
             max_agent_concurrent_requests_per_user: config
@@ -401,10 +471,16 @@ fn build_os_accounts_client(
 
 fn build_token_verifier(config: &AppConfig) -> Arc<dyn june_domain::TokenVerifier> {
     if config.local_dev.enabled {
-        Arc::new(LocalDevTokenVerifier::new(
-            config.local_dev.bearer_token.clone(),
-            config.local_dev.user_id.clone(),
-        ))
+        Arc::new(
+            LocalDevTokenVerifier::new(
+                config.local_dev.bearer_token.clone(),
+                config.local_dev.user_id.clone(),
+            )
+            .with_viewer(
+                config.local_dev.viewer_bearer_token.clone(),
+                config.local_dev.viewer_user_id.clone(),
+            ),
+        )
     } else {
         Arc::new(JwksTokenVerifier::from_config(
             jwks_client(),

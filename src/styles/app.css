@@ -534,10 +534,10 @@ input:focus-visible,
   overflow-y: auto;
   overscroll-behavior: contain;
   margin: calc(-1 * var(--detail-bar-h)) calc(-1 * var(--sp-8)) 0;
-  /* The fixed composer is outside layout. Its measured overlap grows with the
-   * Up next queue and shrinks as rows drain; the final gap keeps the last chat
-   * item visibly separated from the top of that floating surface. */
-  padding: var(--detail-bar-h) var(--sp-8) calc(var(--agent-composer-clearance, 0px) + var(--sp-5));
+  /* The fixed composer is outside layout. Keep the resting gap here; its live
+   * overlap is reserved on the in-flow .agent-main child below so WebKit
+   * cannot absorb it into a non-scrolling flex viewport. */
+  padding: var(--detail-bar-h) var(--sp-8) var(--sp-5);
   /* Center the thread column from the LEFT GUTTER, not margin:auto inside the
    * scroller: the classic scrollbar steals an engine-specific slice of the
    * content box (8px custom in Chrome, wider native in WKWebView), and auto
@@ -584,7 +584,11 @@ input:focus-visible,
  * Auto margins here would re-split the scrollbar's bite into the centering.
  * The hero's .agent-main has no scrollbar and keeps margin:auto. */
 .agent-scroll .agent-main {
-  margin: 0;
+  /* The measured composer overlap grows with the Up next queue and shrinks as
+   * rows drain. It must live on this in-flow child, not as outer scroller
+   * padding: WKWebView can otherwise report no scroll range when a short thread
+   * fits the full viewport but not the unobscured space above the composer. */
+  margin: 0 0 var(--agent-composer-clearance, 0px);
 }
 
 .agent-detail-title {
@@ -2899,14 +2903,14 @@ input:focus-visible,
   opacity: 0;
 }
 
-/* Running rows trade the status word for the rolling dot spinner (fixed-size
- * mark; wrappers only set color). */
+/* Running rows trade the status word for the fixed-size June mark spinner.
+ * It stays on the spinner's neutral default — a working row is ambient
+ * activity, not a semantic accent. */
 .agent-tool-spinner {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  color: var(--warm-strong);
 }
 
 /* Name inherits the row's muted color (the whole line darkens on hover). */
@@ -3109,12 +3113,12 @@ input:focus-visible,
   overflow: hidden;
   /* Concentric with the card: inner radius = outer - the card's 4px inset. */
   border-radius: calc(var(--r-lg) - var(--sp-1));
-  /* The gray canvas itself gradates into the card surface at the bottom (and
+  /* The quiet canvas tint gradates into the card surface at the bottom (and
    * the dot field thins out over the same run), so the footer transition is
    * owned by the background rather than an overlay fading in on top. */
   background: linear-gradient(
     to bottom,
-    color-mix(in oklch, var(--secondary) 97%, var(--foreground)) 62%,
+    color-mix(in oklch, var(--secondary) 60%, var(--card)) 62%,
     var(--card)
   );
   color: var(--muted-foreground);
@@ -3128,7 +3132,7 @@ input:focus-visible,
 [data-theme="dark"] .agent-generated-video-placeholder,
 [data-theme="dark"] .agent-generated-media-reveal {
   --agent-generated-dot-alpha: 0.05;
-  --agent-generated-sheen-glow: 0.27;
+  --agent-generated-sheen-glow: 0.15;
   --agent-generated-mark-alpha: 0.3;
   color: var(--foreground);
 }
@@ -5010,7 +5014,7 @@ input:focus-visible,
 /* Why a rejected send didn't go through — sits on the composer because that's
  * where the user just acted, and clears itself when the turn finishes. A
  * content-sized pill (not another full-width box, which read as a second
- * composer) with the rolling dot spinner tying it to the working state. Same
+ * composer) with the dot-grid spinner tying it to the working state. Same
  * surface recipe as the "Generating notes…" pill so the app's progress
  * statuses read as one family. (The recording-consent note left this family
  * for the funding-notice card chrome — it asks, it doesn't report progress.) */
@@ -5218,12 +5222,6 @@ input:focus-visible,
   --tier-ink: oklch(10% 0.01 60);
   --tier-mark: oklch(82% 0.07 75);
   --tier-mark-relief: oklch(16% 0.012 60);
-}
-
-/* Waiting states swap the coin glyph for the dot spinner: neutral progress,
- * not a caution accent. */
-.funding-notice-spinner {
-  color: var(--muted-foreground);
 }
 
 .funding-notice-body {
@@ -7755,7 +7753,7 @@ input:focus-visible,
 }
 
 .report-dialog-submit-spinner {
-  color: currentColor;
+  --spinner-color: currentColor;
 }
 
 /* Mic is the resting affordance — a light ghost button (matches our other ghost
@@ -9477,10 +9475,6 @@ input:focus-visible,
   border-radius: var(--r-pill);
 }
 
-.agent-sidebar-spinner {
-  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
-}
-
 .agent-sidebar-working[data-status="waitingForUser"],
 .agent-sidebar-working[data-status="unread"] {
   background: var(--warm-strong);
@@ -10657,7 +10651,6 @@ input:focus-visible,
 
 .transcript-processing-spinner {
   flex: none;
-  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
 /* Pairs with the shared .shimmer utility in markup. The label just sets its
@@ -10942,11 +10935,10 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-/* The rolling dot spinner (drawn, colored via currentColor) — the same working
- * indicator as the agent chat, sidebar, and composer notice. */
+/* The dot-grid spinner — the same working indicator as the agent chat, sidebar,
+ * and composer notice. */
 .note-processing-progress-spinner {
   flex: none;
-  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
 /* The rolling stage label: a one-line window the stage names roll through.
@@ -12014,10 +12006,6 @@ input:focus-visible,
 /* Feature 07: the fork lifecycle (creating → branched) is now surfaced as a
  * toast, not an inline banner — see branchFromMessage in AgentWorkspace.tsx. */
 
-.agent-turn-action-spinner {
-  color: var(--warm-strong);
-}
-
 .agent-error-banner {
   display: flex;
   align-items: center;
@@ -12129,9 +12117,10 @@ input:focus-visible,
  * consumer class passed through via the InlineNotice `className` prop. */
 .inline-notice {
   display: flex;
-  /* Top-align so the leading icon lines up with the first line of the content,
-   * not the vertical middle of a multi-line body. */
-  align-items: flex-start;
+  /* Match the first text line across the message and any actions. This reads
+   * centered for a one-line notice while wrapped copy grows downward from the
+   * same top line, without measuring line count in JavaScript. */
+  align-items: first baseline;
   gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-subtle);
@@ -12146,6 +12135,9 @@ input:focus-visible,
 .inline-notice-icon {
   display: inline-flex;
   flex-shrink: 0;
+  /* Icons have no useful text baseline, so keep the glyph centered against
+   * the message's first line while the text and actions baseline-align. */
+  align-self: flex-start;
   align-items: center;
   height: calc(var(--fs-md) * 1.5);
   color: var(--muted-foreground);
@@ -17079,8 +17071,9 @@ input:focus-visible,
   animation: sign-in-prompt-spin 0.9s linear infinite;
 }
 
-/* App-wide loading indicator: the rolling dot spinner. Size comes
- * from font-size (set inline by <Spinner size>); color inherits. */
+/* App-wide loading indicator: the dot spinner that draws June's mark. Its size
+ * is fixed per variant (data-size sm/md/lg) in dot-spinner.css, not font-scaled;
+ * the default color is the theme-aware --spinner-neutral token. */
 .spinner {
   display: inline-flex;
   flex-shrink: 0;
@@ -17091,6 +17084,13 @@ input:focus-visible,
 
 /* The dot spinner itself lives in dot-spinner.css (shared with the agent
  * HUD page entry). */
+
+/* Solid controls opt back into their inherited foreground instead of the
+ * spinner's neutral-gray default, so the dots stay legible on a brand fill. */
+.agent-composer-send .dot-spinner,
+.primary-action.primary-solid .dot-spinner {
+  --spinner-color: currentColor;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .sign-in-prompt-spinner,

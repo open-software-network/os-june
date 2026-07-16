@@ -1,7 +1,8 @@
 use crate::envelope::{
     ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_SERVICE_OVERLOADED, ERR_UNAUTHORIZED,
-    ERR_UNPROCESSABLE, ERR_UPSTREAM, TRANSIENT_RETRY_AFTER_SECS,
+    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_SERVICE_OVERLOADED,
+    ERR_SHARING_UNAVAILABLE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
+    TRANSIENT_RETRY_AFTER_SECS,
 };
 use axum::{
     Json,
@@ -37,6 +38,9 @@ pub enum ApiError {
     ServiceOverloaded,
     #[error("internal_error")]
     Internal,
+    /// Sharing is not configured on this deployment (no share database).
+    #[error("sharing_unavailable")]
+    SharingUnavailable,
 }
 
 impl ApiError {
@@ -127,6 +131,11 @@ impl ApiError {
                 ERR_INTERNAL,
                 "internal_error",
             ),
+            Self::SharingUnavailable => error_parts(
+                StatusCode::NOT_IMPLEMENTED,
+                ERR_SHARING_UNAVAILABLE,
+                "sharing_unavailable",
+            ),
         }
     }
 }
@@ -179,6 +188,10 @@ impl From<ServiceError> for ApiError {
             ServiceError::InvalidInput { reason } => Self::bad_request(reason),
             ServiceError::JobNotFound => Self::not_found("job_not_found"),
             ServiceError::ContentRejected { reason } => Self::unprocessable(reason),
+            // Non-enumeration (JUN-308): unknown, revoked, not-owned, and
+            // uninvited all collapse into one indistinguishable 404.
+            ServiceError::ShareNotFound => Self::not_found("share_not_found"),
+            ServiceError::ShareUnavailable => Self::SharingUnavailable,
         }
     }
 }

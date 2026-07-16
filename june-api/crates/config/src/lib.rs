@@ -155,6 +155,11 @@ pub struct AppConfig {
     pub attestation: AttestationConfig,
     #[serde(default)]
     pub issue_reports: IssueReportsConfig,
+    /// Private sharing (JUN-308). Sharing endpoints return 501
+    /// `sharing_unavailable` until `database_url` is configured, so the
+    /// feature cannot regress deployments that predate it.
+    #[serde(default)]
+    pub share: ShareConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
     /// Flat credits charged per generated image, keyed by image model id. Kept
     /// separate from `pricing` (the text/ASR catalog) so image models never leak
@@ -217,6 +222,7 @@ impl Debug for AppConfig {
             .field("upstreams", &self.upstreams)
             .field("attestation", &self.attestation)
             .field("issue_reports", &self.issue_reports)
+            .field("share", &RedactedShare(&self.share))
             .field("pricing", &self.pricing)
             .field("image_pricing", &self.image_pricing)
             .field("image_edit_pricing", &self.image_edit_pricing)
@@ -391,6 +397,22 @@ pub struct LocalDevConfig {
     pub bearer_token: String,
     #[serde(default = "default_local_dev_user_id")]
     pub user_id: String,
+    /// Second local identity so recipient-side share flows (JUN-308) can be
+    /// exercised without real OS Accounts. Empty disables the second token.
+    #[serde(default)]
+    pub viewer_bearer_token: String,
+    #[serde(default = "default_local_dev_viewer_user_id")]
+    pub viewer_user_id: String,
+    #[serde(default = "default_local_dev_viewer_email")]
+    pub viewer_email: String,
+}
+
+fn default_local_dev_viewer_user_id() -> String {
+    "usr_local_dev_viewer".to_string()
+}
+
+fn default_local_dev_viewer_email() -> String {
+    "viewer@localdev.june".to_string()
 }
 
 fn default_local_dev_bearer_token() -> String {
@@ -407,6 +429,9 @@ impl Default for LocalDevConfig {
             enabled: false,
             bearer_token: default_local_dev_bearer_token(),
             user_id: default_local_dev_user_id(),
+            viewer_bearer_token: String::new(),
+            viewer_user_id: default_local_dev_viewer_user_id(),
+            viewer_email: default_local_dev_viewer_email(),
         }
     }
 }
@@ -425,6 +450,79 @@ impl Debug for LocalDevConfig {
                 },
             )
             .field("user_id", &self.user_id)
+            .field(
+                "viewer_bearer_token",
+                if self.viewer_bearer_token.is_empty() {
+                    &"<unset>"
+                } else {
+                    &REDACTED
+                },
+            )
+            .field("viewer_user_id", &self.viewer_user_id)
+            .field("viewer_email", &self.viewer_email)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShareConfig {
+    /// Postgres URL for the share store. Empty disables sharing.
+    #[serde(default)]
+    pub database_url: String,
+    /// OS Accounts site origin the viewer sends recipients to for sign-in
+    /// (e.g. `https://accounts.opensoftware.co`). Empty falls back to the
+    /// canonical issuer from `os_accounts.iss`.
+    #[serde(default)]
+    pub viewer_accounts_url: String,
+    /// Public OAuth client id registered for the browser viewer.
+    #[serde(default)]
+    pub viewer_client_id: String,
+    /// Max accepted ciphertext, in bytes.
+    #[serde(default = "default_share_max_ciphertext_bytes")]
+    pub max_ciphertext_bytes: usize,
+}
+
+impl Default for ShareConfig {
+    // Hand-written so the derived Default can't diverge from the serde field
+    // defaults. `load()` seeds `AppConfig::default()` as the figment base, so a
+    // `usize::default()` zero here would be *present* in the merged config and
+    // shadow `default_share_max_ciphertext_bytes` (which only applies when the
+    // field is absent), capping every share at 0 bytes on a deployment that
+    // sets only the share envs.
+    fn default() -> Self {
+        Self {
+            database_url: String::new(),
+            viewer_accounts_url: String::new(),
+            viewer_client_id: String::new(),
+            max_ciphertext_bytes: default_share_max_ciphertext_bytes(),
+        }
+    }
+}
+
+fn default_share_max_ciphertext_bytes() -> usize {
+    10 * 1024 * 1024
+}
+
+/// Debug view of `ShareConfig` that never prints the database URL (it embeds
+/// credentials); everything else in the section is public.
+struct RedactedShare<'a>(&'a ShareConfig);
+
+impl Debug for RedactedShare<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ShareConfig")
+            .field(
+                "database_url",
+                &if self.0.database_url.is_empty() {
+                    "<unset>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("viewer_accounts_url", &self.0.viewer_accounts_url)
+            .field("viewer_client_id", &self.0.viewer_client_id)
+            .field("max_ciphertext_bytes", &self.0.max_ciphertext_bytes)
             .finish()
     }
 }
@@ -969,6 +1067,7 @@ impl Default for AppConfig {
                         .to_string(),
             },
             issue_reports: IssueReportsConfig::default(),
+            share: ShareConfig::default(),
             pricing: default_pricing(),
             image_pricing: default_image_pricing(),
             image_edit_pricing: default_image_edit_pricing(),
@@ -1519,6 +1618,23 @@ mod tests {
             .merge(Toml::file(toml_path))
             .extract::<AppConfig>()
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn share_max_ciphertext_survives_default_seeding() -> Result<(), Box<dyn std::error::Error>> {
+        // load() seeds AppConfig::default() as the figment base via
+        // Serialized::defaults, then layers config.toml/env on top. If
+        // ShareConfig::default left max_ciphertext_bytes at usize::default()
+        // (0), that 0 is present in the base and shadows the serde field
+        // default, so a deployment that sets only the share envs would build a
+        // 0-byte cap and reject every share. Mirror that merge with no overlay
+        // and assert the real cap survives.
+        use figment::{Figment, providers::Serialized};
+        let config: AppConfig = Figment::new()
+            .merge(Serialized::defaults(AppConfig::default()))
+            .extract()?;
+        assert_eq!(config.share.max_ciphertext_bytes, 10 * 1024 * 1024);
+        Ok(())
     }
 
     #[test]

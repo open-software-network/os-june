@@ -78,6 +78,17 @@ web_search_credits = 20
 web_fetch_credits = 20
 authorize_hold_ttl_web_secs = 30
 
+[share]
+# Private sharing (JUN-308). Sharing endpoints answer 501 until a share
+# database is configured. Set via JUNE__SHARE__DATABASE_URL per environment.
+database_url = ""
+# OS Accounts sign-in origin for the browser viewer; empty falls back to
+# os_accounts.iss. The viewer OAuth client id must be registered in OS
+# Accounts with redirect https://<api-origin>/s/callback.
+viewer_accounts_url = ""
+viewer_client_id = ""
+max_ciphertext_bytes = 10485760
+
 [upstreams.openai]
 base_url = "https://api.openai.com/v1"
 

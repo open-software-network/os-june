@@ -12,6 +12,9 @@ workspace = true
 
 [dependencies]
 axum.workspace = true
+base64.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
 june-config.workspace = true
 june-domain.workspace = true
 june-services.workspace = true

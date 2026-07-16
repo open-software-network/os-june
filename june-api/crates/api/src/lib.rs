@@ -26,8 +26,8 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 pub use envelope::{
     ApiResponse, ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_SERVICE_OVERLOADED, ERR_TIMEOUT,
-    ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
+    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_SERVICE_OVERLOADED,
+    ERR_SHARING_UNAVAILABLE, ERR_TIMEOUT, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
 };
 pub use error::ApiError;
 pub use handlers::dictate::{
@@ -43,13 +43,16 @@ pub use handlers::video::{
     VideoAnimateRequest, VideoGenerateRequest, VideoJobResponse, VideoStatusResponse,
 };
 pub use handlers::web::{WebFetchRequest, WebSearchRequest};
-pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo};
+pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, ShareViewerInfo};
 
 /// Real shipped app version, sent by the desktop client on every request.
 /// Old stable builds keep calling production long after main moves on; this
 /// header is how logs and metrics tell them apart (ADR 0021).
 pub const JUNE_APP_VERSION_HEADER: &str = "x-june-app-version";
 
+// The route table: one line per endpoint, so it grows with each capability
+// (private sharing is the latest). Splitting it would scatter the surface.
+#[allow(clippy::too_many_lines)]
 pub fn router(state: ApiState) -> Router {
     let limits = state.limits();
     let timeout = ServiceBuilder::new()
@@ -62,6 +65,22 @@ pub fn router(state: ApiState) -> Router {
         .route("/readyz", get(handlers::health::readyz))
         .route("/healthz", get(handlers::health::healthz))
         .route("/verify", get(handlers::verify::verify))
+        .route("/robots.txt", get(handlers::share_viewer::robots))
+        .route("/s/{share_id}", get(handlers::share_viewer::shell))
+        .route(
+            "/v1/share-viewer/token",
+            post(handlers::share_viewer::token_exchange),
+        )
+        .route("/v1/shares", get(handlers::share::list))
+        .route(
+            "/v1/shares/{share_id}",
+            get(handlers::share::detail).delete(handlers::share::delete),
+        )
+        .route(
+            "/v1/shares/{share_id}/invites/{invite_id}",
+            axum::routing::delete(handlers::share::revoke_invite),
+        )
+        .route("/v1/shares/{share_id}/view", get(handlers::share::view))
         .route("/v1/models", get(handlers::models::list_models))
         .route(
             "/v1/notes/generate",
@@ -141,9 +160,18 @@ pub fn router(state: ApiState) -> Router {
 /// small-JSON cap — grouped so authentication and admission control run, as the
 /// outermost layer, before any of their body-limit layers buffer a request.
 /// Grouping keeps both unauthenticated and authenticated resource-exhaustion
-/// surfaces closed for every multi-MiB route at once (JUN-336 review).
+/// surfaces closed for every multi-MiB route at once (JUN-336/JUN-308 review).
 fn authenticated_body_routes(state: &ApiState, limits: ApiLimits) -> Router<ApiState> {
     Router::new()
+        .route(
+            "/v1/shares",
+            post(handlers::share::create).layer(DefaultBodyLimit::max(limits.max_share_body_bytes)),
+        )
+        .route(
+            "/v1/shares/{share_id}/invites",
+            post(handlers::share::add_invites)
+                .layer(DefaultBodyLimit::max(limits.max_share_body_bytes)),
+        )
         .route(
             "/v1/chat/completions",
             post(handlers::agent::chat_completions)
@@ -188,11 +216,11 @@ async fn handle_timeout_error(error: BoxError) -> axum::response::Response {
 /// large-body routes (those whose cap exceeds the shared 512 KiB small-JSON
 /// cap). Without it, an unauthenticated client could force June API to buffer
 /// and JSON-parse a multi-MiB body — up to `max_agent_chat_bytes` (12 MiB),
-/// `max_image_edit_bytes` (~66 MiB) or `max_audio_bytes` (25 MiB) — before the
-/// handler's own `authenticated_user` check ran, an unauthenticated
-/// resource-exhaustion path that widened with the JUN-336 cap increase. The
-/// verify is a cached-JWKS signature check, so re-checking in the handler is
-/// cheap; keeping the handler check makes each handler correct on its own.
+/// `max_share_body_bytes` (~14 MiB), `max_image_edit_bytes` (~66 MiB), or
+/// `max_audio_bytes` (25 MiB) — before the handler's own `authenticated_user`
+/// check ran. The verify is a cached-JWKS signature check, so re-checking in
+/// the handler is cheap; keeping the handler check makes each handler correct
+/// on its own.
 async fn authenticate_and_admit(
     State(state): State<ApiState>,
     request: Request,
@@ -210,7 +238,7 @@ async fn authenticate_and_admit(
     // buffers up to the cap, and an exaggerated length would reserve the whole
     // global budget. An honest length under the cap is charged as-is.
     let limits = state.limits();
-    let route_cap = agent_route_body_cap(request.uri().path(), &limits);
+    let route_cap = authenticated_route_body_cap(request.uri().path(), &limits);
     let declared = request
         .headers()
         .get(axum::http::header::CONTENT_LENGTH)
@@ -230,10 +258,14 @@ async fn authenticate_and_admit(
 /// bytes it will buffer, used to weight admission independently of the untrusted
 /// `Content-Length` (JUN-336). Unknown paths fall back to the largest cap so the
 /// charge is never an underestimate.
-fn agent_route_body_cap(path: &str, limits: &ApiLimits) -> usize {
+fn authenticated_route_body_cap(path: &str, limits: &ApiLimits) -> usize {
     match path {
         "/v1/chat/completions" => limits.max_agent_chat_bytes,
         "/v1/notes/transcribe" | "/v1/dictate" => limits.max_audio_bytes,
+        "/v1/shares" => limits.max_share_body_bytes,
+        path if path.starts_with("/v1/shares/") && path.ends_with("/invites") => {
+            limits.max_share_body_bytes
+        }
         _ => limits.max_image_edit_bytes,
     }
 }
@@ -274,7 +306,7 @@ fn hold_issue_report_permit_through_body(
 
 #[cfg(test)]
 mod tests {
-    use super::agent_route_body_cap;
+    use super::authenticated_route_body_cap;
     use crate::state::ApiLimits;
 
     fn limits() -> ApiLimits {
@@ -283,6 +315,7 @@ mod tests {
             max_json_bytes: 1,
             max_issue_report_bytes: 2,
             max_image_edit_bytes: 66,
+            max_share_body_bytes: 14,
             max_agent_chat_bytes: 12,
             max_agent_inflight_body_bytes: 100,
             max_agent_concurrent_requests_per_user: 8,
@@ -293,12 +326,17 @@ mod tests {
     #[test]
     fn route_body_cap_maps_each_large_body_route_to_its_real_cap() {
         let l = limits();
-        assert_eq!(agent_route_body_cap("/v1/chat/completions", &l), 12);
-        assert_eq!(agent_route_body_cap("/v1/notes/transcribe", &l), 25);
-        assert_eq!(agent_route_body_cap("/v1/dictate", &l), 25);
-        assert_eq!(agent_route_body_cap("/v1/image/edit", &l), 66);
-        assert_eq!(agent_route_body_cap("/v1/video/animate", &l), 66);
+        assert_eq!(authenticated_route_body_cap("/v1/chat/completions", &l), 12);
+        assert_eq!(authenticated_route_body_cap("/v1/notes/transcribe", &l), 25);
+        assert_eq!(authenticated_route_body_cap("/v1/dictate", &l), 25);
+        assert_eq!(authenticated_route_body_cap("/v1/shares", &l), 14);
+        assert_eq!(
+            authenticated_route_body_cap("/v1/shares/shr_test/invites", &l),
+            14
+        );
+        assert_eq!(authenticated_route_body_cap("/v1/image/edit", &l), 66);
+        assert_eq!(authenticated_route_body_cap("/v1/video/animate", &l), 66);
         // Unknown path falls back to the largest cap (never an underestimate).
-        assert_eq!(agent_route_body_cap("/v1/other", &l), 66);
+        assert_eq!(authenticated_route_body_cap("/v1/other", &l), 66);
     }
 }

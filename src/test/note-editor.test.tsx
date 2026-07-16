@@ -812,6 +812,33 @@ describe("NoteEditor", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
+  it("keeps recording options interactive after recording transitions to note transcription", async () => {
+    const user = userEvent.setup();
+    const recordingStatus = {
+      sessionId: "session-1",
+      state: "recording" as const,
+      elapsedMs: 1000,
+      level: { peak: 0.5, rms: 0.2, recentPeaks: [0.1, 0.3] },
+      silenceWarning: false,
+      bytesWritten: 2048,
+    };
+    const { rerender } = render(
+      <NoteEditor {...props} note={note()} recordingStatus={recordingStatus} />,
+    );
+
+    rerender(<NoteEditor {...props} note={note({ processingStatus: "transcribing" })} />);
+
+    const options = screen.getByRole("button", { name: "Recording options" });
+    expect(options).toBeEnabled();
+
+    await user.click(options);
+    expect(options).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("switch", { name: "Capture system audio" })).toBeInTheDocument();
+
+    await user.click(options);
+    expect(options).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("shows validating progress in the notes tab", () => {
     render(
       <NoteEditor

@@ -97,3 +97,9 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #777 | Greptile (bot) | 2 | 2 | caught process-global environment mutation in the default test suite and an implicit odd-sample median contract; fixed with child-process isolation and executable five-run/all-or-none invariants |
 | #777 | Adversarial (codex, post-bot fix) | 1 | 1 | caught libtest's exit-0 behavior when a stale exact filter runs zero tests; added a child-only completion sentinel and a focused false-pass regression |
 | #777 | Codex (bot) | 1 | 1 | caught dictionary-load failure returning before dual-Source terminal telemetry; aligned it with microphone-only finalization and added storage-failure checkpoint coverage |
+| JUN-349 (pre-PR) | Standards (codex) | 0 | — | clean on the runtime startup guard and focused relaunch regression coverage |
+| JUN-349 (pre-PR) | Spec (codex) | 0 | — | clean against the immediate relaunch-history restoration contract and explicit non-goals |
+| JUN-349 (pre-PR) | Adversarial (claude) | 0 | — | approved after tracing double-start locking, shared session storage across runtime modes, and the canonical message read path |
+| JUN-324 (pre-PR) | Standards (codex, r1+final) | 1 | 1 | caught the ambiguous bare “transcription” term in the new regression test; renamed it to canonical note transcription wording, final clean |
+| JUN-324 (pre-PR) | Spec (codex, r1+final) | 0 | — | clean against the chevron visibility, enabled-state, open/close interaction, and regression-coverage acceptance criteria |
+| JUN-324 (pre-PR) | Adversarial (codex, r1+convergence) | 0 | — | approved after tracing the persisted recording source mode and confirming the newly reachable options affect only the next recording |

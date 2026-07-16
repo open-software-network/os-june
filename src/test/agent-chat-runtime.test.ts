@@ -23,6 +23,7 @@ type ReasoningEvent = Extract<JuneHermesEvent, { kind: "reasoning" }>;
 type ToolEvent = Extract<JuneHermesEvent, { kind: "tool" }>;
 type PendingActionEvent = Extract<JuneHermesEvent, { kind: "pending_action" }>;
 type PendingActionResolutionEvent = Extract<JuneHermesEvent, { kind: "pending_action_resolution" }>;
+type PendingActionExpirationEvent = Extract<JuneHermesEvent, { kind: "pending_action_expiration" }>;
 type BackgroundActivityEvent = Extract<JuneHermesEvent, { kind: "background_activity" }>;
 type ErrorEvent = Extract<JuneHermesEvent, { kind: "error" }>;
 type LifecycleEvent = Extract<JuneHermesEvent, { kind: "lifecycle" }>;
@@ -66,6 +67,17 @@ function pendingActionEvent(
 ): PendingActionEvent {
   return {
     kind: "pending_action",
+    sessionId: "",
+    receivedAt: DEFAULT_RECEIVED_AT,
+    ...event,
+  };
+}
+
+function pendingActionExpirationEvent(
+  event: Pick<PendingActionExpirationEvent, "action"> & Partial<PendingActionExpirationEvent>,
+): PendingActionExpirationEvent {
+  return {
+    kind: "pending_action_expiration",
     sessionId: "",
     receivedAt: DEFAULT_RECEIVED_AT,
     ...event,
@@ -1104,6 +1116,118 @@ describe("Agent chat runtime", () => {
         status: "resolved",
       },
     ]);
+  });
+
+  it("deduplicates one approval before and after reconnect while keeping distinct requests", () => {
+    const approval = pendingActionEvent({
+      sessionId: "runtime-session",
+      action: {
+        kind: "approval",
+        requestId: "approval-1",
+        description: "Connect Todoist?",
+        allowPermanent: false,
+      },
+    });
+    const distinct = pendingActionEvent({
+      sessionId: "runtime-session",
+      action: {
+        kind: "approval",
+        requestId: "approval-2",
+        description: "Share another resource?",
+        allowPermanent: false,
+      },
+    });
+    const response = pendingActionResolutionEvent({
+      sessionId: "runtime-session",
+      action: {
+        kind: "approval",
+        requestId: "approval-1",
+        command: "",
+        description: "",
+        allowPermanent: false,
+        choice: "once",
+      },
+    });
+
+    const turns = buildAgentChatTurns([], [], [approval, approval, distinct, response, approval]);
+    const approvals = turns[0]?.parts.filter((part) => part.type === "approval") ?? [];
+    expect(approvals).toHaveLength(2);
+    expect(approvals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "approval-1", status: "resolved", choice: "once" }),
+        expect.objectContaining({ id: "approval-2", status: "pending" }),
+      ]),
+    );
+  });
+
+  it("shows a fail-closed expiration instead of a resolved approval", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        pendingActionEvent({
+          action: {
+            kind: "approval",
+            requestId: "approval-expired",
+            description: "Connect Todoist?",
+            allowPermanent: false,
+          },
+        }),
+        pendingActionExpirationEvent({
+          action: { kind: "approval", requestId: "approval-expired", reason: "timeout" },
+        }),
+      ],
+    );
+    expect(turns[0]?.parts).toContainEqual(
+      expect.objectContaining({
+        type: "approval",
+        id: "approval-expired",
+        status: "expired",
+        retiredReason: "timeout",
+      }),
+    );
+  });
+
+  it("does not let a replayed expiration overwrite a resolved approval", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        pendingActionEvent({
+          action: {
+            kind: "approval",
+            requestId: "approval-resolved-before-expire",
+            description: "Connect Todoist?",
+            allowPermanent: false,
+          },
+        }),
+        pendingActionResolutionEvent({
+          action: {
+            kind: "approval",
+            requestId: "approval-resolved-before-expire",
+            command: "",
+            description: "",
+            allowPermanent: false,
+            choice: "once",
+          },
+        }),
+        pendingActionExpirationEvent({
+          action: {
+            kind: "approval",
+            requestId: "approval-resolved-before-expire",
+            reason: "disconnect",
+          },
+        }),
+      ],
+    );
+    expect(turns[0]?.parts).toContainEqual(
+      expect.objectContaining({
+        type: "approval",
+        id: "approval-resolved-before-expire",
+        status: "resolved",
+        choice: "once",
+      }),
+    );
   });
 
   it("preserves whitespace-only message deltas", () => {

@@ -318,6 +318,12 @@ body {
   height: 14px;
 }
 
+/* The standalone HUD does not load app.css, so opt its spinner back into the
+ * status foreground here instead of leaving the dot grid at its neutral default. */
+.agent-hud-status .dot-spinner {
+  --spinner-color: currentColor;
+}
+
 .agent-hud-status[data-status="received"],
 .agent-hud-status[data-status="starting"],
 .agent-hud-status[data-status="running"] {

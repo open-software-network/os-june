@@ -225,12 +225,14 @@ describe("pending action card styles", () => {
 });
 
 describe("credits notice centering", () => {
-  it("centers the single-line credits notice via an override that outranks the base rule", () => {
-    // The base rule top-aligns every inline notice.
-    expect(cssRuleFor(".inline-notice")).toContain("align-items: flex-start;");
-    // The credits override centers it — and because the base rule sits LATER in
-    // this flat stylesheet, the override must carry higher specificity (a
-    // two-class compound, 0,2,0) to beat the single-class base (0,1,0).
+  it("centers the tier-card credits notice via an override that outranks the base rule", () => {
+    // The base rule aligns notice copy with action-label baselines while
+    // wrapped copy grows downward from the first line.
+    expect(cssRuleFor(".inline-notice")).toContain("align-items: first baseline;");
+    // The credits override centers its taller tier card — and because the base
+    // rule sits LATER in this flat stylesheet, the override must carry higher
+    // specificity (a two-class compound, 0,2,0) to beat the single-class base
+    // (0,1,0).
     expect(cssRuleFor(".inline-notice.agent-credits-notice")).toContain("align-items: center;");
     const baseIndex = appCss.indexOf(".inline-notice {");
     const overrideIndex = appCss.indexOf(".inline-notice.agent-credits-notice {");
