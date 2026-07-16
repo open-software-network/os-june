@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  authoritativeTranscriptCoverageKey,
   clearTerminalLiveTranscriptEvents,
   coalesceLiveTranscriptEventsForDisplay,
   reconcileLiveTranscriptEvents,
@@ -210,5 +211,30 @@ describe("live transcript preview", () => {
 
     expect(reconcileLiveTranscriptEvents(events, [])).toBe(events);
     expect(clearTerminalLiveTranscriptEvents(events, "note-1", [])).toBe(events);
+  });
+
+  it("keeps the authoritative coverage key stable across polling array rebuilds", () => {
+    const microphone = persistedTurn();
+    const system = persistedTurn({
+      id: "turn-2",
+      recordingSessionId: "session-2",
+      source: "system",
+      startMs: 10_000,
+      endMs: 18_000,
+    });
+    const key = authoritativeTranscriptCoverageKey([microphone, system]);
+
+    expect(
+      authoritativeTranscriptCoverageKey([{ ...system }, { ...microphone, text: "Revised" }]),
+    ).toBe(key);
+    expect(
+      authoritativeTranscriptCoverageKey([{ ...microphone, status: "failed" }, system]),
+    ).not.toBe(key);
+    expect(
+      authoritativeTranscriptCoverageKey([
+        microphone,
+        { ...system, recordingSessionId: "session-3" },
+      ]),
+    ).not.toBe(key);
   });
 });

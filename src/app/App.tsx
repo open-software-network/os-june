@@ -123,6 +123,7 @@ import { errorCode, messageFromError } from "../lib/errors";
 import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import {
+  authoritativeTranscriptCoverageKey,
   clearTerminalLiveTranscriptEvents,
   upsertLiveTranscriptEvent,
 } from "../lib/live-transcript-preview";
@@ -974,6 +975,9 @@ export function App() {
     });
   }, []);
   const selectedNote = state.selectedNote;
+  const selectedNoteTranscriptCoverageKey = authoritativeTranscriptCoverageKey(
+    selectedNote?.sourceTranscripts ?? [],
+  );
   const selectedNoteId = selectedNote?.id;
   // The contextual Ask June panel next to the open note. Scoped to one note:
   // it only renders while a note is the active view, and closes whenever the
@@ -2390,7 +2394,7 @@ export function App() {
     selectedNote?.id,
     selectedNote?.processingStatus,
     selectedNote?.queuedRecordings,
-    selectedNote?.sourceTranscripts,
+    selectedNoteTranscriptCoverageKey,
     state.recordingStatus?.sessionId,
   ]);
 

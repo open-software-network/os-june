@@ -73,6 +73,25 @@ export function clearTerminalLiveTranscriptEvents(
   );
 }
 
+/**
+ * Stable dependency key for the persisted coverage that can replace live
+ * preview events. Polling rebuilds TranscriptDto arrays even when their
+ * coverage is unchanged, so depending on the array reference would rerun the
+ * cleanup effect on every response.
+ */
+export function authoritativeTranscriptCoverageKey(persisted: TranscriptDto[]) {
+  const spans = persisted
+    .filter((turn) => turn.status === "succeeded" && turn.text.trim().length > 0)
+    .map((turn) => [
+      turn.recordingSessionId ?? null,
+      turn.source ?? null,
+      turn.startMs ?? null,
+      turn.endMs ?? null,
+    ])
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return JSON.stringify(spans);
+}
+
 function preserveReferenceWhenUnchanged(
   current: LiveTranscriptEventDto[],
   filtered: LiveTranscriptEventDto[],
