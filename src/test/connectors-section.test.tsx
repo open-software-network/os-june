@@ -185,16 +185,19 @@ describe("ConnectorsSection", () => {
     await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
   });
 
-  it("disconnects with the optional Google-side revoke", async () => {
+  it("revokes by default so a disconnect cannot orphan the grant", async () => {
     mocks.connectorsList.mockResolvedValue([account()]);
     render(<ConnectorsSection />);
     await screen.findByText(/alex@example\.com/);
 
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Google" }));
     const dialog = await screen.findByRole("dialog", { name: /Disconnect alex@example.com/ });
-    await userEvent.click(
+    // Checked on open: a disconnect that leaves the grant alive also drops
+    // June's tokens, so the user could never revoke it from June afterward.
+    expect(
       within(dialog).getByRole("checkbox", { name: /revoke June's access with Google/i }),
-    );
+    ).toBeChecked();
+
     mocks.connectorsList.mockResolvedValue([]);
     await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
 
@@ -207,13 +210,17 @@ describe("ConnectorsSection", () => {
     expect(await findEnabledConnect("Connect Google")).toBeInTheDocument();
   });
 
-  it("disconnects without revoking by default", async () => {
+  it("still allows opting out of the provider-side revoke", async () => {
     mocks.connectorsList.mockResolvedValue([account()]);
     render(<ConnectorsSection />);
     await screen.findByText(/alex@example\.com/);
 
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Google" }));
     const dialog = await screen.findByRole("dialog", { name: /Disconnect alex@example.com/ });
+    // Unchecking is a deliberate "I'll reconnect shortly" choice.
+    await userEvent.click(
+      within(dialog).getByRole("checkbox", { name: /revoke June's access with Google/i }),
+    );
     await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
 
     await waitFor(() =>

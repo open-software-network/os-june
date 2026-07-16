@@ -154,7 +154,12 @@ export function ConnectorsSection() {
   const [connecting, setConnecting] = useState(false);
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<ConnectorAccount | null>(null);
-  const [revoke, setRevoke] = useState(false);
+  // Revoke defaults ON: disconnecting without it leaves the grant alive at
+  // the provider AND deletes June's copy of its tokens, so June can never
+  // revoke it afterward - the user is left cleaning up orphaned
+  // authorizations in the provider's own settings. Opting out stays
+  // available for a deliberate reconnect-soon disconnect.
+  const [revoke, setRevoke] = useState(true);
   const [disconnecting, setDisconnecting] = useState(false);
 
   // Linear team-selection dialog: the account id it's open for (null =
@@ -523,7 +528,7 @@ export function ConnectorsSection() {
                         className="btn btn-ghost"
                         aria-label={`Disconnect ${name}`}
                         onClick={() => {
-                          setRevoke(false);
+                          setRevoke(true);
                           setDisconnectTarget(account);
                         }}
                       >
