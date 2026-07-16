@@ -10,7 +10,7 @@ use std::hash::{Hash, Hasher};
 
 use super::{
     begin_connect, disconnect, list_accounts, notion, scopes::ScopeBundle, ConnectFlow,
-    ConnectorAccount, ConnectorAccountStatus, NotionConnectFlow,
+    ConnectorAccount, ConnectorAccountStatus, ConnectorProvider, NotionConnectFlow,
 };
 
 /// A routine earns autonomy only after this many completed approval-mode
@@ -388,7 +388,10 @@ async fn first_connected_account_email(app: &tauri::AppHandle) -> String {
     match list_accounts(app).await {
         Ok(accounts) => accounts
             .into_iter()
-            .find(|account| account.status == ConnectorAccountStatus::Connected)
+            .find(|account| {
+                account.provider == ConnectorProvider::Google
+                    && account.status == ConnectorAccountStatus::Connected
+            })
             .map(|account| account.email)
             .unwrap_or_default(),
         // Never fail the trust change on an account-enumeration hiccup; the

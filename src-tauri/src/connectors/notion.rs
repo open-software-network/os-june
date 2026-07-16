@@ -34,6 +34,7 @@ const NOTION_ACCOUNT_EMAIL: &str = "Notion hosted MCP preview";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_RESPONSE_MAX_BYTES: usize = 512 * 1024;
 const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
@@ -60,6 +61,7 @@ fn http_client() -> Result<&'static reqwest::Client, AppError> {
             reqwest::Client::builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(HTTP_CONNECT_TIMEOUT)
                 .pool_idle_timeout(Duration::from_secs(90))
                 .tcp_keepalive(Some(Duration::from_secs(30)))
                 .user_agent("os-june/0.1 notion-hosted-mcp-preview")

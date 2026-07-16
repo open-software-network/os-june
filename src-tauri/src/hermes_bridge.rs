@@ -10012,11 +10012,14 @@ fn provider_proxy_required_token<'a>(
 }
 
 fn provider_proxy_is_connector_route(path: &str) -> bool {
+    provider_proxy_is_google_connector_route(path) || provider_proxy_is_notion_connector_route(path)
+}
+
+fn provider_proxy_is_google_connector_route(path: &str) -> bool {
     path.starts_with("/v1/gmail/")
         || path.starts_with("/v1/gmail-actions/")
         || path.starts_with("/v1/gcal/")
         || path.starts_with("/v1/gcal-actions/")
-        || provider_proxy_is_notion_connector_route(path)
 }
 
 fn provider_proxy_is_notion_connector_route(path: &str) -> bool {
@@ -12025,8 +12028,20 @@ mod tests {
             );
         }
 
+        assert!(provider_proxy_is_google_connector_route("/v1/gmail/search_threads"));
+        assert!(provider_proxy_is_google_connector_route("/v1/gmail-actions/send_email"));
+        assert!(provider_proxy_is_google_connector_route("/v1/gcal/list_events"));
+        assert!(provider_proxy_is_google_connector_route("/v1/gcal-actions/create_event"));
+        assert!(provider_proxy_is_notion_connector_route("/v1/notion/tools"));
+        assert!(provider_proxy_is_notion_connector_route("/v1/notion-actions/notion-create-pages"));
+        assert!(!provider_proxy_is_connector_route("/v1/gmailish/search_threads"));
+        assert!(!provider_proxy_is_connector_route("/v1/notionish/tools"));
+        assert!(!provider_proxy_is_connector_route("/v1/models"));
+        assert!(!provider_proxy_is_connector_route("/v1/recorder/start"));
+
         let provider_bearer = request_with_authorization("Bearer provider-tok");
         let recorder_bearer = request_with_authorization("Bearer recorder-tok");
+        let connector_bearer = request_with_authorization("Bearer connector-tok");
         let recorder_required = provider_proxy_required_token(
             "/v1/recorder/start",
             "provider-tok",
@@ -12055,6 +12070,14 @@ mod tests {
             &provider_bearer,
             provider_required
         ));
+        let notion_required = provider_proxy_required_token(
+            "/v1/notion-actions/notion-create-pages",
+            "provider-tok",
+            "recorder-tok",
+            "connector-tok",
+        );
+        assert!(!provider_proxy_authorized(&provider_bearer, notion_required));
+        assert!(provider_proxy_authorized(&connector_bearer, notion_required));
     }
 
     #[test]

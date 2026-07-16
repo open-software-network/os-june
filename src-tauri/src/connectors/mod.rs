@@ -354,12 +354,11 @@ pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccoun
             status: ConnectorAccountStatus::from_db(&record.status),
         })
         .collect();
-    // `list_accounts` is a connected-account listing. The Connectors settings
-    // provider directory owns disconnected rows, so a disconnected Notion
-    // preview is represented here by omission. Keep this to a local credential
-    // check so hosted MCP account listing does not perform network work.
-    // Propagate credential-store errors because an unreadable Notion credential
-    // makes the returned account list non-authoritative for runtime sync.
+    // `list_accounts` is a connected-account listing for user-facing account
+    // surfaces. The Connectors settings provider directory owns disconnected
+    // rows, so a disconnected or unreadable Notion preview is represented here
+    // by omission. Runtime sync checks Notion credentials independently so this
+    // resilient UI listing is not treated as authoritative for MCP registration.
     // `Connected` means local Notion hosted MCP credential material is present;
     // connect and tool use verify hosted-tool usability separately.
     match notion::has_connection().await {
@@ -371,7 +370,12 @@ pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccoun
             status: ConnectorAccountStatus::Connected,
         }),
         Ok(false) => {}
-        Err(error) => return Err(error),
+        Err(error) => {
+            tracing::warn!(
+                error_code = %error.code,
+                "failed to read optional Notion connector status; omitting Notion from account listing"
+            );
+        }
     }
     Ok(accounts)
 }
