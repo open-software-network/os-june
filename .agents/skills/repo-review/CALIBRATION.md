@@ -107,3 +107,7 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #798 | Spec (codex, r1+final) | 0 | — | clean against the RC Slack announcement contract and documented amendments |
 | #798 | Adversarial (codex, r1-r5) | 5 | 3.5 | found mutable historical download links, fail-open provenance guards, and duplicate non-idempotent webhook retries; the notification-only recovery request was partly deliberate, and fixed-alias atomicity was verified as origin/main parity; final approve |
 | #798 | Cross-harness convergence (claude + codex CLI) | — | — | both runner attempts produced no usable verdict; the cycle continued with fresh read-only reviewers rather than treating missing output as approval |
+| #786 | Standards (codex, r1+final) | 3 | 3 | caught two OS Accounts glossary-name violations, raw avatar effect sizes instead of tokens, and the missing canonical avatar-seed term; final clean |
+| #786 | Spec (codex, r1+final) | 2 | 2 | found the old remote seed suppressing a required unsynced local fallback, then the unmount path that bypassed the first stale-response guard; final clean |
+| #786 | Adversarial (codex, r1-r3) | 3 | 3 | found credential resurrection from logout racing a detached cache writer, the legacy-scope fallback hole, and delayed avatar completion restoring signed-in UI after Settings unmounted; final approve |
+| #786 | Adversarial (claude, cross-harness) | — | — | harness produced no verdict before the bounded wait expired; stopped rather than extending the cycle, then used a focused independent codex pass |
