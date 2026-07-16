@@ -261,7 +261,30 @@ describe("ShareDialog", () => {
     );
 
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(mocks.shareKeyGet).toHaveBeenCalledOnce();
+    expect(mocks.shareKeyGet).toHaveBeenCalledTimes(2);
+    expect(onLinkChange).toHaveBeenLastCalledWith(expect.stringContaining("/s/shr_1#link."));
+  });
+
+  it("retries a failed background load when the dialog opens", async () => {
+    const keyB64 = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+    mocks.shareKeyGet.mockResolvedValue({ shareId: "shr_1", contentKeyB64: keyB64 });
+    mocks.shareGet.mockRejectedValueOnce(new Error("temporary load failure")).mockResolvedValue({
+      shareId: "shr_1",
+      kind: "note",
+      invites: [{ inviteId: "shi_link", email: "link@share.invalid", state: "pending" }],
+    });
+    mocks.shareInviteKeysGet.mockResolvedValue([{ inviteId: "shi_link", inviteKeyB64: keyB64 }]);
+    const onLinkChange = vi.fn();
+
+    const { rerender } = render(
+      <ShareDialog open={false} onClose={vi.fn()} onLinkChange={onLinkChange} item={noteItem()} />,
+    );
+    await waitFor(() => expect(mocks.shareGet).toHaveBeenCalledOnce());
+
+    rerender(<ShareDialog open onClose={vi.fn()} onLinkChange={onLinkChange} item={noteItem()} />);
+
+    expect(await screen.findByRole("button", { name: "Copy link" })).toBeEnabled();
+    expect(mocks.shareGet).toHaveBeenCalledTimes(2);
     expect(onLinkChange).toHaveBeenLastCalledWith(expect.stringContaining("/s/shr_1#link."));
   });
 

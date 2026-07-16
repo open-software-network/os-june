@@ -72,14 +72,22 @@ export function ShareDialog({
   const [copying, setCopying] = useState(false);
   const [legacyShare, setLegacyShare] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [loadVersion, setLoadVersion] = useState(0);
   const [confirmStop, setConfirmStop] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busyRef = useRef(false);
   const copyingRef = useRef(false);
   const copyResetTimerRef = useRef<number>();
   const activeItemRef = useRef(`${item.kind}:${item.itemId}`);
+  const previousOpenRef = useRef(open);
   activeItemRef.current = `${item.kind}:${item.itemId}`;
   const shouldLoadShare = open || Boolean(onLinkChange);
+
+  useEffect(() => {
+    const wasOpen = previousOpenRef.current;
+    previousOpenRef.current = open;
+    if (open && !wasOpen) setLoadVersion((version) => version + 1);
+  }, [open]);
 
   const clearCopyFeedback = useCallback(() => {
     if (copyResetTimerRef.current !== undefined) {
@@ -179,7 +187,7 @@ export function ShareDialog({
     return () => {
       cancelled = true;
     };
-  }, [shouldLoadShare, item.kind, item.itemId, clearCopyFeedback]);
+  }, [shouldLoadShare, item.kind, item.itemId, clearCopyFeedback, loadVersion]);
 
   const copyExistingLink = useCallback(
     async (
