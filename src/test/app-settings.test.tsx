@@ -44,6 +44,9 @@ const mocks = vi.hoisted(() => ({
   osAccountsUpgradeSession: vi.fn(),
   osAccountsChangePlan: vi.fn(),
   osAccountsSetAvatarSeed: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastWarning: vi.fn(),
+  toastError: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
@@ -75,6 +78,14 @@ vi.mock("../lib/updater", () => ({
   getReleaseChannel: mocks.getReleaseChannel,
   setReleaseChannel: mocks.setReleaseChannel,
   reconcileToStable: mocks.reconcileToStable,
+}));
+
+vi.mock("../components/ui/Toaster", () => ({
+  toast: {
+    success: mocks.toastSuccess,
+    warning: mocks.toastWarning,
+    error: mocks.toastError,
+  },
 }));
 
 // Pin a prerelease build so the leave-rc reconcile offer can be exercised; the
@@ -710,7 +721,7 @@ describe("AppSettings", () => {
       ...signedInAccount,
       user: { ...signedInAccount.user, avatarSeed: seed },
     });
-    expect(screen.getByText("Avatar synced with your OpenSoftware account.")).toBeInTheDocument();
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("Avatar updated everywhere");
     expect(
       Object.keys(localStorage).some((key) => key.startsWith("june:account-avatar-pending:")),
     ).toBe(true);
@@ -751,9 +762,10 @@ describe("AppSettings", () => {
         avatarSeed: "v1:00000000000000000000000000000000",
       },
     };
-    mocks.osAccountsSetAvatarSeed.mockRejectedValueOnce(
-      new Error("Sign in again to refresh your account permissions."),
-    );
+    mocks.osAccountsSetAvatarSeed.mockRejectedValueOnce({
+      code: "account_permission_required",
+      message: "Your current sign-in does not include this permission.",
+    });
     const renderSettings = () =>
       render(
         <AppSettings
@@ -776,9 +788,10 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("button", { name: "Refresh" }));
 
-    expect(
-      screen.getByText("Sign in again to refresh your account permissions."),
-    ).toBeInTheDocument();
+    expect(mocks.toastWarning).toHaveBeenCalledWith(
+      "Avatar changed on this device, but it couldn't sync. Sign out and sign in again to update your account permissions.",
+    );
+    expect(screen.queryByText(/account permissions/)).not.toBeInTheDocument();
     expect(
       Object.keys(localStorage).some((key) => key.startsWith("june:account-avatar-pending:")),
     ).toBe(true);

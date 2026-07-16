@@ -2,6 +2,7 @@ import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise
 import { IconShuffle } from "central-icons/IconShuffle";
 import { useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { toast } from "../ui/Toaster";
 import { hasLiveSubscription } from "../../lib/account-gate";
 import { errorCode } from "../../lib/errors";
 import {
@@ -108,14 +109,18 @@ export function AccountSettingsSection({ account, loading, onAccountChanged }: P
         onAccountChanged({ ...currentAccount, user });
       }
       if (!accountRef.current.signedIn && !accountRef.current.localDev) return;
-      setAccountStatus(
-        account.localDev
-          ? "Avatar refreshed on this device."
-          : "Avatar synced with your OpenSoftware account.",
+      toast.success(
+        account.localDev ? "Avatar updated on this device" : "Avatar updated everywhere",
       );
     } catch (error) {
       if (mountedRef.current && (accountRef.current.signedIn || accountRef.current.localDev)) {
-        setAccountStatus(messageFromError(error));
+        if (errorCode(error) === "account_permission_required") {
+          toast.warning(
+            "Avatar changed on this device, but it couldn't sync. Sign out and sign in again to update your account permissions.",
+          );
+        } else {
+          toast.error(messageFromError(error));
+        }
       }
     } finally {
       if (mountedRef.current) setAvatarBusy(false);

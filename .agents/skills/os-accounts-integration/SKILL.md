@@ -103,12 +103,19 @@ POST {API}/auth/refresh  { refresh_token } → { access_token, refresh_token }  
 POST {API}/auth/logout   { refresh_token }
 GET  {API}/me            → { id:"usr_…", handle, email, display_name, avatar_url, avatar_seed }
 PATCH {API}/me           Bearer user JWT with `profile:write`
-                          { avatar_seed:"<opaque ASCII value, 1..128 chars>" }
+                          { avatar_seed:"v1:<printable ASCII payload>" }  # 4..128 chars total
+                          # send null to clear the stored seed
                           → updated `/me` shape
+
+# Avatar v1 presentation ────────────────────────────────────────────
+# effective seed = supported avatar_seed ?? `v1:default:${user.id}`
+# seed fixes geometry; default palette is neutral gray
+# host themes may supply semantic accent + bright-accent colors
+# never persist a new seed during login, startup, or a theme change
 
 # Metering (App API key, server-to-server) ──────────────────────────
 POST {API}/authorize     Bearer osk_…
-  { user_id:"usr_…", action, estimate_credits, hold_ttl_seconds }   # ttl: 1..=600s
+  { user_id:"usr_…", action, estimate_credits, hold_ttl_seconds }   # ttl: 1..=900s
                           → allowed:
                               { allowed:true,  grant_id:"agt_…", token:"agts_…",
                                 action:"<slug>.<action>", cap_credits, expires_at }

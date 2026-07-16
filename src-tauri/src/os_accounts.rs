@@ -73,6 +73,7 @@ const ALREADY_ON_PLAN_CODE: &str = "already_on_plan";
 const UNKNOWN_PLAN_CODE: &str = "unknown_plan";
 const PLAN_NOT_ENABLED_CODE: &str = "plan_not_enabled";
 const UPGRADE_SESSION_UNAVAILABLE_CODE: &str = "upgrade_session_unavailable";
+const ACCOUNT_PERMISSION_REQUIRED_CODE: &str = "account_permission_required";
 /// Error code for a refresh that failed transiently (OS Accounts unreachable or
 /// wobbling), as opposed to a definitive rejection of the refresh token. A
 /// transient failure must NOT be treated as a sign-out: the user is still
@@ -785,10 +786,16 @@ pub async fn os_accounts_set_avatar_seed(seed: String) -> Result<AccountUser, Ap
 }
 
 fn validate_avatar_seed(seed: String) -> Result<String, AppError> {
-    if seed.is_empty() || seed.len() > AVATAR_SEED_MAX_LENGTH || !seed.is_ascii() {
+    let payload = seed.strip_prefix("v1:").unwrap_or_default();
+    let is_valid = !payload.is_empty()
+        && seed.len() <= AVATAR_SEED_MAX_LENGTH
+        && payload
+            .bytes()
+            .all(|byte| byte == b' ' || byte.is_ascii_graphic());
+    if !is_valid {
         return Err(AppError::new(
             "invalid_avatar_seed",
-            "The avatar seed must be 1 to 128 ASCII characters.",
+            "The avatar seed must use v1 with 1 to 125 printable ASCII payload characters.",
         ));
     }
     Ok(seed)
@@ -1721,6 +1728,12 @@ async fn authed_patch<T: for<'de> Deserialize<'de>>(
 /// codes so the frontend never has to match on message text. Canonical-copy
 /// fallbacks cover envelopes that omit the message.
 fn accounts_request_error(error_code: Option<i64>, message: Option<String>) -> AppError {
+    if message.as_deref() == Some("access token is missing required scope") {
+        return AppError::new(
+            ACCOUNT_PERMISSION_REQUIRED_CODE,
+            "Your current sign-in does not include this permission.",
+        );
+    }
     let stable = |code: &str, fallback: &str, message: Option<String>| {
         AppError::new(code, message.unwrap_or_else(|| fallback.to_string()))
     };
@@ -1766,9 +1779,6 @@ fn accounts_request_error_for_response(
 
 fn accounts_request_failed_message(message: Option<String>) -> String {
     match message.as_deref() {
-        Some("access token is missing required scope") => {
-            "Sign in again to refresh your account permissions.".to_string()
-        }
         Some(message) => message.to_string(),
         None => "OS Accounts request failed.".to_string(),
     }
@@ -2246,9 +2256,13 @@ mod tests {
     #[test]
     fn avatar_seed_validation_matches_the_os_accounts_contract() {
         assert!(validate_avatar_seed("v1:seed".to_string()).is_ok());
+        assert!(validate_avatar_seed(format!("v1:{}", "x".repeat(125))).is_ok());
         assert!(validate_avatar_seed(String::new()).is_err());
-        assert!(validate_avatar_seed("☁".to_string()).is_err());
-        assert!(validate_avatar_seed("x".repeat(AVATAR_SEED_MAX_LENGTH + 1)).is_err());
+        assert!(validate_avatar_seed("v1:".to_string()).is_err());
+        assert!(validate_avatar_seed("v2:future".to_string()).is_err());
+        assert!(validate_avatar_seed("v1:cloud-☁".to_string()).is_err());
+        assert!(validate_avatar_seed("v1:line\nbreak".to_string()).is_err());
+        assert!(validate_avatar_seed(format!("v1:{}", "x".repeat(126))).is_err());
     }
 
     #[test]
@@ -2348,6 +2362,19 @@ mod tests {
         let error = accounts_request_error(None, None);
         assert_eq!(error.code, "request_failed");
         assert_eq!(error.message, "OS Accounts request failed.");
+    }
+
+    #[test]
+    fn accounts_error_maps_a_legacy_scope_token_to_a_stable_code() {
+        let error = accounts_request_error(
+            None,
+            Some("access token is missing required scope".to_string()),
+        );
+        assert_eq!(error.code, ACCOUNT_PERMISSION_REQUIRED_CODE);
+        assert_eq!(
+            error.message,
+            "Your current sign-in does not include this permission."
+        );
     }
 
     #[test]

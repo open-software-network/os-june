@@ -23,7 +23,9 @@ on their own account — profile and own billing-config writes). The hard line i
 the **App API key**, not read-vs-write: anything requiring it (**app-attributed
 spend** — `authorize`/`charge`) goes through a backend you control. The pattern
 below deliberately keeps even Top-up off-device by opening the system browser, so
-the on-device surface stays identity + reads.
+the on-device surface stays identity + reads. It can still **capture the User's
+`credits:spend` Consent at login** (ADR-0010) so your backend Broker can meter —
+capturing consent is not spending, and the binary never holds the App API key.
 
 ## Plugins & crates
 
@@ -81,7 +83,7 @@ non-secret config file so the same module can target local, staging, and prod:
 |---|---|---|
 | Local | `http://localhost:3000` | `http://localhost:4000` |
 | Staging | `https://os-accounts-portal-staging.up.railway.app` | `https://os-accounts-api-staging.up.railway.app` |
-| Prod | `https://accounts.opensoftware.co` | `https://api.accounts.opensoftware.co` |
+| Prod | `https://accounts.opensoftware.co` | `https://accounts-api.opensoftware.co` |
 
 Do not load `OS_ACCOUNTS_APP_API_KEY` in Tauri. That secret belongs only in your
 backend broker.
@@ -99,7 +101,7 @@ use sha2::{Digest, Sha256};
 use tauri_plugin_opener::OpenerExt;
 
 const DEFAULT_ACCOUNTS_URL: &str = "https://accounts.opensoftware.co";
-const DEFAULT_API_URL: &str = "https://api.accounts.opensoftware.co";
+const DEFAULT_API_URL: &str = "https://accounts-api.opensoftware.co";
 const REDIRECT_URI: &str = "yourapp://auth/callback";
 const CLIENT_ID: &str = env!("OS_ACCOUNTS_CLIENT_ID");
 const KEYCHAIN_SERVICE: &str = "com.yourapp.os-accounts";
@@ -168,7 +170,12 @@ pub fn begin_login(app: tauri::AppHandle, state: tauri::State<LoginFlow>) -> Res
         config.accounts_url,
         urlencoding::encode(CLIENT_ID),
         urlencoding::encode(REDIRECT_URI),
-        urlencoding::encode("profile:read profile:write billing:read"),
+        // Request `credits:spend` HERE if your App meters usage. A public client
+        // MAY capture this consent (ADR-0010); it can never *spend* with it (it
+        // holds no App API key). This is the consent your backend Broker relies
+        // on at /authorize — omit it and metering fails with
+        // `missing_spend_consent`. Drop it for identity-only apps.
+        urlencoding::encode("profile:read profile:write billing:read credits:spend"),
     );
     app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string()) // system browser
 }
@@ -287,11 +294,21 @@ Authenticate these calls with the **user's own** access token from the keychain.
 On `error_code 3001` (expired), refresh once via `/auth/refresh` (rotating — store
 the new pair), then retry.
 
+The Avatar is network-wide profile state (ADR-0034 through ADR-0036). Render a
+supported `v1:<payload>` seed with the Open Software Avatar v1 renderer. Without
+one — including when a future unsupported version is stored — derive the
+presentation-only seed `v1:default:<User.id>`. The seed fixes cloud geometry;
+use a neutral gray palette by default or supply the App's semantic accent and
+bright-accent colors. A theme change never writes profile state. Never replace
+an unknown version or write a new seed during login/startup — `PATCH /me` is
+reserved for an explicit User choice.
+
 ```rust
 #[derive(Serialize, Deserialize)]
 pub struct Me {
     pub id: String,
     pub handle: String,
+    pub avatar_url: Option<String>,
     pub avatar_seed: Option<String>,
 }
 
@@ -364,6 +381,13 @@ user token (JWKS/ES256 — see [verifying-tokens.md](verifying-tokens.md)) to ge
 `usr_` id, then runs the `authorize`→`charge` sequence with the App API key (see
 [metering-and-billing.md](metering-and-billing.md)). The desktop app just calls
 *your* endpoint with the user's token:
+
+> **Consent prerequisite.** `/authorize` requires the User to have granted this
+> App `credits:spend`. That consent is captured during *this app's* login —
+> request `credits:spend` in `begin_login`'s `scope` (above). A public client
+> capturing spend consent is allowed (ADR-0010) and inert on its own: the consent
+> only becomes spend when your Broker presents the App API key. Omit the scope and
+> the Broker's first `/authorize` returns `missing_spend_consent`.
 
 ```rust
 #[tauri::command]

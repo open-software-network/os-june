@@ -34,13 +34,17 @@ export function AccountAvatar({
 
 export function useAccountAvatar(account: AccountStatus) {
   const identity = accountAvatarIdentity(account);
-  const remoteSeed = validAccountAvatarSeed(account.user?.avatarSeed);
+  const userId = account.user?.id?.trim() || identity;
+  const remoteSeed = supportedAccountAvatarSeed(account.user?.avatarSeed);
+  const defaultSeed = resolvedAccountAvatarSeed(account.user?.avatarSeed, userId);
   const getSnapshot = useCallback(
     () =>
-      readPendingAccountAvatarSeed(identity) ?? remoteSeed ?? readLocalAccountAvatarSeed(identity),
-    [identity, remoteSeed],
+      readPendingAccountAvatarSeed(identity) ??
+      (account.localDev ? readLocalAccountAvatarSeed(identity) : undefined) ??
+      defaultSeed,
+    [account.localDev, defaultSeed, identity],
   );
-  const seed = useSyncExternalStore(subscribeAccountAvatar, getSnapshot, () => `${identity}:0`);
+  const seed = useSyncExternalStore(subscribeAccountAvatar, getSnapshot, () => defaultSeed);
 
   useEffect(() => {
     if (remoteSeed && readPendingAccountAvatarSeed(identity) === remoteSeed) {
@@ -83,7 +87,7 @@ function accountAvatarIdentity(account: AccountStatus): string {
   );
 }
 
-function accountAvatarStyle(seed: string): AccountAvatarStyle {
+export function accountAvatarStyle(seed: string): AccountAvatarStyle {
   return {
     "--avatar-cloud-x": `${seededInteger(seed, "x", 14, 40)}%`,
     "--avatar-cloud-y": `${seededInteger(seed, "y", 12, 38)}%`,
@@ -115,18 +119,13 @@ function accountAvatarPendingStorageKey(identity: string): string {
   return `${ACCOUNT_AVATAR_PENDING_STORAGE_PREFIX}${avatarHash(identity).toString(36)}`;
 }
 
-function readLocalAccountAvatarSeed(identity: string): string {
-  if (typeof window === "undefined") return `${identity}:0`;
+function readLocalAccountAvatarSeed(identity: string): string | undefined {
+  if (typeof window === "undefined") return undefined;
   try {
     const stored = window.localStorage.getItem(accountAvatarVariantStorageKey(identity));
-    const legacyVariant = Number.parseInt(stored ?? "0", 10);
-    if (stored !== null && /^\d+$/.test(stored)) {
-      const variant = Number.isSafeInteger(legacyVariant) && legacyVariant >= 0 ? legacyVariant : 0;
-      return `${identity}:${variant}`;
-    }
-    return validAccountAvatarSeed(stored) ?? `${identity}:0`;
+    return supportedAccountAvatarSeed(stored);
   } catch {
-    return `${identity}:0`;
+    return undefined;
   }
 }
 
@@ -142,7 +141,7 @@ function writeLocalAccountAvatarSeed(identity: string, seed: string) {
 function readPendingAccountAvatarSeed(identity: string): string | undefined {
   if (typeof window === "undefined") return undefined;
   try {
-    return validAccountAvatarSeed(
+    return supportedAccountAvatarSeed(
       window.localStorage.getItem(accountAvatarPendingStorageKey(identity)),
     );
   } catch {
@@ -168,13 +167,24 @@ function clearPendingAccountAvatarSeed(identity: string) {
   }
 }
 
-function validAccountAvatarSeed(value: string | null | undefined): string | undefined {
-  const hasNonAscii = value ? [...value].some((character) => character.charCodeAt(0) > 127) : false;
-  if (!value || value.length > 128 || hasNonAscii) return undefined;
-  return value;
+export function supportedAccountAvatarSeed(value: string | null | undefined): string | undefined {
+  if (!value?.startsWith("v1:") || value.length < 4 || value.length > 128) return undefined;
+  const payload = value.slice(3);
+  const isPrintableAscii = [...payload].every((character) => {
+    const code = character.charCodeAt(0);
+    return code >= 32 && code <= 126;
+  });
+  return payload && isPrintableAscii ? value : undefined;
 }
 
-function createAccountAvatarSeed(): string {
+export function resolvedAccountAvatarSeed(
+  avatarSeed: string | null | undefined,
+  userId: string,
+): string {
+  return supportedAccountAvatarSeed(avatarSeed) ?? `v1:default:${userId}`;
+}
+
+export function createAccountAvatarSeed(): string {
   const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
   const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
   return `v1:${hex}`;

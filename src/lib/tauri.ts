@@ -1769,7 +1769,7 @@ export async function osAccountsLogout(options: AccountsLogoutOptions = {}) {
   });
 }
 
-/** Persist the opaque generated-avatar seed on the signed-in OS Accounts User. */
+/** Persist an explicit Avatar v1 selection on the signed-in OS Accounts User. */
 export async function osAccountsSetAvatarSeed(seed: string) {
   return invoke<AccountUser>("os_accounts_set_avatar_seed", { seed });
 }

@@ -23,12 +23,17 @@ see [june-api-prd.md](june-api-prd.md). Implementation lives in
    prompts.
 5. The app fetches an **account snapshot** — `/me` + `/billing/balance` +
    `/billing/subscription` — surfaced to the UI as `AccountStatus`. `/me`
-   includes the optional opaque `avatar_seed` used to keep generated avatars
-   stable across devices.
+   includes the optional renderer-versioned `avatar_seed` used to keep the
+   User's Avatar geometry stable across Apps and devices.
 
 June requests `profile:write` in addition to `profile:read` so the User can
-refresh that seed from General settings. Existing sessions minted without the
-write scope must sign in again before the refresh can sync.
+explicitly choose a new Avatar from General settings. Avatar v1 seeds use
+`v1:<payload>` with 1 to 125 printable ASCII payload characters. June renders a
+supported saved seed; if the seed is absent or uses a future unsupported
+version, June derives `v1:default:<User.id>` without changing OS Accounts. The
+seed fixes geometry and June supplies the active theme's palette. Existing
+sessions minted without the write scope remain signed in but must sign out and
+sign in again before a new selection can sync.
 
 ## Gates
 
