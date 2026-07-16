@@ -1035,7 +1035,11 @@ fn absolute_expiry(now: i64, expires_in: u64) -> Result<i64, AppError> {
 fn is_invalid_refresh(error: &str) -> bool {
     matches!(
         error,
-        "bad_refresh_token" | "invalid_grant" | "expired_token" | "revoked_token"
+        "bad_refresh_token"
+            | "invalid_grant"
+            | "expired_token"
+            | "revoked_token"
+            | "incorrect_client_credentials"
     )
 }
 
@@ -2088,6 +2092,27 @@ pub(crate) mod tests {
         ));
         server.await.expect("server task");
 
+        for status in [200, 400] {
+            let (base_url, server) = scripted_server(vec![(
+                ResponseFixture::json(status, r#"{"error":"incorrect_client_credentials"}"#),
+                RequestExpectations {
+                    refresh_token: Some("revoked-live-refresh"),
+                    ..RequestExpectations::default()
+                },
+            )])
+            .await;
+            let client = GitHubAuthClient::for_test(&base_url).expect("test client");
+
+            assert!(matches!(
+                client
+                    .refresh_tokens("Iv23example", "revoked-live-refresh")
+                    .await
+                    .expect("live revocation must be definitive"),
+                RefreshOutcome::InvalidGrant
+            ));
+            server.await.expect("server task");
+        }
+
         let leaked = "body-must-not-leak";
         let (base_url, server) = scripted_server(vec![(
             ResponseFixture::json(500, leaked),
@@ -2122,17 +2147,17 @@ pub(crate) mod tests {
 
         for status in [302, 401, 429, 500] {
             let (base_url, server) = scripted_server(vec![(
-                ResponseFixture::json(status, r#"{"error":"bad_refresh_token"}"#),
+                ResponseFixture::json(status, r#"{"error":"incorrect_client_credentials"}"#),
                 RequestExpectations::default(),
             )])
             .await;
             let client = GitHubAuthClient::for_test(&base_url).expect("test client");
             let error = client
-                .refresh_tokens("Iv23example", "hostile-fake-refresh")
+                .refresh_tokens("Iv23example", "revoked-live-refresh")
                 .await
-                .expect_err("hostile status must not invalidate the grant");
+                .expect_err("unsafe status must remain transient");
             assert_eq!(error.code, "github_refresh_failed");
-            assert!(!error.message.contains("bad_refresh_token"));
+            assert!(!error.message.contains("incorrect_client_credentials"));
             server.await.expect("server task");
         }
     }
