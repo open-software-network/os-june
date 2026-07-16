@@ -274,6 +274,8 @@ struct BrowserBrokerState {
     routine_grants: Vec<RoutineBrowserGrant>,
     outcome_repository: Option<Repositories>,
     transport_policy: BrowserTransportPolicy,
+    #[cfg(test)]
+    routine_entitlement_override: Option<bool>,
 }
 
 struct BrowserSession {
@@ -387,6 +389,46 @@ impl BrowserBroker {
             .routine_grants
             .retain(|existing| existing.job_id != grant.job_id);
         state.routine_grants.push(grant);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_routine_entitlement_for_test(&self, entitled: bool) {
+        self.lock().routine_entitlement_override = Some(entitled);
+    }
+
+    async fn routine_entitled(&self) -> Result<bool, AppError> {
+        #[cfg(test)]
+        {
+            return Ok(self.lock().routine_entitlement_override.unwrap_or(true));
+        }
+        #[cfg(not(test))]
+        {
+            crate::os_accounts::require_routine_browser_entitlement()
+                .await
+                .map(|()| true)
+                .or_else(|error| {
+                    if error.code == "browser_routine_pro_required" {
+                        Ok(false)
+                    } else {
+                        Err(error)
+                    }
+                })
+        }
+    }
+
+    /// Re-check the current account tier at the broker boundary for every
+    /// routine request. A stored grant is only an opt-in, never proof of the
+    /// paid capability; a downgrade also tears down any already-live managed
+    /// session before the request is refused.
+    pub(crate) async fn require_routine_entitlement(&self, job_id: &str) -> Result<(), AppError> {
+        if self.routine_entitled().await? {
+            return Ok(());
+        }
+        self.revoke_routine_sessions(job_id).await;
+        Err(AppError::new(
+            "browser_routine_pro_required",
+            "Routine Browser use requires a Pro or Max plan.",
+        ))
     }
 
     pub(crate) fn remove_routine_grant(&self, job_id: &str) -> Option<RoutineBrowserGrant> {
@@ -1028,6 +1070,7 @@ impl BrowserBroker {
         let routine_id = match &context {
             BrowserBrokerContext::Attended => None,
             BrowserBrokerContext::Routine(job_id) => {
+                self.require_routine_entitlement(job_id).await?;
                 self.require_routine_opt_in(job_id, tool)?;
                 Some(job_id.as_str())
             }
@@ -2711,6 +2754,57 @@ mod tests {
             .await
             .expect_err("a revoked routine cannot retain a live session");
         assert_eq!(error.code, "browser_routine_not_opted_in");
+    }
+
+    #[tokio::test]
+    async fn routine_entitlement_is_rechecked_before_dispatch_and_downgrade_closes_sessions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let transport = Arc::new(TeardownTrackingTransport::default());
+        let broker = BrowserBroker::default();
+        broker.set_routine_entitlement_for_test(true);
+        broker.configure_transport(
+            BrowserTransportKind::Managed,
+            transport.clone(),
+            temp.path().join("images"),
+            temp.path().join("artifacts"),
+        );
+        broker.set_routine_grant(RoutineBrowserGrant {
+            job_id: "routine-downgraded".into(),
+            server_name: "june_browser_routine_downgraded".into(),
+            token: "routine-token".into(),
+            enabled: true,
+        });
+        let started = broker
+            .execute_for(
+                BrowserBrokerContext::Routine("routine-downgraded".into()),
+                "start_session",
+                json!({}),
+            )
+            .await
+            .expect("an entitled routine can start a session");
+
+        broker.set_routine_entitlement_for_test(false);
+        let error = broker
+            .execute_for(
+                BrowserBrokerContext::Routine("routine-downgraded".into()),
+                "snapshot",
+                json!({ "session_id": started["sessionId"] }),
+            )
+            .await
+            .expect_err("a downgraded account must be refused before dispatch");
+
+        assert_eq!(error.code, "browser_routine_pro_required");
+        assert_eq!(
+            transport
+                .terminated
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            transport.closed.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(broker.active_session_count(), 0);
     }
 
     #[tokio::test]

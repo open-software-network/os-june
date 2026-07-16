@@ -2969,6 +2969,12 @@ pub async fn routine_browser_access_set(
             "A routine id is required.",
         ));
     }
+    if request.enabled {
+        bridge
+            .browser_broker
+            .require_routine_entitlement(job_id)
+            .await?;
+    }
     let repos = crate::commands::repositories(&app).await?;
     let previous = repos.routine_browser_grant(job_id).await?;
     if request.enabled {
@@ -10431,6 +10437,24 @@ async fn handle_browser_status(
         .await;
     };
     let broker_context = authenticated_context.broker_context();
+    if let BrowserCallerContext::Routine(job_id) = &authenticated_context {
+        if let Err(error) = state
+            .browser_broker
+            .require_routine_entitlement(job_id)
+            .await
+        {
+            return write_json_response(
+                stream,
+                403,
+                serde_json::json!({
+                    "success": false,
+                    "message": error.message,
+                    "errorCode": error.code,
+                }),
+            )
+            .await;
+        }
+    }
     if matches!(&authenticated_context, BrowserCallerContext::Attended)
         && !state.browser_broker.is_enabled_for(&broker_context)
     {
@@ -13278,6 +13302,22 @@ mod tests {
         );
         assert!(response.contains("\"enabled\":true"));
         assert!(response.contains("\"activeSessions\":0"));
+    }
+
+    #[tokio::test]
+    async fn routine_browser_status_refuses_an_account_without_the_paid_capability() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let access_flag = home.path().join(BROWSER_ACCESS_FLAG_FILE);
+        let broker = broker_for_access_flag_with_routine(&access_flag, true);
+        broker.set_routine_entitlement_for_test(false);
+
+        let response = browser_status_response_with_broker_and_token(broker, "browser-token").await;
+
+        assert!(
+            response.starts_with("HTTP/1.1 403 Forbidden"),
+            "a routine grant must not bypass the account capability: {response}"
+        );
+        assert!(response.contains("browser_routine_pro_required"));
     }
 
     #[tokio::test]
