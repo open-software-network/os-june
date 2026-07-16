@@ -13,6 +13,10 @@ export type UpdateCheckMode = "launch" | "manual" | "periodic";
 
 export const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
+// The manual-check success status. Shared so the reporter and the auto-dismiss
+// effect that matches on it (App), plus the dev demo, can't drift apart.
+export const UP_TO_DATE_STATUS = "June is up to date.";
+
 export type UpdaterUpdate = {
   version: string;
   body?: string;

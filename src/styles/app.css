@@ -22032,10 +22032,15 @@ button.memory-project:hover {
   cursor: default;
 }
 
-/* Bare June mark, no tile: faint at rest, warms to brand on hover. */
+/* Bare June mark, no tile: faint at rest, warms to brand on hover. Fixed 10px
+ * box (mirroring .update-status-mark) so swapping to the dot spinner while
+ * relaunching never reflows the copy; the spinner ignores this faint tint and
+ * keeps its darker --spinner-neutral default. */
 .update-relaunch-mark {
   display: inline-grid;
   place-items: center;
+  width: 10px;
+  height: 10px;
   margin-top: 2px;
   color: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
   transition: color var(--t-slow) var(--ease-spring);
@@ -22060,7 +22065,7 @@ button.memory-project:hover {
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: var(--fw-medium);
+  font-weight: 400;
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -22090,33 +22095,43 @@ button.memory-project:hover {
   transform: translateX(3px);
 }
 
+/* Same card chrome as .update-relaunch-card, minus the hover shadow: this is a
+ * non-interactive status card (only the close button acts). Left padding sits
+ * a step wider so the mark/spinner slot doesn't hug the card edge. */
 .update-status-card {
   display: grid;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   width: 100%;
-  padding: var(--sp-3);
-  border: 1px solid var(--popover-border);
+  padding: var(--sp-2);
+  padding-left: var(--sp-3);
+  border: 1px solid color-mix(in oklch, var(--foreground) 15%, transparent);
   border-radius: var(--r-md);
-  background: var(--popover);
-  color: var(--popover-foreground);
-  box-shadow: var(--shadow-md);
+  background: var(--card);
+  color: var(--foreground);
 }
 
 .update-status-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 24px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
 }
 
-.update-status-icon {
+/* Fixed 10px box so the busy dot spinner and the settled June mark occupy the
+ * exact same footprint — swapping them never reflows the status text. The
+ * static mark takes the muted tint matching .update-relaunch-mark; the spinner
+ * keeps its darker --spinner-neutral default so the busy state reads clearly. */
+.update-status-mark {
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
-  color: var(--muted-foreground);
+  width: 10px;
+  height: 10px;
+  color: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+}
+
+.update-status-mark svg {
+  width: 10px;
+  height: auto;
 }
 
 .update-status-text {
@@ -22124,10 +22139,16 @@ button.memory-project:hover {
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: var(--fw-medium);
+  font-weight: 400;
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Failed checks/downloads tint the text destructive, like .update-relaunch-status;
+ * the mark stays muted. */
+.update-status-text-failed {
+  color: color-mix(in oklch, var(--destructive) 70%, var(--foreground));
 }
 
 .update-status-close {
@@ -22153,6 +22174,9 @@ button.memory-project:hover {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-3);
+  /* Start the track under the copy column (10px mark slot + row gap) so it
+   * lines up with the status text rather than the mark. */
+  padding-left: calc(10px + var(--sp-3));
 }
 
 .update-progress-track {
@@ -22166,7 +22190,9 @@ button.memory-project:hover {
   height: 100%;
   min-width: 8px;
   border-radius: inherit;
-  background: var(--foreground);
+  /* Lighter than --foreground so the bar reads quiet; --muted-foreground stays
+   * clearly ahead of the --surface-subtle track in both themes. */
+  background: var(--muted-foreground);
   transition: width var(--t-fast) var(--ease-out);
 }
 
@@ -22174,6 +22200,40 @@ button.memory-project:hover {
   color: var(--muted-foreground);
   font-size: var(--fs-xs);
   line-height: 1;
+}
+
+/* Number pop-in for the download percent: each digit is keyed by
+ * position+character in React, so only a digit that actually changed remounts
+ * and replays the rise — the ones digit ticks, the tens digit only rolls over.
+ * Vars are scoped here (flat global stylesheet), tuned short for a 1%-per-tick
+ * counter but kept tunable. */
+.update-digit-group {
+  --update-digit-dur: 320ms;
+  --update-digit-distance: 8px;
+  --update-digit-blur: 2px;
+  --update-digit-ease: cubic-bezier(0.34, 1.45, 0.64, 1);
+
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.update-digit {
+  display: inline-block;
+  animation: update-digit-pop-in var(--update-digit-dur) var(--update-digit-ease) both;
+  will-change: transform, opacity, filter;
+}
+
+@keyframes update-digit-pop-in {
+  from {
+    transform: translateY(var(--update-digit-distance));
+    opacity: 0;
+    filter: blur(var(--update-digit-blur));
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+    filter: blur(0);
+  }
 }
 
 @keyframes update-popover-in {
@@ -22187,8 +22247,34 @@ button.memory-project:hover {
   }
 }
 
+/* Timed auto-dismiss of the up-to-date confirmation: mirror the entrance so
+ * the card fades and slides back down instead of blinking out. The status
+ * clears just after this finishes (UP_TO_DATE_EXIT_MS in App.tsx). Manual
+ * close-button dismisses stay instant. */
+.update-popover[data-leaving="true"] {
+  animation: update-popover-out var(--t-med) var(--ease-out) both;
+}
+
+@keyframes update-popover-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .update-popover {
+  /* The attribute selector outranks the bare class, so the exit needs its own
+   * entry here: the timed hide becomes an instant disappearance. */
+  .update-popover,
+  .update-popover[data-leaving="true"] {
+    animation: none;
+  }
+
+  .update-digit {
     animation: none;
   }
 
