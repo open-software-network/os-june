@@ -6121,12 +6121,26 @@ describe("AgentWorkspace", () => {
       expect(userTurn).not.toBeNull();
       expect(assistantTurn).not.toBeNull();
 
-      await user.click(
-        within(assistantTurn as HTMLElement).getByRole("button", {
-          name: "Copy message",
-        }),
-      );
+      const assistantCopy = within(assistantTurn as HTMLElement).getByRole("button", {
+        name: "Copy message",
+      });
+      const iconSwap = assistantCopy.querySelector(".t-icon-swap");
+      const idleIcon = iconSwap?.querySelector('[data-icon="a"]');
+      const copiedIcon = iconSwap?.querySelector('[data-icon="b"]');
+
+      expect(iconSwap).toHaveAttribute("data-state", "a");
+      expect(idleIcon).toBeInTheDocument();
+      expect(copiedIcon).toBeInTheDocument();
+      fireEvent.focus(assistantCopy);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copy message");
+
+      await user.click(assistantCopy);
       expect(writeText).toHaveBeenLastCalledWith("Here is the launch plan.");
+      expect(assistantCopy).toHaveAccessibleName("Copied message");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+      expect(iconSwap?.querySelector('[data-icon="a"]')).toBe(idleIcon);
+      expect(iconSwap?.querySelector('[data-icon="b"]')).toBe(copiedIcon);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
 
       await user.click(
         within(userTurn as HTMLElement).getByRole("button", {

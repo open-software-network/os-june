@@ -1,6 +1,11 @@
+import { IconCircleInfo } from "central-icons/IconCircleInfo";
+import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
+import { IconEyeOpen } from "central-icons/IconEyeOpen";
+import { IconEyeSlash } from "central-icons/IconEyeSlash";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 
-import { isShareNotFoundError, messageFromError } from "../../lib/errors";
+import { describeShareError, isShareNotFoundError } from "../../lib/errors";
 import {
   buildLinkShareFragment,
   derivePasscodeKey,
@@ -24,7 +29,12 @@ import {
   type ShareKind,
 } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { CopyLinkField } from "../ui/CopyLinkField";
+import { CopyStateIcon } from "../ui/CopyStateIcon";
 import { Dialog } from "../ui/Dialog";
+import { HoverTip } from "../ui/HoverTip";
+import { InlineNotice } from "../ui/InlineNotice";
+import { Switch } from "../ui/Switch";
 
 export type ShareDialogItem = {
   kind: ShareKind;
@@ -40,10 +50,12 @@ const MIN_PASSCODE_LENGTH = 8;
 export function ShareDialog({
   open,
   onClose,
+  onLinkChange,
   item,
 }: {
   open: boolean;
   onClose: () => void;
+  onLinkChange?: (url: string | null) => void;
   item: ShareDialogItem;
 }) {
   const [loading, setLoading] = useState(false);
@@ -54,18 +66,59 @@ export function ShareDialog({
   const [passwordProtected, setPasswordProtected] = useState(false);
   const [requirePasscode, setRequirePasscode] = useState(false);
   const [passcode, setPasscode] = useState("");
+  const [revealPasscode, setRevealPasscode] = useState(false);
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState<"link" | "passcode" | null>(null);
+  const [copying, setCopying] = useState(false);
   const [legacyShare, setLegacyShare] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [loadVersion, setLoadVersion] = useState(0);
   const [confirmStop, setConfirmStop] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busyRef = useRef(false);
+  const copyingRef = useRef(false);
+  const copyResetTimerRef = useRef<number>();
   const activeItemRef = useRef(`${item.kind}:${item.itemId}`);
+  const previousOpenRef = useRef(open);
   activeItemRef.current = `${item.kind}:${item.itemId}`;
+  const shouldLoadShare = open || Boolean(onLinkChange);
 
   useEffect(() => {
-    if (!open) return;
+    const wasOpen = previousOpenRef.current;
+    previousOpenRef.current = open;
+    if (open && !wasOpen) setLoadVersion((version) => version + 1);
+  }, [open]);
+
+  const clearCopyFeedback = useCallback(() => {
+    if (copyResetTimerRef.current !== undefined) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = undefined;
+    }
+    setCopied(null);
+  }, []);
+
+  const showCopyFeedback = useCallback((kind: "link" | "passcode") => {
+    if (copyResetTimerRef.current !== undefined) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+    setCopied(kind);
+    copyResetTimerRef.current = window.setTimeout(() => {
+      setCopied(null);
+      copyResetTimerRef.current = undefined;
+    }, 1600);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!shouldLoadShare) return;
     const startedItem = `${item.kind}:${item.itemId}`;
     let cancelled = false;
     setLoading(true);
@@ -75,7 +128,8 @@ export function ShareDialog({
     setPasswordProtected(false);
     setRequirePasscode(false);
     setPasscode("");
-    setCopied(null);
+    setRevealPasscode(false);
+    clearCopyFeedback();
     setLegacyShare(false);
     setLoadFailed(false);
     setConfirmStop(false);
@@ -125,7 +179,7 @@ export function ShareDialog({
           setShareId(null);
         }
       } catch (loadError) {
-        if (!cancelled) setError(messageFromError(loadError));
+        if (!cancelled) setError(describeShareError(loadError));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -133,7 +187,7 @@ export function ShareDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, item.kind, item.itemId]);
+  }, [shouldLoadShare, item.kind, item.itemId, clearCopyFeedback, loadVersion]);
 
   const copyExistingLink = useCallback(
     async (
@@ -141,6 +195,7 @@ export function ShareDialog({
       nextInviteId: string,
       materialB64: string,
       protectedLink: boolean,
+      showFeedback = true,
     ) => {
       const url = baseUrl ?? (await getShareBaseUrl());
       const fragment = buildLinkShareFragment(
@@ -148,20 +203,33 @@ export function ShareDialog({
         fromBase64Url(materialB64),
         protectedLink,
       );
-      await navigator.clipboard.writeText(`${url}/s/${nextShareId}#${fragment}`);
+      await writeClipboardText(`${url}/s/${nextShareId}#${fragment}`);
       setBaseUrl(url);
-      setCopied("link");
+      if (showFeedback) showCopyFeedback("link");
     },
-    [baseUrl],
+    [baseUrl, showCopyFeedback],
   );
 
+  const runClipboardCopy = useCallback(async (copy: () => Promise<void>) => {
+    copyingRef.current = true;
+    setCopying(true);
+    try {
+      await copy();
+    } finally {
+      copyingRef.current = false;
+      setCopying(false);
+    }
+  }, []);
+
   const handleCopyLink = useCallback(async () => {
-    if (busyRef.current || loading || legacyShare || loadFailed) return;
+    if (busyRef.current || copyingRef.current || loading || legacyShare || loadFailed) return;
     setError(null);
-    setCopied(null);
+    clearCopyFeedback();
     if (shareId && inviteId && linkMaterialB64) {
       try {
-        await copyExistingLink(shareId, inviteId, linkMaterialB64, passwordProtected);
+        await runClipboardCopy(() =>
+          copyExistingLink(shareId, inviteId, linkMaterialB64, passwordProtected),
+        );
       } catch {
         setError("Couldn't copy the link. Try again.");
       }
@@ -210,23 +278,36 @@ export function ShareDialog({
         shareId: created.shareId,
         inviteKeyB64: materialB64,
       });
+      createdShareId = null;
       if (activeItemRef.current === startedItem) {
         setShareId(created.shareId);
         setInviteId(createdInvite.inviteId);
         setLinkMaterialB64(materialB64);
         setPasswordProtected(Boolean(salt));
+        try {
+          await runClipboardCopy(() =>
+            copyExistingLink(
+              created.shareId,
+              createdInvite.inviteId,
+              materialB64,
+              Boolean(salt),
+              false,
+            ),
+          );
+        } catch {
+          setError("Link created, but couldn't copy it. Select Copy to try again.");
+        }
       }
-      createdShareId = null;
-      await copyExistingLink(created.shareId, createdInvite.inviteId, materialB64, Boolean(salt));
     } catch (createError) {
       if (createdShareId) await shareDelete(createdShareId).catch(() => {});
-      if (activeItemRef.current === startedItem) setError(messageFromError(createError));
+      if (activeItemRef.current === startedItem) setError(describeShareError(createError));
     } finally {
       busyRef.current = false;
       setBusy(false);
     }
   }, [
     copyExistingLink,
+    clearCopyFeedback,
     inviteId,
     item,
     legacyShare,
@@ -236,13 +317,26 @@ export function ShareDialog({
     passcode,
     passwordProtected,
     requirePasscode,
+    runClipboardCopy,
     shareId,
   ]);
+
+  const handleCopyPasscode = useCallback(async () => {
+    if (!passcode || busyRef.current || copyingRef.current) return;
+    setError(null);
+    clearCopyFeedback();
+    try {
+      await runClipboardCopy(() => writeClipboardText(passcode));
+      showCopyFeedback("passcode");
+    } catch {
+      setError("Couldn't copy the passcode. Try again.");
+    }
+  }, [clearCopyFeedback, passcode, runClipboardCopy, showCopyFeedback]);
 
   const handleStopSharing = useCallback(async () => {
     if (!shareId) return;
     await shareDelete(shareId).catch((stopError) => {
-      setError(messageFromError(stopError));
+      setError(describeShareError(stopError));
       throw stopError;
     });
     setShareId(null);
@@ -250,8 +344,8 @@ export function ShareDialog({
     setLinkMaterialB64(null);
     setPasswordProtected(false);
     setLegacyShare(false);
-    setCopied(null);
-  }, [shareId]);
+    clearCopyFeedback();
+  }, [clearCopyFeedback, shareId]);
 
   const handleClose = useCallback(() => {
     if (!busyRef.current) onClose();
@@ -259,6 +353,19 @@ export function ShareDialog({
 
   const itemNoun = item.kind === "note" ? "note" : "session";
   const hasLink = Boolean(shareId && inviteId && linkMaterialB64);
+  const requiresPasscode = requirePasscode || passwordProtected;
+  const shareUrl =
+    shareId && inviteId && linkMaterialB64 && baseUrl
+      ? `${baseUrl}/s/${shareId}#${buildLinkShareFragment(
+          inviteId,
+          fromBase64Url(linkMaterialB64),
+          passwordProtected,
+        )}`
+      : null;
+
+  useEffect(() => {
+    onLinkChange?.(shareUrl);
+  }, [onLinkChange, shareUrl]);
 
   return (
     <>
@@ -267,111 +374,134 @@ export function ShareDialog({
         onClose={handleClose}
         disableBackdropClose={busy}
         title={`Share ${itemNoun}`}
-        description={`Anyone with the link can view a snapshot of "${item.title || `Untitled ${itemNoun}`}".`}
+        description={`Anyone with the link${requiresPasscode ? " and passcode" : ""} can view an encrypted snapshot of "${item.title || `Untitled ${itemNoun}`}".${requiresPasscode ? " June never stores the passcode." : ""}`}
         width={480}
         className="share-dialog"
         footer={
-          <>
-            {shareId ? (
-              <button
-                type="button"
-                className="primary-action share-unshare"
-                disabled={busy}
-                onClick={() => setConfirmStop(true)}
-              >
-                Stop sharing
-              </button>
-            ) : null}
+          shareId ? (
             <button
               type="button"
-              className="primary-action primary-solid"
+              className="primary-action share-unshare"
               disabled={busy}
-              onClick={handleClose}
+              onClick={() => setConfirmStop(true)}
             >
-              Done
+              Stop sharing
             </button>
-          </>
-        }
-      >
-        <div className="dialog-body share-dialog-body">
-          {loading ? <p className="share-dialog-caption">Loading share...</p> : null}
-          {!loading && legacyShare ? (
-            <p className="share-dialog-caption">
-              This item uses the previous invite-only sharing model. Stop sharing it to create a
-              simpler link.
-            </p>
-          ) : null}
-          {!loading && !legacyShare && !hasLink ? (
-            <label className="share-dialog-caption">
-              <input
-                type="checkbox"
-                checked={requirePasscode}
-                disabled={busy || loadFailed}
-                onChange={(event) => {
-                  setRequirePasscode(event.currentTarget.checked);
-                  setError(null);
-                }}
-              />{" "}
-              Require a passcode
-            </label>
-          ) : null}
-          {!loading && !legacyShare && !hasLink && requirePasscode ? (
-            <div className="share-invite-row">
-              <label className="dialog-field-label" htmlFor="share-passcode">
-                Passcode
-              </label>
-              <input
-                id="share-passcode"
-                className="dialog-input"
-                type="password"
-                autoComplete="new-password"
-                disabled={loadFailed}
-                value={passcode}
-                placeholder="At least 8 characters"
-                onChange={(event) => setPasscode(event.currentTarget.value)}
-              />
-              <p className="share-dialog-caption">
-                June never stores this passcode. Send it separately from the link.
-              </p>
-            </div>
-          ) : null}
-          {!loading && !legacyShare ? (
+          ) : !loading && !legacyShare ? (
             <button
               type="button"
               className="primary-action primary-solid"
               disabled={busy || loadFailed}
               onClick={() => void handleCopyLink()}
             >
-              {busy ? "Creating link..." : copied === "link" ? "Link copied" : "Copy link"}
+              {busy ? "Creating link..." : "Create link"}
             </button>
+          ) : undefined
+        }
+      >
+        <div className="dialog-body share-dialog-body">
+          {loading ? <p className="share-dialog-caption">Loading share...</p> : null}
+          {!loading && legacyShare ? (
+            <InlineNotice
+              tone="info"
+              aria-label="Legacy share notice"
+              icon={<IconCircleInfo size={14} aria-hidden />}
+              body="This item uses the previous invite-only sharing model. Stop sharing it to create a simpler link."
+            />
           ) : null}
-          {hasLink ? (
-            <p className="share-dialog-caption">
-              {passwordProtected
-                ? "This link requires the passcode you chose. June does not store the passcode."
-                : "Anyone with this encrypted link can view the snapshot without signing in."}
-            </p>
+          {!loading && !legacyShare && !hasLink ? (
+            <div className="share-dialog-section">
+              <div className="share-option-row">
+                <div className="share-option-info">
+                  <span className="share-option-title" id="share-passcode-label">
+                    Require a passcode
+                  </span>
+                  <span className="share-option-description">
+                    June never stores the passcode. Send it separately.
+                  </span>
+                </div>
+                <Switch
+                  checked={requirePasscode}
+                  disabled={busy || loadFailed}
+                  aria-labelledby="share-passcode-label"
+                  onCheckedChange={(next) => {
+                    setRequirePasscode(next);
+                    setError(null);
+                  }}
+                />
+              </div>
+              {requirePasscode ? (
+                <div className="share-option-row">
+                  <label className="share-option-title" htmlFor="share-passcode">
+                    Passcode
+                  </label>
+                  <div className="share-passcode-control">
+                    <input
+                      id="share-passcode"
+                      className="dialog-input"
+                      type={revealPasscode ? "text" : "password"}
+                      autoComplete="new-password"
+                      disabled={loadFailed}
+                      value={passcode}
+                      placeholder="At least 8 characters"
+                      onChange={(event) => setPasscode(event.currentTarget.value)}
+                    />
+                    <button
+                      type="button"
+                      className="icon-button share-passcode-reveal"
+                      aria-label={revealPasscode ? "Hide passcode" : "Show passcode"}
+                      aria-pressed={revealPasscode}
+                      onClick={() => setRevealPasscode((value) => !value)}
+                    >
+                      {revealPasscode ? <IconEyeSlash size={16} /> : <IconEyeOpen size={16} />}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
           ) : null}
-          {hasLink && passwordProtected && passcode ? (
-            <button
-              type="button"
-              className="primary-action"
-              onClick={() => {
-                void navigator.clipboard.writeText(passcode).then(() => setCopied("passcode"));
-              }}
-            >
-              {copied === "passcode" ? "Passcode copied" : "Copy passcode"}
-            </button>
+          {hasLink && shareUrl ? (
+            <div className="share-link-block">
+              <CopyLinkField
+                value={shareUrl}
+                label={`Share link for ${item.title || `Untitled ${itemNoun}`}`}
+                copied={copied === "link"}
+                disabled={busy || copying}
+                onCopy={() => void handleCopyLink()}
+              />
+              {passwordProtected && passcode ? (
+                <HoverTip
+                  compact
+                  width={112}
+                  tip={copied === "passcode" ? "Copied" : "Copy passcode"}
+                  forceOpen={copied === "passcode"}
+                  suppressed={busy || copying}
+                  className="share-link-copy-passcode-tip"
+                >
+                  <button
+                    type="button"
+                    className="share-link-copy-passcode"
+                    aria-label={copied === "passcode" ? "Passcode copied" : "Copy passcode"}
+                    data-copied={copied === "passcode" ? "true" : undefined}
+                    disabled={busy || copying}
+                    onClick={() => void handleCopyPasscode()}
+                  >
+                    <CopyStateIcon copied={copied === "passcode"} />
+                    Copy passcode
+                  </button>
+                </HoverTip>
+              ) : null}
+            </div>
           ) : null}
           {error ? (
-            <p className="share-dialog-error" role="alert">
-              {error}
-            </p>
+            <InlineNotice
+              tone="destructive"
+              role="alert"
+              aria-label="Share error"
+              icon={<IconExclamationCircle size={14} aria-hidden />}
+              body={error}
+            />
           ) : null}
-          <p className="share-dialog-caption">
-            Shares are encrypted snapshots. Anyone can forward the link and passcode; stopping
-            sharing disables the link for everyone.
-          </p>
         </div>
       </Dialog>
       <ConfirmDialog

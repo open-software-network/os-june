@@ -1,4 +1,3 @@
-import { IconClipboard } from "central-icons/IconClipboard";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
@@ -6,7 +5,6 @@ import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconMicrophone as IconMicrophoneLine } from "central-icons/IconMicrophone";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
-import { IconCheckmark2 } from "central-icons-filled/IconCheckmark2";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
@@ -27,6 +25,7 @@ import type {
 } from "../../lib/tauri";
 import { DotSpinner } from "../DotSpinner";
 import { InlineNotice } from "../ui/InlineNotice";
+import { CopyStateIcon } from "../ui/CopyStateIcon";
 import { HoverTip } from "../ui/HoverTip";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
@@ -1053,6 +1052,33 @@ function compareOptionalNumber(left?: number, right?: number) {
   return left - right;
 }
 
+function useCopyFeedback() {
+  const [copied, setCopied] = useState(false);
+  const copyResetTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(
+    () => () => {
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  function showCopiedFeedback() {
+    setCopied(true);
+    if (copyResetTimerRef.current !== undefined) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+    copyResetTimerRef.current = window.setTimeout(() => {
+      setCopied(false);
+      copyResetTimerRef.current = undefined;
+    }, 1600);
+  }
+
+  return { copied, showCopiedFeedback };
+}
+
 /** A single conversation turn in the Transcription tab. Mirrors the dictation
  * history row language: a source glyph, a light meta line, and the transcript
  * text — copy reveals on hover, long turns clamp to a "Show more" toggle. */
@@ -1064,7 +1090,7 @@ function TranscriptTurn({
   preview?: boolean;
 }) {
   const textRef = useRef<HTMLParagraphElement>(null);
-  const [copied, setCopied] = useState(false);
+  const { copied, showCopiedFeedback } = useCopyFeedback();
   const [expanded, setExpanded] = useState(false);
   const [clamped, setClamped] = useState(false);
 
@@ -1078,12 +1104,6 @@ function TranscriptTurn({
   const errorMessage = sourceTurnFailureMessage(transcript.lastError);
   const copyValue = hasText ? transcript.text : errorMessage;
   const canCopy = copyValue.trim().length > 0;
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
 
   // Measure whether the collapsed text overflows its line clamp so the
   // "Show more" toggle only appears when there's hidden content.
@@ -1104,7 +1124,7 @@ function TranscriptTurn({
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(copyValue);
-      setCopied(true);
+      showCopiedFeedback();
     } catch {
       // Clipboard can fail in restricted contexts; stay silent.
     }
@@ -1138,16 +1158,17 @@ function TranscriptTurn({
         {errorMessage ? <p className="source-transcript-error">{errorMessage}</p> : null}
       </div>
       {canCopy ? (
-        <button
-          type="button"
-          className="transcript-turn-copy"
-          data-copied={copied || undefined}
-          aria-label={copied ? "Copied" : "Copy turn"}
-          title={copied ? "Copied" : "Copy"}
-          onClick={() => void handleCopy()}
-        >
-          {copied ? <IconCheckmark2 size={14} /> : <IconClipboard size={14} />}
-        </button>
+        <HoverTip compact width={104} tip={copied ? "Copied" : "Copy"} forceOpen={copied}>
+          <button
+            type="button"
+            className="transcript-turn-copy"
+            data-copied={copied || undefined}
+            aria-label={copied ? "Copied" : "Copy turn"}
+            onClick={() => void handleCopy()}
+          >
+            <CopyStateIcon copied={copied} />
+          </button>
+        </HoverTip>
       ) : null}
     </article>
   );
@@ -1161,18 +1182,12 @@ function sourceTurnFailureMessage(message?: string) {
 }
 
 function CopyTranscriptButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
+  const { copied, showCopiedFeedback } = useCopyFeedback();
 
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
+      showCopiedFeedback();
     } catch {
       // Clipboard API can fail in restricted contexts; stay silent
       // rather than nag — the user can retry.
@@ -1180,17 +1195,18 @@ function CopyTranscriptButton({ text }: { text: string }) {
   }
 
   return (
-    <button
-      type="button"
-      className="transcript-copy"
-      onClick={() => void handleCopy()}
-      data-copied={copied || undefined}
-      aria-label={copied ? "Transcript copied" : "Copy transcript"}
-      title={copied ? "Copied" : "Copy transcript"}
-    >
-      {copied ? <IconCheckmark2 size={14} /> : <IconClipboard size={14} />}
-      {copied ? "Copied" : "Copy"}
-    </button>
+    <HoverTip compact width={104} tip={copied ? "Copied" : "Copy"} forceOpen={copied}>
+      <button
+        type="button"
+        className="transcript-copy"
+        onClick={() => void handleCopy()}
+        data-copied={copied || undefined}
+        aria-label={copied ? "Transcript copied" : "Copy transcript"}
+      >
+        <CopyStateIcon copied={copied} />
+        Copy
+      </button>
+    </HoverTip>
   );
 }
 

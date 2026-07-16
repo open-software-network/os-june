@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   shareInviteKeySave: vi.fn(),
   shareInviteKeysGet: vi.fn(),
   getShareBaseUrl: vi.fn(),
+  writeClipboardText: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -26,6 +27,10 @@ vi.mock("../lib/tauri", () => ({
   shareInviteKeySave: mocks.shareInviteKeySave,
   shareInviteKeysGet: mocks.shareInviteKeysGet,
   getShareBaseUrl: mocks.getShareBaseUrl,
+}));
+
+vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  writeText: mocks.writeClipboardText,
 }));
 
 const BASE_URL = "https://june-api.opensoftware.co";
@@ -46,12 +51,19 @@ function noteItem(overrides: Partial<Parameters<typeof ShareDialog>[0]["item"]> 
 }
 
 function mockClipboard() {
-  const writeText = vi.fn().mockResolvedValue(undefined);
-  Object.defineProperty(navigator, "clipboard", {
-    configurable: true,
-    value: { writeText },
+  mocks.writeClipboardText.mockResolvedValue(undefined);
+  return mocks.writeClipboardText;
+}
+
+function mockStoredLink() {
+  const keyB64 = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+  mocks.shareKeyGet.mockResolvedValue({ shareId: "shr_1", contentKeyB64: keyB64 });
+  mocks.shareGet.mockResolvedValue({
+    shareId: "shr_1",
+    kind: "note",
+    invites: [{ inviteId: "shi_link", email: "link@share.invalid", state: "pending" }],
   });
-  return writeText;
+  mocks.shareInviteKeysGet.mockResolvedValue([{ inviteId: "shi_link", inviteKeyB64: keyB64 }]);
 }
 
 beforeEach(() => {
@@ -62,35 +74,48 @@ beforeEach(() => {
   mocks.shareInviteKeySave.mockResolvedValue(undefined);
   mocks.shareInviteKeysGet.mockResolvedValue([]);
   mocks.shareDelete.mockResolvedValue(undefined);
+  mocks.writeClipboardText.mockResolvedValue(undefined);
 });
 
 describe("ShareDialog", () => {
-  it("offers one copy-link action with an optional passcode", async () => {
+  it("offers one create-link action with an optional passcode", async () => {
     render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
-    expect(await screen.findByRole("button", { name: "Copy link" })).toBeEnabled();
-    expect(screen.getByRole("checkbox", { name: "Require a passcode" })).not.toBeChecked();
+    expect(await screen.findByRole("button", { name: "Create link" })).toBeEnabled();
+    expect(screen.getByRole("switch", { name: "Require a passcode" })).not.toBeChecked();
     expect(screen.queryByLabelText("Passcode")).not.toBeInTheDocument();
     expect(screen.queryByText(/Invite by email/i)).not.toBeInTheDocument();
   });
 
-  it("creates an anonymous encrypted link and copies a decryptable URL", async () => {
+  it("creates an anonymous encrypted link and copies it automatically", async () => {
     mocks.shareCreate.mockImplementation(async (input) => ({
       shareId: "shr_1",
       invites: [{ inviteId: "shi_link", email: input.invites[0].email }],
     }));
+    let finishInviteKeySave: () => void = () => {};
+    mocks.shareInviteKeySave.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishInviteKeySave = resolve;
+        }),
+    );
     const user = userEvent.setup();
     const clipboard = mockClipboard();
     render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
 
-    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+    await user.click(await screen.findByRole("button", { name: "Create link" }));
+    await waitFor(() => expect(mocks.shareInviteKeySave).toHaveBeenCalledTimes(1));
+    expect(clipboard).not.toHaveBeenCalled();
+    finishInviteKeySave();
 
-    await waitFor(() => expect(clipboard).toHaveBeenCalledTimes(1));
+    const linkField = (await screen.findByRole("textbox", {
+      name: /Share link for/i,
+    })) as HTMLInputElement;
     expect(mocks.shareCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         invites: [expect.objectContaining({ email: "link@share.invalid" })],
       }),
     );
-    const link = clipboard.mock.calls[0][0] as string;
+    const link = linkField.value;
     const fragment = link.split("#")[1].split(".");
     expect(fragment.slice(0, 3)).toEqual(["link", "shi_link", "key"]);
 
@@ -110,6 +135,8 @@ describe("ShareDialog", () => {
     expect(mocks.shareInviteKeySave).toHaveBeenCalledWith(
       expect.objectContaining({ inviteId: "shi_link" }),
     );
+    await waitFor(() => expect(clipboard).toHaveBeenCalledWith(link));
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeEnabled();
   });
 
   it("creates a passcode link whose fragment carries only a salt", async () => {
@@ -121,34 +148,82 @@ describe("ShareDialog", () => {
     const clipboard = mockClipboard();
     render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
 
-    await user.click(await screen.findByRole("checkbox", { name: "Require a passcode" }));
+    await user.click(await screen.findByRole("switch", { name: "Require a passcode" }));
     await user.type(screen.getByLabelText("Passcode"), "correct horse battery staple");
-    await user.click(screen.getByRole("button", { name: "Copy link" }));
+    await user.click(screen.getByRole("button", { name: "Create link" }));
 
-    await waitFor(() => expect(clipboard).toHaveBeenCalledTimes(1));
-    const fragment = (clipboard.mock.calls[0][0] as string).split("#")[1].split(".");
+    const linkField = (await screen.findByRole("textbox", {
+      name: /Share link for/i,
+    })) as HTMLInputElement;
+    const fragment = linkField.value.split("#")[1].split(".");
     expect(fragment.slice(0, 3)).toEqual(["link", "shi_link", "pass"]);
     expect(fromBase64Url(fragment[3])).toHaveLength(16);
     expect(mocks.shareInviteKeySave.mock.calls[0][0].inviteKeyB64).toBe(fragment[3]);
-    expect(screen.getByText(/June does not store the passcode/i)).toBeInTheDocument();
+    await waitFor(() => expect(clipboard).toHaveBeenCalledWith(linkField.value));
+    expect(screen.getByText(/June never stores the passcode/i)).toBeInTheDocument();
+
+    let finishPasscodeCopy: () => void = () => {};
+    clipboard.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPasscodeCopy = resolve;
+        }),
+    );
+    await user.click(screen.getByRole("button", { name: "Copy passcode" }));
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Copy passcode" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(clipboard).toHaveBeenCalledTimes(2);
+    finishPasscodeCopy();
+    await waitFor(() => expect(clipboard).toHaveBeenLastCalledWith("correct horse battery staple"));
+    const copiedPasscodeButton = screen.getByRole("button", { name: "Passcode copied" });
+    expect(copiedPasscodeButton).toBeEnabled();
+    expect(copiedPasscodeButton).toHaveTextContent("Copy passcode");
+    expect(copiedPasscodeButton.querySelector(".t-icon-swap")).toHaveAttribute("data-state", "b");
+    fireEvent.focus(copiedPasscodeButton);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
+  });
+
+  it("keeps a created link available when automatic copy fails", async () => {
+    mocks.shareCreate.mockResolvedValue({
+      shareId: "shr_1",
+      invites: [{ inviteId: "shi_link", email: "link@share.invalid" }],
+    });
+    mocks.writeClipboardText.mockRejectedValueOnce(new Error("clipboard unavailable"));
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    await user.click(await screen.findByRole("button", { name: "Create link" }));
+
+    const linkField = (await screen.findByRole("textbox", {
+      name: /Share link for/i,
+    })) as HTMLInputElement;
+    expect(await screen.findByText(/Link created, but couldn't copy it/i)).toBeInTheDocument();
+    expect(mocks.shareDelete).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Copy link" }));
+    await waitFor(() => expect(mocks.writeClipboardText).toHaveBeenLastCalledWith(linkField.value));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
 
   it("loads and copies an existing link without recreating the share", async () => {
-    const keyB64 = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
-    mocks.shareKeyGet.mockResolvedValue({ shareId: "shr_1", contentKeyB64: keyB64 });
-    mocks.shareGet.mockResolvedValue({
-      shareId: "shr_1",
-      kind: "note",
-      invites: [{ inviteId: "shi_link", email: "link@share.invalid", state: "pending" }],
-    });
-    mocks.shareInviteKeysGet.mockResolvedValue([{ inviteId: "shi_link", inviteKeyB64: keyB64 }]);
+    mockStoredLink();
     const user = userEvent.setup();
     const clipboard = mockClipboard();
     render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
 
-    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+    const linkField = (await screen.findByRole("textbox", {
+      name: /Share link for/i,
+    })) as HTMLInputElement;
+    expect(linkField).toHaveAttribute("readonly");
+    expect(linkField.value).toContain("/s/shr_1#link.");
+    expect(linkField.closest(".copy-link-field")).not.toBeNull();
+    expect(linkField.closest(".share-dialog-section")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Copy link" }));
     await waitFor(() => expect(clipboard).toHaveBeenCalledWith(expect.stringContaining("#link.")));
     expect(mocks.shareCreate).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Link copied" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Stop sharing" })).toBeEnabled();
   });
 
@@ -159,32 +234,105 @@ describe("ShareDialog", () => {
     render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("temporary load failure");
-    const copyButton = screen.getByRole("button", { name: "Copy link" });
-    expect(copyButton).toBeDisabled();
-    fireEvent.click(copyButton);
+    const passcodeSwitch = screen.getByRole("switch", { name: "Require a passcode" });
+    expect(passcodeSwitch).toBeDisabled();
+    fireEvent.click(passcodeSwitch);
     expect(mocks.shareCreate).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Stop sharing" })).toBeEnabled();
   });
 
-  it("keeps a created share attached when copying its link fails", async () => {
-    mocks.shareCreate.mockResolvedValue({
+  it("reports a stored link while closed for breadcrumb actions", async () => {
+    mockStoredLink();
+    const onLinkChange = vi.fn();
+
+    const { rerender } = render(
+      <ShareDialog open={false} onClose={vi.fn()} onLinkChange={onLinkChange} item={noteItem()} />,
+    );
+
+    await waitFor(() =>
+      expect(onLinkChange).toHaveBeenLastCalledWith(expect.stringContaining("/s/shr_1#link.")),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    rerender(<ShareDialog open onClose={vi.fn()} onLinkChange={onLinkChange} item={noteItem()} />);
+    expect(await screen.findByRole("button", { name: "Copy link" })).toBeEnabled();
+    rerender(
+      <ShareDialog open={false} onClose={vi.fn()} onLinkChange={onLinkChange} item={noteItem()} />,
+    );
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mocks.shareKeyGet).toHaveBeenCalledTimes(2);
+    expect(onLinkChange).toHaveBeenLastCalledWith(expect.stringContaining("/s/shr_1#link."));
+  });
+
+  it("retries a failed background load when the dialog opens", async () => {
+    const keyB64 = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+    mocks.shareKeyGet.mockResolvedValue({ shareId: "shr_1", contentKeyB64: keyB64 });
+    mocks.shareGet.mockRejectedValueOnce(new Error("temporary load failure")).mockResolvedValue({
       shareId: "shr_1",
-      invites: [{ inviteId: "shi_link", email: "link@share.invalid" }],
+      kind: "note",
+      invites: [{ inviteId: "shi_link", email: "link@share.invalid", state: "pending" }],
     });
-    const user = userEvent.setup();
-    const clipboard = mockClipboard();
-    clipboard.mockRejectedValueOnce(new Error("clipboard unavailable"));
+    mocks.shareInviteKeysGet.mockResolvedValue([{ inviteId: "shi_link", inviteKeyB64: keyB64 }]);
+    const onLinkChange = vi.fn();
+
+    const { rerender } = render(
+      <ShareDialog open={false} onClose={vi.fn()} onLinkChange={onLinkChange} item={noteItem()} />,
+    );
+    await waitFor(() => expect(mocks.shareGet).toHaveBeenCalledOnce());
+
+    rerender(<ShareDialog open onClose={vi.fn()} onLinkChange={onLinkChange} item={noteItem()} />);
+
+    expect(await screen.findByRole("button", { name: "Copy link" })).toBeEnabled();
+    expect(mocks.shareGet).toHaveBeenCalledTimes(2);
+    expect(onLinkChange).toHaveBeenLastCalledWith(expect.stringContaining("/s/shr_1#link."));
+  });
+
+  it("resets explicit copy feedback after the platform delay", async () => {
+    mockStoredLink();
+    mockClipboard();
     render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
 
-    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+    const copyButton = await screen.findByRole("button", { name: "Copy link" });
+    const iconSwap = copyButton.querySelector(".t-icon-swap");
+    expect(iconSwap).toHaveAttribute("data-state", "a");
+    expect(iconSwap?.querySelectorAll(".t-icon")).toHaveLength(2);
+    expect(iconSwap?.querySelector('[data-icon="a"]')).not.toBeNull();
+    expect(iconSwap?.querySelector('[data-icon="b"]')).not.toBeNull();
+    expect(copyButton).toHaveTextContent("");
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("clipboard unavailable");
-    expect(screen.getByRole("button", { name: "Stop sharing" })).toBeEnabled();
-    expect(mocks.shareDelete).not.toHaveBeenCalled();
+    vi.useFakeTimers();
+    try {
+      fireEvent.focus(copyButton);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copy link");
 
-    await user.click(screen.getByRole("button", { name: "Copy link" }));
-    await waitFor(() => expect(clipboard).toHaveBeenCalledTimes(2));
-    expect(mocks.shareCreate).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+      expect(copyButton).toHaveAccessibleName("Link copied");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
+
+      act(() => vi.advanceTimersByTime(1_599));
+      expect(copyButton).toHaveAccessibleName("Link copied");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+      act(() => vi.advanceTimersByTime(1));
+      expect(copyButton).toHaveAccessibleName("Link copied");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+
+      act(() => vi.advanceTimersByTime(1_599));
+      expect(copyButton).toHaveAccessibleName("Copy link");
+      expect(iconSwap).toHaveAttribute("data-state", "a");
+      expect(screen.queryByRole("tooltip")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("blocks every close path while link creation is in flight", async () => {
@@ -199,9 +347,9 @@ describe("ShareDialog", () => {
     const user = userEvent.setup();
     render(<ShareDialog open onClose={onClose} item={noteItem()} />);
 
-    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+    await user.click(await screen.findByRole("button", { name: "Create link" }));
     await waitFor(() => expect(mocks.shareCreate).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole("button", { name: "Done" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Creating link..." })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
@@ -209,7 +357,21 @@ describe("ShareDialog", () => {
       shareId: "shr_1",
       invites: [{ inviteId: "shi_link", email: "link@share.invalid" }],
     });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Done" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Stop sharing" })).toBeEnabled());
+  });
+
+  it("maps the sharing_unavailable machine code to a human message", async () => {
+    mocks.shareCreate.mockRejectedValue({ message: "sharing_unavailable" });
+    mockClipboard();
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    await user.click(await screen.findByRole("button", { name: "Create link" }));
+
+    expect(
+      await screen.findByText(/Sharing isn't available on this June server yet/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("sharing_unavailable")).not.toBeInTheDocument();
   });
 
   it("surfaces legacy invite shares without making them anonymous", async () => {
@@ -222,6 +384,6 @@ describe("ShareDialog", () => {
     mocks.shareInviteKeysGet.mockResolvedValue([]);
     render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
     expect(await screen.findByText(/previous invite-only sharing model/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Copy link" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create link" })).not.toBeInTheDocument();
   });
 });

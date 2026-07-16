@@ -1,17 +1,18 @@
 import { IconBubble3 } from "central-icons/IconBubble3";
-import { IconChainLink1 } from "central-icons/IconChainLink1";
-import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
+import { IconArrowShareRight } from "central-icons/IconArrowShareRight";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
-import { IconArrowInbox } from "central-icons/IconArrowInbox";
-import { IconShareOs } from "central-icons/IconShareOs";
+import { IconFilePdf } from "central-icons/IconFilePdf";
+import { IconReference } from "central-icons/IconReference";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { useEffect, useRef, useState } from "react";
 
 import { noteReferenceToken } from "../agent/composer/noteReference";
+import { toast } from "../ui/Toaster";
 
 /** The note's top-bar actions: Ask June (toggles the contextual chat panel),
- * copy-reference, and an overflow menu (delete). Lives in the note toolbar's
- * actions slot so it sits in a consistent, predictable spot across every note. */
+ * share, and an overflow menu (copy reference, export, delete). Lives in the
+ * note toolbar's actions slot so it sits in a consistent, predictable spot
+ * across every note. */
 export function NoteHeaderActions({
   noteId,
   noteTitle,
@@ -34,7 +35,7 @@ export function NoteHeaderActions({
   onShare?: () => void;
   /** Opens the system print sheet with a PDF-ready version of the note. */
   onExportPdf?: () => void;
-  /** Opens the delete-note confirmation. Omitted → no overflow menu. */
+  /** Opens the delete-note confirmation. */
   onDelete?: () => void;
 }) {
   return (
@@ -59,21 +60,27 @@ export function NoteHeaderActions({
           title="Share"
           onClick={onShare}
         >
-          <IconShareOs size={16} />
+          <IconArrowShareRight size={16} />
         </button>
       ) : null}
-      <CopyNoteReferenceButton noteId={noteId} title={noteTitle} />
-      {onExportPdf || onDelete ? (
-        <NoteOverflowMenu onExportPdf={onExportPdf} onDelete={onDelete} />
-      ) : null}
+      <NoteOverflowMenu
+        noteId={noteId}
+        noteTitle={noteTitle}
+        onExportPdf={onExportPdf}
+        onDelete={onDelete}
+      />
     </div>
   );
 }
 
 function NoteOverflowMenu({
+  noteId,
+  noteTitle,
   onExportPdf,
   onDelete,
 }: {
+  noteId: string;
+  noteTitle: string;
   onExportPdf?: () => void;
   onDelete?: () => void;
 }) {
@@ -96,6 +103,16 @@ function NoteOverflowMenu({
     };
   }, [open]);
 
+  async function handleCopyReference() {
+    try {
+      await navigator.clipboard.writeText(noteReferenceToken({ id: noteId, title: noteTitle }));
+      toast("Reference for June copied");
+    } catch {
+      // Clipboard API can fail in restricted contexts; stay silent so retrying
+      // the same menu action remains the least disruptive recovery.
+    }
+  }
+
   return (
     <div className="note-actions-menu-wrap" ref={wrapRef}>
       <button
@@ -110,6 +127,17 @@ function NoteOverflowMenu({
       </button>
       {open ? (
         <div className="sidebar-identity-menu note-actions-menu" role="menu">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              void handleCopyReference();
+            }}
+          >
+            <IconReference size={14} />
+            Copy reference for June
+          </button>
           {onExportPdf ? (
             <button
               type="button"
@@ -119,7 +147,7 @@ function NoteOverflowMenu({
                 onExportPdf();
               }}
             >
-              <IconArrowInbox size={14} />
+              <IconFilePdf size={14} />
               Export as PDF
             </button>
           ) : null}
@@ -140,38 +168,5 @@ function NoteOverflowMenu({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function CopyNoteReferenceButton({ noteId, title }: { noteId: string; title: string }) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
-  async function handleCopy() {
-    try {
-      await navigator.clipboard.writeText(noteReferenceToken({ id: noteId, title }));
-      setCopied(true);
-    } catch {
-      // Clipboard API can fail in restricted contexts; stay silent
-      // rather than nag, since the user can retry.
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      className="note-reference-copy"
-      onClick={() => void handleCopy()}
-      data-copied={copied || undefined}
-      aria-label="Copy note reference"
-      title={copied ? "Copied" : "Copy note reference"}
-    >
-      {copied ? <IconCheckmark2Small size={14} /> : <IconChainLink1 size={14} />}
-    </button>
   );
 }

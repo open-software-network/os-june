@@ -50,6 +50,21 @@ export function isShareNotFoundError(err: unknown): boolean {
   return messageFromError(err) === "share_not_found";
 }
 
+/** Human-readable share command error. The June API's share endpoints answer
+ * with bare machine codes as messages (`sharing_unavailable` when the server
+ * has no share database configured, `share_not_found` for unknown or revoked
+ * shares); user-facing surfaces must not leak those raw codes. */
+export function describeShareError(err: unknown): string {
+  const message = messageFromError(err);
+  if (message === "sharing_unavailable") {
+    return "Sharing isn't available on this June server yet. Try again after the next update.";
+  }
+  if (message === "share_not_found") {
+    return "This share no longer exists. It may have been stopped.";
+  }
+  return message;
+}
+
 export function isHermesSessionsStartupRequestError(err: unknown) {
   return /error sending request for url \(http:\/\/127\.0\.0\.1:\d+\/api\/sessions(?:\?|[)/])/i.test(
     messageFromError(err),
