@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  buildDigestMessage,
   buildStateChangeMessage,
   failureIds,
   sameFailures,
-  shouldSendDigest,
-  zonedDateAndHour,
+  shouldPostOutage,
 } from "./worker.mjs";
 
 const snapshot = {
@@ -22,26 +20,18 @@ test("sorts the failing check ids", () => {
   assert.equal(sameFailures(["a"], ["b"]), false);
 });
 
-test("builds incident and recovery messages with state markers", () => {
+test("builds outage messages with state markers", () => {
   const incident = buildStateChangeMessage([], ["failed"], snapshot, "https://health.opensoftware.co");
-  assert.match(incident, /incident detected/);
+  assert.match(incident, /outage detected/);
   assert.match(incident, /Failed API/);
-  assert.match(incident, /\[os-health-state\] failed/);
-
-  const recovery = buildStateChangeMessage(["failed"], [], { checks: [snapshot.checks[0]] }, "https://health.opensoftware.co");
-  assert.match(recovery, /recovered/);
-  assert.match(recovery, /\[os-health-state\] healthy/);
+  assert.match(incident, /\[os-health-outage\] failed/);
 });
 
-test("builds a daily digest", () => {
-  const message = buildDigestMessage(snapshot, "https://health.opensoftware.co");
-  assert.match(message, /1\/2 checks healthy/);
-  assert.match(message, /\[os-health-digest\]/);
-});
-
-test("sends one digest after the configured local hour", () => {
-  const now = new Date("2026-07-16T13:05:00.000Z");
-  assert.deepEqual(zonedDateAndHour(now, "America/New_York"), { date: "2026-07-16", hour: 9 });
-  assert.equal(shouldSendDigest(now, "America/New_York", 9, "2026-07-15"), true);
-  assert.equal(shouldSendDigest(now, "America/New_York", 9, "2026-07-16"), false);
+test("posts only new or changed active outages", () => {
+  assert.equal(shouldPostOutage(null, []), false);
+  assert.equal(shouldPostOutage(null, ["failed"]), true);
+  assert.equal(shouldPostOutage([], ["failed"]), true);
+  assert.equal(shouldPostOutage(["failed"], ["failed"]), false);
+  assert.equal(shouldPostOutage(["failed"], []), false);
+  assert.equal(shouldPostOutage(["failed"], ["other"]), true);
 });

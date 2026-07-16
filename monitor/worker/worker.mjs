@@ -15,56 +15,22 @@ export function sameFailures(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
-export function zonedDateAndHour(now, timeZone) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(now);
-  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return { date: `${value.year}-${value.month}-${value.day}`, hour: Number(value.hour) };
-}
-
-export function shouldSendDigest(now, timeZone, dailyHour, lastDigestDate) {
-  const current = zonedDateAndHour(now, timeZone);
-  return current.hour >= dailyHour && current.date !== lastDigestDate;
+export function shouldPostOutage(previousFailures, currentFailures) {
+  return currentFailures.length > 0
+    && (previousFailures === null || !sameFailures(previousFailures, currentFailures));
 }
 
 export function buildStateChangeMessage(previousFailures, currentFailures, snapshot, dashboardUrl) {
-  const recovered = currentFailures.length === 0;
   const started = previousFailures.length === 0;
-  const title = recovered
-    ? ":large_green_circle: *OS health recovered*"
-    : started
-      ? ":red_circle: *OS health incident detected*"
-      : ":large_orange_circle: *OS health incident updated*";
-  const summary = recovered
-    ? `All ${snapshot.checks.length} production checks are healthy.`
-    : `${currentFailures.length} of ${snapshot.checks.length} production checks failed after a retry.`;
-  const details = recovered
-    ? ""
-    : `\n\n*Failing checks*\n${snapshot.checks
-        .filter((check) => check.state === "unhealthy")
-        .map((check) => `• *${check.label}* - ${check.detail}${check.statusCode ? ` (HTTP ${check.statusCode})` : ""}`)
-        .join("\n")}`;
-  const marker = currentFailures.length === 0 ? "healthy" : currentFailures.join(",");
-  return `${title}\n${summary}${details}\n\n<${dashboardUrl}|Open health dashboard>\n\n[os-health-state] ${marker}`;
-}
-
-export function buildDigestMessage(snapshot, dashboardUrl) {
-  const failures = failureIds(snapshot);
-  const healthy = snapshot.checks.length - failures.length;
-  const icon = failures.length === 0 ? ":large_green_circle:" : ":large_orange_circle:";
-  const details = failures.length === 0
-    ? "All monitored production surfaces are healthy."
-    : snapshot.checks
-        .filter((check) => check.state === "unhealthy")
-        .map((check) => `• *${check.label}* - ${check.detail}${check.statusCode ? ` (HTTP ${check.statusCode})` : ""}`)
-        .join("\n");
-  return `${icon} *Daily OS health summary*\n${healthy}/${snapshot.checks.length} checks healthy.\n\n${details}\n\n<${dashboardUrl}|Open health dashboard>\n\n[os-health-digest]`;
+  const title = started
+    ? ":red_circle: *OS health outage detected*"
+    : ":large_orange_circle: *OS health outage updated*";
+  const summary = `${currentFailures.length} of ${snapshot.checks.length} production checks failed after a retry.`;
+  const details = `\n\n*Failing checks*\n${snapshot.checks
+    .filter((check) => check.state === "unhealthy")
+    .map((check) => `• *${check.label}* - ${check.detail}${check.statusCode ? ` (HTTP ${check.statusCode})` : ""}`)
+    .join("\n")}`;
+  return `${title}\n${summary}${details}\n\n<${dashboardUrl}|Open health dashboard>\n\n[os-health-outage] ${currentFailures.join(",")}`;
 }
 
 export async function collectSnapshot({ env = process.env, fetchImpl = fetch } = {}) {
@@ -171,21 +137,14 @@ async function runCycle(state, config) {
   }
 
   const previousFailures = state.failureIds ?? [];
-  if (state.failureIds === null ? currentFailures.length > 0 : !sameFailures(previousFailures, currentFailures)) {
+  if (shouldPostOutage(state.failureIds, currentFailures)) {
     await postSlack(
       config.webhookUrl,
       buildStateChangeMessage(previousFailures, currentFailures, snapshot, config.dashboardUrl),
     );
   }
 
-  const now = new Date();
-  let lastDigestDate = state.lastDigestDate;
-  if (shouldSendDigest(now, config.timeZone, config.dailyHour, lastDigestDate)) {
-    await postSlack(config.webhookUrl, buildDigestMessage(snapshot, config.dashboardUrl));
-    lastDigestDate = zonedDateAndHour(now, config.timeZone).date;
-  }
-
-  return { failureIds: currentFailures, lastDigestDate };
+  return { failureIds: currentFailures };
 }
 
 async function loadState(path) {
@@ -193,11 +152,10 @@ async function loadState(path) {
     const parsed = JSON.parse(await readFile(path, "utf8"));
     return {
       failureIds: Array.isArray(parsed.failureIds) ? parsed.failureIds.filter((id) => typeof id === "string").sort() : null,
-      lastDigestDate: typeof parsed.lastDigestDate === "string" ? parsed.lastDigestDate : null,
     };
   } catch (error) {
     if (error?.code !== "ENOENT") console.warn("Could not read monitor state; starting with a clean state");
-    return { failureIds: null, lastDigestDate: null };
+    return { failureIds: null };
   }
 }
 
@@ -234,8 +192,6 @@ async function main() {
     intervalMs: clampInteger(process.env.HEALTH_MONITOR_INTERVAL_MS, 300_000, 60_000, 3_600_000),
     retryDelayMs: clampInteger(process.env.HEALTH_MONITOR_RETRY_DELAY_MS, 15_000, 1_000, 60_000),
     statePath: process.env.HEALTH_MONITOR_STATE_PATH || "/data/os-health-state.json",
-    timeZone: process.env.HEALTH_MONITOR_TIME_ZONE || "America/New_York",
-    dailyHour: clampInteger(process.env.HEALTH_MONITOR_DAILY_HOUR, 9, 0, 23),
   };
 
   let state = await loadState(config.statePath);

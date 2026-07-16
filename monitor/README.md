@@ -1,6 +1,6 @@
 # Open Software health
 
-A private production health dashboard and durable alert worker for Open Software. The dashboard uses OS Accounts login and an exact server-side user id allowlist. The worker runs independently, probes production every five minutes, retries failures before alerting, and posts state changes plus a daily summary to Slack.
+A private production health dashboard and durable alert worker for Open Software. The dashboard uses OS Accounts login and an exact server-side user id allowlist. The worker runs independently, probes production every five minutes, retries failures before alerting, and posts only new or changed active outages to Slack.
 
 The shared check catalog covers:
 
