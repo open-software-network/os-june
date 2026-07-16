@@ -203,22 +203,25 @@ jobs:
         if: steps.phala.outputs.deployed == 'true'
         run: |
           set -euo pipefail
-          base="https://june-api.opensoftware.co"
-          # The CVM restarts its containers on update; give the ingress up to
-          # 10 minutes to come back before judging the deploy.
-          code=""
-          for _ in $(seq 1 60); do
-            # `|| true`, not `|| echo`: curl prints its own %{http_code} (000)
-            # on transport failure, so a fallback echo would corrupt the value.
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$base/healthz" || true)
-            [[ "$code" == "200" ]] && break
-            sleep 10
-          done
-          if [[ "$code" != "200" ]]; then
+          wait_for_healthz() {
+            local base="$1"
+            local code=""
+            # The CVM restarts its containers on update; give each hostname up
+            # to 10 minutes to come back before judging the deploy.
+            for _ in $(seq 1 60); do
+              # `|| true`, not `|| echo`: curl prints its own %{http_code} (000)
+              # on transport failure, so a fallback echo would corrupt the value.
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$base/healthz" || true)
+              [[ "$code" == "200" ]] && return 0
+              sleep 10
+            done
             echo "::error::$base/healthz did not return 200 within 10 minutes of the promote (last: $code)."
-            exit 1
-          fi
-          echo "healthz OK"
+            return 1
+          }
+
+          wait_for_healthz "https://june-api.opensoftware.co"
+          wait_for_healthz "https://june.link"
+          echo "healthz OK on the API and share-link origins"
 
       - name: Retag digest as :production
         if: steps.phala.outputs.deployed == 'true'
