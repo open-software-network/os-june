@@ -1599,8 +1599,9 @@ enum RecordingPurpose {
 
 let micTestCapturePaddingSeconds: Double = 0.35
 // Keep in sync with DICTATION_AUDIO_ACTIVITY_THRESHOLD in dictation.rs. The
-// trained classifier only affects captures below this independent meter gate,
-// so louder dictation should not pay for file analysis during finalization.
+// trained classifier only affects complete-window captures below this
+// independent meter gate, so louder dictation should not pay for file analysis
+// during finalization. Sub-window captures are quarantined before this gate.
 let dictationAudioActivityThreshold: Float = 0.04
 
 final class DictationController {
@@ -1935,15 +1936,15 @@ final class DictationController {
             "observedAudioLevel": String(format: "%.4f", observedAudioLevel),
             "targetBundleIdentifier": targetBundleIdentifier,
         ]
-        guard observedAudioLevel < dictationAudioActivityThreshold else {
-            emit("recording_ready", basePayload)
-            return
-        }
         if let duration = audioDurationSeconds(at: recordingURL),
            duration < speechAnalysisWindowDurationSeconds {
             var payload = basePayload
             payload["speechAnalysisStatus"] = "no_complete_window"
             emit("recording_ready", payload)
+            return
+        }
+        guard observedAudioLevel < dictationAudioActivityThreshold else {
+            emit("recording_ready", basePayload)
             return
         }
         analyzeSpeechConfidence(at: recordingURL) { [weak self] speechConfidence in

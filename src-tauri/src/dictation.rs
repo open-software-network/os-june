@@ -4390,17 +4390,21 @@ struct RecordingReadyInfo {
 }
 
 fn recording_has_low_speech_evidence(recording: &RecordingReadyInfo) -> bool {
-    let classifier_is_low = match recording.speech_analysis_status {
+    match recording.speech_analysis_status {
+        // A sub-window capture has no classifier evidence in either direction.
+        // Quarantine it regardless of meter level rather than allowing a loud
+        // transient to bypass the incomplete analysis.
         Some(SpeechAnalysisStatus::NoCompleteWindow) => true,
         Some(SpeechAnalysisStatus::Unavailable) => false,
-        Some(SpeechAnalysisStatus::Ok) | None => recording
-            .speech_confidence
-            .is_some_and(|confidence| confidence < DICTATION_SPEECH_CONFIDENCE_THRESHOLD),
-    };
-    classifier_is_low
-        && recording
-            .observed_audio_level
-            .is_some_and(|level| level < DICTATION_AUDIO_ACTIVITY_THRESHOLD)
+        Some(SpeechAnalysisStatus::Ok) | None => {
+            recording
+                .speech_confidence
+                .is_some_and(|confidence| confidence < DICTATION_SPEECH_CONFIDENCE_THRESHOLD)
+                && recording
+                    .observed_audio_level
+                    .is_some_and(|level| level < DICTATION_AUDIO_ACTIVITY_THRESHOLD)
+        }
+    }
 }
 
 fn quarantine_low_speech_evidence_outcome(
@@ -7252,7 +7256,7 @@ mod tests {
     }
 
     #[test]
-    fn short_low_level_capture_is_quarantined_but_analysis_failure_fails_open() {
+    fn short_capture_is_quarantined_regardless_of_level_but_analysis_failure_fails_open() {
         let info = |status, speech_confidence| RecordingReadyInfo {
             audio_path: PathBuf::from("/tmp/os-june-dictation-test.m4a"),
             observed_audio_level: Some(0.0305),
@@ -7265,6 +7269,19 @@ mod tests {
             SpeechAnalysisStatus::NoCompleteWindow,
             None,
         )));
+        let loud_short_capture = RecordingReadyInfo {
+            audio_path: PathBuf::from("/tmp/os-june-dictation-test.m4a"),
+            observed_audio_level: Some(DICTATION_AUDIO_ACTIVITY_THRESHOLD),
+            speech_confidence: None,
+            speech_analysis_status: Some(SpeechAnalysisStatus::NoCompleteWindow),
+            target_bundle_id: None,
+        };
+        assert!(recording_has_low_speech_evidence(&loud_short_capture));
+        let unmetered_short_capture = RecordingReadyInfo {
+            observed_audio_level: None,
+            ..loud_short_capture
+        };
+        assert!(recording_has_low_speech_evidence(&unmetered_short_capture));
         assert!(!recording_has_low_speech_evidence(&info(
             SpeechAnalysisStatus::Unavailable,
             Some(0.0),
