@@ -807,7 +807,7 @@ describe("AppSettings", () => {
     );
   });
 
-  it("warns when the Accounts environment cannot sync the locally refreshed avatar", async () => {
+  it("warns when the OS Accounts environment cannot sync the locally refreshed avatar", async () => {
     const user = userEvent.setup();
     mocks.osAccountsSetAvatarSeed.mockRejectedValueOnce({
       code: "avatar_sync_unavailable",
@@ -831,7 +831,7 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("button", { name: "Refresh" }));
 
     expect(mocks.toastWarning).toHaveBeenCalledWith(
-      "Avatar changed on this device, but syncing isn't available in this Accounts environment yet.",
+      "Avatar changed on this device, but syncing isn't available in this OS Accounts environment yet.",
     );
     expect(screen.getByText("This pattern is saved only on this device.")).toBeInTheDocument();
     expect(mocks.toastError).not.toHaveBeenCalled();

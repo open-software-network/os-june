@@ -121,7 +121,7 @@ export function AccountSettingsSection({ account, loading, onAccountChanged }: P
           );
         } else if (code === "avatar_sync_unavailable") {
           toast.warning(
-            "Avatar changed on this device, but syncing isn't available in this Accounts environment yet.",
+            "Avatar changed on this device, but syncing isn't available in this OS Accounts environment yet.",
           );
         } else {
           toast.error(messageFromError(error));
