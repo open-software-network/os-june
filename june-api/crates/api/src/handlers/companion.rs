@@ -43,6 +43,8 @@ const MAX_MESSAGES_PER_MINUTE: usize = 120;
 const MIN_APNS_TOKEN_BYTES: usize = 16;
 const MAX_APNS_TOKEN_BYTES: usize = 256;
 const APNS_WAKE_COOLDOWN: Duration = Duration::from_secs(30);
+const APNS_PROVIDER_TOKEN_MAX_AGE_SECS: u64 = 55 * 60;
+const PAIRING_APPROVAL_PERSIST_TIMEOUT: Duration = Duration::from_secs(15);
 const DEVICE_AUTH_SCHEME: &str = "Device ";
 const SECRET_BYTES: usize = 32;
 const MAX_PENDING_PAIRINGS_PER_USER: usize = 8;
@@ -105,6 +107,34 @@ struct PendingPairingApproval {
 enum PairingApprovalPreparation {
     Approved(PairingResponse),
     Pending(Box<PendingPairingApproval>),
+}
+
+struct PairingApprovalGuard<'a> {
+    relay: &'a CompanionRelay,
+    pairing_id: Uuid,
+    active: bool,
+}
+
+impl<'a> PairingApprovalGuard<'a> {
+    fn new(relay: &'a CompanionRelay, pairing_id: Uuid) -> Self {
+        Self {
+            relay,
+            pairing_id,
+            active: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for PairingApprovalGuard<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.relay.reset_pairing_approval(self.pairing_id);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -205,10 +235,15 @@ pub(crate) struct RegisterPushRequest {
     token: Vec<u8>,
 }
 
-#[derive(Clone)]
 struct ApnsClient {
     http: reqwest::Client,
     config: CompanionPushConfig,
+    provider_token: Mutex<Option<CachedApnsProviderToken>>,
+}
+
+struct CachedApnsProviderToken {
+    value: String,
+    issued_at: u64,
 }
 
 #[derive(Serialize)]
@@ -674,23 +709,39 @@ impl CompanionRelay {
             PairingApprovalPreparation::Approved(response) => return Ok(response),
             PairingApprovalPreparation::Pending(approval) => approval,
         };
+        let mut guard = PairingApprovalGuard::new(self, pairing_id);
         if approval.desktop.credential_hash.is_some() || approval.mobile.credential_hash.is_none() {
-            self.reset_pairing_approval(pairing_id);
             return Err(ApiError::bad_request("device_identity_conflict"));
         }
-        if let Err(error) = self.persist_pairing_approval(user_id, &approval).await {
-            self.reset_pairing_approval(pairing_id);
-            return Err(match error {
-                CompanionStoreError::IdentityConflict => {
-                    ApiError::bad_request("device_identity_conflict")
-                }
-                CompanionStoreError::Unavailable { .. } => {
-                    tracing::error!(%error, "companion pairing persistence failed");
-                    ApiError::service_overloaded()
-                }
-            });
+        match tokio::time::timeout(
+            PAIRING_APPROVAL_PERSIST_TIMEOUT,
+            self.persist_pairing_approval(user_id, &approval),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                return Err(match error {
+                    CompanionStoreError::IdentityConflict => {
+                        ApiError::bad_request("device_identity_conflict")
+                    }
+                    CompanionStoreError::Unavailable { .. } => {
+                        tracing::error!(%error, "companion pairing persistence failed");
+                        ApiError::service_overloaded()
+                    }
+                });
+            }
+            Err(_) => {
+                tracing::error!(
+                    %pairing_id,
+                    "companion pairing persistence timed out"
+                );
+                return Err(ApiError::service_overloaded());
+            }
         }
-        self.finish_pairing_approval(user_id, pairing_id, &approval)
+        let response = self.finish_pairing_approval(user_id, pairing_id, &approval)?;
+        guard.disarm();
+        Ok(response)
     }
 
     fn prepare_pairing_approval(
@@ -1077,23 +1128,42 @@ impl ApnsClient {
         Self {
             http: reqwest::Client::new(),
             config,
+            provider_token: Mutex::new(None),
         }
     }
 
-    async fn send_wake(&self, device_token: &[u8]) -> Result<(), String> {
+    fn provider_token(&self, now_seconds: u64) -> Result<String, String> {
+        let mut cached = self
+            .provider_token
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(token) = cached.as_ref()
+            && token.is_fresh(now_seconds)
+        {
+            return Ok(token.value.clone());
+        }
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some(self.config.key_id.clone());
         let key = EncodingKey::from_ec_pem(self.config.private_key_pem.as_bytes())
             .map_err(|error| format!("invalid APNs signing key: {error}"))?;
-        let authorization = encode(
+        let value = encode(
             &header,
             &ApnsClaims {
                 iss: &self.config.team_id,
-                iat: now_ms() / 1_000,
+                iat: now_seconds,
             },
             &key,
         )
         .map_err(|error| format!("APNs token signing failed: {error}"))?;
+        *cached = Some(CachedApnsProviderToken {
+            value: value.clone(),
+            issued_at: now_seconds,
+        });
+        Ok(value)
+    }
+
+    async fn send_wake(&self, device_token: &[u8]) -> Result<(), String> {
+        let authorization = self.provider_token(now_ms() / 1_000)?;
         let host = if self.config.production {
             "https://api.push.apple.com"
         } else {
@@ -1123,6 +1193,14 @@ impl ApnsClient {
                 response.status()
             ))
         }
+    }
+}
+
+impl CachedApnsProviderToken {
+    fn is_fresh(&self, now_seconds: u64) -> bool {
+        now_seconds
+            .checked_sub(self.issued_at)
+            .is_some_and(|age| age < APNS_PROVIDER_TOKEN_MAX_AGE_SECS)
     }
 }
 
@@ -1515,5 +1593,54 @@ mod tests {
             assert!(allow_message(&mut times));
         }
         assert!(!allow_message(&mut times));
+    }
+
+    #[test]
+    fn apns_provider_tokens_expire_before_apns_maximum_age() {
+        let token = CachedApnsProviderToken {
+            value: "provider-token".to_string(),
+            issued_at: 1_000,
+        };
+        assert!(!token.is_fresh(999));
+        assert!(token.is_fresh(1_000 + APNS_PROVIDER_TOKEN_MAX_AGE_SECS - 1));
+        assert!(!token.is_fresh(1_000 + APNS_PROVIDER_TOKEN_MAX_AGE_SECS));
+    }
+
+    #[test]
+    fn cancelled_pairing_approval_releases_the_in_flight_lock() {
+        let relay = CompanionRelay::default();
+        let desktop = Uuid::new_v4();
+        let mobile = Uuid::new_v4();
+        let proof = [7; SECRET_BYTES];
+        let pairing = relay
+            .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
+            .unwrap();
+        relay
+            .propose_pairing(
+                pairing.pairing_id,
+                mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
+                &proof,
+            )
+            .unwrap();
+
+        let PairingApprovalPreparation::Pending(_approval) = relay
+            .prepare_pairing_approval(&user(), pairing.pairing_id, mobile)
+            .unwrap()
+        else {
+            panic!("pairing should be pending approval")
+        };
+        {
+            let _guard = PairingApprovalGuard::new(&relay, pairing.pairing_id);
+            let state = relay
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(state.pairings[&pairing.pairing_id].approving);
+        }
+        let state = relay
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!state.pairings[&pairing.pairing_id].approving);
     }
 }

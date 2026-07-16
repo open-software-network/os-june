@@ -207,6 +207,9 @@ impl Controller {
                 ))
             }
             Body::DeviceRevokeSelf => {
+                // This mirrors revocation in Desktop's local device list. The
+                // companion performs the authoritative Device-authenticated
+                // relay revocation before deleting its credential and identity.
                 repositories.revoke_companion_device(device_id).await?;
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }

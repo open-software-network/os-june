@@ -487,11 +487,36 @@ fn finish_pairing(runtime: &CompanionRuntime, pairing_id: Uuid) {
 }
 
 fn desktop_display_name() -> String {
+    #[cfg(target_os = "macos")]
+    if let Ok(output) = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+    {
+        let name = output
+            .status
+            .success()
+            .then(|| normalized_device_name(&String::from_utf8_lossy(&output.stdout)))
+            .flatten();
+        if let Some(name) = name {
+            return name;
+        }
+    }
     std::env::var("COMPUTERNAME")
         .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+        .and_then(|value| normalized_device_name(&value))
         .unwrap_or_else(|| "June on Mac".to_string())
+}
+
+fn normalized_device_name(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let mut end = value.len().min(MAX_DEVICE_NAME_BYTES);
+    while !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    Some(value[..end].to_string())
 }
 
 fn relay_websocket_url() -> String {
@@ -639,4 +664,29 @@ fn current_time_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_names_are_trimmed_and_bounded_by_encoded_size() {
+        assert_eq!(
+            normalized_device_name("  Studio Mac  ").as_deref(),
+            Some("Studio Mac")
+        );
+        assert_eq!(normalized_device_name("  "), None);
+
+        let oversized = "a".repeat(MAX_DEVICE_NAME_BYTES + 1);
+        assert_eq!(
+            normalized_device_name(&oversized).unwrap().len(),
+            MAX_DEVICE_NAME_BYTES
+        );
+
+        let unicode = "é".repeat(MAX_DEVICE_NAME_BYTES);
+        let normalized = normalized_device_name(&unicode).unwrap();
+        assert!(normalized.len() <= MAX_DEVICE_NAME_BYTES);
+        assert!(normalized.is_char_boundary(normalized.len()));
+    }
 }

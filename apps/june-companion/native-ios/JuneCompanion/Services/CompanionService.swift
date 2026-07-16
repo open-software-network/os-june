@@ -233,6 +233,8 @@ final class CompanionService {
     guard let linked else { return }
     let identity = try DeviceIdentityService.shared.identity()
     let credential = try deviceCredential()
+    // Mirror revocation in Desktop's local list, then require the
+    // authoritative relay revocation to succeed before deleting local keys.
     _ = try? await request(capability: "devicesRevokeSelf", body: ["type": "deviceRevokeSelf"])
     try await pairingAPI.revoke(
       relayURL: linked.relayURL,
