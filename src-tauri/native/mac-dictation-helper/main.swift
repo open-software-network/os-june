@@ -165,6 +165,7 @@ func helperBundleIdentifier() -> String {
 enum RecordingCueSound: String {
     case start = "record-start"
     case stop = "record-end"
+    case complete = "record-complete"
 }
 
 enum RecordingCuePlayer {
@@ -181,7 +182,7 @@ enum RecordingCuePlayer {
     }
 
     private static func load(_ cue: RecordingCueSound) -> NSSound? {
-        guard let url = Bundle.main.url(forResource: cue.rawValue, withExtension: "mp3") else {
+        guard let url = cueFileURL(cue) else {
             return nil
         }
         guard let sound = NSSound(contentsOf: url, byReference: false) else {
@@ -189,6 +190,15 @@ enum RecordingCuePlayer {
         }
         sounds[cue] = sound
         return sound
+    }
+
+    private static func cueFileURL(_ cue: RecordingCueSound) -> URL? {
+        for fileExtension in ["mp3", "wav"] {
+            if let url = Bundle.main.url(forResource: cue.rawValue, withExtension: fileExtension) {
+                return url
+            }
+        }
+        return nil
     }
 }
 
@@ -1575,7 +1585,7 @@ final class DictationController {
         cleanupMicTestSample()
     }
 
-    func paste(text: String) {
+    func paste(text: String, playCompletionSound: Bool = true) {
         let text = dictationPasteText(text)
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             fail(DictationError.missingTranscript)
@@ -1583,6 +1593,9 @@ final class DictationController {
         }
 
         emit("final_transcript", ["text": text])
+        if playCompletionSound {
+            RecordingCuePlayer.play(.complete)
+        }
         PasteboardInserter.paste(text)
         resetRecordingState()
     }
@@ -2210,8 +2223,9 @@ func handleCommandLine(_ line: String) {
         }
     case "paste_text":
         let text = command?["text"] as? String ?? ""
+        let playCompletionSound = command?["playCompletionSound"] as? Bool ?? true
         runOnMain {
-            dictation.paste(text: text)
+            dictation.paste(text: text, playCompletionSound: playCompletionSound)
         }
     case "discard_recording":
         runOnMain {

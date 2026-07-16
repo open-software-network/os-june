@@ -162,6 +162,7 @@ pub struct DictationSettings {
     pub microphone: DictationMicrophoneSetting,
     pub style: DictationStyle,
     pub language: Option<String>,
+    pub completion_sound_enabled: bool,
 }
 
 impl Default for DictationSettings {
@@ -172,6 +173,7 @@ impl Default for DictationSettings {
             microphone: DictationMicrophoneSetting::default(),
             style: DictationStyle::Standard,
             language: None,
+            completion_sound_enabled: true,
         }
     }
 }
@@ -189,6 +191,7 @@ impl<'de> Deserialize<'de> for DictationSettings {
             microphone: Option<DictationMicrophoneSetting>,
             style: Option<DictationStyle>,
             language: Option<String>,
+            completion_sound_enabled: Option<bool>,
         }
 
         let value = serde_json::Value::deserialize(deserializer)?;
@@ -201,6 +204,7 @@ impl<'de> Deserialize<'de> for DictationSettings {
         if value.get("shortcut").is_some() || value.get("activationMode").is_some() {
             return Ok(Self {
                 microphone,
+                completion_sound_enabled: true,
                 ..Self::default()
             });
         }
@@ -220,6 +224,7 @@ impl<'de> Deserialize<'de> for DictationSettings {
             microphone: settings.microphone.unwrap_or(microphone),
             style: settings.style.unwrap_or_default(),
             language: normalize_language(settings.language),
+            completion_sound_enabled: settings.completion_sound_enabled.unwrap_or(true),
         })
     }
 }
@@ -984,6 +989,16 @@ pub fn set_dictation_language(
     let language = normalize_language(language);
     update_settings(&state, |settings| {
         settings.language = language;
+    })
+}
+
+#[tauri::command]
+pub fn set_dictation_completion_sound(
+    state: State<'_, DictationSettingsState>,
+    enabled: bool,
+) -> Result<DictationSettings, AppError> {
+    update_settings(&state, |settings| {
+        settings.completion_sound_enabled = enabled;
     })
 }
 
@@ -3343,7 +3358,12 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         utterance_id,
     )
     .await;
-    let outcome = outcome_from_transcription_result(result, recording.observed_audio_level, style);
+    let outcome = outcome_from_transcription_result(
+        result,
+        recording.observed_audio_level,
+        style,
+        current_settings.completion_sound_enabled,
+    );
     let state = app.state::<HelperState>();
     if let Err(error) = send_helper_command(&state, outcome.helper_command) {
         update_shortcut_helper_finalizing(&app, false);
@@ -4202,6 +4222,7 @@ fn outcome_from_transcription_result(
     result: Result<TranscriptionProviderResult, AppError>,
     observed_audio_level: Option<f32>,
     style: DictationStyle,
+    completion_sound_enabled: bool,
 ) -> DictationTranscriptionOutcome {
     match result {
         Ok(mut transcript) => {
@@ -4219,7 +4240,7 @@ fn outcome_from_transcription_result(
                     transcript: None,
                 };
             }
-            outcome_from_clean_transcript(transcript, observed_audio_level)
+            outcome_from_clean_transcript(transcript, observed_audio_level, completion_sound_enabled)
         }
         Err(error) => {
             let event = promote_silent_error_if_audio_detected(
@@ -4238,6 +4259,7 @@ fn outcome_from_transcription_result(
 fn outcome_from_clean_transcript(
     transcript: TranscriptionProviderResult,
     observed_audio_level: Option<f32>,
+    completion_sound_enabled: bool,
 ) -> DictationTranscriptionOutcome {
     match transcript {
         // Recorded silence / nothing to type is not a failure — discard quietly
@@ -4276,6 +4298,7 @@ fn outcome_from_clean_transcript(
                     helper_command: serde_json::json!({
                         "type": "paste_text",
                         "text": transcript.text.clone(),
+                        "playCompletionSound": completion_sound_enabled,
                     }),
                     event: None,
                     transcript: Some(transcript),
@@ -5650,6 +5673,7 @@ mod tests {
         );
         assert_eq!(settings.style, DictationStyle::Standard);
         assert_eq!(settings.language, None);
+        assert!(settings.completion_sound_enabled);
     }
 
     #[test]
@@ -5795,6 +5819,16 @@ mod tests {
         .expect("language settings should deserialize");
 
         assert_eq!(settings.language.as_deref(), Some("es"));
+    }
+
+    #[test]
+    fn deserializes_completion_sound_preference() {
+        let settings: DictationSettings = serde_json::from_str(
+            r#"{"pushToTalkShortcut":{"keyCode":0,"code":"Fn","modifiers":{"command":false,"control":false,"option":false,"shift":false,"function":true},"label":"Fn","pressCount":1},"toggleShortcut":{"keyCode":49,"code":"Space","modifiers":{"command":false,"control":true,"option":true,"shift":false,"function":false},"label":"Ctrl+Opt+Space","pressCount":1},"microphone":{"id":null,"name":null},"completionSoundEnabled":false}"#,
+        )
+        .expect("completion sound setting should deserialize");
+
+        assert!(!settings.completion_sound_enabled);
     }
 
     #[test]
@@ -6065,6 +6099,7 @@ mod tests {
             microphone: DictationMicrophoneSetting::default(),
             style: DictationStyle::Standard,
             language: None,
+            completion_sound_enabled: true,
         };
 
         assert!(validate_shortcut_update(
@@ -6449,6 +6484,7 @@ mod tests {
             }),
             None,
             DictationStyle::Standard,
+            false,
         );
 
         assert_eq!(
@@ -6456,6 +6492,7 @@ mod tests {
             serde_json::json!({
                 "type": "paste_text",
                 "text": "Paste this transcript.",
+                "playCompletionSound": false,
             })
         );
         assert!(outcome.event.is_none());
@@ -6523,6 +6560,7 @@ mod tests {
             }),
             None,
             DictationStyle::Standard,
+            true,
         );
 
         assert_eq!(
@@ -6546,6 +6584,7 @@ mod tests {
             }),
             Some(DICTATION_AUDIO_ACTIVITY_THRESHOLD),
             DictationStyle::Standard,
+            true,
         );
 
         assert_eq!(
@@ -6580,6 +6619,7 @@ mod tests {
             }),
             None,
             DictationStyle::Standard,
+            true,
         );
 
         assert_eq!(
@@ -6587,6 +6627,7 @@ mod tests {
             serde_json::json!({
                 "type": "paste_text",
                 "text": "Send this, please.",
+                "playCompletionSound": true,
             })
         );
         assert!(outcome.event.is_none());
@@ -6745,6 +6786,7 @@ mod tests {
             }),
             None,
             DictationStyle::Standard,
+            true,
         );
 
         assert_eq!(
@@ -6814,6 +6856,7 @@ mod tests {
             }),
             None,
             DictationStyle::Standard,
+            true,
         );
 
         assert_eq!(
@@ -6835,6 +6878,7 @@ mod tests {
             }),
             Some(DICTATION_AUDIO_ACTIVITY_THRESHOLD),
             DictationStyle::Standard,
+            true,
         );
 
         let event = outcome.event.expect("empty capture emits an event");
@@ -6979,6 +7023,7 @@ mod tests {
             )),
             None,
             DictationStyle::Standard,
+            true,
         );
 
         assert_eq!(
@@ -7004,6 +7049,7 @@ mod tests {
             Err(AppError::new("june_request_failed", "no_speech")),
             Some(0.2),
             DictationStyle::Standard,
+            true,
         );
 
         let event = outcome.event.expect("no speech emits an event");

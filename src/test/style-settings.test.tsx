@@ -55,6 +55,7 @@ describe("StyleSettingsSection", () => {
         },
         microphone: {},
         style: "casualLowercase",
+        completionSoundEnabled: true,
       },
     });
     mocks.setDictationStyle.mockImplementation(async (style) => ({

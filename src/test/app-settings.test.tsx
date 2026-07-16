@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   setDictationShortcut: vi.fn(),
   setDictationMicrophone: vi.fn(),
   setDictationLanguage: vi.fn(),
+  setDictationCompletionSound: vi.fn(),
   osAccountsLogin: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
@@ -107,6 +108,7 @@ vi.mock("../lib/tauri", () => ({
   setDictationShortcut: mocks.setDictationShortcut,
   setDictationMicrophone: mocks.setDictationMicrophone,
   setDictationLanguage: mocks.setDictationLanguage,
+  setDictationCompletionSound: mocks.setDictationCompletionSound,
   osAccountsLogin: mocks.osAccountsLogin,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
@@ -170,6 +172,7 @@ const baseSettings: DictationSettingsDto = {
   microphone: {},
   style: "standard",
   language: undefined,
+  completionSoundEnabled: true,
 };
 
 const signedInAccount = {
@@ -269,6 +272,10 @@ describe("AppSettings", () => {
     mocks.setDictationLanguage.mockImplementation(async (language) => ({
       ...baseSettings,
       language,
+    }));
+    mocks.setDictationCompletionSound.mockImplementation(async (enabled) => ({
+      ...baseSettings,
+      completionSoundEnabled: enabled,
     }));
     mocks.listDictionaryEntries.mockResolvedValue([]);
     mocks.juneOpenCommunityPage.mockResolvedValue(undefined);
@@ -1777,6 +1784,35 @@ describe("AppSettings", () => {
 
     expect(mocks.setDictationLanguage).toHaveBeenCalledWith("vi");
     await waitFor(() => expect(language).toHaveTextContent("Vietnamese"));
+  });
+
+  it("saves the dictation completion sound preference", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Dictation" }));
+    const completionSound = await screen.findByRole("switch", {
+      name: "Completion sound",
+    });
+
+    expect(completionSound).toHaveAttribute("aria-checked", "true");
+    await user.click(completionSound);
+
+    expect(mocks.setDictationCompletionSound).toHaveBeenCalledWith(false);
+    await waitFor(() =>
+      expect(completionSound).toHaveAttribute("aria-checked", "false"),
+    );
   });
 
   it("lists system permissions with status and manage actions", async () => {
