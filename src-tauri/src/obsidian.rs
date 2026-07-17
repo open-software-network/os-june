@@ -4,7 +4,6 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tauri::AppHandle;
@@ -15,11 +14,6 @@ const HERMES_ENV_PROJECTION_LOCK_FILE: &str = ".june-obsidian-env.lock";
 const HERMES_ENV_PROJECTION_LOCK_WAIT: Duration = Duration::from_secs(2);
 const HERMES_ENV_PROJECTION_STALE_LOCK_AGE: Duration = Duration::from_secs(30);
 
-/// Serializes June's read-modify-write updates to the shared Hermes `.env`.
-/// Hermes itself does not edit this key, and every June runtime entrypoint
-/// re-syncs the projection, so a process-local guard prevents competing June
-/// commands from losing unrelated settings between read and atomic replace.
-static HERMES_ENV_PROJECTION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -98,15 +92,6 @@ pub(crate) fn sync_hermes_env_projection(
     hermes_home: &Path,
     vault_path: Option<&Path>,
 ) -> Result<(), AppError> {
-    let _guard = HERMES_ENV_PROJECTION_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .map_err(|_| {
-            AppError::new(
-                "obsidian_runtime_config_unavailable",
-                "Could not update the Hermes runtime configuration.",
-            )
-        })?;
     let env_path = hermes_home.join(".env");
     let _file_guard = acquire_hermes_env_projection_lock(hermes_home).map_err(|_| {
         AppError::new(

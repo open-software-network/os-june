@@ -1710,7 +1710,18 @@ pub(crate) async fn reapply_hermes_runtime(
         }
     }
     // Do not call Hermes' `/api/gateway/restart`: it launches a replacement
-    // outside June's supervision and loses June-owned spawn configuration.
+    // outside June's supervision and loses June-owned spawn configuration. Run
+    // the same June-supervised gateway start path used at app startup instead so
+    // the launchd-managed gateway reloads the freshly rendered config.
+    if let Some(connection) = live_connections(bridge)?.first() {
+        if let Err(error) = run_hermes_gateway_start(connection).await {
+            tracing::warn!(
+                ?error,
+                "reapply: restarting the Hermes gateway failed after runtime reapply"
+            );
+            first_error.get_or_insert(error);
+        }
+    }
     match first_error {
         Some(error) => Err(error),
         None => Ok(()),
@@ -15174,6 +15185,18 @@ mcp_servers:
         assert!(error.message.contains("got"));
     }
 
+    fn command_env_removals(cmd: &Command) -> std::collections::HashSet<String> {
+        cmd.get_envs()
+            .filter_map(|(key, value)| {
+                if value.is_none() {
+                    Some(key.to_string_lossy().into_owned())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     #[test]
     fn gateway_start_spawns_the_bare_hermes_cli_outside_the_sandbox() {
         let connection = HermesBridgeConnection {
@@ -15220,6 +15243,7 @@ mcp_servers:
             envs.get("HERMES_NONINTERACTIVE").map(String::as_str),
             Some("1")
         );
+        assert!(command_env_removals(&cmd).contains(crate::obsidian::OBSIDIAN_VAULT_PATH_ENV));
         assert_eq!(cmd.get_current_dir(), Some(Path::new("/tmp/hermes-home")));
     }
 
