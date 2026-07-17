@@ -4,15 +4,15 @@ import { IconLock } from "central-icons/IconLock";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSparkle } from "central-icons/IconSparkle";
 import { IconTelegram } from "central-icons/IconTelegram";
-import { isMacLikePlatform } from "../../../lib/platform";
+import { fallbackDictationCapabilities } from "../../../lib/platform";
 import { juneOpenCommunityPage, osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
 import { OsMark } from "../../account/AccountGate";
 import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
 
-// macOS can introduce the full agent, dictation, and notes surface because the
-// release bundle includes the runtime and helpers. Windows narrows the welcome
-// promise below until its Hermes and dictation support is turnkey.
+// Desktop platforms with bundled helpers can introduce the full agent,
+// dictation, and notes surface. Unsupported platforms narrow the welcome
+// promise until native helpers are turnkey there.
 const JUNE_POINTS = [
   {
     icon: IconSparkle,
@@ -67,8 +67,9 @@ export function SignInStep({
 }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
-  const isMac = isMacLikePlatform();
-  const points = isMac ? JUNE_POINTS : WINDOWS_JUNE_POINTS;
+  const capabilities = fallbackDictationCapabilities();
+  const points = capabilities.available ? JUNE_POINTS : WINDOWS_JUNE_POINTS;
+  const introClassName = capabilities.available ? "welcome-card-intro" : undefined;
 
   const cancelInFlight = useCallback(async () => {
     try {
@@ -109,7 +110,7 @@ export function SignInStep({
       subtitle="Private AI for everyday life and work."
       mark
       wide
-      className={isMac ? "welcome-card-intro" : undefined}
+      className={introClassName}
     >
       <ul className="onboarding-points">
         {points.map(({ icon: Icon, title, detail }) => (

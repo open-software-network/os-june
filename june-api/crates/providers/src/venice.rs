@@ -5,11 +5,11 @@ use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit, Upstrea
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
     AgentChatStreamOutcome, CleanedText, Cleaner, CleanupRequest, DomainError, GeneratedNote,
-    GenerationRequest, Generator, ProviderCredentials, TokenUsage, Transcriber, Transcript,
-    TranscriptionRequest,
+    GenerationRequest, Generator, InferencePrivacy, ProviderCredentials, TokenUsage, Transcriber,
+    Transcript, TranscriptionRequest, UpstreamRouteMetadata,
 };
 use reqwest::{
-    StatusCode,
+    RequestBuilder, StatusCode,
     multipart::{Form, Part},
 };
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,45 @@ use std::collections::BTreeMap;
 use tokio::sync::{mpsc, oneshot};
 
 pub const PROVIDER_NAME: &str = "venice";
+const CONFIDENTIAL_COMPUTE_HEADER: &str = "X-Confidential-Compute";
+const PREFERRED_PRIVATE_ROUTING: &str = "preferred";
+const STANDARD_ANONYMIZED_ROUTING: &str = "disabled";
+const OS_PROVIDER_HEADER: &str = "X-OS-Provider";
+const OS_PRIVACY_LEVEL_HEADER: &str = "X-OS-Privacy-Level";
+const OS_ENDPOINT_HEADER: &str = "X-OS-Endpoint";
+
+/// Where BYOK requests go when the config names no `byok_base_url`. The
+/// configured `base_url` may point at a June-managed gateway that only
+/// accepts June's service key; a user's own Venice key is only valid against
+/// Venice itself, so BYOK traffic must target Venice's public API directly.
+const VENICE_PUBLIC_BASE_URL: &str = "https://api.venice.ai/api/v1";
+
+pub(crate) fn byok_base_url(config: &UpstreamConfig) -> String {
+    config
+        .byok_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(VENICE_PUBLIC_BASE_URL)
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Picks the upstream base for one request: BYOK requests carry the user's
+/// key and must go direct to Venice; everything else uses the configured
+/// (June-managed, metered) upstream. Must stay aligned with
+/// [`venice_api_key`], which selects the bearer on the same condition.
+pub(crate) fn request_base_url<'a>(
+    base_url: &'a str,
+    byok_base_url: &'a str,
+    credentials: &ProviderCredentials,
+) -> &'a str {
+    if credentials.has_venice_api_key() {
+        byok_base_url
+    } else {
+        base_url
+    }
+}
 
 const CREDITS_PER_USD: f64 = 1_000.0;
 const RATE_SCALE: f64 = 1_000_000.0;
@@ -24,8 +63,6 @@ const RATE_SCALE: f64 = 1_000_000.0;
 const STREAM_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 #[cfg(test)]
 const STREAM_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
-/// A 20% markup over upstream cost is a 1.2x retail price.
-const RETAIL_PRICE_MULTIPLIER: f64 = 1.2;
 
 /// Standing safety policy injected as the leading system message on every
 /// Venice chat completion — note generation, dictation cleanup, and agent
@@ -116,6 +153,7 @@ pub struct VeniceTranscriber {
     http: reqwest::Client,
     api_key: String,
     base_url: String,
+    byok_base_url: String,
 }
 
 impl VeniceTranscriber {
@@ -124,6 +162,7 @@ impl VeniceTranscriber {
             http,
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
+            byok_base_url: byok_base_url(config),
         }
     }
 }
@@ -131,7 +170,12 @@ impl VeniceTranscriber {
 #[async_trait]
 impl Transcriber for VeniceTranscriber {
     async fn transcribe(&self, request: TranscriptionRequest) -> Result<Transcript, DomainError> {
-        let url = format!("{}/audio/transcriptions", self.base_url);
+        let base_url = request_base_url(
+            &self.base_url,
+            &self.byok_base_url,
+            &request.provider_credentials,
+        );
+        let url = format!("{base_url}/audio/transcriptions");
         // Bounded retry on transient failures (connection reset, 429, 5xx).
         // Safe to replay: the metering charge only settles after this call
         // succeeds, so a retried attempt can never double-charge.
@@ -293,11 +337,13 @@ impl Generator for VeniceGenerator {
                 },
                 ChatCallAuth {
                     provider_credentials: &request.provider_credentials,
+                    inference_privacy: request.inference_privacy,
                     unmetered: request.unmetered,
                 },
             )
             .await?;
         let content = parsed
+            .response
             .first_choice_text()
             .map(|text| {
                 if request.transcript_source_labels {
@@ -315,8 +361,9 @@ impl Generator for VeniceGenerator {
             } else {
                 title_hint.to_string()
             }),
-            provider: PROVIDER_NAME.to_string(),
-            usage: parsed.usage_or_error()?,
+            provider: parsed.provider,
+            route: parsed.route,
+            usage: parsed.response.usage_or_error()?,
         })
     }
 }
@@ -353,6 +400,7 @@ impl AgentChatCompleter for VeniceAgentChat {
                 request.model,
                 ChatCallAuth {
                     provider_credentials: &request.provider_credentials,
+                    inference_privacy: request.inference_privacy,
                     unmetered: request.unmetered,
                 },
             )
@@ -369,6 +417,7 @@ impl AgentChatCompleter for VeniceAgentChat {
                 request.model,
                 ChatCallAuth {
                     provider_credentials: &request.provider_credentials,
+                    inference_privacy: request.inference_privacy,
                     unmetered: request.unmetered,
                 },
             )
@@ -417,19 +466,22 @@ impl Cleaner for VeniceCleaner {
                 // it never gets the unmetered client.
                 ChatCallAuth {
                     provider_credentials: &request.provider_credentials,
+                    inference_privacy: request.inference_privacy,
                     unmetered: false,
                 },
             )
             .await?;
         let cleaned = parsed
+            .response
             .first_choice_text()
             .map(|text| strip_scaffolding_tags(&text))
             .filter(|text| !text.is_empty())
             .ok_or(DomainError::UpstreamProvider)?;
         Ok(CleanedText {
             text: cleaned,
-            provider: PROVIDER_NAME.to_string(),
-            usage: parsed.usage_or_error()?,
+            provider: parsed.provider,
+            route: parsed.route,
+            usage: parsed.response.usage_or_error()?,
         })
     }
 }
@@ -440,6 +492,7 @@ impl Cleaner for VeniceCleaner {
 #[derive(Clone, Copy)]
 struct ChatCallAuth<'a> {
     provider_credentials: &'a ProviderCredentials,
+    inference_privacy: InferencePrivacy,
     unmetered: bool,
 }
 
@@ -453,6 +506,7 @@ struct VeniceChat {
     unmetered_http: Option<reqwest::Client>,
     api_key: String,
     base_url: String,
+    byok_base_url: String,
 }
 
 impl VeniceChat {
@@ -462,6 +516,7 @@ impl VeniceChat {
             unmetered_http: None,
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
+            byok_base_url: byok_base_url(config),
         }
     }
 
@@ -484,13 +539,18 @@ impl VeniceChat {
         }
     }
 
+    fn chat_completions_url(&self, credentials: &ProviderCredentials) -> String {
+        let base_url = request_base_url(&self.base_url, &self.byok_base_url, credentials);
+        format!("{base_url}/chat/completions")
+    }
+
     async fn complete(
         &self,
         mut body: ChatCompletionRequest,
         auth: ChatCallAuth<'_>,
-    ) -> Result<ChatCompletionResponse, DomainError> {
+    ) -> Result<RoutedChatCompletion, DomainError> {
         body.messages.insert(0, ChatMessage::safety_context());
-        let url = format!("{}/chat/completions", self.base_url);
+        let url = self.chat_completions_url(auth.provider_credentials);
         // Bounded retry on transient failures — same rationale as the
         // transcribers: metering settles only after success, so a replay
         // can never double-charge.
@@ -519,13 +579,14 @@ impl VeniceChat {
         url: &str,
         body: &ChatCompletionRequest,
         auth: ChatCallAuth<'_>,
-    ) -> Result<ChatCompletionResponse, UpstreamAttemptError> {
+    ) -> Result<RoutedChatCompletion, UpstreamAttemptError> {
         let api_key = venice_api_key(&self.api_key, auth.provider_credentials);
-        let response = self
+        let request = self
             .client(auth.unmetered)
             .post(url)
             .bearer_auth(api_key)
-            .json(body)
+            .json(body);
+        let response = apply_private_routing(request, auth)
             .send()
             .await
             .map_err(|error| {
@@ -549,9 +610,15 @@ impl VeniceChat {
                 retryable,
             });
         }
+        let route = upstream_route(&response);
         response
             .json::<ChatCompletionResponse>()
             .await
+            .map(|response| RoutedChatCompletion {
+                response,
+                provider: PROVIDER_NAME.to_string(),
+                route,
+            })
             .map_err(|error| {
                 tracing::error!(%error, %url, model = %body.model, "venice: chat response JSON parse failed");
                 UpstreamAttemptError::fatal(DomainError::UpstreamProvider)
@@ -565,69 +632,19 @@ impl VeniceChat {
         auth: ChatCallAuth<'_>,
     ) -> Result<AgentChatCompletion, DomainError> {
         let body = prepare_agent_chat_body(body, &model)?;
-        let url = format!("{}/chat/completions", self.base_url);
-        let response = self
+        let url = self.chat_completions_url(auth.provider_credentials);
+        let request = self
             .client(auth.unmetered)
             .post(&url)
             .bearer_auth(venice_api_key(&self.api_key, auth.provider_credentials))
-            .json(&body)
+            .json(&body);
+        let response = apply_private_routing(request, auth)
             .send()
             .await
             .map_err(|error| {
                 tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
                 DomainError::UpstreamProvider
-            })?;
-        let status = response.status();
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("application/json")
-            .to_string();
-        let body = response.bytes().await.map_err(|error| {
-            tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
-            DomainError::UpstreamProvider
         })?;
-        if !status.is_success() {
-            return Err(handle_agent_chat_non_success(
-                AgentChatNonSuccess {
-                    status,
-                    url: &url,
-                    model: &model.0,
-                    body_bytes: body.len(),
-                    body: &body,
-                },
-                auth.provider_credentials,
-            ));
-        }
-        let usage = usage_from_chat_body(&body, &content_type)?;
-        Ok(AgentChatCompletion {
-            body: body.to_vec(),
-            content_type,
-            provider: PROVIDER_NAME.to_string(),
-            usage,
-        })
-    }
-
-    async fn complete_stream(
-        &self,
-        body: serde_json::Value,
-        model: june_domain::ModelId,
-        auth: ChatCallAuth<'_>,
-    ) -> Result<AgentChatStream, DomainError> {
-        let body = prepare_agent_chat_body(body, &model)?;
-        let url = format!("{}/chat/completions", self.base_url);
-        let mut response = self
-            .client(auth.unmetered)
-            .post(&url)
-            .bearer_auth(venice_api_key(&self.api_key, auth.provider_credentials))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
-                DomainError::UpstreamProvider
-            })?;
         let status = response.status();
         let content_type = response
             .headers()
@@ -651,6 +668,65 @@ impl VeniceChat {
                 auth.provider_credentials,
             ));
         }
+        let route = upstream_route(&response);
+        let body = response.bytes().await.map_err(|error| {
+            tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
+            DomainError::UpstreamProvider
+        })?;
+        let usage = usage_from_chat_body(&body, &content_type)?;
+        Ok(AgentChatCompletion {
+            body: body.to_vec(),
+            content_type,
+            provider: PROVIDER_NAME.to_string(),
+            route,
+            usage,
+        })
+    }
+
+    async fn complete_stream(
+        &self,
+        body: serde_json::Value,
+        model: june_domain::ModelId,
+        auth: ChatCallAuth<'_>,
+    ) -> Result<AgentChatStream, DomainError> {
+        let body = prepare_agent_chat_body(body, &model)?;
+        let url = self.chat_completions_url(auth.provider_credentials);
+        let request = self
+            .client(auth.unmetered)
+            .post(&url)
+            .bearer_auth(venice_api_key(&self.api_key, auth.provider_credentials))
+            .json(&body);
+        let mut response = apply_private_routing(request, auth)
+            .send()
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
+                DomainError::UpstreamProvider
+        })?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+        if !status.is_success() {
+            let body = response.bytes().await.map_err(|error| {
+                tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
+                DomainError::UpstreamProvider
+            })?;
+            return Err(handle_agent_chat_non_success(
+                AgentChatNonSuccess {
+                    status,
+                    url: &url,
+                    model: &model.0,
+                    body_bytes: body.len(),
+                    body: &body,
+                },
+                auth.provider_credentials,
+            ));
+        }
+        let route = upstream_route(&response);
 
         let (chunks_tx, chunks_rx) = mpsc::unbounded_channel();
         let (outcome_tx, outcome_rx) = oneshot::channel();
@@ -674,10 +750,47 @@ impl VeniceChat {
         Ok(AgentChatStream {
             content_type,
             provider: PROVIDER_NAME.to_string(),
+            route,
             chunks: chunks_rx,
             outcome: outcome_rx,
         })
     }
+}
+
+fn apply_private_routing(request: RequestBuilder, auth: ChatCallAuth<'_>) -> RequestBuilder {
+    if auth.provider_credentials.has_venice_api_key() {
+        request
+    } else {
+        let routing = match auth.inference_privacy {
+            InferencePrivacy::Private => PREFERRED_PRIVATE_ROUTING,
+            InferencePrivacy::Anonymized => STANDARD_ANONYMIZED_ROUTING,
+        };
+        request.header(CONFIDENTIAL_COMPUTE_HEADER, routing)
+    }
+}
+
+fn upstream_route(response: &reqwest::Response) -> UpstreamRouteMetadata {
+    let header = |name| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let route = UpstreamRouteMetadata {
+        provider: header(OS_PROVIDER_HEADER),
+        privacy_level: header(OS_PRIVACY_LEVEL_HEADER),
+        endpoint: header(OS_ENDPOINT_HEADER),
+    };
+    tracing::info!(
+        upstream_provider = route.provider.as_deref().unwrap_or("unknown"),
+        privacy_level = route.privacy_level.as_deref().unwrap_or("unknown"),
+        upstream_endpoint = route.endpoint.as_deref().unwrap_or("unknown"),
+        "venice: resolved upstream route"
+    );
+    route
 }
 
 fn prepare_agent_chat_body(
@@ -948,6 +1061,12 @@ impl ChatMessage {
 struct ChatCompletionResponse {
     choices: Vec<ChatCompletionChoice>,
     usage: Option<ChatCompletionUsage>,
+}
+
+struct RoutedChatCompletion {
+    response: ChatCompletionResponse,
+    provider: String,
+    route: UpstreamRouteMetadata,
 }
 
 impl ChatCompletionResponse {
@@ -1373,11 +1492,11 @@ fn usd_at_path(value: &serde_json::Value, path: &[&str]) -> Option<f64> {
 }
 
 fn credits_per_million_units(usd_per_million_units: f64) -> Option<u64> {
-    ceil_positive_u64(usd_per_million_units * CREDITS_PER_USD * RETAIL_PRICE_MULTIPLIER)
+    ceil_positive_u64(usd_per_million_units * CREDITS_PER_USD)
 }
 
 fn credits_per_million_seconds(usd_per_second: f64) -> Option<u64> {
-    ceil_positive_u64(usd_per_second * CREDITS_PER_USD * RATE_SCALE * RETAIL_PRICE_MULTIPLIER)
+    ceil_positive_u64(usd_per_second * CREDITS_PER_USD * RATE_SCALE)
 }
 
 fn ceil_positive_u64(value: f64) -> Option<u64> {
@@ -1484,7 +1603,7 @@ mod tests {
     use june_config::UpstreamConfig;
     use june_domain::{
         AgentChatCompleter, AgentChatRequest, AgentChatStreamOutcome, DomainError,
-        GenerationRequest, Generator, ModelId, ProviderCredentials,
+        GenerationRequest, Generator, InferencePrivacy, ModelId, ProviderCredentials,
     };
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -1504,15 +1623,22 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .and(header("authorization", "Bearer venice_key"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "choices": [
-                    { "message": { "content": "Generated note block" } }
-                ],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5
-                }
-            })))
+            .and(header("x-confidential-compute", "preferred"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-os-provider", "phala")
+                    .insert_header("x-os-privacy-level", "tee")
+                    .insert_header("x-os-endpoint", "phala-glm-5.2")
+                    .set_body_json(json!({
+                        "choices": [
+                            { "message": { "content": "Generated note block" } }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 10,
+                            "completion_tokens": 5
+                        }
+                    })),
+            )
             .mount(&server)
             .await;
         let generator = VeniceGenerator::from_config(
@@ -1521,6 +1647,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1536,6 +1663,7 @@ mod tests {
                 system_prompt: "system".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await;
@@ -1544,12 +1672,18 @@ mod tests {
             generated.map(|value| (
                 value.content,
                 value.provider,
+                value.route.provider,
+                value.route.privacy_level,
+                value.route.endpoint,
                 value.usage.prompt_tokens,
                 value.usage.completion_tokens,
             )),
             Ok((
                 "Generated note block".to_string(),
                 "venice".to_string(),
+                Some("phala".to_string()),
+                Some("tee".to_string()),
+                Some("phala-glm-5.2".to_string()),
                 10,
                 5
             ))
@@ -1579,7 +1713,9 @@ mod tests {
             http::default_client(),
             &UpstreamConfig {
                 api_key: "shared_venice_key".to_string(),
-                base_url: server.uri(),
+                // BYOK requests route to byok_base_url, never base_url.
+                base_url: "http://127.0.0.1:9".to_string(),
+                byok_base_url: Some(server.uri()),
             },
         );
 
@@ -1597,6 +1733,7 @@ mod tests {
                 provider_credentials: ProviderCredentials {
                     venice_api_key: Some("user_venice_key".to_string()),
                 },
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: true,
             })
             .await;
@@ -1605,6 +1742,8 @@ mod tests {
             generated.map(|value| value.content),
             Ok("Generated note block".to_string())
         );
+        let requests = server.received_requests().await.expect("requests");
+        assert!(requests[0].headers.get("x-confidential-compute").is_none());
     }
 
     #[tokio::test]
@@ -1629,6 +1768,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1644,6 +1784,7 @@ mod tests {
                 system_prompt: "system".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await
@@ -1677,6 +1818,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1692,6 +1834,7 @@ mod tests {
                 system_prompt: "system".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await
@@ -1752,6 +1895,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1767,6 +1911,7 @@ mod tests {
                 system_prompt: "system".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await;
@@ -1792,6 +1937,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1807,6 +1953,7 @@ mod tests {
                 system_prompt: "system".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await;
@@ -1833,6 +1980,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1862,6 +2010,96 @@ mod tests {
         assert!(body.contains("filename=\"audio.wav\""), "body: {body}");
     }
 
+    #[test]
+    fn byok_base_url_defaults_to_public_venice() {
+        let mut config = UpstreamConfig {
+            api_key: "venice_key".to_string(),
+            base_url: "https://june-managed.example/v1".to_string(),
+            byok_base_url: None,
+        };
+        assert_eq!(super::byok_base_url(&config), super::VENICE_PUBLIC_BASE_URL);
+
+        // An explicitly blank override (e.g. an empty env var) must fall back
+        // too, not build scheme-less request URLs.
+        config.byok_base_url = Some("   ".to_string());
+        assert_eq!(super::byok_base_url(&config), super::VENICE_PUBLIC_BASE_URL);
+    }
+
+    #[tokio::test]
+    async fn byok_transcription_routes_direct_to_byok_base_url() {
+        // Regression: the configured base_url may be a June-managed gateway
+        // that rejects any bearer other than June's service key. A request
+        // carrying a user's own Venice key must go to the BYOK base instead.
+        let byok_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/audio/transcriptions"))
+            .and(header("authorization", "Bearer user_venice_key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "text": "Hello" })))
+            .expect(1)
+            .mount(&byok_server)
+            .await;
+        let transcriber = super::VeniceTranscriber::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: "http://127.0.0.1:9".to_string(),
+                byok_base_url: Some(byok_server.uri()),
+            },
+        );
+
+        let transcript = june_domain::Transcriber::transcribe(
+            &transcriber,
+            june_domain::TranscriptionRequest {
+                audio: b"fake wav".to_vec(),
+                format: june_domain::AudioFormat::Wav,
+                context: None,
+                language: None,
+                model: ModelId("nvidia/parakeet-tdt-0.6b-v3".to_string()),
+                provider_credentials: ProviderCredentials {
+                    venice_api_key: Some("user_venice_key".to_string()),
+                },
+            },
+        )
+        .await;
+
+        assert_eq!(transcript.map(|value| value.text), Ok("Hello".to_string()));
+    }
+
+    #[tokio::test]
+    async fn metered_transcription_ignores_byok_base_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/audio/transcriptions"))
+            .and(header("authorization", "Bearer venice_key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "text": "Hello" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let transcriber = super::VeniceTranscriber::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+                byok_base_url: Some("http://127.0.0.1:9".to_string()),
+            },
+        );
+
+        let transcript = june_domain::Transcriber::transcribe(
+            &transcriber,
+            june_domain::TranscriptionRequest {
+                audio: b"fake wav".to_vec(),
+                format: june_domain::AudioFormat::Wav,
+                context: None,
+                language: None,
+                model: ModelId("nvidia/parakeet-tdt-0.6b-v3".to_string()),
+                provider_credentials: ProviderCredentials::default(),
+            },
+        )
+        .await;
+
+        assert_eq!(transcript.map(|value| value.text), Ok("Hello".to_string()));
+    }
+
     #[tokio::test]
     async fn agent_chat_replaces_non_object_stream_options() {
         // A non-object `stream_options` used to silently skip the
@@ -1870,11 +2108,18 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
+            .and(header("x-confidential-compute", "preferred"))
             .and(body_string_contains(r#""include_usage":true"#))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "choices": [{ "message": { "content": "hi" } }],
-                "usage": { "prompt_tokens": 1, "completion_tokens": 2 }
-            })))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("x-os-provider", "phala")
+                    .insert_header("x-os-privacy-level", "tee")
+                    .insert_header("x-os-endpoint", "phala-glm-5.2")
+                    .set_body_json(json!({
+                        "choices": [{ "message": { "content": "hi" } }],
+                        "usage": { "prompt_tokens": 1, "completion_tokens": 2 }
+                    })),
+            )
             .mount(&server)
             .await;
         let agent = VeniceAgentChat::from_config(
@@ -1883,6 +2128,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -1896,6 +2142,51 @@ mod tests {
                 }),
                 model: ModelId("text-model".to_string()),
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
+                unmetered: false,
+            })
+            .await
+            .expect("completion succeeds");
+
+        assert_eq!(completion.usage.prompt_tokens, 1);
+        assert_eq!(completion.usage.completion_tokens, 2);
+        assert_eq!(completion.provider, "venice");
+        assert_eq!(completion.route.provider.as_deref(), Some("phala"));
+        assert_eq!(completion.route.privacy_level.as_deref(), Some("tee"));
+        assert_eq!(completion.route.endpoint.as_deref(), Some("phala-glm-5.2"));
+    }
+
+    #[tokio::test]
+    async fn agent_chat_uses_standard_route_for_anonymized_model() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(header("x-confidential-compute", "disabled"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{ "message": { "content": "hi" } }],
+                "usage": { "prompt_tokens": 1, "completion_tokens": 2 }
+            })))
+            .mount(&server)
+            .await;
+        let agent = VeniceAgentChat::from_config(
+            http::default_client(),
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: server.uri(),
+                byok_base_url: None,
+            },
+        );
+
+        let completion = agent
+            .complete(AgentChatRequest {
+                body: json!({
+                    "model": "kimi-k3",
+                    "messages": [{ "role": "user", "content": "hi" }],
+                }),
+                model: ModelId("kimi-k3".to_string()),
+                provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Anonymized,
                 unmetered: false,
             })
             .await
@@ -1921,7 +2212,9 @@ mod tests {
             http::default_client(),
             &UpstreamConfig {
                 api_key: "shared_venice_key".to_string(),
-                base_url: server.uri(),
+                // BYOK requests route to byok_base_url, never base_url.
+                base_url: "http://127.0.0.1:9".to_string(),
+                byok_base_url: Some(server.uri()),
             },
         );
 
@@ -1935,6 +2228,7 @@ mod tests {
                 provider_credentials: ProviderCredentials {
                     venice_api_key: Some("VENICE_INFERENCE_KEY_bad".to_string()),
                 },
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: true,
             })
             .await
@@ -2105,6 +2399,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -2120,6 +2415,7 @@ mod tests {
                 system_prompt: "caller system prompt".to_string(),
                 cost_quality: None,
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await
@@ -2152,6 +2448,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         );
 
@@ -2166,6 +2463,7 @@ mod tests {
                 }),
                 model: ModelId("text-model".to_string()),
                 provider_credentials: ProviderCredentials::default(),
+                inference_privacy: InferencePrivacy::Private,
                 unmetered: false,
             })
             .await
@@ -2189,6 +2487,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: base_url.to_string(),
+                byok_base_url: None,
             },
         )
     }
@@ -2308,6 +2607,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: base_url.to_string(),
+                byok_base_url: None,
             },
         )
     }
@@ -2349,6 +2649,7 @@ mod tests {
             }),
             model: ModelId("text-model".to_string()),
             provider_credentials: ProviderCredentials::default(),
+            inference_privacy: InferencePrivacy::Private,
             unmetered: false,
         }
     }
@@ -2618,8 +2919,8 @@ mod tests {
             model.capabilities,
             vec!["nested.enabled", "supportsFunctionCalling"]
         );
-        assert_eq!(model.input_credits_per_million_tokens, Some(84));
-        assert_eq!(model.output_credits_per_million_tokens, Some(360));
+        assert_eq!(model.input_credits_per_million_tokens, Some(70));
+        assert_eq!(model.output_credits_per_million_tokens, Some(300));
         assert!(model.pricing.is_some());
     }
 
@@ -2645,6 +2946,6 @@ mod tests {
         let models = venice_priced_model_items(response, ModelType::Asr);
         let model = models.get("asr-model").expect("asr model");
 
-        assert_eq!(model.credits_per_million_seconds, Some(120_000));
+        assert_eq!(model.credits_per_million_seconds, Some(100_000));
     }
 }

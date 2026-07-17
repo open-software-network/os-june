@@ -15,6 +15,7 @@ pub mod venice_augment;
 pub mod venice_image;
 pub mod venice_image_edit;
 pub mod venice_video;
+pub mod viewer_identity;
 pub mod wav_probe;
 
 mod retry;

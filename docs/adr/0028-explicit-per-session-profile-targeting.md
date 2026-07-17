@@ -1,4 +1,4 @@
-# ADR 0019: Hermes profile switching is explicit per-session targeting, not runtime state
+# ADR 0028: Hermes profile switching is explicit per-session targeting, not runtime state
 
 Date: 2026-07-07
 Status: accepted

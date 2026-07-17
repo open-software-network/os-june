@@ -158,6 +158,7 @@ mod tests {
             &UpstreamConfig {
                 api_key: "openai_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         )
     }

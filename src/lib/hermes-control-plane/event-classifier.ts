@@ -4,6 +4,7 @@ import type {
   BackgroundHermesPhase,
   JuneHermesEvent,
   PendingHermesAction,
+  PendingHermesActionExpiration,
   PendingHermesActionResolution,
 } from "./events";
 import { parseHermesMode } from "./events";
@@ -78,6 +79,25 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
         action: classifyPendingActionResolution(type, payload, receivedAt),
         receivedAt,
       };
+
+    case "approval.expire": {
+      const requestId = explicitRequestIdOf(payload);
+      if (!requestId) {
+        return {
+          kind: "unsupported",
+          sessionId,
+          rawType: type,
+          sanitizedPayload: payload === undefined ? undefined : sanitizePayload(payload),
+          receivedAt,
+        };
+      }
+      return {
+        kind: "pending_action_expiration",
+        sessionId: sessionId ?? "",
+        action: classifyPendingActionExpiration(requestId, payload),
+        receivedAt,
+      };
+    }
 
     case "error":
       return classifyError(sessionId, payload, receivedAt);
@@ -155,7 +175,8 @@ function classifyTool(
       stringValue(payload?.tool_call_id) ??
       stringValue(payload?.toolCallId) ??
       stringValue(payload?.call_id) ??
-      stringValue(payload?.id),
+      stringValue(payload?.id) ??
+      stringValue(payload?.tool_id),
     // The builder treats failure-flavored tool event names as terminal failed,
     // while unknown tool.* names still update the in-flight row as progress.
     phase: toolPhase(type),
@@ -169,7 +190,10 @@ function classifyTool(
     text: eventText(payload),
     // Clarify tool calls are action-card plumbing in the builder, not tool rows.
     isClarify: isClarifyTool(payload),
-    content: toolMediaContent(payload?.content),
+    // The pinned runtime emits completed tool output under `result`; older
+    // fixtures/builds used `content`, and some frames carry complementary
+    // blocks in both. Normalize and combine them at this sole raw boundary.
+    content: combinedToolMediaContent(payload?.content, payload?.result),
     // Tool cards render arguments/output, so keep the sanitized payload in case
     // a tool's args happen to embed a secret.
     sanitizedPayload,
@@ -179,6 +203,37 @@ function classifyTool(
 
 const TOOL_MEDIA_REFERENCE_PATTERN =
   /MEDIA:[^\r\n]+\.(?:png|jpe?g|gif|webp|tiff?|bmp|avif|mp4|mov|webm|m4v)(?:[)\].,;:]?)(?=\s|$)/i;
+
+function combinedToolMediaContent(...values: unknown[]): unknown {
+  const items: unknown[] = [];
+  const seen = new Set<string>();
+  let sawArray = false;
+  for (const value of values) {
+    const normalized = toolMediaContent(value);
+    sawArray ||= Array.isArray(normalized);
+    const candidates = Array.isArray(normalized) ? normalized : [normalized];
+    for (const candidate of candidates) {
+      if (candidate === undefined) continue;
+      const key = toolMediaContentKey(candidate);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(candidate);
+    }
+  }
+  if (items.length === 0) return undefined;
+  return items.length === 1 && !sawArray ? items[0] : items;
+}
+
+function toolMediaContentKey(value: unknown): string {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (record.type === "text" && typeof record.text === "string") {
+      const metadata = parseJsonObject(record.text);
+      if (typeof metadata?.filename === "string") return `filename:${metadata.filename}`;
+    }
+  }
+  return JSON.stringify(value);
+}
 
 function toolMediaContent(value: unknown, depth = 0): unknown {
   if (value === null || value === undefined || depth > 4) return undefined;
@@ -221,10 +276,18 @@ function toolMediaContent(value: unknown, depth = 0): unknown {
       return { type: "text", text: record.text };
     }
   }
-  if (Array.isArray(record.content)) {
-    return toolMediaContent(record.content, depth + 1);
+  if (
+    typeof record.filename === "string" ||
+    typeof record.label === "string" ||
+    typeof record.mimeType === "string"
+  ) {
+    return { type: "text", text: JSON.stringify(record) };
   }
-  return undefined;
+  return combinedToolMediaContent(
+    toolMediaContent(record.content, depth + 1),
+    toolMediaContent(record.result, depth + 1),
+    toolMediaContent(record.structuredContent, depth + 1),
+  );
 }
 
 function parseJsonObject(value: string): Record<string, unknown> | undefined {
@@ -355,6 +418,22 @@ function classifyPendingActionResolution(
         answer: stringValue(payload?.answer, true) ?? "",
       };
   }
+}
+
+function classifyPendingActionExpiration(
+  requestId: string,
+  payload: RawHermesPayload | undefined,
+): PendingHermesActionExpiration {
+  const rawReason = stringValue(payload?.reason)?.toLowerCase();
+  const reason =
+    rawReason === "timeout" ||
+    rawReason === "disconnect" ||
+    rawReason === "overflow" ||
+    rawReason === "stale" ||
+    rawReason === "unconfirmed"
+      ? rawReason
+      : "unknown";
+  return { kind: "approval", requestId, reason };
 }
 
 function classifyBackgroundActivity(
@@ -488,11 +567,53 @@ function requestIdOf(
   receivedAt: string,
 ): string {
   return (
-    stringValue(payload?.request_id) ??
-    stringValue(payload?.requestId) ??
-    stringValue(payload?.id) ??
-    `${type}:${receivedAt}`
+    explicitRequestIdOf(payload) ??
+    (type === "approval.request" ? stableLegacyRequestId(type, payload) : `${type}:${receivedAt}`)
   );
+}
+
+function explicitRequestIdOf(payload: RawHermesPayload | undefined): string | undefined {
+  return (
+    stringValue(payload?.request_id) ?? stringValue(payload?.requestId) ?? stringValue(payload?.id)
+  );
+}
+
+/**
+ * Legacy Hermes builds omitted approval request ids. A timestamp made each
+ * replay look unique, so derive an opaque, deterministic fingerprint from the
+ * already-sanitized payload instead. The pinned runtime now supplies a real id;
+ * this approval-only fallback prevents old or partially-upgraded runtimes from
+ * causing a card storm without changing non-MCP action compatibility. No raw
+ * payload text is retained in the id.
+ */
+function stableLegacyRequestId(type: string, payload: RawHermesPayload | undefined): string {
+  const canonical = stableJson(sanitizePayload(payload ?? {}));
+  return `legacy:${type}:${fingerprint(canonical)}`;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function fingerprint(value: string): string {
+  let left = 0x811c9dc5;
+  let right = 0x9e3779b9;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    left = Math.imul(left ^ code, 0x01000193);
+    right = Math.imul(right ^ code, 0x85ebca6b);
+  }
+  return `${(left >>> 0).toString(16).padStart(8, "0")}${(right >>> 0)
+    .toString(16)
+    .padStart(8, "0")}`;
 }
 
 function messageRole(

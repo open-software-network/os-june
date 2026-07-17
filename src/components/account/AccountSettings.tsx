@@ -1,6 +1,8 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
-import { useEffect, useState } from "react";
+import { IconShuffle } from "central-icons/IconShuffle";
+import { useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { toast } from "../ui/Toaster";
 import { hasLiveSubscription } from "../../lib/account-gate";
 import { errorCode } from "../../lib/errors";
 import {
@@ -43,6 +45,7 @@ import {
   osAccountsUpgradeSession,
 } from "../../lib/tauri";
 import type { AccountStatus, SubscriptionPlan } from "../../lib/tauri";
+import { AccountAvatar, useAccountAvatar } from "./AccountAvatar";
 
 const FREE_PLAN_NAME = "Free plan";
 const PRO_PLAN_NAME = "Pro plan";
@@ -81,7 +84,57 @@ export function AccountSettings({ account, loading, onAccountChanged, onRefresh 
 
 export function AccountSettingsSection({ account, loading, onAccountChanged }: Props) {
   const [busy, setBusy] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
   const [accountStatus, setAccountStatus] = useState<string>();
+  const accountRef = useRef(account);
+  const mountedRef = useRef(true);
+  accountRef.current = account;
+  const { localOnly: avatarLocalOnly, refresh: refreshAvatar } = useAccountAvatar(account);
+  const canManageAvatar = account.localDev || Boolean(account.signedIn && account.user?.id?.trim());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  async function handleRefreshAvatar() {
+    setAvatarBusy(true);
+    try {
+      const user = await refreshAvatar();
+      if (user) {
+        // Propagate to App-level account state before the mounted guard: the
+        // callback is safe post-unmount and skipping it would strand the
+        // local-only copy until the next focus refresh.
+        const currentAccount = accountRef.current;
+        if (currentAccount.signedIn && currentAccount.user?.id === user.id) {
+          onAccountChanged({ ...currentAccount, user });
+        }
+      }
+      if (!mountedRef.current) return;
+      toast.success(
+        accountRef.current.localDev ? "Avatar updated on this device" : "Avatar updated everywhere",
+      );
+    } catch (error) {
+      if (mountedRef.current && (accountRef.current.signedIn || accountRef.current.localDev)) {
+        const code = errorCode(error);
+        if (code === "account_permission_required") {
+          toast.warning(
+            "Avatar changed on this device, but it couldn't sync. Sign out and sign in again to update your account permissions.",
+          );
+        } else if (code === "avatar_sync_unavailable") {
+          toast.warning(
+            "Avatar changed on this device, but syncing isn't available in this OS Accounts environment yet.",
+          );
+        } else {
+          toast.error(messageFromError(error));
+        }
+      }
+    } finally {
+      if (mountedRef.current) setAvatarBusy(false);
+    }
+  }
 
   async function handleSignIn() {
     setBusy(true);
@@ -154,7 +207,7 @@ export function AccountSettingsSection({ account, loading, onAccountChanged }: P
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  disabled={busy}
+                  disabled={busy || avatarBusy}
                   onClick={() => void handleSignOut()}
                 >
                   Sign out
@@ -179,6 +232,32 @@ export function AccountSettingsSection({ account, loading, onAccountChanged }: P
               )}
             </div>
           </div>
+          {canManageAvatar ? (
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">Avatar</h3>
+                <p className="settings-row-description">
+                  {account.localDev
+                    ? "A generated pattern saved on this device."
+                    : avatarLocalOnly
+                      ? "This pattern is saved only on this device."
+                      : "A generated pattern synced with your OpenSoftware account."}
+                </p>
+              </div>
+              <div className="settings-row-control">
+                <AccountAvatar account={account} className="account-avatar-preview" />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={avatarBusy || busy}
+                  onClick={() => void handleRefreshAvatar()}
+                >
+                  <IconShuffle size={14} />
+                  Refresh
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </section>

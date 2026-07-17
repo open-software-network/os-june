@@ -34,7 +34,9 @@ import {
 } from "../lib/hermes-admin";
 import {
   getActiveHermesProfileName,
+  PROFILE_DATA_CHANGED_EVENT,
   resetActiveHermesProfileForTests,
+  type ProfileDataChangedDetail,
 } from "../lib/active-hermes-profile";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
 
@@ -258,10 +260,17 @@ describe("profile manager - hook flows", () => {
     const controller = new ProfileManagerController(harness as ProfileManagerEngine);
     await controller.load();
     await controller.beginRemove("research");
+    const dataChanged = vi.fn();
+    const handleDataChanged = (event: Event) => {
+      dataChanged((event as CustomEvent<ProfileDataChangedDetail>).detail);
+    };
+    window.addEventListener(PROFILE_DATA_CHANGED_EVENT, handleDataChanged);
 
     const ok = await controller.confirmRemoval("move");
 
     expect(ok).toBe(true);
+    expect(dataChanged).toHaveBeenCalledWith({ profile: "default" });
+    window.removeEventListener(PROFILE_DATA_CHANGED_EVENT, handleDataChanged);
     expect(mocks.moveProfileDataToDefault).toHaveBeenCalledWith("research");
     expect(mocks.deleteProfileData).not.toHaveBeenCalled();
     expect(

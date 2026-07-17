@@ -21,6 +21,7 @@ fn main() {
     clean_legacy_helper_bundles();
     build_system_audio_helper();
     build_dictation_helper();
+    build_windows_dictation_helper();
     ensure_bundled_hermes_dir();
     tauri_build::build();
 }
@@ -34,13 +35,14 @@ fn main() {
 /// placeholder keeps the build green and the app falls back to the managed
 /// on-device install (`bundled_hermes_command` finds no launcher in it).
 ///
-/// A populated bundle carries a PIN stamp (the hermes-agent commit it was
-/// built from). When that stamp no longer matches the pin in
-/// src/hermes_bridge.rs — a developer bumped the pin after bundling — the
-/// stale bundle is evicted and replaced with the placeholder rather than
-/// silently shipping outdated runtime code.
+/// A populated bundle carries PIN and PATCHSET stamps (the hermes-agent commit
+/// and June compatibility patch it was built from). When either stamp no
+/// longer matches src/hermes_bridge.rs, the stale bundle is evicted and
+/// replaced with the placeholder rather than silently shipping outdated
+/// runtime code.
 fn ensure_bundled_hermes_dir() {
     println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PIN");
+    println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PATCHSET");
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
     );
@@ -61,12 +63,21 @@ fn ensure_bundled_hermes_dir() {
             .map(|raw| raw.trim().to_string())
             .unwrap_or_default();
         let pinned = hermes_agent_pinned_commit(&manifest_dir);
-        if !stamped.is_empty() && stamped == pinned {
+        let stamped_patch_set = std::fs::read_to_string(hermes_dir.join("PATCHSET"))
+            .map(|raw| raw.trim().to_string())
+            .unwrap_or_default();
+        let pinned_patch_set = hermes_runtime_patch_set(&manifest_dir);
+        if !stamped.is_empty()
+            && stamped == pinned
+            && !stamped_patch_set.is_empty()
+            && stamped_patch_set == pinned_patch_set
+        {
             return;
         }
         println!(
-            "cargo:warning=bundled Hermes runtime is stale (built from {stamped:?}, pin is \
-             {pinned:?}); evicting it — rerun scripts/bundle-hermes-runtime.sh to bundle again"
+            "cargo:warning=bundled Hermes runtime is stale (built from {stamped:?} with patch \
+             {stamped_patch_set:?}, expected {pinned:?} with patch {pinned_patch_set:?}); evicting \
+             it — rerun scripts/bundle-hermes-runtime.sh to bundle again"
         );
         if let Err(error) = std::fs::remove_dir_all(&hermes_dir) {
             println!(
@@ -95,11 +106,19 @@ ship the runtime inside the app.\n";
 /// script cannot import crate constants, so this parses the declaration the
 /// same way scripts/bundle-hermes-runtime.sh does — one source of truth.
 fn hermes_agent_pinned_commit(manifest_dir: &std::path::Path) -> String {
+    hermes_bridge_constant(manifest_dir, "HERMES_AGENT_INSTALL_COMMIT")
+}
+
+fn hermes_runtime_patch_set(manifest_dir: &std::path::Path) -> String {
+    hermes_bridge_constant(manifest_dir, "HERMES_RUNTIME_PATCH_SET")
+}
+
+fn hermes_bridge_constant(manifest_dir: &std::path::Path, name: &str) -> String {
     let source = std::fs::read_to_string(manifest_dir.join("src").join("hermes_bridge.rs"))
         .unwrap_or_default();
     source
         .lines()
-        .find(|line| line.contains("const HERMES_AGENT_INSTALL_COMMIT"))
+        .find(|line| line.contains(&format!("const {name}")))
         .and_then(|line| {
             let start = line.find('"')? + 1;
             let end = line[start..].find('"')? + start;
@@ -227,6 +246,150 @@ fn build_system_audio_helper() {
     }
 }
 
+fn build_windows_dictation_helper() {
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("windows") {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    let helper_manifest = manifest_dir
+        .join("native")
+        .join("windows-dictation-helper")
+        .join("Cargo.toml");
+    if !helper_manifest.exists() {
+        panic!(
+            "Windows dictation helper manifest is missing at {}",
+            helper_manifest.display()
+        );
+    }
+    println!("cargo:rerun-if-changed={}", helper_manifest.display());
+    for source in [
+        "main.rs",
+        "protocol.rs",
+        "hotkeys.rs",
+        "audio.rs",
+        "clipboard.rs",
+        "focus.rs",
+        "permissions.rs",
+    ] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest_dir
+                .join("native")
+                .join("windows-dictation-helper")
+                .join("src")
+                .join(source)
+                .display()
+        );
+    }
+
+    let target = std::env::var("TARGET").ok();
+    let target_dir = manifest_dir.join("target").join("windows-dictation-helper");
+    let mut command = std::process::Command::new("cargo");
+    command
+        .arg("build")
+        .arg("--release")
+        .arg("--locked")
+        .arg("--manifest-path")
+        .arg(&helper_manifest)
+        .arg("--target-dir")
+        .arg(&target_dir);
+    if let Some(target) = target.as_deref() {
+        command.arg("--target").arg(target);
+    }
+    let status = command.status().unwrap_or_else(|error| {
+        panic!(
+            "Windows dictation helper build command could not start for {}: {error}",
+            helper_manifest.display()
+        )
+    });
+    if !status.success() {
+        panic!(
+            "Windows dictation helper build failed for {} with status {status}",
+            helper_manifest.display()
+        );
+    }
+
+    let mut built = target_dir.join("release").join("june-dictation-helper.exe");
+    if let Some(target) = target.as_deref() {
+        built = target_dir
+            .join(target)
+            .join("release")
+            .join("june-dictation-helper.exe");
+    }
+    let destination = manifest_dir
+        .join("native")
+        .join("bin")
+        .join("june-dictation-helper.exe");
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .expect("Windows dictation helper destination should be created");
+    }
+    let should_copy = match (std::fs::read(&built), std::fs::read(&destination)) {
+        (Ok(built_contents), Ok(current_contents)) => built_contents != current_contents,
+        (Ok(_), Err(_)) => true,
+        (Err(error), _) => {
+            panic!(
+                "Windows dictation helper {} should be readable before copying to {}: {error}",
+                built.display(),
+                destination.display()
+            )
+        }
+    };
+    if should_copy {
+        std::fs::copy(&built, &destination).unwrap_or_else(|error| {
+            panic!(
+                "Windows dictation helper {} should copy to {}: {error}",
+                built.display(),
+                destination.display()
+            )
+        });
+    }
+    sign_windows_helper_if_configured(&manifest_dir, &destination);
+}
+
+fn sign_windows_helper_if_configured(manifest_dir: &std::path::Path, helper: &std::path::Path) {
+    if std::env::var("WINDOWS_CERTIFICATE_PASSWORD")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return;
+    }
+    let Some(repo_dir) = manifest_dir.parent() else {
+        return;
+    };
+    let script = repo_dir.join("scripts").join("windows-sign.ps1");
+    if !script.exists() {
+        panic!(
+            "Windows signing requested but {} is missing",
+            script.display()
+        );
+    }
+    let status = std::process::Command::new("powershell.exe")
+        .arg("-NoLogo")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(&script)
+        .arg(helper)
+        .status()
+        .unwrap_or_else(|error| {
+            panic!(
+                "Windows dictation helper signing command could not start for {}: {error}",
+                helper.display()
+            )
+        });
+    if !status.success() {
+        panic!(
+            "Windows dictation helper {} signing failed with status {status}",
+            helper.display()
+        );
+    }
+}
+
 fn read_system_audio_min_macos_version(manifest_dir: &std::path::Path) -> Option<String> {
     let version_file = manifest_dir.join(SYSTEM_AUDIO_MIN_MACOS_VERSION_FILE);
     println!("cargo:rerun-if-changed={}", version_file.display());
@@ -283,6 +446,7 @@ fn build_dictation_helper() {
                 "Carbon",
                 "CoreMedia",
                 "CoreGraphics",
+                "SoundAnalysis",
             ],
         );
         if !built {

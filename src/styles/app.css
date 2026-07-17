@@ -534,6 +534,9 @@ input:focus-visible,
   overflow-y: auto;
   overscroll-behavior: contain;
   margin: calc(-1 * var(--detail-bar-h)) calc(-1 * var(--sp-8)) 0;
+  /* The fixed composer is outside layout. Keep the resting gap here; its live
+   * overlap is reserved on the in-flow .agent-main child below so WebKit
+   * cannot absorb it into a non-scrolling flex viewport. */
   padding: var(--detail-bar-h) var(--sp-8) var(--sp-5);
   /* Center the thread column from the LEFT GUTTER, not margin:auto inside the
    * scroller: the classic scrollbar steals an engine-specific slice of the
@@ -581,7 +584,11 @@ input:focus-visible,
  * Auto margins here would re-split the scrollbar's bite into the centering.
  * The hero's .agent-main has no scrollbar and keeps margin:auto. */
 .agent-scroll .agent-main {
-  margin: 0;
+  /* The measured composer overlap grows with the Up next queue and shrinks as
+   * rows drain. It must live on this in-flow child, not as outer scroller
+   * padding: WKWebView can otherwise report no scroll range when a short thread
+   * fits the full viewport but not the unobscured space above the composer. */
+  margin: 0 0 var(--agent-composer-clearance, 0px);
 }
 
 .agent-detail-title {
@@ -741,9 +748,11 @@ input:focus-visible,
   /* Align the thread rail with the composer's text line, not its outer
    * border: 1px box border + sp-1 box padding + sp-5 textarea padding.
    * User turns stay right-aligned inside this rail. */
-  /* Bottom padding clears the fixed composer so the last turn can scroll fully
-   * clear of it instead of hiding underneath. */
-  padding: var(--sp-2) calc(1px + var(--sp-1) + var(--sp-5)) 148px;
+  /* The outer scroller owns the live clearance for the fixed composer. Keep
+   * only the final turn's out-of-flow action row in this rail's tail so its
+   * copy/branch/timestamp controls also remain above that surface. */
+  padding: var(--sp-2) calc(1px + var(--sp-1) + var(--sp-5))
+    calc(var(--agent-turn-actions-h) + var(--sp-2));
 }
 
 /* Dev-tools response gallery (window.__agentGallery): a labeled catalog of every
@@ -2894,14 +2903,14 @@ input:focus-visible,
   opacity: 0;
 }
 
-/* Running rows trade the status word for the rolling dot spinner (fixed-size
- * mark; wrappers only set color). */
+/* Running rows trade the status word for the fixed-size June mark spinner.
+ * It stays on the spinner's neutral default — a working row is ambient
+ * activity, not a semantic accent. */
 .agent-tool-spinner {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  color: var(--warm-strong);
 }
 
 /* Name inherits the row's muted color (the whole line darkens on hover). */
@@ -2920,6 +2929,18 @@ input:focus-visible,
   border: 0;
   padding: 0;
   background: transparent;
+}
+
+/* Condensed tool run (JUN-326): settled rows tuck behind one count line so a
+ * long command run reads as a single quiet row instead of a column of them.
+ * The fold reuses the disclosure row treatment; only the body is new — the
+ * folded rows indent under the summary label so the hierarchy is legible. */
+.agent-tool-fold-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+  padding-left: calc(15px + var(--sp-2));
 }
 
 .agent-tool-output {
@@ -3092,10 +3113,14 @@ input:focus-visible,
   overflow: hidden;
   /* Concentric with the card: inner radius = outer - the card's 4px inset. */
   border-radius: calc(var(--r-lg) - var(--sp-1));
-  /* The gray canvas itself gradates into the card surface at the bottom (and
+  /* The quiet canvas tint gradates into the card surface at the bottom (and
    * the dot field thins out over the same run), so the footer transition is
    * owned by the background rather than an overlay fading in on top. */
-  background: linear-gradient(to bottom, var(--secondary) 62%, var(--card));
+  background: linear-gradient(
+    to bottom,
+    color-mix(in oklch, var(--secondary) 60%, var(--card)) 62%,
+    var(--card)
+  );
   color: var(--muted-foreground);
 }
 
@@ -3107,7 +3132,7 @@ input:focus-visible,
 [data-theme="dark"] .agent-generated-video-placeholder,
 [data-theme="dark"] .agent-generated-media-reveal {
   --agent-generated-dot-alpha: 0.05;
-  --agent-generated-sheen-glow: 0.27;
+  --agent-generated-sheen-glow: 0.15;
   --agent-generated-mark-alpha: 0.3;
   color: var(--foreground);
 }
@@ -3154,9 +3179,11 @@ input:focus-visible,
   display: block;
   width: 100%;
   height: 100%;
-  /* The theme accent for the mark's glints and the press ripple's wash; the
-   * canvas reads the computed value (accent-color paints nothing here). */
-  accent-color: var(--brand);
+  /* The luminous clay accent for the mark's glints and the press ripple's
+   * wash; a plain lightness lift would read as mud over the light field, so
+   * --brand-bright pins chroma too. The canvas reads the computed value
+   * (accent-color paints nothing here). */
+  accent-color: var(--brand-bright);
 }
 
 /* The label sits on the card surface the canvas gradient lands on - no
@@ -3174,16 +3201,6 @@ input:focus-visible,
   --shimmer-spread: calc(2ch + var(--sp-8));
   max-width: 100%;
   font-size: var(--fs-lg);
-}
-
-/* Caption under a generating frame (video's elapsed-time note). */
-.agent-generated-media-caption {
-  margin-top: var(--sp-2);
-}
-
-.agent-generated-media-note {
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
 }
 
 .agent-generated-image-error {
@@ -4987,7 +5004,7 @@ input:focus-visible,
 /* Why a rejected send didn't go through — sits on the composer because that's
  * where the user just acted, and clears itself when the turn finishes. A
  * content-sized pill (not another full-width box, which read as a second
- * composer) with the rolling dot spinner tying it to the working state. Same
+ * composer) with the dot-grid spinner tying it to the working state. Same
  * surface recipe as the "Generating notes…" pill so the app's progress
  * statuses read as one family. (The recording-consent note left this family
  * for the funding-notice card chrome — it asks, it doesn't report progress.) */
@@ -5195,12 +5212,6 @@ input:focus-visible,
   --tier-ink: oklch(10% 0.01 60);
   --tier-mark: oklch(82% 0.07 75);
   --tier-mark-relief: oklch(16% 0.012 60);
-}
-
-/* Waiting states swap the coin glyph for the dot spinner: neutral progress,
- * not a caution accent. */
-.funding-notice-spinner {
-  color: var(--muted-foreground);
 }
 
 .funding-notice-body {
@@ -5470,10 +5481,16 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-1);
   min-width: 0;
-  max-width: 100%;
+  width: 100%;
+}
+
+.june-download-toast-action {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .june-download-toast-file {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5735,6 +5752,10 @@ input:focus-visible,
   outline-offset: 1px;
 }
 
+.hermes-trace-copy-tip {
+  display: inline-flex;
+}
+
 .hermes-trace-panel-close {
   padding: var(--sp-1) var(--sp-2);
 }
@@ -5908,6 +5929,9 @@ input:focus-visible,
   gap: var(--sp-2);
   min-height: var(--control-md);
   padding: var(--sp-1) var(--sp-2);
+  /* Match the composer text line: queue frame (sp-2) + this sp-4 inset equals
+   * composer frame (sp-1) + editor inset (sp-5). */
+  padding-inline-start: var(--sp-4);
   border: 0;
   border-radius: var(--r-md);
   background: transparent;
@@ -6663,7 +6687,7 @@ input:focus-visible,
   /* Bleed past the surface padding so the hairline runs the panel's full
    * width; the widened padding keeps the label on the shared content gutter. */
   margin: 0 calc(-1 * var(--sp-1));
-  padding: 0 calc(var(--sp-1) + var(--sp-2));
+  padding: var(--sp-2) calc(var(--sp-1) + var(--sp-2));
   border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
   color: var(--popover-foreground);
   font-size: var(--fs-md);
@@ -6690,6 +6714,17 @@ input:focus-visible,
   margin: 0;
   padding: 0 var(--sp-2) 0 var(--sp-3);
   border-bottom: 0;
+}
+
+/* Billing note under the Auto toggle while a Venice API key is saved: Auto
+ * never uses the key, so the credits impact stays visible right where Auto
+ * gets switched on. Quiet caption on the same gutter as the toggle label. */
+.agent-composer-model-auto-note {
+  margin: 0;
+  padding: 0 var(--sp-2) var(--sp-1) var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
 }
 
 /* The Preference drill-in row while Auto is on: label left, the active preset
@@ -7712,7 +7747,7 @@ input:focus-visible,
 }
 
 .report-dialog-submit-spinner {
-  color: currentColor;
+  --spinner-color: currentColor;
 }
 
 /* Mic is the resting affordance — a light ghost button (matches our other ghost
@@ -8915,8 +8950,65 @@ input:focus-visible,
   position: relative;
 }
 
-.sidebar-identity .sidebar-nav-icon {
-  color: var(--muted-foreground);
+/* A tiny, theme-aware avatar in place of the generic account glyph. Layered
+ * gradients create the cloudy depth without a canvas or render loop. */
+.account-avatar {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background:
+    radial-gradient(
+      circle at var(--avatar-cloud-x, 24%) var(--avatar-cloud-y, 18%),
+      color-mix(in oklch, var(--brand-bright) 82%, transparent) 0 12%,
+      transparent 48%
+    ),
+    radial-gradient(
+      circle at calc(100% - var(--avatar-cloud-x, 24%)) calc(100% - var(--avatar-cloud-y, 18%)),
+      color-mix(in oklch, var(--brand) 72%, transparent) 0 18%,
+      transparent 54%
+    ),
+    linear-gradient(
+      var(--avatar-cloud-angle, 145deg),
+      color-mix(in oklch, var(--brand-bright) 28%, var(--brand)),
+      color-mix(in oklch, var(--brand) var(--avatar-cloud-strength, 54%), var(--sidebar))
+    );
+  box-shadow:
+    inset 0 0 0 var(--border-width) color-mix(in oklch, var(--on-solid) 24%, transparent),
+    inset 0 calc(-1 * var(--sp-1)) var(--sp-3)
+    color-mix(in oklch, var(--foreground) 20%, transparent);
+}
+
+.account-avatar::before {
+  position: absolute;
+  inset: -45%;
+  z-index: 0;
+  content: "";
+  background:
+    radial-gradient(
+      circle at var(--avatar-cloud-x, 31%) 42%,
+      color-mix(in oklch, var(--on-solid) 78%, transparent) 0 10%,
+      transparent 30%
+    ),
+    radial-gradient(
+      circle at var(--avatar-cloud-y, 55%) 53%,
+      color-mix(in oklch, var(--brand-bright) 86%, transparent) 0 14%,
+      transparent 36%
+    ),
+    radial-gradient(
+      circle at calc(100% - var(--avatar-cloud-x, 28%)) 38%,
+      color-mix(in oklch, var(--on-solid) 52%, transparent) 0 9%,
+      transparent 28%
+    );
+  filter: blur(var(--sp-1));
+  opacity: 0.58;
+  transform: translate3d(-4%, 3%, 0) rotate(var(--avatar-cloud-angle, -9deg));
+}
+
+.account-avatar-preview {
+  width: var(--control-lg);
+  height: var(--control-lg);
+  flex: 0 0 auto;
 }
 
 .sidebar-identity .sidebar-nav-label {
@@ -9432,10 +9524,6 @@ input:focus-visible,
   width: 6px;
   height: 6px;
   border-radius: var(--r-pill);
-}
-
-.agent-sidebar-spinner {
-  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
 .agent-sidebar-working[data-status="waitingForUser"],
@@ -10257,8 +10345,7 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-.note-header-ask,
-.note-reference-copy {
+.note-header-ask {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -10279,11 +10366,6 @@ input:focus-visible,
   padding: 0 var(--sp-2);
   font-size: var(--fs-sm);
   font-weight: 400;
-}
-
-.note-reference-copy {
-  width: var(--control-sm);
-  padding: 0;
 }
 
 .note-header-ask:hover,
@@ -10320,12 +10402,6 @@ input:focus-visible,
   }
 }
 
-.note-reference-copy:hover,
-.note-reference-copy[data-copied="true"] {
-  background: color-mix(in oklch, var(--muted) 55%, transparent);
-  color: var(--foreground);
-}
-
 /* Note toolbar overflow menu — mirrors the agent session bar's menu (same
    base .sidebar-identity-menu popover) so both detail-bar menus read alike. */
 .note-actions-menu-wrap {
@@ -10333,6 +10409,9 @@ input:focus-visible,
   display: inline-flex;
 }
 
+/* Both icon buttons share the toolbar's compact control size so share and
+ * the overflow trigger read as one consistent row. */
+.note-header-share,
 .note-actions-menu-trigger {
   width: var(--control-sm);
   height: var(--control-sm);
@@ -10614,7 +10693,6 @@ input:focus-visible,
 
 .transcript-processing-spinner {
   flex: none;
-  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
 /* Pairs with the shared .shimmer utility in markup. The label just sets its
@@ -10899,11 +10977,10 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-/* The rolling dot spinner (drawn, colored via currentColor) — the same working
- * indicator as the agent chat, sidebar, and composer notice. */
+/* The dot-grid spinner — the same working indicator as the agent chat, sidebar,
+ * and composer notice. */
 .note-processing-progress-spinner {
   flex: none;
-  color: color-mix(in oklch, var(--muted-foreground) 80%, transparent);
 }
 
 /* The rolling stage label: a one-line window the stage names roll through.
@@ -11926,6 +12003,15 @@ input:focus-visible,
   font-size: var(--fs-md);
 }
 
+/* The app-shell banners render as the first children of .main-panel-body,
+ * which has no top padding (each workspace row brings its own). Without a
+ * top margin the banner sits flush against the card's top edge. Scoped to
+ * direct children so mid-content usages (routines) keep their geometry. */
+.main-panel-body > .error-banner,
+.main-panel-body > .notice-banner {
+  margin-top: var(--sp-4);
+}
+
 .routines-error-banner {
   display: flex;
   align-items: center;
@@ -11961,10 +12047,6 @@ input:focus-visible,
 
 /* Feature 07: the fork lifecycle (creating → branched) is now surfaced as a
  * toast, not an inline banner — see branchFromMessage in AgentWorkspace.tsx. */
-
-.agent-turn-action-spinner {
-  color: var(--warm-strong);
-}
 
 .agent-error-banner {
   display: flex;
@@ -12077,9 +12159,10 @@ input:focus-visible,
  * consumer class passed through via the InlineNotice `className` prop. */
 .inline-notice {
   display: flex;
-  /* Top-align so the leading icon lines up with the first line of the content,
-   * not the vertical middle of a multi-line body. */
-  align-items: flex-start;
+  /* Match the first text line across the message and any actions. This reads
+   * centered for a one-line notice while wrapped copy grows downward from the
+   * same top line, without measuring line count in JavaScript. */
+  align-items: first baseline;
   gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-subtle);
@@ -12094,6 +12177,9 @@ input:focus-visible,
 .inline-notice-icon {
   display: inline-flex;
   flex-shrink: 0;
+  /* Icons have no useful text baseline, so keep the glyph centered against
+   * the message's first line while the text and actions baseline-align. */
+  align-self: flex-start;
   align-items: center;
   height: calc(var(--fs-md) * 1.5);
   color: var(--muted-foreground);
@@ -16990,6 +17076,132 @@ input:focus-visible,
   max-width: 60%;
 }
 
+/* Memory manager (Settings > Memory) — a dedicated, searchable, filterable
+ * list built to scale, since memory grows unbounded. Mirrors the Installed
+ * skills page: a group heading + count pill, a subtitle, then a card whose
+ * toolbar (search + project filter + add) sits above the row list. */
+/* Breathing room between the remember-things toggle card and the memory
+ * list section below it (the grid gap alone reads as cramped). */
+.memory-manager-heading,
+.memory-empty-state {
+  margin-top: var(--sp-6);
+}
+
+.memory-manager-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.memory-manager-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.memory-manager-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Search stays a compact fixed width; the project filter + add button ride
+ * to the right of it. */
+.memory-search {
+  flex: 0 0 auto;
+  width: 220px;
+}
+
+.memory-scope-select {
+  margin-left: auto;
+}
+
+.memory-manager-card .memory-rows {
+  padding: var(--sp-1) var(--sp-5);
+}
+
+.memory-manager-noresults {
+  margin: 0;
+  padding: var(--sp-8) var(--sp-5);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.memory-settings-hint {
+  margin: 0;
+  padding: 0 var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.memory-row .settings-row-info {
+  min-width: 0;
+}
+
+.memory-content {
+  display: -webkit-box;
+  width: 100%;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  line-height: 1.45;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.memory-content[data-expanded="true"] {
+  display: block;
+  overflow: visible;
+}
+
+/* Row meta line: source · date · project tag (project last, only if set). */
+.memory-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+/* Project reads as plain metadata (no chip), matching the source + date beside
+ * it. On row hover a chevron reveals, turning the name into a drill-in. */
+.memory-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  cursor: pointer;
+}
+
+button.memory-project:hover {
+  color: var(--foreground);
+}
+
+.memory-project-chevron {
+  opacity: 0;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.memory-row:hover .memory-project-chevron,
+.memory-project:focus-visible .memory-project-chevron {
+  opacity: 1;
+}
+
 .sign-in-prompt-status {
   margin: var(--sp-4) 0 0;
   color: var(--muted-foreground);
@@ -17035,8 +17247,9 @@ input:focus-visible,
   animation: sign-in-prompt-spin 0.9s linear infinite;
 }
 
-/* App-wide loading indicator: the rolling dot spinner. Size comes
- * from font-size (set inline by <Spinner size>); color inherits. */
+/* App-wide loading indicator: the dot spinner that draws June's mark. Its size
+ * is fixed per variant (data-size sm/md/lg) in dot-spinner.css, not font-scaled;
+ * the default color is the theme-aware --spinner-neutral token. */
 .spinner {
   display: inline-flex;
   flex-shrink: 0;
@@ -17047,6 +17260,13 @@ input:focus-visible,
 
 /* The dot spinner itself lives in dot-spinner.css (shared with the agent
  * HUD page entry). */
+
+/* Solid controls opt back into their inherited foreground instead of the
+ * spinner's neutral-gray default, so the dots stay legible on a brand fill. */
+.agent-composer-send .dot-spinner,
+.primary-action.primary-solid .dot-spinner {
+  --spinner-color: currentColor;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .sign-in-prompt-spinner,
@@ -17240,7 +17460,7 @@ input:focus-visible,
 
 .select-popover button {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 16px;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-3);
   width: 100%;
@@ -17293,8 +17513,18 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+/* Trailing group at the right edge of an option: the selection checkmark sits
+ * just left of the count, so the numbers line up in a right-hand column and the
+ * check reads against them. */
+.select-trailing {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
 /* The count reads as the same quiet number badge used on the Agent page
- * (a bare .status-pill), sitting right next to the label. */
+ * (a bare .status-pill). */
 .select-count {
   flex-shrink: 0;
 }
@@ -17322,7 +17552,7 @@ input:focus-visible,
  * the trigger and its option rows use one sp-2 gap after the swatch, so their
  * labels overlay when the popover opens in place without adding extra margin. */
 .select-popover button.has-swatch {
-  grid-template-columns: 14px minmax(0, 1fr) 16px;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
   column-gap: var(--sp-2);
 }
 
@@ -17808,6 +18038,17 @@ input:focus-visible,
   border-color: transparent;
 }
 
+/* Ghost destructive — the outlined secondary button recolored, for a low-stakes
+ * destructive action that shares a footer with Cancel / Save. */
+.primary-action.primary-destructive-ghost {
+  color: var(--destructive);
+}
+
+.primary-action.primary-destructive-ghost:hover {
+  border-color: var(--destructive);
+  background: color-mix(in oklch, var(--destructive) 10%, transparent);
+}
+
 /* Ghost icon button — back-arrow style header chip ------------------ */
 
 .ghost-icon-button {
@@ -17988,6 +18229,50 @@ input:focus-visible,
   font-weight: 400;
 }
 
+.detail-breadcrumb-current-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.detail-breadcrumb-share-tip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.detail-breadcrumb-current-group:hover .detail-breadcrumb-share-tip,
+.detail-breadcrumb-current-group:focus-within .detail-breadcrumb-share-tip {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.detail-breadcrumb-share {
+  display: inline-grid;
+  place-items: center;
+  inline-size: var(--control-xs);
+  block-size: var(--control-xs);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.detail-breadcrumb-share:hover,
+.detail-breadcrumb-share[data-copied] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
 .detail-breadcrumb-separator {
   flex: 0 0 auto;
   color: var(--muted-foreground);
@@ -17999,6 +18284,33 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
+}
+
+.agent-project-instructions {
+  height: var(--control-xs);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-3);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.agent-project-instructions:hover {
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.agent-project-instructions-content {
+  max-height: calc(var(--control-xl) * 8);
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
 }
 
 /* Agent session bar — inline rename + overflow menu layered on the shared
@@ -19928,6 +20240,10 @@ input:focus-visible,
  * but the text itself stays anchored at the column edge. Same trick
  * for the inline edit input — the baseline doesn't shift. */
 .folder-detail-title {
+  /* Hug the text so the hover background and click target only cover the
+   * name, not the full width of the content column. */
+  align-self: flex-start;
+  max-width: 100%;
   margin: 0 calc(-1 * var(--sp-2));
   padding: 2px var(--sp-2);
   font-family: var(--font-serif);
@@ -19963,7 +20279,7 @@ input:focus-visible,
   font-size: var(--fs-display);
   letter-spacing: 0;
   line-height: 1.1;
-  width: calc(100% + var(--sp-4));
+  width: min(calc(100% + var(--sp-4)), 34rem);
   border-radius: var(--r-sm);
 }
 
@@ -20005,6 +20321,64 @@ input:focus-visible,
 
 .folder-detail-meta-dot {
   opacity: 0.5;
+}
+
+/* Project settings dialog: memory + danger sections sit below the form fields,
+ * each fenced off with a quiet top rule. */
+.dialog-field-count {
+  margin: var(--sp-1) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  text-align: right;
+}
+
+.dialog-field-count[data-over-limit="true"] {
+  color: var(--destructive);
+}
+
+/* One rule only — the section top border separates memory from the fields
+ * above. The toggle row drops its stock settings-row divider so the memory
+ * block reads as a single quiet group, not a stack of fences. */
+.project-settings-memory {
+  display: grid;
+  gap: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: var(--sp-4);
+}
+
+.project-settings-memory-toggle {
+  padding: 0;
+  border-bottom: 0;
+}
+
+/* Memory here is just a pointer: a count and a link out to the full manager. */
+.project-settings-memory-manage {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.project-settings-memory-count {
+  color: var(--muted-foreground);
+}
+
+.project-settings-memory-manage-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Delete sits bottom-left in the footer, opposite Cancel / Save. */
+.project-settings-dialog .dialog-footer {
+  justify-content: space-between;
+}
+
+.dialog-footer-group {
+  display: flex;
+  gap: var(--sp-3);
 }
 
 /* Notes list — rows ride on white by default, hover lifts a quiet
@@ -20691,33 +21065,32 @@ input:focus-visible,
 
 /* Folder empty state — subtle gray surface, muted helper text above
  * side-by-side primary + secondary actions. */
-.folder-empty-surface {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-5);
-  min-height: 280px;
-  padding: var(--sp-10) var(--sp-6);
-  border-radius: var(--r-lg);
-  background: color-mix(in oklch, var(--muted) 35%, transparent);
-}
-
-.folder-empty-hint {
-  margin: 0;
-  max-width: 360px;
-  color: var(--muted-foreground);
-  font-size: var(--fs-md);
-  text-align: center;
-  line-height: 1.5;
-}
-
-.folder-empty-actions {
+/* Two-action call to action inside the shared EmptyState — session and
+ * meeting note, the two things a project is actually for. */
+.folder-empty-cta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: center;
   gap: var(--sp-3);
+}
+
+/* One quiet line under the actions, pointing first-timers at Project settings
+ * (instructions + memory) — the one place they'd otherwise never find. */
+.folder-empty-nudge {
+  margin: var(--sp-1) 0 0;
+  max-width: 340px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.folder-empty-nudge-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
 }
 
 /* Folder action row above the notes list — right-aligned. */
@@ -21194,59 +21567,114 @@ input:focus-visible,
   font-weight: 400;
 }
 
-/* Borderless filled field with the Copy button inset on the right. */
-.referral-link-field {
+/* Shared borderless URL field with an inset Copy action. Referral and private
+ * sharing use the same component so typography and feedback cannot drift. */
+.copy-link-field {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
+  min-height: var(--control-lg);
   padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
   border-radius: var(--r-md);
   background: var(--surface-subtle);
 }
 
-.referral-link-url {
+.copy-link-url {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: var(--fs-sm);
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.referral-link-url:focus {
+.copy-link-url:focus {
   outline: none;
 }
 
 /* Keep a visible ring for keyboard focus (clipped inside the field's
  * rounding) — only the mouse-focus outline is suppressed above. */
-.referral-link-url:focus-visible {
+.copy-link-url:focus-visible {
   outline: 2px solid var(--ring-focus);
   outline-offset: -2px;
   border-radius: var(--r-sm);
 }
 
-.referral-copy-inset {
+.copy-link-action-tip {
   flex: 0 0 auto;
   display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  min-height: var(--control-md);
-  padding: 0 var(--sp-3);
+}
+
+.copy-link-action {
+  display: inline-grid;
+  place-items: center;
+  inline-size: var(--control-md);
+  block-size: var(--control-md);
+  padding: 0;
   border: 0;
   border-radius: var(--r-sm);
   background: var(--primary);
   color: var(--primary-foreground);
-  font-size: var(--fs-sm);
-  font-weight: 400;
-  white-space: nowrap;
+  line-height: 1;
   cursor: pointer;
   transition: opacity var(--t-fast) var(--ease-out);
 }
 
-.referral-copy-inset:hover {
+.copy-link-action:hover:not(:disabled) {
   opacity: 0.9;
+}
+
+.copy-link-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Transitions.dev — Icon swap */
+.t-icon-swap {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  line-height: 0;
+}
+
+.t-icon-swap .t-icon {
+  grid-area: 1 / 1;
+  display: inline-grid;
+  place-items: center;
+  transition:
+    opacity var(--icon-swap-dur) var(--icon-swap-ease),
+    filter var(--icon-swap-dur) var(--icon-swap-ease),
+    transform var(--icon-swap-dur) var(--icon-swap-ease);
+  will-change: opacity, filter, transform;
+}
+
+.t-icon-swap svg {
+  display: block;
+}
+
+.t-icon-swap[data-state="a"] .t-icon[data-icon="a"],
+.t-icon-swap[data-state="b"] .t-icon[data-icon="b"] {
+  opacity: 1;
+  filter: blur(0);
+  transform: scale(1);
+}
+
+.t-icon-swap[data-state="a"] .t-icon[data-icon="b"],
+.t-icon-swap[data-state="b"] .t-icon[data-icon="a"] {
+  opacity: 0;
+  filter: blur(var(--icon-swap-blur));
+  transform: scale(var(--icon-swap-start-scale));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-icon-swap .t-icon {
+    transition: none !important;
+  }
 }
 
 .referral-copy-error,
@@ -21318,8 +21746,9 @@ input:focus-visible,
    grain, June mark) — so the click-through feels continuous. */
 .referral-nudge {
   position: fixed;
-  /* Window bottom-left, on the main-panel card's --sp-3 inset so the two
-     share a bottom line (a near-miss offset here reads as misalignment).
+  /* Window bottom-left, on the main-panel card's equal --sp-3 inset so the
+     two share a bottom line. The compact overlay shadow preserves that
+     breathing room instead of visually filling it with a long downward blur.
      Keep this a static inset: anchoring to the animated --sidebar-w-current
      made the compositor move a blend-mode + WebGL stack continuously, which
      read as noise flashing on the hero. It overlaps the sidebar footer while
@@ -21333,12 +21762,20 @@ input:focus-visible,
   background: var(--card);
   color: var(--foreground);
   box-shadow:
-    var(--shadow-md),
+    var(--shadow-hud),
     0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
   animation: referral-nudge-enter var(--t-med) var(--ease-out) both;
   transition:
     opacity var(--t-med) var(--ease-out),
     transform var(--t-med) var(--ease-out);
+}
+
+/* With the sidebar collapsed, keep a small reveal between the nudge and the
+   main panel without changing the card's uniform r-xl corner treatment. */
+.app-shell[data-sidebar="collapsed"] .referral-nudge {
+  left: var(--sp-5);
+  bottom: var(--sp-5);
+  width: min(300px, calc(100vw - 2 * var(--sp-5)));
 }
 
 /* Dismissing: drop the (filled) enter animation so the exit transition can
@@ -21650,17 +22087,21 @@ input:focus-visible,
   cursor: default;
 }
 
-/* Bare June mark, no tile: faint at rest, warms to brand on hover. */
+/* Bare June mark, no tile: faint at rest, warms to brand on hover. The fixed
+ * mark-sized box mirrors .update-status-mark, so swapping to the dot spinner
+ * never reflows the copy; the spinner keeps its darker --spinner-neutral. */
 .update-relaunch-mark {
   display: inline-grid;
   place-items: center;
+  width: var(--sp-4);
+  height: var(--sp-4);
   margin-top: 2px;
   color: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
   transition: color var(--t-slow) var(--ease-spring);
 }
 
 .update-relaunch-mark svg {
-  width: 10px;
+  width: var(--sp-4);
   height: auto;
 }
 
@@ -21678,7 +22119,7 @@ input:focus-visible,
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: var(--fw-medium);
+  font-weight: 400;
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -21708,33 +22149,42 @@ input:focus-visible,
   transform: translateX(3px);
 }
 
+/* Same card chrome as .update-relaunch-card, minus the hover shadow: this is a
+ * non-interactive status card (only the close button acts). Left padding sits
+ * a step wider so the mark/spinner slot doesn't hug the card edge. */
 .update-status-card {
   display: grid;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   width: 100%;
-  padding: var(--sp-3);
-  border: 1px solid var(--popover-border);
+  padding: var(--sp-2);
+  padding-left: var(--sp-3);
+  border: 1px solid color-mix(in oklch, var(--foreground) 15%, transparent);
   border-radius: var(--r-md);
-  background: var(--popover);
-  color: var(--popover-foreground);
-  box-shadow: var(--shadow-md);
+  background: var(--card);
+  color: var(--foreground);
 }
 
 .update-status-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 24px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
 }
 
-.update-status-icon {
+/* The fixed mark-sized box gives the busy dot spinner and settled June mark
+ * the same footprint, so swapping them never reflows the status text. The
+ * static mark is muted; the spinner keeps its darker --spinner-neutral. */
+.update-status-mark {
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--r-sm);
-  background: var(--surface-subtle);
-  color: var(--muted-foreground);
+  width: var(--sp-4);
+  height: var(--sp-4);
+  color: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+}
+
+.update-status-mark svg {
+  width: var(--sp-4);
+  height: auto;
 }
 
 .update-status-text {
@@ -21742,10 +22192,16 @@ input:focus-visible,
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: var(--fw-medium);
+  font-weight: 400;
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Failed checks/downloads tint the text destructive, like .update-relaunch-status;
+ * the mark stays muted. */
+.update-status-text-failed {
+  color: color-mix(in oklch, var(--destructive) 70%, var(--foreground));
 }
 
 .update-status-close {
@@ -21771,6 +22227,9 @@ input:focus-visible,
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--sp-3);
+  /* Start the track under the copy column (mark slot + row gap) so it
+   * lines up with the status text rather than the mark. */
+  padding-left: calc(var(--sp-4) + var(--sp-3));
 }
 
 .update-progress-track {
@@ -21784,7 +22243,9 @@ input:focus-visible,
   height: 100%;
   min-width: 8px;
   border-radius: inherit;
-  background: var(--foreground);
+  /* Lighter than --foreground so the bar reads quiet; --muted-foreground stays
+   * clearly ahead of the --surface-subtle track in both themes. */
+  background: var(--muted-foreground);
   transition: width var(--t-fast) var(--ease-out);
 }
 
@@ -21794,10 +22255,44 @@ input:focus-visible,
   line-height: 1;
 }
 
+/* Number pop-in for the download percent: each digit is keyed by
+ * position+character in React, so only a digit that actually changed remounts
+ * and replays the rise — the ones digit ticks, the tens digit only rolls over.
+ * Vars are scoped here (flat global stylesheet), tuned short for a 1%-per-tick
+ * counter but kept tunable. */
+.update-digit-group {
+  --update-digit-dur: calc(var(--t-med) + var(--t-med));
+  --update-digit-distance: var(--sp-3);
+  --update-digit-blur: var(--sp-px);
+  --update-digit-ease: var(--ease-pop);
+
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.update-digit {
+  display: inline-block;
+  animation: update-digit-pop-in var(--update-digit-dur) var(--update-digit-ease) both;
+  will-change: transform, opacity, filter;
+}
+
+@keyframes update-digit-pop-in {
+  from {
+    transform: translateY(var(--update-digit-distance));
+    opacity: 0;
+    filter: blur(var(--update-digit-blur));
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
 @keyframes update-popover-in {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.98);
+    transform: translateY(var(--sp-2)) scale(0.98);
   }
   to {
     opacity: 1;
@@ -21805,8 +22300,38 @@ input:focus-visible,
   }
 }
 
+/* Timed auto-dismiss of the up-to-date confirmation: mirror the entrance so
+ * the card fades and slides back down instead of blinking out. The status
+ * clears just after this finishes (UP_TO_DATE_EXIT_MS in App.tsx). Manual
+ * close-button dismisses stay instant. */
+.update-popover[data-leaving="true"] {
+  animation: update-popover-out var(--t-med) var(--ease-out) both;
+}
+
+@keyframes update-popover-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(var(--sp-2)) scale(0.98);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .update-popover {
+  /* The attribute selector outranks the bare class, so the exit needs its own
+   * entry here: the timed hide becomes an instant disappearance. */
+  .update-popover,
+  .update-popover[data-leaving="true"] {
+    animation: none;
+  }
+
+  .update-popover[data-leaving="true"] {
+    visibility: hidden;
+  }
+
+  .update-digit {
     animation: none;
   }
 
@@ -26648,4 +27173,128 @@ button.connector-approvals-info {
   .note-preview {
     caret-color: transparent;
   }
+}
+
+/* ---- Share dialog (JUN-308) -------------------------------------------- */
+/* Owner-side private sharing: a settings-style passcode option before the link
+ * exists, then one quiet link field directly in the dialog once it does. */
+
+.share-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+/* Boxed option group inside the dialog body — same surface-in-card recipe as
+ * the app's other in-card boxes, so the passcode choice reads as one elevated
+ * section instead of loose lines under the description. */
+.share-dialog-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+
+/* Option rows follow the settings-row recipe scaled to the dialog: title +
+ * muted description on the left (same size, color carries the hierarchy),
+ * control on the right, a hairline between stacked rows. */
+.share-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-5);
+}
+
+.share-option-row + .share-option-row {
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.share-option-info {
+  display: grid;
+  gap: var(--sp-px);
+  min-width: 0;
+}
+
+.share-option-title {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 400;
+}
+
+.share-option-description {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+/* Passcode input with the reveal toggle tucked into its right edge. */
+.share-passcode-control {
+  position: relative;
+  width: min(240px, 100%);
+}
+
+.share-passcode-control .dialog-input {
+  width: 100%;
+  padding-right: calc(var(--control-sm) + var(--sp-2));
+}
+
+.share-passcode-reveal {
+  position: absolute;
+  top: 50%;
+  right: var(--sp-1);
+  width: var(--control-sm);
+  height: var(--control-sm);
+  transform: translateY(-50%);
+}
+
+.share-link-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.share-link-copy-passcode-tip {
+  align-self: flex-start;
+  display: inline-flex;
+}
+
+.share-link-copy-passcode {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--control-xs);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+
+.share-link-copy-passcode:hover {
+  background: var(--muted);
+}
+
+.share-unshare {
+  margin-right: auto;
+  padding: 0 var(--sp-2);
+  border-color: transparent;
+  background: transparent;
+  color: var(--destructive);
+}
+
+.primary-action.share-unshare:hover {
+  border-color: transparent;
+  background: var(--destructive-soft);
+}
+
+.share-dialog-caption {
+  margin: 0;
+  font-size: var(--fs-md);
+  color: var(--muted-foreground);
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { isAccessibilityBlocked } from "../app/App";
+import { isAccessibilityBlocked, isMicrophoneRecordingBlocked } from "../app/App";
+import type { RecordingSourceReadinessDto, SourceReadinessDto } from "../lib/tauri";
 
 // Regression: the dictation helper reports Accessibility as "granted" |
 // "missing" (AXIsProcessTrusted), not the microphone's denied/restricted
@@ -38,5 +39,58 @@ describe("accessibility banner across proactive status changes", () => {
     expect(isAccessibilityBlocked("missing")).toBe(true);
     // Re-granted (next change event): banner clears.
     expect(isAccessibilityBlocked("granted")).toBe(false);
+  });
+});
+
+// TCC grants are bundle-scoped, so the dictation helper and main app can report
+// different microphone states. Note recording follows the main app readiness
+// probe once it is available; the helper is only a launch-time fallback.
+function readinessWithMicPermission(
+  permissionState: SourceReadinessDto["permissionState"],
+): RecordingSourceReadinessDto {
+  const microphone: SourceReadinessDto = {
+    source: "microphone",
+    required: true,
+    ready: permissionState === "granted",
+    permissionState,
+    deviceAvailable: true,
+    captureAvailable: permissionState === "granted",
+  };
+  return { sourceMode: "microphoneOnly", ready: microphone.ready, sources: [microphone] };
+}
+
+describe("isMicrophoneRecordingBlocked", () => {
+  it("blocks when the readiness probe sees the main app's grant denied", () => {
+    expect(isMicrophoneRecordingBlocked("granted", readinessWithMicPermission("denied"))).toBe(
+      true,
+    );
+    expect(isMicrophoneRecordingBlocked(undefined, readinessWithMicPermission("restricted"))).toBe(
+      true,
+    );
+  });
+
+  it("uses the dictation helper before the main app readiness probe returns", () => {
+    expect(isMicrophoneRecordingBlocked("denied", undefined)).toBe(true);
+  });
+
+  it("does not let a dictation-helper denial override a granted recorder", () => {
+    expect(isMicrophoneRecordingBlocked("restricted", readinessWithMicPermission("granted"))).toBe(
+      false,
+    );
+  });
+
+  it("does not block when both signals are granted", () => {
+    expect(isMicrophoneRecordingBlocked("granted", readinessWithMicPermission("granted"))).toBe(
+      false,
+    );
+  });
+
+  it("keeps a fresh install startable so the TCC prompt can fire", () => {
+    // `unknown` covers the Rust probe's not_determined mapping; the start
+    // path resolves it with the main app's own TCC prompt.
+    expect(isMicrophoneRecordingBlocked(undefined, readinessWithMicPermission("unknown"))).toBe(
+      false,
+    );
+    expect(isMicrophoneRecordingBlocked(undefined, undefined)).toBe(false);
   });
 });

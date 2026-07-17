@@ -8,9 +8,9 @@ Windows assets to the existing `open-software-network/os-june-releases` release.
 ## Windows support
 
 The Windows installer supports the app shell, OS Accounts sign-in, microphone
-recording, note generation, folders, and settings backed by the production June
-API. Global dictation shortcuts, dictation paste, macOS system-audio capture, and
-Seatbelt sandbox features are macOS-only.
+recording, dictation shortcuts and paste, note generation, folders, and settings
+backed by the production June API. macOS system-audio capture and Seatbelt
+sandbox features are macOS-only.
 
 Production Windows builds bundle the pinned Hermes runtime under `native/hermes`,
 so June can start the agent on a clean machine without Python, GitHub downloads,
@@ -37,6 +37,10 @@ Create or confirm these before cutting the first Windows release:
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
   `PRODUCTION_JUNE_API_URL`.
+- OS Accounts scope attestation:
+  `PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY=true`, set only after the June
+  OAuth client allowlist includes `profile:write` and the macOS release-candidate
+  sign-in smoke test succeeds. The Windows workflow fails closed without it.
 
 Keep the Authenticode certificate separate from the Tauri updater key. The
 certificate establishes the Windows publisher signature. The updater key signs
@@ -80,13 +84,14 @@ The Windows workflow performs the release steps in order:
    checkout, a relocatable CPython, Python deps, prebuilt dashboard UI, and a
    relocatable `bin/hermes.exe` launcher.
 7. Authenticode-signs the bundled Hermes `.exe`, `.dll`, and `.pyd` binaries.
-8. Builds the Windows NSIS installer with production OS Accounts and June API
-   configuration embedded as fallback runtime config.
+8. Builds and signs the Windows dictation helper, then builds the Windows NSIS
+   installer with production OS Accounts and June API configuration embedded as
+   fallback runtime config.
 9. Signs the app executable and NSIS installer through
    `scripts/windows-sign.ps1`.
 10. Verifies Authenticode status for the executable and installer, checks the
     updater signature file exists, and inspects the NSIS payload, including the
-    bundled Hermes launcher and Python runtime.
+    bundled dictation helper, Hermes launcher, and Python runtime.
 11. Uploads the NSIS output as a workflow artifact.
 12. Uploads Windows release assets and merges `windows-x86_64` into
     `latest.json` without removing macOS updater entries or the generated
@@ -109,8 +114,9 @@ The installed app is branded as June, but the current Windows binary on disk is
 `os-june.exe` under `$env:LOCALAPPDATA\June`.
 
 Confirm the signature status is `Valid`, the publisher is Open Software Network,
-the app launches as June, the sign-in copy mentions recording and notes without
-dictation, and the bundled agent starts on a clean VM with no Python installed.
+the app launches as June, the sign-in copy mentions recording, notes, and
+dictation, the bundled agent starts on a clean VM with no Python installed, and
+Windows dictation can record from the microphone and paste into a normal app.
 Record from the microphone and generate a note against production June API
 before linking the installer publicly.
 

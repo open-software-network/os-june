@@ -153,9 +153,11 @@ jobs:
           PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
+          PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY: ${{ secrets.PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
           PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          PRODUCTION_LINEAR_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_LINEAR_OAUTH_CLIENT_ID }}
         run: |
           set -euo pipefail
           missing=0
@@ -172,13 +174,18 @@ jobs:
             PRODUCTION_OS_ACCOUNTS_CLIENT_ID \
             PRODUCTION_GOOGLE_OAUTH_CLIENT_ID \
             PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET \
-            PRODUCTION_JUNE_API_URL
+            PRODUCTION_JUNE_API_URL \
+            PRODUCTION_LINEAR_OAUTH_CLIENT_ID
           do
             if [ -z "${!name:-}" ]; then
               echo "::error::${name} is required to promote a stable release."
               missing=1
             fi
           done
+          if [ "${PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY:-}" != "true" ]; then
+            echo "::error::Set PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY=true only after the June OAuth client allows profile:write and a fresh production sign-in succeeds."
+            missing=1
+          fi
           exit "$missing"
 
       - name: Stamp clean stable version
@@ -257,6 +264,7 @@ jobs:
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
           JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          LINEAR_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_LINEAR_OAUTH_CLIENT_ID }}
           # Preserve the RC's first-run Auto behavior when it is promoted.
           OS_JUNE_AUTO_MODE_DEFAULT: "true"
         with:

@@ -1,4 +1,3 @@
-import { IconClipboard } from "central-icons/IconClipboard";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
@@ -6,7 +5,6 @@ import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconMicrophone as IconMicrophoneLine } from "central-icons/IconMicrophone";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
-import { IconCheckmark2 } from "central-icons-filled/IconCheckmark2";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
@@ -27,6 +25,7 @@ import type {
 } from "../../lib/tauri";
 import { DotSpinner } from "../DotSpinner";
 import { InlineNotice } from "../ui/InlineNotice";
+import { CopyStateIcon } from "../ui/CopyStateIcon";
 import { HoverTip } from "../ui/HoverTip";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { RecorderBar } from "../recorder/RecorderBar";
@@ -34,6 +33,10 @@ import { NoteRecoveryPrompt } from "../recorder/NoteRecoveryPrompt";
 import { isMacLikePlatform } from "../../lib/platform";
 import { useDismiss } from "../../lib/use-dismiss";
 import { systemAudioAvailability } from "../../lib/source-readiness";
+import {
+  coalesceLiveTranscriptEventsForDisplay,
+  reconcileLiveTranscriptEvents,
+} from "../../lib/live-transcript-preview";
 import {
   isInvalidJuneResponseMessage,
   NoteFailureBanner,
@@ -171,9 +174,16 @@ export function NoteEditor({
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
   const sourceTranscripts = orderedVisibleSourceTranscripts(note);
+  const reconciledLiveTranscript = useMemo(
+    () => reconcileLiveTranscriptEvents(liveTranscript, note.sourceTranscripts ?? []),
+    [liveTranscript, note.sourceTranscripts],
+  );
   const liveTranscriptTurns = useMemo(
-    () => liveTranscript.map(liveTranscriptEventToTurn),
-    [liveTranscript],
+    () =>
+      coalesceLiveTranscriptEventsForDisplay(reconciledLiveTranscript).map(
+        liveTranscriptEventToTurn,
+      ),
+    [reconciledLiveTranscript],
   );
   const transcriptTurns = useMemo(
     () =>
@@ -196,7 +206,7 @@ export function NoteEditor({
 
   // The filter only earns its place when both sources are present — a
   // mic-only voice memo has nothing to switch between. Built on the
-  // already-pruned visible list so silent/error-only lanes don't count.
+  // already-pruned visible list so silent/error-only Sources don't count.
   const hasBothSources = useMemo(() => {
     let mic = false;
     let system = false;
@@ -218,8 +228,9 @@ export function NoteEditor({
   // offered; only the recovery copy differs.
   const systemLocked = systemAvailability === "denied" || systemAvailability === "unavailable";
   const showRecordingOptions = isMacLikePlatform();
-  // Mic denial is sourced from App via the dictation helper, not from
-  // sourceReadiness — the Rust cpal-based check can't see TCC denials.
+  // Mic denial is sourced from App, which combines the dictation helper's
+  // grant with the Rust readiness probe of the main app's own TCC grant —
+  // recording uses the latter, so either denial blocks the record button.
   const micDenied = microphoneBlocked;
 
   // Auto-close the options panel whenever a recording starts so the
@@ -281,8 +292,9 @@ export function NoteEditor({
   const processingLock = processingStatus !== null;
   const recordButtonDisabled = recordingDisabled || Boolean(recordingBlockedReason);
   // A funding block disables the record button but not the options chevron:
-  // choosing sources is free, so that setting stays reachable while gated.
-  const recordOptionsDisabled = processingLock || recordingDisabled;
+  // choosing sources is free, and note processing can queue another recording,
+  // so that setting stays reachable unless another recording is active.
+  const recordOptionsDisabled = recordingDisabled;
   // When generation finishes for the note you're looking at, reveal the fresh
   // notes with a top-down wipe instead of letting the text snap in. Only fires
   // on the live processing -> ready edge for this same note — never when
@@ -1004,6 +1016,7 @@ function liveTranscriptEventToTurn(event: LiveTranscriptEventDto): RenderedTrans
   return {
     id: `live-${event.sessionId}-${event.source}-${event.segmentId}`,
     text: event.text,
+    recordingSessionId: event.sessionId,
     sourceMode: event.sourceMode,
     source: event.source,
     startMs: event.startMs,
@@ -1039,6 +1052,33 @@ function compareOptionalNumber(left?: number, right?: number) {
   return left - right;
 }
 
+function useCopyFeedback() {
+  const [copied, setCopied] = useState(false);
+  const copyResetTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(
+    () => () => {
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  function showCopiedFeedback() {
+    setCopied(true);
+    if (copyResetTimerRef.current !== undefined) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+    copyResetTimerRef.current = window.setTimeout(() => {
+      setCopied(false);
+      copyResetTimerRef.current = undefined;
+    }, 1600);
+  }
+
+  return { copied, showCopiedFeedback };
+}
+
 /** A single conversation turn in the Transcription tab. Mirrors the dictation
  * history row language: a source glyph, a light meta line, and the transcript
  * text — copy reveals on hover, long turns clamp to a "Show more" toggle. */
@@ -1050,7 +1090,7 @@ function TranscriptTurn({
   preview?: boolean;
 }) {
   const textRef = useRef<HTMLParagraphElement>(null);
-  const [copied, setCopied] = useState(false);
+  const { copied, showCopiedFeedback } = useCopyFeedback();
   const [expanded, setExpanded] = useState(false);
   const [clamped, setClamped] = useState(false);
 
@@ -1064,12 +1104,6 @@ function TranscriptTurn({
   const errorMessage = sourceTurnFailureMessage(transcript.lastError);
   const copyValue = hasText ? transcript.text : errorMessage;
   const canCopy = copyValue.trim().length > 0;
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
 
   // Measure whether the collapsed text overflows its line clamp so the
   // "Show more" toggle only appears when there's hidden content.
@@ -1090,7 +1124,7 @@ function TranscriptTurn({
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(copyValue);
-      setCopied(true);
+      showCopiedFeedback();
     } catch {
       // Clipboard can fail in restricted contexts; stay silent.
     }
@@ -1124,16 +1158,17 @@ function TranscriptTurn({
         {errorMessage ? <p className="source-transcript-error">{errorMessage}</p> : null}
       </div>
       {canCopy ? (
-        <button
-          type="button"
-          className="transcript-turn-copy"
-          data-copied={copied || undefined}
-          aria-label={copied ? "Copied" : "Copy turn"}
-          title={copied ? "Copied" : "Copy"}
-          onClick={() => void handleCopy()}
-        >
-          {copied ? <IconCheckmark2 size={14} /> : <IconClipboard size={14} />}
-        </button>
+        <HoverTip compact width={104} tip={copied ? "Copied" : "Copy"} forceOpen={copied}>
+          <button
+            type="button"
+            className="transcript-turn-copy"
+            data-copied={copied || undefined}
+            aria-label={copied ? "Copied" : "Copy turn"}
+            onClick={() => void handleCopy()}
+          >
+            <CopyStateIcon copied={copied} />
+          </button>
+        </HoverTip>
       ) : null}
     </article>
   );
@@ -1147,18 +1182,12 @@ function sourceTurnFailureMessage(message?: string) {
 }
 
 function CopyTranscriptButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
+  const { copied, showCopiedFeedback } = useCopyFeedback();
 
   async function handleCopy() {
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
+      showCopiedFeedback();
     } catch {
       // Clipboard API can fail in restricted contexts; stay silent
       // rather than nag — the user can retry.
@@ -1166,17 +1195,18 @@ function CopyTranscriptButton({ text }: { text: string }) {
   }
 
   return (
-    <button
-      type="button"
-      className="transcript-copy"
-      onClick={() => void handleCopy()}
-      data-copied={copied || undefined}
-      aria-label={copied ? "Transcript copied" : "Copy transcript"}
-      title={copied ? "Copied" : "Copy transcript"}
-    >
-      {copied ? <IconCheckmark2 size={14} /> : <IconClipboard size={14} />}
-      {copied ? "Copied" : "Copy"}
-    </button>
+    <HoverTip compact width={104} tip={copied ? "Copied" : "Copy"} forceOpen={copied}>
+      <button
+        type="button"
+        className="transcript-copy"
+        onClick={() => void handleCopy()}
+        data-copied={copied || undefined}
+        aria-label={copied ? "Transcript copied" : "Copy transcript"}
+      >
+        <CopyStateIcon copied={copied} />
+        Copy
+      </button>
+    </HoverTip>
   );
 }
 

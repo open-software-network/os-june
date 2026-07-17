@@ -43,6 +43,7 @@ import type {
   DictationSettingsDto,
   DictationShortcutModifiers,
   DictationShortcutSetting,
+  FolderDto,
   LocalGenerationSettingsDto,
   ProviderModelMode,
   ProviderModelSettingsDto,
@@ -83,17 +84,29 @@ import {
   setReleaseChannel,
   type ReleaseChannel,
 } from "../../lib/updater";
-import { isMacLikePlatform, isSystemAudioSupportedPlatform } from "../../lib/platform";
+import {
+  fallbackDictationCapabilities,
+  isSystemAudioSupportedPlatform,
+  useDictationCapabilities,
+} from "../../lib/platform";
 import { systemAudioAvailability } from "../../lib/source-readiness";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
-import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
+import {
+  dispatchProviderModelSettingsChanged,
+  modelAvailableForMode,
+} from "../../lib/model-privacy";
 import {
   isLoopbackUrl,
   localGenerationOptionId,
   withLocalGenerationOption,
 } from "../../lib/local-generation";
 import { ProviderLogo } from "./ProviderLogo";
-import { modelOptions, selectedModel } from "./ModelPickerDialog";
+import { AUTO_MODEL_ID, modelOptions, selectedModel } from "./ModelPickerDialog";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import {
+  DEFAULT_GENERATION_SUGGESTION_ID,
+  suggestedModelsForMode,
+} from "../../lib/suggested-models";
 import {
   AUTO_PREFERENCE_VALUES,
   autoPreferenceFromCostQuality,
@@ -126,6 +139,7 @@ import { SkillsHubSection } from "./SkillsHubSection";
 import { TeamTapsSection } from "./TeamTapsSection";
 import { ToolsetsSection } from "./ToolsetsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
+import { MemorySettingsSection } from "./MemorySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
 import { PrivacySettingsSection } from "./PrivacySettingsSection";
@@ -248,9 +262,15 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
   language: undefined,
 };
 
-const DEFAULT_SHORTCUTS: Record<DictationShortcutKind, DictationShortcutSetting> = {
-  push_to_talk: DEFAULT_SETTINGS.pushToTalkShortcut,
-  toggle: DEFAULT_SETTINGS.toggleShortcut,
+const WINDOWS_DEFAULT_SHORTCUTS: Record<DictationShortcutKind, DictationShortcutSetting> = {
+  push_to_talk: {
+    ...DEFAULT_SETTINGS.pushToTalkShortcut,
+    label: "Ctrl+Alt+D",
+  },
+  toggle: {
+    ...DEFAULT_SETTINGS.toggleShortcut,
+    label: "Ctrl+Alt+T",
+  },
 };
 
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
@@ -325,6 +345,7 @@ export type SettingsTab =
   | "audio"
   | "models"
   | "agent"
+  | "memory"
   | "connectors"
   | "skills"
   | "external-dirs"
@@ -351,6 +372,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "audio", label: "Audio" },
   { id: "models", label: "Models" },
   { id: "agent", label: "Agent" },
+  { id: "memory", label: "Memory" },
   { id: "connectors", label: "Connectors" },
   { id: "skills", label: "Installed skills" },
   { id: "external-dirs", label: "External skill directories" },
@@ -397,6 +419,11 @@ export function SettingsPageHeader({
 }
 
 type AppSettingsProps = {
+  folders?: FolderDto[];
+  /** When Memory is opened from a project, the manager pre-filters to it. */
+  memoryFolderFilter?: string;
+  /** Drill from a memory's project tag into that project. */
+  onOpenProject?: (folderId: string) => void;
   account: AccountStatus;
   accountLoading: boolean;
   sourceMode: RecordingSourceMode;
@@ -439,6 +466,9 @@ type AppSettingsProps = {
 };
 
 export function AppSettings({
+  folders = [],
+  memoryFolderFilter,
+  onOpenProject,
   account,
   accountLoading,
   sourceMode,
@@ -496,6 +526,7 @@ export function AppSettings({
   const [capturingShortcut, setCapturingShortcut] = useState<DictationShortcutKind>();
   const capturingShortcutRef = useRef<DictationShortcutKind>();
   const [shortcutError, setShortcutError] = useState<string>();
+  const [shortcutErrorKind, setShortcutErrorKind] = useState<DictationShortcutKind>();
   const [status, setStatus] = useState<string>();
   // Set when the dictation helper dies (crash or the bundle swap after an
   // update) and cleared once it re-arms the hotkey, so the shortcuts pane never
@@ -523,6 +554,10 @@ export function AppSettings({
   const latestCostQualitySaveRef = useRef(0);
   const confirmedCostQualityRef = useRef(DEFAULT_PROVIDER_MODELS.costQuality);
   const [veniceApiKeyDraft, setVeniceApiKeyDraft] = useState("");
+  // Saving a Venice key while Auto is the text model would silently keep
+  // billing June credits (Auto never uses the key), so the save surfaces an
+  // explicit billing choice: switch to a Venice model or knowingly keep Auto.
+  const [veniceKeyAutoBillingChoiceOpen, setVeniceKeyAutoBillingChoiceOpen] = useState(false);
   const [showMoreModelOptions, setShowMoreModelOptions] = useState(false);
   const [showMoreImageOptions, setShowMoreImageOptions] = useState(false);
   const [localModelSetupVisible, setLocalModelSetupVisible] = useState(false);
@@ -565,8 +600,20 @@ export function AppSettings({
   const settingsTabs = account.localDev
     ? SETTINGS_TABS.filter((tab) => tab.id !== "billing")
     : SETTINGS_TABS;
-  const macLikePlatform = isMacLikePlatform();
-  const systemAudioSupportedPlatform = isSystemAudioSupportedPlatform();
+  const capabilities = useDictationCapabilities();
+  const macLikePlatform = capabilities.platform === "macos";
+  const systemAudioSupportedPlatform = capabilities.systemAudio || isSystemAudioSupportedPlatform();
+  const defaultShortcuts =
+    capabilities.platform === "windows"
+      ? WINDOWS_DEFAULT_SHORTCUTS
+      : {
+          push_to_talk: DEFAULT_SETTINGS.pushToTalkShortcut,
+          toggle: DEFAULT_SETTINGS.toggleShortcut,
+        };
+  const modifierRequiredMessage =
+    capabilities.platform === "windows"
+      ? "Shortcut must include Ctrl, Alt, Shift, or Win."
+      : MODIFIER_REQUIRED_MESSAGE;
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
       onTabChange?.(tab);
@@ -839,8 +886,9 @@ export function AppSettings({
       event.preventDefault();
       event.stopPropagation();
       if (result.kind === "needsModifier") {
-        setShortcutError(MODIFIER_REQUIRED_MESSAGE);
-        setStatus(MODIFIER_REQUIRED_MESSAGE);
+        setShortcutError(modifierRequiredMessage);
+        setShortcutErrorKind(kind);
+        setStatus(modifierRequiredMessage);
         return;
       }
       setShortcutError(undefined);
@@ -932,14 +980,33 @@ export function AppSettings({
       setHelperUnavailable(undefined);
       return;
     }
+    if (helperEvent.type === "hotkey_trigger_unavailable") {
+      const message = helperEvent.payload?.message ?? "Dictation shortcut is unavailable.";
+      const kind = shortcutKindPayload(helperEvent.payload?.kind);
+      setHelperUnavailable(undefined);
+      setShortcutError(message);
+      setShortcutErrorKind(kind);
+      setStatus(message);
+      return;
+    }
     if (helperEvent.type === "shortcut_capture_started") {
       setStatus("Press the shortcut to record it.");
       return;
     }
     if (helperEvent.type === "shortcut_capture_error") {
       const message = helperEvent.payload?.message ?? "Shortcut could not be captured.";
+      const kind = shortcutKindPayload(helperEvent.payload?.kind) ?? capturingShortcutRef.current;
+      setCapturingShortcut(undefined);
       setShortcutError(message);
+      setShortcutErrorKind(kind);
       setStatus(message);
+      return;
+    }
+    if (helperEvent.type === "shortcut_capture_cancelled") {
+      setCapturingShortcut(undefined);
+      setShortcutError(undefined);
+      setShortcutErrorKind(undefined);
+      setStatus("Shortcut capture ended.");
       return;
     }
     if (helperEvent.type === "shortcut_captured") {
@@ -956,6 +1023,7 @@ export function AppSettings({
         return;
       }
       setShortcutError(undefined);
+      setShortcutErrorKind(undefined);
       void saveShortcut(kind, shortcut);
       return;
     }
@@ -986,24 +1054,30 @@ export function AppSettings({
       const next = await setDictationShortcut(kind, shortcut);
       setSettings(next);
       setCapturingShortcut(undefined);
+      setShortcutError(undefined);
+      setShortcutErrorKind(undefined);
       setStatus(`${shortcutKindLabel(kind)} set to ${shortcutForKind(next, kind).label}.`);
     } catch (error) {
       setShortcutError(messageFromError(error));
+      setShortcutErrorKind(kind);
       setStatus(messageFromError(error));
     }
   }
 
   async function startShortcutCapture(kind: DictationShortcutKind) {
     setShortcutError(undefined);
+    setShortcutErrorKind(undefined);
     setCapturingShortcut(kind);
     try {
       await dictationHelperCommand({
         type: "start_shortcut_capture",
+        kind,
         pressCount: 1,
       });
     } catch (error) {
       setCapturingShortcut(undefined);
       setShortcutError(messageFromError(error));
+      setShortcutErrorKind(kind);
       setStatus(messageFromError(error));
     }
   }
@@ -1011,6 +1085,7 @@ export function AppSettings({
   async function cancelShortcutCapture() {
     setCapturingShortcut(undefined);
     setShortcutError(undefined);
+    setShortcutErrorKind(undefined);
     try {
       await dictationHelperCommand({ type: "cancel_shortcut_capture" });
     } catch (error) {
@@ -1061,8 +1136,10 @@ export function AppSettings({
     }
   }
 
-  async function selectVeniceModel(mode: ProviderModelMode, modelId: string) {
-    if (showingActiveProfileModels) return;
+  // Returns whether the switch persisted, so confirmation flows (the Venice
+  // key billing choice) can stay open instead of closing over a failed save.
+  async function selectVeniceModel(mode: ProviderModelMode, modelId: string): Promise<boolean> {
+    if (showingActiveProfileModels) return false;
     try {
       const next = await setVeniceModel(mode, modelId);
       setProviderSettings(next);
@@ -1077,8 +1154,10 @@ export function AppSettings({
               ? "Video model updated."
               : "Text model updated.",
       );
+      return true;
     } catch (error) {
       setStatus(messageFromError(error));
+      return false;
     }
   }
 
@@ -1276,6 +1355,12 @@ export function AppSettings({
       setProviderSettings(next);
       setVeniceApiKeyDraft("");
       setStatus("Venice API key saved.");
+      // The workspace's model picker shows a billing note while a key is
+      // saved, so let it refresh its provider settings snapshot.
+      dispatchProviderModelSettingsChanged({ mode: "generation", modelId: next.generationModel });
+      if (next.generationModel === AUTO_MODEL_ID) {
+        setVeniceKeyAutoBillingChoiceOpen(true);
+      }
     } catch (error) {
       setStatus(messageFromError(error));
     }
@@ -1309,6 +1394,7 @@ export function AppSettings({
       setProviderSettings(next);
       setVeniceApiKeyDraft("");
       setStatus("Venice API key removed.");
+      dispatchProviderModelSettingsChanged({ mode: "generation", modelId: next.generationModel });
     } catch (error) {
       setStatus(messageFromError(error));
     }
@@ -1379,6 +1465,21 @@ export function AppSettings({
   // prepend a bare duplicate entry that persisted the local id as the remote
   // model when clicked.
   const generationOptions = modelOptions(generationCatalog, modelValueForMode("generation"));
+  // Where the billing-choice dialog lands when the user opts out of Auto to
+  // use their Venice key: the leading suggested pick, else the first Venice
+  // catalog model, drawn from the same selectable list as the model picker so
+  // the dialog can never persist a model the picker would exclude (the factory
+  // default stays the last resort for an empty catalog).
+  const selectableGenerationOptions = generationOptions.filter((option) =>
+    modelAvailableForMode("generation", option),
+  );
+  const veniceKeySwitchTarget =
+    suggestedModelsForMode("generation", selectableGenerationOptions).find(
+      (item) => item.model.id !== AUTO_MODEL_ID,
+    )?.model ??
+    selectableGenerationOptions.find(
+      (option) => option.provider === "venice" && option.id !== AUTO_MODEL_ID,
+    );
   const imageOptions = IMAGE_GENERATION_ENABLED
     ? modelOptions(imageModelCatalog(), displayProviderSettings.imageModel)
     : [];
@@ -1735,34 +1836,36 @@ export function AppSettings({
             ) : null}
             <div className="settings-card">
               <div className="settings-rows">
-                {macLikePlatform ? (
+                {capabilities.shortcuts ? (
                   <>
                     <ShortcutRow
                       title="Push to talk"
                       description="Hold this shortcut to dictate, then release to paste."
                       shortcut={settings.pushToTalkShortcut}
-                      defaultShortcut={DEFAULT_SHORTCUTS.push_to_talk}
+                      defaultShortcut={defaultShortcuts.push_to_talk}
                       capturing={capturingShortcut === "push_to_talk"}
                       disabled={!!capturingShortcut && capturingShortcut !== "push_to_talk"}
-                      error={capturingShortcut === "push_to_talk" ? shortcutError : undefined}
+                      error={shortcutErrorKind === "push_to_talk" ? shortcutError : undefined}
                       onChange={() => void startShortcutCapture("push_to_talk")}
                       onReset={() =>
-                        void saveShortcut("push_to_talk", DEFAULT_SHORTCUTS.push_to_talk)
+                        void saveShortcut("push_to_talk", defaultShortcuts.push_to_talk)
                       }
                       onCancel={() => void cancelShortcutCapture()}
+                      platform={capabilities.platform}
                     />
 
                     <ShortcutRow
                       title="Toggle dictation"
                       description="Press this shortcut to start or stop dictation."
                       shortcut={settings.toggleShortcut}
-                      defaultShortcut={DEFAULT_SHORTCUTS.toggle}
+                      defaultShortcut={defaultShortcuts.toggle}
                       capturing={capturingShortcut === "toggle"}
                       disabled={!!capturingShortcut && capturingShortcut !== "toggle"}
-                      error={capturingShortcut === "toggle" ? shortcutError : undefined}
+                      error={shortcutErrorKind === "toggle" ? shortcutError : undefined}
                       onChange={() => void startShortcutCapture("toggle")}
-                      onReset={() => void saveShortcut("toggle", DEFAULT_SHORTCUTS.toggle)}
+                      onReset={() => void saveShortcut("toggle", defaultShortcuts.toggle)}
                       onCancel={() => void cancelShortcutCapture()}
+                      platform={capabilities.platform}
                     />
                   </>
                 ) : (
@@ -1770,7 +1873,7 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Dictation shortcuts unavailable</h3>
                       <p className="settings-row-description">
-                        Global dictation shortcuts are only supported on macOS.
+                        Global dictation shortcuts are not available on this device.
                       </p>
                     </div>
                   </div>
@@ -1854,7 +1957,11 @@ export function AppSettings({
             <SettingsPageHeader
               id="audio-heading"
               title="Audio"
-              blurb="Control how June captures meeting and system audio."
+              blurb={
+                capabilities.platform === "windows"
+                  ? "Control how June captures microphone audio on this device."
+                  : "Control how June captures meeting and system audio."
+              }
             />
             <div className="settings-card">
               <div className="settings-rows">
@@ -1916,7 +2023,7 @@ export function AppSettings({
                   </div>
                 </div>
 
-                {macLikePlatform ? (
+                {capabilities.platform === "macos" || capabilities.platform === "windows" ? (
                   <MicTestControl
                     state={micTestState}
                     level={micTestLevel}
@@ -2019,6 +2126,7 @@ export function AppSettings({
                     value={modelValueForMode("generation")}
                     options={generationOptions}
                     costQuality={providerSettings.costQuality}
+                    veniceApiKeyConfigured={providerSettings.veniceApiKeyConfigured}
                     open={pickerMode === "generation"}
                     summarySuppressed={pickerMode !== undefined}
                     flyout={modelPickerFlyout}
@@ -2233,6 +2341,24 @@ export function AppSettings({
               </div>
             </section>
 
+            <ConfirmDialog
+              open={veniceKeyAutoBillingChoiceOpen}
+              onClose={() => setVeniceKeyAutoBillingChoiceOpen(false)}
+              onConfirm={async () => {
+                const switched = await selectVeniceModel(
+                  "generation",
+                  veniceKeySwitchTarget?.id ?? DEFAULT_GENERATION_SUGGESTION_ID,
+                );
+                // Keep the dialog open over a failed save so the choice is
+                // never silently dropped; the status line carries the error.
+                if (!switched) throw new Error("venice_model_switch_failed");
+              }}
+              title="Auto does not use your Venice API key"
+              description={`Notes and chat are billed to June credits while Auto is selected. Switch to ${veniceKeySwitchTarget?.name ?? "a Venice model"} to use your key for notes and new chats.`}
+              confirmLabel={`Use ${veniceKeySwitchTarget?.name ?? "a Venice model"}`}
+              cancelLabel="Keep Auto"
+            />
+
             {IMAGE_GENERATION_ENABLED || VIDEO_GENERATION_ENABLED ? (
               <section
                 className="settings-group settings-models-group"
@@ -2358,6 +2484,14 @@ export function AppSettings({
             selectedPlatformId={agentPlatformId}
             onSelectPlatform={setAgentPlatformId}
             onBackFromPlatform={() => setAgentPlatformId(undefined)}
+          />
+        ) : null}
+
+        {activeTab === "memory" ? (
+          <MemorySettingsSection
+            folders={folders}
+            initialFolderFilter={memoryFolderFilter}
+            onOpenProject={onOpenProject}
           />
         ) : null}
 
@@ -2596,7 +2730,7 @@ function PermissionsSettingsSection({
   onEnableAccessibility?: () => void;
   onEnableSystemAudio: () => void;
 }) {
-  const macLikePlatform = isMacLikePlatform();
+  const macLikePlatform = fallbackDictationCapabilities().platform === "macos";
   const systemAudioSupportedPlatform = isSystemAudioSupportedPlatform();
   return (
     <section className="settings-group" aria-labelledby="permissions-heading">
@@ -2720,6 +2854,8 @@ function permissionStatus(state?: string): PermissionStatusView {
       return { label: "Needs access", tone: "attention" };
     case "not_determined":
       return { label: "Not requested", tone: "attention" };
+    case "unavailable":
+      return { label: "No microphone found", tone: "attention" };
     case "unsupported":
       return { label: "Unsupported", tone: "unsupported" };
     case "unknown":
@@ -2768,6 +2904,7 @@ function ModelRow({
   value,
   options,
   costQuality,
+  veniceApiKeyConfigured,
   open,
   flyout,
   search,
@@ -2788,6 +2925,7 @@ function ModelRow({
   value: string;
   options: VeniceModelDto[];
   costQuality?: number;
+  veniceApiKeyConfigured?: boolean;
   open: boolean;
   flyout: ModelPickerFlyout;
   search: string;
@@ -2843,6 +2981,7 @@ function ModelRow({
             model={model}
             options={options}
             costQuality={costQuality}
+            veniceApiKeyConfigured={veniceApiKeyConfigured}
             search={search}
             popoverRef={popoverRef}
             searchRef={searchRef}
@@ -2939,6 +3078,7 @@ function ShortcutRow({
   onChange,
   onReset,
   onCancel,
+  platform,
 }: {
   title: string;
   description: string;
@@ -2950,6 +3090,7 @@ function ShortcutRow({
   onChange: () => void;
   onReset: () => void;
   onCancel: () => void;
+  platform: "macos" | "windows" | "unsupported";
 }) {
   const canReset = !capturing && !shortcutsMatch(shortcut, defaultShortcut) && !disabled;
 
@@ -2961,7 +3102,7 @@ function ShortcutRow({
         {error ? <p className="settings-row-error">{error}</p> : null}
       </div>
       <div className="settings-row-control">
-        <KeycapShortcut label={shortcut.label} capturing={capturing} />
+        <KeycapShortcut label={shortcut.label} capturing={capturing} platform={platform} />
         <button
           type="button"
           className="btn btn-secondary"
@@ -2983,6 +3124,10 @@ function ShortcutRow({
       </div>
     </div>
   );
+}
+
+function shortcutKindPayload(value: unknown): DictationShortcutKind | undefined {
+  return value === "push_to_talk" || value === "toggle" ? value : undefined;
 }
 
 function shortcutKindLabel(kind: DictationShortcutKind) {

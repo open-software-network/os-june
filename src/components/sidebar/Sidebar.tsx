@@ -1,5 +1,3 @@
-import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
-import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
 import { IconZap } from "central-icons/IconZap";
@@ -9,6 +7,7 @@ import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
 import { IconBox2 } from "central-icons/IconBox2";
 import { IconBrain2 } from "central-icons/IconBrain2";
+import { IconBrainSideview } from "central-icons/IconBrainSideview";
 import { IconBuildingBlocks } from "central-icons/IconBuildingBlocks";
 import { IconElements } from "central-icons/IconElements";
 import { IconModelcontextprotocol } from "central-icons/IconModelcontextprotocol";
@@ -26,7 +25,6 @@ import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
-import { IconPeople } from "central-icons/IconPeople";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconPin } from "central-icons/IconPin";
 import { IconPlugin1 } from "central-icons/IconPlugin1";
@@ -54,6 +52,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   AGENT_SESSION_RENAMED_EVENT,
   markAgentNewSessionPending,
@@ -62,6 +61,7 @@ import {
 } from "../agent/AgentWorkspace";
 import { CategoryIcon } from "../agent/composer/CategoryIcon";
 import { JuneWordmark } from "../brand/JuneWordmark";
+import { AccountAvatar, accountDisplayName } from "../account/AccountAvatar";
 import { type ReportCategory, reportCategoryDef } from "../agent/composer/reportCategory";
 import {
   AGENT_DELETE_SESSION_EVENT,
@@ -100,6 +100,7 @@ import { JuneMark } from "../account/AccountGate";
 import { OPEN_REFERRAL_DIALOG_EVENT } from "../referral/ReferralNudge";
 import { SETTINGS_TABS, type SettingsTab } from "../settings/AppSettings";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { CopyLinkField } from "../ui/CopyLinkField";
 import { Dialog } from "../ui/Dialog";
 import { DotSpinner } from "../DotSpinner";
 import { combineSourceAudioLevels, Waveform } from "../recorder/Waveform";
@@ -285,6 +286,11 @@ const SETTINGS_SIDEBAR_GROUPS: {
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
       { id: "agent", label: "Agent", icon: <IconRobot2 size={16} /> },
       {
+        id: "memory",
+        label: "Memory",
+        icon: <IconBrainSideview size={16} />,
+      },
+      {
         id: "connectors",
         label: "Connectors",
         icon: <IconPlugin1 size={16} />,
@@ -423,6 +429,7 @@ export function Sidebar({
   const [referralLoading, setReferralLoading] = useState(false);
   // Guards against a stale closure double-firing the summary fetch.
   const referralLoadingRef = useRef(false);
+  const referralCopyResetTimerRef = useRef<number>();
   const [referralError, setReferralError] = useState<string | null>(null);
   // The deployment can simply not offer referrals (a 404 from /referrals/me).
   // That's not a transient failure, so it gets a calm message with no retry.
@@ -433,7 +440,7 @@ export function Sidebar({
   const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
   const [allAgentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
-  // Chats belong to the profile they were created under (ADR 0020): the
+  // Chats belong to the profile they were created under (ADR 0029): the
   // sidebar filters its list through the session→profile map and re-filters
   // live when the active profile switches, without waiting for a re-fetch.
   const [sessionProfiles, setSessionProfiles] = useState<SessionProfileMap>({});
@@ -568,6 +575,10 @@ export function Sidebar({
   function openReferralDialog() {
     if (account.localDev) return;
     setReferralDialogOpen(true);
+    if (referralCopyResetTimerRef.current !== undefined) {
+      window.clearTimeout(referralCopyResetTimerRef.current);
+      referralCopyResetTimerRef.current = undefined;
+    }
     setReferralCopied(false);
     setReferralCopyError(null);
     if (!referralLoading) {
@@ -594,19 +605,26 @@ export function Sidebar({
       await navigator.clipboard.writeText(referralSummary.url);
       setReferralCopyError(null);
       setReferralCopied(true);
+      if (referralCopyResetTimerRef.current !== undefined) {
+        window.clearTimeout(referralCopyResetTimerRef.current);
+      }
+      referralCopyResetTimerRef.current = window.setTimeout(() => {
+        setReferralCopied(false);
+        referralCopyResetTimerRef.current = undefined;
+      }, 1600);
     } catch {
       setReferralCopyError("Could not copy the link. Select it and copy manually.");
     }
   }
 
-  // Reset the "Copied" affordance the way every other copy button does
-  // (NoteEditor, dictation rows): a single effect with cleanup, so closing
-  // the dialog mid-flight can't fire a stray setState.
-  useEffect(() => {
-    if (!referralCopied) return;
-    const timer = window.setTimeout(() => setReferralCopied(false), 1600);
-    return () => window.clearTimeout(timer);
-  }, [referralCopied]);
+  useEffect(
+    () => () => {
+      if (referralCopyResetTimerRef.current !== undefined) {
+        window.clearTimeout(referralCopyResetTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const commandPromptGroups = useMemo<CommandPromptGroup[]>(() => {
     const normalized = normalizeCommandQuery(commandQuery);
@@ -1805,7 +1823,12 @@ function CommandPrompt({
 
   let itemIndex = 0;
 
-  return (
+  // Portal to the document body so the prompt renders above the whole app,
+  // never trapped inside the sidebar's DOM subtree. The collapsed sidebar is
+  // `display: none` (see .app-shell[data-sidebar="collapsed"] .sidebar), which
+  // would otherwise hide this overlay along with it — so ⌘K must open a prompt
+  // that lives outside the sidebar to fire regardless of the sidebar state.
+  return createPortal(
     <div
       className="command-prompt-backdrop"
       role="presentation"
@@ -1880,7 +1903,8 @@ function CommandPrompt({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1960,19 +1984,12 @@ function ReferralDialog({
           ) : summary ? (
             <>
               <span className="referral-panel-title">Share your invite link</span>
-              <div className="referral-link-field">
-                <input
-                  className="referral-link-url"
-                  value={summary.url}
-                  readOnly
-                  aria-label="Invite link"
-                  onFocus={(event) => event.currentTarget.select()}
-                />
-                <button type="button" className="referral-copy-inset" onClick={onCopy}>
-                  {copied ? <IconCheckmark2Small size={14} /> : <IconClipboard size={14} />}
-                  {copied ? "Copied" : "Copy"}
-                </button>
-              </div>
+              <CopyLinkField
+                value={summary.url}
+                label="Invite link"
+                copied={copied}
+                onCopy={onCopy}
+              />
               {copyError ? <p className="referral-copy-error">{copyError}</p> : null}
               <div className="referral-stats">
                 <div>
@@ -2003,7 +2020,6 @@ const REPORT_MENU_ITEMS: { category: ReportCategory; label: string }[] = [
   { category: "feedback", label: "Send feedback" },
   { category: "feature", label: "Request a feature" },
 ];
-
 function SidebarIdentity({
   account,
   menuOpen,
@@ -2038,9 +2054,7 @@ function SidebarIdentity({
         aria-label={`${name}, account menu`}
         onClick={onToggleMenu}
       >
-        <span className="sidebar-nav-icon">
-          <IconPeople size={18} />
-        </span>
+        <AccountAvatar account={account} className="sidebar-nav-icon" />
         <span className="sidebar-nav-label">{name}</span>
       </button>
       {menuOpen ? (
@@ -2087,15 +2101,6 @@ function SidebarIdentity({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function accountDisplayName(account: AccountStatus) {
-  return (
-    account.user?.displayName?.trim() ||
-    account.user?.email?.trim() ||
-    account.user?.handle?.trim() ||
-    "Account"
   );
 }
 

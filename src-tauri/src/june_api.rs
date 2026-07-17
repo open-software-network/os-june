@@ -9,6 +9,7 @@ use crate::{
 };
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
@@ -22,6 +23,7 @@ use tauri::AppHandle;
 // docker-compose.production.yml). NOT .network — that hostname has no DNS
 // record, and the v0.0.3 DMG shipped pointing at it.
 const DEFAULT_JUNE_API_URL: &str = "https://june-api.opensoftware.co";
+const DEFAULT_SHARE_BASE_URL: &str = "https://june.link";
 // Nemotron Nano over GLM 5.2: dictation is latency-critical and nano runs
 // ~0.8s per utterance vs GLM's 2-4s (12s outliers), which felt too slow in
 // daily use. Known nano tradeoffs, accepted for speed: explicit unnumbered
@@ -54,6 +56,14 @@ const AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__june_remote_generation__:";
 const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
 const AGENT_TITLE_MAX_CHARS: usize = 48;
 const VENICE_API_KEY_HEADER: &str = "x-venice-api-key";
+// Every June API request carries the real shipped app version so the server
+// can segment logs and metrics by client version and, if ever needed, gate
+// releases that predate a wire change. Older stable builds keep calling the
+// production API long after main moves on; this header is how the server
+// tells them apart. src-tauri/Cargo.toml stays in lockstep with
+// tauri.conf.json (asserted by app_version_matches_tauri_conf below).
+const JUNE_APP_VERSION_HEADER: &str = "x-june-app-version";
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
 const INVALID_JUNE_RESPONSE_MESSAGE: &str = "The processing service returned an invalid response.";
@@ -62,6 +72,11 @@ const IMAGE_REQUEST_RETRY_DELAY: Duration = Duration::from_millis(250);
 // Keep equal to june-config DEFAULT_VIDEO_MAX_RESPONSE_BYTES. The desktop
 // cannot read june-config, and the VPS download_url path bypasses June API.
 const JUNE_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
+// Mirrors june-api::validation::MAX_ID_CHARS. Internal operation IDs may carry
+// durable span and fingerprint detail that is useful locally but too large for
+// the public noteId field. Hash only at the wire boundary so retry jitter,
+// diagnostics, and the durable ledger retain their full identities.
+const JUNE_API_MAX_ID_CHARS: usize = 128;
 const NOTE_GENERATE_SYSTEM_PROMPT: &str =
     include_str!("../../june-api/crates/services/src/prompts/note_generate.md");
 const LOCAL_SAFETY_CONTEXT: &str = "\
@@ -75,6 +90,7 @@ stalkerware, or other malicious code.";
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static AGENT_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+static LOCAL_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static VIDEO_JOB_MODELS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -302,7 +318,7 @@ pub async fn transcribe_saved_audio(
     let model = crate::providers::transcription_model();
     let send_venice_api_key = model_accepts_venice_api_key(&model);
     let mut form = Form::new()
-        .text("noteId", request.operation_id())
+        .text("noteId", june_api_operation_id(&request.operation_id()))
         .text("title", title_or_placeholder(&request.title))
         .text("model", model)
         .part("audio", audio_part(audio, &filename, &request.audio_path)?);
@@ -345,7 +361,7 @@ pub async fn generate_note_from_transcript(
     let model = crate::providers::generation_model();
     let send_venice_api_key = model_accepts_venice_api_key(&model);
     let body = GenerateBody {
-        note_id: request.operation_id(),
+        note_id: june_api_operation_id(&request.operation_id()),
         prompt_version: crate::domain::processing::PROMPT_VERSION.to_string(),
         title: title_or_placeholder(&request.title),
         transcript: transcript.to_string(),
@@ -459,6 +475,54 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
         .await
         .map_err(network_error)?;
     parse_response("/v1/models", response).await
+}
+
+// ---- Private sharing (JUN-308) -------------------------------------------
+// Owner-side proxy for the /v1/shares endpoints. The client only ever moves
+// ciphertext, IVs, envelopes, and metadata here; plaintext and keys stay in
+// the webview (src/lib/share-crypto.ts).
+
+use crate::domain::types::{
+    ShareCreateRequest, ShareCreatedDto, ShareDto, ShareInvitePayload, ShareInvitesAddedDto,
+    ShareSummaryDto,
+};
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareAddInvitesBody<'a> {
+    invites: &'a [ShareInvitePayload],
+}
+
+pub async fn share_create(request: &ShareCreateRequest) -> Result<ShareCreatedDto, AppError> {
+    post_json("/v1/shares", request, false).await
+}
+
+pub async fn share_list() -> Result<Vec<ShareSummaryDto>, AppError> {
+    get_json("/v1/shares").await
+}
+
+pub async fn share_get(share_id: &str) -> Result<ShareDto, AppError> {
+    get_json(&format!("/v1/shares/{share_id}")).await
+}
+
+pub async fn share_add_invites(
+    share_id: &str,
+    invites: &[ShareInvitePayload],
+) -> Result<ShareInvitesAddedDto, AppError> {
+    post_json(
+        &format!("/v1/shares/{share_id}/invites"),
+        &ShareAddInvitesBody { invites },
+        false,
+    )
+    .await
+}
+
+pub async fn share_revoke_invite(share_id: &str, invite_id: &str) -> Result<(), AppError> {
+    delete_expect_success(&format!("/v1/shares/{share_id}/invites/{invite_id}")).await
+}
+
+pub async fn share_delete(share_id: &str) -> Result<(), AppError> {
+    delete_expect_success(&format!("/v1/shares/{share_id}")).await
 }
 
 /// One generated image from the June API `/v1/image/generate` endpoint. The
@@ -917,7 +981,7 @@ async fn generate_note_from_transcript_local(
         ]
     });
     let local_request = with_local_auth(
-        agent_http_client().post(local_chat_completions_url(&settings)?),
+        local_http_client().post(local_chat_completions_url(&settings)?),
         &settings,
     );
     let response = local_request
@@ -974,7 +1038,7 @@ async fn proxy_local_agent_chat_completions(
         inject_local_safety_context(object);
     }
     let request = with_local_auth(
-        agent_http_client().post(local_chat_completions_url(&settings)?),
+        local_http_client().post(local_chat_completions_url(&settings)?),
         &settings,
     );
     let response = request.json(&body).send().await.map_err(network_error)?;
@@ -1413,6 +1477,8 @@ fn drop_leading_orphan_tool_messages(messages: &mut Vec<serde_json::Value>) {
     }
 }
 
+const AGENT_SESSION_TITLE_SYSTEM_PROMPT: &str = "Name this agent session for the user's primary intent or topic. The user request is authoritative. Use an assistant reply excerpt only as secondary context to clarify concrete work, never as the title's point of view. Do not title an acknowledgement, conversational preamble, clarification question, or other wording from the assistant reply. If the user request is already clear, base the title on it even when the assistant asks a follow-up question. Example: for the request 'tell me about my calendar' and reply 'Sure! Which calendar service are you using?', return 'Calendar overview'. Return only a concrete 2 to 5 word title in sentence case: capitalize the first word and proper nouns only, never every word. Avoid first person, words like please/help/you, trailing ellipses, quotes, punctuation wrappers, markdown, or explanations.";
+
 pub async fn suggest_agent_session_title(
     prompt: &str,
     response: Option<&str>,
@@ -1429,7 +1495,7 @@ pub async fn suggest_agent_session_title(
         "messages": [
             {
                 "role": "system",
-                "content": "Name this agent session by the work being done, not by repeating the user's request. Return only a concrete 2 to 5 word title in sentence case: capitalize the first word and proper nouns only, never every word. Avoid first person, words like please/help/you, trailing ellipses, quotes, punctuation wrappers, markdown, or explanations. When an assistant reply excerpt is provided, name the session by the work described there."
+                "content": AGENT_SESSION_TITLE_SYSTEM_PROMPT
             },
             {
                 "role": "user",
@@ -1846,6 +1912,21 @@ pub fn verify_url() -> String {
     format!("{}/verify", june_api_url())
 }
 
+/// Origin that share links point at (`{origin}/s/{share_id}#…`). Production
+/// uses the short branded hostname; local and staging builds stay on their
+/// configured June API origin so they never depend on production.
+pub fn share_base_url() -> String {
+    share_base_url_for_api(&june_api_url())
+}
+
+fn share_base_url_for_api(api_url: &str) -> String {
+    if api_url == DEFAULT_JUNE_API_URL {
+        DEFAULT_SHARE_BASE_URL.to_string()
+    } else {
+        api_url.to_string()
+    }
+}
+
 /// Final assistant text from a chat completion, normalized for reasoning
 /// models: inline `<think>` blocks are stripped, and when generation stopped
 /// at the token cap (`finish_reason: "length"`) the text is cut back to its
@@ -2019,7 +2100,9 @@ fn agent_session_title_user_content(prompt: &str, response: Option<&str>) -> Str
     // crowds the shared max_tokens budget. The frontend caps to the same
     // length before invoking; this cap is the trust-boundary backstop.
     let response: String = response.chars().take(1200).collect();
-    format!("User request:\n{prompt}\n\nAssistant reply excerpt:\n{response}")
+    format!(
+        "Primary user intent (authoritative):\n{prompt}\n\nSecondary assistant context (clarification only):\n{response}"
+    )
 }
 
 fn clean_agent_session_title(value: &str) -> Option<String> {
@@ -2229,6 +2312,36 @@ where
     })
     .await?;
     parse_response(path, response).await
+}
+
+async fn get_json<T>(path: &str) -> Result<T, AppError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let response = authed_send(path, false, |client, url, token| {
+        client.get(url).bearer_auth(token)
+    })
+    .await?;
+    parse_response(path, response).await
+}
+
+/// Sends an authenticated DELETE and accepts any success envelope, with or
+/// without a `data` payload. Failure envelopes map through the same error
+/// handling as every other June API call.
+async fn delete_expect_success(path: &str) -> Result<(), AppError> {
+    let response = authed_send(path, false, |client, url, token| {
+        client.delete(url).bearer_auth(token)
+    })
+    .await?;
+    let status = response.status();
+    let retry_after_ms = response_retry_after_ms(&response);
+    let body = response.text().await.map_err(network_error)?;
+    match parse_response_body::<serde_json::Value>(path, status, retry_after_ms, &body) {
+        Ok(_) => Ok(()),
+        // `success: true` with no `data` is still a success for a DELETE.
+        Err(error) if error.code == "empty_response" => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 async fn post_generate_note<B>(
@@ -2679,7 +2792,8 @@ fn http_client() -> &'static reqwest::Client {
             .timeout(HTTP_TIMEOUT)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent("os-june/0.1")
+            .user_agent(concat!("os-june/", env!("CARGO_PKG_VERSION")))
+            .default_headers(app_version_headers())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
@@ -2692,7 +2806,33 @@ fn agent_http_client() -> &'static reqwest::Client {
             .timeout(AGENT_HTTP_TIMEOUT)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent("os-june-agent/0.1")
+            .user_agent(concat!("os-june-agent/", env!("CARGO_PKG_VERSION")))
+            .default_headers(app_version_headers())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+fn app_version_headers() -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Ok(value) = reqwest::header::HeaderValue::from_str(APP_VERSION) {
+        headers.insert(JUNE_APP_VERSION_HEADER, value);
+    }
+    headers
+}
+
+/// For user-configured local/BYO inference endpoints. Same transport
+/// settings as the agent client, but without the June-only version header;
+/// that header is a June API contract, not something to send to whatever
+/// host the user pointed their local model at.
+fn local_http_client() -> &'static reqwest::Client {
+    LOCAL_HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .no_proxy()
+            .timeout(AGENT_HTTP_TIMEOUT)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .user_agent(concat!("os-june-agent/", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
@@ -2712,6 +2852,18 @@ fn title_or_placeholder(title: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn june_api_operation_id(operation_id: &str) -> String {
+    if operation_id.chars().count() <= JUNE_API_MAX_ID_CHARS {
+        return operation_id.to_string();
+    }
+
+    let mut digest = Sha256::new();
+    digest.update(b"june-api-operation-id-v1\0");
+    digest.update((operation_id.len() as u64).to_be_bytes());
+    digest.update(operation_id.as_bytes());
+    format!("june-op-{:x}", digest.finalize())
 }
 
 fn june_api_url() -> String {
@@ -2777,6 +2929,234 @@ mod tests {
 
     const NOTE_GENERATE_PATH: &str = "/v1/notes/generate";
     const ISSUE_REPORT_PATH: &str = "/v1/issue-reports";
+
+    // APP_VERSION (from Cargo.toml) is what the x-june-app-version header
+    // reports, while tauri.conf.json is what releases actually ship as. If
+    // they drift, the server would segment traffic by the wrong version.
+    #[test]
+    fn app_version_matches_tauri_conf() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        assert_eq!(conf["version"].as_str(), Some(APP_VERSION));
+    }
+
+    #[test]
+    fn app_version_header_is_present_and_valid() {
+        let headers = app_version_headers();
+        assert_eq!(
+            headers
+                .get(JUNE_APP_VERSION_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(APP_VERSION)
+        );
+    }
+
+    #[test]
+    fn production_share_links_use_the_short_domain() {
+        assert_eq!(
+            share_base_url_for_api(DEFAULT_JUNE_API_URL),
+            DEFAULT_SHARE_BASE_URL
+        );
+    }
+
+    #[test]
+    fn nonproduction_share_links_stay_on_the_configured_api_origin() {
+        assert_eq!(
+            share_base_url_for_api("http://127.0.0.1:8080"),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            share_base_url_for_api("https://june-api-staging.opensoftware.co"),
+            "https://june-api-staging.opensoftware.co"
+        );
+    }
+
+    #[test]
+    fn share_create_body_serializes_camel_case() {
+        let request = ShareCreateRequest {
+            kind: "note".to_string(),
+            ciphertext_b64: "Y2lwaGVy".to_string(),
+            iv_b64: "aXY".to_string(),
+            invites: vec![ShareInvitePayload {
+                email: "friend@example.com".to_string(),
+                envelope_b64: "ZW52".to_string(),
+                envelope_iv_b64: "ZW52aXY".to_string(),
+            }],
+        };
+        let body = serde_json::to_value(&request).expect("serialize");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "kind": "note",
+                "ciphertextB64": "Y2lwaGVy",
+                "ivB64": "aXY",
+                "invites": [{
+                    "email": "friend@example.com",
+                    "envelopeB64": "ZW52",
+                    "envelopeIvB64": "ZW52aXY",
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn june_api_operation_id_preserves_ids_within_the_wire_limit() {
+        assert_eq!(june_api_operation_id("note-1"), "note-1");
+        assert_eq!(
+            june_api_operation_id(&"a".repeat(JUNE_API_MAX_ID_CHARS)),
+            "a".repeat(JUNE_API_MAX_ID_CHARS)
+        );
+    }
+
+    #[test]
+    fn share_created_response_parses_from_envelope() {
+        let body = serde_json::json!({
+            "success": true,
+            "data": {
+                "shareId": "shr_abc",
+                "invites": [
+                    { "inviteId": "shi_1", "email": "friend@example.com" }
+                ]
+            }
+        })
+        .to_string();
+        let parsed: ShareCreatedDto =
+            parse_response_body("/v1/shares", reqwest::StatusCode::OK, None, &body)
+                .expect("parse share created");
+        assert_eq!(parsed.share_id, "shr_abc");
+        assert_eq!(parsed.invites.len(), 1);
+        assert_eq!(parsed.invites[0].invite_id, "shi_1");
+        assert_eq!(parsed.invites[0].email, "friend@example.com");
+    }
+
+    #[test]
+    fn share_invites_added_response_parses_without_share_id() {
+        // POST /v1/shares/{id}/invites returns only `{ invites }`; parsing it
+        // as ShareCreatedDto (which requires shareId) would fail.
+        let body = serde_json::json!({
+            "success": true,
+            "data": { "invites": [{ "inviteId": "shi_9", "email": "new@example.com" }] }
+        })
+        .to_string();
+        let parsed: ShareInvitesAddedDto = parse_response_body(
+            "/v1/shares/shr_abc/invites",
+            reqwest::StatusCode::OK,
+            None,
+            &body,
+        )
+        .expect("parse add-invites response");
+        assert_eq!(parsed.invites.len(), 1);
+        assert_eq!(parsed.invites[0].invite_id, "shi_9");
+        assert_eq!(parsed.invites[0].email, "new@example.com");
+    }
+
+    #[test]
+    fn share_list_response_parses_summaries() {
+        // GET /v1/shares returns summaries with no invite list.
+        let body = serde_json::json!({
+            "success": true,
+            "data": [
+                { "shareId": "shr_a", "kind": "note", "createdAt": "2026-07-14T00:00:00Z" },
+                { "shareId": "shr_b", "kind": "session" }
+            ]
+        })
+        .to_string();
+        let parsed: Vec<ShareSummaryDto> =
+            parse_response_body("/v1/shares", reqwest::StatusCode::OK, None, &body)
+                .expect("parse share list");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].share_id, "shr_a");
+        assert_eq!(
+            parsed[0].created_at.as_deref(),
+            Some("2026-07-14T00:00:00Z")
+        );
+        assert_eq!(parsed[1].kind, "session");
+        assert_eq!(parsed[1].created_at, None);
+    }
+
+    #[test]
+    fn share_detail_response_parses_invite_states() {
+        let body = serde_json::json!({
+            "success": true,
+            "data": {
+                "shareId": "shr_abc",
+                "kind": "session",
+                "createdAt": "2026-07-14T00:00:00Z",
+                "invites": [
+                    { "inviteId": "shi_1", "email": "a@example.com", "state": "pending" },
+                    {
+                        "inviteId": "shi_2",
+                        "email": "b@example.com",
+                        "state": "accepted",
+                        "lastAccessAt": "2026-07-14T01:00:00Z"
+                    },
+                    { "inviteId": "shi_3", "email": "c@example.com", "state": "revoked" }
+                ]
+            }
+        })
+        .to_string();
+        let parsed: ShareDto =
+            parse_response_body("/v1/shares/shr_abc", reqwest::StatusCode::OK, None, &body)
+                .expect("parse share detail");
+        assert_eq!(parsed.share_id, "shr_abc");
+        assert_eq!(parsed.kind, "session");
+        let states: Vec<&str> = parsed
+            .invites
+            .iter()
+            .map(|invite| invite.state.as_str())
+            .collect();
+        assert_eq!(states, vec!["pending", "accepted", "revoked"]);
+        assert_eq!(
+            parsed.invites[1].last_access_at.as_deref(),
+            Some("2026-07-14T01:00:00Z")
+        );
+    }
+
+    #[test]
+    fn share_not_found_maps_to_request_failed_with_message() {
+        let body = serde_json::json!({
+            "success": false,
+            "message": "share_not_found"
+        })
+        .to_string();
+        let error = parse_response_body::<ShareDto>(
+            "/v1/shares/shr_missing",
+            reqwest::StatusCode::NOT_FOUND,
+            None,
+            &body,
+        )
+        .expect_err("share_not_found should error");
+        assert_eq!(error.code, "june_request_failed");
+        assert_eq!(error.message, "share_not_found");
+    }
+
+    #[test]
+    fn success_envelope_without_data_is_empty_response() {
+        // delete_expect_success treats this as success; everything else
+        // surfaces it as an error. Pin the code it keys on.
+        let body = serde_json::json!({ "success": true }).to_string();
+        let error = parse_response_body::<serde_json::Value>(
+            "/v1/shares/shr_abc",
+            reqwest::StatusCode::OK,
+            None,
+            &body,
+        )
+        .expect_err("no data should error");
+        assert_eq!(error.code, "empty_response");
+    }
+
+    #[test]
+    fn june_api_operation_id_hashes_long_ids_stably_and_distinctly() {
+        let first = june_api_operation_id(&format!("{}-chunk-0", "durable-operation".repeat(12)));
+        let repeated =
+            june_api_operation_id(&format!("{}-chunk-0", "durable-operation".repeat(12)));
+        let second = june_api_operation_id(&format!("{}-chunk-1", "durable-operation".repeat(12)));
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, second);
+        assert!(first.starts_with("june-op-"));
+        assert!(first.chars().count() <= JUNE_API_MAX_ID_CHARS);
+    }
 
     fn generate_success_envelope(content: &str) -> String {
         serde_json::json!({
@@ -3296,8 +3676,16 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
                 "  Refactor this parser  ",
                 Some("  I rewrote the tokenizer and added coverage.  "),
             ),
-            "User request:\nRefactor this parser\n\nAssistant reply excerpt:\nI rewrote the tokenizer and added coverage."
+            "Primary user intent (authoritative):\nRefactor this parser\n\nSecondary assistant context (clarification only):\nI rewrote the tokenizer and added coverage."
         );
+    }
+
+    #[test]
+    fn agent_session_title_prompt_prioritizes_clear_user_intent_over_reply() {
+        assert!(AGENT_SESSION_TITLE_SYSTEM_PROMPT.contains("user request is authoritative"));
+        assert!(AGENT_SESSION_TITLE_SYSTEM_PROMPT.contains("clarification question"));
+        assert!(AGENT_SESSION_TITLE_SYSTEM_PROMPT.contains("tell me about my calendar"));
+        assert!(AGENT_SESSION_TITLE_SYSTEM_PROMPT.contains("Calendar overview"));
     }
 
     #[test]
@@ -3305,7 +3693,9 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         let response = "é".repeat(1201);
         let content = agent_session_title_user_content("Summarize the work", Some(&response));
         let excerpt = content
-            .strip_prefix("User request:\nSummarize the work\n\nAssistant reply excerpt:\n")
+            .strip_prefix(
+                "Primary user intent (authoritative):\nSummarize the work\n\nSecondary assistant context (clarification only):\n",
+            )
             .expect("formatted content should include assistant reply prefix");
         assert_eq!(excerpt.chars().count(), 1200);
         assert_eq!(excerpt, "é".repeat(1200));

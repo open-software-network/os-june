@@ -23,7 +23,8 @@
 
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
+        AuthorizeParams, ChargeParams, ReleaseHoldParams, authorize_or_deny, charge, clamp_to_cap,
+        log_settled, release_hold,
     },
     error::ServiceError,
     util::sha256_hex,
@@ -227,7 +228,7 @@ impl VideoService {
     }
 
     /// The paid work behind a create: quote -> ceiling -> authorize -> mint the
-    /// settlement key -> queue. On a queue failure the hold simply expires (no
+    /// settlement key -> queue. On a queue failure the hold is released (no
     /// charge). Video is always June-metered for this first cut.
     async fn run_create(&self, inputs: &CreateJobInputs) -> Result<VideoJob, ServiceError> {
         let estimate = self.quote_to_credits(inputs).await?;
@@ -249,10 +250,18 @@ impl VideoService {
             Uuid::now_v7(),
             inputs.shape_hash,
         );
-        let queued = self
-            .queue(&inputs.queue)
-            .await
-            .map_err(translate_upstream_error)?;
+        let queued = match self.queue(&inputs.queue).await {
+            Ok(queued) => queued,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: inputs.action,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(translate_upstream_error(error));
+            }
+        };
         let charge_credits = clamp_to_cap(estimate, authorization.cap_credits);
         Ok(Self::build_job(
             inputs,
@@ -362,8 +371,10 @@ impl VideoService {
                                 // Venice reported COMPLETED but returned no usable media:
                                 // terminal, no charge (we never entered Charging). Retrying
                                 // will not help.
-                                self.registry
+                                let released = self
+                                    .registry
                                     .mark_failed(&job_id, "video_media_unavailable");
+                                self.release_failed_job_hold(released).await;
                                 return Ok(VideoStatusOutput::Failed {
                                     reason: "video_media_unavailable".to_string(),
                                 });
@@ -378,7 +389,7 @@ impl VideoService {
                             }
                         }
                         Err(error) => {
-                            return self.handle_retrieve_error(&job_id, &error);
+                            return self.handle_retrieve_error(&job_id, &error).await;
                         }
                     }
                 }
@@ -439,20 +450,22 @@ impl VideoService {
         }
     }
 
-    fn handle_retrieve_error(
+    async fn handle_retrieve_error(
         &self,
         job_id: &JobId,
         error: &DomainError,
     ) -> Result<VideoStatusOutput, ServiceError> {
         match classify_retrieve_error(error) {
             RetrieveOutcome::ContentRejected { reason } => {
-                // Content policy discovered mid-job: mark Failed, no charge (the
-                // hold expires).
-                self.registry.mark_failed(job_id, &reason);
+                // Content policy discovered mid-job: mark Failed, no charge,
+                // and release the hold.
+                let released = self.registry.mark_failed(job_id, &reason);
+                self.release_failed_job_hold(released).await;
                 Ok(VideoStatusOutput::Failed { reason })
             }
             RetrieveOutcome::MediaExpired => {
-                self.registry.mark_failed(job_id, "media_expired");
+                let released = self.registry.mark_failed(job_id, "media_expired");
+                self.release_failed_job_hold(released).await;
                 Err(ServiceError::JobNotFound)
             }
             RetrieveOutcome::Transient => {
@@ -461,6 +474,19 @@ impl VideoService {
                 Ok(self.registry.processing_snapshot(job_id))
             }
             RetrieveOutcome::Fatal => Err(ServiceError::UpstreamProvider),
+        }
+    }
+
+    /// Releases the hold handed back by `mark_failed`: a Failed job can never
+    /// charge, so its unused grant must not keep pinning the user's wallet.
+    async fn release_failed_job_hold(&self, released: Option<(ActionSlug, VideoCharge)>) {
+        if let Some((action, charge)) = released {
+            release_hold(ReleaseHoldParams {
+                os_accounts: self.os_accounts.as_ref(),
+                action,
+                action_token: charge.action_token,
+            })
+            .await;
         }
     }
 }
@@ -1106,26 +1132,27 @@ impl VideoJobRegistry {
         }
     }
 
-    fn mark_failed(&self, job_id: &JobId, reason: &str) {
-        {
-            let mut state = self.state();
-            let Some(job) = state.jobs.get_mut(job_id) else {
-                return;
-            };
-            // A job already Charging/Delivered must not be flipped to Failed by a
-            // stray retrieve error; only a non-terminal job fails.
-            match &job.state {
-                VideoJobState::Charging { .. }
-                | VideoJobState::Delivered
-                | VideoJobState::Failed { .. } => return,
-                VideoJobState::Queued
-                | VideoJobState::Processing { .. }
-                | VideoJobState::ChargePending => {}
-            }
-            job.state = VideoJobState::Failed {
-                reason: reason.to_string(),
-            };
+    /// Fails a non-terminal job and hands back its unused charge (if any) so
+    /// the caller can release the hold — a Failed job never enters Charging
+    /// (`next_charge_claim` treats Failed as terminal), so the token is dead
+    /// weight that would otherwise pin the user's wallet until TTL.
+    fn mark_failed(&self, job_id: &JobId, reason: &str) -> Option<(ActionSlug, VideoCharge)> {
+        let mut state = self.state();
+        let job = state.jobs.get_mut(job_id)?;
+        // A job already Charging/Delivered must not be flipped to Failed by a
+        // stray retrieve error; only a non-terminal job fails.
+        match &job.state {
+            VideoJobState::Charging { .. }
+            | VideoJobState::Delivered
+            | VideoJobState::Failed { .. } => return None,
+            VideoJobState::Queued
+            | VideoJobState::Processing { .. }
+            | VideoJobState::ChargePending => {}
         }
+        job.state = VideoJobState::Failed {
+            reason: reason.to_string(),
+        };
+        job.charge.take().map(|charge| (job.action, charge))
     }
 
     fn processing_snapshot(&self, job_id: &JobId) -> VideoStatusOutput {

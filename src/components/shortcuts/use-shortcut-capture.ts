@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
+import { isWindowsPlatform } from "../../lib/platform";
 import { dictationHelperCommand, setDictationShortcut } from "../../lib/tauri";
 import type {
   DictationSettingsDto,
@@ -61,13 +62,14 @@ export function useShortcutCapture({
     try {
       await dictationHelperCommand({
         type: "start_shortcut_capture",
+        kind,
         pressCount: 1,
       });
     } catch (caught) {
       setCapturing(false);
       setError(messageFromError(caught));
     }
-  }, []);
+  }, [kind]);
 
   useEffect(() => {
     if (!capturing) return;
@@ -79,6 +81,11 @@ export function useShortcutCapture({
       if (!helperEvent) return;
       if (helperEvent.type === "shortcut_capture_error") {
         setError(helperEvent.payload?.message ?? "Shortcut could not be captured.");
+        setCapturing(false);
+        return;
+      }
+      if (helperEvent.type === "shortcut_capture_cancelled") {
+        setError(undefined);
         setCapturing(false);
         return;
       }
@@ -118,7 +125,7 @@ export function useShortcutCapture({
       event.preventDefault();
       event.stopPropagation();
       if (result.kind === "needsModifier") {
-        setError(MODIFIER_REQUIRED_MESSAGE);
+        setError(modifierRequiredMessage());
         return;
       }
       // Stop the helper's capture before persisting: the chord is decided.
@@ -193,6 +200,12 @@ export type CaptureKeyResult =
 
 export const MODIFIER_REQUIRED_MESSAGE = "Shortcut must include Cmd, Ctrl, Opt, Shift, or Fn.";
 
+export function modifierRequiredMessage() {
+  return isWindowsPlatform()
+    ? "Shortcut must include Ctrl, Alt, Shift, or Win."
+    : MODIFIER_REQUIRED_MESSAGE;
+}
+
 export function chordFromKeyEvent(event: KeyboardEvent): CaptureKeyResult {
   if (["Shift", "Control", "Alt", "Meta"].includes(event.key)) {
     return { kind: "ignore" };
@@ -200,6 +213,7 @@ export function chordFromKeyEvent(event: KeyboardEvent): CaptureKeyResult {
   if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
     return { kind: "needsModifier" };
   }
+  const windows = isWindowsPlatform();
   const modifiers = {
     command: event.metaKey,
     control: event.ctrlKey,
@@ -208,9 +222,9 @@ export function chordFromKeyEvent(event: KeyboardEvent): CaptureKeyResult {
     function: false,
   };
   const label = [
-    modifiers.command ? "Cmd" : undefined,
+    modifiers.command ? (windows ? "Win" : "Cmd") : undefined,
     modifiers.control ? "Ctrl" : undefined,
-    modifiers.option ? "Opt" : undefined,
+    modifiers.option ? (windows ? "Alt" : "Opt") : undefined,
     modifiers.shift ? "Shift" : undefined,
     keyLabel(event.code),
   ]

@@ -1,7 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
-import { IconClipboard } from "central-icons/IconClipboard";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconFontStyle } from "central-icons/IconFontStyle";
 import { IconInfinity } from "central-icons/IconInfinity";
@@ -20,8 +18,10 @@ import {
   useState,
 } from "react";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { CopyStateIcon } from "../ui/CopyStateIcon";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
+import { HoverTip } from "../ui/HoverTip";
 import { KeycapShortcut } from "../shortcuts/KeycapShortcut";
 import {
   deleteDictationHistoryItem,
@@ -33,7 +33,7 @@ import {
 } from "../../lib/tauri";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
-import { isMacLikePlatform } from "../../lib/platform";
+import { useDictationCapabilities } from "../../lib/platform";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 
 const NO_DICTATIONS: DictationHistoryItemDto[] = [];
@@ -85,11 +85,13 @@ export function DictationHistoryView({ onNavigateToSettings }: DictationHistoryV
   const items = forcedEmpty ? NO_DICTATIONS : allItems;
   const loading = !forcedEmpty && loadingState;
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copyResetTimerRef = useRef<number | undefined>(undefined);
   const [settings, setSettings] = useState<DictationSettingsDto>();
   const [dictionaryCount, setDictionaryCount] = useState<number | null>(null);
   const [hintDismissed, setHintDismissed] = useState(readHintDismissed);
   const [pendingDelete, setPendingDelete] = useState<DictationHistoryItemDto | null>(null);
-  const dictationAvailable = isMacLikePlatform();
+  const capabilities = useDictationCapabilities();
+  const dictationAvailable = capabilities.available;
 
   const loadHistory = useCallback(async () => {
     try {
@@ -140,6 +142,15 @@ export function DictationHistoryView({ onNavigateToSettings }: DictationHistoryV
     };
   }, [loadHistory]);
 
+  useEffect(
+    () => () => {
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+    },
+    [],
+  );
+
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return items;
@@ -150,8 +161,10 @@ export function DictationHistoryView({ onNavigateToSettings }: DictationHistoryV
 
   const groups = useMemo(() => groupHistoryItems(filtered), [filtered]);
 
-  const pushToTalk = settings?.pushToTalkShortcut.label ?? "Ctrl+Opt+D";
-  const toggle = settings?.toggleShortcut.label ?? "Ctrl+Opt+T";
+  const defaultPushToTalk = capabilities.platform === "macos" ? "Ctrl+Opt+D" : "Ctrl+Alt+D";
+  const defaultToggle = capabilities.platform === "macos" ? "Ctrl+Opt+T" : "Ctrl+Alt+T";
+  const pushToTalk = settings?.pushToTalkShortcut.label ?? defaultPushToTalk;
+  const toggle = settings?.toggleShortcut.label ?? defaultToggle;
 
   // Show each optional feature only while it's still unconfigured, and only
   // once we know its state (avoids the card flashing in then vanishing). The
@@ -179,7 +192,13 @@ export function DictationHistoryView({ onNavigateToSettings }: DictationHistoryV
     if (!text) return;
     await navigator.clipboard.writeText(`${text} `);
     setCopiedId(item.id);
-    window.setTimeout(() => setCopiedId(null), 1200);
+    if (copyResetTimerRef.current !== undefined) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+    copyResetTimerRef.current = window.setTimeout(() => {
+      setCopiedId(null);
+      copyResetTimerRef.current = undefined;
+    }, 1600);
   }
 
   async function confirmDelete() {
@@ -242,7 +261,7 @@ export function DictationHistoryView({ onNavigateToSettings }: DictationHistoryV
           label={dictationAvailable ? "Start dictating" : "Dictation unavailable"}
           icon={<IconMicrophoneSparkleFilled size={28} />}
           title={
-            dictationAvailable ? "Start dictating anywhere" : "Dictation is only supported on macOS"
+            dictationAvailable ? "Start dictating anywhere" : "Dictation is not available here"
           }
           description={
             dictationAvailable
@@ -377,15 +396,17 @@ function DictationHistoryRow({
         {formatTime(item.createdAt)}
       </time>
       <span className="dictation-history-actions">
-        <button
-          type="button"
-          className="dictation-row-act"
-          data-copied={copied}
-          aria-label={copied ? "Copied" : "Copy"}
-          onClick={onCopy}
-        >
-          {copied ? <IconCheckmark2Small size={14} /> : <IconClipboard size={14} />}
-        </button>
+        <HoverTip compact width={104} tip={copied ? "Copied" : "Copy"} forceOpen={copied && !open}>
+          <button
+            type="button"
+            className="dictation-row-act"
+            data-copied={copied}
+            aria-label={copied ? "Copied" : "Copy"}
+            onClick={onCopy}
+          >
+            <CopyStateIcon copied={copied} />
+          </button>
+        </HoverTip>
         <button
           type="button"
           className="dictation-row-act dictation-row-act-danger"
@@ -404,10 +425,17 @@ function DictationHistoryRow({
         width={540}
         className="transcript-dialog"
         footer={
-          <button type="button" className="btn btn-secondary" onClick={onCopy}>
-            {copied ? <IconCheckmark2Small size={14} /> : <IconClipboard size={14} />}
-            {copied ? "Copied" : "Copy"}
-          </button>
+          <HoverTip compact width={104} tip={copied ? "Copied" : "Copy"} forceOpen={copied && open}>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              aria-label={copied ? "Copied" : "Copy"}
+              onClick={onCopy}
+            >
+              <CopyStateIcon copied={copied} />
+              Copy
+            </button>
+          </HoverTip>
         }
       >
         <div className="transcript-dialog-scroll scroll-fade-mask" ref={scrollRef} {...fade.props}>

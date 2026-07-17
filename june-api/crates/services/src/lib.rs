@@ -13,9 +13,14 @@ mod note_transcribe;
 mod p3a;
 mod pricing;
 mod prompts;
+mod share;
 mod util;
 mod video;
 mod web_augment;
+
+pub use share::{
+    CreateShareInput, CreatedInvite, CreatedShare, InviteInput, ShareService, ShareServiceDeps,
+};
 
 pub use agent_chat::{
     AgentChatOutput, AgentChatParams, AgentChatService, AgentChatServiceDeps, AgentChatStreamOutput,
@@ -63,7 +68,7 @@ mod tests {
         AgentChatStreamOutcome, AudioDurationProbe, Authorization, AuthorizeRequest, ChargeRequest,
         CleanedText, Cleaner, CleanupRequest, Credits, DomainError, GeneratedNote,
         GenerationRequest, Generator, ModelId, OsAccountsClient, ProviderCredentials, Receipt,
-        TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
+        TokenUsage, Transcriber, Transcript, TranscriptionRequest, UpstreamRouteMetadata, UserId,
     };
     use pretty_assertions::assert_eq;
     use std::{
@@ -774,7 +779,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn note_transcribe_preview_failure_still_settles_hold() {
+    async fn note_transcribe_preview_failure_releases_hold_without_billing() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
         let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
             pricing: Arc::new(PricingTable::new(models([(
@@ -806,6 +811,8 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(ServiceError::UpstreamProvider)));
+        // Failed previews used to bill the full audio price just to close the
+        // hold; a zero-credit release closes it without charging.
         assert_eq!(
             os_accounts.events(),
             vec![
@@ -815,15 +822,70 @@ mod tests {
                     estimate: 1024,
                     hold_ttl: 60,
                 },
-                RecordedCall::Charge {
-                    action_token: "agt_test".to_string(),
-                    credits: 4,
-                    idempotency_key: concat!(
-                        "note_transcribe_preview:usr_123:live-preview-session-1:",
-                        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
-                    )
-                    .to_string(),
+                release_charge_event("note_transcribe"),
+            ]
+        );
+    }
+
+    /// The grant-scoped release key: never collides with a later successful
+    /// charge of the same work under a fresh grant.
+    fn release_charge_event(action: &str) -> RecordedCall {
+        RecordedCall::Charge {
+            action_token: "agt_test".to_string(),
+            credits: 0,
+            idempotency_key: format!(
+                "release:{action}:{}",
+                &crate::util::sha256_hex("agt_test".as_bytes())[..32],
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_failure_releases_hold() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: Arc::new(FailingTranscriber),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let result = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "note-1-turn-4-chunk-0".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "turn.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: false,
+                provider_credentials: ProviderCredentials::default(),
+            })
+            .await;
+
+        // The provider failure propagates, but the hold is settled at zero:
+        // stranded holds from failed turns are what saturated the concurrency
+        // cap and denied every later authorize in the 2026-07-14 incident.
+        assert!(matches!(result, Err(ServiceError::UpstreamProvider)));
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 1024,
+                    hold_ttl: 60,
                 },
+                release_charge_event("note_transcribe"),
             ]
         );
     }
@@ -1228,18 +1290,21 @@ mod tests {
             .await
             .expect("stream starts");
         while output.chunks.recv().await.is_some() {}
-        // The settle task returns without charging on a transport failure;
-        // yield so it runs to completion before asserting absence.
+        // The settle task releases the hold (zero-credit charge) on a
+        // transport failure; yield so it runs to completion before asserting.
         for _ in 0..20 {
             tokio::task::yield_now().await;
         }
 
-        assert!(
-            !os_accounts
-                .events()
-                .into_iter()
-                .any(|event| matches!(event, RecordedCall::Charge { .. })),
-            "a transport-failed stream must leave the hold unsettled (buffered-path parity)"
+        let charges = os_accounts
+            .events()
+            .into_iter()
+            .filter(|event| matches!(event, RecordedCall::Charge { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            charges,
+            vec![release_charge_event("agent_chat")],
+            "a transport-failed stream must release the hold without billing"
         );
     }
 
@@ -1469,6 +1534,7 @@ mod tests {
                 content: "Generated note".to_string(),
                 title_suggestion: Some("Title".to_string()),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 usage: TokenUsage {
                     prompt_tokens: 10,
                     completion_tokens: 20,
@@ -1501,6 +1567,7 @@ mod tests {
                 content: "Generated note".to_string(),
                 title_suggestion: Some("Title".to_string()),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 usage: TokenUsage {
                     prompt_tokens: 10,
                     completion_tokens: 20,
@@ -1517,6 +1584,7 @@ mod tests {
             Ok(CleanedText {
                 text: "Hello".to_string(),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 usage: TokenUsage {
                     prompt_tokens: 5,
                     completion_tokens: 6,
@@ -1537,6 +1605,7 @@ mod tests {
                 body: br#"{"id":"chatcmpl_test"}"#.to_vec(),
                 content_type: "application/json".to_string(),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 usage: TokenUsage {
                     prompt_tokens: 10,
                     completion_tokens: 20,
@@ -1560,6 +1629,7 @@ mod tests {
             Ok(AgentChatStream {
                 content_type: "text/event-stream".to_string(),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 chunks: chunks_rx,
                 outcome: outcome_rx,
             })
@@ -1590,6 +1660,7 @@ mod tests {
             Ok(AgentChatStream {
                 content_type: "text/event-stream".to_string(),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 chunks: chunks_rx,
                 outcome: outcome_rx,
             })
@@ -1621,6 +1692,7 @@ mod tests {
             Ok(AgentChatStream {
                 content_type: "text/event-stream".to_string(),
                 provider: "test".to_string(),
+                route: UpstreamRouteMetadata::default(),
                 chunks: chunks_rx,
                 outcome: outcome_rx,
             })

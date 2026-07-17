@@ -40,12 +40,14 @@ const folders: FolderDto[] = [
   {
     id: "project-alpha",
     name: "Alpha",
+    memoryDisabled: false,
     createdAt: "2026-06-04T10:00:00Z",
     updatedAt: "2026-06-04T10:00:00Z",
   },
   {
     id: "project-beta",
     name: "Beta",
+    memoryDisabled: false,
     createdAt: "2026-06-04T10:00:00Z",
     updatedAt: "2026-06-04T10:00:00Z",
   },
@@ -319,6 +321,7 @@ describe("MoveSessionToProjectDialog", () => {
     const created: FolderDto = {
       id: "project-new",
       name: "Roadmap",
+      memoryDisabled: false,
       createdAt: "2026-06-04T10:00:00Z",
       updatedAt: "2026-06-04T10:00:00Z",
     };

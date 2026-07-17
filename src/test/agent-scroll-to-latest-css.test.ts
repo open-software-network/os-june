@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import appCss from "../styles/app.css?raw";
 
-function cssRuleFor(selector: string) {
+function cssRuleFor(selector: string, topLevel = false) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`${escaped}\\s*\\{`).exec(appCss);
-  if (!match) throw new Error(`Missing CSS rule for ${selector}`);
+  const match = new RegExp(`${topLevel ? "(?:^|\\n)" : ""}${escaped}\\s*\\{`).exec(appCss);
+  if (!match) throw new Error(`Missing ${topLevel ? "top-level " : ""}CSS rule for ${selector}`);
   const openIndex = match.index + match[0].length - 1;
   let depth = 0;
   for (let index = openIndex; index < appCss.length; index += 1) {
@@ -14,10 +14,28 @@ function cssRuleFor(selector: string) {
       if (depth === 0) return appCss.slice(openIndex + 1, index);
     }
   }
-  throw new Error(`Unclosed CSS rule for ${selector}`);
+  throw new Error(`Unclosed ${topLevel ? "top-level " : ""}CSS rule for ${selector}`);
 }
 
 describe("agent scroll-to-latest styles", () => {
+  it("reserves the measured fixed-composer overlap below the conversation", () => {
+    expect(cssRuleFor(".agent-scroll", true)).toContain(
+      "padding: var(--detail-bar-h) var(--sp-8) var(--sp-5)",
+    );
+    expect(cssRuleFor(".agent-scroll", true)).not.toContain("--agent-composer-clearance");
+    expect(cssRuleFor(".agent-scroll .agent-main", true)).toContain(
+      "margin: 0 0 var(--agent-composer-clearance, 0px)",
+    );
+    expect(cssRuleFor(".agent-timeline")).not.toContain("148px");
+    expect(cssRuleFor(".agent-timeline")).toContain(
+      "calc(var(--agent-turn-actions-h) + var(--sp-2))",
+    );
+  });
+
+  it("aligns the Up next label with the composer text line", () => {
+    expect(cssRuleFor(".agent-steer-queue-trigger")).toContain("padding-inline-start: var(--sp-4)");
+  });
+
   it("floats the pill absolutely (never fixed) above the composer", () => {
     const rule = cssRuleFor(".agent-scroll-to-latest");
     // WKWebView clips composited fixed elements to the overflow-hidden card.

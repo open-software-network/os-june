@@ -29,7 +29,7 @@ Identity comes from the user's access JWT (via the BFF), not the App API key:
 
 ```
 GET {API}/me   Authorization: Bearer <access JWT>
-→ { id: "usr_…", handle, email, display_name, avatar_url }
+→ { id: "usr_…", handle, email, display_name, avatar_url, avatar_seed }
 ```
 
 The `id` (`usr_…`) is the **only** user reference you pass on the charge path.
@@ -91,7 +91,7 @@ export async function POST(request: Request) {
   //    `estimate_credits` as a Hold against the wallet — overlapping ops on
   //    the same user must fit inside the available balance.
   const estimateCredits = 80;        // worker-computed; e.g. minutes × per-min rate
-  const holdTtlSeconds = 300;        // bounded 1..=600
+  const holdTtlSeconds = 300;        // bounded 1..=900
   const authorization = await requestApiJson<Authorize>("/authorize", {
     method: "POST",
     authorization: appAuth,
@@ -159,7 +159,7 @@ export async function POST(request: Request) {
 - **`credits` are whole integers.** `$1 = 1000 credits`. Decide your per-action price in credits.
 - **`/charge` requires both credentials.** App API key alone (no token) fails; token alone (no API key) fails. Defence in depth: token leak alone can't bill, key leak alone can't bill an action you didn't already authorise.
 - **Don't send `app_id`** — it's derived from the App API key. Sending it does nothing.
-- **`hold_ttl_seconds` is mandatory** (`1..=600`). Pick a tight value: too long strands your user's wallet on a crashed worker; too short fails the legitimate settle.
+- **`hold_ttl_seconds` is mandatory** (`1..=900`). Pick a tight value: too long strands your user's wallet on a crashed worker; too short fails the legitimate settle. The 900s ceiling exists for long-running async jobs (e.g. video generation) that charge-on-complete against the original Hold after a long poll window.
 
 ## Metering from a standalone backend (user identified by a verified token)
 
@@ -219,7 +219,7 @@ export async function runPaidWork(bearerToken: string, workId: string, appKey: s
       user_id: userId,
       action: "transcription",
       estimate_credits: estimateCredits,
-      hold_ttl_seconds: 300,                     // bounded 1..=600
+      hold_ttl_seconds: 300,                     // bounded 1..=900
     },
   });
   if (!authorization.success || !authorization.data?.allowed || !authorization.data.token) {
@@ -264,8 +264,9 @@ GET {API}/billing/balance   (via your BFF)
 → { credits: 4200, usd_millis: 4200 }   # usd display = usd_millis / 1000
 ```
 
-`authorize`/`charge` also return the post-op `balance.credits`, so you usually
-don't need a separate read right after a charge.
+`/charge` also returns the post-op `balance_credits` (and an `/authorize`
+denial includes `available_credits`), so you usually don't need a separate
+read right after a charge.
 
 ## Top-ups — hand off to OS Accounts
 

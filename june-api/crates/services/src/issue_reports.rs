@@ -115,6 +115,7 @@ impl IssueReportService {
             body: issue_report_diagnosis_body(report),
             model: model.clone(),
             provider_credentials: ProviderCredentials::default(),
+            inference_privacy: june_domain::InferencePrivacy::Private,
             unmetered: false,
         };
         match timeout(
@@ -286,7 +287,7 @@ mod tests {
     use june_domain::{
         AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream, DomainError,
         IssueReport, IssueReportAttachment, IssueReportDelivery, IssueReportSink, TokenUsage,
-        UserId,
+        UpstreamRouteMetadata, UserId,
     };
     use pretty_assertions::assert_eq;
     use rstest::rstest;
@@ -619,6 +620,7 @@ mod tests {
             .into_bytes(),
             content_type: "application/json".to_string(),
             provider: "test".to_string(),
+            route: UpstreamRouteMetadata::default(),
             usage: TokenUsage {
                 prompt_tokens: 1,
                 completion_tokens: 1,

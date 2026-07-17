@@ -22,6 +22,7 @@ pub const PROVIDER_LOCAL: &str = "local";
 pub const DEFAULT_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 pub const DEFAULT_GENERATION_MODEL: &str = "zai-org-glm-5-2";
 pub const AUTO_GENERATION_MODEL: &str = "open-software/auto";
+const LOCAL_AUTO_VISION_FALLBACK_MODEL: &str = "kimi-k2-6";
 pub const DEFAULT_COST_QUALITY: u8 = 100;
 pub const DEFAULT_IMAGE_MODEL: &str = "venice-sd35";
 pub const DEFAULT_VIDEO_MODEL: &str = "wan-2.2-a14b-text-to-video";
@@ -446,8 +447,10 @@ fn context_tokens_cache() -> &'static Mutex<Option<(String, i64)>> {
 /// proxy is `provider: custom`, so that override is the only signal, and the
 /// spawn path resolves it here (see `render_hermes_config`). Returns `false`
 /// when the catalog is unreachable (offline, signed out) or the model reports no
-/// vision capability — the conservative default keeps the prior behavior, where
-/// Hermes falls back to its (unconfigured) auxiliary vision LLM.
+/// vision capability. In local dev, a persisted Auto selection can use the same
+/// catalog-backed capability fallback as June API when Auto is absent. The
+/// conservative default keeps the prior behavior, where Hermes falls back to
+/// its (unconfigured) auxiliary vision LLM.
 pub async fn generation_model_supports_vision() -> bool {
     if generation_provider() == PROVIDER_LOCAL {
         return false;
@@ -456,23 +459,61 @@ pub async fn generation_model_supports_vision() -> bool {
     let Ok(models) = crate::june_api::list_models(ModelMode::Generation.api_type()).await else {
         return false;
     };
-    models
-        .into_iter()
-        .find(|model| model.id == model_id)
-        .is_some_and(|model| capabilities_include_vision(&model.capabilities))
+    generation_model_supports_vision_from_catalog(
+        &model_id,
+        crate::os_accounts::local_dev_enabled(),
+        models
+            .iter()
+            .map(|model| (model.id.as_str(), model.capabilities.as_slice())),
+    )
+}
+
+fn generation_model_supports_vision_from_catalog<'a>(
+    model_id: &str,
+    local_dev_enabled: bool,
+    models: impl IntoIterator<Item = (&'a str, &'a [String])>,
+) -> bool {
+    let use_local_auto_fallback = local_dev_enabled && model_id == AUTO_GENERATION_MODEL;
+    let mut preferred_fallback_is_compatible = false;
+    let mut alternate_fallback_is_compatible = false;
+
+    for (catalog_model_id, capabilities) in models {
+        if catalog_model_id == model_id {
+            return capabilities_include_vision(capabilities);
+        }
+        if use_local_auto_fallback && capabilities_support_agent_images(capabilities) {
+            if catalog_model_id == LOCAL_AUTO_VISION_FALLBACK_MODEL {
+                preferred_fallback_is_compatible = true;
+            } else {
+                alternate_fallback_is_compatible = true;
+            }
+        }
+    }
+
+    preferred_fallback_is_compatible || alternate_fallback_is_compatible
 }
 
 /// Mirrors the frontend `modelSupportsImageInput`: key off the authoritative
 /// `capabilities` list (never `traits`), matching the normalized `supportsVision`
 /// name so a rename to snake_case still resolves.
 fn capabilities_include_vision(capabilities: &[String]) -> bool {
+    capabilities_include(capabilities, "supportsvision")
+}
+
+fn capabilities_support_agent_images(capabilities: &[String]) -> bool {
+    capabilities_include_vision(capabilities)
+        && (capabilities_include(capabilities, "functioncalling")
+            || capabilities_include(capabilities, "toolcalling"))
+}
+
+fn capabilities_include(capabilities: &[String], expected: &str) -> bool {
     capabilities.iter().any(|capability| {
         let normalized: String = capability
             .chars()
             .filter(char::is_ascii_alphabetic)
             .map(|ch| ch.to_ascii_lowercase())
             .collect();
-        normalized.contains("supportsvision")
+        normalized.contains(expected)
     })
 }
 
@@ -1255,10 +1296,13 @@ fn default_image_safe_mode() -> bool {
 }
 
 fn provider_settings_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path()
-        .app_config_dir()
+    crate::app_paths::app_config_dir(app)
         .ok()
-        .map(|directory| directory.join("provider-settings.json"))
+        .map(provider_settings_path_from_config_dir)
+}
+
+fn provider_settings_path_from_config_dir(directory: PathBuf) -> PathBuf {
+    directory.join("provider-settings.json")
 }
 
 fn provider_hermes_home(app: &AppHandle) -> Option<PathBuf> {
@@ -1697,6 +1741,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn provider_settings_path_derives_from_the_isolated_config_dir() {
+        let isolated_config_dir = PathBuf::from("/tmp/co.opensoftware.june-dev");
+
+        assert_eq!(
+            provider_settings_path_from_config_dir(isolated_config_dir),
+            PathBuf::from("/tmp/co.opensoftware.june-dev/provider-settings.json")
+        );
+    }
+
+    #[test]
     fn legacy_settings_default_cost_quality_to_higher_quality() {
         let settings: ProviderModelSettings =
             serde_json::from_value(serde_json::json!({})).unwrap();
@@ -1715,6 +1769,108 @@ mod tests {
         ]));
         assert!(!capabilities_include_vision(&["supportsTools".to_string()]));
         assert!(!capabilities_include_vision(&[]));
+    }
+
+    #[test]
+    fn generation_vision_uses_selected_catalog_model() {
+        let vision = vec!["supportsVision".to_string()];
+
+        assert!(generation_model_supports_vision_from_catalog(
+            "vision-model",
+            false,
+            [("vision-model", vision.as_slice())],
+        ));
+    }
+
+    #[test]
+    fn generation_vision_local_auto_uses_catalog_backed_kimi_when_auto_is_absent() {
+        let compatible = vec![
+            "supportsVision".to_string(),
+            "supportsFunctionCalling".to_string(),
+        ];
+
+        assert!(generation_model_supports_vision_from_catalog(
+            AUTO_GENERATION_MODEL,
+            true,
+            [(LOCAL_AUTO_VISION_FALLBACK_MODEL, compatible.as_slice())],
+        ));
+    }
+
+    #[test]
+    fn generation_vision_non_local_auto_does_not_use_kimi_fallback() {
+        let compatible = vec![
+            "supportsVision".to_string(),
+            "supportsFunctionCalling".to_string(),
+        ];
+
+        assert!(!generation_model_supports_vision_from_catalog(
+            AUTO_GENERATION_MODEL,
+            false,
+            [(LOCAL_AUTO_VISION_FALLBACK_MODEL, compatible.as_slice())],
+        ));
+    }
+
+    #[test]
+    fn generation_vision_local_auto_rejects_kimi_without_tool_support() {
+        let vision_only = vec!["supportsVision".to_string()];
+
+        assert!(!generation_model_supports_vision_from_catalog(
+            AUTO_GENERATION_MODEL,
+            true,
+            [(LOCAL_AUTO_VISION_FALLBACK_MODEL, vision_only.as_slice())],
+        ));
+    }
+
+    #[test]
+    fn generation_vision_local_auto_accepts_an_alternate_compatible_model() {
+        let compatible = vec![
+            "parent.supportsVision".to_string(),
+            "features.toolCalling".to_string(),
+        ];
+
+        assert!(generation_model_supports_vision_from_catalog(
+            AUTO_GENERATION_MODEL,
+            true,
+            [("replacement-model", compatible.as_slice())],
+        ));
+    }
+
+    #[test]
+    fn generation_vision_local_auto_without_catalog_fallback_is_false() {
+        assert!(!generation_model_supports_vision_from_catalog(
+            AUTO_GENERATION_MODEL,
+            true,
+            std::iter::empty(),
+        ));
+    }
+
+    #[test]
+    fn generation_vision_present_auto_wins_over_local_kimi_fallback() {
+        let compatible = vec![
+            "supportsVision".to_string(),
+            "supportsFunctionCalling".to_string(),
+        ];
+        let no_capabilities = Vec::new();
+
+        assert!(!generation_model_supports_vision_from_catalog(
+            AUTO_GENERATION_MODEL,
+            true,
+            [
+                (LOCAL_AUTO_VISION_FALLBACK_MODEL, compatible.as_slice()),
+                (AUTO_GENERATION_MODEL, no_capabilities.as_slice()),
+            ],
+        ));
+    }
+
+    #[test]
+    fn generation_vision_local_auto_requires_a_compatible_catalog_model() {
+        let no_capabilities = Vec::new();
+
+        assert!(!generation_model_supports_vision_from_catalog(
+            AUTO_GENERATION_MODEL,
+            true,
+            [(LOCAL_AUTO_VISION_FALLBACK_MODEL, no_capabilities.as_slice(),)],
+        ));
     }
 
     #[test]

@@ -379,6 +379,18 @@ fn authorize_count(events: &[Call]) -> usize {
         .count()
 }
 
+/// The zero-credit release settling a failed job's hold (grant-scoped key,
+/// derived from the mock's fixed `agt_test` token).
+fn release_call() -> (u64, String) {
+    (
+        0,
+        format!(
+            "release:video_generate:{}",
+            &crate::util::sha256_hex("agt_test".as_bytes())[..32],
+        ),
+    )
+}
+
 // --- credits_from_quote ------------------------------------------------------
 
 #[test]
@@ -599,9 +611,9 @@ async fn content_violation_on_queue_rejects_without_charging() {
         result,
         Err(ServiceError::ContentRejected { reason }) if reason == "content_violation"
     ));
-    // The hold was taken (authorize) but never charged.
+    // The hold was taken (authorize) and released at zero credits.
     assert_eq!(authorize_count(&os.events()), 1);
-    assert_eq!(charge_calls(&os.events()).len(), 0);
+    assert_eq!(charge_calls(&os.events()), vec![release_call()]);
 }
 
 #[tokio::test]
@@ -639,7 +651,7 @@ async fn content_violation_on_status_fails_without_charging() {
             reason: "content_violation".to_string(),
         }
     );
-    assert_eq!(charge_calls(&os.events()).len(), 0);
+    assert_eq!(charge_calls(&os.events()), vec![release_call()]);
 }
 
 #[tokio::test]
@@ -675,7 +687,7 @@ async fn oversized_video_on_status_fails_without_charging() {
             reason: "video_too_large".to_string(),
         }
     );
-    assert_eq!(charge_calls(&os.events()).len(), 0);
+    assert_eq!(charge_calls(&os.events()), vec![release_call()]);
 }
 
 #[tokio::test]
@@ -688,9 +700,9 @@ async fn queue_capacity_maps_to_metering_and_does_not_charge() {
         .await;
 
     assert!(matches!(result, Err(ServiceError::MeteringProvider)));
-    // Authorized (hold taken) but never charged; the hold expires.
+    // Authorized (hold taken), never billed: released at zero credits.
     assert_eq!(authorize_count(&os.events()), 1);
-    assert_eq!(charge_calls(&os.events()).len(), 0);
+    assert_eq!(charge_calls(&os.events()), vec![release_call()]);
 }
 
 #[tokio::test]
@@ -703,7 +715,7 @@ async fn queue_upstream_failure_maps_to_upstream_and_does_not_charge() {
         .await;
 
     assert!(matches!(result, Err(ServiceError::UpstreamProvider)));
-    assert_eq!(charge_calls(&os.events()).len(), 0);
+    assert_eq!(charge_calls(&os.events()), vec![release_call()]);
 }
 
 #[tokio::test]
@@ -752,7 +764,7 @@ async fn expired_media_on_status_is_not_found() {
 
     let result = service.status(usr("usr_1"), handle.job_id).await;
     assert!(matches!(result, Err(ServiceError::JobNotFound)));
-    assert_eq!(charge_calls(&os.events()).len(), 0);
+    assert_eq!(charge_calls(&os.events()), vec![release_call()]);
 }
 
 // --- charge failure re-poll --------------------------------------------------
@@ -1082,7 +1094,7 @@ async fn completed_url_without_usable_media_fails_terminally_without_charging() 
             reason: "video_media_unavailable".to_string(),
         }
     );
-    assert_eq!(charge_calls(&os.events()).len(), 0);
+    assert_eq!(charge_calls(&os.events()), vec![release_call()]);
 }
 
 // --- registry eviction / ttl -------------------------------------------------

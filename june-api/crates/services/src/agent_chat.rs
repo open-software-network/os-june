@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
-        new_charge_operation_id, zero_receipt,
+        AuthorizeParams, ChargeParams, ReleaseHoldParams, authorize_or_deny, charge, clamp_to_cap,
+        log_settled, new_charge_operation_id, release_hold, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
@@ -11,7 +11,7 @@ use crate::{
 use june_domain::{
     ActionSlug, AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStreamOutcome,
     Credits, DomainError, ModelId, ModelKind, OsAccountsClient, ProviderCredentials, Receipt,
-    UserId,
+    UpstreamRouteMetadata, UserId,
 };
 use std::sync::Arc;
 
@@ -45,6 +45,7 @@ impl AgentChatService {
     pub async fn complete(&self, params: AgentChatParams) -> Result<AgentChatOutput, ServiceError> {
         self.pricing
             .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        let inference_privacy = self.pricing.inference_privacy(&params.model_id.0);
         if uses_user_venice_key_for_model(
             &self.pricing,
             &params.model_id.0,
@@ -56,6 +57,7 @@ impl AgentChatService {
                     body: params.body,
                     model: params.model_id.clone(),
                     provider_credentials: params.provider_credentials.clone(),
+                    inference_privacy,
                     unmetered: true,
                 })
                 .await?;
@@ -75,15 +77,28 @@ impl AgentChatService {
         })
         .await?;
         let idempotency_key = idempotency_key(&params.user_id, &params.body);
-        let completion = self
+        let completion = match self
             .chat_completer
             .complete(AgentChatRequest {
                 body: params.body,
                 model: params.model_id.clone(),
                 provider_credentials: params.provider_credentials.clone(),
+                inference_privacy,
                 unmetered: false,
             })
-            .await?;
+            .await
+        {
+            Ok(completion) => completion,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::AgentChat,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         let actual = self
             .pricing
             .price_token_usage(&params.model_id.0, completion.usage)?;
@@ -113,6 +128,7 @@ impl AgentChatService {
     ) -> Result<AgentChatStreamOutput, ServiceError> {
         self.pricing
             .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        let inference_privacy = self.pricing.inference_privacy(&params.model_id.0);
         if uses_user_venice_key_for_model(
             &self.pricing,
             &params.model_id.0,
@@ -124,6 +140,7 @@ impl AgentChatService {
                     body: params.body,
                     model: params.model_id.clone(),
                     provider_credentials: params.provider_credentials.clone(),
+                    inference_privacy,
                     unmetered: true,
                 })
                 .await?;
@@ -134,6 +151,7 @@ impl AgentChatService {
             return Ok(AgentChatStreamOutput {
                 content_type: stream.content_type,
                 provider: stream.provider,
+                route: stream.route,
                 chunks: stream.chunks,
             });
         }
@@ -148,15 +166,28 @@ impl AgentChatService {
         })
         .await?;
         let idempotency_key = idempotency_key(&params.user_id, &params.body);
-        let stream = self
+        let stream = match self
             .chat_completer
             .complete_stream(AgentChatRequest {
                 body: params.body,
                 model: params.model_id.clone(),
                 provider_credentials: params.provider_credentials.clone(),
+                inference_privacy,
                 unmetered: false,
             })
-            .await?;
+            .await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::AgentChat,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         spawn_stream_settlement(StreamSettlement {
             pricing: self.pricing.clone(),
             os_accounts: self.os_accounts.clone(),
@@ -171,6 +202,7 @@ impl AgentChatService {
         Ok(AgentChatStreamOutput {
             content_type: stream.content_type,
             provider: stream.provider,
+            route: stream.route,
             chunks: stream.chunks,
         })
     }
@@ -193,6 +225,7 @@ pub struct AgentChatOutput {
 pub struct AgentChatStreamOutput {
     pub content_type: String,
     pub provider: String,
+    pub route: UpstreamRouteMetadata,
     pub chunks: tokio::sync::mpsc::UnboundedReceiver<Result<bytes::Bytes, DomainError>>,
 }
 
@@ -270,8 +303,14 @@ async fn settle_stream_charge(params: StreamSettlement) {
                 user_id = %params.user_id.0,
                 action = ActionSlug::AgentChat.as_str(),
                 model = %params.model_id.0,
-                "agent chat stream failed mid-transport; leaving hold unsettled"
+                "agent chat stream failed mid-transport; releasing hold"
             );
+            release_hold(ReleaseHoldParams {
+                os_accounts: params.os_accounts.as_ref(),
+                action: ActionSlug::AgentChat,
+                action_token: params.action_token,
+            })
+            .await;
             return;
         }
     };

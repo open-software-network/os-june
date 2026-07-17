@@ -18,6 +18,10 @@ inputs:
     description: Phala Cloud API key (PHALA_CLOUD_API_KEY).
     required: false
     default: ""
+  require-existing:
+    description: Fail instead of creating a CVM when cvm-name does not already exist.
+    required: false
+    default: "false"
   cli-version:
     description: phala npm package version to install. Pinned for reproducibility.
     required: false
@@ -83,6 +87,7 @@ runs:
         PHALA_CLOUD_API_KEY: ${{ inputs.api-key }}
         CVM_NAME: ${{ inputs.cvm-name }}
         RENDERED: ${{ steps.render.outputs.rendered }}
+        REQUIRE_EXISTING: ${{ inputs.require-existing }}
       run: |
         set -euo pipefail
         # Probe via the raw /apps endpoint, not `phala cvms list`. The CLI's
@@ -109,6 +114,9 @@ runs:
         if [[ "$jq_status" -eq 0 ]]; then
           echo "CVM $CVM_NAME exists; updating via --cvm-id."
           phala deploy -c "$RENDERED" --cvm-id "$CVM_NAME" --wait
+        elif [[ "$REQUIRE_EXISTING" == "true" ]]; then
+          echo "::error::CVM $CVM_NAME does not exist. This deployment is update-only; provision and seal the isolated CVM first."
+          exit 1
         else
           echo "CVM $CVM_NAME does not exist; creating via -n."
           phala deploy -c "$RENDERED" -n "$CVM_NAME" --wait

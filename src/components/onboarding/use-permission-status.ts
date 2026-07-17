@@ -6,6 +6,10 @@ import { checkRecordingSourceReadiness, dictationHelperCommand } from "../../lib
 export type PermissionStatuses = {
   /** AVCaptureDevice vocabulary: "granted" | "denied" | "restricted" | "undetermined". */
   microphone?: string;
+  /** Whether the Windows helper found a usable input device. */
+  microphoneDeviceAvailable?: boolean;
+  /** Machine-readable Windows microphone probe reason. */
+  microphoneReason?: string;
   /** AXIsProcessTrusted, surfaced as "granted" | "missing". */
   accessibility?: string;
   /** True after the helper has emitted at least one permission snapshot. */
@@ -154,6 +158,14 @@ export function usePermissionStatuses(active: boolean): PermissionStatuses {
       setStatuses((prev) => ({
         checked: true,
         microphone: typeof microphone === "string" ? microphone : prev.microphone,
+        microphoneDeviceAvailable:
+          typeof helperEvent.payload?.microphoneDeviceAvailable === "boolean"
+            ? helperEvent.payload.microphoneDeviceAvailable
+            : prev.microphoneDeviceAvailable,
+        microphoneReason:
+          typeof helperEvent.payload?.microphoneReason === "string"
+            ? helperEvent.payload.microphoneReason
+            : prev.microphoneReason,
         accessibility: typeof accessibility === "string" ? accessibility : prev.accessibility,
       }));
     }).then((cleanup) => {

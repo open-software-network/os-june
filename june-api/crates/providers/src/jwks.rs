@@ -205,6 +205,8 @@ impl JwksTokenVerifier {
 #[derive(Debug, Deserialize)]
 struct AccessClaims {
     sub: String,
+    #[serde(default)]
+    scope: String,
 }
 
 // Used only for diagnostic logging on a verification failure. Decoding the
@@ -221,6 +223,29 @@ struct UnverifiedClaims {
 #[async_trait]
 impl TokenVerifier for JwksTokenVerifier {
     async fn verify(&self, access_jwt: &str) -> Result<UserId, AuthError> {
+        let claims = self.verify_claims(access_jwt).await?;
+        user_id_from_claims(&claims)
+    }
+
+    async fn verify_scope(
+        &self,
+        access_jwt: &str,
+        required_scope: &str,
+    ) -> Result<UserId, AuthError> {
+        let claims = self.verify_claims(access_jwt).await?;
+        if !claims
+            .scope
+            .split_ascii_whitespace()
+            .any(|scope| scope == required_scope)
+        {
+            return Err(AuthError::InvalidToken);
+        }
+        user_id_from_claims(&claims)
+    }
+}
+
+impl JwksTokenVerifier {
+    async fn verify_claims(&self, access_jwt: &str) -> Result<AccessClaims, AuthError> {
         let access_jwt = access_jwt.trim();
         if access_jwt.is_empty() {
             return Err(AuthError::MissingToken);
@@ -251,12 +276,16 @@ impl TokenVerifier for JwksTokenVerifier {
                 return Err(AuthError::InvalidToken);
             }
         };
-        let user_id = token.claims.sub.trim();
-        if !user_id.starts_with("usr_") {
-            return Err(AuthError::InvalidToken);
-        }
-        Ok(UserId(user_id.to_string()))
+        Ok(token.claims)
     }
+}
+
+fn user_id_from_claims(claims: &AccessClaims) -> Result<UserId, AuthError> {
+    let user_id = claims.sub.trim();
+    if !user_id.starts_with("usr_") {
+        return Err(AuthError::InvalidToken);
+    }
+    Ok(UserId(user_id.to_string()))
 }
 
 fn unverified_claims(jwt: &str) -> Option<UnverifiedClaims> {
@@ -303,6 +332,29 @@ mod tests {
         let user_id = verifier.verify(&token).await?;
 
         assert_eq!(user_id, UserId("usr_123".to_string()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn requires_the_requested_scope() -> Result<(), Box<dyn Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.well-known/jwks.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(jwks_body()))
+            .mount(&server)
+            .await;
+        let verifier = build_verifier(&server.uri(), "issuer", "june-api");
+        let token =
+            test_token_with_scope(["ec01", "usr_123", "issuer", "june-api"], "profile:read")?;
+
+        assert_eq!(
+            verifier.verify_scope(&token, "profile:read").await?,
+            UserId("usr_123".to_string())
+        );
+        assert_eq!(
+            verifier.verify_scope(&token, "credits:spend").await,
+            Err(AuthError::InvalidToken)
+        );
         Ok(())
     }
 
@@ -486,6 +538,7 @@ mod tests {
         aud: String,
         exp: u64,
         nbf: u64,
+        scope: String,
     }
 
     fn test_token(
@@ -493,6 +546,13 @@ mod tests {
         sub: &str,
         issuer: &str,
         audience: &str,
+    ) -> Result<String, jsonwebtoken::errors::Error> {
+        test_token_with_scope([kid, sub, issuer, audience], "")
+    }
+
+    fn test_token_with_scope(
+        [kid, sub, issuer, audience]: [&str; 4],
+        scope: &str,
     ) -> Result<String, jsonwebtoken::errors::Error> {
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some(kid.to_string());
@@ -505,6 +565,7 @@ mod tests {
                 aud: audience.to_string(),
                 exp: now + 600,
                 nbf: now - 60,
+                scope: scope.to_string(),
             },
             &EncodingKey::from_ec_der(TEST_EC_PRIVATE_KEY_DER),
         )

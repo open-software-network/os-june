@@ -8,6 +8,10 @@ use june_domain::{
 pub struct LocalDevTokenVerifier {
     bearer_token: String,
     user_id: UserId,
+    /// Optional second identity (JUN-308): lets recipient-side share flows
+    /// run locally. Empty token disables it.
+    viewer_bearer_token: String,
+    viewer_user_id: UserId,
 }
 
 impl LocalDevTokenVerifier {
@@ -15,7 +19,20 @@ impl LocalDevTokenVerifier {
         Self {
             bearer_token: bearer_token.into().trim().to_string(),
             user_id: UserId(user_id.into().trim().to_string()),
+            viewer_bearer_token: String::new(),
+            viewer_user_id: UserId(String::new()),
         }
+    }
+
+    #[must_use]
+    pub fn with_viewer(
+        mut self,
+        viewer_bearer_token: impl Into<String>,
+        viewer_user_id: impl Into<String>,
+    ) -> Self {
+        self.viewer_bearer_token = viewer_bearer_token.into().trim().to_string();
+        self.viewer_user_id = UserId(viewer_user_id.into().trim().to_string());
+        self
     }
 }
 
@@ -26,10 +43,23 @@ impl TokenVerifier for LocalDevTokenVerifier {
         if access_jwt.is_empty() {
             return Err(AuthError::MissingToken);
         }
-        if access_jwt != self.bearer_token {
-            return Err(AuthError::InvalidToken);
+        if access_jwt == self.bearer_token {
+            return Ok(self.user_id.clone());
         }
-        Ok(self.user_id.clone())
+        if !self.viewer_bearer_token.is_empty() && access_jwt == self.viewer_bearer_token {
+            return Ok(self.viewer_user_id.clone());
+        }
+        Err(AuthError::InvalidToken)
+    }
+
+    async fn verify_scope(
+        &self,
+        access_jwt: &str,
+        _required_scope: &str,
+    ) -> Result<UserId, AuthError> {
+        // Local-dev tokens are configured out of band and intentionally stand
+        // in for the production desktop/viewer grants.
+        self.verify(access_jwt).await
     }
 }
 
@@ -118,5 +148,33 @@ mod tests {
 
         assert_eq!(receipt.credits_charged, Credits(0));
         assert_eq!(receipt.idempotent_replay, false);
+    }
+}
+
+/// Local-dev `ViewerIdentity`: the second local token resolves to the
+/// configured email so recipient share matching works without OS Accounts;
+/// every other token has no verified emails.
+#[derive(Clone, Debug)]
+pub struct LocalDevViewerIdentity {
+    viewer_bearer_token: String,
+    viewer_email: String,
+}
+
+impl LocalDevViewerIdentity {
+    pub fn new(viewer_bearer_token: impl Into<String>, viewer_email: impl Into<String>) -> Self {
+        Self {
+            viewer_bearer_token: viewer_bearer_token.into().trim().to_string(),
+            viewer_email: viewer_email.into().trim().to_ascii_lowercase(),
+        }
+    }
+}
+
+#[async_trait]
+impl june_domain::ViewerIdentity for LocalDevViewerIdentity {
+    async fn verified_emails(&self, access_token: &str) -> Result<Vec<String>, DomainError> {
+        if !self.viewer_bearer_token.is_empty() && access_token.trim() == self.viewer_bearer_token {
+            return Ok(vec![self.viewer_email.clone()]);
+        }
+        Ok(Vec::new())
     }
 }

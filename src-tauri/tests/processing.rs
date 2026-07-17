@@ -26,6 +26,7 @@ fn note(overrides: impl FnOnce(&mut NoteDto)) -> NoteDto {
         active_tab: Some("notes".to_string()),
         last_error: None,
         queued_recordings: 0,
+        retry_recording_session_id: None,
     };
     overrides(&mut note);
     note

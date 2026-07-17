@@ -20,6 +20,20 @@ export type ActiveHermesProfileRefreshOptions = {
   mode?: HermesAdminMode;
 };
 
+export const PROFILE_DATA_CHANGED_EVENT = "june:profile-data-changed";
+
+export type ProfileDataChangedDetail = {
+  profile: string;
+};
+
+export function dispatchProfileDataChanged(profile: string): void {
+  window.dispatchEvent(
+    new CustomEvent<ProfileDataChangedDetail>(PROFILE_DATA_CHANGED_EVENT, {
+      detail: { profile: normalizeProfileName(profile) },
+    }),
+  );
+}
+
 /** Last-known active profile. Starts at `default` and is only ever moved by a
  * confirmed source (a successful active read or an in-app switch) — a failed
  * refresh keeps the current value, because a transient read failure must not

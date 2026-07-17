@@ -3,7 +3,7 @@ import {
   autonomyProgressLabel,
   autonomyUnlockHint,
   canSelectAutonomous,
-  CONNECTOR_ACTION_TOOLS,
+  GRANTABLE_CONNECTOR_ACTION_TOOLS,
   TRUST_MODE_META,
 } from "../../lib/connectors";
 import { Checkbox } from "../ui/Checkbox";
@@ -63,7 +63,9 @@ export function TrustModePicker({
     const next = new Set(autonomousTools);
     if (granted) next.add(toolId);
     else next.delete(toolId);
-    onAutonomousToolsChange(CONNECTOR_ACTION_TOOLS.map((t) => t.id).filter((id) => next.has(id)));
+    onAutonomousToolsChange(
+      GRANTABLE_CONNECTOR_ACTION_TOOLS.map((t) => t.id).filter((id) => next.has(id)),
+    );
   }
 
   return (
@@ -83,7 +85,9 @@ export function TrustModePicker({
       {value === "autonomous" ? (
         <fieldset className="trust-mode-grants">
           <legend className="trust-mode-grants-legend">Tools this routine may run unasked</legend>
-          {CONNECTOR_ACTION_TOOLS.map((tool) => (
+          {/* Grantable tools only: Linear's write tools are approval-only in v1
+              and must never appear as autonomy checkboxes. */}
+          {GRANTABLE_CONNECTOR_ACTION_TOOLS.map((tool) => (
             <label key={tool.id} className="trust-mode-grant" htmlFor={`trust-grant-${tool.id}`}>
               <Checkbox
                 id={`trust-grant-${tool.id}`}

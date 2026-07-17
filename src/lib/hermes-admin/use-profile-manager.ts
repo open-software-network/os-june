@@ -16,7 +16,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { setActiveHermesProfileName } from "../active-hermes-profile";
+import { dispatchProfileDataChanged, setActiveHermesProfileName } from "../active-hermes-profile";
 import { messageFromError } from "../errors";
 import { deleteHermesSession } from "../hermes-adapter";
 import {
@@ -280,6 +280,7 @@ export class ProfileManagerController {
     try {
       if (disposition === "move") {
         await moveProfileDataToDefault(name);
+        dispatchProfileDataChanged("default");
       } else {
         // Hermes owns the chat transcripts; wiping only June's mapping rows
         // would surface the dead profile's chats under default (unmapped

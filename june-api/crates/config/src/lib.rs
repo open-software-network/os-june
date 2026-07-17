@@ -74,6 +74,25 @@ const _: () = assert!(DEFAULT_IMAGE_HOLD_TTL_SECS <= OS_ACCOUNTS_MAX_HOLD_TTL_SE
 const IMAGE_EDIT_JSON_OVERHEAD_BYTES: usize = 16 * 1024;
 pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
     base64_encoded_len(IMAGE_EDIT_SOURCE_MAX_BYTES) + IMAGE_EDIT_JSON_OVERHEAD_BYTES;
+/// Dedicated request-body cap for `/v1/chat/completions`. Sized to the
+/// desktop provider proxy's chat body cap
+/// (`JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES`, 12 MiB, in
+/// `src-tauri/src/hermes_bridge.rs`) so an in-window agent chat request the
+/// proxy forwards is never rejected here by a stricter outer gate before
+/// `validate_agent_chat_body` can size-check it (JUN-336). 12 MiB is the
+/// byte-image of the 6M-char semantic cap (`MAX_AGENT_TOTAL_STRING_CHARS`) at
+/// ~2 bytes/char, sized for a 1M-token context window. This is only an abuse
+/// ceiling above every valid agent chat request; semantic size rejection stays
+/// in `validate_agent_chat_body`. Keep this in sync with the proxy constant
+/// across the src-tauri / june-api workspace boundary.
+pub const DEFAULT_MAX_AGENT_CHAT_BYTES: usize = 12 * 1024 * 1024;
+/// Global cap on the total in-flight request-body bytes buffered across the
+/// large-body agent routes, so concurrent authenticated requests cannot exhaust
+/// the shared TEE (JUN-336). Conservative default; tune against real traffic.
+pub const DEFAULT_MAX_AGENT_INFLIGHT_BODY_BYTES: usize = 1024 * 1024 * 1024;
+/// Max concurrent large-body agent requests a single user may have in flight
+/// before June API load-sheds with 503 (JUN-336).
+pub const DEFAULT_MAX_AGENT_CONCURRENT_REQUESTS_PER_USER: usize = 8;
 
 // --- Video generation (ADR 0015) ---------------------------------------------
 //
@@ -136,6 +155,11 @@ pub struct AppConfig {
     pub attestation: AttestationConfig,
     #[serde(default)]
     pub issue_reports: IssueReportsConfig,
+    /// Private sharing (JUN-308). Sharing endpoints return 501
+    /// `sharing_unavailable` until `database_url` is configured, so the
+    /// feature cannot regress deployments that predate it.
+    #[serde(default)]
+    pub share: ShareConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
     /// Flat credits charged per generated image, keyed by image model id. Kept
     /// separate from `pricing` (the text/ASR catalog) so image models never leak
@@ -198,6 +222,7 @@ impl Debug for AppConfig {
             .field("upstreams", &self.upstreams)
             .field("attestation", &self.attestation)
             .field("issue_reports", &self.issue_reports)
+            .field("share", &RedactedShare(&self.share))
             .field("pricing", &self.pricing)
             .field("image_pricing", &self.image_pricing)
             .field("image_edit_pricing", &self.image_edit_pricing)
@@ -354,6 +379,14 @@ pub struct ServerConfig {
     /// JSON body cap for `/v1/image/edit`. It is sized for a 50 MiB source
     /// image after base64 expansion plus fixed request overhead.
     pub max_image_edit_bytes: usize,
+    /// JSON body cap for `/v1/chat/completions`, sized to the desktop proxy's
+    /// 12 MiB chat body cap so an in-window agent chat request is not rejected by
+    /// a stricter outer gate before semantic validation (JUN-336).
+    pub max_agent_chat_bytes: usize,
+    /// Global in-flight request-body budget for the large-body agent routes.
+    pub max_agent_inflight_body_bytes: usize,
+    /// Per-user concurrent request cap for the large-body agent routes.
+    pub max_agent_concurrent_requests_per_user: usize,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -364,6 +397,22 @@ pub struct LocalDevConfig {
     pub bearer_token: String,
     #[serde(default = "default_local_dev_user_id")]
     pub user_id: String,
+    /// Second local identity so recipient-side share flows (JUN-308) can be
+    /// exercised without real OS Accounts. Empty disables the second token.
+    #[serde(default)]
+    pub viewer_bearer_token: String,
+    #[serde(default = "default_local_dev_viewer_user_id")]
+    pub viewer_user_id: String,
+    #[serde(default = "default_local_dev_viewer_email")]
+    pub viewer_email: String,
+}
+
+fn default_local_dev_viewer_user_id() -> String {
+    "usr_local_dev_viewer".to_string()
+}
+
+fn default_local_dev_viewer_email() -> String {
+    "viewer@localdev.june".to_string()
 }
 
 fn default_local_dev_bearer_token() -> String {
@@ -380,6 +429,9 @@ impl Default for LocalDevConfig {
             enabled: false,
             bearer_token: default_local_dev_bearer_token(),
             user_id: default_local_dev_user_id(),
+            viewer_bearer_token: String::new(),
+            viewer_user_id: default_local_dev_viewer_user_id(),
+            viewer_email: default_local_dev_viewer_email(),
         }
     }
 }
@@ -398,6 +450,86 @@ impl Debug for LocalDevConfig {
                 },
             )
             .field("user_id", &self.user_id)
+            .field(
+                "viewer_bearer_token",
+                if self.viewer_bearer_token.is_empty() {
+                    &"<unset>"
+                } else {
+                    &REDACTED
+                },
+            )
+            .field("viewer_user_id", &self.viewer_user_id)
+            .field("viewer_email", &self.viewer_email)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShareConfig {
+    /// Postgres URL for the share store. Empty disables sharing.
+    #[serde(default)]
+    pub database_url: String,
+    /// OS Accounts site origin the viewer sends recipients to for sign-in
+    /// (e.g. `https://accounts.opensoftware.co`). Empty falls back to the
+    /// canonical issuer from `os_accounts.iss`.
+    #[serde(default)]
+    pub viewer_accounts_url: String,
+    /// Public OAuth client id registered for the browser viewer.
+    #[serde(default)]
+    pub viewer_client_id: String,
+    /// Restrict this process to the read-only browser viewer surface. This is
+    /// used by the isolated june.link CVM so its ingress and certificate
+    /// lifecycle cannot expose or disrupt the primary June API deployment.
+    #[serde(default)]
+    pub viewer_only: bool,
+    /// Max accepted ciphertext, in bytes.
+    #[serde(default = "default_share_max_ciphertext_bytes")]
+    pub max_ciphertext_bytes: usize,
+}
+
+impl Default for ShareConfig {
+    // Hand-written so the derived Default can't diverge from the serde field
+    // defaults. `load()` seeds `AppConfig::default()` as the figment base, so a
+    // `usize::default()` zero here would be *present* in the merged config and
+    // shadow `default_share_max_ciphertext_bytes` (which only applies when the
+    // field is absent), capping every share at 0 bytes on a deployment that
+    // sets only the share envs.
+    fn default() -> Self {
+        Self {
+            database_url: String::new(),
+            viewer_accounts_url: String::new(),
+            viewer_client_id: String::new(),
+            viewer_only: false,
+            max_ciphertext_bytes: default_share_max_ciphertext_bytes(),
+        }
+    }
+}
+
+fn default_share_max_ciphertext_bytes() -> usize {
+    10 * 1024 * 1024
+}
+
+/// Debug view of `ShareConfig` that never prints the database URL (it embeds
+/// credentials); everything else in the section is public.
+struct RedactedShare<'a>(&'a ShareConfig);
+
+impl Debug for RedactedShare<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ShareConfig")
+            .field(
+                "database_url",
+                &if self.0.database_url.is_empty() {
+                    "<unset>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("viewer_accounts_url", &self.0.viewer_accounts_url)
+            .field("viewer_client_id", &self.0.viewer_client_id)
+            .field("viewer_only", &self.0.viewer_only)
+            .field("max_ciphertext_bytes", &self.0.max_ciphertext_bytes)
             .finish()
     }
 }
@@ -531,6 +663,12 @@ pub struct UpstreamConfig {
     #[serde(default)]
     pub api_key: String,
     pub base_url: String,
+    /// Base URL for requests authenticated with a user-supplied (BYOK) key.
+    /// `base_url` may point at a June-managed gateway that only accepts
+    /// June's own service key; a user's key must be presented to the provider
+    /// that issued it. `None` falls back to the provider's public API URL.
+    #[serde(default)]
+    pub byok_base_url: Option<String>,
 }
 
 impl Debug for UpstreamConfig {
@@ -539,6 +677,7 @@ impl Debug for UpstreamConfig {
             .debug_struct("UpstreamConfig")
             .field("api_key", &REDACTED)
             .field("base_url", &self.base_url)
+            .field("byok_base_url", &self.byok_base_url)
             .finish()
     }
 }
@@ -632,8 +771,8 @@ struct TextModelFallback {
 /// authoritative numbers and extends over this on every boot. Split out of
 /// `AppConfig::default` to keep that constructor under the line limit.
 ///
-/// Usage credit prices include June's 1.2x retail multiplier over upstream
-/// cost. `$1 = 1000 credits`.
+/// Usage credit prices pass through upstream cost without a June markup.
+/// `$1 = 1000 credits`.
 fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
     let mut pricing = BTreeMap::new();
     pricing.insert(
@@ -641,8 +780,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         ModelPriceConfig {
             unit: PriceUnit::Seconds,
             // OpenAI lists ASR prices per MINUTE ($0.003/min for mini);
-            // converted per second with the 1.2x retail multiplier.
-            credits_per_million_seconds: Some(60_000),
+            // converted per second at upstream cost.
+            credits_per_million_seconds: Some(50_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Openai,
@@ -652,7 +791,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
             privacy: Some("anonymized".to_string()),
             // Matches what `models.rs::price_description` derives from the
             // credit price above (raw metadata only — the API recomputes it).
-            pricing: Some(serde_json::json!({ "display": "$0.00006 per second audio" })),
+            pricing: Some(serde_json::json!({ "display": "$0.00005 per second audio" })),
             context_tokens: Some(16_000),
             traits: vec!["prompt".to_string()],
             capabilities: Vec::new(),
@@ -662,7 +801,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         "nvidia/parakeet-tdt-0.6b-v3".to_string(),
         ModelPriceConfig {
             unit: PriceUnit::Seconds,
-            credits_per_million_seconds: Some(120_000),
+            credits_per_million_seconds: Some(100_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Venice,
@@ -676,17 +815,17 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
             capabilities: Vec::new(),
         },
     );
-    // Fallback pricing for the default and suggested text models, used only
-    // when the live Venice catalog can't be reached at startup so metered
-    // charges still settle. The live catalog (which carries the authoritative
-    // numbers) extends over this on every boot. Keep the GLM 5.2 entry in sync
-    // with DEFAULT_GENERATION_MODEL in the Tauri providers module.
+    // Credit prices for June's legacy text-model ids. os-api's live catalog
+    // uses canonical ids, so those entries extend rather than replace these
+    // aliases. Price each alias for the most expensive enabled private route
+    // so a Phala fallback cannot cost more than June charges. Keep GLM 5.2 in
+    // sync with DEFAULT_GENERATION_MODEL in the Tauri providers module.
     for model in [
         TextModelFallback {
             id: "zai-org-glm-5-2",
             display_name: "GLM 5.2",
-            input_credits_per_million_tokens: 2_100,
-            output_credits_per_million_tokens: 6_600,
+            input_credits_per_million_tokens: 1_400,
+            output_credits_per_million_tokens: 4_400,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -699,8 +838,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "kimi-k2-6",
             display_name: "Kimi K2.6",
-            input_credits_per_million_tokens: 1_020,
-            output_credits_per_million_tokens: 5_592,
+            input_credits_per_million_tokens: 1_090,
+            output_credits_per_million_tokens: 4_600,
             context_tokens: 256_000,
             // Kimi K2.6 is natively multimodal (Venice `supportsVision`), so it
             // is the image-input fallback the frontend switches to when an image
@@ -716,8 +855,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5-1",
             display_name: "GLM 5.1",
-            input_credits_per_million_tokens: 2_100,
-            output_credits_per_million_tokens: 6_600,
+            input_credits_per_million_tokens: 1_400,
+            output_credits_per_million_tokens: 4_400,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -730,8 +869,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5",
             display_name: "GLM 5",
-            input_credits_per_million_tokens: 1_200,
-            output_credits_per_million_tokens: 3_840,
+            input_credits_per_million_tokens: 1_400,
+            output_credits_per_million_tokens: 4_400,
             context_tokens: 198_000,
             capabilities: &["supportsFunctionCalling"],
         },
@@ -888,6 +1027,10 @@ impl Default for AppConfig {
                 max_json_bytes: 524_288,
                 max_issue_report_bytes: DEFAULT_MAX_ISSUE_REPORT_BYTES,
                 max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
+                max_agent_chat_bytes: DEFAULT_MAX_AGENT_CHAT_BYTES,
+                max_agent_inflight_body_bytes: DEFAULT_MAX_AGENT_INFLIGHT_BODY_BYTES,
+                max_agent_concurrent_requests_per_user:
+                    DEFAULT_MAX_AGENT_CONCURRENT_REQUESTS_PER_USER,
             },
             local_dev: LocalDevConfig::default(),
             os_accounts: OsAccountsConfig {
@@ -914,10 +1057,12 @@ impl Default for AppConfig {
                 openai: UpstreamConfig {
                     api_key: String::new(),
                     base_url: "https://api.openai.com/v1".to_string(),
+                    byok_base_url: None,
                 },
                 venice: UpstreamConfig {
                     api_key: String::new(),
                     base_url: "https://api.venice.ai/api/v1".to_string(),
+                    byok_base_url: None,
                 },
             },
             attestation: AttestationConfig {
@@ -929,6 +1074,7 @@ impl Default for AppConfig {
                         .to_string(),
             },
             issue_reports: IssueReportsConfig::default(),
+            share: ShareConfig::default(),
             pricing: default_pricing(),
             image_pricing: default_image_pricing(),
             image_edit_pricing: default_image_edit_pricing(),
@@ -983,6 +1129,10 @@ const VENICE_API_KEY_PLACEHOLDERS: &[&str] = &["VENICE_API_KEY_REPLACE_ME"];
 const LOCAL_DEV_BEARER_TOKEN_PLACEHOLDERS: &[&str] = &[LOCAL_DEV_BEARER_TOKEN_PLACEHOLDER];
 
 fn validate(config: &AppConfig) -> Result<(), ConfigError> {
+    if config.share.viewer_only {
+        return validate_viewer_only(config);
+    }
+
     if config.local_dev.enabled {
         validate_local_dev_bearer_token(config)?;
         validate_required_text("local_dev.user_id", &config.local_dev.user_id)?;
@@ -1084,6 +1234,34 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// The isolated short-link process does not expose product routes and must not
+/// need their billing/provider credentials. Validate only the network origins
+/// and limits its viewer routes actually use. Sharing itself still fails closed
+/// at runtime (501) when the database or public client id is absent; the deploy
+/// contract probes the shell and a missing link so a partially sealed CVM
+/// cannot pass activation.
+fn validate_viewer_only(config: &AppConfig) -> Result<(), ConfigError> {
+    validate_absolute_http_url("os_accounts.api_url", &config.os_accounts.api_url)?;
+    let (viewer_accounts_field, viewer_accounts_url) =
+        if config.share.viewer_accounts_url.trim().is_empty() {
+            ("os_accounts.iss", &config.os_accounts.iss)
+        } else {
+            (
+                "share.viewer_accounts_url",
+                &config.share.viewer_accounts_url,
+            )
+        };
+    validate_absolute_http_url(viewer_accounts_field, viewer_accounts_url)?;
+    validate_request_limits(config)?;
+    if config.share.max_ciphertext_bytes == 0 {
+        return Err(ConfigError::InvalidRequired {
+            field: "share.max_ciphertext_bytes",
+            reason: "must be > 0",
+        });
+    }
+    Ok(())
+}
+
 /// Video markups (thousandths) must be > 0 — a zero markup would charge nothing
 /// on a paid quote — and the ceiling must be > 0. The default animate model must
 /// be priced, since every MCP-driven animate uses it. Mirrors
@@ -1156,6 +1334,43 @@ fn validate_request_limits(config: &AppConfig) -> Result<(), ConfigError> {
         "server.max_image_edit_bytes",
         config.server.max_image_edit_bytes,
     )?;
+    validate_positive_usize_config(
+        "server.max_agent_chat_bytes",
+        config.server.max_agent_chat_bytes,
+    )?;
+    validate_positive_usize_config(
+        "server.max_agent_inflight_body_bytes",
+        config.server.max_agent_inflight_body_bytes,
+    )?;
+    validate_positive_usize_config(
+        "server.max_agent_concurrent_requests_per_user",
+        config.server.max_agent_concurrent_requests_per_user,
+    )?;
+    // The global in-flight body budget must be at least the largest single
+    // large-body route cap (image edit, ~66 MiB), or the admission control would
+    // load-shed EVERY request on that route — and, worse, an operator could tune
+    // the budget below a route cap and defeat the memory-safety guarantee it
+    // exists to provide (JUN-336 review). max_image_edit_bytes is the largest of
+    // the agent route caps (image/video 66 MiB > audio 25 MiB > chat 12 MiB).
+    if config.server.max_agent_inflight_body_bytes < config.server.max_image_edit_bytes {
+        return Err(ConfigError::InvalidRequired {
+            field: "server.max_agent_inflight_body_bytes",
+            reason: "must be >= the largest agent route body cap (server.max_image_edit_bytes)",
+        });
+    }
+    // The extractor cap must never sit BELOW the desktop provider proxy's fixed
+    // 12 MiB chat body cap (mirrored here as `DEFAULT_MAX_AGENT_CHAT_BYTES`), or a
+    // configured override silently reintroduces the JUN-336 regression: the proxy
+    // still forwards a 1-12 MiB agent chat request, but this route 413s it before
+    // `validate_agent_chat_body` runs. `max_json_bytes` is NOT the right floor —
+    // an override of e.g. 1 MiB clears it yet is still stricter than the proxy.
+    // The compile-time asserts only pin the default; this guards overrides.
+    if config.server.max_agent_chat_bytes < DEFAULT_MAX_AGENT_CHAT_BYTES {
+        return Err(ConfigError::InvalidRequired {
+            field: "server.max_agent_chat_bytes",
+            reason: "must be >= the 12 MiB desktop proxy chat body cap",
+        });
+    }
     validate_positive_usize_config(
         "server.max_issue_report_bytes",
         config.server.max_issue_report_bytes,
@@ -1407,14 +1622,16 @@ fn validate_positive_rate(
 mod tests {
     use super::{
         AppConfig, ConfigError, DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS, DEFAULT_IMAGE_HOLD_TTL_SECS,
-        DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_MAX_ISSUE_REPORT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS,
-        DEFAULT_VIDEO_HOLD_TTL_SECS, DEFAULT_VIDEO_JOB_MAX_SECS, DEFAULT_VIDEO_MAX_RESPONSE_BYTES,
-        IMAGE_EDIT_SOURCE_MAX_BYTES, IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS,
-        ISSUE_REPORT_ATTACHMENT_MAX_BYTES, ModelPriceConfig, ModelProvider, ModelType,
-        OPENAI_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS,
-        OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS, OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit,
-        VENICE_API_KEY_PLACEHOLDERS, VIDEO_CLIENT_POLL_WINDOW_SECS,
-        VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS, image_client_timeout_secs, validate,
+        DEFAULT_MAX_AGENT_CHAT_BYTES, DEFAULT_MAX_AGENT_CONCURRENT_REQUESTS_PER_USER,
+        DEFAULT_MAX_AGENT_INFLIGHT_BODY_BYTES, DEFAULT_MAX_IMAGE_EDIT_BYTES,
+        DEFAULT_MAX_ISSUE_REPORT_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, DEFAULT_VIDEO_HOLD_TTL_SECS,
+        DEFAULT_VIDEO_JOB_MAX_SECS, DEFAULT_VIDEO_MAX_RESPONSE_BYTES, IMAGE_EDIT_SOURCE_MAX_BYTES,
+        IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS, ISSUE_REPORT_ATTACHMENT_MAX_BYTES, ModelPriceConfig,
+        ModelProvider, ModelType, OPENAI_API_KEY_PLACEHOLDERS,
+        OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS,
+        OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit, VENICE_API_KEY_PLACEHOLDERS,
+        VIDEO_CLIENT_POLL_WINDOW_SECS, VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS,
+        image_client_timeout_secs, validate, validate_request_limits,
     };
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
@@ -1440,6 +1657,76 @@ mod tests {
             .merge(Toml::file(toml_path))
             .extract::<AppConfig>()
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn share_max_ciphertext_survives_default_seeding() -> Result<(), Box<dyn std::error::Error>> {
+        // load() seeds AppConfig::default() as the figment base via
+        // Serialized::defaults, then layers config.toml/env on top. If
+        // ShareConfig::default left max_ciphertext_bytes at usize::default()
+        // (0), that 0 is present in the base and shadows the serde field
+        // default, so a deployment that sets only the share envs would build a
+        // 0-byte cap and reject every share. Mirror that merge with no overlay
+        // and assert the real cap survives.
+        use figment::{Figment, providers::Serialized};
+        let config: AppConfig = Figment::new()
+            .merge(Serialized::defaults(AppConfig::default()))
+            .extract()?;
+        assert_eq!(config.share.max_ciphertext_bytes, 10 * 1024 * 1024);
+        Ok(())
+    }
+
+    #[test]
+    fn viewer_only_config_does_not_require_product_secrets() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "https://accounts-api.example".to_string();
+        config.os_accounts.iss = "https://accounts.example".to_string();
+
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn viewer_only_config_still_validates_its_accounts_origin() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "not-a-url".to_string();
+        config.os_accounts.iss = "https://accounts.example".to_string();
+
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn viewer_only_config_names_the_invalid_fallback_accounts_origin() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "https://accounts-api.example".to_string();
+        config.os_accounts.iss = "not-a-url".to_string();
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "os_accounts.iss",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn viewer_only_config_names_an_invalid_explicit_accounts_origin() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "https://accounts-api.example".to_string();
+        config.os_accounts.iss = "https://accounts.example".to_string();
+        config.share.viewer_accounts_url = "not-a-url".to_string();
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "share.viewer_accounts_url",
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1495,45 +1782,67 @@ mod tests {
     }
 
     #[test]
-    fn packaged_config_toml_includes_usage_margin() {
+    fn packaged_config_toml_passes_through_upstream_cost() {
         let config = packaged_config_toml();
 
         // Per-second conversions of OpenAI's per-MINUTE ASR list prices
-        // ($0.003/min mini, $0.006/min 4o) with the 1.2x retail multiplier.
+        // ($0.003/min mini, $0.006/min 4o) at upstream cost.
         assert_eq!(
             config
                 .pricing
                 .get("gpt-4o-mini-transcribe")
                 .and_then(|model| model.credits_per_million_seconds),
-            Some(60_000)
+            Some(50_000)
         );
         assert_eq!(
             config
                 .pricing
                 .get("gpt-4o-transcribe")
                 .and_then(|model| model.credits_per_million_seconds),
-            Some(120_000)
+            Some(100_000)
         );
         assert_eq!(
             config
                 .pricing
                 .get("zai-org-glm-5-2")
                 .and_then(|model| model.input_credits_per_million_tokens),
-            Some(2_100)
+            Some(1_400)
         );
         assert_eq!(
             config
                 .pricing
                 .get("zai-org-glm-5-2")
                 .and_then(|model| model.output_credits_per_million_tokens),
-            Some(6_600)
+            Some(4_400)
+        );
+        for model_id in ["zai-org-glm-5-1", "zai-org-glm-5"] {
+            let model = config.pricing.get(model_id);
+            assert_eq!(
+                model.and_then(|model| model.input_credits_per_million_tokens),
+                Some(1_400),
+                "{model_id} must use the routed GLM 5.2 input price"
+            );
+            assert_eq!(
+                model.and_then(|model| model.output_credits_per_million_tokens),
+                Some(4_400),
+                "{model_id} must use the routed GLM 5.2 output price"
+            );
+        }
+        let kimi = config.pricing.get("kimi-k2-6");
+        assert_eq!(
+            kimi.and_then(|model| model.input_credits_per_million_tokens),
+            Some(1_090)
+        );
+        assert_eq!(
+            kimi.and_then(|model| model.output_credits_per_million_tokens),
+            Some(4_600)
         );
         assert_eq!(
             config
                 .pricing
                 .get("nvidia-nemotron-3-nano-30b-a3b")
                 .and_then(|model| model.input_credits_per_million_tokens),
-            Some(84)
+            Some(70)
         );
     }
 
@@ -1712,6 +2021,71 @@ mod tests {
             AppConfig::default().server.max_image_edit_bytes,
             DEFAULT_MAX_IMAGE_EDIT_BYTES
         );
+    }
+
+    #[test]
+    fn default_agent_chat_body_limit_is_the_dedicated_12_mib_cap() {
+        assert_eq!(DEFAULT_MAX_AGENT_CHAT_BYTES, 12 * 1024 * 1024);
+        assert_eq!(
+            AppConfig::default().server.max_agent_chat_bytes,
+            DEFAULT_MAX_AGENT_CHAT_BYTES
+        );
+        // The dedicated agent chat cap must never be stricter than the shared
+        // small-JSON cap, or JUN-336 reopens.
+        assert!(
+            AppConfig::default().server.max_agent_chat_bytes
+                >= AppConfig::default().server.max_json_bytes
+        );
+    }
+
+    #[test]
+    fn default_agent_admission_limits_match_their_constants() {
+        let server = AppConfig::default().server;
+
+        assert_eq!(
+            server.max_agent_inflight_body_bytes,
+            DEFAULT_MAX_AGENT_INFLIGHT_BODY_BYTES
+        );
+        assert_eq!(
+            server.max_agent_concurrent_requests_per_user,
+            DEFAULT_MAX_AGENT_CONCURRENT_REQUESTS_PER_USER
+        );
+        // The default budget must clear the largest route cap so admission never
+        // load-sheds every request on a route.
+        assert!(server.max_agent_inflight_body_bytes >= server.max_image_edit_bytes);
+    }
+
+    #[test]
+    fn agent_inflight_budget_below_largest_route_cap_is_rejected() {
+        // An operator override that drops the global budget below a single route
+        // cap must fail loudly at load, not silently defeat the memory guarantee.
+        let mut config = AppConfig::default();
+        config.server.max_agent_inflight_body_bytes = config.server.max_image_edit_bytes - 1;
+        assert!(matches!(
+            validate_request_limits(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "server.max_agent_inflight_body_bytes",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn agent_chat_body_limit_below_proxy_cap_is_rejected() {
+        // An override BELOW the 12 MiB desktop proxy cap must fail loudly at load,
+        // even when it clears the shared small-JSON cap — otherwise the proxy
+        // forwards a 1-3 MiB agent chat request that this route then 413s,
+        // reopening JUN-336 (Codex review on PR #776).
+        let mut config = AppConfig::default();
+        config.server.max_agent_chat_bytes = DEFAULT_MAX_AGENT_CHAT_BYTES - 1;
+        assert!(config.server.max_agent_chat_bytes > config.server.max_json_bytes);
+        assert!(matches!(
+            validate_request_limits(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "server.max_agent_chat_bytes",
+                ..
+            })
+        ));
     }
 
     #[test]
