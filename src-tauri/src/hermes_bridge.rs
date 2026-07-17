@@ -1709,19 +1709,6 @@ pub(crate) async fn reapply_hermes_runtime(
             first_error.get_or_insert(error);
         }
     }
-    // Do not call Hermes' `/api/gateway/restart`: it launches a replacement
-    // from the jailed dashboard request handler. Run the Hermes CLI restart as a
-    // direct June child instead so an already-running launchd-managed gateway is
-    // forced to reload the freshly rendered config.
-    if let Some(connection) = live_connections(bridge)?.first() {
-        if let Err(error) = run_hermes_gateway_restart(connection).await {
-            tracing::warn!(
-                ?error,
-                "reapply: restarting the Hermes gateway failed after runtime reapply"
-            );
-            first_error.get_or_insert(error);
-        }
-    }
     match first_error {
         Some(error) => Err(error),
         None => Ok(()),
@@ -5661,11 +5648,6 @@ async fn run_hermes_gateway_start(connection: &HermesBridgeConnection) -> Result
     run_hermes_gateway_lifecycle_command(cmd, "start").await
 }
 
-async fn run_hermes_gateway_restart(connection: &HermesBridgeConnection) -> Result<(), AppError> {
-    let cmd = hermes_gateway_restart_command(connection);
-    run_hermes_gateway_lifecycle_command(cmd, "restart").await
-}
-
 async fn run_hermes_gateway_lifecycle_command(
     mut cmd: Command,
     action: &'static str,
@@ -5700,13 +5682,6 @@ fn hermes_gateway_start_command(connection: &HermesBridgeConnection) -> Command 
     cmd
 }
 
-fn hermes_gateway_restart_command(connection: &HermesBridgeConnection) -> Command {
-    let hermes_home = PathBuf::from(&connection.hermes_home);
-    let mut cmd = build_hermes_gateway_restart_command(connection, &hermes_home);
-    attach_gateway_lifecycle_log(&mut cmd, &hermes_home);
-    cmd
-}
-
 fn attach_gateway_lifecycle_log(cmd: &mut Command, hermes_home: &Path) {
     match open_gateway_start_log(hermes_home) {
         Some((log_for_stdout, log_for_stderr)) => {
@@ -5725,13 +5700,6 @@ fn build_hermes_gateway_start_command(
     hermes_home: &Path,
 ) -> Command {
     build_hermes_gateway_lifecycle_command(connection, hermes_home, "start")
-}
-
-fn build_hermes_gateway_restart_command(
-    connection: &HermesBridgeConnection,
-    hermes_home: &Path,
-) -> Command {
-    build_hermes_gateway_lifecycle_command(connection, hermes_home, "restart")
 }
 
 fn build_hermes_gateway_lifecycle_command(
@@ -15289,21 +15257,6 @@ mcp_servers:
             envs.get("HERMES_NONINTERACTIVE").map(String::as_str),
             Some("1")
         );
-        assert!(command_env_removals(&cmd).contains(crate::obsidian::OBSIDIAN_VAULT_PATH_ENV));
-        assert_eq!(cmd.get_current_dir(), Some(Path::new("/tmp/hermes-home")));
-    }
-
-    #[test]
-    fn gateway_restart_spawns_the_bare_hermes_cli_outside_the_sandbox() {
-        let connection = test_gateway_connection();
-        let cmd = build_hermes_gateway_restart_command(&connection, Path::new("/tmp/hermes-home"));
-
-        assert_eq!(cmd.get_program(), "/opt/hermes/bin/hermes");
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args, ["gateway", "restart"]);
         assert!(command_env_removals(&cmd).contains(crate::obsidian::OBSIDIAN_VAULT_PATH_ENV));
         assert_eq!(cmd.get_current_dir(), Some(Path::new("/tmp/hermes-home")));
     }

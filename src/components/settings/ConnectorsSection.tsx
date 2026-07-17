@@ -393,10 +393,10 @@ export function ConnectorsSection() {
   async function chooseObsidianVault() {
     if (obsidianBusy) return;
     setObsidianError(null);
-    const selected = await openFileDialog({ directory: true, multiple: false });
-    if (typeof selected !== "string") return;
     setObsidianBusy(true);
     try {
+      const selected = await openFileDialog({ directory: true, multiple: false });
+      if (typeof selected !== "string") return;
       setObsidian(await obsidianConfigure(selected));
       await obsidianApplyRuntime();
       await refresh();

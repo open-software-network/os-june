@@ -12,6 +12,11 @@ const mocks = vi.hoisted(() => ({
   connectorsApplyRuntime: vi.fn(),
   connectorsLinearTeams: vi.fn(),
   connectorsSetSelectedTeams: vi.fn(),
+  obsidianStatus: vi.fn(),
+  obsidianConfigure: vi.fn(),
+  obsidianDisconnect: vi.fn(),
+  obsidianApplyRuntime: vi.fn(),
+  openFileDialog: vi.fn(),
   listen: vi.fn(),
 }));
 
@@ -24,6 +29,14 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   connectorsApplyRuntime: mocks.connectorsApplyRuntime,
   connectorsLinearTeams: mocks.connectorsLinearTeams,
   connectorsSetSelectedTeams: mocks.connectorsSetSelectedTeams,
+  obsidianStatus: mocks.obsidianStatus,
+  obsidianConfigure: mocks.obsidianConfigure,
+  obsidianDisconnect: mocks.obsidianDisconnect,
+  obsidianApplyRuntime: mocks.obsidianApplyRuntime,
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: mocks.openFileDialog,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -79,6 +92,15 @@ beforeEach(() => {
     truncated: false,
   });
   mocks.connectorsSetSelectedTeams.mockResolvedValue(linearAccount({ selectedTeams: [TEAM_ENG] }));
+  mocks.obsidianStatus.mockResolvedValue({ connected: false });
+  mocks.obsidianConfigure.mockResolvedValue({
+    connected: true,
+    vaultPath: "/vaults/work",
+    vaultName: "work",
+  });
+  mocks.obsidianDisconnect.mockResolvedValue({ connected: false });
+  mocks.obsidianApplyRuntime.mockResolvedValue(undefined);
+  mocks.openFileDialog.mockResolvedValue(null);
   mocks.listen.mockImplementation(async (_event: string, handler: () => void) => {
     connectorsChangedListener = handler;
     return () => {};
@@ -93,6 +115,42 @@ async function findEnabledConnect(name: string) {
 }
 
 describe("ConnectorsSection", () => {
+  it("blocks duplicate Obsidian picker opens and clears busy state after cancellation", async () => {
+    let resolvePicker: (selection: string | null) => void = () => {};
+    mocks.openFileDialog.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePicker = resolve;
+      }),
+    );
+
+    render(<ConnectorsSection />);
+    const connect = await findEnabledConnect("Connect Obsidian");
+
+    await userEvent.click(connect);
+    expect(connect).toBeDisabled();
+    await userEvent.click(connect);
+    expect(mocks.openFileDialog).toHaveBeenCalledTimes(1);
+
+    resolvePicker(null);
+    await waitFor(() => expect(connect).toBeEnabled());
+    expect(mocks.obsidianConfigure).not.toHaveBeenCalled();
+    expect(mocks.obsidianApplyRuntime).not.toHaveBeenCalled();
+  });
+
+  it("connects an Obsidian vault and applies it to the runtime", async () => {
+    mocks.openFileDialog.mockResolvedValue("/vaults/work");
+    mocks.obsidianStatus
+      .mockResolvedValueOnce({ connected: false })
+      .mockResolvedValue({ connected: true, vaultPath: "/vaults/work", vaultName: "work" });
+
+    render(<ConnectorsSection />);
+    await userEvent.click(await findEnabledConnect("Connect Obsidian"));
+
+    await waitFor(() => expect(mocks.obsidianConfigure).toHaveBeenCalledWith("/vaults/work"));
+    await waitFor(() => expect(mocks.obsidianApplyRuntime).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("button", { name: "Change Obsidian vault" })).toBeEnabled();
+  });
+
   it("lists Google with a capability blurb", async () => {
     render(<ConnectorsSection />);
     await findEnabledConnect("Connect Google");
