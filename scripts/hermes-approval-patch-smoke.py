@@ -292,20 +292,20 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert attachment_result["response"].get("result", {}).get("attached") is True
         assert len(concurrent_session["attached_images"]) == 1, concurrent_session
 
-        # Reset must own the same lock before agent construction starts. An
+        # Reset must own the same lock before Hermes construction starts. An
         # attachment arriving during a slow rebuild waits, then queues after
         # reset instead of being acknowledged and silently cleared.
         reset_build_started = threading.Event()
         reset_build_release = threading.Event()
 
-        def make_agent_for_reset(*_args, **_kwargs):
+        def make_hermes_agent_for_reset(*_args, **_kwargs):
             reset_build_started.set()
             assert reset_build_release.wait(2), "reset build was not released"
             return object()
 
         namespace.update(
             {
-                "_make_agent": make_agent_for_reset,
+                "_make_agent": make_hermes_agent_for_reset,
                 "_set_session_context": lambda _key: None,
                 "_clear_session_context": lambda _tokens: None,
                 "_config_model_target": lambda: "synthetic-model",
