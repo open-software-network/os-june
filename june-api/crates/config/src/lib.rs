@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fmt::{self, Debug},
+    net::IpAddr,
 };
 use thiserror::Error;
 use url::Url;
@@ -1528,20 +1529,48 @@ fn validate_image_pricing(config: &AppConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// Local-dev mode skips real OS Accounts auth and metering, so its bearer
+/// token is the only credential on the API. The placeholder default is publicly
+/// known (it ships in `.env.example` and in the desktop shell), which is safe
+/// only while the server binds a loopback address. On a non-loopback bind the
+/// placeholder is rejected at startup (security audit 2026-07-17): anyone who
+/// could reach the port would otherwise authenticate as the local dev user.
 fn validate_local_dev_bearer_token(config: &AppConfig) -> Result<(), ConfigError> {
+    validate_required_text("local_dev.bearer_token", &config.local_dev.bearer_token)?;
     if is_loopback_host(&config.server.host) {
-        validate_required_text("local_dev.bearer_token", &config.local_dev.bearer_token)
-    } else {
-        validate_required_secret(
-            "local_dev.bearer_token",
-            &config.local_dev.bearer_token,
-            LOCAL_DEV_BEARER_TOKEN_PLACEHOLDERS,
-        )
+        return Ok(());
     }
+    if LOCAL_DEV_BEARER_TOKEN_PLACEHOLDERS
+        .iter()
+        .any(|placeholder| config.local_dev.bearer_token.trim() == *placeholder)
+    {
+        return Err(ConfigError::InvalidRequired {
+            field: "local_dev.bearer_token",
+            reason: "the default placeholder token is publicly known, and local-dev mode skips \
+                metering, so binding a non-loopback host with it lets anyone who can reach this \
+                port authenticate as the local dev user; set JUNE__LOCAL_DEV__BEARER_TOKEN to a \
+                random value (e.g. `openssl rand -hex 32`) or bind server.host to a loopback \
+                address (127.0.0.0/8 or ::1)",
+        });
+    }
+    Ok(())
 }
 
+/// Loopback is the whole IPv4 127.0.0.0/8 range or IPv6 `::1`, not just
+/// 127.0.0.1: any of them keeps the API unreachable from off-host. Hostnames
+/// other than `localhost` and unparseable values are treated as non-loopback
+/// (fail closed) — the placeholder token check then applies.
 fn is_loopback_host(host: &str) -> bool {
-    matches!(host.trim(), "127.0.0.1" | "localhost" | "::1")
+    let host = host.trim();
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // Accept the bracketed IPv6 form ("[::1]") as written in some configs.
+    let host = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
+    host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 fn validate_required_text(field: &'static str, value: &str) -> Result<(), ConfigError> {
@@ -1631,7 +1660,7 @@ mod tests {
         OS_ACCOUNTS_APP_API_KEY_PLACEHOLDERS, OS_ACCOUNTS_AUTHORIZE_TIMEOUT_BUDGET_SECS,
         OS_ACCOUNTS_MAX_HOLD_TTL_SECS, PriceUnit, VENICE_API_KEY_PLACEHOLDERS,
         VIDEO_CLIENT_POLL_WINDOW_SECS, VIDEO_SETTLEMENT_TIMEOUT_MARGIN_SECS,
-        image_client_timeout_secs, validate, validate_request_limits,
+        image_client_timeout_secs, is_loopback_host, validate, validate_request_limits,
     };
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
@@ -2474,6 +2503,87 @@ mod tests {
         let result = validate(&config);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn loopback_hosts_cover_the_full_ipv4_range_and_ipv6() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.2",
+            "127.255.255.255",
+            "localhost",
+            "LOCALHOST",
+            "::1",
+            "[::1]",
+        ] {
+            assert!(is_loopback_host(host), "{host} should be loopback");
+        }
+        for host in [
+            "0.0.0.0",
+            "10.0.0.1",
+            "192.168.1.1",
+            "::",
+            "::2",
+            "example.com",
+        ] {
+            assert!(!is_loopback_host(host), "{host} should not be loopback");
+        }
+    }
+
+    #[test]
+    fn validate_local_dev_allows_placeholder_bearer_token_on_loopback_host() {
+        // The publicly known placeholder is acceptable only while the bind
+        // address keeps the API off the network: any 127.0.0.0/8 address or ::1.
+        for host in ["127.0.0.1", "127.0.0.2", "::1"] {
+            let mut config = AppConfig::default();
+            config.local_dev.enabled = true;
+            config.server.host = host.to_string();
+
+            let result = validate(&config);
+
+            assert!(result.is_ok(), "loopback host {host} rejected: {result:?}");
+        }
+    }
+
+    #[test]
+    fn validate_local_dev_rejects_placeholder_bearer_token_on_non_loopback_host_with_guidance() {
+        // The fail-fast error must explain the risk and the fix, not just name
+        // the field (security audit 2026-07-17).
+        let mut config = AppConfig::default();
+        config.local_dev.enabled = true;
+        config.server.host = "0.0.0.0".to_string();
+
+        let result = validate(&config);
+
+        assert!(matches!(
+            &result,
+            Err(ConfigError::InvalidRequired {
+                field: "local_dev.bearer_token",
+                ..
+            })
+        ));
+        if let Err(ConfigError::InvalidRequired { reason, .. }) = &result {
+            assert!(
+                reason.contains("openssl rand"),
+                "error should explain how to set a random token: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_local_dev_allows_random_bearer_token_on_non_loopback_host() {
+        let mut config = AppConfig::default();
+        config.local_dev.enabled = true;
+        config.server.host = "0.0.0.0".to_string();
+        config.local_dev.bearer_token =
+            "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".to_string();
+
+        let result = validate(&config);
+
+        assert!(
+            result.is_ok(),
+            "random token on non-loopback rejected: {result:?}"
+        );
     }
 
     #[test]
