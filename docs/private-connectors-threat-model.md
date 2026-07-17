@@ -91,10 +91,10 @@ Connectors.
 ## GitHub local mode and interactive reads
 
 GitHub adds App device authorization, selected-repository discovery, and a
-fixed read-only repository, issue, pull-request, comment, commit, and workflow
-surface beside the existing Google connector. It stays within the
-same local-mode custody boundary. GitHub write actions are not part of this
-slice. The Google analysis above remains unchanged.
+fixed read-only repository, issue, pull-request, comment, commit, check-run,
+and commit-status surface beside the existing Google connector. It stays
+within the same local-mode custody boundary. GitHub write actions are not part
+of this slice. The Google analysis above remains unchanged.
 
 ### Assets and metadata
 
