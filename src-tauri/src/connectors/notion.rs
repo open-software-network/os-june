@@ -39,6 +39,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 const TOKEN_EXPIRY_BUFFER_SECS: i64 = 60;
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_RESPONSE_MAX_BYTES: usize = 512 * 1024;
@@ -52,8 +53,6 @@ const NOTION_READ_TOOL_ALLOWLIST: &[&str] = &[
     "notion-query-data-sources",
     "notion-query-database-view",
     "notion-get-comments",
-    "notion-get-teams",
-    "notion-get-users",
     "notion-get-enhanced-markdown-specification",
     "notion-get-view-configuration-dsl",
 ];
@@ -1043,6 +1042,7 @@ impl McpHttpClient {
             .header("accept", "application/json, text/event-stream")
             .header("content-type", "application/json")
             .header("mcp-protocol-version", MCP_PROTOCOL_VERSION)
+            .timeout(MCP_REQUEST_TIMEOUT)
             .json(&body);
         if let Some(session_id) = self.session_id() {
             request = request.header(MCP_SESSION_ID_HEADER, session_id);
@@ -1259,6 +1259,22 @@ fn preflight_create_pages_arguments(arguments: &serde_json::Value) -> Result<(),
             "Notion page creation requires object arguments.",
         ));
     }
+    reject_async_action(arguments)?;
+    Ok(())
+}
+
+fn reject_async_action(arguments: &serde_json::Value) -> Result<(), AppError> {
+    if arguments
+        .as_object()
+        .and_then(|object| object.get("allow_async"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(AppError::new(
+            "notion_async_actions_unsupported",
+            "Notion async page actions are not supported in this preview.",
+        ));
+    }
     Ok(())
 }
 
@@ -1275,6 +1291,7 @@ fn preflight_update_page_arguments(arguments: &serde_json::Value) -> Result<(), 
             "Notion page updates require a top-level page_id target.",
         ));
     }
+    reject_async_action(arguments)?;
     if object.iter().any(|(key, value)| {
         NOTION_DESTRUCTIVE_UPDATE_FIELDS.contains(&key.as_str()) && !value.is_null()
     }) {
@@ -1307,8 +1324,7 @@ fn summarize_create_pages_action(arguments: &serde_json::Value) -> String {
 fn preview_create_pages_action(arguments: &serde_json::Value) -> String {
     let title = find_first_string_by_key(arguments, &["title", "name"])
         .unwrap_or_else(|| "(title not specified)".to_string());
-    let parent = find_first_string_by_key(arguments, &["parent", "parent_id", "parentId"])
-        .unwrap_or_else(|| "Not specified".to_string());
+    let parent = create_pages_parent(arguments).unwrap_or_else(|| "Not specified".to_string());
     let count = create_pages_count(arguments).unwrap_or(1);
     format!(
         "Operation: create Notion page | Pages: {count} | Title: {} | Parent: {}",
@@ -1375,6 +1391,47 @@ fn create_pages_count(arguments: &serde_json::Value) -> Option<usize> {
         .get("pages")
         .and_then(serde_json::Value::as_array)
         .map(|pages| pages.len().max(1))
+}
+
+fn create_pages_parent(arguments: &serde_json::Value) -> Option<String> {
+    top_level_string(arguments, &["parent", "parent_id", "parentId"])
+        .or_else(|| nested_parent_string(arguments))
+        .or_else(|| {
+            arguments
+                .get("pages")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|pages| pages.first())
+                .and_then(|page| {
+                    top_level_string(page, &["parent", "parent_id", "parentId"])
+                        .or_else(|| nested_parent_string(page))
+                })
+        })
+}
+
+fn top_level_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    let object = value.as_object()?;
+    keys.iter().find_map(|key| {
+        object
+            .get(*key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn nested_parent_string(value: &serde_json::Value) -> Option<String> {
+    let parent = value.as_object()?.get("parent")?.as_object()?;
+    ["page_id", "database_id", "url", "id"]
+        .iter()
+        .find_map(|key| {
+            parent
+                .get(*key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(ToOwned::to_owned)
+        })
 }
 
 fn find_first_string_by_key(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
@@ -1782,6 +1839,8 @@ mod tests {
         assert_eq!(action_tool_allowed_for_hermes("Notion-update-page"), None);
         assert_eq!(action_tool_allowed_for_hermes("notion-move-pages"), None);
         assert_eq!(tool_allowed_for_hermes("notion-update-page"), None);
+        assert_eq!(tool_allowed_for_hermes("notion-get-users"), None);
+        assert_eq!(tool_allowed_for_hermes("notion-get-teams"), None);
     }
 
     #[test]
@@ -1854,6 +1913,40 @@ mod tests {
         assert_eq!(update_page_target(&arguments).as_deref(), Some("page-123"));
         assert!(preflight_update_page_arguments(&arguments).is_ok());
         assert!(preview_update_page_action(&arguments).contains("Target: page-123"));
+    }
+
+    #[test]
+    fn create_pages_preview_shows_nested_parent() {
+        let arguments = serde_json::json!({
+            "pages": [{
+                "title": "Child page",
+                "parent": { "page_id": "page-123" }
+            }]
+        });
+
+        assert!(preview_create_pages_action(&arguments).contains("Parent: page-123"));
+    }
+
+    #[test]
+    fn create_and_update_reject_async_actions() {
+        let create = serde_json::json!({
+            "allow_async": true,
+            "pages": [{ "title": "Async page" }]
+        });
+        let update = serde_json::json!({
+            "allow_async": true,
+            "page_id": "page-123",
+            "title": "Async update"
+        });
+
+        assert_eq!(
+            preflight_create_pages_arguments(&create).unwrap_err().code,
+            "notion_async_actions_unsupported"
+        );
+        assert_eq!(
+            preflight_update_page_arguments(&update).unwrap_err().code,
+            "notion_async_actions_unsupported"
+        );
     }
 
     #[test]
