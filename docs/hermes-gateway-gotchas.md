@@ -107,7 +107,7 @@ falls back to the config's `oauth` marker and OAuth-shaped probe errors.
 ## Events
 
 **MCP approvals are identity-addressed, not FIFO.** The pinned runtime carries
-June's checksum-gated `june-approval-v2` patch. MCP elicitation preserves the
+June's checksum-gated `june-approval-v3` patch. MCP elicitation preserves the
 SDK request id and emits an opaque stable `request_id` on `approval.request`.
 While unanswered, the same logical request retried after an MCP transport
 reconnect joins the existing entry; separate requests on one transport remain
@@ -150,11 +150,19 @@ unproven completion is retried without manufacturing ordinal authority. No
 later Agent run may clear or replace that retained frame. User submissions
 retry it before starting; goal continuations defer and process notifications
 requeue until a replacement accepts it. Deferred goals are released only after
-the current transport's corresponding resume response write. The transport-owned
-barrier is armed in the same history-lock transaction as the live swap and
-snapshot, so the old completion and resume snapshot precede the next
+the exact live snapshot response write succeeds. A per-snapshot token is armed
+in the same history-lock transaction as the live swap and snapshot, so an older
+response on the same transport cannot release a newer snapshot. The old
+completion and resume snapshot precede the next
 `message.start` even if the emitter wins immediately after the snapshot. See
-ADR 0028.
+ADR 0028. `session.activate` also swaps transport and returns a live snapshot,
+so it shares resume/disconnect serialization, retargets the barrier, and
+releases only its own token after its response is accepted.
+Resume, activation, and prompt admission share a receive-ordered ownership
+lane. `prompt.submit` must already arrive on the session's owned transport; a
+replacement socket has to resume or activate first. Disconnect cleanup and
+idle reaping recheck ownership under that same lock, so stale cleanup cannot
+detach or finalize a newly rebound session.
 
 **The control plane fails loudly on unknown event types — by design.** A new
 raw type renders as the red "event June does not support yet" banner until it

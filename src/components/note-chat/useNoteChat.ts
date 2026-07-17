@@ -216,6 +216,7 @@ type NoteChatContinuityRecord = {
 type NoteChatDispatchRunBoundary = {
   runGeneration: number;
   previousRevision: number;
+  runtimeIncarnation?: HermesRuntimeIncarnation;
   deferredApprovalEvents: JuneHermesEvent[];
 };
 
@@ -1046,9 +1047,21 @@ function routeNoteChatControlPlaneEvent(
     }
   }
   if (deliveryAccepted && event.kind === "transcript" && !event.messageId) {
-    const origin = record.currentRunPendingUserTurn ?? record.lastAcceptedRunPendingUserTurn;
+    const pendingDispatchBoundary = record.pendingDispatchRunBoundary;
+    const currentDispatchOwnsEvent =
+      !record.runAccepted && pendingDispatchBoundary?.runGeneration === record.runGeneration;
+    // Send establishes optimistic UI state before its shared-session preflight
+    // finishes. Until the dispatch boundary exists, incoming transcript still
+    // belongs to the preceding accepted run, not the unsent optimistic turn.
+    const origin =
+      record.working && !record.runAccepted && !currentDispatchOwnsEvent
+        ? record.lastAcceptedRunPendingUserTurn
+        : (record.currentRunPendingUserTurn ?? record.lastAcceptedRunPendingUserTurn);
     if (origin) {
       const existing = record.unpersistedIdlessTranscriptOrigins.get(origin.id);
+      const runtimeIncarnation = currentDispatchOwnsEvent
+        ? pendingDispatchBoundary?.runtimeIncarnation
+        : record.acceptedRuntimeIncarnation;
       record.unpersistedIdlessTranscriptOrigins.set(
         origin.id,
         appendIdlessTranscriptTextPart(
@@ -1057,7 +1070,7 @@ function routeNoteChatControlPlaneEvent(
           event,
           nextLiveStream.revision,
           record.runStartRevision,
-          record.acceptedRuntimeIncarnation,
+          runtimeIncarnation,
         ),
       );
     } else {
@@ -3587,6 +3600,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           const boundary: NoteChatDispatchRunBoundary = {
             runGeneration: submissionRunGeneration,
             previousRevision: activeRecord.runStartRevision,
+            runtimeIncarnation: sharedGateway === gateway ? sharedGatewayIncarnation : undefined,
             deferredApprovalEvents: [],
           };
           dispatchRunBoundary = { record: activeRecord, boundary };
@@ -3621,7 +3635,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
               pendingUserTurn: optimistic,
               record: acceptedRecord,
               runGeneration: submissionRunGeneration,
-              runtimeIncarnation: sharedGatewayIncarnation,
+              runtimeIncarnation: boundary.runtimeIncarnation,
               runtimeSessionId: activeRuntimeSessionId,
               storedSessionId: activeStoredSessionId,
             })

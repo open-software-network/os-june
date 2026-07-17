@@ -1756,6 +1756,163 @@ describe("note chat session map", () => {
     view.unmount();
   });
 
+  it("attributes pre-ack ID-less text to the dispatch process before a same-process reconnect", async () => {
+    const firstStatus = hermesRuntimeStatus(721, 61721);
+    const dispatchStatus = hermesRuntimeStatus(722, 61722);
+    const firstPrompt = "Establish process A.";
+    const prompt = "Keep the pre-ack process boundary.";
+    const predecessorAnswer = "Pre-dispatch predecessor";
+    const livePrefix = "Pre-ack partial";
+    const persistedAnswer = "Pre-ack partial completed.";
+    const persistedAt = Date.now() + 1_000;
+    const persistedMessages: HermesSessionMessage[] = [
+      {
+        id: "persisted-process-a-user",
+        role: "user",
+        content: firstPrompt,
+        timestamp: new Date(persistedAt).toISOString(),
+      },
+      {
+        id: "persisted-process-a-assistant",
+        role: "assistant",
+        content: predecessorAnswer,
+        timestamp: new Date(persistedAt + 1_000).toISOString(),
+      },
+      {
+        id: "persisted-process-b-user",
+        role: "user",
+        content: prompt,
+        timestamp: new Date(persistedAt + 2_000).toISOString(),
+      },
+      {
+        id: "persisted-process-b-assistant",
+        role: "assistant",
+        content: persistedAnswer,
+        timestamp: new Date(persistedAt + 3_000).toISOString(),
+      },
+    ];
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.hermesBridgeStatus.mockResolvedValue(firstStatus);
+
+    let resumeCount = 0;
+    let promptCount = 0;
+    let acknowledgeSecondResume: ((value: { session_id: string }) => void) | undefined;
+    const secondResumeAcknowledgement = new Promise<{ session_id: string }>((resolve) => {
+      acknowledgeSecondResume = resolve;
+    });
+    let acknowledgeSecondPrompt: (() => void) | undefined;
+    const secondPromptAcknowledgement = new Promise<void>((resolve) => {
+      acknowledgeSecondPrompt = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        resumeCount += 1;
+        if (resumeCount === 1) return Promise.resolve({ session_id: "runtime-process-a" });
+        if (resumeCount === 2) return secondResumeAcknowledgement;
+        return Promise.resolve({
+          messages: rawResumeMessages(persistedMessages),
+          retired_approval_request_ids: [],
+          running: false,
+          session_id: "runtime-process-b-after-close",
+        });
+      }
+      if (method === "prompt.submit") {
+        promptCount += 1;
+        if (promptCount === 2) return secondPromptAcknowledgement;
+      }
+      return Promise.resolve({});
+    });
+
+    const view = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await view.result.current.submit(firstPrompt)).toBe(true);
+    });
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_SETTLED_EVENT, {
+          detail: {
+            sessionId: "stored-note-chat",
+            runMonitorGeneration: 1,
+            title: "Launch planning",
+            summary: "June finished.",
+          },
+        }),
+      );
+    });
+    await waitFor(() => expect(view.result.current.working).toBe(false));
+
+    mocks.hermesBridgeStatus.mockResolvedValue(dispatchStatus);
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+
+    let secondSubmission: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      secondSubmission = view.result.current.submit(prompt);
+    });
+    await waitFor(() => expect(resumeCount).toBe(2));
+    const processBHandler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      processBHandler?.({
+        type: "message.start",
+        event_id: "process-b-pre-dispatch-start",
+        session_id: "runtime-process-b",
+        payload: {},
+      });
+      processBHandler?.({
+        type: "message.delta",
+        event_id: "process-b-pre-dispatch-delta",
+        session_id: "runtime-process-b",
+        payload: { delta: predecessorAnswer },
+      });
+      processBHandler?.({
+        type: "message.complete",
+        event_id: "process-b-pre-dispatch-complete",
+        session_id: "runtime-process-b",
+        payload: { text: predecessorAnswer },
+      });
+    });
+    await act(async () => acknowledgeSecondResume?.({ session_id: "runtime-process-b" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-process-b",
+        text: prompt,
+      }),
+    );
+    act(() => {
+      processBHandler?.({
+        type: "message.start",
+        event_id: "process-b-pre-ack-start",
+        session_id: "runtime-process-b",
+        payload: {},
+      });
+      processBHandler?.({
+        type: "message.delta",
+        event_id: "process-b-pre-ack-delta",
+        session_id: "runtime-process-b",
+        payload: { delta: livePrefix },
+      });
+    });
+    expect(noteChatTextParts(view.result.current, "assistant")).toContain(livePrefix);
+
+    await act(async () => acknowledgeSecondPrompt?.());
+    await expect(secondSubmission).resolves.toBe(true);
+
+    mocks.hermesBridgeSessionMessages.mockResolvedValue({ messages: persistedMessages });
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+    await waitFor(() => expect(resumeCount).toBe(3));
+    await waitFor(() => {
+      const assistantParts = noteChatTextParts(view.result.current, "assistant");
+      expect(assistantParts.filter((text) => text === predecessorAnswer)).toHaveLength(1);
+      expect(assistantParts).toContain(livePrefix);
+      expect(assistantParts).toContain(persistedAnswer);
+    });
+    view.unmount();
+  });
+
   it("replays replacement text before the resume ACK, then fills only its missing snapshot suffix", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     let resumeCount = 0;

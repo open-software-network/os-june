@@ -34,22 +34,22 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
-const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v2";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v3";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     (
         "tools/approval.py",
-        "cb3cb292e34121dbfa452eea78243ce8ca1c31029f8cd047a3d8cc4f01c26df9",
+        "daaac4cbc6adfffd3a8cbd8442d3cc0c26bc499725e395cf837607dbcebc46d8",
     ),
     (
         "tools/mcp_tool.py",
         "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
     ),
-    // Includes atomic resume ownership, exact retry for a rejected ID-less
-    // message.complete, and a transport-owned Agent run continuation
-    // resume-acknowledgement barrier.
+    // Includes receive-ordered live-snapshot and prompt ownership, exact retry
+    // for a rejected ID-less message.complete, and a generation-tokened Agent
+    // run continuation acknowledgement barrier.
     (
         "tui_gateway/server.py",
-        "d99f47d92c81c20b334b7df8be95c03ee83dc56742b95666fac697d79394bf3e",
+        "5a44165e85dd0922d2810b54275726763effff9a752d863ad501806c8f6e9575",
     ),
 ];
 const HERMES_SOURCE_TARBALL_URL: &str =

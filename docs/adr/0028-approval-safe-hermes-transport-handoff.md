@@ -109,3 +109,28 @@ targeted protocol remains binding, including the rule that June never sends
   the response is written.
 - **Add only a client-side timing delay.** Rejected because timing does not prove
   callback retirement and behaves differently under load.
+
+## 2026-07-16 addendum: live snapshot ownership
+
+The expanded ownership contract advances the sealed compatibility patch to
+`june-approval-v3`, ensuring installs stamped with an earlier patch set are
+rebuilt before the new hashes are verified.
+
+`session.activate` also swaps transport while returning a live session
+snapshot. It participates in the same acknowledgement barrier as
+`session.resume`: activation atomically retargets the barrier to its transport,
+and only the current snapshot transport's successful response write releases
+Agent run continuations. A live-payload caller that attempts to replace a
+different transport while a snapshot acknowledgement is pending must either
+participate in that protocol or fail closed. This prevents a racing activation
+from stranding the prior resume barrier and rejecting all later prompts.
+Activation, resume, and disconnect serialize ownership changes under the same
+lock. Barrier authority is a distinct in-memory token for each live snapshot,
+not transport identity alone, so an older response on the same socket cannot
+release a newer snapshot's Agent run continuations.
+`session.resume`, `session.activate`, and `prompt.submit` enter one
+receive-ordered ownership lane. A prompt cannot change transport by itself; a
+replacement client must complete resume or activation first so stream,
+snapshot, and approval-notifier ownership move together. Disconnect cleanup
+and idle reaping use the same ownership lock and recheck the exact session
+before detaching or finalizing it.

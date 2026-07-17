@@ -40,7 +40,7 @@ note (copy `docs/hermes-upstream-template.md` to
 
 ## June compatibility patch set
 
-The current pin also carries the checksum-gated `june-approval-v2` patch set
+The current pin also carries the checksum-gated `june-approval-v3` patch set
 documented in `docs/hermes-upstream-v2026.6.19.md`, ADR 0025, and ADR 0028. On every pin
 bump:
 
@@ -121,7 +121,18 @@ completion write. Confirm neither can clear or replace the old frame: the goal
 stays deferred, the process event stays queued, resume retries the exact old
 completion first, and the goal becomes runnable only after the resume response
 write succeeds. A new user submission must likewise retry the old completion
-before it can start another Agent run.
+before it can start another Agent run. Race `session.activate` on a second
+transport against an unacknowledged live `session.resume` snapshot. Activation
+must atomically retarget the snapshot barrier, the stale resume response must
+not release it, and the activation response must release it without stranding
+later prompts. Queue two snapshots on the same transport and confirm the older
+response cannot release the newer snapshot's generation token.
+Hold an earlier resume in the ordered ownership lane, then queue activation
+and `prompt.submit`. The prompt must wait until both snapshot responses are
+written. Submit a prompt from a different transport without a handoff and
+confirm it fails closed. Race disconnect cleanup and idle reaping against live,
+lazy, and rebuilt resume commits; cleanup must either observe the committed
+owner or the commit must reject the closed request transport.
 
 ## New methods/events (gateway method + event catalog diff)
 

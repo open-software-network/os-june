@@ -10,7 +10,7 @@
 ## June compatibility patch
 
 The upstream pin remains unchanged. June applies the deterministic
-`june-approval-v2` patch set before building the bundled runtime and before
+`june-approval-v3` patch set before building the bundled runtime and before
 finishing a managed runtime install. See
 [ADR 0025](adr/0025-targeted-hermes-approval-protocol.md) and
 [ADR 0028](adr/0028-approval-safe-hermes-transport-handoff.md).
@@ -51,22 +51,34 @@ Agent run cannot clear or replace them. A new user submission retries
 the retained completion on its request transport before it can start. Goal
 continuations remain deferred and process notifications remain queued until a
 live resume accepts the old exact frame; a deferred goal is released only after
-the current transport's resume response itself is accepted. Every live resume
-arms that transport-owned barrier in the same history-lock transaction as its
-swap and snapshot, preserving completion, response, then next-run ordering even
-when the emitter wins after the snapshot. Delivery retry does not depend on
+the exact live snapshot response itself is accepted. Every live resume arms a
+per-snapshot token in the same history-lock transaction as its swap and
+snapshot, so an older response on the same transport cannot release a newer
+snapshot. This preserves completion, response, then next-run ordering even when
+the emitter wins after the snapshot. Delivery retry does not depend on
 ordinal authority: missing
 or ambiguous proof is omitted and remains uncompacted rather than relying on
 identical text, but its exact visible completion is still retried.
+
+`session.activate` returns the same live-session snapshot while swapping the
+transport. It therefore shares resume/disconnect serialization, atomically
+retargets the snapshot acknowledgement token, and participates in the same
+response-write release protocol. An unguarded live-payload transport swap fails
+closed while another snapshot acknowledgement is pending.
+Resume, activation, and prompt admission use one receive-ordered ownership
+lane, and prompt submission cannot rebind transport independently. A
+replacement client must complete a live snapshot handoff first. Disconnect and
+idle cleanup share the ownership lock, recheck the exact session, and queued
+resume work rejects a transport that closed before its commit.
 
 The patcher in `src-tauri/src/hermes/apply_june_patches.py` accepts only these
 exact source states:
 
 | File | Upstream SHA-256 | Patched SHA-256 |
 | --- | --- | --- |
-| `tools/approval.py` | `e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85` | `cb3cb292e34121dbfa452eea78243ce8ca1c31029f8cd047a3d8cc4f01c26df9` |
+| `tools/approval.py` | `e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85` | `daaac4cbc6adfffd3a8cbd8442d3cc0c26bc499725e395cf837607dbcebc46d8` |
 | `tools/mcp_tool.py` | `3f0aca90d076a1b0aa5daffd7bb39b0d1a4fee83265f855e68d556e5c8a29d01` | `48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa` |
-| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `d99f47d92c81c20b334b7df8be95c03ee83dc56742b95666fac697d79394bf3e` |
+| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `5a44165e85dd0922d2810b54275726763effff9a752d863ad501806c8f6e9575` |
 
 Both macOS and Windows bundlers apply the same patch, write `PATCHSET`, verify
 the patched hashes after relocation, and run

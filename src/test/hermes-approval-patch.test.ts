@@ -11,7 +11,7 @@ describe("June Hermes approval patch", () => {
       const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       expect(patcher.match(new RegExp(`"${escaped}": "[a-f0-9]{64}"`, "g"))).toHaveLength(2);
     }
-    expect(patcher).toContain('PATCH_SET = "june-approval-v2"');
+    expect(patcher).toContain('PATCH_SET = "june-approval-v3"');
     expect(patcher).toContain('upstream_request_id = getattr(context, "request_id", None)');
     expect(patcher).toContain("request_id=request_id");
     expect(patcher).toContain("_MAX_GATEWAY_APPROVALS_PER_SESSION = 32");
@@ -32,12 +32,22 @@ describe("June Hermes approval patch", () => {
       "def _deliver_message_complete(session: dict, sid: str, payload: dict)",
     );
     expect(patcher).toContain(
-      "def _retry_pending_message_complete_locked(\n    session: dict,\n    transport: Transport,\n    *,\n    arm_agent_run_continuation_resume_ack_barrier: bool = False,",
+      "def _retry_pending_message_complete_locked(\n    session: dict,\n    transport: Transport,\n    *,\n    snapshot_ack_token: object | None = None,",
     );
-    expect(patcher).toContain("_AGENT_RUN_CONTINUATION_RESUME_ACK_BARRIER");
-    expect(patcher).toContain("agent_run_continuation_resume_ack_transport=resume_transport");
-    expect(patcher).toContain("arm_agent_run_continuation_resume_ack_barrier=True");
+    expect(patcher).toContain("_AGENT_RUN_CONTINUATION_SNAPSHOT_ACK_BARRIER");
+    expect(patcher).toContain("_LIVE_SNAPSHOT_ACK_TOKEN_RESULT");
+    expect(patcher).toContain("def _handoff_live_session_transport(");
+    expect(patcher).toContain("agent_run_continuation_snapshot_ack_transport=transport");
+    expect(patcher).toContain("snapshot_ack_token=snapshot_ack_token");
     expect(patcher).toContain("_bind_prompt_transport_for_submit(session, request_transport)");
+    expect(patcher).toContain("_ORDERED_SESSION_OWNERSHIP_HANDLERS");
+    expect(patcher).toContain('if method == "prompt.submit":');
+    expect(patcher).toContain("dispatched.result()");
+    expect(patcher).toContain('or session.get("transport") is not request_transport');
+    expect(patcher).toContain("if _transport_is_dead(resume_transport):");
+    expect(patcher).toContain("with _session_resume_lock:");
+    expect(patcher).toContain('if method in {"session.activate", "session.resume"}:');
+    expect(patcher).toContain("if snapshot_ack_delivered and snapshot_ack_token is not None:");
     expect(patcher).toContain("_PENDING_MESSAGE_COMPLETE_PAYLOAD");
     expect(patcher).toContain("_clear_pending_message_complete(session)");
     expect(patcher).not.toContain("server pending-complete final cleanup");
@@ -59,7 +69,8 @@ describe("June Hermes approval patch", () => {
   });
 
   it("pins managed installs to the patch set and verifies them before launch", () => {
-    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v2"');
+    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v3"');
+    expect(bridge).not.toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v2"');
     expect(bridge).toContain('include_str!("hermes/apply_june_patches.py")');
     expect(bridge).toContain("verify_managed_hermes_runtime_patch(&managed_install_dir)?");
     const patchedHashes = patcher
