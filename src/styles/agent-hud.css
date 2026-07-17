@@ -102,7 +102,8 @@ body {
   box-shadow: none;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-3px) scale(0.98);
+  transform: scale(0.98);
+  transform-origin: top right;
   /* Out (base state): a longer, calmer fade; agent-hud.ts keeps the last
    * content rendered underneath it and delays the native hide to match.
    * Width is in the list for the JS FLIP that animates expand/collapse. */
@@ -485,7 +486,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: color-mix(in oklch, var(--popover) 96%, transparent);
-  box-shadow: var(--shadow-md);
+  box-shadow: none;
   pointer-events: auto;
 }
 

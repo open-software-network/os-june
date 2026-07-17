@@ -42,7 +42,9 @@ pub fn agent_hud_show(app: AppHandle) -> Result<(), String> {
     let Some(window) = app.get_webview_window(AGENT_HUD_WINDOW_LABEL) else {
         return Ok(());
     };
-    position_agent_hud_window(&window)?;
+    // agent_hud_set_layout sizes and positions the panel before every show.
+    // Re-reading outer_size() here can briefly return the previous width on
+    // macOS and undo that right-edge anchoring.
     #[cfg(target_os = "macos")]
     {
         // The HUD is a passive status surface. Tauri's show() does
