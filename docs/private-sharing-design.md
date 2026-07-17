@@ -111,6 +111,15 @@ fail closed.
 ## Viewer
 
 The static `/s/{share_id}` shell has a strict self-only CSP and no analytics.
+Production links use `https://june.link/s/{share_id}#…`. That hostname is served
+by an isolated viewer-only June API CVM with its own ingress and certificate;
+it reads the same encrypted-share database but cannot create or mutate shares
+or invoke product APIs. `https://june-api.opensoftware.co` remains on its own
+CVM and ingress. Staging and local builds keep the viewer on their configured
+API origin. This preserves the viewer's self-only network policy while keeping
+production links short and branded, and makes a june.link DNS/certificate
+failure incapable of taking the primary API off port 443.
+
 For a new link it:
 
 1. parses the fragment;

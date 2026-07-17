@@ -142,11 +142,11 @@ async fn load_pricing(
 /// sold below cost. Remove this once settlement is authenticated per route.
 fn apply_private_route_price_floors(pricing: &mut BTreeMap<String, ModelPriceConfig>) {
     for (model_id, input_floor, output_floor) in [
-        ("openai/gpt-oss-120b", 180, 720),
-        ("google/gemma-3-27b-it", 180, 552),
-        ("z-ai/glm-5.2", 1_680, 5_280),
-        ("qwen/qwen3.6-27b", 390, 3_900),
-        ("moonshotai/kimi-k2.6", 1_308, 5_520),
+        ("openai/gpt-oss-120b", 150, 600),
+        ("google/gemma-3-27b-it", 150, 460),
+        ("z-ai/glm-5.2", 1_400, 4_400),
+        ("qwen/qwen3.6-27b", 325, 3_250),
+        ("moonshotai/kimi-k2.6", 1_090, 4_600),
     ] {
         let Some(model) = pricing.get_mut(model_id) else {
             continue;
@@ -405,7 +405,11 @@ fn build_router(
             trust_center_url: config.attestation.trust_center_url.clone(),
         },
     });
-    june_api::router(state)
+    if config.share.viewer_only {
+        june_api::viewer_router(state)
+    } else {
+        june_api::router(state)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -590,11 +594,11 @@ mod tests {
         apply_private_route_price_floors(&mut pricing);
 
         for (model_id, input, output) in [
-            ("openai/gpt-oss-120b", 180, 720),
-            ("google/gemma-3-27b-it", 180, 552),
-            ("z-ai/glm-5.2", 1_680, 5_280),
-            ("qwen/qwen3.6-27b", 390, 3_900),
-            ("moonshotai/kimi-k2.6", 1_308, 5_520),
+            ("openai/gpt-oss-120b", 150, 600),
+            ("google/gemma-3-27b-it", 150, 460),
+            ("z-ai/glm-5.2", 1_400, 4_400),
+            ("qwen/qwen3.6-27b", 325, 3_250),
+            ("moonshotai/kimi-k2.6", 1_090, 4_600),
         ] {
             let canonical = &pricing[model_id];
             assert_eq!(

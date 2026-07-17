@@ -1,4 +1,6 @@
-//! Google native-app OAuth for private connectors.
+//! Google native-app OAuth for private connectors, plus the provider-neutral
+//! loopback primitive ([`loopback_authorize`]) every connector's OAuth flow
+//! is built on.
 //!
 //! PKCE (S256) + loopback redirect on an ephemeral 127.0.0.1 port, for BOTH
 //! debug and release builds: Google desktop-app clients use the loopback
@@ -6,7 +8,11 @@
 //! `client_secret` at its token endpoint even though an installed application
 //! cannot keep that credential confidential; PKCE remains the protection for
 //! an intercepted authorization code. Mirrors the os_accounts.rs login flow
-//! mechanics.
+//! mechanics. [`loopback_authorize`] owns the PKCE/CSRF minting, the
+//! listener, and the browser handoff; [`authorize`] is Google's thin wrapper
+//! around it and owns Google's own auth-URL shape, token exchange, and email
+//! resolution. `linear::authorize` is the same kind of thin wrapper; neither
+//! touches the shared listener code.
 //!
 //! NEVER log, print, or serialize tokens (or authorization codes) into
 //! errors. Error messages carry stable codes and short human text only.
@@ -108,38 +114,84 @@ pub enum RefreshOutcome {
     Transient,
 }
 
-/// Run the full authorization handoff: open the consent screen in the
-/// default browser, wait on a loopback listener for the redirect, exchange
-/// the code, and resolve the account email.
-pub async fn authorize(
+/// Outcome of the provider-neutral PKCE + loopback handoff: the
+/// authorization code, its PKCE verifier, and the exact `redirect_uri` the
+/// code was issued for (the token endpoint requires it echoed back
+/// byte-identical). The caller still owns the token exchange and identity
+/// resolution, which differ per provider (Google's OIDC id_token/userinfo;
+/// Linear's own token endpoint + viewer query).
+pub(crate) struct LoopbackAuthorization {
+    pub code: String,
+    pub verifier: String,
+    pub redirect_uri: String,
+}
+
+/// How the loopback listener picks its port. Google ignores the loopback
+/// port when matching redirect URIs (RFC 8252 native-app behavior), so an
+/// OS-assigned ephemeral port works. Linear matches the registered callback
+/// URL exactly, port included, so its listener must bind one of the fixed
+/// ports whose callback URLs are registered on the OAuth application.
+pub(crate) enum LoopbackPort {
+    Ephemeral,
+    Candidates(Vec<u16>),
+}
+
+/// Bind the loopback listener per the port strategy. For candidates, the
+/// first free port wins; every candidate being taken is reported with the
+/// full list so the user can see which local ports the connect needs.
+async fn bind_loopback(port: &LoopbackPort) -> Result<TcpListener, AppError> {
+    let bind_failed = |detail: String| {
+        AppError::new(
+            "connector_loopback_bind_failed",
+            format!("Could not start the local connect listener: {detail}"),
+        )
+    };
+    match port {
+        LoopbackPort::Ephemeral => TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .map_err(|e| bind_failed(e.to_string())),
+        LoopbackPort::Candidates(ports) => {
+            for &candidate in ports {
+                if let Ok(listener) = TcpListener::bind(("127.0.0.1", candidate)).await {
+                    return Ok(listener);
+                }
+            }
+            let list = ports
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(bind_failed(format!(
+                "ports {list} are all in use on this Mac"
+            )))
+        }
+    }
+}
+
+/// Provider-neutral half of a native-app OAuth connect: mint PKCE + CSRF
+/// state, bind a 127.0.0.1 listener per the port strategy, ask
+/// `build_auth_url` to assemble the provider's consent URL from the
+/// resulting `(redirect_uri, code_challenge, state)`, open it in the system
+/// browser, and race the loopback callback against the connect timeout and
+/// the flow's cancel signal. `provider_label` names the provider in the
+/// timeout/cancel/denial copy shown to the user (e.g. "Google"), so each
+/// provider's wrapper keeps producing its own exact error text.
+pub(crate) async fn loopback_authorize(
     flow: &ConnectFlow,
-    client_id: &str,
-    client_secret: &str,
-    scopes: &[&str],
-    login_hint: Option<&str>,
-) -> Result<AuthorizedGrant, AppError> {
+    provider_label: &str,
+    port: LoopbackPort,
+    build_auth_url: impl FnOnce(&str, &str, &str) -> String,
+) -> Result<LoopbackAuthorization, AppError> {
     let (verifier, challenge) = pkce();
     let csrf = random_b64url(24);
 
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.map_err(|e| {
-        AppError::new(
-            "connector_loopback_bind_failed",
-            format!("Could not start the local connect listener: {e}"),
-        )
-    })?;
+    let listener = bind_loopback(&port).await?;
     let port = listener
         .local_addr()
         .map_err(|e| AppError::new("connector_loopback_bind_failed", e.to_string()))?
         .port();
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
-    let auth_url = build_auth_url(
-        client_id,
-        &redirect_uri,
-        scopes,
-        &challenge,
-        &csrf,
-        login_hint,
-    );
+    let auth_url = build_auth_url(&redirect_uri, &challenge, &csrf);
 
     crate::os_accounts::open_in_browser(&auth_url)?;
 
@@ -148,17 +200,17 @@ pub async fn authorize(
         *slot = Some(cancel_tx);
     }
     let outcome = tokio::select! {
-        result = tokio::time::timeout(CONNECT_TIMEOUT, await_callback(&listener, &csrf)) => {
+        result = tokio::time::timeout(CONNECT_TIMEOUT, await_callback(&listener, &csrf, provider_label)) => {
             result.unwrap_or_else(|_| {
                 Err(AppError::new(
                     "connector_connect_timed_out",
-                    "Connecting to Google timed out. Please try again.",
+                    format!("Connecting to {provider_label} timed out. Please try again."),
                 ))
             })
         }
         _ = cancel_rx => Err(AppError::new(
             "connector_connect_canceled",
-            "Connecting to Google was canceled.",
+            format!("Connecting to {provider_label} was canceled."),
         )),
     };
     if let Ok(mut slot) = flow.cancel.lock() {
@@ -166,7 +218,51 @@ pub async fn authorize(
     }
     let code = outcome?;
 
-    let tokens = exchange_code(client_id, client_secret, &code, &verifier, &redirect_uri).await?;
+    Ok(LoopbackAuthorization {
+        code,
+        verifier,
+        redirect_uri,
+    })
+}
+
+/// Run the full Google authorization handoff: open the consent screen in the
+/// default browser, wait on a loopback listener for the redirect, exchange
+/// the code, and resolve the account email. A thin Google-specific wrapper
+/// over [`loopback_authorize`]: it supplies Google's auth URL and owns the
+/// token exchange + email resolution the shared primitive knows nothing
+/// about.
+pub async fn authorize(
+    flow: &ConnectFlow,
+    client_id: &str,
+    client_secret: &str,
+    scopes: &[&str],
+    login_hint: Option<&str>,
+) -> Result<AuthorizedGrant, AppError> {
+    let authorization = loopback_authorize(
+        flow,
+        "Google",
+        LoopbackPort::Ephemeral,
+        |redirect_uri, code_challenge, state| {
+            build_auth_url(
+                client_id,
+                redirect_uri,
+                scopes,
+                code_challenge,
+                state,
+                login_hint,
+            )
+        },
+    )
+    .await?;
+
+    let tokens = exchange_code(
+        client_id,
+        client_secret,
+        &authorization.code,
+        &authorization.verifier,
+        &authorization.redirect_uri,
+    )
+    .await?;
     let email = resolve_email(&tokens).await?;
     Ok(AuthorizedGrant { tokens, email })
 }
@@ -231,8 +327,13 @@ const SUCCESS_BODY: &str = r##"<!doctype html>
 
 /// Accept connections until one hits `/callback` with a matching state.
 /// Every per-socket read is bounded so a slow client on the loopback port
-/// cannot stall the listener for the full connect timeout.
-async fn await_callback(listener: &TcpListener, expected_state: &str) -> Result<String, AppError> {
+/// cannot stall the listener for the full connect timeout. `provider_label`
+/// names the provider in the denial/missing-code error copy.
+async fn await_callback(
+    listener: &TcpListener,
+    expected_state: &str,
+    provider_label: &str,
+) -> Result<String, AppError> {
     loop {
         let (mut stream, _) = listener
             .accept()
@@ -265,14 +366,14 @@ async fn await_callback(listener: &TcpListener, expected_state: &str) -> Result<
                 write_http(&mut stream, "200 OK", "You can close this tab.").await;
                 return Err(AppError::new(
                     "connector_connect_denied",
-                    "Google access was declined.",
+                    format!("{provider_label} access was declined."),
                 ));
             }
             CallbackOutcome::MissingCode => {
                 write_http(&mut stream, "400 Bad Request", "Missing authorization code").await;
                 return Err(AppError::new(
                     "connector_missing_code",
-                    "Google's response was missing an authorization code.",
+                    format!("{provider_label}'s response was missing an authorization code."),
                 ));
             }
             CallbackOutcome::Code(code) => {
