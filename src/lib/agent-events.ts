@@ -53,6 +53,31 @@ export type AgentRunStartedDetail = {
   fullMode: boolean;
 };
 
+export type AgentRunTerminalDispatch =
+  | { kind: "status"; detail: AgentSessionStatusDetail }
+  | { kind: "settled"; detail: AgentRunSettledDetail };
+
+type AgentRunTerminalDispatchGuard = (dispatch: AgentRunTerminalDispatch) => boolean;
+
+const agentRunTerminalDispatchGuards = new Set<AgentRunTerminalDispatchGuard>();
+
+/**
+ * Installs an app-lifetime authority guard before terminal state reaches the
+ * window or native event buses. A guard returns false to block dispatch; the
+ * guard owns whether that terminal is retained for later delivery or dropped.
+ */
+export function registerAgentRunTerminalDispatchGuard(guard: AgentRunTerminalDispatchGuard) {
+  agentRunTerminalDispatchGuards.add(guard);
+  return () => agentRunTerminalDispatchGuards.delete(guard);
+}
+
+function agentRunTerminalDispatchAllowed(dispatch: AgentRunTerminalDispatch) {
+  for (const guard of agentRunTerminalDispatchGuards) {
+    if (!guard(dispatch)) return false;
+  }
+  return true;
+}
+
 export type AgentSessionsChangedDetail = {
   sessions: HermesSessionInfo[];
   selectedSessionId?: string;
@@ -61,6 +86,15 @@ export type AgentSessionsChangedDetail = {
 };
 
 export function dispatchAgentSessionStatus(detail: AgentSessionStatusDetail) {
+  if (
+    detail.runMonitorGeneration !== undefined &&
+    (detail.status === "completed" ||
+      detail.status === "failed" ||
+      detail.status === "cancelled") &&
+    !agentRunTerminalDispatchAllowed({ kind: "status", detail })
+  ) {
+    return false;
+  }
   window.dispatchEvent(
     new CustomEvent<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, {
       detail,
@@ -71,9 +105,11 @@ export function dispatchAgentSessionStatus(detail: AgentSessionStatusDetail) {
       typeof api.emit === "function" ? api.emit(AGENT_SESSION_STATUS_EVENT, detail) : undefined,
     )
     .catch(() => {});
+  return true;
 }
 
 export function dispatchAgentRunSettled(detail: AgentRunSettledDetail) {
+  if (!agentRunTerminalDispatchAllowed({ kind: "settled", detail })) return false;
   window.dispatchEvent(
     new CustomEvent<AgentRunSettledDetail>(AGENT_RUN_SETTLED_EVENT, {
       detail,
@@ -84,6 +120,7 @@ export function dispatchAgentRunSettled(detail: AgentRunSettledDetail) {
       typeof api.emit === "function" ? api.emit(AGENT_RUN_SETTLED_EVENT, detail) : undefined,
     )
     .catch(() => {});
+  return true;
 }
 
 export function dispatchAgentRunStarted(detail: AgentRunStartedDetail) {

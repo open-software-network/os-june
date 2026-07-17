@@ -121,7 +121,14 @@ export type PendingHermesActionExpiration = {
   kind: "approval";
   requestId: string;
   instanceId?: string;
-  reason: "timeout" | "disconnect" | "overflow" | "stale" | "unconfirmed" | "unknown";
+  reason:
+    | "timeout"
+    | "disconnect"
+    | "overflow"
+    | "stale"
+    | "transport_handoff"
+    | "unconfirmed"
+    | "unknown";
 };
 
 /** The lifecycle phase a background subagent is reporting. */
@@ -274,7 +281,7 @@ export type JuneHermesEvent =
  * exhaustiveness assertions. */
 export type JuneHermesEventKind = JuneHermesEvent["kind"];
 
-/** True for classified events that end the current workspace turn. */
+/** True for classified events that end the current Agent run. */
 export function isTerminalHermesEvent(event: JuneHermesEvent): boolean {
   switch (event.kind) {
     case "error":

@@ -5,11 +5,15 @@ import {
   displayedComposerUserMessageText,
   hasFinalContentBearingAssistantReply,
   textFromHermesContent,
+  textFromHermesTransportContent,
   type AgentChatTurn,
 } from "../../lib/agent-chat-runtime";
 import { withTimeout } from "../../lib/async-timeout";
 import { messageFromError } from "../../lib/errors";
-import { listHermesSessions } from "../../lib/hermes-adapter";
+import {
+  listHermesSessions,
+  normalizeHermesSessionMessagesResponse,
+} from "../../lib/hermes-adapter";
 import { hermesConnectionForMode } from "../../lib/hermes-connection";
 import { classifyHermesEvent } from "../../lib/hermes-control-plane/event-classifier";
 import { createHermesMethods } from "../../lib/hermes-control-plane/methods";
@@ -19,12 +23,17 @@ import {
   HermesGatewayClient,
   HermesGatewayError,
   isSessionBusyError,
+  type HermesGatewayEvent,
 } from "../../lib/hermes-gateway";
 import {
   appendHermesLiveEvent,
   createHermesLiveStream,
+  hermesApprovalInstanceId,
   hermesLiveEvents,
+  recordHermesIdlessTranscriptPersistenceBoundary,
+  reconcileHermesInflightSnapshot,
   reconcileHermesLiveStream,
+  type HermesIdlessTranscriptPersistenceBoundary,
   type HermesLiveStream,
 } from "../../lib/hermes-live-stream";
 import { applySessionModelWhenIdle } from "../../lib/hermes-next-prompt-model";
@@ -51,7 +60,7 @@ import {
 import {
   holdHermesSessionDispatch,
   reserveHermesSessionDispatch,
-  withHermesSessionDispatchLock,
+  reserveHermesSessionTransportHandoff,
   type HermesSessionDispatchReservation,
 } from "../../lib/hermes-session-dispatch-mutex";
 import {
@@ -85,6 +94,18 @@ import { noteReferenceToken, type NoteReferenceInput } from "../agent/composer/n
 import { noteChatSessionIdFor, rememberNoteChatSession } from "./noteChatSessions";
 
 type HermesRuntimeSessionResponse = {
+  inflight?: {
+    assistant?: string;
+    streaming?: boolean;
+    user?: string;
+  } | null;
+  messages?: unknown[];
+  pending_message_complete?: {
+    /** Zero-based ordinal among content-bearing assistant transport rows. */
+    assistant_ordinal?: number;
+  };
+  retired_approval_request_ids?: string[];
+  running?: boolean;
   session_id?: string;
   stored_session_id?: string;
 };
@@ -132,8 +153,15 @@ let sharedGateway: HermesGatewayClient | null = null;
 let sharedGatewayConnecting: Promise<HermesGatewayClient> | null = null;
 type NoteChatIdlessTranscriptOrigin = {
   pendingUserTurn: AgentChatTurn;
-  visibleSegments: string[];
-  activeSegmentIndex?: number;
+  runStartRevision: number;
+  transcriptEntries: Array<{
+    event: Extract<JuneHermesEvent, { kind: "transcript" }>;
+    revision: number;
+  }>;
+  visibleTextParts: string[];
+  visibleTextPartRevisions: number[][];
+  activeTextPartIndex?: number;
+  terminalSettledRevision?: number;
 };
 
 type NoteChatRunTerminalEvidence = {
@@ -206,7 +234,7 @@ type NoteChatRefreshSnapshot = {
 };
 
 type NoteChatContinuityUpdate = {
-  noteId: string;
+  noteId?: string;
   storedSessionId?: string;
   record: NoteChatContinuityRecord;
 };
@@ -220,6 +248,7 @@ const NOTE_CHAT_DISPATCH_SNAPSHOT_TIMEOUT_MS = 250;
 const noteChatContinuityByStoredSessionId = new Map<string, NoteChatContinuityRecord>();
 const provisionalNoteChatContinuityByNoteId = new Map<string, NoteChatContinuityRecord>();
 const noteChatStoredSessionIdByRuntimeSessionId = new Map<string, string>();
+const noteChatStoredSessionIdsOwnedByGateway = new Set<string>();
 const noteChatStoredSessionContinuityOrder: string[] = [];
 const eventSubscribers = new Set<
   (event: JuneHermesEvent, route: RoutedNoteChatEvent | undefined) => void
@@ -231,7 +260,14 @@ type NoteChatRuntimeResumeAttempt = {
   promise: Promise<string | undefined>;
 };
 
+type NoteChatRuntimeResumeHandoff = {
+  gateway: HermesGatewayClient;
+  stagedEvents: HermesGatewayEvent[];
+  storedSessionId: string;
+};
+
 const runtimeResumeByStoredSessionId = new Map<string, NoteChatRuntimeResumeAttempt>();
+const runtimeResumeHandoffs = new Set<NoteChatRuntimeResumeHandoff>();
 const activeSubmissionByNoteId = new Map<string, symbol>();
 let gatewayRecovery: Promise<void> | null = null;
 let gatewayRecoveryRetryRequested = false;
@@ -357,6 +393,13 @@ function notifyNoteChatContinuity(update: NoteChatContinuityUpdate) {
   for (const subscriber of [...continuitySubscribers]) subscriber(update);
 }
 
+function notifyNoteChatStoredSessionContinuity(
+  storedSessionId: string,
+  record: NoteChatContinuityRecord,
+) {
+  notifyNoteChatContinuity({ storedSessionId, record });
+}
+
 function subscribeToNoteChatContinuity(subscriber: (update: NoteChatContinuityUpdate) => void) {
   continuitySubscribers.add(subscriber);
   return () => {
@@ -371,10 +414,12 @@ function registerNoteChatRuntimeSession(storedSessionId: string, runtimeSessionI
   }
   record.runtimeSessionId = runtimeSessionId;
   noteChatStoredSessionIdByRuntimeSessionId.set(runtimeSessionId, storedSessionId);
+  noteChatStoredSessionIdsOwnedByGateway.add(storedSessionId);
 }
 
 function invalidateNoteChatRuntimeSessions() {
   noteChatStoredSessionIdByRuntimeSessionId.clear();
+  noteChatStoredSessionIdsOwnedByGateway.clear();
   for (const record of noteChatContinuityByStoredSessionId.values()) {
     record.runtimeSessionId = undefined;
   }
@@ -443,6 +488,89 @@ function isApprovalLifecycleEvent(event: JuneHermesEvent) {
       event.kind === "pending_action_expiration") &&
     event.action.kind === "approval"
   );
+}
+
+function openNoteChatApprovalInstances(record: NoteChatContinuityRecord) {
+  type OpenApprovalInstance = {
+    deferredUntilDispatchSettles: boolean;
+    instanceId: string;
+    requestId: string;
+  };
+  const openByInstanceId = new Map<string, OpenApprovalInstance>();
+  const applyEvent = (event: JuneHermesEvent, deferredUntilDispatchSettles: boolean) => {
+    if ((event.kind === "lifecycle" && event.flavor === "terminal") || event.kind === "error") {
+      openByInstanceId.clear();
+      return;
+    }
+    if (
+      event.kind !== "pending_action" &&
+      event.kind !== "pending_action_resolution" &&
+      event.kind !== "pending_action_expiration"
+    ) {
+      return;
+    }
+    if (event.action.kind !== "approval") return;
+    if (event.kind === "pending_action") {
+      const instanceId = hermesApprovalInstanceId(event.action, record.runStartRevision);
+      const existing = openByInstanceId.get(instanceId);
+      openByInstanceId.set(instanceId, {
+        deferredUntilDispatchSettles:
+          existing?.deferredUntilDispatchSettles === false ? false : deferredUntilDispatchSettles,
+        instanceId,
+        requestId: event.action.requestId,
+      });
+      return;
+    }
+    const instanceId = event.action.instanceId;
+    if (instanceId) {
+      openByInstanceId.delete(instanceId);
+      return;
+    }
+    for (const [candidateInstanceId, candidate] of openByInstanceId) {
+      if (candidate.requestId === event.action.requestId) {
+        openByInstanceId.delete(candidateInstanceId);
+      }
+    }
+  };
+
+  for (const { event } of record.liveStream.entries) applyEvent(event, false);
+  for (const event of record.pendingDispatchRunBoundary?.deferredApprovalEvents ?? []) {
+    applyEvent(event, true);
+  }
+  return [...openByInstanceId.values()];
+}
+
+function retireOpenNoteChatApprovalsForGatewayClose(affectedStoredSessionIds: ReadonlySet<string>) {
+  const retiredAt = new Date().toISOString();
+  for (const [storedSessionId, record] of noteChatContinuityByStoredSessionId) {
+    if (!affectedStoredSessionIds.has(storedSessionId)) continue;
+    const openApprovals = openNoteChatApprovalInstances(record);
+    if (openApprovals.length === 0) continue;
+    let liveStream = record.liveStream;
+    for (const approval of openApprovals) {
+      const expiration: JuneHermesEvent = {
+        kind: "pending_action_expiration",
+        sessionId: storedSessionId,
+        action: {
+          kind: "approval",
+          requestId: approval.requestId,
+          instanceId: approval.instanceId,
+          reason: "disconnect",
+        },
+        receivedAt: retiredAt,
+      };
+      if (approval.deferredUntilDispatchSettles && record.pendingDispatchRunBoundary) {
+        record.pendingDispatchRunBoundary.deferredApprovalEvents.push(expiration);
+        continue;
+      }
+      liveStream = appendHermesLiveEvent(liveStream, expiration, {
+        runStartRevision: record.runStartRevision,
+      });
+    }
+    if (liveStream === record.liveStream) continue;
+    record.liveStream = liveStream;
+    notifyNoteChatStoredSessionContinuity(storedSessionId, record);
+  }
 }
 
 function bufferPendingDispatchApproval(record: NoteChatContinuityRecord, event: JuneHermesEvent) {
@@ -914,7 +1042,13 @@ function routeNoteChatControlPlaneEvent(
       const existing = record.unpersistedIdlessTranscriptOrigins.get(origin.id);
       record.unpersistedIdlessTranscriptOrigins.set(
         origin.id,
-        appendIdlessTranscriptSegment(origin, existing, event),
+        appendIdlessTranscriptTextPart(
+          origin,
+          existing,
+          event,
+          nextLiveStream.revision,
+          record.runStartRevision,
+        ),
       );
     } else {
       record.hasUnattributedIdlessTranscript = true;
@@ -956,9 +1090,12 @@ function routeNoteChatControlPlaneEvent(
       }
     }
     const idlessOrigin = record.currentRunPendingUserTurn ?? record.lastAcceptedRunPendingUserTurn;
-    if (idlessOrigin) {
+    if (idlessOrigin && settlesWorkingState) {
       const proof = record.unpersistedIdlessTranscriptOrigins.get(idlessOrigin.id);
-      if (proof) proof.activeSegmentIndex = undefined;
+      if (proof) {
+        proof.activeTextPartIndex = undefined;
+        proof.terminalSettledRevision = nextLiveStream.revision;
+      }
     }
     if (settlesWorkingState) {
       record.currentRunPendingUserTurn = undefined;
@@ -975,31 +1112,71 @@ function routeNoteChatControlPlaneEvent(
   };
 }
 
-function appendIdlessTranscriptSegment(
+function appendIdlessTranscriptTextPart(
   pendingUserTurn: AgentChatTurn,
   current: NoteChatIdlessTranscriptOrigin | undefined,
   event: Extract<JuneHermesEvent, { kind: "transcript" }>,
+  revision: number,
+  runStartRevision: number,
 ): NoteChatIdlessTranscriptOrigin {
-  const visibleSegments = [...(current?.visibleSegments ?? [])];
-  let activeSegmentIndex = current?.activeSegmentIndex;
+  const transcriptEntries = [...(current?.transcriptEntries ?? []), { event, revision }];
+  const visibleTextParts = [...(current?.visibleTextParts ?? [])];
+  const visibleTextPartRevisions = (current?.visibleTextPartRevisions ?? []).map((revisions) => [
+    ...revisions,
+  ]);
+  let activeTextPartIndex = current?.activeTextPartIndex;
   const text = event.delta ?? "";
-  const startsSegment = !event.complete && event.delta === undefined;
-  if (startsSegment || activeSegmentIndex === undefined) {
-    visibleSegments.push("");
-    activeSegmentIndex = visibleSegments.length - 1;
+  const startsTextPart = !event.complete && event.delta === undefined;
+  if (startsTextPart || activeTextPartIndex === undefined) {
+    visibleTextParts.push("");
+    visibleTextPartRevisions.push([]);
+    activeTextPartIndex = visibleTextParts.length - 1;
   }
-  const visibleText = visibleSegments[activeSegmentIndex] ?? "";
+  visibleTextPartRevisions[activeTextPartIndex]?.push(revision);
+  const visibleText = visibleTextParts[activeTextPartIndex] ?? "";
   if (event.complete) {
-    if (text.startsWith(visibleText)) visibleSegments[activeSegmentIndex] = text;
-    activeSegmentIndex = undefined;
+    if (text.startsWith(visibleText)) visibleTextParts[activeTextPartIndex] = text;
+    activeTextPartIndex = undefined;
   } else if (text) {
-    visibleSegments[activeSegmentIndex] = visibleText + text;
+    visibleTextParts[activeTextPartIndex] = visibleText + text;
   }
   return {
     pendingUserTurn,
-    visibleSegments,
-    ...(activeSegmentIndex === undefined ? {} : { activeSegmentIndex }),
+    runStartRevision: current?.runStartRevision ?? runStartRevision,
+    transcriptEntries,
+    visibleTextParts,
+    visibleTextPartRevisions,
+    ...(activeTextPartIndex === undefined ? {} : { activeTextPartIndex }),
+    ...(current?.terminalSettledRevision === undefined
+      ? {}
+      : { terminalSettledRevision: current.terminalSettledRevision }),
   };
+}
+
+function idlessTranscriptOriginThroughRevision(
+  origin: NoteChatIdlessTranscriptOrigin,
+  throughRevision: number,
+): NoteChatIdlessTranscriptOrigin | undefined {
+  let snapshot: NoteChatIdlessTranscriptOrigin | undefined;
+  for (const entry of origin.transcriptEntries) {
+    if (entry.revision > throughRevision) continue;
+    snapshot = appendIdlessTranscriptTextPart(
+      origin.pendingUserTurn,
+      snapshot,
+      entry.event,
+      entry.revision,
+      origin.runStartRevision,
+    );
+  }
+  if (
+    snapshot &&
+    origin.terminalSettledRevision !== undefined &&
+    origin.terminalSettledRevision <= throughRevision
+  ) {
+    snapshot.activeTextPartIndex = undefined;
+    snapshot.terminalSettledRevision = origin.terminalSettledRevision;
+  }
+  return snapshot;
 }
 
 function noteChatTerminalFingerprint(event: JuneHermesEvent): string | undefined {
@@ -1346,32 +1523,169 @@ function persistedUserIsAfterBoundary(
 
 function persistedAssistantText(message: HermesSessionMessage): string {
   return (
-    textFromHermesContent(message.content) ??
-    textFromHermesContent(message.text) ??
-    textFromHermesContent(message.context) ??
+    textFromHermesTransportContent(message.content) ??
+    textFromHermesTransportContent(message.text) ??
+    textFromHermesTransportContent(message.context) ??
     ""
   );
+}
+
+/** The live resume projection omits database ids. Response-local ids let the
+ * existing persisted-user boundary matcher validate ordering without leaking
+ * synthetic identity into the Note Chat transcript. */
+function normalizeAtomicNoteChatResumeMessages(rawMessages: unknown[]) {
+  return normalizeHermesSessionMessagesResponse({
+    messages: rawMessages.map((message, index) => {
+      if (!message || typeof message !== "object") return message;
+      const id = (message as { id?: unknown }).id;
+      if (typeof id === "string" || typeof id === "number") return message;
+      return { ...message, id: `note-chat-resume-snapshot:${index}` };
+    }),
+  });
+}
+
+function persistedAssistantRunForAtomicNoteChatResume(
+  record: NoteChatContinuityRecord,
+  pendingUserTurn: AgentChatTurn,
+  rawMessages: unknown[],
+  pendingCompleteAssistantOrdinal: number | undefined,
+) {
+  const persistenceBoundary = record.pendingUserPersistenceBoundaries.get(pendingUserTurn.id);
+  if (!persistenceBoundary) return undefined;
+  const messages = normalizeAtomicNoteChatResumeMessages(rawMessages);
+  const persistedUserIndex = persistedPendingNoteChatUserIndexAtBoundary(
+    pendingUserTurn,
+    { ...persistenceBoundary, historyWasHydrated: true },
+    messages,
+  );
+  if (persistedUserIndex < 0) return undefined;
+
+  const followingRunMessages = messages.slice(persistedUserIndex + 1);
+  const nextUserOffset = followingRunMessages.findIndex((message) => message.role === "user");
+  const runEndIndex =
+    nextUserOffset < 0 ? messages.length : persistedUserIndex + 1 + nextUserOffset;
+  const assistantTexts: string[] = [];
+  let globalAssistantOrdinal = 0;
+  let pendingCompleteRunOrdinal: number | undefined;
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    const text = persistedAssistantText(message);
+    if (!text.trim()) continue;
+    if (index > persistedUserIndex && index < runEndIndex) {
+      if (globalAssistantOrdinal === pendingCompleteAssistantOrdinal) {
+        pendingCompleteRunOrdinal = assistantTexts.length;
+      }
+      assistantTexts.push(text);
+    }
+    globalAssistantOrdinal += 1;
+  }
+
+  const pendingProofIsExactFinalRow =
+    Number.isSafeInteger(pendingCompleteAssistantOrdinal) &&
+    (pendingCompleteAssistantOrdinal ?? -1) >= 0 &&
+    pendingCompleteAssistantOrdinal === globalAssistantOrdinal - 1 &&
+    pendingCompleteRunOrdinal === assistantTexts.length - 1;
+  return {
+    assistantTexts,
+    pendingCompleteRunOrdinal: pendingProofIsExactFinalRow ? pendingCompleteRunOrdinal : undefined,
+  };
+}
+
+function recordNoteChatResumePersistenceBoundary(
+  record: NoteChatContinuityRecord,
+  resumed: HermesRuntimeSessionResponse,
+) {
+  if (!Array.isArray(resumed.messages)) return;
+  const pendingUserTurn = record.currentRunPendingUserTurn ?? record.lastAcceptedRunPendingUserTurn;
+  if (!pendingUserTurn) return;
+  const persistedRun = persistedAssistantRunForAtomicNoteChatResume(
+    record,
+    pendingUserTurn,
+    resumed.messages,
+    resumed.pending_message_complete?.assistant_ordinal,
+  );
+  if (!persistedRun) return;
+  const origin = record.unpersistedIdlessTranscriptOrigins.get(pendingUserTurn.id);
+  record.liveStream = recordHermesIdlessTranscriptPersistenceBoundary(record.liveStream, {
+    runStartRevision: origin?.runStartRevision ?? record.runStartRevision,
+    persistedAssistantOrdinal:
+      persistedRun.pendingCompleteRunOrdinal ?? persistedRun.assistantTexts.length,
+    pendingMessageComplete: persistedRun.pendingCompleteRunOrdinal !== undefined,
+  });
 }
 
 function persistedAssistantCoversIdlessTranscript(
   origin: NoteChatIdlessTranscriptOrigin,
   persistedMessages: HermesSessionMessage[],
   persistedUserIndex: number,
+  persistedAssistantBoundaries: readonly Pick<
+    HermesIdlessTranscriptPersistenceBoundary,
+    "revision" | "persistedAssistantOrdinal" | "pendingMessageComplete"
+  >[],
 ) {
-  if (persistedUserIndex < 0) return false;
+  if (
+    persistedUserIndex < 0 ||
+    origin.activeTextPartIndex !== undefined ||
+    origin.visibleTextParts.length === 0 ||
+    origin.visibleTextParts.some((textPart) => !textPart.trim())
+  ) {
+    return false;
+  }
   const followingRunMessages = persistedMessages.slice(persistedUserIndex + 1);
   const nextUserIndex = followingRunMessages.findIndex((message) => message.role === "user");
   const runMessages =
     nextUserIndex >= 0 ? followingRunMessages.slice(0, nextUserIndex) : followingRunMessages;
-  const persistedAssistantTexts = runMessages.flatMap((message) =>
-    message.role === "assistant" ? [persistedAssistantText(message)] : [],
-  );
-  return (
-    persistedAssistantTexts.length >= origin.visibleSegments.length &&
-    origin.visibleSegments.every((segment, index) =>
-      persistedAssistantTexts[index]?.startsWith(segment),
-    )
-  );
+  const persistedAssistantTexts = runMessages.flatMap((message) => {
+    if (message.role !== "assistant") return [];
+    const text = persistedAssistantText(message);
+    return text.trim() ? [text] : [];
+  });
+  let priorBoundaryRevision = origin.runStartRevision;
+  for (const boundary of persistedAssistantBoundaries) {
+    if (
+      !Number.isSafeInteger(boundary.revision) ||
+      boundary.revision < origin.runStartRevision ||
+      boundary.revision < priorBoundaryRevision ||
+      !Number.isSafeInteger(boundary.persistedAssistantOrdinal) ||
+      boundary.persistedAssistantOrdinal < 0
+    ) {
+      return false;
+    }
+    priorBoundaryRevision = boundary.revision;
+  }
+
+  const appliedBoundaryIndexes = new Set<number>();
+  let persistedAssistantOrdinal = 0;
+  for (let textPartIndex = 0; textPartIndex < origin.visibleTextParts.length; textPartIndex += 1) {
+    const revisions = origin.visibleTextPartRevisions[textPartIndex] ?? [];
+    const firstRevision = revisions[0];
+    const lastRevision = revisions.at(-1);
+    if (firstRevision === undefined || lastRevision === undefined) return false;
+    for (
+      let boundaryIndex = 0;
+      boundaryIndex < persistedAssistantBoundaries.length;
+      boundaryIndex += 1
+    ) {
+      if (appliedBoundaryIndexes.has(boundaryIndex)) continue;
+      const boundary = persistedAssistantBoundaries[boundaryIndex];
+      if (!boundary) continue;
+      const precedesTranscript = boundary.revision < firstRevision;
+      const provesCrossingCompletion =
+        boundary.pendingMessageComplete === true && boundary.revision < lastRevision;
+      if (!precedesTranscript && !provesCrossingCompletion) continue;
+      persistedAssistantOrdinal = Math.max(
+        persistedAssistantOrdinal,
+        boundary.persistedAssistantOrdinal,
+      );
+      appliedBoundaryIndexes.add(boundaryIndex);
+    }
+    const textPart = origin.visibleTextParts[textPartIndex] ?? "";
+    if (!persistedAssistantTexts[persistedAssistantOrdinal]?.startsWith(textPart)) return false;
+    persistedAssistantOrdinal += 1;
+  }
+  return true;
 }
 
 function persistedPendingNoteChatUserIndex(
@@ -1433,12 +1747,44 @@ function persistedIdlessOriginUserIndices(
   return matches;
 }
 
+function noteChatReasoningSnapshot(
+  messages: HermesSessionMessage[],
+  liveEvents: JuneHermesEvent[] = [],
+) {
+  return buildHermesSessionChatTurns(messages, liveEvents).flatMap((turn) => {
+    const text = turn.parts
+      .filter((part) => part.type === "reasoning")
+      .map((part) => part.text)
+      .join("\n\n");
+    return text ? [{ turnId: turn.branchMessageId ?? turn.id, text }] : [];
+  });
+}
+
+function persistedHistoryCoversLiveNoteChatReasoning(record: NoteChatContinuityRecord) {
+  const liveEvents = hermesLiveEvents(record.liveStream);
+  if (!liveEvents.some((event) => event.kind === "reasoning")) return true;
+
+  // Reuse the renderer's canonical Hermes reasoning fields and reconciliation
+  // semantics. This accounts for full reasoning snapshots replacing deltas and
+  // proves that adding the live tail does not change any persisted reasoning.
+  const persisted = noteChatReasoningSnapshot(record.messages);
+  const reconciled = noteChatReasoningSnapshot(record.messages, liveEvents);
+  return (
+    persisted.length === reconciled.length &&
+    persisted.every(
+      (part, index) =>
+        part.turnId === reconciled[index]?.turnId && part.text === reconciled[index]?.text,
+    )
+  );
+}
+
 function hasUnpersistedStructuredNoteChatEntries(record: NoteChatContinuityRecord) {
   const persistedToolResultIds = new Set(
     record.messages.flatMap((message) =>
       message.role === "tool" ? [message.tool_call_id ?? message.id] : [],
     ),
   );
+  const reasoningIsPersisted = persistedHistoryCoversLiveNoteChatReasoning(record);
   return record.liveStream.entries.some(({ event }) => {
     switch (event.kind) {
       case "transcript":
@@ -1448,6 +1794,7 @@ function hasUnpersistedStructuredNoteChatEntries(record: NoteChatContinuityRecor
       case "tool":
         return !event.toolCallId || !persistedToolResultIds.has(event.toolCallId);
       case "reasoning":
+        return !reasoningIsPersisted;
       case "pending_action":
       case "pending_action_resolution":
       case "background_activity":
@@ -1555,22 +1902,52 @@ function applyNoteChatTranscriptResponse(
     idlessOrigins,
     persistedMessages,
   );
+  const compactedIdlessTranscriptRevisions = new Set<number>();
   for (const [turnId, origin] of idlessOrigins) {
+    const snapshotOrigin = idlessTranscriptOriginThroughRevision(origin, snapshot.throughRevision);
     if (
+      snapshotOrigin &&
       persistedAssistantCoversIdlessTranscript(
-        origin,
+        snapshotOrigin,
         persistedMessages,
         persistedOriginUserIndices.get(turnId) ?? -1,
+        (record.liveStream.idlessTranscriptPersistenceBoundaries ?? [])
+          .filter(
+            (boundary) =>
+              boundary.runStartRevision === snapshotOrigin.runStartRevision &&
+              boundary.revision <= snapshot.throughRevision,
+          )
+          .map((boundary) => ({
+            revision: boundary.revision,
+            persistedAssistantOrdinal: boundary.persistedAssistantOrdinal,
+            ...(boundary.pendingMessageComplete ? { pendingMessageComplete: true as const } : {}),
+          })),
       )
     ) {
-      record.unpersistedIdlessTranscriptOrigins.delete(turnId);
-      record.pendingUserPersistenceBoundaries.delete(turnId);
+      for (const { revision } of snapshotOrigin.transcriptEntries) {
+        compactedIdlessTranscriptRevisions.add(revision);
+      }
+      if (
+        record.terminalHandled &&
+        origin.transcriptEntries.every(({ revision }) => revision <= snapshot.throughRevision)
+      ) {
+        record.unpersistedIdlessTranscriptOrigins.delete(turnId);
+        record.pendingUserPersistenceBoundaries.delete(turnId);
+      }
     }
   }
   record.liveStream = reconcileHermesLiveStream(record.liveStream, {
     throughRevision: snapshot.throughRevision,
     persistedMessages: persistedAssistantMessagesById(persistedMessages),
   });
+  if (compactedIdlessTranscriptRevisions.size > 0) {
+    record.liveStream = {
+      ...record.liveStream,
+      entries: record.liveStream.entries.filter(
+        ({ revision }) => !compactedIdlessTranscriptRevisions.has(revision),
+      ),
+    };
+  }
   record.pendingUserTurns = unmatchedPendingUserTurns(record, persistedMessages);
   record.persistedThroughRevision = Math.max(
     record.persistedThroughRevision,
@@ -1696,8 +2073,10 @@ export function resetNoteChatContinuityForTest() {
   noteChatContinuityByStoredSessionId.clear();
   provisionalNoteChatContinuityByNoteId.clear();
   noteChatStoredSessionIdByRuntimeSessionId.clear();
+  noteChatStoredSessionIdsOwnedByGateway.clear();
   noteChatStoredSessionContinuityOrder.length = 0;
   runtimeResumeByStoredSessionId.clear();
+  for (const handoff of [...runtimeResumeHandoffs]) abortNoteChatRuntimeResumeHandoff(handoff);
   activeSubmissionByNoteId.clear();
   gatewayRecovery = null;
   gatewayRecoveryRetryRequested = false;
@@ -1723,6 +2102,134 @@ function noteChatTerminalStatusSummary(
   return event.kind === "error" ? event.message : "June stopped before replying.";
 }
 
+function beginNoteChatRuntimeResumeHandoff(
+  gateway: HermesGatewayClient,
+  storedSessionId: string,
+): NoteChatRuntimeResumeHandoff {
+  const handoff: NoteChatRuntimeResumeHandoff = { gateway, stagedEvents: [], storedSessionId };
+  runtimeResumeHandoffs.add(handoff);
+  return handoff;
+}
+
+function abortNoteChatRuntimeResumeHandoff(handoff: NoteChatRuntimeResumeHandoff) {
+  handoff.stagedEvents = [];
+  runtimeResumeHandoffs.delete(handoff);
+}
+
+function abortNoteChatRuntimeResumeHandoffsForGateway(gateway: HermesGatewayClient) {
+  for (const handoff of [...runtimeResumeHandoffs]) {
+    if (handoff.gateway === gateway) abortNoteChatRuntimeResumeHandoff(handoff);
+  }
+}
+
+function stageNoteChatRuntimeResumeEvent(gateway: HermesGatewayClient, event: HermesGatewayEvent) {
+  const pendingHandoffs = [...runtimeResumeHandoffs].filter(
+    (handoff) => handoff.gateway === gateway,
+  );
+  if (pendingHandoffs.length === 0) return false;
+
+  const eventRuntimeSessionId = event.session_id;
+  if (!eventRuntimeSessionId) {
+    const classified = classifyHermesEvent(event);
+    const attributedStoredSessionId = isTerminalHermesEvent(classified)
+      ? soleWorkingNoteChatStoredSessionId()
+      : undefined;
+    if (!attributedStoredSessionId) return true;
+    const attributedEvent = { ...event, session_id: attributedStoredSessionId };
+    const matchingHandoff = pendingHandoffs.find(
+      (handoff) => handoff.storedSessionId === attributedStoredSessionId,
+    );
+    if (!matchingHandoff) return false;
+    matchingHandoff.stagedEvents.push(attributedEvent);
+    return true;
+  }
+
+  for (const handoff of pendingHandoffs) handoff.stagedEvents.push(event);
+  const routedStoredSessionId =
+    noteChatStoredSessionIdByRuntimeSessionId.get(eventRuntimeSessionId) ??
+    (noteChatContinuityByStoredSessionId.has(eventRuntimeSessionId)
+      ? eventRuntimeSessionId
+      : undefined);
+  return (
+    !routedStoredSessionId ||
+    pendingHandoffs.some((handoff) => handoff.storedSessionId === routedStoredSessionId)
+  );
+}
+
+function completeNoteChatRuntimeResumeHandoff(
+  handoff: NoteChatRuntimeResumeHandoff,
+  runtimeSessionId: string,
+  retiredApprovalRequestIds: readonly string[] | undefined,
+) {
+  const stagedEvents = handoff.stagedEvents;
+  handoff.stagedEvents = [];
+  runtimeResumeHandoffs.delete(handoff);
+  const hasRetirementProof = retiredApprovalRequestIds !== undefined;
+  const retiredApprovalRequestIdSet = new Set(retiredApprovalRequestIds ?? []);
+
+  for (const rawEvent of stagedEvents) {
+    const event = classifyHermesEvent(rawEvent);
+    const eventRuntimeOrStoredSessionId = "sessionId" in event ? event.sessionId : undefined;
+    if (
+      eventRuntimeOrStoredSessionId &&
+      eventRuntimeOrStoredSessionId !== runtimeSessionId &&
+      eventRuntimeOrStoredSessionId !== handoff.storedSessionId
+    ) {
+      continue;
+    }
+    if (
+      !eventRuntimeOrStoredSessionId &&
+      (!isTerminalHermesEvent(event) ||
+        soleWorkingNoteChatStoredSessionId() !== handoff.storedSessionId)
+    ) {
+      continue;
+    }
+    const stagedApprovalRequestId =
+      (event.kind === "pending_action" ||
+        event.kind === "pending_action_resolution" ||
+        event.kind === "pending_action_expiration") &&
+      event.action.kind === "approval"
+        ? event.action.requestId
+        : undefined;
+    if (
+      stagedApprovalRequestId &&
+      (!hasRetirementProof || retiredApprovalRequestIdSet.has(stagedApprovalRequestId))
+    ) {
+      continue;
+    }
+    dispatchNoteChatControlPlaneEvent(event);
+  }
+}
+
+function reconcileNoteChatRuntimeResumeSnapshot(
+  storedSessionId: string,
+  record: NoteChatContinuityRecord,
+  resumed: HermesRuntimeSessionResponse,
+) {
+  if (!record.working || record.terminalHandled || record.stopped) return;
+  const assistant = resumed.inflight?.assistant;
+  if (typeof assistant !== "string" || assistant.length === 0) return;
+  const current = record.liveStream;
+  const reconciled = reconcileHermesInflightSnapshot(current, {
+    storedSessionId,
+    assistant,
+    receivedAt: new Date().toISOString(),
+    bootstrapIfMissing: resumed.running !== false && resumed.inflight?.streaming !== false,
+  });
+  if (reconciled === current) return;
+  record.liveStream = reconciled;
+  notifyNoteChatStoredSessionContinuity(storedSessionId, record);
+}
+
+function refreshNoteChatPersistenceAfterRuntimeResume(
+  storedSessionId: string,
+  record: NoteChatContinuityRecord,
+) {
+  void refreshNoteChatContinuityRecord(storedSessionId, record).then((applied) => {
+    if (applied) notifyNoteChatStoredSessionContinuity(storedSessionId, record);
+  });
+}
+
 async function connectGateway(startIfNeeded: boolean): Promise<HermesGatewayClient | null> {
   if (sharedGatewayConnecting) return sharedGatewayConnecting;
   const attempt = (async () => {
@@ -1739,6 +2246,7 @@ async function connectGateway(startIfNeeded: boolean): Promise<HermesGatewayClie
       const gateway = new HermesGatewayClient();
       gateway.onEvent((raw) => {
         if (sharedGateway !== gateway) return;
+        if (stageNoteChatRuntimeResumeEvent(gateway, raw)) return;
         dispatchNoteChatControlPlaneEvent(classifyHermesEvent(raw));
       });
       // Unexpected drop: forget the client so the next submit reconnects
@@ -1746,6 +2254,11 @@ async function connectGateway(startIfNeeded: boolean): Promise<HermesGatewayClie
       // the socket.
       gateway.onClose(() => {
         if (sharedGateway !== gateway) return;
+        // The close callback is June's physical-detach boundary. Mirror the
+        // embedded runtime's fail-closed approval policy before invalidating
+        // the runtime session id aliases or starting replacement transport work.
+        retireOpenNoteChatApprovalsForGatewayClose(noteChatStoredSessionIdsOwnedByGateway);
+        abortNoteChatRuntimeResumeHandoffsForGateway(gateway);
         sharedGateway = null;
         gatewayEpoch += 1;
         runtimeResumeByStoredSessionId.clear();
@@ -1796,8 +2309,9 @@ function resumeNoteChatRuntimeSession(
       return Promise.resolve(undefined);
     }
     if (record.runtimeSessionId) return Promise.resolve(record.runtimeSessionId);
-    const resumeEpoch = gatewayEpoch;
+    const resumeGatewayEpoch = gatewayEpoch;
     if (sharedGateway !== gateway) return Promise.resolve(undefined);
+    const resumeHandoff = beginNoteChatRuntimeResumeHandoff(gateway, storedSessionId);
     return gateway
       .request<HermesRuntimeSessionResponse>("session.resume", {
         session_id: storedSessionId,
@@ -1807,8 +2321,8 @@ function resumeNoteChatRuntimeSession(
         const runtimeSessionId = resumed.session_id;
         if (!runtimeSessionId) throw new Error("Hermes did not resume the session.");
         // A response from a socket that closed while session.resume was in flight
-        // cannot own the runtime alias used by the replacement gateway.
-        if (sharedGateway !== gateway || gatewayEpoch !== resumeEpoch) return undefined;
+        // cannot own the runtime session id alias used by the replacement gateway.
+        if (sharedGateway !== gateway || gatewayEpoch !== resumeGatewayEpoch) return undefined;
         if (
           record.runtimeIntentEpoch !== intentEpoch ||
           !record.working ||
@@ -1832,8 +2346,30 @@ function resumeNoteChatRuntimeSession(
           return undefined;
         }
         registerNoteChatRuntimeSession(storedSessionId, runtimeSessionId);
+        notifyNoteChatStoredSessionContinuity(storedSessionId, record);
+        // The successful response is the server-side handoff barrier: the old
+        // notifier generation is deactivated and drained before these staged
+        // replacement frames become actionable. Bind the replacement runtime
+        // session id first, replay transport frames second, then fill only a
+        // monotonic missing suffix from the atomic in-flight snapshot.
+        const retiredApprovalRequestIds = Array.isArray(resumed.retired_approval_request_ids)
+          ? resumed.retired_approval_request_ids.filter(
+              (requestId): requestId is string => typeof requestId === "string",
+            )
+          : undefined;
+        recordNoteChatResumePersistenceBoundary(record, resumed);
+        completeNoteChatRuntimeResumeHandoff(
+          resumeHandoff,
+          runtimeSessionId,
+          retiredApprovalRequestIds,
+        );
+        reconcileNoteChatRuntimeResumeSnapshot(storedSessionId, record, resumed);
+        if (Array.isArray(resumed.messages) || resumed.running === false) {
+          refreshNoteChatPersistenceAfterRuntimeResume(storedSessionId, record);
+        }
         return runtimeSessionId;
-      });
+      })
+      .finally(() => abortNoteChatRuntimeResumeHandoff(resumeHandoff));
   };
   const attempt = (predecessor ? predecessor.then(resume) : resume()).finally(() => {
     if (runtimeResumeByStoredSessionId.get(storedSessionId)?.promise === attempt) {
@@ -1848,8 +2384,9 @@ function recoverNoteChatRuntimeSession(
   gateway: HermesGatewayClient,
   storedSessionId: string,
   owner: NoteChatRuntimeRecoveryOwner,
+  transportHandoff: ReturnType<typeof reserveHermesSessionTransportHandoff>,
 ) {
-  return withHermesSessionDispatchLock(storedSessionId, async () => {
+  return transportHandoff.run(async () => {
     if (!noteChatRuntimeRecoveryIsCurrent(storedSessionId, owner)) return undefined;
     return resumeNoteChatRuntimeSession(gateway, storedSessionId, () =>
       noteChatRuntimeRecoveryIsCurrent(storedSessionId, owner),
@@ -1869,14 +2406,22 @@ function recoverWorkingNoteChatRuntimeSessions(): Promise<void> {
     },
   );
   if (recoveryOwners.length === 0) return Promise.resolve();
+  // Reserve synchronously at the physical-close boundary. This handoff gate
+  // deliberately overtakes an ordinary dispatch that is dormant until the
+  // replacement stream supplies its predecessor terminal.
+  const recoveryHandoffs = recoveryOwners.map(({ storedSessionId, owner }) => ({
+    owner,
+    storedSessionId,
+    transportHandoff: reserveHermesSessionTransportHandoff(storedSessionId),
+  }));
 
   const recovery = (async () => {
     try {
       const gateway = await connectGateway(true);
       if (!gateway) return;
       await Promise.allSettled(
-        recoveryOwners.map(async ({ storedSessionId, owner }) => {
-          await recoverNoteChatRuntimeSession(gateway, storedSessionId, owner);
+        recoveryHandoffs.map(async ({ storedSessionId, owner, transportHandoff }) => {
+          await recoverNoteChatRuntimeSession(gateway, storedSessionId, owner, transportHandoff);
         }),
       );
     } catch {
@@ -1884,6 +2429,7 @@ function recoverWorkingNoteChatRuntimeSessions(): Promise<void> {
       // authoritative if reconnecting the live socket is not possible yet.
     }
   })().finally(() => {
+    for (const { transportHandoff } of recoveryHandoffs) transportHandoff.cancel();
     if (gatewayRecovery !== recovery) return;
     gatewayRecovery = null;
     if (gatewayRecoveryRetryRequested) {
@@ -1923,11 +2469,7 @@ function persistedAssistantMessagesById(messages: HermesSessionMessage[]) {
   const persisted = new Map<string, string>();
   for (const message of messages) {
     if (message.role !== "assistant" || !message.id) continue;
-    const text =
-      textFromHermesContent(message.content) ??
-      textFromHermesContent(message.text) ??
-      textFromHermesContent(message.context) ??
-      "";
+    const text = persistedAssistantText(message);
     persisted.set(message.id, text);
   }
   return persisted;
@@ -2132,7 +2674,13 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   useEffect(
     () =>
       subscribeToNoteChatContinuity((update) => {
-        if (update.noteId !== noteId) return;
+        if (
+          update.noteId !== undefined
+            ? update.noteId !== noteId
+            : update.storedSessionId !== storedSessionIdRef.current
+        ) {
+          return;
+        }
         storedSessionIdRef.current = update.storedSessionId;
         setStoredSessionId(update.storedSessionId);
         bindMountedContinuityRecord(update.record);
@@ -2313,7 +2861,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   useEffect(
     () =>
       subscribeToGatewayClose(() => {
-        // Never let a later send reuse a runtime id owned by the dead socket.
+        // Never let a later send reuse a runtime session id owned by the dead socket.
         runtimeSessionIdRef.current = undefined;
         const currentStoredSessionId = storedSessionIdRef.current;
         const recoveryRecord = continuityRecordRef.current;
@@ -2336,13 +2884,11 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         recoveringGatewayRef.current = true;
         void (async () => {
           try {
-            const gateway = await connectGateway(true);
-            if (!gateway) return;
-            const runtimeSessionId = await recoverNoteChatRuntimeSession(
-              gateway,
-              currentStoredSessionId,
-              recoveryOwner,
-            );
+            // The module close handler reserves every transport handoff before
+            // notifying mounted views. Reuse that recovery instead of adding a
+            // normal dispatch reservation that could deadlock behind a dormant send.
+            await (gatewayRecovery ?? recoverWorkingNoteChatRuntimeSessions());
+            const runtimeSessionId = recoveryRecord.runtimeSessionId;
             if (
               runtimeSessionId &&
               noteChatRuntimeRecoveryIsCurrent(currentStoredSessionId, recoveryOwner) &&

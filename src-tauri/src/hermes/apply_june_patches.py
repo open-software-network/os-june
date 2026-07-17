@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-v1"
+PATCH_SET = "june-approval-v2"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "tools/approval.py": "e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85",
@@ -24,9 +24,9 @@ UPSTREAM_SHA256: Dict[str, str] = {
 # Filled after applying the transformations to the exact upstream files. These
 # hashes are part of the runtime provenance contract, not best-effort checks.
 PATCHED_SHA256: Dict[str, str] = {
-    "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
+    "tools/approval.py": "cb3cb292e34121dbfa452eea78243ce8ca1c31029f8cd047a3d8cc4f01c26df9",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "41197c75c3aee760a05a8ecdce4daa3d0ca7f62b34486f29a21f097086a4ef4e",
+    "tui_gateway/server.py": "1d5936df605119d67577b5b8aa07a7e49dff69a5a97474b9c6ec9710655c3d51",
 }
 
 
@@ -86,6 +86,40 @@ def patch_approval(source: str) -> str:
         self.retired_reason: Optional[str] = None
 
 
+class _GatewayNotify:
+    """One transport generation of the session approval notifier."""
+
+    __slots__ = ("_active", "_callback", "_condition", "_inflight")
+
+    def __init__(self, callback):
+        self._active = True
+        self._callback = callback
+        self._condition = threading.Condition()
+        self._inflight = 0
+
+    def __call__(self, approval_data: dict) -> None:
+        with self._condition:
+            if not self._active:
+                raise RuntimeError("gateway approval notifier generation is retired")
+            self._inflight += 1
+        try:
+            self._callback(approval_data)
+        finally:
+            with self._condition:
+                self._inflight -= 1
+                if self._inflight == 0:
+                    self._condition.notify_all()
+
+    def deactivate(self) -> None:
+        with self._condition:
+            self._active = False
+
+    def wait_until_idle(self) -> None:
+        with self._condition:
+            while self._inflight:
+                self._condition.wait()
+
+
 _MAX_GATEWAY_APPROVALS_PER_SESSION = 32
 _MAX_GATEWAY_APPROVAL_ALIASES = 16
 _MAX_COMPLETED_GATEWAY_APPROVALS_PER_SESSION = 128
@@ -99,7 +133,7 @@ _gateway_completed: dict[str, dict] = {}     # session_key → request_id → ch
 def register_gateway_notify(session_key: str, cb, expire_cb=None) -> None:
     """Register callbacks for approval requests and fail-closed retirement."""
     with _lock:
-        _gateway_notify_cbs[session_key] = cb
+        _gateway_notify_cbs[session_key] = _GatewayNotify(cb)
         if expire_cb is None:
             _gateway_expire_cbs.pop(session_key, None)
         else:
@@ -145,12 +179,16 @@ def _remember_gateway_entry_completion_locked(
 def unregister_gateway_notify(session_key: str) -> None:
     """Unregister callbacks and fail closed every blocked approval."""
     with _lock:
-        _gateway_notify_cbs.pop(session_key, None)
+        notifier = _gateway_notify_cbs.pop(session_key, None)
+        if notifier is not None:
+            notifier.deactivate()
         expire_cb = _gateway_expire_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
         for entry in entries:
             entry.retired_reason = "disconnect"
             _remember_gateway_entry_completion_locked(session_key, entry, None)
+    if notifier is not None:
+        notifier.wait_until_idle()
     for entry in entries:
         entry.event.set()
         if expire_cb is not None:
@@ -158,6 +196,48 @@ def unregister_gateway_notify(session_key: str) -> None:
                 expire_cb({"request_id": entry.request_id, "reason": "disconnect"})
             except Exception as exc:
                 logger.warning("Gateway approval expiration notify failed: %s", exc)
+
+
+def replace_gateway_notify(session_key: str, cb, expire_cb=None) -> list[str]:
+    """Install a new transport notifier after retiring the old generation.
+
+    The replacement is visible atomically under the approval lock. Calls that
+    already entered the old notifier finish before this function returns;
+    captured calls that have not entered fail when they observe deactivation.
+    Every queued old-generation approval is tombstoned and signaled fail closed.
+    The returned ids let session.resume distinguish retired pre-ACK frames from
+    genuinely fresh requests emitted by the replacement generation.
+    """
+    replacement = _GatewayNotify(cb)
+    with _lock:
+        notifier = _gateway_notify_cbs.get(session_key)
+        if notifier is not None:
+            notifier.deactivate()
+        _gateway_notify_cbs[session_key] = replacement
+        previous_expire_cb = _gateway_expire_cbs.get(session_key)
+        if expire_cb is None:
+            _gateway_expire_cbs.pop(session_key, None)
+        else:
+            _gateway_expire_cbs[session_key] = expire_cb
+        entries = _gateway_queues.pop(session_key, [])
+        retired_request_ids = set()
+        for entry in entries:
+            entry.retired_reason = "transport_handoff"
+            retired_request_ids.update(entry.request_ids)
+            _remember_gateway_entry_completion_locked(session_key, entry, None)
+
+    if notifier is not None:
+        notifier.wait_until_idle()
+    for entry in entries:
+        entry.event.set()
+        if previous_expire_cb is not None:
+            try:
+                previous_expire_cb(
+                    {"request_id": entry.request_id, "reason": "transport_handoff"}
+                )
+            except Exception as exc:
+                logger.warning("Gateway approval expiration notify failed: %s", exc)
+    return sorted(retired_request_ids)
 
 
 def resolve_gateway_approval(
@@ -258,6 +338,17 @@ def has_blocking_approval(session_key: str) -> bool:
         if completed is not None:
             choice = completed.get("choice")
             return {"resolved": choice is not None, "choice": choice, "replayed": True}
+        if (
+            isinstance(notify_cb, _GatewayNotify)
+            and _gateway_notify_cbs.get(session_key) is not notify_cb
+        ):
+            _remember_gateway_completion_locked(session_key, request_id, None)
+            return {
+                "resolved": False,
+                "choice": None,
+                "notify_failed": True,
+                "reason": "notifier_replaced",
+            }
 
         queue = _gateway_queues.setdefault(session_key, [])
         entry = next((candidate for candidate in queue if candidate.request_id == request_id), None)
@@ -535,27 +626,418 @@ def patch_mcp_tool(source: str) -> str:
 def patch_server(source: str) -> str:
     source = replace_once(
         source,
-        '''            session["transport"] = _detached_ws_transport
+        '''def _emit(event: str, sid: str, payload: dict | None = None):
+    params = {"type": event, "session_id": sid}
+    if payload is not None:
+        params["payload"] = payload
+    write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+''',
+        '''def _emit(
+    event: str,
+    sid: str,
+    payload: dict | None = None,
+    *,
+    transport: Transport | None = None,
+):
+    params = {"type": event, "session_id": sid}
+    if payload is not None:
+        params["payload"] = payload
+    frame = {"jsonrpc": "2.0", "method": "event", "params": params}
+    if transport is not None:
+        return transport.write(frame)
+    return write_json(frame)
+
+
+_PENDING_MESSAGE_COMPLETE_TEXT = "_june_pending_message_complete_text"
+_PENDING_MESSAGE_COMPLETE_PAYLOAD = "_june_pending_message_complete_payload"
+_DEFERRED_GOAL_FOLLOWUP = "_june_deferred_goal_followup"
+_AUTONOMOUS_TURN_RESUME_BARRIER = "_june_autonomous_turn_resume_barrier"
+
+
+def _clear_pending_message_complete(session: dict) -> None:
+    session.pop(_PENDING_MESSAGE_COMPLETE_TEXT, None)
+    session.pop(_PENDING_MESSAGE_COMPLETE_PAYLOAD, None)
+
+
+def _message_complete_is_pending(session: dict) -> bool:
+    return isinstance(session.get(_PENDING_MESSAGE_COMPLETE_PAYLOAD), dict)
+
+
+def _autonomous_turn_waits_for_resume_response(session: dict) -> bool:
+    return bool(session.get(_AUTONOMOUS_TURN_RESUME_BARRIER))
+
+
+def _defer_goal_followup(session: dict, rid: Any, text: Any) -> None:
+    followup = "" if text is None else str(text)
+    if followup:
+        session[_DEFERRED_GOAL_FOLLOWUP] = {
+            "rid": rid,
+            "resume_response_delivered": False,
+            "text": followup,
+        }
+
+
+def _release_autonomous_turns_after_resume_response(
+    response: dict, response_transport: Transport
+) -> None:
+    # Long-handler dispatch calls this only after the session.resume response is
+    # accepted by its transport. Keeping the wake-up behind that write prevents
+    # a newly started continuation from racing ahead of the resume snapshot.
+    result = response.get("result") if isinstance(response, dict) else None
+    sid = str(result.get("session_id") or "") if isinstance(result, dict) else ""
+    if not sid:
+        return
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    if not isinstance(session, dict):
+        return
+    with session["history_lock"]:
+        if session.get("transport") is not response_transport:
+            return
+        if session.get(_AUTONOMOUS_TURN_RESUME_BARRIER) is not response_transport:
+            return
+        session.pop(_AUTONOMOUS_TURN_RESUME_BARRIER, None)
+        followup = session.get(_DEFERRED_GOAL_FOLLOWUP)
+        if isinstance(followup, dict):
+            followup["resume_response_delivered"] = True
+
+
+def _take_deferred_goal_followup(session: dict) -> dict | None:
+    # The notification poller is the durable wake-up path after session.resume
+    # retries the older completion. Claiming under history_lock preserves the
+    # existing "user prompt wins" race and prevents two poller iterations from
+    # starting the same continuation.
+    with session["history_lock"]:
+        if (
+            session.get("running")
+            or _message_complete_is_pending(session)
+            or _autonomous_turn_waits_for_resume_response(session)
+        ):
+            return None
+        followup = session.get(_DEFERRED_GOAL_FOLLOWUP)
+        if (
+            not isinstance(followup, dict)
+            or not followup.get("resume_response_delivered")
+            or not str(followup.get("text") or "")
+        ):
+            return None
+        session.pop(_DEFERRED_GOAL_FOLLOWUP, None)
+        session["running"] = True
+        return {"rid": followup.get("rid"), "text": followup["text"]}
+
+
+def _content_bearing_assistant_texts(history: list[dict]) -> list[str]:
+    return [
+        str(message.get("text") or "")
+        for message in _history_to_messages(history)
+        if message.get("role") == "assistant"
+        and str(message.get("text") or "").strip()
+    ]
+
+
+def _pending_message_complete_proof(
+    history: list[dict], completed_text: Any
+) -> dict | None:
+    text = "" if completed_text is None else str(completed_text)
+    if not text.strip():
+        return None
+    assistant_texts = _content_bearing_assistant_texts(history)
+    # Exact final-row equality is deliberate. Anything else cannot prove which
+    # persisted row an ID-less completion belongs to and must fail closed.
+    if not assistant_texts or assistant_texts[-1] != text:
+        return None
+    return {"assistant_ordinal": len(assistant_texts) - 1}
+
+
+def _mark_pending_message_complete(
+    session: dict,
+    previous_history: list[dict],
+    history: list[dict],
+    completed_text: Any,
+) -> None:
+    # Caller owns history_lock so committing the row and publishing this marker
+    # are one transaction with session.resume's snapshot/transport swap.
+    # A later run must never replace proof for an exact completion that no
+    # transport has accepted. All turn-entry paths defer while this is true;
+    # this guard keeps the invariant fail-closed if a future path misses it.
+    if _message_complete_is_pending(session):
+        return
+    session.pop(_PENDING_MESSAGE_COMPLETE_TEXT, None)
+    previous_assistant_texts = _content_bearing_assistant_texts(previous_history)
+    assistant_texts = _content_bearing_assistant_texts(history)
+    # Text equality alone cannot distinguish a newly committed reply from an
+    # unchanged earlier identical row. Require the exact previous assistant
+    # sequence to remain a prefix and at least one new content-bearing row.
+    if (
+        len(assistant_texts) <= len(previous_assistant_texts)
+        or assistant_texts[: len(previous_assistant_texts)]
+        != previous_assistant_texts
+    ):
+        return
+    if _pending_message_complete_proof(history, completed_text) is not None:
+        session[_PENDING_MESSAGE_COMPLETE_TEXT] = str(completed_text)
+
+
+def _deliver_message_complete(session: dict, sid: str, payload: dict) -> bool:
+    # Keep selection, write, and outcome inside the same history-lock boundary
+    # as _live_session_payload's transport swap. A failed Transport.write must
+    # retain the exact payload and any available proof for a replacement.
+    with session["history_lock"]:
+        if _message_complete_is_pending(session):
+            raise RuntimeError(
+                "cannot replace an undelivered message.complete payload"
+            )
+        _clear_inflight_turn(session)
+        session[_PENDING_MESSAGE_COMPLETE_PAYLOAD] = {
+            "session_id": sid,
+            "payload": payload,
+        }
+        transport = session.get("transport") or current_transport() or _stdio_transport
+        delivered = bool(
+            _emit("message.complete", sid, payload, transport=transport)
+        )
+        if delivered:
+            _clear_pending_message_complete(session)
+        return delivered
+
+
+def _retry_pending_message_complete(
+    session: dict,
+    transport: Transport,
+    *,
+    wait_for_resume_response: bool = False,
+) -> bool:
+    # Original emission and resume retry use the same lock, so only one can
+    # observe and successfully clear a retained payload.
+    with session["history_lock"]:
+        pending = session.get(_PENDING_MESSAGE_COMPLETE_PAYLOAD)
+        if not isinstance(pending, dict):
+            return False
+        delivered = bool(
+            _emit(
+                "message.complete",
+                pending["session_id"],
+                pending["payload"],
+                transport=transport,
+            )
+        )
+        if delivered:
+            _clear_pending_message_complete(session)
+            if wait_for_resume_response:
+                session[_AUTONOMOUS_TURN_RESUME_BARRIER] = transport
+        return delivered
+''',
+        "server atomic pending-complete transport proof",
+    )
+    source = replace_once(
+        source,
+        '''def _live_session_payload(
+    sid: str,
+    session: dict,
+    *,
+    cols: int | None = None,
+    touch: bool = False,
+    transport: Transport | None = None,
+) -> dict:
+''',
+        '''def _live_session_payload(
+    sid: str,
+    session: dict,
+    *,
+    cols: int | None = None,
+    touch: bool = False,
+    transport: Transport | None = None,
+    autonomous_turn_response_transport: Transport | None = None,
+) -> dict:
+''',
+        "server live-resume autonomous response barrier argument",
+    )
+    source = replace_once(
+        source,
+        '''        if transport is not None:
+            session["transport"] = transport
+        if touch:
+''',
+        '''        if transport is not None:
+            session["transport"] = transport
+        if autonomous_turn_response_transport is not None:
+            # Arm in the same history-lock transaction as the transport swap
+            # and resume snapshot. No autonomous turn can claim the gap between
+            # a completion write and its corresponding resume response.
+            session[_AUTONOMOUS_TURN_RESUME_BARRIER] = (
+                autonomous_turn_response_transport
+            )
+        if touch:
+''',
+        "server live-resume autonomous response barrier arm",
+    )
+    source = replace_once(
+        source,
+        '''        inflight = _inflight_snapshot(session)
+        running = bool(session.get("running"))
+    payload = {
+        "info": _fallback_session_info(session),
+        "message_count": len(history),
+        "messages": _history_to_messages(history),
+''',
+        '''        inflight = _inflight_snapshot(session)
+        running = bool(session.get("running"))
+        pending_message_complete_text = session.get(_PENDING_MESSAGE_COMPLETE_TEXT)
+    messages = _history_to_messages(history)
+    payload = {
+        "info": _fallback_session_info(session),
+        "message_count": len(history),
+        "messages": messages,
+''',
+        "server resume pending-complete snapshot",
+    )
+    source = replace_once(
+        source,
+        '''    if inflight:
+        payload["inflight"] = inflight
+    return payload
+''',
+        '''    if inflight:
+        payload["inflight"] = inflight
+    pending_message_complete = _pending_message_complete_proof(
+        history, pending_message_complete_text
+    )
+    if pending_message_complete is not None:
+        payload["pending_message_complete"] = pending_message_complete
+    return payload
+''',
+        "server resume pending-complete response",
+    )
+    source = replace_once(
+        source,
+        '''                        if current_version == history_version:
+                            session["history"] = result["messages"]
+                            session["history_version"] = history_version + 1
+''',
+        '''                        if current_version == history_version:
+                            session["history"] = result["messages"]
+                            session["history_version"] = history_version + 1
+                            proof_history_prefix = list(
+                                session.get("display_history_prefix") or []
+                            )
+                            _mark_pending_message_complete(
+                                session,
+                                proof_history_prefix + list(history),
+                                proof_history_prefix + list(result["messages"]),
+                                result.get("final_response", ""),
+                            )
+''',
+        "server pending-complete history commit",
+    )
+    source = replace_once(
+        source,
+        '''            with session["history_lock"]:
+                _clear_inflight_turn(session)
+            _emit("message.complete", sid, payload)
+''',
+        '''            _deliver_message_complete(session, sid, payload)
+''',
+        "server atomic message-complete delivery",
+    )
+    source = replace_once(
+        source,
+        '''    if (t := current_transport()) is not None:
+        session["transport"] = t
+    with session["history_lock"]:
+        if session.get("running"):
+''',
+        '''    request_transport = current_transport()
+    if request_transport is not None:
+        session["transport"] = request_transport
+        _retry_pending_message_complete(session, request_transport)
+    with session["history_lock"]:
+        if _message_complete_is_pending(session):
+            return _err(rid, 4009, "previous completion awaiting reconnect")
+        if _autonomous_turn_waits_for_resume_response(session):
+            return _err(rid, 4009, "session resume response still settling")
+        if session.get("running"):
+''',
+        "server prompt retry before next run",
+    )
+    source = replace_once(
+        source,
+        '''        session["running"] = True
+        session["last_active"] = time.time()
+        _start_inflight_turn(session, text)
+''',
+        '''        # A real user prompt wins over a deferred goal continuation,
+        # matching the existing race semantics after the prior completion lands.
+        session.pop(_DEFERRED_GOAL_FOLLOWUP, None)
+        session["running"] = True
+        session["last_active"] = time.time()
+        _start_inflight_turn(session, text)
+''',
+        "server user prompt wins deferred goal",
+    )
+    source = replace_once(
+        source,
+        '''            if resp is not None:
+                t.write(resp)
+''',
+        '''            if resp is not None:
+                response_delivered = t.write(resp)
+                if response_delivered and method == "session.resume":
+                    _release_autonomous_turns_after_resume_response(resp, t)
+''',
+        "server resume response ordered before deferred goal",
+    )
+    source = replace_once(
+        source,
+        '''    for sid, session in owned:
+        if session.get("close_on_disconnect"):
+            _close_session_by_id(sid, end_reason=end_reason)
+            reaped += 1
+        else:
+            # Point detached sessions at the drop sentinel (NOT real stdio) so
+            # _ws_session_is_orphaned recognizes them and the grace-reap can
+            # actually fire; a standalone `hermes --tui` keeps real _stdio.
+            session["transport"] = _detached_ws_transport
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)
-''',
-        '''            session["transport"] = _detached_ws_transport
-            detached += 1
-            # A parked session can be resumed, but an approval tied to the
-            # disconnected client cannot. Drain it immediately fail closed;
-            # session.resume registers a fresh callback for future requests.
-            try:
-                from tools.approval import unregister_gateway_notify
-
-                if key := session.get("session_key"):
-                    unregister_gateway_notify(key)
             except Exception:
                 pass
-            try:
-                _schedule_ws_orphan_reap(sid)
 ''',
-        "server disconnect approval drain",
+        '''    for sid, session in owned:
+        # Serialize the ownership re-check and detach against session.resume.
+        # The initial snapshot can go stale while the replacement transport is
+        # rebinding this session; cleanup for the old socket must not clobber the
+        # new transport or unregister its notifier generation.
+        with _session_resume_lock:
+            with _sessions_lock:
+                if _sessions.get(sid) is not session:
+                    continue
+                if session.get("transport") is not transport:
+                    continue
+                close_on_disconnect = bool(session.get("close_on_disconnect"))
+                if not close_on_disconnect:
+                    session["transport"] = _detached_ws_transport
+            if close_on_disconnect:
+                if _close_session_by_id(sid, end_reason=end_reason):
+                    reaped += 1
+            else:
+                # Point detached sessions at the drop sentinel (NOT real stdio)
+                # so the grace reaper recognizes them. Drain approvals while the
+                # same resume lock still protects the transport boundary.
+                detached += 1
+                try:
+                    from tools.approval import unregister_gateway_notify
+
+                    if key := session.get("session_key"):
+                        unregister_gateway_notify(key)
+                except Exception:
+                    pass
+                try:
+                    _schedule_ws_orphan_reap(sid)
+                except Exception:
+                    pass
+''',
+        "server disconnect ownership and approval drain",
     )
     source = replace_once(
         source,
@@ -597,6 +1079,231 @@ def patch_server(source: str) -> str:
         )
 ''',
         "server exec approval callbacks",
+    )
+    source = replace_once(
+        source,
+        '''    _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    while not stop_event.is_set() and not session.get("_finalized"):
+        try:
+            evt = process_registry.completion_queue.get(timeout=0.5)
+''',
+        '''    _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    while not stop_event.is_set() and not session.get("_finalized"):
+        # Goal continuations blocked by an undelivered message.complete stay on
+        # the session until resume retries that exact frame. This existing
+        # long-lived poller wakes them without racing the resume response path.
+        deferred_goal = _take_deferred_goal_followup(session)
+        if deferred_goal is not None:
+            try:
+                _emit("message.start", sid)
+                _run_prompt_submit(
+                    deferred_goal["rid"], sid, session, deferred_goal["text"]
+                )
+            except Exception as exc:
+                print(
+                    f"[tui_gateway] deferred goal dispatch failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                with session["history_lock"]:
+                    session["running"] = False
+                    _defer_goal_followup(
+                        session, deferred_goal["rid"], deferred_goal["text"]
+                    )
+                time.sleep(0.1)
+            continue
+        try:
+            evt = process_registry.completion_queue.get(timeout=0.5)
+''',
+        "server deferred goal poller wake-up",
+    )
+    source = replace_once(
+        source,
+        '''        with session["history_lock"]:
+            if session.get("running"):
+                process_registry.completion_queue.put(evt)
+                continue
+            session["running"] = True
+''',
+        '''        defer_notification = False
+        with session["history_lock"]:
+            if (
+                session.get("running")
+                or _message_complete_is_pending(session)
+                or _autonomous_turn_waits_for_resume_response(session)
+                or _DEFERRED_GOAL_FOLLOWUP in session
+            ):
+                process_registry.completion_queue.put(evt)
+                defer_notification = True
+            else:
+                session["running"] = True
+        if defer_notification:
+            # The shared queue can hand this poller the same event immediately.
+            # Back off outside history_lock so reconnect and sibling sessions
+            # can make progress instead of spinning on a retained completion.
+            time.sleep(0.1)
+            continue
+''',
+        "server notification poller pending-complete deferral",
+    )
+    source = replace_once(
+        source,
+        '''        with session["history_lock"]:
+            if session.get("running"):
+                process_registry.completion_queue.put(evt)
+                break
+            session["running"] = True
+''',
+        '''        with session["history_lock"]:
+            if (
+                session.get("running")
+                or _message_complete_is_pending(session)
+                or _autonomous_turn_waits_for_resume_response(session)
+                or _DEFERRED_GOAL_FOLLOWUP in session
+            ):
+                process_registry.completion_queue.put(evt)
+                break
+            session["running"] = True
+''',
+        "server notification shutdown-drain pending-complete deferral",
+    )
+    source = replace_once(
+        source,
+        '''    def _reuse_live_payload(sid: str, session: dict) -> dict:
+        payload = _live_session_payload(
+            sid,
+            session,
+            cols=cols,
+            touch=True,
+            transport=current_transport() or _stdio_transport,
+        )
+        payload["resumed"] = target
+''',
+        '''    def _reuse_live_payload(sid: str, session: dict) -> dict:
+        resume_transport = current_transport() or _stdio_transport
+        previous_transport = session.get("transport")
+        payload = _live_session_payload(
+            sid,
+            session,
+            cols=cols,
+            touch=True,
+            transport=resume_transport,
+            autonomous_turn_response_transport=resume_transport,
+        )
+        retired_request_ids = []
+        if previous_transport is not resume_transport:
+            from tools.approval import replace_gateway_notify
+
+            if key := session.get("session_key"):
+                retired_request_ids = replace_gateway_notify(
+                    key,
+                    lambda data: _emit("approval.request", sid, data),
+                    lambda data: _emit("approval.expire", sid, data),
+                )
+        _retry_pending_message_complete(
+            session,
+            resume_transport,
+            wait_for_resume_response=True,
+        )
+        payload["retired_approval_request_ids"] = retired_request_ids
+        payload["resumed"] = target
+''',
+        "server resume approval handoff",
+    )
+    source = replace_once(
+        source,
+        '''            other_sid, other_session = live
+            payload = _live_session_payload(
+                other_sid,
+                other_session,
+                cols=cols,
+                touch=True,
+                transport=current_transport() or _stdio_transport,
+            )
+            payload["resumed"] = target
+            return _ok(rid, payload)
+''',
+        '''            other_sid, other_session = live
+            return _ok(rid, _reuse_live_payload(other_sid, other_session))
+''',
+        "server concurrent resume approval handoff",
+    )
+    source = replace_once(
+        source,
+        '''        if goal_followup:
+            with session["history_lock"]:
+                if session.get("running"):
+                    # User already sent something — their turn wins,
+                    # the judge will re-run on the next turn anyway.
+                    return
+                session["running"] = True
+            try:
+                _emit("message.start", sid)
+                _run_prompt_submit(rid, sid, session, goal_followup)
+            except Exception as _cont_exc:
+                print(
+                    f"[tui_gateway] goal continuation dispatch failed: "
+                    f"{type(_cont_exc).__name__}: {_cont_exc}",
+                    file=sys.stderr,
+                )
+                with session["history_lock"]:
+                    session["running"] = False
+''',
+        '''        if goal_followup:
+            dispatch_goal_followup = False
+            with session["history_lock"]:
+                if session.get("running"):
+                    # User already sent something — their turn wins,
+                    # the judge will re-run on the next turn anyway.
+                    return
+                if (
+                    _message_complete_is_pending(session)
+                    or _autonomous_turn_waits_for_resume_response(session)
+                ):
+                    _defer_goal_followup(session, rid, goal_followup)
+                else:
+                    session["running"] = True
+                    dispatch_goal_followup = True
+            if dispatch_goal_followup:
+                try:
+                    _emit("message.start", sid)
+                    _run_prompt_submit(rid, sid, session, goal_followup)
+                except Exception as _cont_exc:
+                    print(
+                        f"[tui_gateway] goal continuation dispatch failed: "
+                        f"{type(_cont_exc).__name__}: {_cont_exc}",
+                        file=sys.stderr,
+                    )
+                    with session["history_lock"]:
+                        session["running"] = False
+''',
+        "server goal continuation pending-complete deferral",
+    )
+    source = replace_once(
+        source,
+        '''            for _evt, synth in process_registry.drain_notifications():
+                with session["history_lock"]:
+                    if session.get("running"):
+                        process_registry.completion_queue.put(_evt)
+                        break
+                    session["running"] = True
+''',
+        '''            for _evt, synth in process_registry.drain_notifications():
+                with session["history_lock"]:
+                    if (
+                        session.get("running")
+                        or _message_complete_is_pending(session)
+                        or _autonomous_turn_waits_for_resume_response(session)
+                        or _DEFERRED_GOAL_FOLLOWUP in session
+                    ):
+                        process_registry.completion_queue.put(_evt)
+                        # drain_notifications() already removed the full batch.
+                        # Requeue every blocked event instead of dropping the
+                        # remainder after the first one.
+                        continue
+                    session["running"] = True
+''',
+        "server completion drain pending-complete deferral",
     )
 
     handler = r'''@method("approval.respond")

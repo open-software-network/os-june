@@ -152,6 +152,7 @@ import {
   deleteHermesSession,
   listHermesSessionMessages,
   listHermesSessions,
+  normalizeHermesSessionMessagesResponse,
   sessionTimestamp,
   stripScheduledRunPreamble,
   titleFromPrompt,
@@ -165,11 +166,14 @@ import {
   AGENT_RUN_STARTED_EVENT,
   AGENT_SESSION_STATUS_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
+  dispatchAgentRunSettled,
   dispatchAgentSessionsChanged,
   dispatchAgentSessionStatus,
+  registerAgentRunTerminalDispatchGuard,
   type AgentGalleryDetail,
   type AgentRunSettledDetail,
   type AgentRunStartedDetail,
+  type AgentRunTerminalDispatch,
   type AgentSessionsChangedDetail,
   type AgentSessionStatusDetail,
   type AgentSessionStatusKind,
@@ -239,6 +243,8 @@ import {
   createHermesLiveStream,
   currentHermesApprovalInstanceId,
   hermesLiveEvents,
+  recordHermesIdlessTranscriptPersistenceBoundary,
+  reconcileHermesInflightSnapshot,
   reconcileHermesLiveStream,
   type HermesLiveStream,
 } from "../../lib/hermes-live-stream";
@@ -280,6 +286,7 @@ import { applySessionModelWhenIdle } from "../../lib/hermes-next-prompt-model";
 import {
   holdHermesSessionDispatch,
   reserveHermesSessionDispatch,
+  reserveHermesSessionTransportHandoff,
   withHermesSessionDispatchLock,
   type HermesSessionDispatchReservation,
 } from "../../lib/hermes-session-dispatch-mutex";
@@ -387,6 +394,7 @@ import {
   hasFinalContentBearingAssistantReply,
   stripRenderedMediaReferences,
   textFromHermesContent,
+  textFromHermesTransportContent,
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
@@ -1825,6 +1833,20 @@ type FileBytesImportOptions = {
 };
 
 type HermesRuntimeSessionResponse = {
+  inflight?: {
+    assistant?: string;
+    streaming?: boolean;
+    user?: string;
+  } | null;
+  messages?: unknown[];
+  pending_message_complete?: {
+    /** Zero-based ordinal among content-bearing assistant rows in `messages`.
+     * The patched runtime supplies this only when that row's complete event is
+     * still pending the same atomic transport-delivery decision as resume. */
+    assistant_ordinal?: number;
+  };
+  retired_approval_request_ids?: string[];
+  running?: boolean;
   session_id?: string;
   stored_session_id?: string;
 };
@@ -1920,6 +1942,11 @@ type AgentRunAuthorityProof = {
   submittedUserMessage: HermesSessionMessage;
 };
 
+type AgentRunTranscriptPersistenceProof = {
+  authorityProof: AgentRunAuthorityProof;
+  runStartRevision: number;
+};
+
 type PendingAgentRunTerminalEvidence = {
   authorityProof: AgentRunAuthorityProof;
   completionSource: symbol;
@@ -1931,17 +1958,55 @@ type WorkingReconcileMiss = {
   count: number;
 };
 
+type AcceptedAgentRunListener = {
+  confirmMonitorStarted: (generation: number) => void;
+};
+
+type AgentRunGatewayEventRoute = {
+  completionSource: symbol;
+  handleEvent: (event: HermesGatewayEvent) => void;
+  listenerEpoch: symbol;
+  mountEpoch: symbol | undefined;
+  retireApprovalsAtPhysicalClose: () => void;
+  semanticConsumerActive: boolean;
+};
+
+type AgentRunGatewayEventHandoff = {
+  completionSource: symbol;
+  events: HermesGatewayEvent[];
+};
+
+type AgentRunGatewayPhysicalDetach = {
+  completionSource: symbol;
+  detached: Promise<void>;
+  mountEpoch: symbol | undefined;
+  resolve: () => void;
+  storedSessionId: string;
+};
+
+type BufferedAgentRunTerminal = {
+  candidateRunStarted: boolean;
+  event: HermesGatewayEvent;
+};
+
 type PendingAgentRunAcceptance = {
   authorityProof: AgentRunAuthorityProof;
-  bufferedTerminals: HermesGatewayEvent[];
+  bufferedApprovals: HermesGatewayEvent[];
+  bufferedTerminals: BufferedAgentRunTerminal[];
+  candidateRunStarted: boolean;
+  candidateRunStartRevision: number;
   completionSource: symbol;
   existingCompletionSource: symbol | undefined;
   previousAuthorityProof: AgentRunAuthorityProof | undefined;
   previousPendingTerminalEvidence: PendingAgentRunTerminalEvidence | undefined;
   previousReconcileMiss: WorkingReconcileMiss | undefined;
   previousRunStartRevision: number | undefined;
+  predecessorMonitorOwner: AgentRunMonitorOwner | undefined;
+  predecessorMonitorWasActive: boolean;
+  predecessorRunMonitorGeneration: number | undefined;
+  deferredPredecessorMonitorTerminal?: AgentRunMonitorTerminalRecord;
   onSuperseded?: () => void;
-  acceptWithCurrentListener?: () => boolean;
+  acceptWithCurrentListener?: () => AcceptedAgentRunListener | undefined;
   rejectWithCurrentListener?: () => boolean;
   restoreBusyWithCurrentListener?: () => boolean;
 };
@@ -1982,9 +2047,16 @@ type IssueReportUiTransition =
   | { kind: "follow-up-submit-failed"; detail: IssueReportFollowUpSubmitFailedDetail };
 
 type IssueReportDiagnosisRefreshRecord = {
+  due: boolean;
+  executionGeneration: number;
+  executingGeneration?: number;
+  executor?: (proof?: AgentRunTranscriptPersistenceProof) => Promise<void>;
+  owner?: symbol;
   promise: Promise<void>;
   resolve: () => void;
+  settled: boolean;
   timer: number;
+  transcriptPersistenceProof?: AgentRunTranscriptPersistenceProof;
 };
 
 let sessionContinuity: AgentSessionContinuity | null = null;
@@ -1996,8 +2068,12 @@ let sessionContinuity: AgentSessionContinuity | null = null;
 const pendingAgentRunTerminalEvidenceRegistry = new Map<string, PendingAgentRunTerminalEvidence>();
 const pendingAgentRunAcceptanceRegistry = new Map<string, PendingAgentRunAcceptance>();
 const agentRunMonitorOwnerRegistry = new Map<string, AgentRunMonitorOwner>();
+const agentRunGatewayEventRouteRegistry = new Map<string, AgentRunGatewayEventRoute>();
+const agentRunGatewayEventHandoffRegistry = new Map<string, AgentRunGatewayEventHandoff>();
+const agentRunGatewayPhysicalDetachRegistry = new Map<string, AgentRunGatewayPhysicalDetach>();
 const latestAgentRunGenerationRegistry = new Map<string, number>();
 const latestAgentRunGenerationOrder: string[] = [];
+const supersededAgentRunGenerationRegistry = new Map<string, number>();
 const MAX_AGENT_RUN_GENERATION_TOMBSTONES = 100;
 // Issue-report prompts can remain inside prompt.submit while navigation
 // replaces the Workspace. Keep the tentative report at app lifetime so the
@@ -2006,10 +2082,141 @@ const MAX_AGENT_RUN_GENERATION_TOMBSTONES = 100;
 // but cannot promote it before this prompt is acknowledged as current.
 const pendingIssueReportRegistry = new Map<string, PendingIssueReport>();
 const acceptedPendingIssueReportRegistry = new Map<string, PendingIssueReport>();
+
+function retireAgentRunGatewayEventRoutesForMount(mountEpoch: symbol | undefined) {
+  if (mountEpoch === undefined) return;
+  for (const [storedSessionId, route] of agentRunGatewayEventRouteRegistry) {
+    if (route.mountEpoch === mountEpoch) agentRunGatewayEventRouteRegistry.delete(storedSessionId);
+  }
+}
+
+function suspendAgentRunGatewayEventRoutesForMount(mountEpoch: symbol | undefined) {
+  if (mountEpoch === undefined) return;
+  for (const route of agentRunGatewayEventRouteRegistry.values()) {
+    if (route.mountEpoch === mountEpoch) route.semanticConsumerActive = false;
+  }
+}
+
+function forgetAgentRunGatewayEventHandoff(storedSessionId: string) {
+  agentRunGatewayEventHandoffRegistry.delete(storedSessionId);
+}
+
+function createAgentRunGatewayPhysicalDetach(
+  storedSessionId: string,
+  completionSource: symbol,
+  mountEpoch: symbol | undefined,
+): AgentRunGatewayPhysicalDetach {
+  let settle = () => {};
+  let settled = false;
+  const detached = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  return {
+    completionSource,
+    detached,
+    mountEpoch,
+    resolve: () => {
+      if (settled) return;
+      settled = true;
+      settle();
+    },
+    storedSessionId,
+  };
+}
+
+function retainAgentRunGatewayEventForHandoff(
+  storedSessionId: string,
+  completionSource: symbol,
+  event: HermesGatewayEvent,
+) {
+  const existing = agentRunGatewayEventHandoffRegistry.get(storedSessionId);
+  // These frames are the only semantic copy of text and lifecycle state that
+  // arrives between Workspace mounts. Keep the handoff lossless; takeover,
+  // listener retirement, session deletion, and test/app reset clear it.
+  if (existing?.completionSource === completionSource) {
+    existing.events.push(event);
+    return;
+  }
+  agentRunGatewayEventHandoffRegistry.set(storedSessionId, {
+    completionSource,
+    events: [event],
+  });
+}
+
+function takeAgentRunGatewayEventHandoff(storedSessionId: string, completionSource: symbol) {
+  const handoff = agentRunGatewayEventHandoffRegistry.get(storedSessionId);
+  forgetAgentRunGatewayEventHandoff(storedSessionId);
+  return handoff?.completionSource === completionSource ? handoff.events : [];
+}
+
+function isPendingAgentRunGatewayApproval(event: HermesGatewayEvent) {
+  const classified = classifyHermesEvent(event);
+  return classified.kind === "pending_action" && classified.action.kind === "approval";
+}
+
+function retireAgentRunGatewayApprovalsAtPhysicalClose(
+  ownedGatewayEventSources: ReadonlyMap<string, symbol>,
+) {
+  for (const [storedSessionId, completionSource] of ownedGatewayEventSources) {
+    const handoff = agentRunGatewayEventHandoffRegistry.get(storedSessionId);
+    if (handoff?.completionSource === completionSource) {
+      handoff.events = handoff.events.filter((event) => !isPendingAgentRunGatewayApproval(event));
+      if (handoff.events.length === 0) {
+        forgetAgentRunGatewayEventHandoff(storedSessionId);
+      }
+    }
+
+    const currentRoute = agentRunGatewayEventRouteRegistry.get(storedSessionId);
+    if (
+      currentRoute?.completionSource !== completionSource ||
+      !currentRoute.semanticConsumerActive
+    ) {
+      continue;
+    }
+    currentRoute.retireApprovalsAtPhysicalClose();
+  }
+}
+
 const issueReportPromotionRegistry = new Map<string, IssueReportPromotedDetail>();
 const issueReportUiTransitionRegistry: IssueReportUiTransition[] = [];
 const MAX_ISSUE_REPORT_UI_TRANSITIONS = 64;
 const issueReportDiagnosisRefreshRegistry = new Map<string, IssueReportDiagnosisRefreshRecord>();
+
+function executeDueIssueReportDiagnosisRefresh(record: IssueReportDiagnosisRefreshRecord) {
+  if (
+    !record.due ||
+    record.settled ||
+    record.executingGeneration === record.executionGeneration ||
+    !record.executor
+  ) {
+    return;
+  }
+  const executionGeneration = record.executionGeneration;
+  record.executingGeneration = executionGeneration;
+  const executor = record.executor;
+  const settleExecution = () => {
+    if (record.executingGeneration === executionGeneration) {
+      record.executingGeneration = undefined;
+    }
+    if (record.settled) return;
+    if (record.executionGeneration !== executionGeneration) {
+      executeDueIssueReportDiagnosisRefresh(record);
+      return;
+    }
+    record.settled = true;
+    record.resolve();
+  };
+  void executor(record.transcriptPersistenceProof).then(settleExecution, settleExecution);
+}
+
+function releaseIssueReportDiagnosisRefreshClaims(owner: symbol) {
+  for (const record of issueReportDiagnosisRefreshRegistry.values()) {
+    if (record.owner !== owner) continue;
+    record.owner = undefined;
+    record.executor = undefined;
+    record.executionGeneration += 1;
+  }
+}
 // Delivery of the report being followed up can settle while the Workspace is
 // unmounted. Retain that result until the follow-up prompt accepts or rejects.
 const deferredFailedIssueReportDeliverySessionIdRegistry = new Set<string>();
@@ -2163,14 +2370,49 @@ function rememberLatestAgentRunGeneration(storedSessionId: string, generation: n
     if (evictionIndex < 0) return;
     const [evictedStoredSessionId] = latestAgentRunGenerationOrder.splice(evictionIndex, 1);
     latestAgentRunGenerationRegistry.delete(evictedStoredSessionId);
+    supersededAgentRunGenerationRegistry.delete(evictedStoredSessionId);
     agentRunMonitorTerminalRegistry.delete(evictedStoredSessionId);
   }
 }
 
 function forgetLatestAgentRunGeneration(storedSessionId: string) {
   latestAgentRunGenerationRegistry.delete(storedSessionId);
+  supersededAgentRunGenerationRegistry.delete(storedSessionId);
+  forgetAgentRunGatewayEventHandoff(storedSessionId);
   const index = latestAgentRunGenerationOrder.indexOf(storedSessionId);
   if (index >= 0) latestAgentRunGenerationOrder.splice(index, 1);
+}
+
+function rememberSupersededAgentRunGeneration(storedSessionId: string, generation: number) {
+  const current = supersededAgentRunGenerationRegistry.get(storedSessionId);
+  if (current === undefined || generation > current) {
+    supersededAgentRunGenerationRegistry.set(storedSessionId, generation);
+  }
+}
+
+function takeDeferredPendingAcceptancePredecessorTerminal(
+  storedSessionId: string,
+  acceptance: PendingAgentRunAcceptance,
+) {
+  const deferred = acceptance.deferredPredecessorMonitorTerminal;
+  const generation = acceptance.predecessorRunMonitorGeneration;
+  acceptance.deferredPredecessorMonitorTerminal = undefined;
+  if (generation !== undefined) retireAgentRunMonitorTerminal(storedSessionId, generation);
+  return deferred;
+}
+
+function supersedePendingAcceptancePredecessor(
+  storedSessionId: string,
+  acceptance: PendingAgentRunAcceptance,
+) {
+  takeDeferredPendingAcceptancePredecessorTerminal(storedSessionId, acceptance);
+  const generation = acceptance.predecessorRunMonitorGeneration;
+  if (generation === undefined) return;
+  cancelAgentRunMonitoring(storedSessionId, generation);
+  if (agentRunMonitorOwnerRegistry.get(storedSessionId) === acceptance.predecessorMonitorOwner) {
+    agentRunMonitorOwnerRegistry.delete(storedSessionId);
+  }
+  rememberSupersededAgentRunGeneration(storedSessionId, generation);
 }
 
 function retireAgentRunMonitorTerminal(storedSessionId: string, runMonitorGeneration: number) {
@@ -2179,6 +2421,27 @@ function retireAgentRunMonitorTerminal(storedSessionId: string, runMonitorGenera
     agentRunMonitorTerminalRegistry.delete(storedSessionId);
   }
 }
+
+function agentRunTerminalDispatchSuppressed(record: AgentRunMonitorTerminalRecord) {
+  const detail = record.detail;
+  const storedSessionId = detail?.sessionId;
+  const runMonitorGeneration = detail?.runMonitorGeneration;
+  if (!storedSessionId || runMonitorGeneration === undefined) return false;
+  const supersededGeneration = supersededAgentRunGenerationRegistry.get(storedSessionId);
+  if (supersededGeneration !== undefined && runMonitorGeneration <= supersededGeneration) {
+    return true;
+  }
+  const latestGeneration = latestAgentRunGenerationRegistry.get(storedSessionId);
+  if (latestGeneration !== undefined && runMonitorGeneration < latestGeneration) return true;
+  const pendingAcceptance = pendingAgentRunAcceptanceRegistry.get(storedSessionId);
+  if (pendingAcceptance?.predecessorRunMonitorGeneration !== runMonitorGeneration) return false;
+  pendingAcceptance.deferredPredecessorMonitorTerminal = record;
+  return true;
+}
+
+registerAgentRunTerminalDispatchGuard(
+  (dispatch: AgentRunTerminalDispatch) => !agentRunTerminalDispatchSuppressed(dispatch),
+);
 
 function publishAgentRunMonitorTerminal(record: AgentRunMonitorTerminalRecord) {
   const detail = record.detail;
@@ -2192,6 +2455,7 @@ function publishAgentRunMonitorTerminal(record: AgentRunMonitorTerminalRecord) {
   ) {
     return;
   }
+  if (agentRunTerminalDispatchSuppressed(record)) return;
   const owner = agentRunMonitorOwnerRegistry.get(storedSessionId);
   const latestGeneration = latestAgentRunGenerationRegistry.get(storedSessionId);
   const knownGeneration = Math.max(
@@ -2889,8 +3153,13 @@ export function resetAgentSessionContinuity() {
   pendingAgentRunTerminalEvidenceRegistry.clear();
   pendingAgentRunAcceptanceRegistry.clear();
   agentRunMonitorOwnerRegistry.clear();
+  agentRunGatewayEventRouteRegistry.clear();
+  agentRunGatewayEventHandoffRegistry.clear();
+  for (const detach of agentRunGatewayPhysicalDetachRegistry.values()) detach.resolve();
+  agentRunGatewayPhysicalDetachRegistry.clear();
   latestAgentRunGenerationRegistry.clear();
   latestAgentRunGenerationOrder.length = 0;
+  supersededAgentRunGenerationRegistry.clear();
   agentRunMonitorTerminalRegistry.clear();
   pendingIssueReportRegistry.clear();
   acceptedPendingIssueReportRegistry.clear();
@@ -3004,6 +3273,7 @@ export function AgentWorkspace({
     return () => {
       unsubscribe();
       releasePendingCompletedAgentRunContinuations(epoch);
+      releaseIssueReportDiagnosisRefreshClaims(epoch);
       if (workspaceMountEpochRef.current === epoch) {
         workspaceMountEpochRef.current = undefined;
       }
@@ -3559,10 +3829,25 @@ export function AgentWorkspace({
   // Per-mode: both gateways can drop together (network reconnect), and one
   // mode's in-flight recovery must not swallow the other's only onClose.
   const gatewayRecoveringRef = useRef<Set<boolean>>(new Set());
+  // A replacement transport can itself close while session.resume is still
+  // crossing the handoff barrier. Coalesce those closes into one follow-up
+  // attempt after the current recovery releases its per-mode ownership.
+  const gatewayRecoveryRetryRequestedRef = useRef<Set<boolean>>(new Set());
   // One live gateway subscription per Hermes session. A follow-up send while
   // the previous turn is still streaming must replace the old handler, not
   // stack a second one — otherwise every event lands twice in liveEvents.
   const sessionGatewayUnlistenRef = useRef<Map<string, () => void>>(new Map());
+  // A replacement mount can overwrite the module route registry before this
+  // mount's delayed gateway close runs. Retain the sources this mount registered
+  // so that physical-close cleanup stays scoped to its Agent runs.
+  const ownedAgentRunGatewayEventSourcesRef = useRef<Map<string, symbol>>(new Map());
+  // Preserve client-close ordering before a replacement gateway resumes a
+  // running session. This promise resolves when close() is issued; only the
+  // patched session.resume ACK proves the server has atomically retired the
+  // old transport's approval notifier generation.
+  const ownedAgentRunGatewayPhysicalDetachesRef = useRef<Set<AgentRunGatewayPhysicalDetach>>(
+    new Set(),
+  );
   // Completion source identity spans reconnects for one Agent run, but async replay
   // checks belong to the listener that started them. A fresh epoch invalidates
   // proof work left behind by the listener recovery just replaced.
@@ -3693,7 +3978,11 @@ export function AgentWorkspace({
     setDiagnosisRefreshIssueReportSessionIds(next);
   }
 
-  function queueIssueReportDiagnosisRefresh(sessionId: string, delayMs = 300) {
+  function queueIssueReportDiagnosisRefresh(
+    sessionId: string,
+    delayMs = 300,
+    transcriptPersistenceProof?: AgentRunTranscriptPersistenceProof,
+  ) {
     let record = issueReportDiagnosisRefreshRegistry.get(sessionId);
     if (!record) {
       let resolveRefresh = () => {};
@@ -3701,12 +3990,18 @@ export function AgentWorkspace({
         resolveRefresh = resolve;
       });
       const createdRecord: IssueReportDiagnosisRefreshRecord = {
+        due: false,
+        executionGeneration: 0,
         promise,
         resolve: resolveRefresh,
-        timer: window.setTimeout(() => {
-          void refreshHermesSession(sessionId).finally(resolveRefresh);
-        }, delayMs),
+        settled: false,
+        timer: 0,
+        transcriptPersistenceProof,
       };
+      createdRecord.timer = window.setTimeout(() => {
+        createdRecord.due = true;
+        executeDueIssueReportDiagnosisRefresh(createdRecord);
+      }, delayMs);
       issueReportDiagnosisRefreshRegistry.set(sessionId, createdRecord);
       void promise.finally(() => {
         if (issueReportDiagnosisRefreshRegistry.get(sessionId) === createdRecord) {
@@ -3715,6 +4010,22 @@ export function AgentWorkspace({
       });
       record = createdRecord;
     }
+    const owner = workspaceMountEpochRef.current;
+    if (
+      record.owner !== owner ||
+      (transcriptPersistenceProof !== undefined &&
+        record.transcriptPersistenceProof !== transcriptPersistenceProof)
+    ) {
+      record.executionGeneration += 1;
+    }
+    if (transcriptPersistenceProof) {
+      record.transcriptPersistenceProof = transcriptPersistenceProof;
+    }
+    record.owner = owner;
+    record.executor = async (proof) => {
+      await refreshHermesSession(sessionId, proof);
+    };
+    executeDueIssueReportDiagnosisRefresh(record);
     const refresh = record.promise;
     if (issueReportDiagnosisRefreshesRef.current.get(sessionId) === refresh) {
       return refresh;
@@ -3881,36 +4192,135 @@ export function AgentWorkspace({
   }, [runtimeSessionIds]);
 
   useEffect(() => {
-    const restoredSessionIds = Array.from(workingSessionIdsRef.current);
-    if (!restoredSessionIds.length) return;
+    // The activity projection is UI state and may lag a navigation cleanup by
+    // one React commit. Completion-source continuity is the stronger signal
+    // that a live semantic route still needs to be reclaimed.
+    const restoredStoredSessionIds = Array.from(
+      new Set([
+        ...workingSessionIdsRef.current,
+        ...Object.keys(continuity?.runCompletionSources ?? {}),
+      ]),
+    );
+    if (!restoredStoredSessionIds.length) return;
     let cancelled = false;
+    const resumeHandoffs = new Map(
+      restoredStoredSessionIds.map((storedSessionId) => [
+        storedSessionId,
+        reserveHermesSessionTransportHandoff(storedSessionId),
+      ]),
+    );
 
     void (async () => {
-      for (const sessionId of restoredSessionIds) {
-        const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
-        if (!runtimeSessionId) continue;
+      for (const storedSessionId of restoredStoredSessionIds) {
+        // A navigation can race the React state commit that remembers the
+        // ephemeral runtime session id. Resume itself is keyed by the durable
+        // stored session id, and the handoff listener stages before its ingress
+        // gate, so the stored session id is a safe provisional value until the
+        // ACK rebinds it.
+        const runtimeSessionId = runtimeSessionIdsRef.current[storedSessionId] ?? storedSessionId;
+        const priorPhysicalDetach = agentRunGatewayPhysicalDetachRegistry.get(storedSessionId);
+        const resumeHandoff = resumeHandoffs.get(storedSessionId);
+        if (!resumeHandoff) continue;
+        let restoredListener: ReturnType<typeof attachHermesSessionEventListener> | undefined;
         try {
-          const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
-          if (cancelled || !workingSessionIdsRef.current.has(sessionId)) {
+          const gateway = await ensureHermesGateway(sessionUnrestricted(storedSessionId));
+          if (cancelled) {
+            resumeHandoff.cancel();
             continue;
           }
-          attachHermesSessionEventListener({
+          restoredListener = attachHermesSessionEventListener({
             gateway,
             runAlreadyAccepted: true,
             runtimeSessionId,
             sessionDisplayTitle:
-              hermesSessionItemsRef.current.find((session) => session.id === sessionId)?.title ??
-              "Agent session",
-            storedSessionId: sessionId,
+              hermesSessionItemsRef.current.find((session) => session.id === storedSessionId)
+                ?.title ?? "Agent session",
+            stageEventsUntilResume: true,
+            storedSessionId,
           });
+          const activeRestoredListener = restoredListener;
+          const restoredCompletionSource = activeRestoredListener.completionSource;
+          await trackInFlightSessionDispatch(
+            resumeHandoff.run(async () => {
+              // Preserve client-side close ordering before asking the pinned
+              // runtime to transfer the live session. The close promise alone
+              // cannot prove server cleanup; the patched session.resume ACK is
+              // the barrier that deactivates and drains the old approval
+              // notifier generation before this route becomes actionable.
+              await priorPhysicalDetach?.detached;
+              if (
+                cancelled ||
+                agentRunCompletionSourcesRef.current.get(storedSessionId) !==
+                  restoredCompletionSource ||
+                handledAgentRunCompletionSourcesRef.current.get(storedSessionId) ===
+                  restoredCompletionSource
+              ) {
+                activeRestoredListener.abortResumeHandoff();
+                return;
+              }
+              const resumed = await gateway.request<HermesRuntimeSessionResponse>(
+                "session.resume",
+                {
+                  session_id: storedSessionId,
+                  cols: 96,
+                },
+              );
+              const resumedRuntimeSessionId = resumed.session_id;
+              if (
+                !resumedRuntimeSessionId ||
+                cancelled ||
+                agentRunCompletionSourcesRef.current.get(storedSessionId) !==
+                  restoredCompletionSource ||
+                handledAgentRunCompletionSourcesRef.current.get(storedSessionId) ===
+                  restoredCompletionSource
+              ) {
+                activeRestoredListener.abortResumeHandoff();
+                return;
+              }
+              activeRestoredListener.rebindRuntimeSessionId(resumedRuntimeSessionId);
+              recordHermesResumePersistenceBoundary(
+                storedSessionId,
+                resumed.messages,
+                resumed.pending_message_complete,
+              );
+              // Replay transport frames first, then use the atomic snapshot to
+              // fill only any missing suffix. A delta is appended to Hermes'
+              // in-flight buffer before it is emitted, so snapshot-first would
+              // duplicate a frame staged just ahead of the resume response.
+              activeRestoredListener.completeResumeHandoff(resumed.retired_approval_request_ids);
+              const inflightAssistant = resumed.inflight?.assistant;
+              if (typeof inflightAssistant === "string" && inflightAssistant.length > 0) {
+                activeRestoredListener.reconcileResumeSnapshot(
+                  inflightAssistant,
+                  resumed.running !== false && resumed.inflight?.streaming !== false,
+                );
+              }
+              runtimeSessionIdsRef.current = {
+                ...runtimeSessionIdsRef.current,
+                [storedSessionId]: resumedRuntimeSessionId,
+              };
+              setRuntimeSessionIds((current) => {
+                return {
+                  ...current,
+                  [storedSessionId]: resumedRuntimeSessionId,
+                };
+              });
+              if (Array.isArray(resumed.messages) || resumed.running === false) {
+                void refreshHermesSession(storedSessionId);
+              }
+            }),
+          );
         } catch {
+          resumeHandoff.cancel();
           // The working-session poll still reconciles if reconnecting fails.
+          restoredListener?.abortResumeHandoff();
         }
       }
     })();
 
     return () => {
       cancelled = true;
+      for (const handoff of resumeHandoffs.values()) handoff.cancel();
     };
   }, []);
 
@@ -5363,6 +5773,10 @@ export function AgentWorkspace({
       }
     })();
     return () => {
+      // This unmounted component is no longer the semantic consumer. Keep
+      // origin transports alive for in-flight RPCs, but queue their frames
+      // until a mounted route takes ownership.
+      suspendAgentRunGatewayEventRoutesForMount(mountEpoch);
       cancelled = true;
       for (const reservation of activeComposerDispatchReservationsRef.current.keys()) {
         reservation.cancel();
@@ -5417,16 +5831,35 @@ export function AgentWorkspace({
         ...inFlightSessionDispatches,
         ...ownedDeliveries.map((continuation) => continuation.deliverySettled ?? Promise.resolve()),
       ];
+      const closeOwnedGateways = () => {
+        // An origin transport can receive an approval after unmount while an
+        // in-flight prompt keeps its socket alive. Fail that request closed at
+        // the actual detach boundary, scoped to the run source this mount
+        // owned, so neither handoff replay nor a replacement route can revive it.
+        try {
+          retireAgentRunGatewayApprovalsAtPhysicalClose(
+            ownedAgentRunGatewayEventSourcesRef.current,
+          );
+          for (const gateway of new Set(gatewaysRef.current.values())) gateway.close();
+          retireAgentRunGatewayEventRoutesForMount(mountEpoch);
+        } finally {
+          for (const detach of ownedAgentRunGatewayPhysicalDetachesRef.current) {
+            detach.resolve();
+            if (agentRunGatewayPhysicalDetachRegistry.get(detach.storedSessionId) === detach) {
+              agentRunGatewayPhysicalDetachRegistry.delete(detach.storedSessionId);
+            }
+          }
+          ownedAgentRunGatewayPhysicalDetachesRef.current.clear();
+        }
+      };
       if (gatewayCloseBarriers.length > 0) {
         // Keep the JSON-RPC socket alive until every already-started dispatch
         // settles. Closing it during resume can strand the FIFO until timeout;
         // closing it during prompt.submit makes acceptance unknowable and can
         // manufacture a Retry.
-        void Promise.all(gatewayCloseBarriers).finally(() => {
-          for (const gateway of new Set(gatewaysRef.current.values())) gateway.close();
-        });
+        void Promise.all(gatewayCloseBarriers).finally(closeOwnedGateways);
       } else {
-        for (const gateway of new Set(gatewaysRef.current.values())) gateway.close();
+        closeOwnedGateways();
       }
     };
   }, []);
@@ -7810,22 +8243,29 @@ export function AgentWorkspace({
     gateway,
     onSuperseded,
     persistenceBoundary,
+    predecessorRunMonitorGeneration,
     runAlreadyAccepted = false,
     runtimeSessionId,
     sessionDisplayTitle,
+    stageEventsUntilResume = false,
     storedSessionId,
     submittedUserMessage,
   }: {
     gateway: HermesGatewayClient;
     onSuperseded?: () => void;
     persistenceBoundary?: AgentRunPersistenceBoundary;
+    predecessorRunMonitorGeneration?: number;
     runAlreadyAccepted?: boolean;
     runtimeSessionId: string;
     sessionDisplayTitle: string;
+    stageEventsUntilResume?: boolean;
     storedSessionId: string;
     submittedUserMessage?: HermesSessionMessage;
   }) {
     const previousUnlisten = sessionGatewayUnlistenRef.current.get(storedSessionId);
+    let currentRuntimeSessionId = runtimeSessionId;
+    let resumeHandoffPending = stageEventsUntilResume;
+    let stagedResumeHandoffEvents: HermesGatewayEvent[] = [];
     const previousAuthorityProof = agentRunAuthorityProofsRef.current.get(storedSessionId);
     const previousRunStartRevision = agentRunStartRevisionsRef.current.get(storedSessionId);
     const previousReconcileMiss = workingReconcileMissesRef.current.get(storedSessionId);
@@ -7851,15 +8291,43 @@ export function AgentWorkspace({
     const agentRunCompletionSource = existingCompletionSource ?? Symbol(storedSessionId);
     let pendingAcceptance = pendingAgentRunAcceptanceRef.current.get(storedSessionId);
     if (providedAuthorityProof) {
+      const predecessorMonitorOwner = agentRunMonitorOwnersRef.current.get(storedSessionId);
+      const predecessorMonitorSnapshot = agentRunMonitorSnapshot(storedSessionId);
+      const latestKnownGeneration = latestAgentRunGenerationRegistry.get(storedSessionId);
+      const predecessorMonitorWasActive = Boolean(
+        predecessorMonitorSnapshot &&
+          predecessorMonitorSnapshot.phase !== "terminal" &&
+          isAgentRunMonitorGenerationCurrent(
+            storedSessionId,
+            predecessorMonitorSnapshot.generation,
+          ) &&
+          (predecessorRunMonitorGeneration === undefined ||
+            predecessorMonitorSnapshot.generation === predecessorRunMonitorGeneration) &&
+          (latestKnownGeneration === undefined ||
+            predecessorMonitorSnapshot.generation === latestKnownGeneration),
+      );
+      const predecessorGenerations = [
+        predecessorRunMonitorGeneration,
+        predecessorMonitorOwner?.generation,
+        predecessorMonitorWasActive ? predecessorMonitorSnapshot?.generation : undefined,
+        latestKnownGeneration,
+      ].filter((generation): generation is number => generation !== undefined);
       pendingAcceptance = {
         authorityProof: providedAuthorityProof,
+        bufferedApprovals: [],
         bufferedTerminals: [],
+        candidateRunStarted: false,
+        candidateRunStartRevision: liveEventsRef.current[storedSessionId]?.revision ?? 0,
         completionSource: agentRunCompletionSource,
         existingCompletionSource,
         previousAuthorityProof,
         previousPendingTerminalEvidence,
         previousReconcileMiss,
         previousRunStartRevision,
+        predecessorMonitorOwner,
+        predecessorMonitorWasActive,
+        predecessorRunMonitorGeneration:
+          predecessorGenerations.length > 0 ? Math.max(...predecessorGenerations) : undefined,
         onSuperseded,
       };
       pendingAgentRunAcceptanceRef.current.set(storedSessionId, pendingAcceptance);
@@ -7885,7 +8353,7 @@ export function AgentWorkspace({
       acceptedAgentRunCompletionSourcesRef.current.add(agentRunCompletionSource);
     }
     let unlisten = () => {};
-    let deferredPreAcceptanceTerminals: HermesGatewayEvent[] = [];
+    let deferredPreAcceptanceTerminals: BufferedAgentRunTerminal[] = [];
     let ambiguousTerminalGeneration = 0;
     let ambiguousTerminalDrainPending = false;
     let ambiguousTerminalCandidates: Array<{
@@ -7902,7 +8370,9 @@ export function AgentWorkspace({
     };
     const sourceIsCurrent = () =>
       agentRunCompletionSourcesRef.current.get(storedSessionId) === agentRunCompletionSource &&
-      agentRunListenerEpochsRef.current.get(storedSessionId) === agentRunListenerEpoch;
+      agentRunListenerEpochsRef.current.get(storedSessionId) === agentRunListenerEpoch &&
+      agentRunGatewayEventRouteRegistry.get(storedSessionId)?.listenerEpoch ===
+        agentRunListenerEpoch;
     const sourceWasHandled = () =>
       handledAgentRunCompletionSourcesRef.current.get(storedSessionId) === agentRunCompletionSource;
     const deletePendingRunAcceptance = () => {
@@ -7952,36 +8422,66 @@ export function AgentWorkspace({
         !runAuthorityProof ||
         notBeforeMs === undefined
       ) {
-        return;
+        return false;
       }
       latchAgentRunTerminalEvidence({
         status,
         summary: agentStatusSummaryFromHermesEvent(classified, status),
         notBeforeMs,
       });
+      return true;
     };
     const acceptWithCurrentListener = () => {
-      if (!sourceIsCurrent() || sourceWasHandled()) return false;
+      if (!sourceIsCurrent() || sourceWasHandled()) return undefined;
       retirePreviousListener();
       acceptedAgentRunCompletionSourcesRef.current.add(agentRunCompletionSource);
       const sharedPending = pendingAgentRunAcceptanceRef.current.get(storedSessionId);
-      const sharedDeferred =
+      const acceptance =
         sharedPending?.completionSource === agentRunCompletionSource &&
         sharedPending.authorityProof === runAuthorityProof
-          ? sharedPending.bufferedTerminals
-          : [];
+          ? sharedPending
+          : pendingAcceptance;
+      if (acceptance) {
+        agentRunStartRevisionsRef.current.set(
+          storedSessionId,
+          acceptance.candidateRunStartRevision,
+        );
+        takeDeferredPendingAcceptancePredecessorTerminal(storedSessionId, acceptance);
+      }
+      const sharedApprovals = acceptance?.bufferedApprovals ?? [];
+      if (acceptance) acceptance.bufferedApprovals = [];
+      for (const approval of sharedApprovals) {
+        if (!sourceIsCurrent() || sourceWasHandled()) break;
+        handleGatewayEvent(approval, false, true);
+      }
+      const sharedDeferred = acceptance?.bufferedTerminals ?? [];
       const deferred = [...sharedDeferred, ...deferredPreAcceptanceTerminals];
       deferredPreAcceptanceTerminals = [];
       for (const terminal of deferred) {
         if (!sourceIsCurrent() || sourceWasHandled()) break;
-        handleGatewayEvent(terminal);
+        // Hermes can emit the predecessor's terminal before prompt.submit
+        // acknowledges the replacement. A fresh message.start is the pinned
+        // runtime's run boundary: quarantine only terminals observed before
+        // that edge when a locally owned or app-lifetime predecessor is proven.
+        const terminalBelongsToPredecessor = Boolean(
+          !terminal.candidateRunStarted &&
+            (acceptance?.existingCompletionSource || acceptance?.predecessorMonitorWasActive),
+        );
+        if (terminalBelongsToPredecessor) {
+          continue;
+        }
+        handleGatewayEvent(terminal.event, false, true);
       }
       deletePendingRunAcceptance();
-      return sourceIsCurrent() && !sourceWasHandled();
+      if (!sourceIsCurrent() || sourceWasHandled()) {
+        if (acceptance) supersedePendingAcceptancePredecessor(storedSessionId, acceptance);
+        return undefined;
+      }
+      return { confirmMonitorStarted: confirmMonitorStartedWithCurrentListener };
     };
     const confirmRunAccepted = () => {
       const pending = pendingAgentRunAcceptanceRef.current.get(storedSessionId);
-      if (providedAuthorityProof && pending !== pendingAcceptance) return false;
+      if (providedAuthorityProof && pending !== pendingAcceptance) return undefined;
       if (
         pending?.completionSource === agentRunCompletionSource &&
         pending.authorityProof === runAuthorityProof &&
@@ -7992,7 +8492,7 @@ export function AgentWorkspace({
       }
       return acceptWithCurrentListener();
     };
-    const confirmMonitorStarted = (generation: number) => {
+    const confirmMonitorStartedWithCurrentListener = (generation: number) => {
       listenerRunMonitorGeneration = generation;
       if (runAuthorityProof) {
         agentRunMonitorTerminalRegistry.delete(storedSessionId);
@@ -8001,40 +8501,23 @@ export function AgentWorkspace({
           authorityProof: runAuthorityProof,
           generation,
         });
+        // The queued equal-generation start is deliberately ignored because a
+        // current terminal can beat that queue. Repair only an absent or
+        // terminal projection here in case acceptance ownership was installed
+        // after another surface projected its terminal; preserve any exact
+        // waiting/background work already observed for this accepted run.
+        const activityPhase = hermesActivityStore.getRecord(storedSessionId)?.phase;
+        if (
+          activityPhase === undefined ||
+          activityPhase === "complete" ||
+          activityPhase === "error"
+        ) {
+          recordSessionRunningActivity(storedSessionId);
+        }
       }
       clearPendingTerminalEvidence();
     };
-    const restoreBusyWithCurrentListener = () => {
-      if (!sourceIsCurrent() || sourceWasHandled()) return false;
-      const currentPending = pendingAgentRunAcceptanceRef.current.get(storedSessionId);
-      const acceptance =
-        currentPending?.completionSource === agentRunCompletionSource &&
-        currentPending.authorityProof === runAuthorityProof
-          ? currentPending
-          : pendingAcceptance;
-      const rejectedPendingUserMessageId = runAuthorityProof?.submittedUserMessage.id;
-      if (rejectedPendingUserMessageId) {
-        setPendingHermesMessages((current) => {
-          const next = {
-            ...current,
-            [storedSessionId]: (current[storedSessionId] ?? []).filter(
-              (message) => message.id !== rejectedPendingUserMessageId,
-            ),
-          };
-          pendingHermesMessagesRef.current = next;
-          return next;
-        });
-      }
-      pendingTerminalEvidence = undefined;
-      pendingAgentRunAcceptanceRef.current.delete(storedSessionId);
-      if (acceptance?.existingCompletionSource && acceptance.previousPendingTerminalEvidence) {
-        pendingAgentRunTerminalEvidenceRef.current.set(
-          storedSessionId,
-          acceptance.previousPendingTerminalEvidence,
-        );
-      } else {
-        pendingAgentRunTerminalEvidenceRef.current.delete(storedSessionId);
-      }
+    const restorePredecessorAuthority = (acceptance: PendingAgentRunAcceptance | undefined) => {
       if (acceptance?.existingCompletionSource) {
         runAuthorityProof = acceptance.previousAuthorityProof;
         if (acceptance.previousAuthorityProof) {
@@ -8059,17 +8542,95 @@ export function AgentWorkspace({
           workingReconcileMissesRef.current.delete(storedSessionId);
         }
       } else {
-        // A 4009 proves some runtime work exists, but not that Hermes accepted
-        // this prompt. Keep listening to the busy runtime without letting the
-        // rejected optimistic message become persistence authority for it.
         runAuthorityProof = undefined;
         agentRunAuthorityProofsRef.current.delete(storedSessionId);
+        if (acceptance?.previousRunStartRevision === undefined) {
+          agentRunStartRevisionsRef.current.delete(storedSessionId);
+        } else {
+          agentRunStartRevisionsRef.current.set(
+            storedSessionId,
+            acceptance.previousRunStartRevision,
+          );
+        }
       }
+    };
+    const dispatchDeferredPredecessorTerminal = (record: AgentRunMonitorTerminalRecord) => {
+      if (record.kind === "status") {
+        dispatchAgentSessionStatus(record.detail);
+      } else {
+        dispatchAgentRunSettled(record.detail);
+      }
+    };
+    const restoreBusyWithCurrentListener = () => {
+      if (!sourceIsCurrent() || sourceWasHandled()) return false;
+      const currentPending = pendingAgentRunAcceptanceRef.current.get(storedSessionId);
+      const acceptance =
+        currentPending?.completionSource === agentRunCompletionSource &&
+        currentPending.authorityProof === runAuthorityProof
+          ? currentPending
+          : pendingAcceptance;
+      const deferredPredecessorTerminal = acceptance
+        ? takeDeferredPendingAcceptancePredecessorTerminal(storedSessionId, acceptance)
+        : undefined;
+      const rejectedPendingUserMessageId = runAuthorityProof?.submittedUserMessage.id;
+      if (rejectedPendingUserMessageId) {
+        setPendingHermesMessages((current) => {
+          const next = {
+            ...current,
+            [storedSessionId]: (current[storedSessionId] ?? []).filter(
+              (message) => message.id !== rejectedPendingUserMessageId,
+            ),
+          };
+          pendingHermesMessagesRef.current = next;
+          return next;
+        });
+      }
+      pendingTerminalEvidence = undefined;
+      pendingAgentRunAcceptanceRef.current.delete(storedSessionId);
+      if (acceptance?.existingCompletionSource && acceptance.previousPendingTerminalEvidence) {
+        pendingAgentRunTerminalEvidenceRef.current.set(
+          storedSessionId,
+          acceptance.previousPendingTerminalEvidence,
+        );
+      } else {
+        pendingAgentRunTerminalEvidenceRef.current.delete(storedSessionId);
+      }
+      // A 4009 proves some runtime work exists, but not that Hermes accepted
+      // this prompt. Restore a locally owned predecessor or replay its exact
+      // generation-matched cross-surface terminal; otherwise keep listening
+      // without making the rejected optimistic message persistence authority
+      // for that runtime work.
+      restorePredecessorAuthority(acceptance);
       retirePreviousListener();
       acceptedAgentRunCompletionSourcesRef.current.add(agentRunCompletionSource);
+      const bufferedApprovals = acceptance?.bufferedApprovals ?? [];
+      if (acceptance) acceptance.bufferedApprovals = [];
+      for (const approval of bufferedApprovals) {
+        if (!sourceIsCurrent() || sourceWasHandled()) break;
+        handleGatewayEvent(approval);
+      }
       for (const terminal of acceptance?.bufferedTerminals ?? []) {
         if (!sourceIsCurrent() || sourceWasHandled()) break;
-        handleGatewayEvent(terminal);
+        const classifiedTerminal = classifyHermesEvent(terminal.event);
+        const bufferedFingerprint = hermesTerminalFingerprint(classifiedTerminal);
+        if (
+          !terminal.candidateRunStarted &&
+          !classifiedTerminal.delivery?.eventId &&
+          bufferedFingerprint &&
+          agentRunTerminalFingerprintsRef.current
+            .get(storedSessionId)
+            ?.includes(bufferedFingerprint)
+        ) {
+          // A rejected replacement never established a fresh run boundary.
+          // Replaying an anonymous terminal already seen by the predecessor
+          // would reinterpret the same timeout under restored authority and
+          // duplicate its terminal evidence.
+          continue;
+        }
+        handleGatewayEvent(terminal.event);
+      }
+      if (deferredPredecessorTerminal && sourceIsCurrent() && !sourceWasHandled()) {
+        dispatchDeferredPredecessorTerminal(deferredPredecessorTerminal);
       }
       return sourceIsCurrent() && !sourceWasHandled();
     };
@@ -8086,9 +8647,40 @@ export function AgentWorkspace({
       }
       return restoreBusyWithCurrentListener();
     };
+    const restorePredecessorAfterRejectedReplacement = () => {
+      const acceptance = pendingAgentRunAcceptanceRef.current.get(storedSessionId);
+      if (
+        !acceptance ||
+        acceptance.completionSource !== agentRunCompletionSource ||
+        acceptance.authorityProof !== runAuthorityProof
+      ) {
+        return false;
+      }
+      const hasRestorablePredecessor = Boolean(
+        acceptance.existingCompletionSource ||
+          acceptance.predecessorMonitorWasActive ||
+          acceptance.deferredPredecessorMonitorTerminal,
+      );
+      if (!hasRestorablePredecessor) return false;
+      const restore = acceptance.restoreBusyWithCurrentListener ?? restoreBusyWithCurrentListener;
+      const predecessorRemainsLive = restore();
+      return (
+        predecessorRemainsLive ||
+        pendingAgentRunAcceptanceRef.current.get(storedSessionId) !== acceptance
+      );
+    };
     const rejectWithCurrentListener = () => {
       if (!sourceIsCurrent()) return false;
-      (pendingAcceptance?.onSuperseded ?? onSuperseded)?.();
+      const currentPending = pendingAgentRunAcceptanceRef.current.get(storedSessionId);
+      const acceptance =
+        currentPending?.completionSource === agentRunCompletionSource &&
+        currentPending.authorityProof === runAuthorityProof
+          ? currentPending
+          : pendingAcceptance;
+      if (acceptance) {
+        takeDeferredPendingAcceptancePredecessorTerminal(storedSessionId, acceptance);
+      }
+      (acceptance?.onSuperseded ?? onSuperseded)?.();
       const rejectedPendingUserMessageId = runAuthorityProof?.submittedUserMessage.id;
       if (rejectedPendingUserMessageId) {
         setPendingHermesMessages((current) => {
@@ -8141,8 +8733,50 @@ export function AgentWorkspace({
       currentPendingAcceptance.rejectWithCurrentListener = rejectWithCurrentListener;
       currentPendingAcceptance.restoreBusyWithCurrentListener = restoreBusyWithCurrentListener;
     }
-    function handleGatewayEvent(event: HermesGatewayEvent, ambiguityResolved = false) {
-      if (event.session_id !== runtimeSessionId && event.session_id !== storedSessionId) return;
+    function handleGatewayEvent(
+      event: HermesGatewayEvent,
+      ambiguityResolved = false,
+      acceptanceResolved = false,
+    ) {
+      // `session.resume` can rebind a live session to a different runtime session id.
+      // Stage before the id gate so frames emitted after the server swaps the
+      // transport but before its response reaches June cannot fall through the
+      // old mapping. The resume ACK later supplies the authoritative id and
+      // approval-retirement set before this FIFO is replayed.
+      if (resumeHandoffPending) {
+        // This queue contains the only client-side copy of frames received
+        // before the ACK. Keep it lossless; abort, listener retirement, or
+        // successful replay owns its bounded lifetime.
+        stagedResumeHandoffEvents.push(event);
+        return;
+      }
+      if (event.session_id !== currentRuntimeSessionId && event.session_id !== storedSessionId) {
+        return;
+      }
+      // This listener has authenticated the origin runtime mapping. Canonicalize
+      // only the inter-listener envelope so a recovered listener with a new
+      // runtime session id can accept it without relaxing either listener's ingress gate.
+      const routedEvent =
+        event.session_id === storedSessionId ? event : { ...event, session_id: storedSessionId };
+      const currentRoute = agentRunGatewayEventRouteRegistry.get(storedSessionId);
+      if (currentRoute?.listenerEpoch !== agentRunListenerEpoch) {
+        // The runtime can keep emitting on the transport that submitted this
+        // prompt while navigation has already installed a mounted replacement.
+        // Route that origin-only frame into the one current semantic listener
+        // so live text and terminal side effects land on the visible Workspace.
+        if (currentRoute?.completionSource === agentRunCompletionSource) {
+          currentRoute.handleEvent(routedEvent);
+        }
+        return;
+      }
+      if (!currentRoute.semanticConsumerActive) {
+        retainAgentRunGatewayEventForHandoff(
+          storedSessionId,
+          agentRunCompletionSource,
+          routedEvent,
+        );
+        return;
+      }
       // A removed listener can still have a copied callback or an async caller
       // in flight. Its source must never append into, or settle, a newer Agent run.
       if (!sourceIsCurrent()) return;
@@ -8152,7 +8786,31 @@ export function AgentWorkspace({
       // and the Stage B status helpers below.
       const classified = classifyHermesEvent(liveEvent);
       const storedEvent = withStoredHermesSessionId(classified, storedSessionId);
+      const currentPendingAcceptance = pendingAgentRunAcceptanceRef.current.get(storedSessionId);
+      const listenerOwnsPendingAcceptance =
+        currentPendingAcceptance !== undefined &&
+        currentPendingAcceptance.authorityProof === runAuthorityProof &&
+        currentPendingAcceptance.completionSource === agentRunCompletionSource;
+      const approvalEvent =
+        (storedEvent.kind === "pending_action" && storedEvent.action.kind === "approval") ||
+        (storedEvent.kind === "pending_action_resolution" &&
+          storedEvent.action.kind === "approval") ||
+        storedEvent.kind === "pending_action_expiration";
+      if (approvalEvent && listenerOwnsPendingAcceptance && !acceptanceResolved) {
+        // A runtime frame can beat prompt.submit's acknowledgement. Keep every
+        // approval transition outside the live stream and global stores until
+        // this prompt either owns a fresh run boundary or restores its predecessor.
+        currentPendingAcceptance.bufferedApprovals.push(routedEvent);
+        return;
+      }
       const approvalRunEpoch = agentRunStartRevisionsRef.current.get(storedSessionId);
+      const transcriptPersistenceProof =
+        approvalRunEpoch !== undefined && runAuthorityProof
+          ? {
+              runStartRevision: approvalRunEpoch,
+              authorityProof: runAuthorityProof,
+            }
+          : undefined;
       const currentSessionEvents =
         liveEventsRef.current[storedSessionId] ?? createHermesLiveStream();
       const retiringApprovalRequestId =
@@ -8197,11 +8855,6 @@ export function AgentWorkspace({
       if (terminal && sourceWasHandled()) return;
       const monitorOwner = agentRunMonitorOwnersRef.current.get(storedSessionId);
       const latestMonitorGeneration = latestAgentRunGenerationRegistry.get(storedSessionId);
-      const currentPendingAcceptance = pendingAgentRunAcceptanceRef.current.get(storedSessionId);
-      const listenerOwnsPendingAcceptance =
-        currentPendingAcceptance !== undefined &&
-        currentPendingAcceptance.authorityProof === runAuthorityProof &&
-        currentPendingAcceptance.completionSource === agentRunCompletionSource;
       if (
         terminal &&
         listenerRunMonitorGeneration !== undefined &&
@@ -8225,29 +8878,30 @@ export function AgentWorkspace({
         return;
       }
       const terminalFingerprint = terminal ? hermesTerminalFingerprint(classified) : undefined;
-      if (terminal && !acceptedAgentRunCompletionSourcesRef.current.has(agentRunCompletionSource)) {
+      if (
+        terminal &&
+        ((listenerOwnsPendingAcceptance && !acceptanceResolved) ||
+          !acceptedAgentRunCompletionSourcesRef.current.has(agentRunCompletionSource))
+      ) {
         // Hermes may emit a fast terminal from inside prompt.submit before the
         // RPC acknowledgement reaches June. Retain a bounded candidate queue:
         // an old replay can arrive first, and must not displace the real terminal
         // that follows it before the acknowledgement. Once accepted, each
         // candidate still routes through delivery/fingerprint authority below.
-        if (
-          terminalFingerprint &&
-          !classified.delivery?.eventId &&
-          agentRunTerminalFingerprintsRef.current
-            .get(storedSessionId)
-            ?.includes(terminalFingerprint) === true
-        ) {
-          latchAmbiguousTerminal(classified);
-        }
         const pending = pendingAgentRunAcceptanceRef.current.get(storedSessionId);
         if (
           pending?.completionSource === agentRunCompletionSource &&
           pending.authorityProof === runAuthorityProof
         ) {
-          pending.bufferedTerminals = [...pending.bufferedTerminals, event].slice(-64);
+          pending.bufferedTerminals = [
+            ...pending.bufferedTerminals,
+            { candidateRunStarted: pending.candidateRunStarted, event },
+          ].slice(-64);
         } else {
-          deferredPreAcceptanceTerminals = [...deferredPreAcceptanceTerminals, event].slice(-64);
+          deferredPreAcceptanceTerminals = [
+            ...deferredPreAcceptanceTerminals,
+            { candidateRunStarted: pendingAcceptance?.candidateRunStarted ?? false, event },
+          ].slice(-64);
         }
         return;
       }
@@ -8295,12 +8949,24 @@ export function AgentWorkspace({
       // settlement. A new listener for the next Agent run must not reinterpret
       // the previous Agent run's replayed terminal as its own terminal.
       if (nextSessionEvents === currentSessionEvents) return;
+      if (event.type === "message.start" && listenerOwnsPendingAcceptance && !acceptanceResolved) {
+        currentPendingAcceptance.candidateRunStarted = true;
+      }
       liveEventsRef.current = {
         ...liveEventsRef.current,
         [storedSessionId]: nextSessionEvents,
       };
       setLiveEvents(liveEventsRef.current);
       if (terminal) {
+        if (
+          listenerOwnsPendingAcceptance &&
+          currentPendingAcceptance?.predecessorRunMonitorGeneration !== undefined
+        ) {
+          rememberSupersededAgentRunGeneration(
+            storedSessionId,
+            currentPendingAcceptance.predecessorRunMonitorGeneration,
+          );
+        }
         handledAgentRunCompletionSourcesRef.current.set(storedSessionId, agentRunCompletionSource);
         acceptedAgentRunCompletionSourcesRef.current.delete(agentRunCompletionSource);
         deferredPreAcceptanceTerminals = [];
@@ -8395,7 +9061,7 @@ export function AgentWorkspace({
         // Hydrate persistence at the message boundary without treating it as
         // the Agent run boundary. Later tool/continuation frames stay subscribed.
         window.setTimeout(() => {
-          void refreshHermesSession(storedSessionId);
+          void refreshHermesSession(storedSessionId, transcriptPersistenceProof);
         }, 300);
       }
       const toolEventPhase = classified.kind === "tool" ? classified.phase : undefined;
@@ -8481,9 +9147,11 @@ export function AgentWorkspace({
         const promotedIssueReport = promotePendingIssueReportToReview(storedSessionId, {
           queueDiagnosisRefresh: true,
         });
-        if (!promotedIssueReport) {
+        if (promotedIssueReport) {
+          queueIssueReportDiagnosisRefresh(storedSessionId, 300, transcriptPersistenceProof);
+        } else {
           window.setTimeout(() => {
-            void refreshHermesSession(storedSessionId);
+            void refreshHermesSession(storedSessionId, transcriptPersistenceProof);
           }, 300);
         }
       }
@@ -8557,9 +9225,9 @@ export function AgentWorkspace({
       }
       const matchingRows = (response.sessions ?? []).filter(
         (row) =>
-          row.id === runtimeSessionId ||
+          row.id === currentRuntimeSessionId ||
           row.id === storedSessionId ||
-          row.session_key === runtimeSessionId ||
+          row.session_key === currentRuntimeSessionId ||
           row.session_key === storedSessionId,
       );
       if (matchingRows.length === 0 || matchingRows.some((row) => row.status !== "idle")) return;
@@ -8591,10 +9259,95 @@ export function AgentWorkspace({
       }
       handleGatewayEvent(event, true);
     }
+    const rebindRuntimeSessionId = (nextRuntimeSessionId: string) => {
+      currentRuntimeSessionId = nextRuntimeSessionId;
+    };
+    const abortResumeHandoff = () => {
+      resumeHandoffPending = false;
+      stagedResumeHandoffEvents = [];
+    };
+    const completeResumeHandoff = (retiredApprovalRequestIds: readonly string[] | undefined) => {
+      const retired = new Set(retiredApprovalRequestIds ?? []);
+      const hasRetirementProof = retiredApprovalRequestIds !== undefined;
+      const staged = stagedResumeHandoffEvents;
+      stagedResumeHandoffEvents = [];
+      resumeHandoffPending = false;
+      for (const event of staged) {
+        if (!sourceIsCurrent() || sourceWasHandled()) break;
+        const stagedEvent = classifyHermesEvent(event);
+        const stagedApprovalRequestId =
+          (stagedEvent.kind === "pending_action" && stagedEvent.action.kind === "approval") ||
+          (stagedEvent.kind === "pending_action_resolution" &&
+            stagedEvent.action.kind === "approval") ||
+          stagedEvent.kind === "pending_action_expiration"
+            ? stagedEvent.action.requestId
+            : undefined;
+        // The patched resume response names every request tombstoned by the
+        // old notifier generation. Drop only those exact transitions: a fresh
+        // approval can legitimately arrive on the replacement transport just
+        // before the ACK and must remain actionable.
+        if (
+          stagedApprovalRequestId &&
+          (!hasRetirementProof || retired.has(stagedApprovalRequestId))
+        ) {
+          continue;
+        }
+        handleGatewayEvent(event);
+      }
+    };
+    const reconcileResumeSnapshot = (assistant: string, bootstrapIfMissing: boolean) => {
+      if (!sourceIsCurrent() || sourceWasHandled()) return;
+      const current = liveEventsRef.current[storedSessionId] ?? createHermesLiveStream();
+      const reconciled = reconcileHermesInflightSnapshot(current, {
+        storedSessionId,
+        assistant,
+        receivedAt: new Date().toISOString(),
+        bootstrapIfMissing,
+      });
+      if (reconciled === current) return;
+      liveEventsRef.current = {
+        ...liveEventsRef.current,
+        [storedSessionId]: reconciled,
+      };
+      setLiveEvents(liveEventsRef.current);
+    };
+    const listenerMountEpoch = workspaceMountEpochRef.current;
+    agentRunGatewayEventRouteRegistry.set(storedSessionId, {
+      completionSource: agentRunCompletionSource,
+      handleEvent: handleGatewayEvent,
+      listenerEpoch: agentRunListenerEpoch,
+      mountEpoch: listenerMountEpoch,
+      retireApprovalsAtPhysicalClose: () =>
+        retireApprovalsForGatewayDetach({
+          storedSessionIds: new Set([storedSessionId]),
+        }),
+      semanticConsumerActive: true,
+    });
+    ownedAgentRunGatewayEventSourcesRef.current.set(storedSessionId, agentRunCompletionSource);
+    const registeredDetach = agentRunGatewayPhysicalDetachRegistry.get(storedSessionId);
+    if (
+      registeredDetach?.completionSource !== agentRunCompletionSource ||
+      registeredDetach.mountEpoch !== listenerMountEpoch
+    ) {
+      const physicalDetach = createAgentRunGatewayPhysicalDetach(
+        storedSessionId,
+        agentRunCompletionSource,
+        listenerMountEpoch,
+      );
+      agentRunGatewayPhysicalDetachRegistry.set(storedSessionId, physicalDetach);
+      ownedAgentRunGatewayPhysicalDetachesRef.current.add(physicalDetach);
+    }
     const removeListener = gateway.onEvent(handleGatewayEvent);
     unlisten = () => {
       retirePreviousListener();
       removeListener();
+      if (
+        agentRunGatewayEventRouteRegistry.get(storedSessionId)?.listenerEpoch ===
+        agentRunListenerEpoch
+      ) {
+        agentRunGatewayEventRouteRegistry.delete(storedSessionId);
+        forgetAgentRunGatewayEventHandoff(storedSessionId);
+      }
       if (agentRunListenerEpochsRef.current.get(storedSessionId) === agentRunListenerEpoch) {
         agentRunListenerEpochsRef.current.delete(storedSessionId);
       }
@@ -8603,12 +9356,19 @@ export function AgentWorkspace({
       }
     };
     sessionGatewayUnlistenRef.current.set(storedSessionId, unlisten);
+    for (const event of takeAgentRunGatewayEventHandoff(
+      storedSessionId,
+      agentRunCompletionSource,
+    )) {
+      if (!sourceIsCurrent() || sourceWasHandled()) break;
+      handleGatewayEvent(event);
+    }
     return {
+      abortResumeHandoff,
       authorityProof: providedAuthorityProof,
       clearPendingRunAcceptance,
       completionSource: agentRunCompletionSource,
       clearPendingTerminalEvidence,
-      confirmMonitorStarted,
       confirmRunAccepted,
       pendingTerminalEvidence: () => {
         const pending = pendingAgentRunTerminalEvidenceRef.current.get(storedSessionId);
@@ -8620,6 +9380,10 @@ export function AgentWorkspace({
       promptAttemptIsCurrent: () =>
         !providedAuthorityProof ||
         pendingAgentRunAcceptanceRef.current.get(storedSessionId) === pendingAcceptance,
+      completeResumeHandoff,
+      rebindRuntimeSessionId,
+      reconcileResumeSnapshot,
+      restorePredecessorAfterRejectedReplacement,
       restoreRunAfterBusyRejection,
       unlisten,
     };
@@ -9038,6 +9802,14 @@ export function AgentWorkspace({
         clearQueuedIssueReport();
         throw supersededPromptError();
       }
+      // React may defer a functional state updater until after navigation has
+      // already unmounted this Workspace. Publish the live route to the ref
+      // before scheduling state so the unmount continuity snapshot cannot lose
+      // the stored-to-runtime mapping for an in-flight prompt.
+      runtimeSessionIdsRef.current = {
+        ...runtimeSessionIdsRef.current,
+        [storedSessionId]: activeRuntimeSessionId,
+      };
       setRuntimeSessionIds((current) => ({
         ...current,
         [storedSessionId]: activeRuntimeSessionId,
@@ -9147,15 +9919,16 @@ export function AgentWorkspace({
         clearPendingRunAcceptance,
         clearPendingTerminalEvidence,
         completionSource,
-        confirmMonitorStarted,
         confirmRunAccepted,
         pendingTerminalEvidence,
         promptAttemptIsCurrent,
+        restorePredecessorAfterRejectedReplacement,
         restoreRunAfterBusyRejection,
       } = attachHermesSessionEventListener({
         gateway,
         onSuperseded: clearQueuedIssueReport,
         persistenceBoundary,
+        predecessorRunMonitorGeneration: runGenerationAtSend,
         runtimeSessionId: activeRuntimeSessionId,
         sessionDisplayTitle,
         storedSessionId,
@@ -9216,7 +9989,8 @@ export function AgentWorkspace({
         ) {
           acceptedPendingIssueReportRegistry.set(storedSessionId, queuedIssueReport);
         }
-        if (confirmRunAccepted()) {
+        const acceptedListener = confirmRunAccepted();
+        if (acceptedListener) {
           const runMonitorGeneration = startAgentRunMonitoring({
             storedSessionId,
             runtimeSessionId: activeRuntimeSessionId,
@@ -9234,7 +10008,7 @@ export function AgentWorkspace({
             },
             terminalEvidence: pendingTerminalEvidence(),
           });
-          confirmMonitorStarted(runMonitorGeneration);
+          acceptedListener.confirmMonitorStarted(runMonitorGeneration);
         }
         projectContextSignaturesBySessionId.set(
           storedSessionId,
@@ -9289,6 +10063,7 @@ export function AgentWorkspace({
           if (promptAttemptIsCurrent()) restoreRunAfterBusyRejection();
           throw err;
         }
+        if (restorePredecessorAfterRejectedReplacement()) throw err;
         const failedMonitorOwner = agentRunMonitorOwnersRef.current.get(storedSessionId);
         const failedOwnerGeneration = failedMonitorOwner?.generation;
         const failedMonitorGeneration =
@@ -9360,9 +10135,12 @@ export function AgentWorkspace({
     async (storedSessionId: string): Promise<SessionUsage> => {
       const gateway = await ensureHermesGateway(sessionUnrestricted(storedSessionId));
       const methods = createHermesMethods(gateway);
-      const usageFor = async (runtimeId: string) =>
-        parseSessionUsage(storedSessionId, await methods.getSessionUsage({ sessionId: runtimeId }));
-      // session.usage reads the live runtime by runtime id. Keep the lookup in
+      const usageFor = async (runtimeSessionId: string) =>
+        parseSessionUsage(
+          storedSessionId,
+          await methods.getSessionUsage({ sessionId: runtimeSessionId }),
+        );
+      // session.usage reads the live runtime by runtime session id. Keep the lookup in
       // the same cross-surface FIFO as Send because session.resume mutates that
       // binding. During an app-lifetime Agent run, query only the monitor's exact
       // runtime; a missing/dead runtime must fail closed instead of rebinding the
@@ -9653,6 +10431,19 @@ export function AgentWorkspace({
   }
 
   async function recoverFromGatewayClose(fullMode: boolean) {
+    // onClose fires only after this mode's socket has physically detached.
+    // Resolve and retire the old per-run barrier now; the replacement listener
+    // below registers a fresh barrier for its replacement transport.
+    const physicallyDetachedRuns = new Map<string, AgentRunGatewayPhysicalDetach>();
+    for (const [storedSessionId, physicalDetach] of agentRunGatewayPhysicalDetachRegistry) {
+      if (sessionUnrestricted(storedSessionId) !== fullMode) continue;
+      physicallyDetachedRuns.set(storedSessionId, physicalDetach);
+      physicalDetach.resolve();
+      if (agentRunGatewayPhysicalDetachRegistry.get(storedSessionId) === physicalDetach) {
+        agentRunGatewayPhysicalDetachRegistry.delete(storedSessionId);
+      }
+      ownedAgentRunGatewayPhysicalDetachesRef.current.delete(physicalDetach);
+    }
     // Approval retirement is a property of every physical gateway close, not
     // of whether reconnect work is needed or already running. Derive its
     // session scope from the synchronous semantic/store sources so a close in
@@ -9684,7 +10475,10 @@ export function AgentWorkspace({
     // keep their existing stale/reannounce reconciliation contract.
     retireApprovalsForGatewayDetach({ storedSessionIds: storedSessionIdsWithApprovals });
 
-    if (gatewayRecoveringRef.current.has(fullMode)) return;
+    if (gatewayRecoveringRef.current.has(fullMode)) {
+      gatewayRecoveryRetryRequestedRef.current.add(fullMode);
+      return;
+    }
     const activeStoredSessionIds = new Set(
       [...workingSessionIdsRef.current, ...waitingSessionIdsRef.current].filter(
         (storedSessionId) => sessionUnrestricted(storedSessionId) === fullMode,
@@ -9700,13 +10494,26 @@ export function AgentWorkspace({
           : [];
       }),
     );
+    // Reserve the transport gate synchronously, before reconnect yields. It
+    // must overtake a queued Send whose dormant FIFO slot cannot start until a
+    // terminal frame from this resumed stream arrives.
+    const recoveryTransportHandoffs = new Map(
+      Array.from(recoveryRuns.keys()).map((storedSessionId) => [
+        storedSessionId,
+        reserveHermesSessionTransportHandoff(storedSessionId),
+      ]),
+    );
     gatewayRecoveringRef.current.add(fullMode);
     try {
       const gateway = await ensureHermesGateway(fullMode);
       await Promise.all(
         Array.from(recoveryRuns).map(async ([storedSessionId, recoveryRun]) => {
           const { monitorOwner: recoveryMonitorOwner, source: recoverySource } = recoveryRun;
-          const recoveryRunIsCurrent = () =>
+          const recoveryTransportHandoff = recoveryTransportHandoffs.get(storedSessionId);
+          if (!recoveryTransportHandoff) return;
+          let recoveryListener: ReturnType<typeof attachHermesSessionEventListener> | undefined;
+          let recoveryListenerPhysicalDetach: AgentRunGatewayPhysicalDetach | undefined;
+          const recoveryOwnershipIsCurrent = () =>
             agentRunCompletionSourcesRef.current.get(storedSessionId) === recoverySource &&
             handledAgentRunCompletionSourcesRef.current.get(storedSessionId) !== recoverySource &&
             agentRunMonitorOwnersRef.current.get(storedSessionId) === recoveryMonitorOwner &&
@@ -9715,10 +10522,39 @@ export function AgentWorkspace({
             latestAgentRunGenerationRegistry.get(storedSessionId) ===
               recoveryMonitorOwner.generation &&
             isAgentRunMonitorGenerationCurrent(storedSessionId, recoveryMonitorOwner.generation);
+          const recoveryRunIsCurrent = () =>
+            recoveryOwnershipIsCurrent() &&
+            (recoveryListenerPhysicalDetach === undefined ||
+              agentRunGatewayPhysicalDetachRegistry.get(storedSessionId) ===
+                recoveryListenerPhysicalDetach);
+          const abortRecoveryListener = () => {
+            recoveryListener?.abortResumeHandoff();
+            recoveryListener?.unlisten();
+          };
           try {
             await trackInFlightSessionDispatch(
-              withHermesSessionDispatchLock(storedSessionId, async () => {
+              recoveryTransportHandoff.run(async () => {
+                await physicallyDetachedRuns.get(storedSessionId)?.detached;
                 if (!recoveryRunIsCurrent()) return;
+                const provisionalRuntimeSessionId =
+                  runtimeSessionIdsRef.current[storedSessionId] ?? storedSessionId;
+                recoveryListener = attachHermesSessionEventListener({
+                  gateway,
+                  runAlreadyAccepted: true,
+                  runtimeSessionId: provisionalRuntimeSessionId,
+                  sessionDisplayTitle:
+                    hermesSessionItemsRef.current.find((session) => session.id === storedSessionId)
+                      ?.title ?? "Agent session",
+                  stageEventsUntilResume: true,
+                  storedSessionId,
+                });
+                const activeRecoveryListener = recoveryListener;
+                recoveryListenerPhysicalDetach =
+                  agentRunGatewayPhysicalDetachRegistry.get(storedSessionId);
+                if (!recoveryRunIsCurrent()) {
+                  abortRecoveryListener();
+                  return;
+                }
                 const resumed = await gateway.request<HermesRuntimeSessionResponse>(
                   "session.resume",
                   {
@@ -9726,54 +10562,72 @@ export function AgentWorkspace({
                     cols: 96,
                   },
                 );
-                const runtimeSessionId = resumed.session_id;
-                if (!recoveryRunIsCurrent()) {
+                const resumedRuntimeSessionId = resumed.session_id;
+                if (!resumedRuntimeSessionId || !recoveryRunIsCurrent()) {
+                  abortRecoveryListener();
                   const currentMonitor = agentRunMonitorSnapshot(storedSessionId);
                   const runtimeBelongsToCurrentMonitor =
                     currentMonitor?.phase !== "terminal" &&
-                    currentMonitor?.runtimeSessionId === runtimeSessionId;
+                    currentMonitor?.runtimeSessionId === resumedRuntimeSessionId;
                   if (
-                    runtimeSessionId &&
-                    runtimeSessionId !== runtimeSessionIdsRef.current[storedSessionId] &&
+                    resumedRuntimeSessionId &&
+                    resumedRuntimeSessionId !== runtimeSessionIdsRef.current[storedSessionId] &&
                     !runtimeBelongsToCurrentMonitor
                   ) {
                     await gateway
-                      .request("session.interrupt", { session_id: runtimeSessionId })
+                      .request("session.interrupt", {
+                        session_id: resumedRuntimeSessionId,
+                      })
                       .catch(() => undefined);
                   }
                   return;
                 }
-                if (runtimeSessionId) {
-                  setRuntimeSessionIds((current) => {
-                    const next = {
-                      ...current,
-                      [storedSessionId]: runtimeSessionId,
-                    };
-                    runtimeSessionIdsRef.current = next;
-                    return next;
-                  });
-                  attachHermesSessionEventListener({
-                    gateway,
-                    runAlreadyAccepted: true,
-                    runtimeSessionId,
-                    sessionDisplayTitle:
-                      hermesSessionItemsRef.current.find(
-                        (session) => session.id === storedSessionId,
-                      )?.title ?? "Agent session",
-                    storedSessionId,
-                  });
+                activeRecoveryListener.rebindRuntimeSessionId(resumedRuntimeSessionId);
+                recordHermesResumePersistenceBoundary(
+                  storedSessionId,
+                  resumed.messages,
+                  resumed.pending_message_complete,
+                );
+                // Replay replacement-transport frames first, then append only
+                // a missing suffix from the atomic in-flight snapshot. Approval
+                // transitions retired by the old notifier generation are
+                // filtered by exact request id; absent retirement metadata
+                // keeps staged approvals fail closed.
+                activeRecoveryListener.completeResumeHandoff(resumed.retired_approval_request_ids);
+                const inflightAssistant = resumed.inflight?.assistant;
+                if (typeof inflightAssistant === "string" && inflightAssistant.length > 0) {
+                  activeRecoveryListener.reconcileResumeSnapshot(
+                    inflightAssistant,
+                    resumed.running !== false && resumed.inflight?.streaming !== false,
+                  );
                 }
+                runtimeSessionIdsRef.current = {
+                  ...runtimeSessionIdsRef.current,
+                  [storedSessionId]: resumedRuntimeSessionId,
+                };
+                setRuntimeSessionIds((current) => ({
+                  ...current,
+                  [storedSessionId]: resumedRuntimeSessionId,
+                }));
               }),
             );
           } catch {
+            recoveryTransportHandoff.cancel();
+            abortRecoveryListener();
             // The runtime session may be gone; the poll reconciles it.
           }
         }),
       );
     } catch {
+      for (const recoveryTransportHandoff of recoveryTransportHandoffs.values()) {
+        recoveryTransportHandoff.cancel();
+      }
       // Reconnect failed — fall back to the persisted-message poll.
     } finally {
       gatewayRecoveringRef.current.delete(fullMode);
+      if (gatewayRecoveryRetryRequestedRef.current.delete(fullMode)) {
+        void recoverFromGatewayClose(fullMode);
+      }
     }
     // Feature 04: the gateway is back. Any non-approval pending action not
     // re-announced by a fresh event is unverifiable across the drop, so mark it
@@ -10079,12 +10933,37 @@ export function AgentWorkspace({
     storedSessionId: string,
     messages: HermesSessionMessage[],
     throughRevision: number,
+    transcriptPersistenceProof?: AgentRunTranscriptPersistenceProof,
   ) {
     const current = liveEventsRef.current[storedSessionId];
     if (!current) return;
+    const persistedRunAssistantTexts = transcriptPersistenceProof
+      ? persistedAssistantTextsForAgentRun(messages, transcriptPersistenceProof.authorityProof)
+      : undefined;
     const reconciled = reconcileHermesLiveStream(current, {
       throughRevision,
       persistedMessages: persistedAssistantMessagesById(messages),
+      ...(persistedRunAssistantTexts && transcriptPersistenceProof
+        ? {
+            idlessTranscriptRun: {
+              runStartRevision: transcriptPersistenceProof.runStartRevision,
+              persistedAssistantTexts: persistedRunAssistantTexts,
+              persistedAssistantBoundaries: (current.idlessTranscriptPersistenceBoundaries ?? [])
+                .filter(
+                  (boundary) =>
+                    boundary.runStartRevision === transcriptPersistenceProof.runStartRevision &&
+                    boundary.revision <= throughRevision,
+                )
+                .map((boundary) => ({
+                  revision: boundary.revision,
+                  persistedAssistantOrdinal: boundary.persistedAssistantOrdinal,
+                  ...(boundary.pendingMessageComplete
+                    ? { pendingMessageComplete: true as const }
+                    : {}),
+                })),
+            },
+          }
+        : {}),
     });
     if (reconciled === current) return;
     liveEventsRef.current = {
@@ -10094,9 +10973,53 @@ export function AgentWorkspace({
     setLiveEvents(liveEventsRef.current);
   }
 
-  async function refreshHermesSession(sessionId: string) {
+  function recordHermesResumePersistenceBoundary(
+    storedSessionId: string,
+    rawMessages: unknown[] | undefined,
+    pendingMessageComplete: HermesRuntimeSessionResponse["pending_message_complete"],
+  ) {
+    if (!Array.isArray(rawMessages)) return;
+    const runStartRevision = agentRunStartRevisionsRef.current.get(storedSessionId);
+    const authorityProof = agentRunAuthorityProofsRef.current.get(storedSessionId);
+    if (runStartRevision === undefined || !authorityProof) return;
+    const messages = normalizeAtomicHermesResumeMessages(rawMessages);
+    const persistedRun = persistedAssistantRunForAtomicResume(
+      messages,
+      authorityProof,
+      pendingMessageComplete?.assistant_ordinal,
+    );
+    if (!persistedRun) return;
+    const current = liveEventsRef.current[storedSessionId] ?? createHermesLiveStream();
+    const next = recordHermesIdlessTranscriptPersistenceBoundary(current, {
+      runStartRevision,
+      persistedAssistantOrdinal:
+        persistedRun.pendingCompleteRunOrdinal ?? persistedRun.assistantTexts.length,
+      pendingMessageComplete: persistedRun.pendingCompleteRunOrdinal !== undefined,
+    });
+    if (next === current) return;
+    liveEventsRef.current = {
+      ...liveEventsRef.current,
+      [storedSessionId]: next,
+    };
+    setLiveEvents(liveEventsRef.current);
+  }
+
+  async function refreshHermesSession(
+    sessionId: string,
+    transcriptPersistenceProof?: AgentRunTranscriptPersistenceProof,
+  ) {
     try {
       const throughRevision = liveEventsRef.current[sessionId]?.revision ?? 0;
+      const activeRunStartRevision = agentRunStartRevisionsRef.current.get(sessionId);
+      const activeRunAuthorityProof = agentRunAuthorityProofsRef.current.get(sessionId);
+      const capturedTranscriptPersistenceProof =
+        transcriptPersistenceProof ??
+        (activeRunStartRevision !== undefined && activeRunAuthorityProof
+          ? {
+              runStartRevision: activeRunStartRevision,
+              authorityProof: activeRunAuthorityProof,
+            }
+          : undefined);
       const messages = await listSessionMessagesOrdered(sessionId);
       if (!messages) return undefined;
       const retainedPending = retainUnpersistedPendingMessages(
@@ -10121,7 +11044,12 @@ export function AgentWorkspace({
         return next;
       });
       void suggestTitleForUntitledSession(sessionId, messages);
-      reconcilePersistedHermesLiveEvents(sessionId, messages, throughRevision);
+      reconcilePersistedHermesLiveEvents(
+        sessionId,
+        messages,
+        throughRevision,
+        capturedTranscriptPersistenceProof,
+      );
       await loadHermesSessions();
       return combined;
     } catch (err) {
@@ -15867,7 +16795,7 @@ function AgentChatTurnRow({
             <ContextCompactionPart key={`${turn.id}:context:${index}`} part={part} />
           ) : part.type === "approval" ? (
             <ApprovalPart
-              key={`${turn.id}:approval:${part.id}`}
+              key={`${turn.id}:approval:${part.instanceId ?? part.id}`}
               part={part}
               submitting={
                 approvalSubmitting[approvalResponseKey(approvalScopeId, part.instanceId ?? part.id)]
@@ -19109,31 +20037,115 @@ function shouldResumeSessionActivity(messages: HermesSessionMessage[]) {
   return sentAt !== undefined && Date.now() - sentAt < RESUME_ACTIVITY_WINDOW_MS;
 }
 
-function sessionHasActiveWork(
-  sessionId: string,
-  workingSessionIds: Set<string>,
-  waitingSessionIds: Set<string>,
-  liveEvents: Record<string, HermesLiveStream>,
-) {
-  return (
-    workingSessionIds.has(sessionId) ||
-    waitingSessionIds.has(sessionId) ||
-    (liveEvents[sessionId]?.entries.length ?? 0) > 0
-  );
-}
-
 function persistedAssistantMessagesById(messages: HermesSessionMessage[]) {
   const persisted = new Map<string, string>();
   for (const message of messages) {
     if (message.role !== "assistant" || !message.id) continue;
-    const text =
-      textFromHermesContent(message.content) ??
-      textFromHermesContent(message.text) ??
-      textFromHermesContent(message.context) ??
-      "";
-    persisted.set(message.id, text);
+    persisted.set(message.id, persistedHermesAssistantText(message));
   }
   return persisted;
+}
+
+function persistedHermesAssistantText(message: HermesSessionMessage) {
+  return (
+    textFromHermesTransportContent(message.content) ??
+    textFromHermesTransportContent(message.text) ??
+    textFromHermesTransportContent(message.context) ??
+    ""
+  );
+}
+
+function persistedAssistantTextsForAgentRun(
+  messages: HermesSessionMessage[],
+  authorityProof: AgentRunAuthorityProof,
+) {
+  const persistedUserIndex = persistedPendingUserIndex(
+    messages,
+    authorityProof.submittedUserMessage,
+    authorityProof.persistenceBoundary,
+  );
+  if (persistedUserIndex < 0) return undefined;
+  const followingRunMessages = messages.slice(persistedUserIndex + 1);
+  const nextUserIndex = followingRunMessages.findIndex((message) => message.role === "user");
+  const runMessages =
+    nextUserIndex >= 0 ? followingRunMessages.slice(0, nextUserIndex) : followingRunMessages;
+  return runMessages.flatMap((message) => {
+    if (message.role !== "assistant") return [];
+    const text = persistedHermesAssistantText(message);
+    return text.trim() ? [text] : [];
+  });
+}
+
+/** Live `session.resume` rows come from Hermes' in-memory history projection,
+ * which does not carry the database ids required by the REST normalizer. Give
+ * those rows response-local identities so the atomic snapshot can still prove
+ * ordering; the ids never escape this handoff calculation. */
+function normalizeAtomicHermesResumeMessages(rawMessages: unknown[]) {
+  return normalizeHermesSessionMessagesResponse({
+    messages: rawMessages.map((message, index) => {
+      if (!message || typeof message !== "object") return message;
+      const id = (message as { id?: unknown }).id;
+      if (typeof id === "string" || typeof id === "number") return message;
+      return { ...message, id: `resume-snapshot:${index}` };
+    }),
+  });
+}
+
+/** Resolves a resume snapshot's assistant rows against the accepted Agent run.
+ * A patched-runtime pending-complete ordinal may move the boundary back by one
+ * exact row: that event will be delivered on the replacement transport after
+ * the response. Missing, malformed, non-final, or out-of-run proof stays at the
+ * snapshot's end so identical prose can never become a text-only overlap. */
+function persistedAssistantRunForAtomicResume(
+  messages: HermesSessionMessage[],
+  authorityProof: AgentRunAuthorityProof,
+  pendingCompleteAssistantOrdinal: number | undefined,
+) {
+  const persistedUserIndex = persistedPendingUserIndex(
+    messages,
+    authorityProof.submittedUserMessage,
+    {
+      ...authorityProof.persistenceBoundary,
+      // This is the live runtime's atomic history, not a lagging REST read.
+      // Its user ordinal is therefore authoritative even when a brand-new
+      // session had no timestamp-bearing history before prompt acceptance.
+      historyWasHydrated: true,
+    },
+  );
+  if (persistedUserIndex < 0) return undefined;
+
+  const followingRunMessages = messages.slice(persistedUserIndex + 1);
+  const nextUserOffset = followingRunMessages.findIndex((message) => message.role === "user");
+  const runEndIndex =
+    nextUserOffset < 0 ? messages.length : persistedUserIndex + 1 + nextUserOffset;
+  const assistantTexts: string[] = [];
+  let globalAssistantOrdinal = 0;
+  let pendingCompleteRunOrdinal: number | undefined;
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role !== "assistant") continue;
+    const text = persistedHermesAssistantText(message);
+    if (!text.trim()) continue;
+    if (index > persistedUserIndex && index < runEndIndex) {
+      if (globalAssistantOrdinal === pendingCompleteAssistantOrdinal) {
+        pendingCompleteRunOrdinal = assistantTexts.length;
+      }
+      assistantTexts.push(text);
+    }
+    globalAssistantOrdinal += 1;
+  }
+
+  const pendingProofIsExactFinalRow =
+    Number.isSafeInteger(pendingCompleteAssistantOrdinal) &&
+    (pendingCompleteAssistantOrdinal ?? -1) >= 0 &&
+    pendingCompleteAssistantOrdinal === globalAssistantOrdinal - 1 &&
+    pendingCompleteRunOrdinal === assistantTexts.length - 1;
+
+  return {
+    assistantTexts,
+    pendingCompleteRunOrdinal: pendingProofIsExactFinalRow ? pendingCompleteRunOrdinal : undefined,
+  };
 }
 
 function hermesTerminalFingerprint(event: JuneHermesEvent): string | undefined {

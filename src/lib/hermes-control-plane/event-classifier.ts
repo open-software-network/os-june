@@ -482,6 +482,7 @@ function classifyPendingActionExpiration(
     rawReason === "disconnect" ||
     rawReason === "overflow" ||
     rawReason === "stale" ||
+    rawReason === "transport_handoff" ||
     rawReason === "unconfirmed"
       ? rawReason
       : "unknown";

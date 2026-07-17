@@ -1,8 +1,10 @@
 import type { JuneHermesEvent, PendingHermesAction } from "./hermes-control-plane";
+import { stripRenderedMediaReferences, textFromHermesTransportContent } from "./agent-chat-runtime";
 
 export type HermesLiveStream = {
   revision: number;
   entries: Array<{ event: JuneHermesEvent; revision: number }>;
+  idlessTranscriptPersistenceBoundaries?: HermesIdlessTranscriptPersistenceBoundary[];
   seenDeliveries: HermesDeliveryLedger;
   transcriptByMessageId: Record<
     string,
@@ -16,6 +18,15 @@ export type HermesLiveStream = {
     }
   >;
   persistedMessageIds: Record<string, true>;
+};
+
+export type HermesIdlessTranscriptPersistenceBoundary = {
+  runStartRevision: number;
+  revision: number;
+  persistedAssistantOrdinal: number;
+  /** The runtime committed this assistant row atomically, but its ID-less
+   * `message.complete` still belongs to the replacement transport. */
+  pendingMessageComplete?: true;
 };
 
 type HermesDeliveryLedger = {
@@ -36,14 +47,74 @@ export function createHermesLiveStream(): HermesLiveStream {
   return {
     revision: 0,
     entries: [],
+    idlessTranscriptPersistenceBoundaries: [],
     seenDeliveries: { root: {}, size: 0 },
     transcriptByMessageId: {},
     persistedMessageIds: {},
   };
 }
 
-/** June-owned identity for one approval request instance. Runtime ids remain
- * globally stable; payload fingerprints are scoped to the accepted Agent run. */
+const MAX_IDLESS_TRANSCRIPT_PERSISTENCE_BOUNDARIES = 64;
+
+/** Records how many content-bearing assistant rows from the accepted Agent run
+ * were already persisted at an atomic live-resume boundary. An ordinary
+ * boundary aligns later transcripts; pending-complete proof can also align the
+ * active transcript whose final revision lands after the boundary. */
+export function recordHermesIdlessTranscriptPersistenceBoundary(
+  current: HermesLiveStream,
+  options: {
+    runStartRevision: number;
+    persistedAssistantOrdinal: number;
+    pendingMessageComplete?: boolean;
+  },
+): HermesLiveStream {
+  if (
+    !Number.isSafeInteger(options.runStartRevision) ||
+    options.runStartRevision < 0 ||
+    options.runStartRevision > current.revision ||
+    !Number.isSafeInteger(options.persistedAssistantOrdinal) ||
+    options.persistedAssistantOrdinal < 0
+  ) {
+    return current;
+  }
+  const boundaries = current.idlessTranscriptPersistenceBoundaries ?? [];
+  const prior = boundaries.at(-1);
+  const pendingMessageComplete = options.pendingMessageComplete === true;
+  if (
+    prior?.runStartRevision === options.runStartRevision &&
+    prior.revision === current.revision &&
+    Boolean(prior.pendingMessageComplete) === pendingMessageComplete
+  ) {
+    if (prior.persistedAssistantOrdinal >= options.persistedAssistantOrdinal) return current;
+    return {
+      ...current,
+      idlessTranscriptPersistenceBoundaries: [
+        ...boundaries.slice(0, -1),
+        {
+          runStartRevision: options.runStartRevision,
+          revision: current.revision,
+          persistedAssistantOrdinal: options.persistedAssistantOrdinal,
+          ...(pendingMessageComplete ? { pendingMessageComplete: true as const } : {}),
+        },
+      ],
+    };
+  }
+  return {
+    ...current,
+    idlessTranscriptPersistenceBoundaries: [
+      ...boundaries,
+      {
+        runStartRevision: options.runStartRevision,
+        revision: current.revision,
+        persistedAssistantOrdinal: options.persistedAssistantOrdinal,
+        ...(pendingMessageComplete ? { pendingMessageComplete: true as const } : {}),
+      },
+    ].slice(-MAX_IDLESS_TRANSCRIPT_PERSISTENCE_BOUNDARIES),
+  };
+}
+
+/** June-owned identity for one approval request instance. Runtime-issued request ids
+ * remain globally stable; payload fingerprints are scoped to the accepted Agent run. */
 export function hermesApprovalInstanceId(
   action: PendingHermesAction,
   runStartRevision: number | undefined,
@@ -136,6 +207,7 @@ export function appendHermesLiveEvent(
   const next: HermesLiveStream = {
     revision: current.revision + 1,
     entries: [...current.entries],
+    idlessTranscriptPersistenceBoundaries: current.idlessTranscriptPersistenceBoundaries ?? [],
     // A fixed-depth persistent hash trie keeps reducer snapshots immutable and
     // exact while adding/looking up delivery identities in effectively O(1).
     // Only the seven-node hash path is copied for an accepted delivery.
@@ -195,7 +267,8 @@ function isRetiredApprovalRequestReplay(
   // Old development/partial runtimes synthesize an approval identity from the
   // sanitized payload, so two real Agent runs can legitimately produce the
   // same id. Limit that compatibility identity to the current accepted run;
-  // patched runtime ids remain sticky across runs so delayed replays stay shut.
+  // patched runtime-issued request ids remain sticky across Agent runs so
+  // delayed replays stay shut.
   const revisionFloor =
     candidate.action.requestIdProvenance === "payload-fingerprint" ? runStartRevision : undefined;
   let state: "unseen" | "pending" | "retired" = "unseen";
@@ -235,6 +308,14 @@ export function reconcileHermesLiveStream(
   options: {
     throughRevision: number;
     persistedMessages: ReadonlyMap<string, string>;
+    idlessTranscriptRun?: {
+      runStartRevision: number;
+      persistedAssistantTexts: readonly string[];
+      persistedAssistantBoundaries?: readonly Pick<
+        HermesIdlessTranscriptPersistenceBoundary,
+        "revision" | "persistedAssistantOrdinal" | "pendingMessageComplete"
+      >[];
+    };
   },
 ): HermesLiveStream {
   let persistedMessageIds: Record<string, true> | undefined;
@@ -244,19 +325,256 @@ export function reconcileHermesLiveStream(
     const completeRevision = completedMessageRevision(current.entries, messageId);
     if (completeRevision === undefined || completeRevision > options.throughRevision) continue;
     if (!current.transcriptByMessageId[messageId]?.complete) continue;
-    if (visibleTranscriptText(current.entries, messageId) !== persistedText) continue;
+    const liveText = stripRenderedMediaReferences(
+      visibleTranscriptText(current.entries, messageId),
+    );
+    if (liveText !== stripRenderedMediaReferences(persistedText)) continue;
 
     persistedMessageIds ??= { ...current.persistedMessageIds };
     persistedMessageIds[messageId] = true;
   }
 
-  if (!persistedMessageIds) return current;
+  const compactedIdlessTranscriptRevisions = options.idlessTranscriptRun
+    ? persistedIdlessTranscriptRevisions(current.entries, {
+        throughRevision: options.throughRevision,
+        ...options.idlessTranscriptRun,
+      })
+    : undefined;
+  if (!persistedMessageIds && !compactedIdlessTranscriptRevisions) return current;
   return {
     ...current,
-    // Canonical entries intentionally stay in place. Their segmentation and
-    // object identity are observable while the live surface remains mounted.
-    persistedMessageIds,
+    ...(compactedIdlessTranscriptRevisions
+      ? {
+          entries: current.entries.filter(
+            ({ revision }) => !compactedIdlessTranscriptRevisions.has(revision),
+          ),
+        }
+      : {}),
+    // Identified canonical entries stay in place because their live part
+    // boundaries are observable while mounted. The only removed entries are a
+    // completed ID-less transcript proven equivalent to this run's persistence.
+    persistedMessageIds: persistedMessageIds ?? current.persistedMessageIds,
   };
+}
+
+function persistedIdlessTranscriptRevisions(
+  entries: readonly StreamEntry[],
+  options: {
+    runStartRevision: number;
+    throughRevision: number;
+    persistedAssistantTexts: readonly string[];
+    persistedAssistantBoundaries?: readonly Pick<
+      HermesIdlessTranscriptPersistenceBoundary,
+      "revision" | "persistedAssistantOrdinal" | "pendingMessageComplete"
+    >[];
+  },
+): Set<number> | undefined {
+  if (
+    !Number.isSafeInteger(options.runStartRevision) ||
+    options.runStartRevision < 0 ||
+    options.runStartRevision >= options.throughRevision
+  ) {
+    return undefined;
+  }
+
+  const completedTranscripts: Array<{ revisions: number[]; visibleText: string }> = [];
+  let activeTranscript: { revisions: number[]; visibleText: string } | undefined;
+  let terminalReached = false;
+
+  for (const { event, revision } of entries) {
+    if (revision <= options.runStartRevision || revision > options.throughRevision) continue;
+    if (event.kind === "lifecycle" && event.flavor === "terminal") {
+      if (activeTranscript) return undefined;
+      terminalReached = true;
+      continue;
+    }
+    if (event.kind !== "transcript") continue;
+    // A transcript after the terminal belongs to a later Agent run, while an
+    // explicit id needs the existing id-based reconciliation path. In either
+    // case this proof is not exclusively about one completed ID-less run.
+    if (terminalReached || event.messageId) return undefined;
+    if (event.failed) return undefined;
+
+    const startsTranscript = !event.complete && event.delta === undefined;
+    if (startsTranscript) {
+      if (activeTranscript) return undefined;
+      activeTranscript = { revisions: [revision], visibleText: "" };
+      continue;
+    }
+
+    activeTranscript ??= { revisions: [], visibleText: "" };
+    activeTranscript.revisions.push(revision);
+    const text = event.delta ?? "";
+    if (!event.complete) {
+      activeTranscript.visibleText += text;
+      continue;
+    }
+    // Hermes completes with a full snapshot. Accept only its monotonic suffix;
+    // the renderer likewise preserves already-painted text on a conflicting
+    // snapshot, so this reconstructs the exact visible live transcript.
+    if (text.startsWith(activeTranscript.visibleText)) {
+      activeTranscript.visibleText = text;
+    }
+    completedTranscripts.push(activeTranscript);
+    activeTranscript = undefined;
+  }
+
+  if (!terminalReached || activeTranscript || completedTranscripts.length === 0) return undefined;
+  if (options.persistedAssistantTexts.length < completedTranscripts.length) return undefined;
+  const persistedAssistantBoundaries = options.persistedAssistantBoundaries ?? [];
+  let priorBoundaryRevision = options.runStartRevision;
+  for (const boundary of persistedAssistantBoundaries) {
+    if (
+      !Number.isSafeInteger(boundary.revision) ||
+      boundary.revision < options.runStartRevision ||
+      boundary.revision > options.throughRevision ||
+      boundary.revision < priorBoundaryRevision ||
+      !Number.isSafeInteger(boundary.persistedAssistantOrdinal) ||
+      boundary.persistedAssistantOrdinal < 0
+    ) {
+      return undefined;
+    }
+    priorBoundaryRevision = boundary.revision;
+  }
+
+  const appliedBoundaryIndexes = new Set<number>();
+  let persistedAssistantOrdinal = 0;
+  for (const transcript of completedTranscripts) {
+    const firstRevision = transcript.revisions[0];
+    const lastRevision = transcript.revisions.at(-1);
+    if (firstRevision === undefined || lastRevision === undefined) return undefined;
+    for (
+      let boundaryIndex = 0;
+      boundaryIndex < persistedAssistantBoundaries.length;
+      boundaryIndex += 1
+    ) {
+      if (appliedBoundaryIndexes.has(boundaryIndex)) continue;
+      const boundary = persistedAssistantBoundaries[boundaryIndex];
+      if (!boundary) continue;
+      // A full-prefix snapshot cannot reinterpret a transcript already in
+      // progress. The pending-complete marker is narrower authority: it proves
+      // that this exact assistant row was committed while its completion frame
+      // still belongs after the atomic resume boundary.
+      const precedesTranscript = boundary.revision < firstRevision;
+      const provesCrossingCompletion =
+        boundary.pendingMessageComplete === true && boundary.revision < lastRevision;
+      if (!precedesTranscript && !provesCrossingCompletion) continue;
+      persistedAssistantOrdinal = Math.max(
+        persistedAssistantOrdinal,
+        boundary.persistedAssistantOrdinal,
+      );
+      appliedBoundaryIndexes.add(boundaryIndex);
+    }
+    const visibleText = textFromHermesTransportContent(transcript.visibleText) ?? "";
+    const persistedText =
+      textFromHermesTransportContent(
+        options.persistedAssistantTexts[persistedAssistantOrdinal] ?? "",
+      ) ?? "";
+    if (!visibleText || !persistedText.startsWith(visibleText)) return undefined;
+    persistedAssistantOrdinal += 1;
+  }
+
+  return new Set(completedTranscripts.flatMap((transcript) => transcript.revisions));
+}
+
+/** Reconciles the assistant text captured atomically by `session.resume` with
+ * June's already-visible live transcript. The snapshot is only authoritative
+ * for a monotonic suffix: an equal, shorter, or conflicting value cannot
+ * rewrite text the user has already seen. */
+export function reconcileHermesInflightSnapshot(
+  current: HermesLiveStream,
+  options: {
+    storedSessionId: string;
+    assistant: string;
+    receivedAt: string;
+    /** A live resume can begin streaming entirely while no Workspace owns the
+     * transport. In that case the atomic in-flight snapshot is the only start
+     * edge June can recover, so seed a pinned ID-less assistant transcript. */
+    bootstrapIfMissing?: boolean;
+  },
+): HermesLiveStream {
+  const openTranscript = openAssistantTranscript(current.entries, options.storedSessionId);
+  if (!openTranscript) {
+    if (!options.bootstrapIfMissing || !options.assistant) return current;
+    const started = appendHermesLiveEvent(current, {
+      kind: "transcript",
+      sessionId: options.storedSessionId,
+      complete: false,
+      failed: false,
+      role: "assistant",
+      receivedAt: options.receivedAt,
+    });
+    return appendHermesLiveEvent(started, {
+      kind: "transcript",
+      sessionId: options.storedSessionId,
+      delta: options.assistant,
+      complete: false,
+      failed: false,
+      role: "assistant",
+      receivedAt: options.receivedAt,
+    });
+  }
+  if (!options.assistant.startsWith(openTranscript.visibleText)) return current;
+
+  const suffix = options.assistant.slice(openTranscript.visibleText.length);
+  if (!suffix) return current;
+
+  return appendHermesLiveEvent(current, {
+    kind: "transcript",
+    sessionId: options.storedSessionId,
+    ...(openTranscript.messageId === undefined ? {} : { messageId: openTranscript.messageId }),
+    delta: suffix,
+    complete: false,
+    failed: false,
+    receivedAt: options.receivedAt,
+  });
+}
+
+function openAssistantTranscript(entries: StreamEntry[], storedSessionId: string) {
+  let active:
+    | {
+        messageId?: string;
+        isAssistant: boolean;
+        visibleText: string;
+      }
+    | undefined;
+
+  for (const { event } of entries) {
+    if (!("sessionId" in event) || event.sessionId !== storedSessionId) continue;
+    if (event.kind === "error" || (event.kind === "lifecycle" && event.flavor === "terminal")) {
+      active = undefined;
+      continue;
+    }
+    if (event.kind !== "transcript") continue;
+
+    const sameTranscript = active !== undefined && active.messageId === event.messageId;
+    if (event.complete === true) {
+      if (sameTranscript) active = undefined;
+      continue;
+    }
+
+    if (event.delta === undefined) {
+      if (!sameTranscript) {
+        active = {
+          ...(event.messageId === undefined ? {} : { messageId: event.messageId }),
+          isAssistant: event.role !== "user" && event.role !== "system",
+          visibleText: "",
+        };
+      }
+      continue;
+    }
+
+    if (!sameTranscript) {
+      active = {
+        ...(event.messageId === undefined ? {} : { messageId: event.messageId }),
+        isAssistant: event.role !== "user" && event.role !== "system",
+        visibleText: "",
+      };
+    }
+    if (active?.isAssistant) active.visibleText += event.delta;
+  }
+
+  return active?.isAssistant ? active : undefined;
 }
 
 function appendTranscriptEvent(stream: HermesLiveStream, event: TranscriptEvent) {

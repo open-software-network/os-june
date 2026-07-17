@@ -20,7 +20,7 @@ export type AgentChatTextPart = {
   type: "text";
   text: string;
   status?: "running" | "complete";
-  /** Stable semantic segment identity for live Hermes transcript prose. */
+  /** Stable semantic part identity for live Hermes transcript prose. */
   renderKey?: string;
 };
 
@@ -28,7 +28,7 @@ export type AgentChatReasoningPart = {
   type: "reasoning";
   text: string;
   status: "running" | "complete";
-  /** Stable semantic segment identity for live Hermes reasoning. */
+  /** Stable semantic part identity for live Hermes reasoning. */
   renderKey?: string;
 };
 
@@ -536,7 +536,7 @@ function appendLiveHermesEvents(
   let currentAssistant: AgentChatTurn | null = null;
   let transcriptOwnerMessageId: string | undefined;
   let idlessToolSequence = 0;
-  const toolCreatedTurns = new Set<AgentChatTurn>();
+  const toolOnlyAssistantRows = new Set<AgentChatTurn>();
   const completedMessageIds = new Set<string>();
   const liveAssistantTurnsByMessageId = new Map<string, AgentChatTurn>();
   const messageIdByTurn = new Map<AgentChatTurn, string>();
@@ -569,7 +569,7 @@ function appendLiveHermesEvents(
     const turn = createAssistantTurn(turns, receivedAt, messageId);
     if (persisted) {
       // Keep the authoritative source ordering while retaining the live row and
-      // its semantic segmentation as the render identity.
+      // its semantic part boundaries as the render identity.
       turn.createdAt = persisted.createdAt;
       turn.isScheduledRun = persisted.isScheduledRun;
       persistedTurnForLiveTurn.set(turn, persisted);
@@ -716,7 +716,7 @@ function appendLiveHermesEvents(
         // rows that resolve as they finish.
         if (!currentAssistant) {
           currentAssistant = createAssistantTurn(turns, event.receivedAt);
-          toolCreatedTurns.add(currentAssistant);
+          toolOnlyAssistantRows.add(currentAssistant);
         }
         const { activity } = event;
         const key =
@@ -746,7 +746,7 @@ function appendLiveHermesEvents(
               : "running";
         if (status === "running") {
           currentAssistant.status = "running";
-        } else if (toolCreatedTurns.has(currentAssistant)) {
+        } else if (toolOnlyAssistantRows.has(currentAssistant)) {
           currentAssistant.status = "complete";
         }
         upsertToolPart(currentAssistant.parts, {
@@ -787,12 +787,12 @@ function appendLiveHermesEvents(
         }
         if (!currentAssistant) {
           currentAssistant = createAssistantTurn(turns, event.receivedAt);
-          toolCreatedTurns.add(currentAssistant);
+          toolOnlyAssistantRows.add(currentAssistant);
         }
         if (status === "running") {
           currentAssistant.status = "running";
-        } else if (toolCreatedTurns.has(currentAssistant)) {
-          // A turn that exists only because of tool events has nothing left to
+        } else if (toolOnlyAssistantRows.has(currentAssistant)) {
+          // An assistant row that exists only because of tool events has nothing left to
           // stream once its tool reaches a terminal state.
           currentAssistant.status = "complete";
         }
@@ -1055,8 +1055,8 @@ function pushAssistantTextPart(
   }
 }
 
-// Reconcile the final snapshot against every streamed text segment. A verified
-// extension may append to the last segment; every other snapshot is retained
+// Reconcile the final snapshot against every streamed text part. A verified
+// extension may append to the last part; every other snapshot is retained
 // only as transport evidence and cannot rewrite prose already painted.
 function completeAssistantTextPart(
   parts: AgentChatPart[],
@@ -1867,6 +1867,14 @@ export function textFromHermesContent(
   options: TextFromHermesContentOptions = {},
 ): string | undefined {
   return textFromHermesContentInner(value, 0, options);
+}
+
+/** Extracts the exact text-bearing Hermes transport content used for
+ * persistence identity and assistant ordinals. Display projection removes
+ * MEDIA references separately; proof must retain them because media-only rows
+ * are content-bearing runtime history. */
+export function textFromHermesTransportContent(value: unknown): string | undefined {
+  return textFromHermesContent(value, { stripMediaImageReferences: false });
 }
 
 function textFromHermesContentInner(

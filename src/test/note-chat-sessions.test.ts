@@ -172,6 +172,22 @@ function noteChatText(chat: NoteChat, role: AgentChatTurn["role"]) {
     .join(" ");
 }
 
+function noteChatTextParts(chat: NoteChat, role: AgentChatTurn["role"]) {
+  return chat.turns
+    .filter((turn) => turn.role === role)
+    .flatMap((turn) => turn.parts)
+    .filter((part) => part.type === "text")
+    .map((part) => part.text);
+}
+
+function noteChatReasoningText(chat: NoteChat) {
+  return chat.turns
+    .flatMap((turn) => turn.parts)
+    .filter((part) => part.type === "reasoning")
+    .map((part) => part.text)
+    .join(" ");
+}
+
 describe("note chat session map", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1570,6 +1586,424 @@ describe("note chat session map", () => {
     );
   });
 
+  it("replays replacement text before the resume ACK, then fills only its missing snapshot suffix", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let resumeCount = 0;
+    let finishRecovery:
+      | ((value: {
+          session_id: string;
+          running: boolean;
+          inflight: { assistant: string; streaming: boolean };
+          retired_approval_request_ids: string[];
+        }) => void)
+      | undefined;
+    const recovery = new Promise<{
+      session_id: string;
+      running: boolean;
+      inflight: { assistant: string; streaming: boolean };
+      retired_approval_request_ids: string[];
+    }>((resolve) => {
+      finishRecovery = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method !== "session.resume") return Promise.resolve({});
+      resumeCount += 1;
+      return resumeCount === 1 ? Promise.resolve({ session_id: "runtime-before-close" }) : recovery;
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Keep streaming through reconnect.")).toBe(true);
+    });
+
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+    await waitFor(() => expect(resumeCount).toBe(2));
+    const replacementHandler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      replacementHandler?.({
+        type: "message.start",
+        session_id: "runtime-after-close",
+        payload: { message_id: "replacement-message" },
+      });
+      replacementHandler?.({
+        type: "message.delta",
+        session_id: "runtime-after-close",
+        payload: { message_id: "replacement-message", delta: "Hello " },
+      });
+    });
+    expect(noteChatText(result.current, "assistant")).not.toContain("Hello ");
+
+    await act(async () =>
+      finishRecovery?.({
+        session_id: "runtime-after-close",
+        running: true,
+        inflight: { assistant: "Hello world", streaming: true },
+        retired_approval_request_ids: [],
+      }),
+    );
+
+    await waitFor(() => expect(noteChatText(result.current, "assistant")).toBe("Hello world"));
+    expect(result.current.working).toBe(true);
+  });
+
+  it.each([
+    { label: "with exact pending-complete proof", assistantOrdinal: 1, expectedCopies: 1 },
+    { label: "without pending-complete proof", assistantOrdinal: undefined, expectedCopies: 2 },
+  ])("keeps a boundary-crossing ID-less completion fail-closed $label", async ({
+    assistantOrdinal,
+    expectedCopies,
+  }) => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let resumeCount = 0;
+    let finishRecovery:
+      | ((value: {
+          messages: unknown[];
+          pending_message_complete?: { assistant_ordinal: number };
+          retired_approval_request_ids: string[];
+          running: boolean;
+          session_id: string;
+        }) => void)
+      | undefined;
+    const recovery = new Promise<{
+      messages: unknown[];
+      pending_message_complete?: { assistant_ordinal: number };
+      retired_approval_request_ids: string[];
+      running: boolean;
+      session_id: string;
+    }>((resolve) => {
+      finishRecovery = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method !== "session.resume") return Promise.resolve({});
+      resumeCount += 1;
+      return resumeCount === 1
+        ? Promise.resolve({ session_id: "runtime-before-crossing-close" })
+        : recovery;
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Keep the crossing reply singular when proven.")).toBe(
+        true,
+      );
+    });
+
+    const persistedMessages: HermesSessionMessage[] = [
+      {
+        id: "persisted-crossing-note-chat-user",
+        role: "user",
+        content: "Keep the crossing reply singular when proven.",
+        timestamp: new Date(Date.now() + 1_000).toISOString(),
+      },
+      {
+        id: "persisted-crossing-note-chat-earlier-assistant",
+        role: "assistant",
+        content: "Earlier content-bearing reply.",
+        timestamp: new Date(Date.now() + 2_000).toISOString(),
+      },
+      {
+        id: "persisted-crossing-note-chat-tool-call-assistant",
+        role: "assistant",
+        content: "   ",
+        tool_calls: [{ id: "note-chat-read-1", name: "read_file" }],
+        timestamp: new Date(Date.now() + 3_000).toISOString(),
+      },
+      {
+        id: "persisted-crossing-note-chat-tool-result",
+        role: "tool",
+        content: "result",
+        tool_call_id: "note-chat-read-1",
+        timestamp: new Date(Date.now() + 4_000).toISOString(),
+      },
+      {
+        id: "persisted-crossing-note-chat-final-assistant",
+        role: "assistant",
+        content: "Final Note Chat reply crossing the resume boundary.",
+        timestamp: new Date(Date.now() + 5_000).toISOString(),
+      },
+    ];
+    const originalHandler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      originalHandler?.({
+        type: "message.start",
+        event_id: `note-chat-crossing-start-${assistantOrdinal ?? "absent"}`,
+        session_id: "runtime-before-crossing-close",
+        payload: {},
+      });
+      originalHandler?.({
+        type: "message.delta",
+        event_id: `note-chat-crossing-delta-${assistantOrdinal ?? "absent"}`,
+        session_id: "runtime-before-crossing-close",
+        payload: { delta: "Final Note Chat reply crossing the resume boundary." },
+      });
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+    await waitFor(() => expect(resumeCount).toBe(2));
+
+    mocks.hermesBridgeSessionMessages.mockResolvedValue({ messages: persistedMessages });
+    const replacementHandler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      replacementHandler?.({
+        type: "message.complete",
+        event_id: `note-chat-crossing-complete-${assistantOrdinal ?? "absent"}`,
+        session_id: "runtime-after-crossing-close",
+        payload: { text: "Final Note Chat reply crossing the resume boundary." },
+      });
+      replacementHandler?.({
+        type: "turn.completed",
+        event_id: `note-chat-crossing-terminal-${assistantOrdinal ?? "absent"}`,
+        session_id: "runtime-after-crossing-close",
+        payload: { status: "success" },
+      });
+    });
+    const rawResumeMessages = persistedMessages.map(({ id: _id, ...message }) => message);
+    await act(async () =>
+      finishRecovery?.({
+        messages: rawResumeMessages,
+        ...(assistantOrdinal === undefined
+          ? {}
+          : { pending_message_complete: { assistant_ordinal: assistantOrdinal } }),
+        retired_approval_request_ids: [],
+        running: true,
+        session_id: "runtime-after-crossing-close",
+      }),
+    );
+
+    await waitFor(() => expect(result.current.working).toBe(false));
+    await waitFor(() =>
+      expect(
+        noteChatTextParts(result.current, "assistant").filter(
+          (text) => text === "Final Note Chat reply crossing the resume boundary.",
+        ),
+      ).toHaveLength(expectedCopies),
+    );
+  });
+
+  it("replays a replacement terminal only after the resume ACK binds its runtime session id", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let resumeCount = 0;
+    let finishRecovery:
+      | ((value: {
+          session_id: string;
+          running: boolean;
+          retired_approval_request_ids: string[];
+        }) => void)
+      | undefined;
+    const recovery = new Promise<{
+      session_id: string;
+      running: boolean;
+      retired_approval_request_ids: string[];
+    }>((resolve) => {
+      finishRecovery = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method !== "session.resume") return Promise.resolve({});
+      resumeCount += 1;
+      return resumeCount === 1 ? Promise.resolve({ session_id: "runtime-before-close" }) : recovery;
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Finish through reconnect.")).toBe(true);
+    });
+
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+    await waitFor(() => expect(resumeCount).toBe(2));
+    act(() => {
+      [...mocks.gatewayEventHandlers].at(-1)?.({
+        type: "turn.completed",
+        event_id: "replacement-terminal",
+        session_id: "runtime-after-close",
+        payload: { status: "success" },
+      });
+    });
+    expect(result.current.working).toBe(true);
+
+    await act(async () =>
+      finishRecovery?.({
+        session_id: "runtime-after-close",
+        running: false,
+        retired_approval_request_ids: [],
+      }),
+    );
+
+    await waitFor(() => expect(result.current.working).toBe(false));
+  });
+
+  it("retires only open approvals on close and preserves fresh pre-ACK approvals", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let resumeCount = 0;
+    let finishRecovery:
+      | ((value: { session_id: string; retired_approval_request_ids: string[] }) => void)
+      | undefined;
+    const recovery = new Promise<{
+      session_id: string;
+      retired_approval_request_ids: string[];
+    }>((resolve) => {
+      finishRecovery = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method !== "session.resume") return Promise.resolve({});
+      resumeCount += 1;
+      return resumeCount === 1 ? Promise.resolve({ session_id: "runtime-before-close" }) : recovery;
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Exercise approval handoff.")).toBe(true);
+    });
+    const originalHandler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      originalHandler?.({
+        type: "approval.request",
+        session_id: "runtime-before-close",
+        payload: { request_id: "open-before-close", description: "Open before close" },
+      });
+      originalHandler?.({
+        type: "approval.request",
+        session_id: "runtime-before-close",
+        payload: { request_id: "resolved-before-close", description: "Already resolved" },
+      });
+      originalHandler?.({
+        type: "approval.response",
+        session_id: "runtime-before-close",
+        payload: { request_id: "resolved-before-close", choice: "deny" },
+      });
+    });
+
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+    await waitFor(() => expect(resumeCount).toBe(2));
+    const approvalPartsAfterClose = result.current.turns
+      .flatMap((turn) => turn.parts)
+      .filter((part) => part.type === "approval");
+    expect(approvalPartsAfterClose).toContainEqual(
+      expect.objectContaining({ id: "open-before-close", status: "expired" }),
+    );
+    expect(approvalPartsAfterClose).toContainEqual(
+      expect.objectContaining({ id: "resolved-before-close", status: "resolved" }),
+    );
+
+    const replacementHandler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      replacementHandler?.({
+        type: "approval.request",
+        session_id: "runtime-after-close",
+        payload: { request_id: "open-before-close", description: "Retired transport replay" },
+      });
+      replacementHandler?.({
+        type: "approval.request",
+        session_id: "runtime-after-close",
+        payload: { request_id: "fresh-after-close", description: "Fresh replacement request" },
+      });
+    });
+    await act(async () =>
+      finishRecovery?.({
+        session_id: "runtime-after-close",
+        retired_approval_request_ids: ["open-before-close"],
+      }),
+    );
+
+    await waitFor(() =>
+      expect(
+        result.current.turns
+          .flatMap((turn) => turn.parts)
+          .find((part) => part.type === "approval" && part.id === "fresh-after-close"),
+      ).toMatchObject({ status: "pending" }),
+    );
+    expect(
+      result.current.turns
+        .flatMap((turn) => turn.parts)
+        .filter((part) => part.type === "approval" && part.id === "open-before-close"),
+    ).toEqual([expect.objectContaining({ status: "expired" })]);
+  });
+
+  it("drops pre-ACK approval transitions when resume retirement metadata is absent", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let resumeCount = 0;
+    let finishRecovery: ((value: { session_id: string }) => void) | undefined;
+    const recovery = new Promise<{ session_id: string }>((resolve) => {
+      finishRecovery = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method !== "session.resume") return Promise.resolve({});
+      resumeCount += 1;
+      return resumeCount === 1 ? Promise.resolve({ session_id: "runtime-before-close" }) : recovery;
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Use fail-closed approval recovery.")).toBe(true);
+    });
+
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+    await waitFor(() => expect(resumeCount).toBe(2));
+    act(() => {
+      [...mocks.gatewayEventHandlers].at(-1)?.({
+        type: "approval.request",
+        session_id: "runtime-after-close",
+        payload: { request_id: "unproven-approval", description: "Unproven request" },
+      });
+    });
+    await act(async () => finishRecovery?.({ session_id: "runtime-after-close" }));
+
+    expect(
+      result.current.turns
+        .flatMap((turn) => turn.parts)
+        .find((part) => part.type === "approval" && part.id === "unproven-approval"),
+    ).toBeUndefined();
+  });
+
+  it("lets recovery overtake a dormant dispatch for the stored session id", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let resumeCount = 0;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method !== "session.resume") return Promise.resolve({});
+      resumeCount += 1;
+      return Promise.resolve({
+        session_id: resumeCount === 1 ? "runtime-before-close" : "runtime-after-close",
+        retired_approval_request_ids: [],
+      });
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Recover around the dormant dispatch.")).toBe(true);
+    });
+
+    let releaseDormantDispatch: (() => void) | undefined;
+    const dormantDispatch = reserveHermesSessionDispatch("stored-note-chat").run(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseDormantDispatch = resolve;
+        }),
+    );
+    await waitFor(() => expect(releaseDormantDispatch).toBeTypeOf("function"));
+    let queuedDispatchStarted = false;
+    const queuedDispatch = reserveHermesSessionDispatch("stored-note-chat").run(async () => {
+      queuedDispatchStarted = true;
+    });
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+
+    try {
+      await waitFor(() => expect(resumeCount).toBe(2), { timeout: 500 });
+      expect(queuedDispatchStarted).toBe(false);
+    } finally {
+      releaseDormantDispatch?.();
+      await Promise.all([dormantDispatch, queuedDispatch]);
+    }
+    expect(queuedDispatchStarted).toBe(true);
+  });
+
   it("retries recovery when the replacement gateway closes during session resume", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     let resumeCount = 0;
@@ -1608,6 +2042,78 @@ describe("note chat session map", () => {
       session_id: "stored-note-chat",
       cols: 96,
     });
+  });
+
+  it("does not reattribute a concurrently staged untagged terminal after another run settles", async () => {
+    rememberNoteChatSession("note-a", "stored-a");
+    rememberNoteChatSession("note-b", "stored-b");
+    const resumeCounts = new Map<string, number>();
+    const recoveryResolvers = new Map<
+      string,
+      (value: { session_id: string; retired_approval_request_ids: string[] }) => void
+    >();
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { session_id?: string }) => {
+      if (method !== "session.resume") return Promise.resolve({});
+      const storedSessionId = params?.session_id ?? "";
+      const count = (resumeCounts.get(storedSessionId) ?? 0) + 1;
+      resumeCounts.set(storedSessionId, count);
+      if (count === 1) {
+        return Promise.resolve({ session_id: `${storedSessionId}-runtime-before-close` });
+      }
+      return new Promise((resolve) => {
+        recoveryResolvers.set(storedSessionId, resolve);
+      });
+    });
+    const noteA = renderHook(() => useNoteChat({ id: "note-a", title: "Note A" }));
+    const noteB = renderHook(() => useNoteChat({ id: "note-b", title: "Note B" }));
+    await waitFor(() => expect(noteA.result.current.loading).toBe(false));
+    await waitFor(() => expect(noteB.result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await noteA.result.current.submit("Keep A running.")).toBe(true);
+      expect(await noteB.result.current.submit("Finish B first.")).toBe(true);
+    });
+
+    act(() => {
+      [...mocks.gatewayCloseHandlers].at(-1)?.();
+    });
+    await waitFor(() => {
+      expect(recoveryResolvers.has("stored-a")).toBe(true);
+      expect(recoveryResolvers.has("stored-b")).toBe(true);
+    });
+    const replacementHandler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      replacementHandler?.({
+        type: "turn.completed",
+        event_id: "untagged-b-before-resume-ack",
+        payload: { status: "success" },
+      });
+    });
+
+    await act(async () =>
+      recoveryResolvers.get("stored-b")?.({
+        session_id: "stored-b-runtime-after-close",
+        retired_approval_request_ids: [],
+      }),
+    );
+    act(() => {
+      replacementHandler?.({
+        type: "turn.completed",
+        event_id: "tagged-b-after-resume-ack",
+        session_id: "stored-b-runtime-after-close",
+        payload: { status: "success" },
+      });
+    });
+    await waitFor(() => expect(noteB.result.current.working).toBe(false));
+    expect(noteA.result.current.working).toBe(true);
+
+    await act(async () =>
+      recoveryResolvers.get("stored-a")?.({
+        session_id: "stored-a-runtime-after-close",
+        retired_approval_request_ids: [],
+      }),
+    );
+
+    expect(noteA.result.current.working).toBe(true);
   });
 
   it("interrupts a resumed runtime when Stop lands during reconnect", async () => {
@@ -2590,6 +3096,537 @@ describe("note chat session map", () => {
     expect(third.result.current.working).toBe(false);
   });
 
+  it("compacts settled offscreen reasoning once canonical history persists it", async () => {
+    rememberNoteChatSession("reasoning-note", "stored-reasoning-note");
+    const first = renderHook(() =>
+      useNoteChat({ id: "reasoning-note", title: "Reasoning persistence" }),
+    );
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await first.result.current.submit("Persist this reasoning.")).toBe(true);
+    });
+
+    const persistedMessages: HermesSessionMessage[] = [
+      {
+        id: "persisted-reasoning-user",
+        role: "user",
+        content: "Persist this reasoning.",
+        timestamp: new Date(Date.now() + 1_000).toISOString(),
+      },
+      {
+        id: "persisted-reasoning-answer",
+        role: "assistant",
+        content: "Persisted reasoning answer.",
+        reasoning_details: [{ type: "text", text: "Matched persisted reasoning." }],
+        timestamp: new Date(Date.now() + 2_000).toISOString(),
+      },
+    ];
+    mocks.hermesBridgeSessionMessages.mockClear();
+    let resolveOffscreenPersistence:
+      | ((value: { messages: HermesSessionMessage[] }) => void)
+      | undefined;
+    mocks.hermesBridgeSessionMessages.mockReturnValue(
+      new Promise((resolve) => {
+        resolveOffscreenPersistence = resolve;
+      }),
+    );
+    first.unmount();
+    const handler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      handler?.({
+        type: "message.start",
+        event_id: "persisted-reasoning-start",
+        session_id: "runtime-note-chat",
+        payload: { message_id: "persisted-reasoning-answer" },
+      });
+      handler?.({
+        type: "reasoning.delta",
+        event_id: "persisted-reasoning-delta",
+        session_id: "runtime-note-chat",
+        payload: { delta: "Stale streamed prefix." },
+      });
+      handler?.({
+        type: "reasoning.available",
+        event_id: "persisted-reasoning-snapshot",
+        session_id: "runtime-note-chat",
+        payload: { text: "Matched persisted reasoning." },
+      });
+      handler?.({
+        type: "message.complete",
+        event_id: "persisted-reasoning-complete",
+        session_id: "runtime-note-chat",
+        payload: {
+          message_id: "persisted-reasoning-answer",
+          text: "Persisted reasoning answer.",
+        },
+      });
+      handler?.({
+        type: "turn.completed",
+        event_id: "persisted-reasoning-terminal",
+        session_id: "runtime-note-chat",
+        payload: { status: "success" },
+      });
+    });
+    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalled());
+    await act(async () => resolveOffscreenPersistence?.({ messages: persistedMessages }));
+    await act(async () => Promise.resolve());
+
+    let resolveRehydration: ((value: { messages: HermesSessionMessage[] }) => void) | undefined;
+    mocks.hermesBridgeSessionMessages.mockReturnValue(
+      new Promise((resolve) => {
+        resolveRehydration = resolve;
+      }),
+    );
+    const second = renderHook(() =>
+      useNoteChat({ id: "reasoning-note", title: "Reasoning persistence" }),
+    );
+    await waitFor(() =>
+      expect(second.result.current.storedSessionId).toBe("stored-reasoning-note"),
+    );
+    expect(second.result.current.turns).toEqual([]);
+
+    await act(async () => resolveRehydration?.({ messages: persistedMessages }));
+    await waitFor(() => expect(second.result.current.loading).toBe(false));
+    expect(noteChatReasoningText(second.result.current)).toBe("Matched persisted reasoning.");
+  });
+
+  it("retains settled offscreen reasoning that canonical history does not cover", async () => {
+    rememberNoteChatSession("unmatched-reasoning-note", "stored-unmatched-reasoning-note");
+    const first = renderHook(() =>
+      useNoteChat({ id: "unmatched-reasoning-note", title: "Unmatched reasoning" }),
+    );
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await first.result.current.submit("Keep unmatched reasoning.")).toBe(true);
+    });
+
+    const persistedMessages: HermesSessionMessage[] = [
+      {
+        id: "unmatched-reasoning-user",
+        role: "user",
+        content: "Keep unmatched reasoning.",
+        timestamp: new Date(Date.now() + 1_000).toISOString(),
+      },
+      {
+        id: "unmatched-reasoning-answer",
+        role: "assistant",
+        content: "Persisted unmatched answer.",
+        reasoning_content: "Different persisted reasoning.",
+        timestamp: new Date(Date.now() + 2_000).toISOString(),
+      },
+    ];
+    mocks.hermesBridgeSessionMessages.mockClear();
+    let resolveOffscreenPersistence:
+      | ((value: { messages: HermesSessionMessage[] }) => void)
+      | undefined;
+    mocks.hermesBridgeSessionMessages.mockReturnValue(
+      new Promise((resolve) => {
+        resolveOffscreenPersistence = resolve;
+      }),
+    );
+    first.unmount();
+    const handler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      handler?.({
+        type: "message.start",
+        event_id: "unmatched-reasoning-start",
+        session_id: "runtime-note-chat",
+        payload: { message_id: "unmatched-reasoning-answer" },
+      });
+      handler?.({
+        type: "reasoning.delta",
+        event_id: "unmatched-reasoning-delta",
+        session_id: "runtime-note-chat",
+        payload: { delta: "Unique live reasoning." },
+      });
+      handler?.({
+        type: "message.complete",
+        event_id: "unmatched-reasoning-complete",
+        session_id: "runtime-note-chat",
+        payload: {
+          message_id: "unmatched-reasoning-answer",
+          text: "Persisted unmatched answer.",
+        },
+      });
+      handler?.({
+        type: "turn.completed",
+        event_id: "unmatched-reasoning-terminal",
+        session_id: "runtime-note-chat",
+        payload: { status: "success" },
+      });
+    });
+    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalled());
+    await act(async () => resolveOffscreenPersistence?.({ messages: persistedMessages }));
+    await act(async () => Promise.resolve());
+
+    let resolveRehydration: ((value: { messages: HermesSessionMessage[] }) => void) | undefined;
+    mocks.hermesBridgeSessionMessages.mockReturnValue(
+      new Promise((resolve) => {
+        resolveRehydration = resolve;
+      }),
+    );
+    const second = renderHook(() =>
+      useNoteChat({ id: "unmatched-reasoning-note", title: "Unmatched reasoning" }),
+    );
+    await waitFor(() =>
+      expect(second.result.current.storedSessionId).toBe("stored-unmatched-reasoning-note"),
+    );
+    expect(noteChatReasoningText(second.result.current)).toContain("Unique live reasoning.");
+
+    await act(async () => resolveRehydration?.({ messages: persistedMessages }));
+    await waitFor(() => expect(second.result.current.loading).toBe(false));
+  });
+
+  it("replaces a covered mounted ID-less transcript with one canonical copy", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Keep one canonical answer.")).toBe(true);
+    });
+
+    let resolveRefresh: ((value: { messages: HermesSessionMessage[] }) => void) | undefined;
+    mocks.hermesBridgeSessionMessages.mockClear();
+    mocks.hermesBridgeSessionMessages.mockReturnValue(
+      new Promise((resolve) => {
+        resolveRefresh = resolve;
+      }),
+    );
+    const handler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      handler?.({
+        type: "message.complete",
+        event_id: "mounted-idless-complete",
+        session_id: "runtime-note-chat",
+        payload: { text: "One canonical answer." },
+      });
+    });
+    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(1));
+    expect(noteChatTextParts(result.current, "assistant")).toEqual(["One canonical answer."]);
+
+    await act(async () =>
+      resolveRefresh?.({
+        messages: [
+          {
+            id: "persisted-mounted-user",
+            role: "user",
+            content: "Keep one canonical answer.",
+            timestamp: new Date(Date.now() + 1_000).toISOString(),
+          },
+          {
+            id: "persisted-mounted-assistant",
+            role: "assistant",
+            content: "One canonical answer.",
+            timestamp: new Date(Date.now() + 2_000).toISOString(),
+          },
+        ],
+      }),
+    );
+
+    expect(noteChatTextParts(result.current, "assistant")).toEqual(["One canonical answer."]);
+  });
+
+  it.each([
+    {
+      label: "media-only",
+      path: "/tmp/note-chat-idless-media-only.png",
+      prefix: "",
+    },
+    {
+      label: "media-prefixed",
+      path: "/tmp/note-chat-idless-media-prefixed.png",
+      prefix: "Rendered once with its image.",
+    },
+  ])("replaces a covered mounted $label ID-less transcript with one canonical copy", async ({
+    path,
+    prefix,
+  }) => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const first = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await first.result.current.submit("Keep one canonical generated image.")).toBe(true);
+    });
+
+    const transportText = [prefix, `MEDIA:${path}`].filter(Boolean).join("\n");
+    let resolveRefresh: ((value: { messages: HermesSessionMessage[] }) => void) | undefined;
+    mocks.hermesBridgeSessionMessages.mockClear();
+    mocks.hermesBridgeSessionMessages.mockReturnValue(
+      new Promise((resolve) => {
+        resolveRefresh = resolve;
+      }),
+    );
+    const handler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      handler?.({
+        type: "message.complete",
+        event_id: `mounted-${path.split("/").at(-1)}-complete`,
+        session_id: "runtime-note-chat",
+        payload: { text: transportText },
+      });
+    });
+    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(1));
+    expect(
+      first.result.current.turns
+        .flatMap((turn) => turn.parts)
+        .filter((part) => part.type === "image" && part.path === path),
+    ).toHaveLength(1);
+
+    await act(async () =>
+      resolveRefresh?.({
+        messages: [
+          {
+            id: `persisted-${path.split("/").at(-1)}-user`,
+            role: "user",
+            content: "Keep one canonical generated image.",
+            timestamp: new Date(Date.now() + 1_000).toISOString(),
+          },
+          {
+            id: `persisted-${path.split("/").at(-1)}-assistant`,
+            role: "assistant",
+            content: transportText,
+            timestamp: new Date(Date.now() + 2_000).toISOString(),
+          },
+        ],
+      }),
+    );
+
+    expect(
+      first.result.current.turns
+        .flatMap((turn) => turn.parts)
+        .filter((part) => part.type === "image" && part.path === path),
+    ).toHaveLength(1);
+    if (prefix) {
+      expect(
+        noteChatTextParts(first.result.current, "assistant").filter((text) => text === prefix),
+      ).toHaveLength(1);
+    }
+
+    mocks.hermesBridgeSessionMessages.mockResolvedValue({
+      messages: [
+        {
+          id: `persisted-${path.split("/").at(-1)}-user`,
+          role: "user",
+          content: "Keep one canonical generated image.",
+          timestamp: new Date(Date.now() + 1_000).toISOString(),
+        },
+        {
+          id: `persisted-${path.split("/").at(-1)}-assistant`,
+          role: "assistant",
+          content: transportText,
+          timestamp: new Date(Date.now() + 2_000).toISOString(),
+        },
+      ],
+    });
+    act(() => {
+      handler?.({
+        type: "turn.completed",
+        event_id: `mounted-${path.split("/").at(-1)}-terminal`,
+        session_id: "runtime-note-chat",
+        payload: { status: "success" },
+      });
+    });
+    await waitFor(() => expect(first.result.current.working).toBe(false));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    let resolveRemount: ((value: { messages: HermesSessionMessage[] }) => void) | undefined;
+    mocks.hermesBridgeSessionMessages.mockReturnValue(
+      new Promise((resolve) => {
+        resolveRemount = resolve;
+      }),
+    );
+    first.unmount();
+    const second = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(second.result.current.storedSessionId).toBe("stored-note-chat"));
+    expect(second.result.current.turns).toEqual([]);
+    await act(async () => resolveRemount?.({ messages: [] }));
+  });
+
+  it("ignores empty assistant tool-call rows when proving an ID-less canonical reply", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Read the file, then answer.")).toBe(true);
+    });
+
+    let resolveRefresh: ((value: { messages: HermesSessionMessage[] }) => void) | undefined;
+    mocks.hermesBridgeSessionMessages.mockClear();
+    mocks.hermesBridgeSessionMessages.mockReturnValue(
+      new Promise((resolve) => {
+        resolveRefresh = resolve;
+      }),
+    );
+    const handler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      handler?.({
+        type: "message.complete",
+        event_id: "tool-tail-idless-complete",
+        session_id: "runtime-note-chat",
+        payload: { text: "The file says hello." },
+      });
+    });
+    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(1));
+
+    await act(async () =>
+      resolveRefresh?.({
+        messages: [
+          {
+            id: "persisted-tool-tail-user",
+            role: "user",
+            content: "Read the file, then answer.",
+            timestamp: new Date(Date.now() + 1_000).toISOString(),
+          },
+          {
+            id: "persisted-empty-tool-call-assistant",
+            role: "assistant",
+            content: "   ",
+            tool_calls: [{ id: "read-1", name: "read_file" }],
+            timestamp: new Date(Date.now() + 2_000).toISOString(),
+          },
+          {
+            id: "persisted-tool-result",
+            role: "tool",
+            content: "hello",
+            tool_call_id: "read-1",
+            timestamp: new Date(Date.now() + 3_000).toISOString(),
+          },
+          {
+            id: "persisted-tool-tail-answer",
+            role: "assistant",
+            content: "The file says hello.",
+            timestamp: new Date(Date.now() + 4_000).toISOString(),
+          },
+        ],
+      }),
+    );
+
+    expect(noteChatTextParts(result.current, "assistant")).toEqual(["The file says hello."]);
+  });
+
+  it("does not reuse a persisted assistant ordinal for a later identical ID-less reply", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await result.current.submit("Give both identical replies.")).toBe(true);
+    });
+
+    const firstPersistedReply: HermesSessionMessage[] = [
+      {
+        id: "persisted-identical-user",
+        role: "user",
+        content: "Give both identical replies.",
+        timestamp: new Date(Date.now() + 1_000).toISOString(),
+      },
+      {
+        id: "persisted-first-identical-assistant",
+        role: "assistant",
+        content: "Same reply.",
+        timestamp: new Date(Date.now() + 2_000).toISOString(),
+      },
+    ];
+    let resolveFirstRefresh: ((value: { messages: HermesSessionMessage[] }) => void) | undefined;
+    mocks.hermesBridgeSessionMessages.mockClear();
+    mocks.hermesBridgeSessionMessages.mockReturnValue(
+      new Promise((resolve) => {
+        resolveFirstRefresh = resolve;
+      }),
+    );
+    const handler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      handler?.({
+        type: "message.complete",
+        event_id: "first-identical-idless-complete",
+        session_id: "runtime-note-chat",
+        payload: { text: "Same reply." },
+      });
+    });
+    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(1));
+    await act(async () => resolveFirstRefresh?.({ messages: firstPersistedReply }));
+    expect(noteChatTextParts(result.current, "assistant")).toEqual(["Same reply."]);
+
+    let resolveSecondRefresh: ((value: { messages: HermesSessionMessage[] }) => void) | undefined;
+    mocks.hermesBridgeSessionMessages.mockClear();
+    mocks.hermesBridgeSessionMessages.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSecondRefresh = resolve;
+      }),
+    );
+    act(() => {
+      handler?.({
+        type: "message.complete",
+        event_id: "second-identical-idless-complete",
+        session_id: "runtime-note-chat",
+        payload: { text: "Same reply." },
+      });
+    });
+    await waitFor(() => expect(mocks.hermesBridgeSessionMessages).toHaveBeenCalledTimes(1));
+    expect(noteChatTextParts(result.current, "assistant")).toEqual(["Same reply.", "Same reply."]);
+
+    await act(async () => resolveSecondRefresh?.({ messages: firstPersistedReply }));
+    expect(noteChatTextParts(result.current, "assistant")).toEqual(["Same reply.", "Same reply."]);
+  });
+
+  it("retains an active ID-less partial during persisted hydration", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    const first = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await first.result.current.submit("Keep the active partial.")).toBe(true);
+    });
+
+    const handler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      handler?.({
+        type: "message.delta",
+        event_id: "active-idless-partial",
+        session_id: "runtime-note-chat",
+        payload: { delta: "Active partial" },
+      });
+    });
+    expect(noteChatTextParts(first.result.current, "assistant")).toEqual(["Active partial"]);
+    first.unmount();
+
+    let resolveHydration: ((value: { messages: HermesSessionMessage[] }) => void) | undefined;
+    mocks.hermesBridgeSessionMessages.mockReturnValue(
+      new Promise((resolve) => {
+        resolveHydration = resolve;
+      }),
+    );
+    const second = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(second.result.current.storedSessionId).toBe("stored-note-chat"));
+    expect(noteChatTextParts(second.result.current, "assistant")).toEqual(["Active partial"]);
+
+    await act(async () =>
+      resolveHydration?.({
+        messages: [
+          {
+            id: "persisted-active-partial-user",
+            role: "user",
+            content: "Keep the active partial.",
+            timestamp: new Date(Date.now() + 1_000).toISOString(),
+          },
+          {
+            id: "persisted-active-partial-assistant",
+            role: "assistant",
+            content: "Active partial completed by persistence.",
+            timestamp: new Date(Date.now() + 2_000).toISOString(),
+          },
+        ],
+      }),
+    );
+    await waitFor(() => expect(second.result.current.loading).toBe(false));
+
+    expect(noteChatTextParts(second.result.current, "assistant")).toEqual([
+      "Active partial completed by persistence.",
+      "Active partial",
+    ]);
+  });
+
   it("retains an idless transcript until persistence covers it, then compacts", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     const first = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
@@ -2807,7 +3844,7 @@ describe("note chat session map", () => {
     );
   });
 
-  it("retains distinct complete-only idless turns until every segment persists", async () => {
+  it("retains distinct complete-only idless messages until every text part persists", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     const first = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
     await waitFor(() => expect(first.result.current.loading).toBe(false));
@@ -5565,7 +6602,7 @@ describe("note chat session map", () => {
     ).toBe(false);
 
     // The socket may close before the rejected RPC settles. Deferred events
-    // must already carry the stored id because close invalidates runtime aliases.
+    // must already carry the stored session id because close invalidates runtime session id aliases.
     act(() => {
       for (const handler of mocks.gatewayCloseHandlers) handler();
     });

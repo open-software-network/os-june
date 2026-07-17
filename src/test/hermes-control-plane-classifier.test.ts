@@ -512,6 +512,21 @@ describe("classifyHermesEvent — pending actions", () => {
       action: { kind: "approval", requestId: "a-unconfirmed", reason: "unconfirmed" },
     });
 
+    const handedOff = classifyHermesEvent(
+      event("approval.expire", {
+        request_id: "a-old-transport",
+        reason: "transport_handoff",
+      }),
+    );
+    expect(handedOff).toMatchObject({
+      kind: "pending_action_expiration",
+      action: {
+        kind: "approval",
+        requestId: "a-old-transport",
+        reason: "transport_handoff",
+      },
+    });
+
     const malformed = classifyHermesEvent(event("approval.expire", { reason: "timeout" }));
     expect(malformed.kind).toBe("unsupported");
   });

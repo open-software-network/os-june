@@ -364,7 +364,7 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       return;
     case "transcript":
       // The agent is actively producing output — running, unless it has already
-      // reached a completed state this turn (a late frame shouldn't
+      // reached a completed state during the current Agent run (a late frame shouldn't
       // un-complete). A message.complete frame closes only that assistant
       // message; the lifecycle terminal closes the run. Transcript activity
       // can recover a parent row after a subagent error.

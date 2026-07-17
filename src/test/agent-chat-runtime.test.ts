@@ -1569,7 +1569,7 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
-  it("assigns deterministic render identity to reasoning segments in an identified message", () => {
+  it("assigns deterministic render identity to reasoning parts in an identified message", () => {
     const turns = buildHermesSessionChatTurns(
       [],
       [
@@ -1588,7 +1588,7 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
-  it("reconciles persisted text into the canonical live segmentation", () => {
+  it("reconciles persisted text into the canonical live part boundaries", () => {
     const turns = buildHermesSessionChatTurns(
       [
         {
@@ -1714,7 +1714,7 @@ describe("Agent chat runtime", () => {
     expect(turns[0]?.parts[2]).toMatchObject({ type: "tool", id: "live-tool" });
   });
 
-  it("preserves a keyed whitespace segment through media completion and persisted merge", () => {
+  it("preserves a keyed whitespace part through media completion and persisted merge", () => {
     const mediaPath = "/tmp/persisted-image.png";
     const turns = buildHermesSessionChatTurns(
       [
@@ -1760,16 +1760,16 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
-  it("appends a verified visible suffix without mutating a raw media segment", () => {
+  it("appends a verified visible suffix without mutating a raw media part", () => {
     const mediaPath = "/tmp/streamed-image.png";
-    const rawSegment = `Here you go:\n\nMEDIA:${mediaPath}`;
+    const rawMediaText = `Here you go:\n\nMEDIA:${mediaPath}`;
     const events = [
       transcriptEvent({ messageId: "m1" }),
-      transcriptEvent({ messageId: "m1", delta: rawSegment }),
+      transcriptEvent({ messageId: "m1", delta: rawMediaText }),
       transcriptEvent({
         messageId: "m1",
         complete: true,
-        delta: `${rawSegment}\n\nAfter the image.`,
+        delta: `${rawMediaText}\n\nAfter the image.`,
       }),
     ];
     const turns = buildHermesSessionChatTurns([], events);
@@ -1777,7 +1777,7 @@ describe("Agent chat runtime", () => {
     expect(turns[0]?.parts).toEqual([
       {
         type: "text",
-        text: rawSegment,
+        text: rawMediaText,
         status: "complete",
         renderKey: "m1:text:0",
       },
@@ -1798,9 +1798,9 @@ describe("Agent chat runtime", () => {
     expect(completedHermesMessageText(events)).toBe("Here you go:\n\nAfter the image.");
   });
 
-  it("extends persisted prose past a completed raw media segment with media structure", () => {
+  it("extends persisted prose past a completed raw media part with media structure", () => {
     const mediaPath = "/tmp/final-image.png";
-    const rawSegment = "MEDIA:/tmp/generated-ima";
+    const rawMediaText = "MEDIA:/tmp/generated-ima";
     const events = [
       transcriptEvent({ messageId: "m1" }),
       transcriptEvent({ messageId: "m1", delta: "Here it is." }),
@@ -1810,7 +1810,7 @@ describe("Agent chat runtime", () => {
         name: "search",
         sanitizedPayload: { tool_id: "search-1", name: "search" },
       }),
-      transcriptEvent({ messageId: "m1", delta: rawSegment }),
+      transcriptEvent({ messageId: "m1", delta: rawMediaText }),
       transcriptEvent({
         messageId: "m1",
         complete: true,
@@ -1840,7 +1840,7 @@ describe("Agent chat runtime", () => {
       },
       {
         type: "text",
-        text: rawSegment,
+        text: rawMediaText,
         status: "complete",
         renderKey: "m1:text:1",
       },
@@ -1862,7 +1862,7 @@ describe("Agent chat runtime", () => {
     expect(completedHermesMessageText(events)).not.toContain("MEDIA:");
   });
 
-  it("does not attach identified transcript prose to a tool-created turn", () => {
+  it("does not attach identified transcript prose to a tool-only assistant row", () => {
     const turns = buildHermesSessionChatTurns(
       [],
       [
@@ -3235,7 +3235,7 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
-  it("retains a streamed MEDIA segment for display-time stripping", () => {
+  it("retains a streamed MEDIA part for display-time stripping", () => {
     // Regression: prose + MEDIA arrive as streamed deltas, then a complete
     // event with the full text. The streamed parts hold the raw MEDIA line, and
     // completeAssistantTextPart would keep them as a prefix of the stripped

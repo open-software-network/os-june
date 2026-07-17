@@ -248,10 +248,10 @@ export function normalizeHermesSessionMessagesResponse(response: unknown) {
 export function sessionTimestamp(session: HermesSessionInfo) {
   return timestampString(
     session.last_active ??
-      session.started_at ??
-      session.ended_at ??
       (session as { lastActive?: unknown }).lastActive ??
+      session.started_at ??
       (session as { startedAt?: unknown }).startedAt ??
+      session.ended_at ??
       (session as { endedAt?: unknown }).endedAt,
   );
 }

@@ -34,19 +34,21 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
-const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v1";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v2";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     (
         "tools/approval.py",
-        "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
+        "cb3cb292e34121dbfa452eea78243ce8ca1c31029f8cd047a3d8cc4f01c26df9",
     ),
     (
         "tools/mcp_tool.py",
         "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
     ),
+    // Includes atomic resume ownership, exact retry for a rejected ID-less
+    // message.complete, and a transport-owned autonomous response barrier.
     (
         "tui_gateway/server.py",
-        "41197c75c3aee760a05a8ecdce4daa3d0ca7f62b34486f29a21f097086a4ef4e",
+        "1d5936df605119d67577b5b8aa07a7e49dff69a5a97474b9c6ec9710655c3d51",
     ),
 ];
 const HERMES_SOURCE_TARBALL_URL: &str =

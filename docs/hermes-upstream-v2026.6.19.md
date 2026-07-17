@@ -10,9 +10,10 @@
 ## June compatibility patch
 
 The upstream pin remains unchanged. June applies the deterministic
-`june-approval-v1` patch set before building the bundled runtime and before
+`june-approval-v2` patch set before building the bundled runtime and before
 finishing a managed runtime install. See
-[ADR 0025](adr/0025-targeted-hermes-approval-protocol.md).
+[ADR 0025](adr/0025-targeted-hermes-approval-protocol.md) and
+[ADR 0028](adr/0028-approval-safe-hermes-transport-handoff.md).
 
 The patch preserves MCP `RequestContext.request_id`, derives an opaque stable
 approval id, and coalesces a still-pending logical request retried after an MCP
@@ -24,14 +25,48 @@ responses, notification failure, queue overflow, timeout, and disconnect fail
 closed. Existing command/code approvals derive targeted identity from their
 turn/tool-call context, so non-MCP approval behavior is preserved.
 
+The v2 extension makes a live cross-transport `session.resume` an approval-safe
+handoff barrier. It atomically deactivates the old notifier generation,
+installs the replacement, tombstones and expires old queued requests, and waits
+for old notifier calls already in flight before returning. The resume result
+adds `retired_approval_request_ids: string[]`, including reconnect aliases, so
+June can retire old pre-response frames without discarding a genuinely fresh
+request emitted by the replacement notifier. Queue arbitration verifies the
+captured notifier generation so a delayed old request cannot deduplicate into a
+fresh replacement-generation request.
+
+The same atomic resume boundary also closes an ID-less transcript overlap.
+When a newly appended content-bearing assistant row is already present in the
+resume snapshot but its `message.complete` delivery is still undecided, the
+result adds `pending_message_complete: { assistant_ordinal: number }`. The
+zero-based ordinal is measured across content-bearing assistant rows in that
+result's `messages`; blank reasoning/tool-call-only rows do not consume one.
+Resume and completion serialize transport selection, the exact frame write, and
+its Boolean outcome on the history lock. The runtime retains the exact
+`message.complete` payload until one transport accepts it; a closed old
+transport and any failed replacement leave it available for the next live
+resume, which retries it on the replacement before returning the resume result.
+Only a successful write clears the payload and ordinal proof. Starting another
+Agent run cannot clear or replace them. A new user submission retries
+the retained completion on its request transport before it can start. Goal
+continuations remain deferred and process notifications remain queued until a
+live resume accepts the old exact frame; a deferred goal is released only after
+the current transport's resume response itself is accepted. Every live resume
+arms that transport-owned barrier in the same history-lock transaction as its
+swap and snapshot, preserving completion, response, then next-run ordering even
+when the emitter wins after the snapshot. Delivery retry does not depend on
+ordinal authority: missing
+or ambiguous proof is omitted and remains uncompacted rather than relying on
+identical text, but its exact visible completion is still retried.
+
 The patcher in `src-tauri/src/hermes/apply_june_patches.py` accepts only these
 exact source states:
 
 | File | Upstream SHA-256 | Patched SHA-256 |
 | --- | --- | --- |
-| `tools/approval.py` | `e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85` | `56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d` |
+| `tools/approval.py` | `e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85` | `cb3cb292e34121dbfa452eea78243ce8ca1c31029f8cd047a3d8cc4f01c26df9` |
 | `tools/mcp_tool.py` | `3f0aca90d076a1b0aa5daffd7bb39b0d1a4fee83265f855e68d556e5c8a29d01` | `48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa` |
-| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `41197c75c3aee760a05a8ecdce4daa3d0ca7f62b34486f29a21f097086a4ef4e` |
+| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `1d5936df605119d67577b5b8aa07a7e49dff69a5a97474b9c6ec9710655c3d51` |
 
 Both macOS and Windows bundlers apply the same patch, write `PATCHSET`, verify
 the patched hashes after relocation, and run
@@ -135,7 +170,8 @@ Two phases, gated independently:
   listed model; no model tokens are spent.
 - Approval patch smoke (during macOS and Windows bundle self-test): duplicate
   delivery, distinct concurrent requests, targeted approval and denial,
-  replay, timeout, malformed identity, bounded overflow, and disconnect drain.
+  replay, timeout, malformed identity, bounded overflow, disconnect drain, and
+  notifier-generation resume handoff with fresh-request preservation.
 - Model smoke (opt-in): set `HERMES_SMOKE_MODEL=1` and ensure the runtime config
   has a real provider key. This adds a minimal no-tool `prompt.submit` and waits
   for a completion. It costs provider tokens, so it is off by default.

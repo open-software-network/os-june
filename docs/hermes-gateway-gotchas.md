@@ -107,7 +107,7 @@ falls back to the config's `oauth` marker and OAuth-shaped probe errors.
 ## Events
 
 **MCP approvals are identity-addressed, not FIFO.** The pinned runtime carries
-June's checksum-gated `june-approval-v1` patch. MCP elicitation preserves the
+June's checksum-gated `june-approval-v2` patch. MCP elicitation preserves the
 SDK request id and emits an opaque stable `request_id` on `approval.request`.
 While unanswered, the same logical request retried after an MCP transport
 reconnect joins the existing entry; separate requests on one transport remain
@@ -118,10 +118,43 @@ assume the first visible card is the queue head. Timeout and disconnect emit
 missing or malformed id fails closed. See ADR 0025.
 
 **A gateway drop retires pre-drop approvals.** The patched runtime drains them
-fail closed as soon as the WebSocket transport detaches. AgentWorkspace mirrors that boundary locally
-before `session.resume`, then replaces the session event listener with the new
-runtime id. A delayed replay is diagnostic noise, not a reason to reopen the
-card.
+fail closed as soon as the WebSocket transport detaches. If `session.resume`
+rebinds first, its notifier-generation handoff provides the same boundary: it
+deactivates the old callback, tombstones queued ids, waits for callbacks already
+in flight, and emits targeted `approval.expire` events with reason
+`transport_handoff` before the response. The response's additive
+`retired_approval_request_ids: string[]` includes primary ids and reconnect
+aliases. Stage pre-response approval frames, retire ids in that list, and keep a
+staged request whose id is absent because the replacement notifier can emit a
+genuinely new request just before the response. Disconnect cleanup rechecks
+transport ownership under the same resume lock so an old socket's stale session
+snapshot cannot detach the newly resumed route. Queue arbitration also verifies
+the captured notifier generation, preventing a delayed old request from joining
+a fresh request through reconnect deduplication. See ADR 0028.
+
+**Resume transcript overlap needs server proof, not matching text.** Hermes can
+commit the final assistant row before emitting its ID-less `message.complete`.
+A live resume can therefore return that row in `messages`, move the transport,
+and then deliver the completion on the replacement connection. The patched
+response carries `pending_message_complete.assistant_ordinal` only when a new
+content-bearing final row and its not-yet-routed completion share that atomic
+handoff decision. The ordinal is global across content-bearing assistant rows
+in the response; blank reasoning and tool-call-only rows do not count. Record
+that ordinal before replaying staged frames. If the field is absent, malformed,
+or does not map to the accepted Agent run's final row, keep the live transcript:
+an earlier identical string is not persistence proof. A rejected transport
+write does not consume the completion: Hermes retains the exact payload and a
+live resume retries it on the replacement before returning its response.
+Repeated rejected replacements keep the payload for a later resume, and an
+unproven completion is retried without manufacturing ordinal authority. No
+later Agent run may clear or replace that retained frame. User submissions
+retry it before starting; goal continuations defer and process notifications
+requeue until a replacement accepts it. Deferred goals are released only after
+the current transport's corresponding resume response write. The transport-owned
+barrier is armed in the same history-lock transaction as the live swap and
+snapshot, so the old completion and resume snapshot precede the next
+`message.start` even if the emitter wins immediately after the snapshot. See
+ADR 0028.
 
 **The control plane fails loudly on unknown event types — by design.** A new
 raw type renders as the red "event June does not support yet" banner until it

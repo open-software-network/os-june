@@ -81,7 +81,7 @@ let nextGeneration = 0;
 /**
  * Starts observing one accepted Agent run independently of the React surface
  * that submitted it. A later call for the same stored session replaces the
- * prior generation, so delayed frames tagged with its old runtime id cannot
+ * prior generation, so delayed frames tagged with its old runtime session id cannot
  * settle the new run.
  */
 export function startAgentRunMonitoring(input: StartAgentRunMonitoringInput) {
@@ -199,7 +199,7 @@ export function cancelAgentRunMonitoring(storedSessionId: string, expectedGenera
 
 /** Sends Stop to the exact runtime session and mode owned by this generation.
  * This owns monitor cancellation so passive surfaces never guess from a stale
- * local runtime id. The UI still retires immediately if the observer reconnects. */
+ * local runtime session id. The UI still retires immediately if the observer reconnects. */
 export function stopAgentRunMonitoring(
   storedSessionId: string,
   expectedGeneration: number,

@@ -37,6 +37,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0025](adr/0025-targeted-hermes-approval-protocol.md) - MCP approvals use stable request identity, targeted resolution, bounded queues, and fail-closed retirement
 - [adr/0026](adr/0026-durable-note-transcription-jobs.md) - saved-audio Source spans use durable, fingerprinted, idempotent note-transcription jobs
 - [adr/0027](adr/0027-june-owned-project-memory-store.md) — memory entries live in June's SQLite (not the Hermes memory toolset), scoped by project, agent writes via the loopback proxy, project context by prompt injection
+- [adr/0028](adr/0028-approval-safe-hermes-transport-handoff.md) - live Hermes resume atomically retires the old approval notifier generation, reports overlap proof, and retries a rejected exact completion
 
 ## Enforceable rules (spec/)
 
@@ -115,7 +116,7 @@ Per-repo config the engineering skills read before acting (see the
 
 - [hermes-upgrade-checklist.md](hermes-upgrade-checklist.md) — the gate for bumping the pinned runtime
 - [hermes-upstream-template.md](hermes-upstream-template.md) — per-bump pin-note template
-- [hermes-upstream-v2026.6.19.md](hermes-upstream-v2026.6.19.md) — current pin and local compatibility patch note (v2026.6.19, `june-approval-v1`)
+- [hermes-upstream-v2026.6.19.md](hermes-upstream-v2026.6.19.md) — current pin and local compatibility patch note (v2026.6.19, `june-approval-v2`)
 - [hermes-tui-debug.md](hermes-tui-debug.md) — dev-only raw-TUI debug fallback
 
 ## Release & ops runbooks

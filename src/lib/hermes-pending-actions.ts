@@ -134,9 +134,9 @@ export type PendingActionStore = {
 };
 
 /**
- * Identity used by June-owned pending-action consumers. Runtime ids are
- * globally stable. A payload-fingerprint compatibility id is only stable
- * inside the validated Agent run that observed it.
+ * Identity used by June-owned pending-action consumers. Runtime-issued request
+ * ids are globally stable. A payload-fingerprint compatibility id is only
+ * stable inside the validated Agent run that observed it.
  */
 export function pendingActionInstanceId(
   action: PendingHermesAction,

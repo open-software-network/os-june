@@ -5,6 +5,8 @@ import {
   appendHermesLiveEvent,
   createHermesLiveStream,
   hermesLiveEvents,
+  recordHermesIdlessTranscriptPersistenceBoundary,
+  reconcileHermesInflightSnapshot,
   reconcileHermesLiveStream,
   type HermesLiveStream,
 } from "../lib/hermes-live-stream";
@@ -366,6 +368,118 @@ describe("Hermes live stream", () => {
     expect(stream.transcriptByMessageId.m1?.replayCandidate).toBeUndefined();
   });
 
+  it("fills only the missing suffix from an in-flight assistant snapshot", () => {
+    const base = append(
+      createHermesLiveStream(),
+      startEvent("m1", "start-1"),
+      deltaEvent("m1", "Before ", "delta-1"),
+    );
+
+    expect(
+      reconcileHermesInflightSnapshot(base, {
+        storedSessionId: "session-1",
+        assistant: "Before ",
+        receivedAt: RECEIVED_AT,
+      }),
+    ).toBe(base);
+    expect(
+      reconcileHermesInflightSnapshot(base, {
+        storedSessionId: "session-1",
+        assistant: "Before",
+        receivedAt: RECEIVED_AT,
+      }),
+    ).toBe(base);
+    expect(
+      reconcileHermesInflightSnapshot(base, {
+        storedSessionId: "session-1",
+        assistant: "Conflicting snapshot",
+        receivedAt: RECEIVED_AT,
+      }),
+    ).toBe(base);
+
+    let reconciled = reconcileHermesInflightSnapshot(base, {
+      storedSessionId: "session-1",
+      assistant: "Before during detach",
+      receivedAt: RECEIVED_AT,
+    });
+
+    expect(transcriptDeltas(reconciled, "m1")).toBe("Before during detach");
+    expect(hermesLiveEvents(reconciled).at(-1)).toMatchObject({
+      kind: "transcript",
+      messageId: "m1",
+    });
+
+    reconciled = appendHermesLiveEvent(
+      reconciled,
+      deltaEvent("m1", " and after resume", "delta-after-resume"),
+    );
+
+    expect(transcriptDeltas(reconciled, "m1")).toBe("Before during detach and after resume");
+  });
+
+  it("reconciles an in-flight snapshot for a pinned ID-less assistant stream", () => {
+    let stream = append(
+      createHermesLiveStream(),
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("start-idless"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Prefix from the origin. ",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("delta-idless"),
+      },
+    );
+
+    stream = reconcileHermesInflightSnapshot(stream, {
+      storedSessionId: "session-1",
+      assistant: "Prefix from the origin. Detached-gap recovery.",
+      receivedAt: RECEIVED_AT,
+    });
+
+    expect(renderedAssistantText(stream)).toBe("Prefix from the origin. Detached-gap recovery.");
+    expect(hermesLiveEvents(stream).at(-1)).not.toHaveProperty("messageId");
+
+    stream = appendHermesLiveEvent(stream, {
+      kind: "transcript",
+      sessionId: "session-1",
+      delta: " Continued live.",
+      complete: false,
+      failed: false,
+      receivedAt: RECEIVED_AT,
+      delivery: delivery("delta-idless-after-resume"),
+    });
+
+    expect(renderedAssistantText(stream)).toBe(
+      "Prefix from the origin. Detached-gap recovery. Continued live.",
+    );
+  });
+
+  it("bootstraps output that began entirely during a detached gap", () => {
+    const stream = reconcileHermesInflightSnapshot(createHermesLiveStream(), {
+      storedSessionId: "session-1",
+      assistant: "The whole response began while the Workspace was detached.",
+      receivedAt: RECEIVED_AT,
+      bootstrapIfMissing: true,
+    });
+
+    expect(renderedAssistantText(stream)).toBe(
+      "The whole response began while the Workspace was detached.",
+    );
+    expect(hermesLiveEvents(stream)).toHaveLength(2);
+    expect(hermesLiveEvents(stream)).not.toContainEqual(
+      expect.objectContaining({ messageId: expect.anything() }),
+    );
+  });
+
   it("ignores late deltas and duplicate completes for a completed message", () => {
     const stream = append(
       createHermesLiveStream(),
@@ -547,5 +661,484 @@ describe("Hermes live stream", () => {
     expect(reconciled.persistedMessageIds).toEqual({ exact: true });
     expect(reconciled.entries).toBe(canonicalEntries);
     expect(hermesLiveEvents(reconciled)).toEqual(hermesLiveEvents(stream));
+  });
+
+  it("compacts only the proven ID-less transcript after the current Agent-run boundary", () => {
+    const previousReply = append(
+      createHermesLiveStream(),
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("previous-idless-start"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Same reply.",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("previous-idless-delta"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Same reply.",
+        complete: true,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("previous-idless-complete"),
+      },
+      {
+        kind: "lifecycle",
+        sessionId: "session-1",
+        flavor: "terminal",
+        status: "completed",
+        text: "Done.",
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("previous-terminal"),
+      },
+    );
+    const runStartRevision = previousReply.revision;
+    const stream = append(
+      previousReply,
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("current-idless-start"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Same reply.",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("current-idless-delta"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Same reply.",
+        complete: true,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("current-idless-complete"),
+      },
+      {
+        kind: "lifecycle",
+        sessionId: "session-1",
+        flavor: "terminal",
+        status: "completed",
+        text: "Done.",
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("current-terminal"),
+      },
+    );
+
+    const reconciled = reconcileHermesLiveStream(stream, {
+      throughRevision: stream.revision,
+      persistedMessages: new Map(),
+      idlessTranscriptRun: {
+        runStartRevision,
+        persistedAssistantTexts: ["Same reply."],
+      },
+    });
+
+    expect(
+      reconciled.entries.filter(({ event }) => event.kind === "transcript" && !event.messageId),
+    ).toEqual(
+      previousReply.entries.filter(({ event }) => event.kind === "transcript" && !event.messageId),
+    );
+  });
+
+  it("aligns a retained ID-less transcript from its proven resume assistant ordinal", () => {
+    let stream = createHermesLiveStream();
+    const resumeBoundaryRevision = stream.revision;
+    stream = append(
+      stream,
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("retained-after-gap-start"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Final reply after the gap.",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("retained-after-gap-delta"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Final reply after the gap.",
+        complete: true,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("retained-after-gap-complete"),
+      },
+      {
+        kind: "lifecycle",
+        sessionId: "session-1",
+        flavor: "terminal",
+        status: "completed",
+        text: "Done.",
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("retained-after-gap-terminal"),
+      },
+    );
+
+    const reconciled = reconcileHermesLiveStream(stream, {
+      throughRevision: stream.revision,
+      persistedMessages: new Map(),
+      idlessTranscriptRun: {
+        runStartRevision: 0,
+        persistedAssistantTexts: [
+          "Earlier reply persisted during the gap.",
+          "Final reply after the gap.",
+        ],
+        persistedAssistantBoundaries: [
+          {
+            revision: resumeBoundaryRevision,
+            persistedAssistantOrdinal: 1,
+          },
+        ],
+      },
+    });
+
+    expect(reconciled.entries.filter(({ event }) => event.kind === "transcript")).toEqual([]);
+  });
+
+  it("applies a pending-complete boundary to an ID-less transcript that crosses it", () => {
+    let stream = append(
+      createHermesLiveStream(),
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("crossing-start"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Final reply crossing the resume boundary.",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("crossing-delta"),
+      },
+    );
+    stream = recordHermesIdlessTranscriptPersistenceBoundary(stream, {
+      runStartRevision: 0,
+      persistedAssistantOrdinal: 1,
+      pendingMessageComplete: true,
+    });
+    stream = append(
+      stream,
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Final reply crossing the resume boundary.",
+        complete: true,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("crossing-complete"),
+      },
+      {
+        kind: "lifecycle",
+        sessionId: "session-1",
+        flavor: "terminal",
+        status: "completed",
+        text: "Done.",
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("crossing-terminal"),
+      },
+    );
+
+    const reconciled = reconcileHermesLiveStream(stream, {
+      throughRevision: stream.revision,
+      persistedMessages: new Map(),
+      idlessTranscriptRun: {
+        runStartRevision: 0,
+        persistedAssistantTexts: [
+          "Earlier assistant reply persisted during the gap.",
+          "Final reply crossing the resume boundary.",
+        ],
+        persistedAssistantBoundaries: stream.idlessTranscriptPersistenceBoundaries,
+      },
+    });
+
+    expect(reconciled.entries.filter(({ event }) => event.kind === "transcript")).toEqual([]);
+  });
+
+  it("does not shift a completed transcript at an ordinary full-prefix boundary", () => {
+    let stream = append(
+      createHermesLiveStream(),
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("pre-boundary-start"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Reply completed before the ordinary boundary.",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("pre-boundary-delta"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Reply completed before the ordinary boundary.",
+        complete: true,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("pre-boundary-complete"),
+      },
+    );
+    stream = recordHermesIdlessTranscriptPersistenceBoundary(stream, {
+      runStartRevision: 0,
+      persistedAssistantOrdinal: 1,
+    });
+    stream = append(stream, {
+      kind: "lifecycle",
+      sessionId: "session-1",
+      flavor: "terminal",
+      status: "completed",
+      text: "Done.",
+      receivedAt: RECEIVED_AT,
+      delivery: delivery("pre-boundary-terminal"),
+    });
+
+    const reconciled = reconcileHermesLiveStream(stream, {
+      throughRevision: stream.revision,
+      persistedMessages: new Map(),
+      idlessTranscriptRun: {
+        runStartRevision: 0,
+        persistedAssistantTexts: ["Reply completed before the ordinary boundary."],
+        persistedAssistantBoundaries: stream.idlessTranscriptPersistenceBoundaries,
+      },
+    });
+
+    expect(reconciled.entries.filter(({ event }) => event.kind === "transcript")).toEqual([]);
+  });
+
+  it("does not let identical pre-resume prose prove a later ID-less transcript persisted", () => {
+    let stream = createHermesLiveStream();
+    const resumeBoundaryRevision = stream.revision;
+    stream = append(
+      stream,
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("identical-after-gap-start"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Same reply.",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("identical-after-gap-delta"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Same reply.",
+        complete: true,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("identical-after-gap-complete"),
+      },
+      {
+        kind: "lifecycle",
+        sessionId: "session-1",
+        flavor: "terminal",
+        status: "completed",
+        text: "Done.",
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("identical-after-gap-terminal"),
+      },
+    );
+
+    const reconciled = reconcileHermesLiveStream(stream, {
+      throughRevision: stream.revision,
+      persistedMessages: new Map(),
+      idlessTranscriptRun: {
+        runStartRevision: 0,
+        persistedAssistantTexts: ["Same reply."],
+        persistedAssistantBoundaries: [
+          {
+            revision: resumeBoundaryRevision,
+            persistedAssistantOrdinal: 1,
+          },
+        ],
+      },
+    });
+
+    expect(reconciled).toBe(stream);
+  });
+
+  it.each([
+    "Conflicting persisted reply.",
+    "Complete live",
+  ])("retains an ID-less transcript without monotonic persisted coverage: %s", (persistedAssistantText) => {
+    const stream = append(
+      createHermesLiveStream(),
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("idless-start"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Complete live reply.",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("idless-delta"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: "Complete live reply.",
+        complete: true,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("idless-complete"),
+      },
+      {
+        kind: "lifecycle",
+        sessionId: "session-1",
+        flavor: "terminal",
+        status: "completed",
+        text: "Done.",
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("idless-terminal"),
+      },
+    );
+
+    const reconciled = reconcileHermesLiveStream(stream, {
+      throughRevision: stream.revision,
+      persistedMessages: new Map(),
+      idlessTranscriptRun: {
+        runStartRevision: 0,
+        persistedAssistantTexts: [persistedAssistantText],
+      },
+    });
+
+    expect(reconciled).toBe(stream);
+  });
+
+  it("compacts a proven ID-less media-only completion by its transport text", () => {
+    const mediaTransportText = "MEDIA:/tmp/idless-generated-result.png";
+    const stream = append(
+      createHermesLiveStream(),
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("idless-media-start"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: mediaTransportText,
+        complete: false,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("idless-media-delta"),
+      },
+      {
+        kind: "transcript",
+        sessionId: "session-1",
+        delta: mediaTransportText,
+        complete: true,
+        failed: false,
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("idless-media-complete"),
+      },
+      {
+        kind: "lifecycle",
+        sessionId: "session-1",
+        flavor: "terminal",
+        status: "completed",
+        text: "Done.",
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("idless-media-terminal"),
+      },
+    );
+
+    const reconciled = reconcileHermesLiveStream(stream, {
+      throughRevision: stream.revision,
+      persistedMessages: new Map(),
+      idlessTranscriptRun: {
+        runStartRevision: 0,
+        persistedAssistantTexts: [mediaTransportText],
+      },
+    });
+
+    expect(reconciled.entries.filter(({ event }) => event.kind === "transcript")).toEqual([]);
+  });
+
+  it("normalizes media transport references before marking a message persisted", () => {
+    const stream = append(
+      createHermesLiveStream(),
+      startEvent("media", "media-start"),
+      deltaEvent("media", "Rendered result\nMEDIA:/tmp/generated-result.png", "media-delta"),
+      completeEvent("media", "Rendered result\nMEDIA:/tmp/generated-result.png", "media-complete"),
+    );
+
+    const reconciled = reconcileHermesLiveStream(stream, {
+      throughRevision: stream.revision,
+      persistedMessages: new Map([["media", "Rendered result\n"]]),
+    });
+
+    expect(reconciled.persistedMessageIds).toEqual({ media: true });
+  });
+
+  it("marks a media-only message persisted after its transport reference is stripped", () => {
+    const stream = append(
+      createHermesLiveStream(),
+      startEvent("media-only", "media-only-start"),
+      deltaEvent("media-only", "MEDIA:/tmp/generated-result.mp4", "media-only-delta"),
+      completeEvent("media-only", "MEDIA:/tmp/generated-result.mp4", "media-only-complete"),
+    );
+
+    const reconciled = reconcileHermesLiveStream(stream, {
+      throughRevision: stream.revision,
+      persistedMessages: new Map([["media-only", ""]]),
+    });
+
+    expect(reconciled.persistedMessageIds).toEqual({ "media-only": true });
   });
 });

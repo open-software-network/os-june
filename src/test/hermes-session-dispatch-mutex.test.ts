@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   reserveHermesSessionDispatch,
+  reserveHermesSessionTransportHandoff,
   withHermesSessionDispatchLock,
 } from "../lib/hermes-session-dispatch-mutex";
 
@@ -129,5 +130,26 @@ describe("Hermes session dispatch mutex", () => {
     firstDispatch.resolve();
     await Promise.all([first, third]);
     expect(events).toEqual(["first started", "first finished", "third"]);
+  });
+
+  it("lets a transport handoff gate an already-reserved dormant dispatch", async () => {
+    const handoffSettled = deferred<void>();
+    const events: string[] = [];
+    const dormantDispatch = reserveHermesSessionDispatch("session-a");
+    const handoff = reserveHermesSessionTransportHandoff("session-a");
+
+    const handoffRun = handoff.run(async () => {
+      events.push("handoff started");
+      await handoffSettled.promise;
+      events.push("handoff finished");
+    });
+    const dormantRun = dormantDispatch.run(async () => {
+      events.push("dispatch started");
+    });
+
+    await vi.waitFor(() => expect(events).toEqual(["handoff started"]));
+    handoffSettled.resolve();
+    await Promise.all([handoffRun, dormantRun]);
+    expect(events).toEqual(["handoff started", "handoff finished", "dispatch started"]);
   });
 });

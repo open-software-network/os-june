@@ -1,5 +1,7 @@
 const sessionDispatchTails = new Map<string, Promise<void>>();
 const sessionDispatchFinishes = new Set<() => void>();
+const sessionTransportHandoffTails = new Map<string, Promise<void>>();
+const sessionTransportHandoffFinishes = new Set<() => void>();
 
 export type HermesSessionDispatchReservation = {
   /** True when another stored-session operation owns an earlier FIFO position. */
@@ -13,6 +15,13 @@ export type HermesSessionDispatchReservation = {
 export type HermesSessionDispatchHold = {
   /** Release this FIFO position. Safe to call more than once. */
   release: () => void;
+};
+
+export type HermesSessionTransportHandoff = {
+  /** Release a handoff that failed before its transport work began. */
+  cancel: () => void;
+  /** Run the handoff while every normal dispatch for this session is gated. */
+  run: <Result>(handoff: () => Promise<Result>) => Promise<Result>;
 };
 
 /**
@@ -58,8 +67,66 @@ export function reserveHermesSessionDispatch(
       }
       state = "running";
       await (previousTail ?? Promise.resolve());
+      // A remount handoff may need to overtake a dormant reservation that was
+      // accepted before navigation. Read this gate only after the earlier
+      // dispatch tail settles so a handoff registered while we wait still wins
+      // before any transport-affecting callback begins.
+      await (sessionTransportHandoffTails.get(storedSessionId) ?? Promise.resolve());
       try {
         return await dispatch();
+      } finally {
+        finish();
+      }
+    },
+  };
+}
+
+/**
+ * Reserve an approval-safe transport handoff for one stored session.
+ *
+ * Unlike a normal FIFO reservation, this gate deliberately overtakes dormant
+ * sends that cannot become runnable until the resumed stream supplies their
+ * predecessor terminal. The caller still owns the physical-detach barrier for
+ * any dispatch already in flight; while the handoff runs, every normal
+ * reservation waits here before touching the replacement transport.
+ */
+export function reserveHermesSessionTransportHandoff(
+  storedSessionId: string,
+): HermesSessionTransportHandoff {
+  const previousHandoff = sessionTransportHandoffTails.get(storedSessionId);
+  let releaseHandoff: () => void = () => undefined;
+  const handoffGate = new Promise<void>((resolve) => {
+    releaseHandoff = resolve;
+  });
+  const currentHandoff = (previousHandoff ?? Promise.resolve()).then(() => handoffGate);
+  sessionTransportHandoffTails.set(storedSessionId, currentHandoff);
+
+  let state: "reserved" | "running" | "finished" = "reserved";
+  const finish = () => {
+    if (state === "finished") return;
+    state = "finished";
+    sessionTransportHandoffFinishes.delete(finish);
+    releaseHandoff();
+    void currentHandoff.then(() => {
+      if (sessionTransportHandoffTails.get(storedSessionId) === currentHandoff) {
+        sessionTransportHandoffTails.delete(storedSessionId);
+      }
+    });
+  };
+  sessionTransportHandoffFinishes.add(finish);
+
+  return {
+    cancel: () => {
+      if (state === "reserved") finish();
+    },
+    run: async <Result>(handoff: () => Promise<Result>): Promise<Result> => {
+      if (state !== "reserved") {
+        throw new Error("Hermes session transport handoff was already used.");
+      }
+      state = "running";
+      await (previousHandoff ?? Promise.resolve());
+      try {
+        return await handoff();
       } finally {
         finish();
       }
@@ -106,4 +173,7 @@ export function resetHermesSessionDispatchForTests() {
   for (const finish of [...sessionDispatchFinishes]) finish();
   sessionDispatchFinishes.clear();
   sessionDispatchTails.clear();
+  for (const finish of [...sessionTransportHandoffFinishes]) finish();
+  sessionTransportHandoffFinishes.clear();
+  sessionTransportHandoffTails.clear();
 }
