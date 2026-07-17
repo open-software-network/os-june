@@ -352,6 +352,9 @@ export function NoteEditor({
           value={note.title}
           onChange={(event) => onTitleChange(event.currentTarget.value)}
         />
+        <div className="note-title-print" aria-hidden="true">
+          {note.title.trim() || "New note"}
+        </div>
         {/* Metadata reads as the title's caption: sits below it, above the
             Notes/Transcription toggle. Navigation lives in the toolbar above. */}
         <div className="note-overline">
