@@ -131,7 +131,10 @@ function accountSubtitle(account: ConnectorAccount): string {
  * for a first connect ("this account"/"this workspace") or for adding scope
  * to an already-connected one. The sign-in surface and the kind of content
  * named swap per provider so the promise reads correctly for either. */
-function connectDescription(provider: OAuthConnectorProvider, target: ConnectorAccount | null): string {
+function connectDescription(
+  provider: OAuthConnectorProvider,
+  target: ConnectorAccount | null,
+): string {
   const isGoogle = provider === "google";
   const lead = target
     ? `Add to what June may do with ${accountDisplayName(target)}.`
