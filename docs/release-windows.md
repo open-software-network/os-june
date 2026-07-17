@@ -37,6 +37,10 @@ Create or confirm these before cutting the first Windows release:
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
   `PRODUCTION_JUNE_API_URL`.
+- OS Accounts scope attestation:
+  `PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY=true`, set only after the June
+  OAuth client allowlist includes `profile:write` and the macOS release-candidate
+  sign-in smoke test succeeds. The Windows workflow fails closed without it.
 
 Keep the Authenticode certificate separate from the Tauri updater key. The
 certificate establishes the Windows publisher signature. The updater key signs

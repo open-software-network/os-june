@@ -36,6 +36,10 @@ Create or confirm these before cutting the first updater release:
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
   `PRODUCTION_JUNE_API_URL`.
+- OS Accounts scope attestation:
+  `PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY=true`. Set it only after the June
+  OAuth client allowlist includes `profile:write` and a fresh production sign-in
+  succeeds. RC and stable workflows fail closed without this attestation.
 - Slack incoming-webhook secret: `SLACK_WEBHOOK_URL`, configured for the release
   announcements channel. An absent or failing webhook warns but does not fail an
   otherwise successful RC build.
@@ -65,6 +69,11 @@ Releases go through the release-candidate channel: build an RC, test it via the
 in-app updater, then promote it to stable. There is no direct stable-build path.
 
 ### 1. Build a release candidate
+
+Before cutting the first candidate that requests `profile:write`, sign out of a
+production-connected test build, sign in again, refresh the Avatar in General
+settings, and confirm the new pattern appears after a second fresh sign-in. Only
+then set `PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY=true`.
 
 ```text
 GitHub Actions -> rc-desktop-release -> Run workflow

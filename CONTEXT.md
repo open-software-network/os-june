@@ -553,6 +553,16 @@ The user + credit balance + subscription state fetched from OS Accounts and
 surfaced to the UI.
 _Avoid_: profile, balance (unqualified).
 
+**Avatar** (`avatar_seed`):
+The network-wide generated account presentation owned by OS Accounts. A saved
+selection is a renderer-versioned `v1:<payload>` seed; without a supported
+selection, June derives `v1:default:<User.id>` without writing it. The seed
+fixes cloud geometry across conforming Apps, while June supplies colors from
+the active theme. An explicit refresh may remain local while its profile write
+cannot sync.
+_Avoid_: App avatar, unversioned avatar seed, silently replacing an unsupported
+future version.
+
 **AccountGate** / **FundingGate**:
 The sign-in wall (`AccountGate`) versus the credits-exhausted / upgrade wall
 (`FundingGate`, keyed off `subscription.subscribed`).

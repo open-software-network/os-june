@@ -175,9 +175,6 @@ export type AgentChatVideoPart = {
   videoCreatedAt?: string;
   /** June API video job id, set once queueing succeeds. */
   jobId?: string;
-  /** Last processing progress from the status poll. */
-  averageExecutionMs?: number;
-  executionMs?: number;
   /** Local mp4 path; set once `status === "complete"`. */
   path?: string;
   /** Optional poster preview, reserved for future June API support. */
@@ -244,6 +241,13 @@ const MEDIA_VIDEO_REFERENCE_PATTERN = new RegExp(
 );
 export const mediaVideoReferencePattern = () =>
   new RegExp(MEDIA_VIDEO_REFERENCE_PATTERN.source, MEDIA_VIDEO_REFERENCE_PATTERN.flags);
+const GENERATED_VIDEO_FILENAME_PATTERN = new RegExp(
+  `^generated-video-[0-9a-f]+\\.(?:${MEDIA_VIDEO_EXTENSION_PATTERN})$`,
+  "i",
+);
+export function isGeneratedVideoFilename(name: string): boolean {
+  return GENERATED_VIDEO_FILENAME_PATTERN.test(name);
+}
 
 function sortAgentChatTurns(turns: AgentChatTurn[]) {
   return turns

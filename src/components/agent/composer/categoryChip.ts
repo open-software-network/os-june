@@ -182,41 +182,54 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
           clientRect?: (() => DOMRect | null) | null;
         } | null = null;
         let ownerDocument: Document | null = null;
+        let ownerWindow: Window | null = null;
 
         function position(props: { clientRect?: (() => DOMRect | null) | null; editor: Editor }) {
           if (!host || !props.clientRect) return;
           const rect = props.clientRect();
           if (!rect) return;
+          const viewport = props.editor.view.dom.ownerDocument.defaultView ?? window;
           const gap = 6;
           const pad = 8;
           const composerBox = props.editor.view.dom.closest<HTMLElement>(".agent-composer-box");
           const composerRect = composerBox?.getBoundingClientRect();
           const width = Math.min(
             composerRect?.width ?? host.getBoundingClientRect().width,
-            window.innerWidth - pad * 2,
+            viewport.innerWidth - pad * 2,
           );
           host.style.setProperty("--agent-category-menu-width", `${width}px`);
-          const maxLeft = window.innerWidth - width - pad;
+          const maxLeft = viewport.innerWidth - width - pad;
           const left = Math.min(
             Math.max(composerRect?.left ?? rect.left, pad),
             Math.max(pad, maxLeft),
           );
           const anchorRect = composerRect ?? rect;
           const belowTop = anchorRect.bottom + gap;
-          const belowSpace = window.innerHeight - belowTop - pad;
+          const belowSpace = viewport.innerHeight - belowTop - pad;
           const aboveSpace = anchorRect.top - gap - pad;
           const hostRect = host.getBoundingClientRect();
-          const fitsBelow = belowSpace >= hostRect.height;
-          const placeBelow = fitsBelow || belowSpace >= aboveSpace;
-          const maxHeight = Math.max(88, Math.min(placeBelow ? belowSpace : aboveSpace, 280));
-          const top = placeBelow
-            ? belowTop
-            : Math.max(anchorRect.top - Math.min(hostRect.height, maxHeight) - gap, pad);
+          const hasMeasuredHeight = hostRect.height > 0;
+          const fitsBelow = hasMeasuredHeight && belowSpace >= hostRect.height;
+          const fitsAbove = hasMeasuredHeight && aboveSpace >= hostRect.height;
+          const placeBelow = fitsBelow || (!fitsAbove && belowSpace >= aboveSpace);
+          const maxHeight = Math.max(0, Math.min(placeBelow ? belowSpace : aboveSpace, 280));
 
           host.style.setProperty("--agent-category-menu-max-height", `${maxHeight}px`);
-          host.style.bottom = "";
-          host.style.top = `${Math.max(top, pad)}px`;
+          if (placeBelow) {
+            host.style.bottom = "";
+            host.style.top = `${Math.max(belowTop, pad)}px`;
+          } else {
+            // Anchor the menu's composer-facing edge instead of deriving its
+            // top from a height that can be stale while async skills render.
+            // The portal then grows upward and remains inside short webviews.
+            host.style.top = "";
+            host.style.bottom = `${Math.max(viewport.innerHeight - anchorRect.top + gap, pad)}px`;
+          }
           host.style.left = `${left}px`;
+        }
+
+        function positionLatest() {
+          if (latestProps) position(latestProps);
         }
 
         function updateLatestProps(props: {
@@ -256,11 +269,14 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
           renderer?.destroy();
           host?.removeEventListener(CATEGORY_SKILLS_CHANGED_EVENT, refreshItems);
           ownerDocument?.removeEventListener("pointerdown", dismissFromPointerDown, true);
+          ownerWindow?.removeEventListener("resize", positionLatest);
+          ownerWindow?.visualViewport?.removeEventListener("resize", positionLatest);
           host?.remove();
           renderer = null;
           host = null;
           latestProps = null;
           ownerDocument = null;
+          ownerWindow = null;
         }
 
         return {
@@ -276,7 +292,10 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
             host.appendChild(renderer.element);
             document.body.appendChild(host);
             ownerDocument = props.editor.view.dom.ownerDocument;
+            ownerWindow = ownerDocument.defaultView;
             ownerDocument.addEventListener("pointerdown", dismissFromPointerDown, true);
+            ownerWindow?.addEventListener("resize", positionLatest);
+            ownerWindow?.visualViewport?.addEventListener("resize", positionLatest);
             position(props);
           },
           onUpdate(props) {
