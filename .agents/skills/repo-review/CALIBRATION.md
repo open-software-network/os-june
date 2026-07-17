@@ -135,3 +135,5 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #825 | Octopus (bot) | 0 | — | unavailable because the organization monthly AI quota was exhausted; no review verdict was produced |
 | #825 | Codex (bot, exact head) | 1 | 1 | found failed Hermes initialization discarded a batch while the client retained attached chip state; drove ordered batch restoration plus executable retry coverage |
 | #825 | Adversarial (codex, retry convergence) | 1 | 1 | found a stale initialization callback could outlive reset and overwrite a newer prompt's queue and running state; drove prompt-generation ownership plus combined reset and stale-failure coverage |
+| #825 | Standards (final convergence) | 1 | 1 | caught unqualified agent terminology and an internal fallback in touched June-facing copy; drove Hermes-specific comments and June-branded error text |
+| #825 | Adversarial (codex, worker convergence) | 2 | 2 | found the lazy build worker was not generation-fenced and failed reset did not restore prompt ownership; drove worker serialization, rollback, and executable coverage |

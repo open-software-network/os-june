@@ -185,12 +185,14 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         "_queue_attached_image",
     )
     functions = [copy.deepcopy(_function(tree, name)) for name in helper_names]
+    build_function = copy.deepcopy(_function(tree, "_start_agent_build"))
     reset_function = copy.deepcopy(_function(tree, "_reset_session_agent"))
     executable_handler = copy.deepcopy(handler)
     executable_handler.name = "_image_attach_bytes"
     executable_handler.decorator_list = []
     source = "from __future__ import annotations\n" + "\n\n".join(
-        ast.unparse(node) for node in (*functions, reset_function, executable_handler)
+        ast.unparse(node)
+        for node in (*functions, build_function, reset_function, executable_handler)
     )
 
     fresh_session = {
@@ -202,11 +204,13 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         namespace = {
             "Path": Path,
             "datetime": datetime,
+            "threading": threading,
             "_ATTACH_BYTES_MAX_BYTES": 25 * 1024 * 1024,
             "_allowed_image_extensions": lambda: frozenset({".png"}),
             "_hermes_home": Path(temp),
             "_image_meta": lambda _path: {},
             "_sessions": {"fresh-session": fresh_session},
+            "_sessions_lock": threading.Lock(),
         }
         exec(compile(source, str(root / "tui_gateway" / "server.py"), "exec"), namespace)
         response = namespace["_image_attach_bytes"](
@@ -292,6 +296,36 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert attachment_result["response"].get("result", {}).get("attached") is True
         assert len(concurrent_session["attached_images"]) == 1, concurrent_session
 
+        # Execute the real lazy-build worker with reset already owning the state
+        # lock. Once reset advances the generation, the stale worker must exit
+        # without constructing or publishing an obsolete Hermes instance.
+        stale_build_calls = []
+        namespace["_make_agent"] = lambda *_args, **_kwargs: stale_build_calls.append(
+            True
+        )
+        stale_build_agent = object()
+        stale_build_session = {
+            "agent": stale_build_agent,
+            "agent_build_lock": threading.Lock(),
+            "agent_error": None,
+            "agent_ready": threading.Event(),
+            "history_lock": threading.Lock(),
+            "prompt_generation": 11,
+            "session_key": "stale-build-key",
+        }
+        namespace["_sessions"]["stale-build"] = stale_build_session
+        with stale_build_session["history_lock"]:
+            namespace["_start_agent_build"](
+                "stale-build", stale_build_session, stale_build_session["prompt_generation"]
+            )
+            stale_build_session["prompt_generation"] = 12
+        assert stale_build_session["agent_ready"].wait(1), (
+            "stale Hermes build did not finish"
+        )
+        assert stale_build_calls == [], stale_build_calls
+        assert stale_build_session["agent"] is stale_build_agent
+        assert stale_build_session["agent_error"] is None
+
         # Reset must own the same lock before Hermes construction starts. An
         # attachment arriving during a slow rebuild waits, then queues after
         # reset instead of being acknowledged and silently cleared.
@@ -316,6 +350,29 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
                 "_restart_slash_worker": lambda *_args: None,
             }
         )
+        failed_reset_session = {
+            "session_key": "failed-reset-key",
+            "agent": object(),
+            "attached_images": ["still-owned.png"],
+            "history_lock": threading.Lock(),
+            "prompt_generation": 19,
+            "running": True,
+        }
+
+        def fail_reset_build(*_args, **_kwargs):
+            raise RuntimeError("synthetic reset failure")
+
+        namespace["_make_agent"] = fail_reset_build
+        try:
+            namespace["_reset_session_agent"]("failed-reset", failed_reset_session)
+        except RuntimeError as exc:
+            assert str(exc) == "synthetic reset failure"
+        else:
+            raise AssertionError("failed reset unexpectedly succeeded")
+        assert failed_reset_session["prompt_generation"] == 19, failed_reset_session
+        assert failed_reset_session["running"] is True, failed_reset_session
+        assert failed_reset_session["attached_images"] == ["still-owned.png"]
+        namespace["_make_agent"] = make_hermes_agent_for_reset
         reset_session = {
             "session_key": "reset-session-key",
             "agent": object(),
@@ -423,6 +480,17 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         )
     ]
     assert len(generation_assigns) == len(captured_generation_assigns) == 1
+    prompt_build_calls = [
+        node
+        for node in ast.walk(prompt_submit)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_start_agent_build"
+    ]
+    assert len(prompt_build_calls) == 1, prompt_build_calls
+    assert len(prompt_build_calls[0].args) == 3, ast.dump(prompt_build_calls[0])
+    assert isinstance(prompt_build_calls[0].args[2], ast.Name)
+    assert prompt_build_calls[0].args[2].id == "prompt_generation"
     run_after_ready = next(
         node
         for node in ast.walk(prompt_submit)
@@ -567,7 +635,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         if isinstance(node, ast.Assign)
         and any(_session_subscript(target, "prompt_generation") for target in node.targets)
     ]
-    assert len(reset_generation_assigns) == 1, reset_generation_assigns
+    assert len(reset_generation_assigns) == 2, reset_generation_assigns
     queue_helper = _function(tree, "_queue_attached_image")
     serialized_appends = [
         node
