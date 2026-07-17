@@ -129,7 +129,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isStarting = true
     @Published var selectedNote: NoteRecordModel?
     @Published var noteConflict: NoteConflictModel?
-    @Published var selectedSessionID: String?
+    @Published var selectedStoredSessionID: String?
     @Published private(set) var messages: [AgentMessageModel] = []
     @Published private(set) var hasEarlierMessages = false
     @Published var draft = ""
@@ -250,9 +250,12 @@ final class AppModel: ObservableObject {
         perform {
             let page = try self.decode(
                 PageModel<AgentMessageModel>.self,
-                from: try await self.service.listAgentMessages(sessionID: session.id, cursor: nil)
+                from: try await self.service.listAgentMessages(
+                    storedSessionID: session.id,
+                    cursor: nil
+                )
             )
-            self.selectedSessionID = session.id
+            self.selectedStoredSessionID = session.id
             self.messages = page.items
             self.nextMessageCursor = page.nextCursor
             self.hasEarlierMessages = page.nextCursor != nil
@@ -261,17 +264,17 @@ final class AppModel: ObservableObject {
     }
 
     func loadEarlierMessages() {
-        guard let sessionID = selectedSessionID,
+        guard let storedSessionID = selectedStoredSessionID,
               let cursor = nextMessageCursor else { return }
         perform {
             let page = try self.decode(
                 PageModel<AgentMessageModel>.self,
                 from: try await self.service.listAgentMessages(
-                    sessionID: sessionID,
+                    storedSessionID: storedSessionID,
                     cursor: cursor
                 )
             )
-            guard self.selectedSessionID == sessionID else { return }
+            guard self.selectedStoredSessionID == storedSessionID else { return }
             let existingIDs = Set(self.messages.map(\.id))
             self.messages.insert(
                 contentsOf: page.items.filter { !existingIDs.contains($0.id) },
@@ -288,7 +291,7 @@ final class AppModel: ObservableObject {
     }
 
     private func resetConversationState() {
-        selectedSessionID = nil
+        selectedStoredSessionID = nil
         messages = []
         nextMessageCursor = nil
         hasEarlierMessages = false
@@ -312,7 +315,7 @@ final class AppModel: ObservableObject {
                 let result = try self.decode(
                     AgentAccepted.self,
                     from: try await self.service.sendAgentMessage(
-                        sessionID: self.selectedSessionID,
+                        storedSessionID: self.selectedStoredSessionID,
                         message: message
                     )
                 )
@@ -327,13 +330,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func acceptAgentSession(_ sessionID: String, fallbackTitle: String) {
-        selectedSessionID = sessionID
-        let buffered = bufferedAgentStreams.removeValue(forKey: sessionID)
-        bufferedAgentStreamOrder.removeAll { $0 == sessionID }
+    func acceptAgentSession(_ storedSessionID: String, fallbackTitle: String) {
+        selectedStoredSessionID = storedSessionID
+        let buffered = bufferedAgentStreams.removeValue(forKey: storedSessionID)
+        bufferedAgentStreamOrder.removeAll { $0 == storedSessionID }
         let bufferedStatus = buffered?.status
         let now = ISO8601DateFormatter().string(from: Date())
-        if let index = snapshot.agentSessions.firstIndex(where: { $0.id == sessionID }) {
+        if let index = snapshot.agentSessions.firstIndex(where: { $0.id == storedSessionID }) {
             if let bufferedStatus {
                 snapshot.agentSessions[index].status = bufferedStatus
             }
@@ -341,7 +344,7 @@ final class AppModel: ObservableObject {
             let title = fallbackTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             snapshot.agentSessions.insert(
                 AgentSessionModel(
-                    id: sessionID,
+                    id: storedSessionID,
                     title: title.isEmpty ? "New chat" : String(title.prefix(80)),
                     status: bufferedStatus ?? .running,
                     updatedAt: now
@@ -350,17 +353,17 @@ final class AppModel: ObservableObject {
             )
         }
         if let text = buffered?.text, !text.isEmpty {
-            appendAgentDelta(text, sessionID: sessionID)
+            appendAgentDelta(text, storedSessionID: storedSessionID)
         }
         if let status = bufferedStatus
-            ?? snapshot.agentSessions.first(where: { $0.id == sessionID })?.status {
-            finishAgentStreamIfNeeded(sessionID: sessionID, status: status)
+            ?? snapshot.agentSessions.first(where: { $0.id == storedSessionID })?.status {
+            finishAgentStreamIfNeeded(storedSessionID: storedSessionID, status: status)
         }
     }
 
     func cancelAgent() {
-        guard let selectedSessionID else { return }
-        perform { try await self.service.cancelAgent(sessionID: selectedSessionID) }
+        guard let selectedStoredSessionID else { return }
+        perform { try await self.service.cancelAgent(storedSessionID: selectedStoredSessionID) }
     }
 
     func updateSafeSettings(style: String, imageSafeMode: Bool) {
@@ -374,9 +377,12 @@ final class AppModel: ObservableObject {
     }
 
     func controlRecording(_ action: String) {
-        guard let sessionID = snapshot.activeRecording?.sessionId else { return }
+        guard let runtimeSessionID = snapshot.activeRecording?.sessionId else { return }
         perform {
-            try await self.service.controlRecording(sessionID: sessionID, action: action)
+            try await self.service.controlRecording(
+                runtimeSessionID: runtimeSessionID,
+                action: action
+            )
             try await self.refreshSnapshot()
         }
     }
@@ -385,8 +391,8 @@ final class AppModel: ObservableObject {
         let target: [String: Any]
         if let note = selectedNote {
             target = ["type": "note", "data": ["noteId": note.id]]
-        } else if let selectedSessionID {
-            target = ["type": "agent", "data": ["storedSessionId": selectedSessionID]]
+        } else if let selectedStoredSessionID {
+            target = ["type": "agent", "data": ["storedSessionId": selectedStoredSessionID]]
         } else {
             target = ["type": "agent", "data": ["storedSessionId": NSNull()]]
         }
@@ -464,25 +470,25 @@ final class AppModel: ObservableObject {
     private func apply(_ event: CompanionEvent) {
         switch event.type {
         case "agentDelta":
-            guard let sessionID = event.data?.storedSessionId,
+            guard let storedSessionID = event.data?.storedSessionId,
                   let text = event.data?.text
             else { return }
-            if selectedSessionID == sessionID {
-                appendAgentDelta(text, sessionID: sessionID)
+            if selectedStoredSessionID == storedSessionID {
+                appendAgentDelta(text, storedSessionID: storedSessionID)
             } else {
-                bufferAgentDelta(text, sessionID: sessionID)
+                bufferAgentDelta(text, storedSessionID: storedSessionID)
             }
         case "agentStatus":
-            guard let sessionID = event.data?.storedSessionId,
+            guard let storedSessionID = event.data?.storedSessionId,
                   let rawStatus = event.data?.status,
                   let status = AgentStatusModel(rawValue: rawStatus)
             else { return }
-            if let index = snapshot.agentSessions.firstIndex(where: { $0.id == sessionID }) {
+            if let index = snapshot.agentSessions.firstIndex(where: { $0.id == storedSessionID }) {
                 snapshot.agentSessions[index].status = status
-            } else if selectedSessionID == sessionID {
+            } else if selectedStoredSessionID == storedSessionID {
                 snapshot.agentSessions.insert(
                     AgentSessionModel(
-                        id: sessionID,
+                        id: storedSessionID,
                         title: "New chat",
                         status: status,
                         updatedAt: ISO8601DateFormatter().string(from: Date())
@@ -490,10 +496,10 @@ final class AppModel: ObservableObject {
                     at: 0
                 )
             }
-            if selectedSessionID != sessionID {
-                bufferAgentStatus(status, sessionID: sessionID)
+            if selectedStoredSessionID != storedSessionID {
+                bufferAgentStatus(status, storedSessionID: storedSessionID)
             }
-            finishAgentStreamIfNeeded(sessionID: sessionID, status: status)
+            finishAgentStreamIfNeeded(storedSessionID: storedSessionID, status: status)
         case "notesChanged", "resyncRequired":
             Task { await refresh() }
         case "deviceRevoked":
@@ -503,8 +509,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func appendAgentDelta(_ delta: String, sessionID: String) {
-        let streamID = "stream:\(sessionID)"
+    private func appendAgentDelta(_ delta: String, storedSessionID: String) {
+        let streamID = "stream:\(storedSessionID)"
         if let index = messages.firstIndex(where: { $0.id == streamID }) {
             messages[index].text = Self.boundedAgentText(messages[index].text + delta)
         } else {
@@ -518,46 +524,46 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func finishAgentStreamIfNeeded(sessionID: String, status: AgentStatusModel) {
+    private func finishAgentStreamIfNeeded(storedSessionID: String, status: AgentStatusModel) {
         guard [.completed, .failed, .cancelled].contains(status),
-              let index = messages.firstIndex(where: { $0.id == "stream:\(sessionID)" })
+              let index = messages.firstIndex(where: { $0.id == "stream:\(storedSessionID)" })
         else { return }
         messages[index].streaming = false
     }
 
-    private func bufferAgentDelta(_ delta: String, sessionID: String) {
-        prepareAgentBuffer(for: sessionID)
-        let existing = bufferedAgentStreams[sessionID]?.text ?? ""
-        bufferedAgentStreams[sessionID]?.text = Self.boundedAgentText(existing + delta)
+    private func bufferAgentDelta(_ delta: String, storedSessionID: String) {
+        prepareAgentBuffer(for: storedSessionID)
+        let existing = bufferedAgentStreams[storedSessionID]?.text ?? ""
+        bufferedAgentStreams[storedSessionID]?.text = Self.boundedAgentText(existing + delta)
     }
 
-    private func bufferAgentStatus(_ status: AgentStatusModel, sessionID: String) {
-        prepareAgentBuffer(for: sessionID)
-        bufferedAgentStreams[sessionID]?.status = status
+    private func bufferAgentStatus(_ status: AgentStatusModel, storedSessionID: String) {
+        prepareAgentBuffer(for: storedSessionID)
+        bufferedAgentStreams[storedSessionID]?.status = status
     }
 
-    private func prepareAgentBuffer(for sessionID: String) {
-        guard bufferedAgentStreams[sessionID] == nil else { return }
+    private func prepareAgentBuffer(for storedSessionID: String) {
+        guard bufferedAgentStreams[storedSessionID] == nil else { return }
         if bufferedAgentStreamOrder.count >= Self.maximumBufferedAgentSessions,
            let evicted = bufferedAgentStreamOrder.first {
             bufferedAgentStreamOrder.removeFirst()
             bufferedAgentStreams.removeValue(forKey: evicted)
         }
-        bufferedAgentStreamOrder.append(sessionID)
-        bufferedAgentStreams[sessionID] = BufferedAgentStream()
+        bufferedAgentStreamOrder.append(storedSessionID)
+        bufferedAgentStreams[storedSessionID] = BufferedAgentStream()
     }
 
-    private func applyBufferedAgentStream(for sessionID: String) {
-        guard let buffered = bufferedAgentStreams.removeValue(forKey: sessionID) else { return }
-        bufferedAgentStreamOrder.removeAll { $0 == sessionID }
+    private func applyBufferedAgentStream(for storedSessionID: String) {
+        guard let buffered = bufferedAgentStreams.removeValue(forKey: storedSessionID) else { return }
+        bufferedAgentStreamOrder.removeAll { $0 == storedSessionID }
         if !buffered.text.isEmpty {
-            appendAgentDelta(buffered.text, sessionID: sessionID)
+            appendAgentDelta(buffered.text, storedSessionID: storedSessionID)
         }
         if let status = buffered.status {
-            if let index = snapshot.agentSessions.firstIndex(where: { $0.id == sessionID }) {
+            if let index = snapshot.agentSessions.firstIndex(where: { $0.id == storedSessionID }) {
                 snapshot.agentSessions[index].status = status
             }
-            finishAgentStreamIfNeeded(sessionID: sessionID, status: status)
+            finishAgentStreamIfNeeded(storedSessionID: storedSessionID, status: status)
         }
     }
 

@@ -1525,6 +1525,25 @@ pub(crate) async fn current_user_id() -> Result<String, AppError> {
     })
 }
 
+/// Read the locally stored account subject without refreshing or contacting OS
+/// Accounts. Logout uses this path so an expired token plus an offline network
+/// cannot skip local, account-scoped companion cleanup.
+pub(crate) async fn stored_user_id() -> Option<String> {
+    if local_dev_enabled() {
+        return Some(local_dev_user_id());
+    }
+    stored_account_user_id(&load_account().await?)
+}
+
+fn stored_account_user_id(stored: &StoredAccount) -> Option<String> {
+    access_token_subject(&stored.pair.access_token).or_else(|| {
+        stored
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.user.id.clone())
+    })
+}
+
 const ACCESS_TOKEN_REFRESH_SKEW_SECS: i64 = 30;
 
 fn access_token_is_stale(jwt: &str) -> bool {
@@ -2660,6 +2679,26 @@ mod tests {
         assert_eq!(
             access_token_subject(&sample_token_for_user("usr_abc")).as_deref(),
             Some("usr_abc")
+        );
+    }
+
+    #[test]
+    fn stored_account_subject_does_not_require_a_fresh_access_token() {
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"alg":"ES256","typ":"JWT"}"#);
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"sub":"usr_offline","exp":1}"#);
+        let stored = StoredAccount::new(
+            TokenPair {
+                access_token: format!("{header}.{payload}.signature"),
+                refresh_token: "offline".to_string(),
+            },
+            None,
+        );
+
+        assert_eq!(
+            stored_account_user_id(&stored).as_deref(),
+            Some("usr_offline")
         );
     }
 

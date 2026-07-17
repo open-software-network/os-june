@@ -88,14 +88,17 @@ connectors, updates, account deletion, or adding a device.
 
 Mutations carry stable client operation ids. The native client keeps an
 unresolved id in Keychain for seven days and reuses it after an ambiguous
-disconnect or relaunch. The desktop reserves an in-flight id before dispatch,
-persists response results keyed by device/operation, and returns the prior
-result on a retry. Results expire after seven days and are capped at 1,024 per
-device; revocation removes prior results. Sequence state resets only after a
-fresh authenticated Noise session. The client reuses a healthy transport,
-retires stale Noise keys when a fresh authenticated handshake arrives, and
-refreshes cursor-based lists after foreground/reconnect. No offline control
-request is replayed.
+disconnect or relaunch, and it does not dispatch until that id is durably
+stored. The desktop writes an outcome-unknown reservation before every mutation
+crosses a side-effect boundary. A final response replaces the reservation and
+is returned on retry. If Desktop crashes in between, the reservation is
+returned instead of dispatching the mutation again; the user checks June on the
+Mac before submitting a changed request. Results and reservations expire after
+seven days and are capped at 1,024 per device; revocation removes both. Sequence
+state resets only after a fresh authenticated Noise session. The client reuses
+a healthy transport, retires stale Noise keys when a fresh authenticated
+handshake arrives, and refreshes cursor-based lists after foreground/reconnect.
+No offline control request is replayed.
 
 Note edits carry `expectedRevision`; SQLite updates atomically only at that
 revision. A mismatch returns a typed conflict with the current note.

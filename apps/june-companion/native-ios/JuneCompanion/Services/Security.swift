@@ -26,7 +26,15 @@ final class SecureStore: @unchecked Sendable {
       kSecAttrService as String: service,
       kSecAttrAccount as String: account,
     ]
-    SecItemDelete(query as CFDictionary)
+    let update: [String: Any] = [
+      kSecValueData as String: data,
+      kSecAttrAccessible as String: accessible,
+    ]
+    let updateStatus = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+    if updateStatus == errSecSuccess { return }
+    guard updateStatus == errSecItemNotFound else {
+      throw CompanionNativeError.unavailable("Secure storage is unavailable.")
+    }
     var item = query
     item[kSecValueData as String] = data
     item[kSecAttrAccessible as String] = accessible

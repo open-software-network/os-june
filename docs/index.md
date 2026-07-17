@@ -42,8 +42,9 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0030](adr/0030-companion-desktop-authorized-device-credential.md) - desktop-authorized pairing and revocable device credentials; its authorization model is current again through ADR 0034
 - [adr/0031](adr/0031-companion-device-generates-relay-credential.md) - companion-generated relay credentials; June API receives and stores only their hashes
 - [adr/0032](adr/0032-companion-relay-single-replica-mvp.md) - the MVP relay is single-replica until pairing and live routing have shared cross-instance state
-- [adr/0033](adr/0033-companion-native-os-accounts-login.md) - native system-browser OS Accounts login plus same-user desktop pairing
+- [adr/0033](adr/0033-companion-native-os-accounts-login.md) - superseded by ADR-0034
 - [adr/0034](adr/0034-companion-pairing-is-mobile-authorization.md) - the authenticated Desktop-created QR pairing is the phone's short-lived authorization; the phone has no account session
+- [adr/0035](adr/0035-companion-mutations-use-durable-at-most-once-reservations.md) - companion mutations reserve their operation id durably before side effects and never redispatch an outcome-unknown request
 
 ## Enforceable rules (spec/)
 

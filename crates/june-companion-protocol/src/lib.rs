@@ -119,6 +119,21 @@ pub enum Body {
 }
 
 impl Body {
+    pub fn is_mutation(&self) -> bool {
+        matches!(
+            self,
+            Self::NoteEdit(_)
+                | Self::AgentSend(_)
+                | Self::AgentCancel { .. }
+                | Self::SettingsEditSafe(_)
+                | Self::RecordingPause { .. }
+                | Self::RecordingResume { .. }
+                | Self::RecordingStop { .. }
+                | Self::AppFocus { .. }
+                | Self::DeviceRevokeSelf
+        )
+    }
+
     pub fn required_capability(&self) -> Capability {
         match self {
             Self::NotesList(_) | Self::NoteGet { .. } => Capability::NotesRead,
@@ -630,6 +645,42 @@ mod tests {
             frame.validate(100),
             Err(ProtocolError::CapabilityMismatch)
         ));
+    }
+
+    #[test]
+    fn classifies_every_side_effecting_request_as_a_mutation() {
+        assert!(
+            Body::NoteEdit(NoteEditRequest {
+                note_id: "note-1".to_string(),
+                expected_revision: 1,
+                title: None,
+                edited_content: Some("updated".to_string()),
+            })
+            .is_mutation()
+        );
+        assert!(
+            Body::AgentSend(AgentSendRequest {
+                stored_session_id: None,
+                message: "hello".to_string(),
+            })
+            .is_mutation()
+        );
+        assert!(
+            Body::RecordingStop {
+                session_id: "runtime-1".to_string(),
+            }
+            .is_mutation()
+        );
+        assert!(
+            Body::AppFocus {
+                target: FocusTarget::Agent {
+                    stored_session_id: None,
+                },
+            }
+            .is_mutation()
+        );
+        assert!(!Body::NotesList(PageRequest::default()).is_mutation());
+        assert!(!Body::SettingsGet.is_mutation());
     }
 
     #[test]

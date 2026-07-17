@@ -56,8 +56,37 @@ final class AuthAndModelTests: XCTestCase {
 
         try SecureStore.shared.save(value, account: account)
         XCTAssertEqual(try SecureStore.shared.read(account: account), value)
+        let replacement = Data("replacement".utf8)
+        try SecureStore.shared.save(replacement, account: account)
+        XCTAssertEqual(try SecureStore.shared.read(account: account), replacement)
         SecureStore.shared.delete(account: account)
         XCTAssertNil(try SecureStore.shared.read(account: account))
+    }
+
+    func testTransportLifecycleRejectsThePreviousConnectionAfterReconnect() {
+        var lifecycle = TransportLifecycle()
+        let first = lifecycle.begin()
+        XCTAssertTrue(lifecycle.isCurrent(first))
+
+        let second = lifecycle.begin()
+        XCTAssertFalse(lifecycle.isCurrent(first))
+        XCTAssertTrue(lifecycle.isCurrent(second))
+
+        lifecycle.disconnect()
+        XCTAssertFalse(lifecycle.isCurrent(second))
+        XCTAssertNil(lifecycle.connectionID)
+    }
+
+    func testTransportDiagnosticsContainNoSecretsOrPayloads() throws {
+        let credential = "device-credential-that-must-not-be-logged"
+        let note = "private note content that must not be logged"
+        let event = CompanionTransportDiagnostic.event(revoked: false)
+        let encoded = try JSONSerialization.data(withJSONObject: event)
+        let diagnostic = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+
+        XCTAssertFalse(diagnostic.contains(credential))
+        XCTAssertFalse(diagnostic.contains(note))
+        XCTAssertEqual(event["type"] as? String, "transportError")
     }
 
     func testInboundFrameValidationRejectsReplayExpiryAndCapabilityConfusion() throws {
@@ -190,16 +219,24 @@ final class AuthAndModelTests: XCTestCase {
         let model = AppModel()
         model.receive(
             type: "protocolEvent",
-            payload: try agentEvent(type: "agentDelta", sessionID: "session-new", text: "Hello")
+            payload: try agentEvent(
+                type: "agentDelta",
+                storedSessionID: "session-new",
+                text: "Hello"
+            )
         )
         model.receive(
             type: "protocolEvent",
-            payload: try agentEvent(type: "agentStatus", sessionID: "session-new", status: "completed")
+            payload: try agentEvent(
+                type: "agentStatus",
+                storedSessionID: "session-new",
+                status: "completed"
+            )
         )
 
         model.acceptAgentSession("session-new", fallbackTitle: "Plan the week")
 
-        XCTAssertEqual(model.selectedSessionID, "session-new")
+        XCTAssertEqual(model.selectedStoredSessionID, "session-new")
         XCTAssertEqual(model.snapshot.agentSessions.first?.status, .completed)
         XCTAssertEqual(model.messages.last?.text, "Hello")
         XCTAssertEqual(model.messages.last?.streaming, false)
@@ -219,7 +256,7 @@ final class AuthAndModelTests: XCTestCase {
             type: "protocolEvent",
             payload: try agentEvent(
                 type: "agentStatus",
-                sessionID: "session-existing",
+                storedSessionID: "session-existing",
                 status: "completed"
             )
         )
@@ -237,11 +274,11 @@ final class AuthAndModelTests: XCTestCase {
 
 private func agentEvent(
     type: String,
-    sessionID: String,
+    storedSessionID: String,
     text: String? = nil,
     status: String? = nil
 ) throws -> String {
-    var data: [String: Any] = ["storedSessionId": sessionID]
+    var data: [String: Any] = ["storedSessionId": storedSessionID]
     if let text { data["text"] = text }
     if let status { data["status"] = status }
     let payload: [String: Any] = [

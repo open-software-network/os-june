@@ -10395,7 +10395,7 @@ input:focus-visible,
   top: calc(100% + 4px);
   left: 0;
   z-index: 60;
-  min-width: 180px;
+  min-width: 220px;
   padding: var(--sp-1);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -17316,7 +17316,7 @@ button.memory-project:hover {
    * the count badge sits at a consistent distance in both places. The chevron
    * is absolutely positioned, so this only spaces the label from the count. */
   gap: var(--sp-2);
-  min-width: var(--companion-pairing-copy-min-w);
+  min-width: 180px;
   height: var(--control-lg);
   padding: 0 32px 0 var(--sp-3);
   border: 1px solid var(--border);
@@ -26801,7 +26801,7 @@ button.connector-approvals-info {
   align-items: flex-start;
   flex: 1;
   flex-direction: column;
-  min-width: 220px;
+  min-width: var(--companion-pairing-copy-min-w);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.5;

@@ -47,6 +47,27 @@ struct InflightOperationGuard {
     operation_id: Uuid,
 }
 
+struct TransportActivityGuard {
+    app: AppHandle,
+}
+
+impl TransportActivityGuard {
+    fn new(app: &AppHandle) -> Self {
+        app.state::<CompanionRuntime>()
+            .transport_activity
+            .fetch_add(1, Ordering::AcqRel);
+        Self { app: app.clone() }
+    }
+}
+
+impl Drop for TransportActivityGuard {
+    fn drop(&mut self) {
+        let runtime = self.app.state::<CompanionRuntime>();
+        runtime.transport_activity.fetch_sub(1, Ordering::AcqRel);
+        runtime.transport_activity_changed.notify_one();
+    }
+}
+
 impl Drop for InflightOperationGuard {
     fn drop(&mut self) {
         let waiters = self
@@ -98,11 +119,13 @@ pub(super) fn start(app: &AppHandle) {
 async fn reconnect_loop(app: AppHandle) {
     let mut attempt = 0_u32;
     loop {
+        let activity = TransportActivityGuard::new(&app);
         if !app
             .state::<CompanionRuntime>()
             .account_transport_enabled
             .load(Ordering::Acquire)
         {
+            drop(activity);
             tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
         }
@@ -122,6 +145,7 @@ async fn reconnect_loop(app: AppHandle) {
             _ => false,
         };
         if !has_active_device && !has_pending_pairing(&app.state::<CompanionRuntime>()) {
+            drop(activity);
             tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
         }
@@ -133,6 +157,7 @@ async fn reconnect_loop(app: AppHandle) {
                 attempt = attempt.saturating_add(1).min(8);
             }
         }
+        drop(activity);
         let cap = 2_u64
             .saturating_pow(attempt)
             .clamp(1, MAX_RECONNECT_DELAY_SECS);
@@ -443,7 +468,7 @@ async fn receive_envelope(
     };
     if should_cache_response(&response) {
         repos
-            .remember_companion_operation(
+            .complete_companion_operation(
                 &identity.account_user_id,
                 &peer_id.to_string(),
                 &operation_id.to_string(),
@@ -607,21 +632,7 @@ async fn dispatch_request(
                         "June on this Mac stopped the request.",
                     )
                 })?;
-            let response = frontend_response(capability, result);
-            repos
-                .remember_companion_operation(
-                    account_user_id,
-                    &peer_id.to_string(),
-                    &operation_id.to_string(),
-                    &serde_json::to_vec(&response).map_err(|_| {
-                        AppError::new(
-                            "companion_response_invalid",
-                            "The companion response could not be encoded.",
-                        )
-                    })?,
-                )
-                .await?;
-            Ok(response)
+            Ok(frontend_response(capability, result))
         }
     }
 }

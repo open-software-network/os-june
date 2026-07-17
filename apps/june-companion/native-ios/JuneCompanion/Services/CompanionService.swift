@@ -17,7 +17,7 @@ private struct PendingPairingRevocation: Codable {
   let deviceID: UUID
 }
 
-struct PendingMutation: Codable {
+struct PendingMutation: Codable, Equatable {
   let operationID: UUID
   let createdAt: Date
 }
@@ -92,15 +92,24 @@ final class CompanionService {
   private let pendingRevocationAccount = "pending.pairing-revocation"
   private let pendingMutationsAccount = "pending.mutations"
   private var pendingMutations: [String: PendingMutation] = [:]
+  private var pendingMutationsNeedRestore = false
 
   private init() {
     // Pre-release builds briefly stored a mobile OS Accounts grant. Pairing is
     // now the phone's authorization, so remove any legacy token on upgrade.
     SecureStore.shared.delete(account: "os-accounts.tokens")
-    pendingMutations = (try? SecureStore.shared.read(account: pendingMutationsAccount))
-      .flatMap { try? JSONDecoder().decode([String: PendingMutation].self, from: $0) }
-      ?? [:]
-    prunePendingMutations()
+    do {
+      if let encoded = try SecureStore.shared.read(account: pendingMutationsAccount) {
+        pendingMutations = try JSONDecoder().decode(
+          [String: PendingMutation].self,
+          from: encoded
+        )
+      }
+    } catch {
+      // Do not risk issuing fresh mutation IDs while durable state is
+      // unavailable or unreadable. The first mutation retries restoration.
+      pendingMutationsNeedRestore = true
+    }
     linked = try? SecureStore.shared.read(account: "linked.configuration")
       .flatMap {try? JSONDecoder().decode(LinkedConfiguration.self, from: $0)}
     if linked != nil {
@@ -274,21 +283,21 @@ final class CompanionService {
     return try jsonString(resultData(response) ?? [:])
   }
 
-  func listAgentMessages(sessionID: String, cursor: String?) async throws -> String {
-    let response = try await request(capability: "agentRead", body: ["type": "agentMessagesList", "data": ["storedSessionId": sessionID, "page": ["cursor": optionalJSON(cursor), "limit": 100]]])
+  func listAgentMessages(storedSessionID: String, cursor: String?) async throws -> String {
+    let response = try await request(capability: "agentRead", body: ["type": "agentMessagesList", "data": ["storedSessionId": storedSessionID, "page": ["cursor": optionalJSON(cursor), "limit": 100]]])
     return try jsonString(resultData(response) ?? [:])
   }
 
-  func sendAgentMessage(sessionID: String?, message: String) async throws -> String {
+  func sendAgentMessage(storedSessionID: String?, message: String) async throws -> String {
     guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw CompanionNativeError.invalidData("Enter a message first.")
     }
-    let response = try await request(capability: "agentChat", body: ["type": "agentSend", "data": ["storedSessionId": optionalJSON(sessionID), "message": message]], mutation: true)
-    return try jsonString(resultData(response) ?? ["storedSessionId": sessionID ?? ""])
+    let response = try await request(capability: "agentChat", body: ["type": "agentSend", "data": ["storedSessionId": optionalJSON(storedSessionID), "message": message]], mutation: true)
+    return try jsonString(resultData(response) ?? ["storedSessionId": storedSessionID ?? ""])
   }
 
-  func cancelAgent(sessionID: String) async throws {
-    _ = try await request(capability: "agentCancel", body: ["type": "agentCancel", "data": ["storedSessionId": sessionID]], mutation: true)
+  func cancelAgent(storedSessionID: String) async throws {
+    _ = try await request(capability: "agentCancel", body: ["type": "agentCancel", "data": ["storedSessionId": storedSessionID]], mutation: true)
   }
 
   func setSafeSettings(style: String, imageSafeMode: Bool) async throws -> String {
@@ -296,7 +305,7 @@ final class CompanionService {
     return try jsonString(resultData(response) ?? [:])
   }
 
-  func controlRecording(sessionID: String, action: String) async throws {
+  func controlRecording(runtimeSessionID: String, action: String) async throws {
     let type: String
     switch action {
     case "pause": type = "recordingPause"
@@ -304,7 +313,7 @@ final class CompanionService {
     case "stop": type = "recordingStop"
     default: throw CompanionNativeError.invalidData("That recording control is not allowed.")
     }
-    _ = try await request(capability: "recordingControlExisting", body: ["type": type, "data": ["sessionId": sessionID]], mutation: true)
+    _ = try await request(capability: "recordingControlExisting", body: ["type": type, "data": ["sessionId": runtimeSessionID]], mutation: true)
   }
 
   func focusDesktop(targetJSON: String) async throws {
@@ -413,7 +422,7 @@ final class CompanionService {
       : nil
     let operationID: UUID
     if let mutationKey {
-      operationID = self.operationID(for: mutationKey)
+      operationID = try self.operationID(for: mutationKey)
     } else {
       operationID = UUID()
     }
@@ -462,37 +471,61 @@ final class CompanionService {
     throw CompanionNativeError.unavailable("Your Mac is offline.")
   }
 
-  private func operationID(for mutationKey: String) -> UUID {
-    prunePendingMutations()
+  private func operationID(for mutationKey: String) throws -> UUID {
+    try restorePendingMutationsIfNeeded()
+    var next = pendingMutations
+    prunePendingMutations(&next)
     let operationID = MutationOperationIdentity.operationID(
       for: mutationKey,
-      pending: &pendingMutations
+      pending: &next
     )
-    persistPendingMutations()
+    try persistPendingMutations(next)
+    pendingMutations = next
     return operationID
   }
 
   private func resolveMutation(_ mutationKey: String) {
-    pendingMutations.removeValue(forKey: mutationKey)
-    persistPendingMutations()
-  }
-
-  private func prunePendingMutations() {
-    let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
-    pendingMutations = pendingMutations.filter { $0.value.createdAt >= cutoff }
-    persistPendingMutations()
-  }
-
-  private func persistPendingMutations() {
-    guard !pendingMutations.isEmpty else {
-      SecureStore.shared.delete(account: pendingMutationsAccount)
-      return
+    var next = pendingMutations
+    next.removeValue(forKey: mutationKey)
+    do {
+      try persistPendingMutations(next)
+      pendingMutations = next
+    } catch {
+      // The previous durable entry is still intact because SecureStore.save
+      // updates atomically. Retaining it is safe: a future retry reuses the
+      // completed operation ID instead of risking a duplicate side effect.
     }
-    if let encoded = try? JSONEncoder().encode(pendingMutations) {
-      try? SecureStore.shared.save(
-        encoded,
-        account: pendingMutationsAccount,
-        accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+  }
+
+  private func prunePendingMutations(_ mutations: inout [String: PendingMutation]) {
+    let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+    mutations = mutations.filter { $0.value.createdAt >= cutoff }
+  }
+
+  private func persistPendingMutations(_ mutations: [String: PendingMutation]) throws {
+    let encoded = try JSONEncoder().encode(mutations)
+    try SecureStore.shared.save(
+      encoded,
+      account: pendingMutationsAccount,
+      accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    )
+  }
+
+  private func restorePendingMutationsIfNeeded() throws {
+    guard pendingMutationsNeedRestore else { return }
+    do {
+      if let encoded = try SecureStore.shared.read(account: pendingMutationsAccount) {
+        pendingMutations = try JSONDecoder().decode(
+          [String: PendingMutation].self,
+          from: encoded
+        )
+      } else {
+        pendingMutations = [:]
+      }
+      pendingMutationsNeedRestore = false
+    } catch {
+      throw CompanionNativeError.unavailable(
+        "Secure operation history is unavailable. Try again before sending changes."
       )
     }
   }
@@ -525,6 +558,7 @@ final class CompanionService {
     SecureStore.shared.delete(account: pendingRevocationAccount)
     SecureStore.shared.delete(account: pendingMutationsAccount)
     pendingMutations.removeAll()
+    pendingMutationsNeedRestore = false
     DeviceIdentityService.shared.delete()
     if let url = try? cacheURL() {
       try? FileManager.default.removeItem(at: url)

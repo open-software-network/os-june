@@ -99,6 +99,37 @@ impl Controller {
         }
         self.accept_sequence(device_id, frame.sequence)?;
         let capability = frame.capability;
+        let is_mutation = frame.body.is_mutation();
+        if is_mutation {
+            let pending = pending_operation_response(capability);
+            let encoded = serde_json::to_vec(&pending).map_err(|_| {
+                AppError::new(
+                    "companion_response_invalid",
+                    "The companion operation reservation could not be encoded.",
+                )
+            })?;
+            if !repositories
+                .reserve_companion_operation(account_user_id, device_id, &operation_id, &encoded)
+                .await?
+            {
+                let encoded = repositories
+                    .companion_operation(account_user_id, device_id, &operation_id)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::new(
+                            "companion_operation_invalid",
+                            "A reserved companion operation could not be loaded.",
+                        )
+                    })?;
+                let response = serde_json::from_slice(&encoded).map_err(|_| {
+                    AppError::new(
+                        "companion_operation_invalid",
+                        "A saved companion response could not be decoded.",
+                    )
+                })?;
+                return Ok(ControllerOutcome::Immediate(response));
+            }
+        }
         let outcome = match frame.body {
             Body::NotesList(page) => {
                 let notes = repositories
@@ -296,9 +327,25 @@ impl Controller {
                     "The companion response could not be encoded.",
                 )
             })?;
-            repositories
-                .remember_companion_operation(account_user_id, device_id, &operation_id, &encoded)
-                .await?;
+            if is_mutation {
+                repositories
+                    .complete_companion_operation(
+                        account_user_id,
+                        device_id,
+                        &operation_id,
+                        &encoded,
+                    )
+                    .await?;
+            } else {
+                repositories
+                    .remember_companion_operation(
+                        account_user_id,
+                        device_id,
+                        &operation_id,
+                        &encoded,
+                    )
+                    .await?;
+            }
         }
         Ok(outcome)
     }
@@ -330,6 +377,18 @@ impl Controller {
 
 pub fn frontend_response(capability: Capability, result: ResultPayload) -> Response {
     response(capability, result)
+}
+
+fn pending_operation_response(capability: Capability) -> Response {
+    response(
+        capability,
+        ResultPayload::Error(ProtocolFailure {
+            code: FailureCode::Busy,
+            message: "This request may already have reached June. Check your Mac before trying a different request."
+                .to_string(),
+            retryable: true,
+        }),
+    )
 }
 
 fn response(capability: Capability, result: ResultPayload) -> Response {

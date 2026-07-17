@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex,
     },
     time::Duration,
@@ -40,6 +40,8 @@ pub struct CompanionRuntime {
     relay_connection_changed: Notify,
     account_transport_enabled: AtomicBool,
     account_session_changed: Notify,
+    transport_activity: AtomicUsize,
+    transport_activity_changed: Notify,
 }
 
 impl Default for CompanionRuntime {
@@ -55,6 +57,8 @@ impl Default for CompanionRuntime {
             relay_connection_changed: Notify::new(),
             account_transport_enabled: AtomicBool::new(true),
             account_session_changed: Notify::new(),
+            transport_activity: AtomicUsize::new(0),
+            transport_activity_changed: Notify::new(),
         }
     }
 }
@@ -645,28 +649,48 @@ pub async fn prepare_account_logout(app: &AppHandle) {
         pairings.clear();
     }
 
-    let Ok(account_user_id) = crate::os_accounts::current_user_id().await else {
+    // An established relay task may currently be awaiting a frontend-backed
+    // operation. Wait until that authorized work finishes and the socket has
+    // observed the account-session notification before revoking local state.
+    loop {
+        let stopped = runtime.transport_activity_changed.notified();
+        if runtime.transport_activity.load(Ordering::Acquire) == 0 {
+            break;
+        }
+        stopped.await;
+    }
+
+    let Some(account_user_id) = crate::os_accounts::stored_user_id().await else {
         return;
     };
+    let mut remote_device_ids = Vec::new();
     if let Ok(repos) = repositories(app).await {
         if let Ok(devices) = repos.list_companion_devices(&account_user_id).await {
-            for device in devices
-                .into_iter()
-                .filter(|device| device.revoked_at.is_none())
-            {
-                if let Ok(device_id) = Uuid::parse_str(&device.id) {
-                    let _ = revoke_device_remote(device_id).await;
-                }
-            }
+            remote_device_ids.extend(
+                devices
+                    .into_iter()
+                    .filter(|device| device.revoked_at.is_none())
+                    .filter_map(|device| Uuid::parse_str(&device.id).ok()),
+            );
         }
         let _ = repos
             .revoke_companion_devices_for_account(&account_user_id)
             .await;
     }
-    if let Ok(Some(identity)) = load_identity(&account_user_id) {
-        let _ = revoke_device_remote(identity.device_id).await;
-    }
+    let desktop_device_id = load_identity(&account_user_id)
+        .ok()
+        .flatten()
+        .map(|identity| identity.device_id);
     remove_identity(&account_user_id);
+
+    // Local authorization is already gone. Remote cleanup is best effort and
+    // may fail offline without allowing a later sign-in to revive old links.
+    for device_id in remote_device_ids {
+        let _ = revoke_device_remote(device_id).await;
+    }
+    if let Some(device_id) = desktop_device_id {
+        let _ = revoke_device_remote(device_id).await;
+    }
 }
 
 pub fn resume_account_transport(app: &AppHandle) {

@@ -28,7 +28,7 @@ struct AgentView: View {
     }
 
     private var currentTitle: String {
-        model.snapshot.agentSessions.first(where: { $0.id == model.selectedSessionID })?.title ?? "June"
+        model.snapshot.agentSessions.first(where: { $0.id == model.selectedStoredSessionID })?.title ?? "June"
     }
 
     private var conversation: some View {
@@ -110,7 +110,7 @@ struct AgentView: View {
     }
 
     private var isRunning: Bool {
-        model.snapshot.agentSessions.first(where: { $0.id == model.selectedSessionID })?.status == .running
+        model.snapshot.agentSessions.first(where: { $0.id == model.selectedStoredSessionID })?.status == .running
     }
 
     private var canSend: Bool {

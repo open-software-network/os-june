@@ -314,12 +314,39 @@ private enum CompanionHTTPAuthorization {
   }
 }
 
+struct TransportLifecycle {
+  private(set) var connectionID: UUID?
+
+  mutating func begin() -> UUID {
+    let next = UUID()
+    connectionID = next
+    return next
+  }
+
+  func isCurrent(_ candidate: UUID) -> Bool {
+    connectionID == candidate
+  }
+
+  mutating func disconnect() {
+    connectionID = nil
+  }
+}
+
+enum CompanionTransportDiagnostic {
+  static func event(revoked: Bool) -> [String: Any] {
+    [
+      "type": revoked ? "deviceRevoked" : "transportError",
+      "message": revoked ? "This device was revoked." : "Your Mac disconnected.",
+    ]
+  }
+}
+
 @MainActor
 final class CompanionTransport {
   typealias EventHandler = ([String: Any]) -> Void
 
   private var task: URLSessionWebSocketTask?
-  private var connectionID: UUID?
+  private var lifecycle = TransportLifecycle()
   private var crypto: CompanionCryptoSession?
   private var ownDeviceID: UUID?
   private var desktopDeviceID: UUID?
@@ -334,7 +361,7 @@ final class CompanionTransport {
   }
 
   func isConnected(to desktopDeviceID: UUID) -> Bool {
-    connectionID != nil
+    lifecycle.connectionID != nil
       && self.desktopDeviceID == desktopDeviceID
       && crypto?.isReady == true
   }
@@ -360,9 +387,8 @@ final class CompanionTransport {
     request.setValue("Device \(deviceCredential)", forHTTPHeaderField: "Authorization")
     request.timeoutInterval = 30
     let socket = URLSession(configuration: .ephemeral).webSocketTask(with: request)
-    let connectionID = UUID()
+    let connectionID = lifecycle.begin()
     task = socket
-    self.connectionID = connectionID
     self.crypto = crypto
     ownDeviceID = identity.deviceID
     self.desktopDeviceID = desktopDeviceID
@@ -383,7 +409,7 @@ final class CompanionTransport {
       sender: desktopDeviceID,
       recipient: identity.deviceID
     )
-    guard self.connectionID == connectionID else { throw CompanionNativeError.cancelled }
+    guard lifecycle.isCurrent(connectionID) else { throw CompanionNativeError.cancelled }
     _ = try crypto.read([UInt8](second.ciphertext))
     if pairing {
       try await sendEnvelope(
@@ -393,7 +419,7 @@ final class CompanionTransport {
         recipient: desktopDeviceID
       )
     }
-    guard self.connectionID == connectionID,
+    guard lifecycle.isCurrent(connectionID),
           crypto.isReady,
           try crypto.remoteStatic() == expectedDesktopPublicKey else {
       disconnect()
@@ -458,7 +484,7 @@ final class CompanionTransport {
   func disconnect() {
     task?.cancel(with: .goingAway, reason: nil)
     task = nil
-    connectionID = nil
+    lifecycle.disconnect()
     crypto = nil
     for request in pending.values {
       request.continuation.resume(throwing: CompanionNativeError.unavailable("Your Mac disconnected."))
@@ -523,7 +549,7 @@ final class CompanionTransport {
     recipient: UUID
   ) async {
     do {
-      while self.connectionID == connectionID {
+      while lifecycle.isCurrent(connectionID) {
         let envelope = try await receiveEnvelope(
           from: socket,
           sender: sender,
@@ -549,14 +575,11 @@ final class CompanionTransport {
         }
       }
     } catch {
-      if self.connectionID == connectionID {
+      if lifecycle.isCurrent(connectionID) {
         let revoked = socket.closeCode == .policyViolation
           && socket.closeReason.flatMap { String(data: $0, encoding: .utf8) } == "revoked"
         disconnect()
-        eventHandler?([
-          "type": revoked ? "deviceRevoked" : "transportError",
-          "message": revoked ? "This device was revoked." : "Your Mac disconnected.",
-        ])
+        eventHandler?(CompanionTransportDiagnostic.event(revoked: revoked))
       }
     }
   }

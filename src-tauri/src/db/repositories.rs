@@ -367,6 +367,70 @@ impl Repositories {
         Ok(())
     }
 
+    pub async fn reserve_companion_operation(
+        &self,
+        account_user_id: &str,
+        device_id: &str,
+        operation_id: &str,
+        pending_response: &[u8],
+    ) -> Result<bool, sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        let inserted = query(
+            "INSERT OR IGNORE INTO companion_operations
+             (device_id, operation_id, response, created_at)
+             SELECT ?, ?, ?, ?
+             WHERE EXISTS (
+               SELECT 1 FROM companion_devices
+               WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
+             )",
+        )
+        .bind(device_id)
+        .bind(operation_id)
+        .bind(pending_response)
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(device_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected()
+            == 1;
+        prune_companion_operations(&mut transaction, device_id).await?;
+        transaction.commit().await?;
+        Ok(inserted)
+    }
+
+    pub async fn complete_companion_operation(
+        &self,
+        account_user_id: &str,
+        device_id: &str,
+        operation_id: &str,
+        response: &[u8],
+    ) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        query(
+            "INSERT INTO companion_operations
+             (device_id, operation_id, response, created_at)
+             SELECT ?, ?, ?, ?
+             WHERE EXISTS (
+               SELECT 1 FROM companion_devices
+               WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
+             )
+             ON CONFLICT(device_id, operation_id) DO UPDATE SET
+               response = excluded.response",
+        )
+        .bind(device_id)
+        .bind(operation_id)
+        .bind(response)
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(device_id)
+        .execute(&mut *transaction)
+        .await?;
+        prune_companion_operations(&mut transaction, device_id).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn increment_p3a_counter(
         &self,
         question_id: &str,
@@ -5134,6 +5198,32 @@ fn companion_operation_cutoff_timestamp() -> String {
         .to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+async fn prune_companion_operations(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_sqlite::Sqlite>,
+    device_id: &str,
+) -> Result<(), sqlx::error::Error> {
+    query("DELETE FROM companion_operations WHERE created_at < ?")
+        .bind(companion_operation_cutoff_timestamp())
+        .execute(&mut **transaction)
+        .await?;
+    query(
+        "DELETE FROM companion_operations
+         WHERE device_id = ?
+           AND operation_id NOT IN (
+             SELECT operation_id FROM companion_operations
+             WHERE device_id = ?
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT ?
+           )",
+    )
+    .bind(device_id)
+    .bind(device_id)
+    .bind(MAX_COMPANION_OPERATIONS_PER_DEVICE)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
 fn companion_device_from_row(row: sqlx_sqlite::SqliteRow) -> CompanionDeviceRecord {
     CompanionDeviceRecord {
         id: row.get("id"),
@@ -6307,6 +6397,51 @@ mod tests {
                 .await
                 .expect("read revoked operation"),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_mutation_reservation_survives_until_a_final_response_replaces_it() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+
+        assert!(repos
+            .reserve_companion_operation("usr_test", &device_id, "mutation-1", b"outcome-unknown",)
+            .await
+            .expect("reserve mutation"));
+        assert!(!repos
+            .reserve_companion_operation(
+                "usr_test",
+                &device_id,
+                "mutation-1",
+                b"different-reservation",
+            )
+            .await
+            .expect("reject duplicate reservation"));
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "mutation-1")
+                .await
+                .expect("read reservation")
+                .as_deref(),
+            Some(b"outcome-unknown".as_slice())
+        );
+
+        repos
+            .complete_companion_operation("usr_test", &device_id, "mutation-1", b"accepted")
+            .await
+            .expect("complete mutation");
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "mutation-1")
+                .await
+                .expect("read completed response")
+                .as_deref(),
+            Some(b"accepted".as_slice())
         );
     }
 
