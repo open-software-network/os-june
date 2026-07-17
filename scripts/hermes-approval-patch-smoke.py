@@ -252,8 +252,8 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert failed_response.get("error", {}).get("code") == 5032, failed_response
         assert failed_session["attached_images"] == [], failed_session
 
-        # Force an upload to cross the prompt-accept boundary. The prompt holds
-        # history_lock while detaching its empty batch; the upload can append
+        # Force an attachment to cross the prompt-accept boundary. The prompt holds
+        # history_lock while detaching its empty batch; the attachment can append
         # only after release, so it remains queued for the next prompt instead
         # of being erased or misrouted into the accepted one.
         concurrent_session = {
@@ -262,12 +262,12 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
             "image_counter": 0,
         }
         namespace["_sessions"]["concurrent-session"] = concurrent_session
-        upload_started = threading.Event()
-        upload_result = {}
+        attachment_started = threading.Event()
+        attachment_result = {}
 
-        def upload_after_prompt_accepts() -> None:
-            upload_started.set()
-            upload_result["response"] = namespace["_image_attach_bytes"](
+        def attach_after_prompt_accepts() -> None:
+            attachment_started.set()
+            attachment_result["response"] = namespace["_image_attach_bytes"](
                 "concurrent-attach",
                 {
                     "session_id": "concurrent-session",
@@ -280,21 +280,21 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
             )
 
         with concurrent_session["history_lock"]:
-            uploader = threading.Thread(target=upload_after_prompt_accepts)
-            uploader.start()
-            assert upload_started.wait(1), "concurrent upload did not start"
+            attachment_worker = threading.Thread(target=attach_after_prompt_accepts)
+            attachment_worker.start()
+            assert attachment_started.wait(1), "concurrent attachment did not start"
             accepted_batch = list(concurrent_session["attached_images"])
             concurrent_session["attached_images"] = []
-        uploader.join(2)
-        assert not uploader.is_alive(), "concurrent upload did not finish"
+        attachment_worker.join(2)
+        assert not attachment_worker.is_alive(), "concurrent attachment did not finish"
         assert accepted_batch == [], accepted_batch
-        assert upload_result["response"].get("result", {}).get("attached") is True
+        assert attachment_result["response"].get("result", {}).get("attached") is True
         assert len(concurrent_session["attached_images"]) == 1, concurrent_session
 
     # Lock the queue ownership boundary across prompt.submit. Acceptance must
     # detach an immutable batch under the same history lock used by queue writes,
     # then hand only that batch to the asynchronous success path. Initialization
-    # failure discards the local batch without touching later uploads.
+    # failure discards the local batch without touching later attachments.
     prompt_submit = _rpc_method(tree, "prompt.submit")
     history_lock_blocks = [
         node
@@ -359,15 +359,23 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     )
     run_prompt_submit = _function(tree, "_run_prompt_submit")
     assert any(argument.arg == "images" for argument in run_prompt_submit.args.args)
-    fallback_clears = [
+    all_prompt_run_calls = [
         node
-        for node in ast.walk(run_prompt_submit)
-        if isinstance(node, ast.Assign)
-        and isinstance(node.value, ast.List)
-        and not node.value.elts
-        and any(_session_subscript(target, "attached_images") for target in node.targets)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_run_prompt_submit"
     ]
-    assert len(fallback_clears) == 1, len(fallback_clears)
+    assert len(all_prompt_run_calls) == 5, len(all_prompt_run_calls)
+    assert all(len(node.args) == 5 for node in all_prompt_run_calls)
+    explicit_batches = [node.args[4] for node in all_prompt_run_calls]
+    assert sum(
+        isinstance(batch, ast.Name) and batch.id == "submitted_images"
+        for batch in explicit_batches
+    ) == 1
+    assert sum(
+        isinstance(batch, ast.List) and not batch.elts for batch in explicit_batches
+    ) == 4
     queue_helper = _function(tree, "_queue_attached_image")
     serialized_appends = [
         node
@@ -419,6 +427,21 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     assert all(under_history_lock(node) for node in attached_image_appends), (
         "every gateway image queue append must share prompt.submit's history lock",
         [node.lineno for node in attached_image_appends if not under_history_lock(node)],
+    )
+    queue_state_assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Assign, ast.AugAssign))
+        and any(
+            _session_subscript(target, key)
+            for target in getattr(node, "targets", [getattr(node, "target", None)])
+            for key in ("attached_images", "image_counter")
+        )
+    ]
+    assert queue_state_assignments, "expected gateway image queue state assignments"
+    assert all(under_history_lock(node) for node in queue_state_assignments), (
+        "every gateway image queue state assignment must share history_lock",
+        [node.lineno for node in queue_state_assignments if not under_history_lock(node)],
     )
 
 

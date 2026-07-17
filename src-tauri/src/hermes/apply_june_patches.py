@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v3"
+PATCH_SET = "june-approval-memory-v4"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "1dbf9c5153f3f9d799d8503445c4f2c0490deac9b768bf22ab4f3550d9a0b3b2",
+    "tui_gateway/server.py": "a512306bbddc51f4f78f90f3bfb7ad6014b3cd6c0e4393a5359a474c17a60fb7",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -54,6 +54,17 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
     if count != 1:
         raise RuntimeError("%s: expected one match, found %d" % (label, count))
     return source.replace(old, new, 1)
+
+
+def replace_count(
+    source: str, old: str, new: str, expected: int, label: str
+) -> str:
+    count = source.count(old)
+    if count != expected:
+        raise RuntimeError(
+            "%s: expected %d matches, found %d" % (label, expected, count)
+        )
+    return source.replace(old, new)
 
 
 def replace_region(source: str, start: str, end: str, replacement: str, label: str) -> str:
@@ -595,7 +606,7 @@ def patch_server(source: str) -> str:
     return img_path
 ''',
         '''    # Queue writes share the prompt's history lock so prompt.submit can
-    # atomically detach exactly the images it owns. An upload that arrives after
+    # atomically detach exactly the images it owns. An attachment that arrives after
     # that boundary stays queued for the next prompt instead of being lost or
     # consumed by the agent run already starting.
     with session["history_lock"]:
@@ -616,7 +627,25 @@ def patch_server(source: str) -> str:
     )
     source = replace_once(
         source,
-        '''    session.setdefault("attached_images", []).append(str(img_path))
+        '''    session["image_counter"] = session.get("image_counter", 0) + 1
+    img_dir = _hermes_home / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    img_path = (
+        img_dir
+        / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png"
+    )
+
+    # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
+    if not save_clipboard_image(img_path):
+        session["image_counter"] = max(0, session["image_counter"] - 1)
+        msg = (
+            "Clipboard has image but extraction failed"
+            if has_clipboard_image()
+            else "No image found in clipboard"
+        )
+        return _ok(rid, {"attached": False, "message": msg})
+
+    session.setdefault("attached_images", []).append(str(img_path))
     return _ok(
         rid,
         {
@@ -625,6 +654,24 @@ def patch_server(source: str) -> str:
             "count": len(session["attached_images"]),
 ''',
         '''    with session["history_lock"]:
+        session["image_counter"] = session.get("image_counter", 0) + 1
+        img_dir = _hermes_home / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        img_path = (
+            img_dir
+            / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png"
+        )
+
+        # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
+        if not save_clipboard_image(img_path):
+            session["image_counter"] = max(0, session["image_counter"] - 1)
+            msg = (
+                "Clipboard has image but extraction failed"
+                if has_clipboard_image()
+                else "No image found in clipboard"
+            )
+            return _ok(rid, {"attached": False, "message": msg})
+
         session.setdefault("attached_images", []).append(str(img_path))
         attached_count = len(session["attached_images"])
     return _ok(
@@ -727,7 +774,7 @@ def patch_server(source: str) -> str:
 ''',
         '''        _start_inflight_turn(session, text)
         # Detach this prompt's immutable image batch at the same boundary that
-        # marks the session running. Later uploads remain queued for the next
+        # marks the session running. Later attachments remain queued for the next
         # prompt, regardless of whether Hermes initialization succeeds.
         submitted_images = list(session.get("attached_images", []))
         session["attached_images"] = []
@@ -760,18 +807,67 @@ def patch_server(source: str) -> str:
         session["attached_images"] = []
 ''',
         '''def _run_prompt_submit(
-    rid, sid: str, session: dict, text: Any, images=None
+    rid, sid: str, session: dict, text: Any, images
 ) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
-        if images is None:
-            images = list(session.get("attached_images", []))
-            session["attached_images"] = []
-        else:
-            images = list(images)
+        images = list(images)
 ''',
         "prompt image batch consumption",
+    )
+    source = replace_count(
+        source,
+        '''            _run_prompt_submit(rid, sid, session, text)
+''',
+        '''            _run_prompt_submit(rid, sid, session, text, [])
+''',
+        2,
+        "notification prompt image isolation",
+    )
+    source = replace_once(
+        source,
+        '''                _run_prompt_submit(rid, sid, session, goal_followup)
+''',
+        '''                _run_prompt_submit(rid, sid, session, goal_followup, [])
+''',
+        "goal continuation image isolation",
+    )
+    source = replace_once(
+        source,
+        '''                    _run_prompt_submit(rid, sid, session, synth)
+''',
+        '''                    _run_prompt_submit(rid, sid, session, synth, [])
+''',
+        "completion prompt image isolation",
+    )
+    source = replace_once(
+        source,
+        '''    session["agent"] = new_agent
+    session["config_model_seen"] = _config_model_target()
+    session["attached_images"] = []
+    session["edit_snapshots"] = {}
+    session["image_counter"] = 0
+    session["running"] = False
+    session["show_reasoning"] = _load_show_reasoning()
+    session["tool_progress_mode"] = _load_tool_progress_mode()
+    session["tool_started_at"] = {}
+    with session["history_lock"]:
+        session["history"] = []
+''',
+        '''    session["agent"] = new_agent
+    session["config_model_seen"] = _config_model_target()
+    session["edit_snapshots"] = {}
+    session["running"] = False
+    session["show_reasoning"] = _load_show_reasoning()
+    session["tool_progress_mode"] = _load_tool_progress_mode()
+    session["tool_started_at"] = {}
+    with session["history_lock"]:
+        session["attached_images"] = []
+        session["image_counter"] = 0
+        session["history"] = []
+''',
+        "serialized session image reset",
     )
     source = replace_once(
         source,

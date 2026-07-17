@@ -265,7 +265,7 @@ const features: HermesCompatibilitySection = {
   targetedMcpApprovals: {
     status: "supported",
     rationale:
-      "The checksum-gated june-approval-memory-v3 patch preserves MCP request identity, deduplicates retries, bounds the per-session queue, resolves a targeted approval or denial exactly once, drains timeout or disconnect fail closed, and carries the global disabled-toolset policy into desktop sessions on macOS and Windows.",
+      "The checksum-gated june-approval-memory-v4 patch preserves MCP request identity, deduplicates retries, bounds the per-session queue, resolves a targeted approval or denial exactly once, drains timeout or disconnect fail closed, and carries the global disabled-toolset policy into desktop sessions on macOS and Windows.",
     since: PIN,
   },
   backgroundSubagentWatch: {

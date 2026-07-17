@@ -40,7 +40,7 @@ note (copy `docs/hermes-upstream-template.md` to
 
 ## June compatibility patch set
 
-The current pin also carries the checksum-gated `june-approval-memory-v3` patch set
+The current pin also carries the checksum-gated `june-approval-memory-v4` patch set
 documented in `docs/hermes-upstream-v2026.6.19.md`. Its targeted-approval portion
 follows ADR 0025. On every pin bump:
 
