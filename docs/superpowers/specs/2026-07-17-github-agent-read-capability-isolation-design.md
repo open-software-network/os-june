@@ -207,6 +207,13 @@ them again after acquiring the lock, and checks them under the process-map lock
 at registration. A successful stop therefore invalidates every already-invoked
 start, including one waiting behind another start.
 
+The broker also binds admission to the spawned process lifetime, not only its
+numeric pid. Before admission becomes active, June registers a macOS
+`EVFILT_PROC` exit monitor for that child. Registration failure rejects
+admission, and exit revokes even an unconsumed admission without waiting for a
+later status, start, or stop call. This closes pid reuse after a dashboard exits
+before the verified extension opens its persistent connection.
+
 Repository content remains untrusted input to the selected model. The selected
 online model may receive bounded tool results in its inference context, as the
 earlier design already states.
@@ -220,6 +227,8 @@ The migration is complete only when automated tests demonstrate all of these:
 - the exact registered dashboard pid succeeds, while a same-user child, an
   unregistered process, a consumed second connection, a revoked generation,
   and a generation mismatch fail;
+- an already-exited dashboard cannot be authorized, and dashboard exit revokes
+  an unconsumed admission without bridge polling before any later pid reuse;
 - request and response framing enforces 64 KiB and 256 KiB before content can
   cross the boundary;
 - malformed and unknown operations return the fixed sanitized protocol;

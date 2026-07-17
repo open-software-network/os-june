@@ -75,6 +75,8 @@ pub(super) struct GitHubReadBroker {
     socket_path: PathBuf,
     admission: Arc<Mutex<Admission>>,
     state_tx: watch::Sender<AdmissionState>,
+    #[cfg(target_os = "macos")]
+    process_exit_monitor: Mutex<Option<ProcessExitMonitor>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     task: JoinHandle<()>,
 }
@@ -111,6 +113,25 @@ impl GitHubReadBroker {
     }
 
     pub(super) fn authorize_interactive(&self, pid: u32, generation: u64) -> Result<(), AppError> {
+        #[cfg(target_os = "macos")]
+        let registered_monitor = RegisteredProcessExitMonitor::new(pid).map_err(|error| {
+            tracing::warn!(
+                error_code = "github_read_broker_process_monitor_failed",
+                os_error = ?error.raw_os_error(),
+                "GitHub read broker process monitor failed"
+            );
+            AppError::new(
+                "github_read_broker_admission_failed",
+                "GitHub read admission could not be updated.",
+            )
+        })?;
+        #[cfg(target_os = "macos")]
+        let mut process_exit_monitor = self.process_exit_monitor.lock().map_err(|_| {
+            AppError::new(
+                "github_read_broker_admission_failed",
+                "GitHub read admission could not be updated.",
+            )
+        })?;
         let mut admission = self.admission.lock().map_err(|_| {
             AppError::new(
                 "github_read_broker_admission_failed",
@@ -123,7 +144,11 @@ impl GitHubReadBroker {
                 "GitHub read admission generation does not match.",
             ));
         }
-        if admission.pid.is_some() || admission.consumed {
+        #[cfg(target_os = "macos")]
+        let monitor_already_registered = process_exit_monitor.is_some();
+        #[cfg(not(target_os = "macos"))]
+        let monitor_already_registered = false;
+        if admission.pid.is_some() || admission.consumed || monitor_already_registered {
             return Err(AppError::new(
                 "github_read_broker_admission_conflict",
                 "GitHub read admission was already registered.",
@@ -131,8 +156,26 @@ impl GitHubReadBroker {
         }
 
         admission.pid = Some(pid);
-        self.state_tx
-            .send_replace(AdmissionState::Active { pid, generation });
+        let active_state = AdmissionState::Active { pid, generation };
+        self.state_tx.send_replace(active_state);
+        #[cfg(target_os = "macos")]
+        {
+            match registered_monitor.start(self.state_tx.clone(), active_state) {
+                Ok(monitor) => *process_exit_monitor = Some(monitor),
+                Err(error) => {
+                    self.state_tx.send_replace(AdmissionState::Revoked);
+                    tracing::warn!(
+                        error_code = "github_read_broker_process_monitor_failed",
+                        os_error = ?error.raw_os_error(),
+                        "GitHub read broker process monitor failed"
+                    );
+                    return Err(AppError::new(
+                        "github_read_broker_admission_failed",
+                        "GitHub read admission could not be updated.",
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -141,8 +184,16 @@ impl GitHubReadBroker {
             self.state_tx.send_replace(AdmissionState::Revoked);
             return;
         };
-        if admission.pid == Some(pid) && admission.generation == generation {
+        let should_revoke = admission.pid == Some(pid) && admission.generation == generation;
+        if should_revoke {
             self.state_tx.send_replace(AdmissionState::Revoked);
+        }
+        drop(admission);
+        if should_revoke {
+            #[cfg(target_os = "macos")]
+            if let Ok(mut monitor) = self.process_exit_monitor.lock() {
+                monitor.take();
+            }
         }
     }
 
@@ -246,6 +297,7 @@ impl GitHubReadBroker {
                 socket_path,
                 admission,
                 state_tx,
+                process_exit_monitor: Mutex::new(None),
                 shutdown_tx: Some(shutdown_tx),
                 task,
             },
@@ -257,11 +309,171 @@ impl GitHubReadBroker {
 impl Drop for GitHubReadBroker {
     fn drop(&mut self) {
         self.state_tx.send_replace(AdmissionState::Revoked);
+        #[cfg(target_os = "macos")]
+        if let Ok(monitor) = self.process_exit_monitor.get_mut() {
+            monitor.take();
+        }
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
             let _ = shutdown_tx.send(());
         }
         self.task.abort();
         let _ = std::fs::remove_file(&self.socket_path);
+    }
+}
+
+#[cfg(target_os = "macos")]
+const PROCESS_MONITOR_SHUTDOWN_IDENT: libc::uintptr_t = libc::uintptr_t::MAX;
+
+#[cfg(target_os = "macos")]
+struct RegisteredProcessExitMonitor {
+    fd: Arc<std::os::fd::OwnedFd>,
+}
+
+#[cfg(target_os = "macos")]
+impl RegisteredProcessExitMonitor {
+    fn new(pid: u32) -> io::Result<Self> {
+        use std::os::fd::{FromRawFd, OwnedFd};
+
+        let raw_fd = unsafe { libc::kqueue() };
+        if raw_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `kqueue` returned a new owned descriptor above. Wrapping it
+        // in `OwnedFd` transfers that ownership exactly once and closes it on
+        // every later error path.
+        let fd = Arc::new(unsafe { OwnedFd::from_raw_fd(raw_fd) });
+        let changes = [
+            libc::kevent {
+                ident: pid as libc::uintptr_t,
+                filter: libc::EVFILT_PROC,
+                flags: libc::EV_ADD | libc::EV_ONESHOT,
+                fflags: libc::NOTE_EXIT,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            },
+            libc::kevent {
+                ident: PROCESS_MONITOR_SHUTDOWN_IDENT,
+                filter: libc::EVFILT_USER,
+                flags: libc::EV_ADD | libc::EV_CLEAR,
+                fflags: 0,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            },
+        ];
+        // SAFETY: `fd` is a live kqueue descriptor, `changes` contains two
+        // fully initialized entries, and the null event list/timeout are
+        // permitted when only registering filters.
+        let registered = unsafe {
+            libc::kevent(
+                std::os::fd::AsRawFd::as_raw_fd(fd.as_ref()),
+                changes.as_ptr(),
+                changes.len() as i32,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        if registered != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self { fd })
+    }
+
+    fn start(
+        self,
+        state_tx: watch::Sender<AdmissionState>,
+        active_state: AdmissionState,
+    ) -> io::Result<ProcessExitMonitor> {
+        let thread_fd = self.fd.clone();
+        let thread = std::thread::Builder::new()
+            .name("june-github-process-monitor".to_string())
+            .spawn(move || wait_for_process_exit(thread_fd, state_tx, active_state))?;
+        Ok(ProcessExitMonitor {
+            fd: self.fd,
+            thread: Some(thread),
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct ProcessExitMonitor {
+    fd: Arc<std::os::fd::OwnedFd>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for ProcessExitMonitor {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        let trigger = libc::kevent {
+            ident: PROCESS_MONITOR_SHUTDOWN_IDENT,
+            filter: libc::EVFILT_USER,
+            flags: 0,
+            fflags: libc::NOTE_TRIGGER,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        // SAFETY: `fd` remains live through the call and `trigger` is a fully
+        // initialized change for the registered EVFILT_USER wakeup.
+        let _ = unsafe {
+            libc::kevent(
+                self.fd.as_raw_fd(),
+                std::ptr::from_ref(&trigger),
+                1,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_process_exit(
+    fd: Arc<std::os::fd::OwnedFd>,
+    state_tx: watch::Sender<AdmissionState>,
+    active_state: AdmissionState,
+) {
+    use std::os::fd::AsRawFd;
+
+    let mut event = std::mem::MaybeUninit::<libc::kevent>::zeroed();
+    // SAFETY: `fd` owns a live kqueue descriptor and the output points to one
+    // properly sized uninitialized event slot. A null timeout blocks this
+    // dedicated monitor thread until process exit or the shutdown user event.
+    let received = unsafe {
+        libc::kevent(
+            fd.as_raw_fd(),
+            std::ptr::null(),
+            0,
+            event.as_mut_ptr(),
+            1,
+            std::ptr::null(),
+        )
+    };
+    if received == 1 {
+        // SAFETY: `kevent` initialized the one event slot when it returned 1.
+        let event = unsafe { event.assume_init() };
+        if event.filter == libc::EVFILT_USER && event.ident == PROCESS_MONITOR_SHUTDOWN_IDENT {
+            return;
+        }
+    }
+    // An observed process exit and any monitor failure both fail closed. The
+    // kqueue filter is attached to the spawned process identity when
+    // registered, so a later process that reuses its numeric pid cannot keep
+    // or regain this admission.
+    revoke_matching_admission(&state_tx, active_state);
+}
+
+fn revoke_matching_admission(
+    state_tx: &watch::Sender<AdmissionState>,
+    active_state: AdmissionState,
+) {
+    if *state_tx.borrow() == active_state {
+        state_tx.send_replace(AdmissionState::Revoked);
     }
 }
 
@@ -865,6 +1077,57 @@ mod tests {
 
         assert_eq!(seen.lock().expect("seen").len(), 2);
         assert_eq!(accepted_connections.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn dashboard_exit_revokes_unconsumed_admission_without_bridge_polling() {
+        let socket_dir = tempfile::tempdir().expect("socket tempdir");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (broker, accepted_connections) =
+            start_test_broker(socket_dir.path(), 7, seen.clone(), REQUEST_DEADLINE).await;
+        let mut dashboard = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn dashboard stand-in");
+        broker
+            .authorize_interactive(dashboard.id(), 7)
+            .expect("authorize live dashboard pid");
+
+        dashboard.kill().expect("terminate dashboard stand-in");
+        dashboard.wait().expect("reap dashboard stand-in");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !broker.revoked_for_bridge_test() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("dashboard exit must revoke admission without another bridge operation");
+
+        let mut late_stream = tokio::net::UnixStream::connect(broker.socket_path())
+            .await
+            .expect("connect after dashboard exit");
+        assert_stream_eof(&mut late_stream).await;
+        assert!(seen.lock().expect("seen").is_empty());
+        assert_eq!(accepted_connections.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn exited_dashboard_pid_cannot_be_authorized() {
+        let socket_dir = tempfile::tempdir().expect("socket tempdir");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (broker, _) = start_test_broker(socket_dir.path(), 7, seen, REQUEST_DEADLINE).await;
+        let mut dashboard = std::process::Command::new("/usr/bin/true")
+            .spawn()
+            .expect("spawn short-lived dashboard stand-in");
+        dashboard.wait().expect("reap dashboard stand-in");
+
+        let error = broker
+            .authorize_interactive(dashboard.id(), 7)
+            .expect_err("an exited dashboard pid must fail closed");
+        assert_eq!(error.code, "github_read_broker_admission_failed");
+        assert!(broker.revoked_for_bridge_test());
     }
 
     #[cfg(target_os = "macos")]

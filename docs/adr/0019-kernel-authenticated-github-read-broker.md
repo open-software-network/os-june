@@ -125,3 +125,26 @@ authorized runtime. A start now captures its lifecycle epoch before waiting for
 that lock, revalidates after acquiring it, and revalidates again under the
 process-map lock before registration. A stop therefore cancels every launch
 attempt already invoked when the stop linearizes.
+
+## 2026-07-17 addendum: Process-identity lifetime
+
+Peer pid authenticates the connecting process, but a numeric pid can be reused
+after that process exits. Because the verified extension opens its one broker
+connection lazily, an authorized dashboard could exit before consuming its
+admission. Relying on a later bridge status or stop operation to notice that
+exit left a stale-admission interval in which a reused pid could satisfy the
+peer-pid comparison.
+
+Admission now registers a macOS `EVFILT_PROC` exit monitor before it becomes
+active. The kqueue filter is bound to the spawned process identity rather than
+only its numeric pid. Registration fails closed if the process has already
+exited, and the broker revokes the admission as soon as that exact process
+exits, whether or not the extension connected and without waiting for another
+bridge operation. An internal `EVFILT_USER` wakeup stops and joins the dedicated
+monitor thread when the broker is explicitly revoked or dropped.
+
+Eagerly opening the extension socket was rejected as the sole fix because a
+successful client `connect` only queues the socket; it does not prove the broker
+has consumed admission before the process can exit. Polling process existence
+was also rejected because it cannot distinguish a reused pid from the original
+spawned process.

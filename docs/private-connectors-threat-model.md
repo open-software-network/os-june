@@ -135,8 +135,12 @@ slice. The Google analysis above remains unchanged.
 - Interactive GitHub tools connect to a Rust-owned Unix-domain broker. The
   broker authorizes the exact dashboard pid and runtime generation using macOS
   kernel peer credentials, admits one persistent connection, and accepts only
-  the fixed bounded read operations. The socket path is non-secret and carries
-  no bearer, credential, repository allowlist, or general provider route.
+  the fixed bounded read operations. Admission also registers a macOS process
+  exit monitor before it becomes active, so an already-exited child fails
+  closed and even an unconsumed admission is revoked on that exact process's
+  exit before its numeric pid can be reused. The socket path is non-secret and
+  carries no bearer, credential, repository allowlist, or general provider
+  route.
 - Terminal children, sibling MCP servers, the launchd gateway, scheduled jobs,
   and sessions using `no_mcp` receive no GitHub read authority. Separate
   processes cannot pass the peer-pid check merely by learning the socket path.
