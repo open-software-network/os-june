@@ -23,6 +23,7 @@ use tauri::AppHandle;
 // docker-compose.production.yml). NOT .network — that hostname has no DNS
 // record, and the v0.0.3 DMG shipped pointing at it.
 const DEFAULT_JUNE_API_URL: &str = "https://june-api.opensoftware.co";
+const DEFAULT_SHARE_BASE_URL: &str = "https://june.link";
 // Nemotron Nano over GLM 5.2: dictation is latency-critical and nano runs
 // ~0.8s per utterance vs GLM's 2-4s (12s outliers), which felt too slow in
 // daily use. Known nano tradeoffs, accepted for speed: explicit unnumbered
@@ -1911,11 +1912,19 @@ pub fn verify_url() -> String {
     format!("{}/verify", june_api_url())
 }
 
-/// Origin that share links point at (`{origin}/s/{share_id}#…`). The viewer
-/// is served by june-api, so this is the same base every metered request
-/// already goes to.
+/// Origin that share links point at (`{origin}/s/{share_id}#…`). Production
+/// uses the short branded hostname; local and staging builds stay on their
+/// configured June API origin so they never depend on production.
 pub fn share_base_url() -> String {
-    june_api_url()
+    share_base_url_for_api(&june_api_url())
+}
+
+fn share_base_url_for_api(api_url: &str) -> String {
+    if api_url == DEFAULT_JUNE_API_URL {
+        DEFAULT_SHARE_BASE_URL.to_string()
+    } else {
+        api_url.to_string()
+    }
 }
 
 /// Final assistant text from a chat completion, normalized for reasoning
@@ -2939,6 +2948,26 @@ mod tests {
                 .get(JUNE_APP_VERSION_HEADER)
                 .and_then(|value| value.to_str().ok()),
             Some(APP_VERSION)
+        );
+    }
+
+    #[test]
+    fn production_share_links_use_the_short_domain() {
+        assert_eq!(
+            share_base_url_for_api(DEFAULT_JUNE_API_URL),
+            DEFAULT_SHARE_BASE_URL
+        );
+    }
+
+    #[test]
+    fn nonproduction_share_links_stay_on_the_configured_api_origin() {
+        assert_eq!(
+            share_base_url_for_api("http://127.0.0.1:8080"),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(
+            share_base_url_for_api("https://june-api-staging.opensoftware.co"),
+            "https://june-api-staging.opensoftware.co"
         );
     }
 

@@ -157,6 +157,17 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
+    // Non-secret, provider-specific account details that don't warrant their
+    // own column (Linear's workspace name/url key today; JSON so a future
+    // provider's own shape never forces another migration). Google rows keep
+    // the default empty object.
+    ensure_column(
+        _pool,
+        "connector_accounts",
+        "metadata",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )
+    .await?;
     for statement in include_str!("../../migrations/012_connector_grants.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
@@ -221,6 +232,18 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     // earlier read-only runs never retroactively unlock autonomy.
     ensure_column(_pool, "routine_trust", "approval_since", "TEXT").await?;
     for statement in include_str!("../../migrations/014_share_keys.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/016_linear_connector.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/017_connector_actions.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;
