@@ -73,3 +73,28 @@ in [GitHub agent-read capability isolation design](../superpowers/specs/2026-07-
 - **Disable GitHub agent reads.** Safe but rejects the approved product
   capability when the kernel can enforce a narrower boundary.
 
+## 2026-07-17 addendum: Managed runtime admission
+
+The verified extension requires the managed runtime that loads it to be part of
+the same authenticated closure. Two implementation choices are therefore part
+of this decision rather than incidental installer details.
+
+First, the pinned upstream source does not ship the dashboard assets required
+at runtime. June builds them only inside private staging with a checksum-pinned
+Node.js archive and the source's pinned npm lockfile. It invokes the verified
+Node program directly for dependency installation and the fixed TypeScript and
+Vite entrypoints, disables lifecycle scripts, validates native package locks
+and generated asset containment, and removes Node, `node_modules`, caches, and
+build inputs before sealing. Trusting an ambient Node or npm installation was
+rejected because it would place unauthenticated executable input inside the
+runtime closure that receives broker authority.
+
+Second, schema-2 admission is sticky for the app process. Once June admits a
+managed runtime, or observes a valid schema-2 integrity record, a later stop,
+failed repair, missing record, or legacy record cannot reopen fallback to an
+unverified runtime. That can make recovery require a clean repair instead of a
+transparent fallback, but it prevents a stop or partial repair from becoming a
+downgrade path after stronger trust has been established.
+
+The detailed contracts and verification evidence are indexed under the GitHub
+agent-read capability isolation documents in [docs/index.md](../index.md).

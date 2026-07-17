@@ -28,7 +28,18 @@ use tokio::{
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 const READY_POLL: Duration = Duration::from_millis(500);
 const JUNE_HERMES_COMMAND_ENV: &str = "JUNE_HERMES_COMMAND";
-const HERMES_PYTHON_BOOTSTRAP: &str = "import os,runpy,site\n_token=os.environ.pop('HERMES_DASHBOARD_SESSION_TOKEN',None)\nsite.main()\nif _token is not None: os.environ['HERMES_DASHBOARD_SESSION_TOKEN']=_token\nrunpy.run_module('hermes_cli.main',run_name='__main__',alter_sys=True)";
+macro_rules! hermes_plugin_discovery_guard {
+    () => {
+        "import pathlib as _j_pathlib\nimport hermes_cli as _j_hc\nfrom hermes_cli import env_loader as _j_env\n_j_plugins=str((_j_pathlib.Path(_j_hc.__file__).resolve().parent.parent/'plugins'))\n_j_original_load=_j_env.load_hermes_dotenv\ndef _j_lock_plugin_discovery():\n os.environ['HERMES_BUNDLED_PLUGINS']=_j_plugins\n os.environ['HERMES_ENABLE_PROJECT_PLUGINS']='0'\n os.environ.pop('HERMES_CONFIG',None)\n os.environ.pop('HERMES_CONFIG_PATH',None)\ndef _j_locked_load(*args,**kwargs):\n _j_home=kwargs.get('hermes_home') or os.environ.get('HERMES_HOME')\n _j_preserved={_j_name:os.environ.get(_j_name) for _j_name in ('HERMES_TUI_TOOLSETS','JUNE_GITHUB_BROKER_SOCKET')}\n _j_result=_j_original_load(*args,**kwargs)\n if _j_home is not None: os.environ['HERMES_HOME']=str(_j_home)\n for _j_name,_j_value in _j_preserved.items():\n  os.environ.pop(_j_name,None) if _j_value is None else os.environ.__setitem__(_j_name,_j_value)\n _j_lock_plugin_discovery()\n return _j_result\n_j_env.load_hermes_dotenv=_j_locked_load\n_j_lock_plugin_discovery()\nfrom hermes_cli import plugins as _j_plugin_module\n_j_original_scan=_j_plugin_module.PluginManager._scan_directory\ndef _j_locked_scan(self,path,source,skip_names=None):\n _j_found=_j_original_scan(self,path,source,skip_names)\n return [manifest for manifest in _j_found if source!='user' or (manifest.key or manifest.name)!='june_github']\n_j_plugin_module.PluginManager._scan_directory=_j_locked_scan"
+    };
+}
+#[cfg(test)]
+const HERMES_PLUGIN_DISCOVERY_GUARD: &str = hermes_plugin_discovery_guard!();
+const HERMES_PYTHON_BOOTSTRAP: &str = concat!(
+    "import os,runpy,site\n_token=os.environ.pop('HERMES_DASHBOARD_SESSION_TOKEN',None)\nsite.main()\nif _token is not None: os.environ['HERMES_DASHBOARD_SESSION_TOKEN']=_token\n",
+    hermes_plugin_discovery_guard!(),
+    "\nrunpy.run_module('hermes_cli.main',run_name='__main__',alter_sys=True)"
+);
 // Set to 1/true/yes to spawn Hermes without the macOS Seatbelt jail. An escape
 // hatch for debugging a runtime that won't boot under the profile — leaving the
 // agent able to write anywhere the user can, so only flip it knowingly.
@@ -421,6 +432,8 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_DASHBOARD_SESSION_TOKEN",
     "HERMES_ENVIRONMENT_HINT",
     "HERMES_TUI_TOOLSETS",
+    "HERMES_BUNDLED_PLUGINS",
+    "HERMES_ENABLE_PROJECT_PLUGINS",
     JUNE_GITHUB_BROKER_SOCKET_ENV,
     "HERMES_MODEL",
     "HERMES_PROVIDER",
@@ -474,6 +487,12 @@ pub struct HermesBridge {
     /// attempt only tears down the exact process it launched (and not a
     /// replacement that arrived after a stop/restart).
     next_generation: AtomicU64,
+    /// Stop linearization counters. A start captures these under the process
+    /// map lock and may register only if they are unchanged under that same
+    /// lock. This closes the pre-registration window where stop previously
+    /// drained an empty map and returned before an authorized child appeared.
+    stop_all_epoch: AtomicU64,
+    stop_mode_epochs: [AtomicU64; 2],
     /// Sticky for this app lifetime. Once a managed runtime has passed full
     /// admission, stopping its process must never reopen legacy/missing-record
     /// downgrade fallback until the app itself restarts.
@@ -500,6 +519,12 @@ struct HermesProcess {
     child: Child,
     connection: HermesBridgeConnection,
     github_broker: Option<GitHubReadBroker>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StartLifecycleSnapshot {
+    stop_all_epoch: u64,
+    stop_mode_epoch: u64,
 }
 
 struct SharedProviderProxy {
@@ -702,6 +727,11 @@ pub struct HermesBridgeConnection {
     pub token: String,
     pub port: u16,
     pub command: String,
+    /// Fixed arguments that enter the authenticated runtime module through
+    /// June's isolated Python bootstrap. Helper CLI invocations must preserve
+    /// this prefix instead of treating `command` as a standalone Hermes CLI.
+    #[serde(default)]
+    pub command_args: Vec<String>,
     pub hermes_home: String,
     pub cwd: Option<String>,
     pub provider_proxy_port: u16,
@@ -1274,6 +1304,7 @@ async fn start_hermes_bridge_inner(
     {
         return Ok(status_for(connections, Some(full_mode)));
     }
+    let lifecycle_snapshot = capture_start_lifecycle(bridge, full_mode)?;
 
     let port = pick_port()?;
     let token = random_token();
@@ -1372,7 +1403,7 @@ async fn start_hermes_bridge_inner(
     let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
     let github_eligible = github_runtime_admitted
         && github_read_enabled_for_interactive_config(&config_path)
-        && github_read_tool_eligible(app, command_source).await;
+        && github_read_tool_eligible(app, command_source, &hermes_home).await;
     let github_broker = match crate::app_paths::app_data_dir(app) {
         Ok(app_data_dir) => {
             start_optional_github_read_broker(
@@ -1464,7 +1495,7 @@ async fn start_hermes_bridge_inner(
     let mut child = cmd.spawn().map_err(|error| {
         AppError::new(
             "hermes_bridge_start_failed",
-            format!("Could not start the June-managed Hermes runtime. {error}"),
+            format!("Could not start June's agent runtime. {error}"),
         )
     })?;
     authorize_live_github_broker_for_child(github_broker.as_ref(), &mut child, generation)?;
@@ -1475,6 +1506,7 @@ async fn start_hermes_bridge_inner(
         token: token.clone(),
         port,
         command: python.program.clone(),
+        command_args: python.hermes_args(std::iter::empty::<&str>()),
         hermes_home: hermes_home.to_string_lossy().into_owned(),
         cwd: cwd_display,
         provider_proxy_port: provider_proxy.port,
@@ -1489,7 +1521,9 @@ async fn start_hermes_bridge_inner(
         connection: connection.clone(),
         github_broker,
     };
-    if let Some(duplicate) = store_hermes_process_or_return_duplicate(bridge, full_mode, process)? {
+    if let Some(duplicate) =
+        store_hermes_process_or_return_duplicate(bridge, full_mode, lifecycle_snapshot, process)?
+    {
         shutdown_hermes_process(Some(duplicate));
         return Ok(status_for(live_connections(bridge)?, Some(full_mode)));
     }
@@ -2875,6 +2909,7 @@ fn stop_hermes_mode(bridge: &HermesBridge, full_mode: bool) -> Result<(), AppErr
         let mut guard = bridge.processes.lock().map_err(|_| {
             AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
         })?;
+        bridge.stop_mode_epochs[hermes_mode_index(full_mode)].fetch_add(1, Ordering::SeqCst);
         guard.remove(&full_mode)
     };
     shutdown_hermes_process(process);
@@ -3859,6 +3894,18 @@ fn is_safe_mcp_server_name(name: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
+fn append_hermes_connection_args<I, S>(
+    cmd: &mut Command,
+    connection: &HermesBridgeConnection,
+    args: I,
+) where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    cmd.args(&connection.command_args);
+    cmd.args(args);
+}
+
 /// Builds the `hermes mcp login <server> [--profile <p>]` command, isolated to
 /// the connection's home/token, in the connection's mode. Pure (no spawn) so a
 /// test can assert the exact argument vector and that the server name is a
@@ -3883,11 +3930,15 @@ fn build_hermes_mcp_login_command(
     let mut cmd = {
         let mut wrapped = Command::new("/usr/bin/script");
         wrapped.args(["-q", "/dev/null", &connection.command]);
+        append_hermes_connection_args(&mut wrapped, connection, ["mcp", "login", server]);
         wrapped
     };
     #[cfg(not(target_os = "macos"))]
-    let mut cmd = Command::new(&connection.command);
-    cmd.args(["mcp", "login", server]);
+    let mut cmd = {
+        let mut command = Command::new(&connection.command);
+        append_hermes_connection_args(&mut command, connection, ["mcp", "login", server]);
+        command
+    };
     if let Some(profile) = profile {
         cmd.args(["--profile", profile]);
     }
@@ -4304,7 +4355,7 @@ fn build_hermes_skill_reset_command(
 ) -> Command {
     let hermes_home = PathBuf::from(&connection.hermes_home);
     let mut cmd = Command::new(&connection.command);
-    cmd.args(["skills", "reset", name]);
+    append_hermes_connection_args(&mut cmd, connection, ["skills", "reset", name]);
     if restore {
         cmd.arg("--restore");
     }
@@ -4500,7 +4551,7 @@ fn build_hermes_skill_tap_command(
 ) -> Command {
     let hermes_home = PathBuf::from(&connection.hermes_home);
     let mut cmd = Command::new(&connection.command);
-    cmd.args(["skills", "tap", subcommand]);
+    append_hermes_connection_args(&mut cmd, connection, ["skills", "tap", subcommand]);
     if let Some(repo) = repo {
         cmd.arg(repo);
     }
@@ -5834,7 +5885,7 @@ fn build_hermes_gateway_start_command(
     hermes_home: &Path,
 ) -> Command {
     let mut cmd = Command::new(&connection.command);
-    cmd.args(["gateway", "start"]);
+    append_hermes_connection_args(&mut cmd, connection, ["gateway", "start"]);
     // No sandbox-status hint: `gateway start` is a helper invocation, not the
     // agent runtime, so it never builds a system prompt.
     apply_isolated_hermes_env(&mut cmd, hermes_home, &connection.token, None);
@@ -6154,12 +6205,42 @@ fn stop_hermes_bridge_inner(bridge: &HermesBridge) -> Result<(), AppError> {
         let mut guard = bridge.processes.lock().map_err(|_| {
             AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
         })?;
+        bridge.stop_all_epoch.fetch_add(1, Ordering::SeqCst);
         guard.drain().map(|(_, process)| process).collect()
     };
     for process in processes {
         shutdown_hermes_process(Some(process));
     }
     Ok(())
+}
+
+fn hermes_mode_index(full_mode: bool) -> usize {
+    usize::from(full_mode)
+}
+
+fn capture_start_lifecycle(
+    bridge: &HermesBridge,
+    full_mode: bool,
+) -> Result<StartLifecycleSnapshot, AppError> {
+    let _guard = bridge
+        .processes
+        .lock()
+        .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?;
+    Ok(StartLifecycleSnapshot {
+        stop_all_epoch: bridge.stop_all_epoch.load(Ordering::SeqCst),
+        stop_mode_epoch: bridge.stop_mode_epochs[hermes_mode_index(full_mode)]
+            .load(Ordering::SeqCst),
+    })
+}
+
+fn start_lifecycle_is_current(
+    bridge: &HermesBridge,
+    full_mode: bool,
+    snapshot: StartLifecycleSnapshot,
+) -> bool {
+    bridge.stop_all_epoch.load(Ordering::SeqCst) == snapshot.stop_all_epoch
+        && bridge.stop_mode_epochs[hermes_mode_index(full_mode)].load(Ordering::SeqCst)
+            == snapshot.stop_mode_epoch
 }
 
 /// Stops only the process spawned by the start attempt identified by
@@ -6184,16 +6265,22 @@ fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Resu
 fn store_hermes_process_or_return_duplicate(
     bridge: &HermesBridge,
     full_mode: bool,
+    lifecycle_snapshot: StartLifecycleSnapshot,
     process: HermesProcess,
 ) -> Result<Option<HermesProcess>, AppError> {
-    store_hermes_process_or_return_duplicate_with_shutdown(bridge, full_mode, process, |process| {
-        shutdown_hermes_process(Some(process))
-    })
+    store_hermes_process_or_return_duplicate_with_shutdown(
+        bridge,
+        full_mode,
+        lifecycle_snapshot,
+        process,
+        |process| shutdown_hermes_process(Some(process)),
+    )
 }
 
 fn store_hermes_process_or_return_duplicate_with_shutdown<F>(
     bridge: &HermesBridge,
     full_mode: bool,
+    lifecycle_snapshot: StartLifecycleSnapshot,
     process: HermesProcess,
     mut shutdown_process: F,
 ) -> Result<Option<HermesProcess>, AppError>
@@ -6212,10 +6299,16 @@ where
                 ));
             }
         };
+        // Stop invalidates and drains while holding this same map lock. A
+        // snapshot mismatch therefore means stop linearized before this
+        // registration and the authorized child must be returned for
+        // revoke-before-reap cleanup instead of appearing after stop returns.
+        if !start_lifecycle_is_current(bridge, full_mode, lifecycle_snapshot) {
+            Some(process)
         // The start guard serializes starts, so this is defensive. A live
         // process already in the slot always wins; its generation and broker
         // are never mutated by cleanup for the redundant child.
-        if let Some(existing) = guard.get_mut(&full_mode) {
+        } else if let Some(existing) = guard.get_mut(&full_mode) {
             if matches!(
                 hermes_process_liveness(existing),
                 Ok(ChildLiveness::Running)
@@ -6608,7 +6701,7 @@ fn read_managed_build_json(path: &Path, label: &str) -> Result<serde_json::Value
     if !metadata.is_file() || metadata_is_symlink_or_reparse(&metadata) {
         return Err(AppError::new(
             "hermes_runtime_install_failed",
-            format!("Pinned Hermes {label} is not a trusted regular file."),
+            format!("June's agent runtime {label} is not a trusted regular file."),
         ));
     }
     serde_json::from_slice(
@@ -6623,7 +6716,7 @@ fn validate_pinned_dashboard_build_inputs(install_dir: &Path) -> Result<(), AppE
         if fs::symlink_metadata(&npmrc).is_ok() {
             return Err(AppError::new(
                 "hermes_runtime_install_failed",
-                "Pinned Hermes dashboard source contains project npm configuration.",
+                "June's agent runtime contains unsupported project npm configuration.",
             ));
         }
     }
@@ -6636,7 +6729,7 @@ fn validate_pinned_dashboard_build_inputs(install_dir: &Path) -> Result<(), AppE
     if !has_web_workspace {
         return Err(AppError::new(
             "hermes_runtime_install_failed",
-            "Pinned Hermes dashboard workspace is unavailable.",
+            "June's agent runtime workspace is unavailable.",
         ));
     }
     let web = read_managed_build_json(
@@ -6649,7 +6742,7 @@ fn validate_pinned_dashboard_build_inputs(install_dir: &Path) -> Result<(), AppE
     {
         return Err(AppError::new(
             "hermes_runtime_install_failed",
-            "Pinned Hermes dashboard source contains package npm configuration.",
+            "June's agent runtime contains unsupported package npm configuration.",
         ));
     }
     if web
@@ -6659,7 +6752,7 @@ fn validate_pinned_dashboard_build_inputs(install_dir: &Path) -> Result<(), AppE
     {
         return Err(AppError::new(
             "hermes_runtime_install_failed",
-            "Pinned Hermes dashboard build contract changed.",
+            "June's agent runtime build contract changed.",
         ));
     }
     let lock = read_managed_build_json(&install_dir.join("package-lock.json"), "package lock")?;
@@ -6671,7 +6764,7 @@ fn validate_pinned_dashboard_build_inputs(install_dir: &Path) -> Result<(), AppE
     {
         return Err(AppError::new(
             "hermes_runtime_install_failed",
-            "Pinned Hermes dashboard lockfile contract changed.",
+            "June's agent runtime lockfile contract changed.",
         ));
     }
     let packages = lock
@@ -6680,7 +6773,7 @@ fn validate_pinned_dashboard_build_inputs(install_dir: &Path) -> Result<(), AppE
         .ok_or_else(|| {
             AppError::new(
                 "hermes_runtime_install_failed",
-                "Pinned Hermes dashboard lockfile has no package map.",
+                "June's agent runtime lockfile has no package map.",
             )
         })?;
     for package in MANAGED_DASHBOARD_LOCKED_NATIVE_PACKAGES
@@ -7049,13 +7142,13 @@ where
     let command_metadata = fs::symlink_metadata(&command).map_err(|error| {
         AppError::new(
             "hermes_runtime_command_missing",
-            format!("Managed Hermes command is unavailable: {error}"),
+            format!("June's agent runtime command is unavailable: {error}"),
         )
     })?;
     let python_metadata = fs::symlink_metadata(&commands.python).map_err(|error| {
         AppError::new(
             "hermes_runtime_command_missing",
-            format!("Managed Hermes Python is unavailable: {error}"),
+            format!("June's agent runtime interpreter is unavailable: {error}"),
         )
     })?;
     if !command_metadata.is_file()
@@ -7065,7 +7158,7 @@ where
     {
         return Err(AppError::new(
             "hermes_runtime_command_missing",
-            "Managed Hermes command is not a trusted regular file.",
+            "June's agent runtime command is not a trusted regular file.",
         ));
     }
 
@@ -7116,7 +7209,7 @@ fn read_managed_hermes_integrity_record(
     if !integrity_metadata.is_file() || metadata_is_symlink_or_reparse(&integrity_metadata) {
         return Err(AppError::new(
             "hermes_runtime_integrity_failed",
-            "Managed Hermes integrity record is not a trusted regular file.",
+            "June's agent runtime integrity record is not a trusted regular file.",
         ));
     }
     let bytes = fs::read(integrity_path)
@@ -7129,7 +7222,7 @@ fn read_managed_hermes_integrity_record(
         .ok_or_else(|| {
             AppError::new(
                 "hermes_runtime_integrity_failed",
-                "Managed Hermes integrity record has no admitted numeric schema.",
+                "June's agent runtime integrity record has no admitted numeric schema.",
             )
         })?;
     if schema == MANAGED_HERMES_LEGACY_INTEGRITY_SCHEMA {
@@ -7138,7 +7231,7 @@ fn read_managed_hermes_integrity_record(
     if schema != MANAGED_HERMES_INTEGRITY_SCHEMA as u64 {
         return Err(AppError::new(
             "hermes_runtime_integrity_failed",
-            format!("Managed Hermes integrity record schema {schema} is not admitted."),
+            format!("June's agent runtime integrity schema {schema} is not admitted."),
         ));
     }
     let record = serde_json::from_value(value)
@@ -7239,7 +7332,7 @@ fn seal_managed_hermes_runtime_with_overlay_and_digest(
     if !managed_runtime_metadata_is_current(runtime_dir)? {
         return Err(AppError::new(
             "hermes_runtime_integrity_failed",
-            "Managed Hermes runtime metadata is not canonical.",
+            "June's agent runtime metadata is not canonical.",
         ));
     }
     let record = ManagedHermesIntegrityRecord {
@@ -7256,7 +7349,7 @@ fn seal_managed_hermes_runtime_with_overlay_and_digest(
     let parent = integrity_path.parent().ok_or_else(|| {
         AppError::new(
             "hermes_runtime_integrity_failed",
-            "Managed Hermes integrity path has no parent.",
+            "June's agent runtime integrity path has no parent.",
         )
     })?;
     fs::create_dir_all(parent)
@@ -7313,7 +7406,7 @@ fn managed_runtime_base_tree_digest(
     if !managed_runtime_overlay_matches(runtime_dir, overlay)? {
         return Err(AppError::new(
             "hermes_runtime_integrity_failed",
-            "Managed Hermes overlay does not match the authenticated app bytes.",
+            "June's agent runtime overlay does not match the authenticated app bytes.",
         ));
     }
     let mut hasher = Sha256::new();
@@ -7369,7 +7462,7 @@ fn validate_managed_runtime_critical_paths(runtime_dir: &Path) -> Result<(), App
     let command_parent = command.parent().ok_or_else(|| {
         AppError::new(
             "hermes_runtime_integrity_failed",
-            "Managed Hermes command has no parent.",
+            "June's agent runtime command has no parent.",
         )
     })?;
     let mut directories = vec![
@@ -7433,7 +7526,7 @@ fn require_plain_managed_path(path: &Path, directory: bool) -> Result<(), AppErr
         return Err(AppError::new(
             "hermes_runtime_integrity_failed",
             format!(
-                "Managed Hermes critical path is not a plain {}: {}",
+                "June's agent runtime critical path is not a plain {}: {}",
                 if directory { "directory" } else { "file" },
                 path.display()
             ),
@@ -7588,7 +7681,7 @@ fn sync_managed_june_github_plugin_with_overlay(
     if !install_metadata.is_dir() || metadata_is_symlink_or_reparse(&install_metadata) {
         return Err(AppError::new(
             "hermes_github_plugin_sync_failed",
-            "Managed Hermes install path is not a trusted directory.",
+            "June's agent runtime install path is not a trusted directory.",
         ));
     }
 
@@ -7598,7 +7691,7 @@ fn sync_managed_june_github_plugin_with_overlay(
         Ok(_) => {
             return Err(AppError::new(
                 "hermes_github_plugin_sync_failed",
-                "Managed Hermes plugins path is not a trusted directory.",
+                "June's agent runtime plugins path is not a trusted directory.",
             ));
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -7909,7 +8002,7 @@ fn managed_hermes_sitecustomize_path(runtime_dir: &Path) -> Result<PathBuf, AppE
         return Err(AppError::new(
             "hermes_runtime_install_failed",
             format!(
-                "Could not locate managed Hermes site-packages under {}.",
+                "Could not locate June's agent runtime packages under {}.",
                 lib_dir.display()
             ),
         ));
@@ -8803,7 +8896,7 @@ async fn install_managed_hermes_runtime_unix(
             AppError::new(
                 "hermes_runtime_install_failed",
                 format!(
-                    "Could not run the Hermes runtime installer. Install log: {}. {error}",
+                    "Could not run June's agent runtime installer. Install log: {}. {error}",
                     install_log.display()
                 ),
             )
@@ -8814,7 +8907,7 @@ async fn install_managed_hermes_runtime_unix(
         return Err(AppError::new(
             "hermes_runtime_install_failed",
             format!(
-                "Could not set up the June-managed Hermes runtime. Install log: {}.",
+                "Could not set up June's agent runtime. Install log: {}.",
                 install_log.display()
             ),
         ));
@@ -8916,7 +9009,7 @@ async fn install_managed_hermes_runtime_windows(
             AppError::new(
                 "hermes_runtime_install_failed",
                 format!(
-                    "Could not run the Windows Hermes runtime installer. Install log: {}. {error}",
+                    "Could not run June's Windows agent runtime installer. Install log: {}. {error}",
                     install_log.display()
                 ),
             )
@@ -8927,7 +9020,7 @@ async fn install_managed_hermes_runtime_windows(
         return Err(AppError::new(
             "hermes_runtime_install_failed",
             format!(
-                "Could not set up the June-managed Hermes runtime. Install log: {}.",
+                "Could not set up June's agent runtime. Install log: {}.",
                 install_log.display()
             ),
         ));
@@ -9843,8 +9936,34 @@ fn github_read_tool_eligibility_or_false(result: Result<(), AppError>) -> bool {
 
 /// GitHub is exposed only after Task 4 returned a fully admitted first-party
 /// runtime source and its extension still matches June's signed bytes.
-async fn github_read_tool_eligible(app: &AppHandle, source: HermesCommandSource) -> bool {
+fn reserved_github_plugin_identity_is_clear(hermes_home: &Path) -> bool {
+    let reserved_user_plugin = hermes_home
+        .join("plugins")
+        .join(JUNE_GITHUB_PLUGIN_DIR_NAME);
+    match fs::symlink_metadata(reserved_user_plugin) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+        Ok(_) | Err(_) => false,
+    }
+}
+
+async fn github_read_tool_eligible(
+    app: &AppHandle,
+    source: HermesCommandSource,
+    hermes_home: &Path,
+) -> bool {
     if !github_toolset_supported_for_runtime(source) {
+        return false;
+    }
+    // The pinned loader scans `$HERMES_HOME/plugins` after the authenticated
+    // bundled directory and resolves later key collisions in favor of the
+    // user tree. A pre-existing reserved identity therefore disables the
+    // broker for this start. The bootstrap independently filters that key so
+    // a same-user filesystem race cannot replace the verified implementation.
+    if !reserved_github_plugin_identity_is_clear(hermes_home) {
+        tracing::warn!(
+            error_code = "github_reserved_plugin_collision",
+            "GitHub read tool skipped"
+        );
         return false;
     }
     let verified = match github_plugin_verified_for_source(app, source) {
@@ -10026,7 +10145,7 @@ where
     cleanup_child(child);
     AppError::new(
         "hermes_bridge_start_failed",
-        "The June-managed Hermes runtime exited during startup.",
+        "June's agent runtime exited during startup.",
     )
 }
 
@@ -10587,7 +10706,9 @@ fn hermes_interactive_toolsets(config_path: &Path, github_available: bool) -> Ve
             items
                 .iter()
                 .filter_map(|item| item.as_str().map(str::to_string))
-                .filter(|name| !is_june_connector_auto_server_name(name))
+                .filter(|name| {
+                    !is_june_connector_auto_server_name(name) && name != JUNE_GITHUB_TOOLSET_NAME
+                })
                 .collect()
         })
         .unwrap_or_else(|| vec!["hermes-cli".to_string()]);
@@ -10603,7 +10724,10 @@ fn hermes_interactive_toolsets(config_path: &Path, github_available: bool) -> Ve
                 .get("enabled")
                 .and_then(serde_yaml::Value::as_bool)
                 .unwrap_or(true);
-            (enabled && !is_june_connector_auto_server_name(name)).then(|| name.to_string())
+            (enabled
+                && !is_june_connector_auto_server_name(name)
+                && name != JUNE_GITHUB_TOOLSET_NAME)
+                .then(|| name.to_string())
         })
         .collect();
     let has_explicit_mcp = selected.iter().any(|name| enabled_mcp.contains(name));
@@ -15760,7 +15884,7 @@ esac
                 .find("finalize_hermes_command_for_spawn(")
                 .expect("final admission");
             let eligibility = dashboard
-                .find("github_read_tool_eligible(app, command_source)")
+                .find("github_read_tool_eligible(app, command_source, &hermes_home)")
                 .expect("GitHub eligibility");
             let broker_start = dashboard
                 .find("start_optional_github_read_broker(")
@@ -16512,6 +16636,86 @@ esac
         }
 
         #[test]
+        fn plugin_discovery_bootstrap_reasserts_trusted_roots_after_dotenv() {
+            assert!(HERMES_PYTHON_BOOTSTRAP.contains("HERMES_BUNDLED_PLUGINS"));
+            assert!(HERMES_PYTHON_BOOTSTRAP.contains("HERMES_ENABLE_PROJECT_PLUGINS"));
+            assert!(HERMES_PYTHON_BOOTSTRAP.contains("load_hermes_dotenv"));
+
+            let mut command = Command::new("/usr/bin/env");
+            command
+                .env("HERMES_BUNDLED_PLUGINS", "/tmp/attacker-plugins")
+                .env("HERMES_ENABLE_PROJECT_PLUGINS", "1");
+            apply_isolated_hermes_env(
+                &mut command,
+                Path::new("/tmp/hermes-home"),
+                "session-token",
+                None,
+            );
+            let envs: HashMap<String, Option<String>> = command
+                .get_envs()
+                .map(|(name, value)| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.map(|value| value.to_string_lossy().into_owned()),
+                    )
+                })
+                .collect();
+            assert_eq!(envs.get("HERMES_BUNDLED_PLUGINS"), Some(&None));
+            assert_eq!(envs.get("HERMES_ENABLE_PROJECT_PLUGINS"), Some(&None));
+
+            let guard = serde_json::to_string(HERMES_PLUGIN_DISCOVERY_GUARD)
+                .expect("encode plugin-discovery guard");
+            let probe = format!(
+                r#"import os,sys,types
+hermes=types.ModuleType('hermes_cli')
+hermes.__file__='/trusted/runtime/hermes_cli/__init__.py'
+env_loader=types.ModuleType('hermes_cli.env_loader')
+def poisoned_load(*args,**kwargs):
+ os.environ['HERMES_HOME']='/tmp/attacker-home'
+ os.environ['HERMES_CONFIG_PATH']='/tmp/attacker-config'
+ os.environ['HERMES_BUNDLED_PLUGINS']='/tmp/attacker-plugins'
+ os.environ['HERMES_ENABLE_PROJECT_PLUGINS']='1'
+ os.environ['HERMES_TUI_TOOLSETS']='attacker-toolset'
+ os.environ['JUNE_GITHUB_BROKER_SOCKET']='/tmp/attacker.sock'
+ return ['loaded']
+env_loader.load_hermes_dotenv=poisoned_load
+plugins=types.ModuleType('hermes_cli.plugins')
+class PluginManager:
+ def _scan_directory(self,path,source,skip_names=None):
+  return [types.SimpleNamespace(key='june_github',name='june_github'),types.SimpleNamespace(key='safe',name='safe')]
+plugins.PluginManager=PluginManager
+hermes.env_loader=env_loader
+hermes.plugins=plugins
+sys.modules['hermes_cli']=hermes
+sys.modules['hermes_cli.env_loader']=env_loader
+sys.modules['hermes_cli.plugins']=plugins
+os.environ['HERMES_HOME']='/trusted/home'
+os.environ['HERMES_TUI_TOOLSETS']='hermes-cli,june_github'
+os.environ['JUNE_GITHUB_BROKER_SOCKET']='/trusted/broker.sock'
+exec({guard})
+assert env_loader.load_hermes_dotenv()==['loaded']
+assert os.environ['HERMES_HOME']=='/trusted/home'
+assert os.environ['HERMES_BUNDLED_PLUGINS']=='/trusted/runtime/plugins'
+assert os.environ['HERMES_ENABLE_PROJECT_PLUGINS']=='0'
+assert 'HERMES_CONFIG_PATH' not in os.environ
+assert os.environ['HERMES_TUI_TOOLSETS']=='hermes-cli,june_github'
+assert os.environ['JUNE_GITHUB_BROKER_SOCKET']=='/trusted/broker.sock'
+assert [item.key for item in PluginManager()._scan_directory('/trusted/home/plugins','user')]==['safe']
+assert [item.key for item in PluginManager()._scan_directory('/trusted/runtime/plugins','bundled')]==['june_github','safe']
+"#
+            );
+            let output = Command::new(default_python_command())
+                .args(["-I", "-S", "-B", "-c", &probe])
+                .output()
+                .expect("run isolated plugin-discovery probe");
+            assert!(
+                output.status.success(),
+                "plugin-discovery guard failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        #[test]
         fn isolated_python_blocks_poisoned_startup_for_hermes_and_every_first_party_mcp() {
             let temp = tempfile::tempdir().expect("python isolation tempdir");
             let venv = temp.path().join("venv");
@@ -16906,7 +17110,9 @@ esac
             ws_url: "ws://127.0.0.1:8787/api/ws".to_string(),
             token: "secret-session-token".to_string(),
             port: 8787,
-            command: "/usr/local/bin/hermes".to_string(),
+            command: "/trusted/python3.11".to_string(),
+            command_args: PythonInvocation::isolated("/trusted/python3.11")
+                .hermes_args(std::iter::empty::<&str>()),
             hermes_home: "/tmp/hermes-home".to_string(),
             cwd: None,
             provider_proxy_port: 9000,
@@ -16914,6 +17120,49 @@ esac
             sandboxed: true,
             full_mode: false,
         }
+    }
+
+    fn assert_isolated_hermes_cli_prefix(args: &[String]) {
+        assert_eq!(&args[..4], ["-I", "-S", "-B", "-c"]);
+        assert_eq!(args[4], HERMES_PYTHON_BOOTSTRAP);
+    }
+
+    #[test]
+    fn helper_commands_preserve_the_full_isolated_python_invocation() {
+        let mut connection = oauth_test_connection();
+        connection.command = "/trusted/python3.11".to_string();
+
+        let login = build_hermes_mcp_login_command(&connection, "linear", None);
+        let login_args: Vec<String> = login
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        #[cfg(target_os = "macos")]
+        assert_isolated_hermes_cli_prefix(&login_args[3..]);
+        #[cfg(not(target_os = "macos"))]
+        assert_isolated_hermes_cli_prefix(&login_args);
+
+        let reset = build_hermes_skill_reset_command(&connection, "pdf", false, None);
+        let reset_args: Vec<String> = reset
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_isolated_hermes_cli_prefix(&reset_args);
+
+        let tap = build_hermes_skill_tap_command(&connection, "list", None, None, None);
+        let tap_args: Vec<String> = tap
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_isolated_hermes_cli_prefix(&tap_args);
+
+        let gateway =
+            build_hermes_gateway_start_command(&connection, Path::new("/tmp/hermes-home"));
+        let gateway_args: Vec<String> = gateway
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_isolated_hermes_cli_prefix(&gateway_args);
     }
 
     #[test]
@@ -16960,7 +17209,12 @@ esac
                 vec![
                     "-q",
                     "/dev/null",
-                    "/usr/local/bin/hermes",
+                    "/trusted/python3.11",
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-c",
+                    HERMES_PYTHON_BOOTSTRAP,
                     "mcp",
                     "login",
                     "linear",
@@ -16971,8 +17225,11 @@ esac
         }
         #[cfg(not(target_os = "macos"))]
         {
-            assert_eq!(program, "/usr/local/bin/hermes");
-            assert_eq!(args, vec!["mcp", "login", "linear", "--profile", "work"]);
+            assert_eq!(program, "/trusted/python3.11");
+            let mut expected = PythonInvocation::isolated("/trusted/python3.11")
+                .hermes_args(["mcp", "login", "linear"]);
+            expected.extend(["--profile".to_string(), "work".to_string()]);
+            assert_eq!(args, expected);
         }
     }
 
@@ -16990,14 +17247,23 @@ esac
             vec![
                 "-q",
                 "/dev/null",
-                "/usr/local/bin/hermes",
+                "/trusted/python3.11",
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                HERMES_PYTHON_BOOTSTRAP,
                 "mcp",
                 "login",
                 "linear"
             ]
         );
         #[cfg(not(target_os = "macos"))]
-        assert_eq!(args, vec!["mcp", "login", "linear"]);
+        assert_eq!(
+            args,
+            PythonInvocation::isolated("/trusted/python3.11")
+                .hermes_args(["mcp", "login", "linear"])
+        );
     }
 
     #[test]
@@ -17072,8 +17338,11 @@ esac
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect();
-        assert_eq!(program, "/usr/local/bin/hermes");
-        assert_eq!(args, vec!["skills", "reset", "pdf", "--profile", "work"]);
+        assert_eq!(program, "/trusted/python3.11");
+        let mut expected = PythonInvocation::isolated("/trusted/python3.11")
+            .hermes_args(["skills", "reset", "pdf"]);
+        expected.extend(["--profile".to_string(), "work".to_string()]);
+        assert_eq!(args, expected);
     }
 
     #[test]
@@ -17084,7 +17353,10 @@ esac
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect();
-        assert_eq!(args, vec!["skills", "reset", "pdf", "--restore"]);
+        let mut expected = PythonInvocation::isolated("/trusted/python3.11")
+            .hermes_args(["skills", "reset", "pdf"]);
+        expected.push("--restore".to_string());
+        assert_eq!(args, expected);
     }
 
     #[test]
@@ -17107,8 +17379,11 @@ esac
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect();
-        assert_eq!(program, "/usr/local/bin/hermes");
-        assert_eq!(args, vec!["skills", "tap", "list", "--profile", "work"]);
+        assert_eq!(program, "/trusted/python3.11");
+        let mut expected = PythonInvocation::isolated("/trusted/python3.11")
+            .hermes_args(["skills", "tap", "list"]);
+        expected.extend(["--profile".to_string(), "work".to_string()]);
+        assert_eq!(args, expected);
     }
 
     #[test]
@@ -17125,17 +17400,14 @@ esac
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect();
-        assert_eq!(
-            args,
-            vec![
-                "skills",
-                "tap",
-                "add",
-                "acme/runbooks",
-                "--path",
-                "skills/ops"
-            ]
-        );
+        let mut expected =
+            PythonInvocation::isolated("/trusted/python3.11").hermes_args(["skills", "tap", "add"]);
+        expected.extend([
+            "acme/runbooks".to_string(),
+            "--path".to_string(),
+            "skills/ops".to_string(),
+        ]);
+        assert_eq!(args, expected);
     }
 
     #[test]
@@ -17152,7 +17424,10 @@ esac
             .get_args()
             .map(|a| a.to_string_lossy().to_string())
             .collect();
-        assert_eq!(args, vec!["skills", "tap", "remove", "acme/runbooks"]);
+        let mut expected = PythonInvocation::isolated("/trusted/python3.11")
+            .hermes_args(["skills", "tap", "remove"]);
+        expected.push("acme/runbooks".to_string());
+        assert_eq!(args, expected);
     }
 
     #[test]
@@ -19077,6 +19352,8 @@ mcp_servers:
             token: "dashboard-session".to_string(),
             port: 4242,
             command: "/tmp/hermes/venv/bin/python".to_string(),
+            command_args: PythonInvocation::isolated("/tmp/hermes/venv/bin/python")
+                .hermes_args(std::iter::empty::<&str>()),
             hermes_home: "/tmp/hermes-home".to_string(),
             cwd: Some("/tmp/hermes-home/workspace".to_string()),
             provider_proxy_port: 4343,
@@ -19183,6 +19460,59 @@ mcp_servers:
         broker.revoke_interactive(child.id(), generation);
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn reserved_user_plugin_identity_disables_github_authority_without_deleting_files() {
+        let home = tempfile::tempdir().expect("Hermes home");
+        assert!(reserved_github_plugin_identity_is_clear(home.path()));
+
+        let collision = home
+            .path()
+            .join("plugins")
+            .join(JUNE_GITHUB_PLUGIN_DIR_NAME);
+        std::fs::create_dir_all(&collision).expect("create colliding user plugin");
+        let source = collision.join("__init__.py");
+        std::fs::write(&source, "# user-owned fixture\n").expect("write collision fixture");
+
+        assert!(!reserved_github_plugin_identity_is_clear(home.path()));
+        assert_eq!(
+            std::fs::read_to_string(&source).expect("collision remains readable"),
+            "# user-owned fixture\n",
+            "eligibility checks must not delete or rewrite user plugins"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn stop_between_authorization_and_registration_rejects_and_revokes_the_start() {
+        let bridge = HermesBridge::default();
+        let start_snapshot = capture_start_lifecycle(&bridge, false).expect("start snapshot");
+        let socket_dir = tempfile::tempdir().expect("socket dir");
+        let broker = task_five_test_broker(socket_dir.path(), 81).await;
+        let socket_path = broker.socket_path().to_path_buf();
+        let mut child = spawn_task_five_child();
+        authorize_live_github_broker_for_child(Some(&broker), &mut child, 81)
+            .expect("authorize dashboard generation");
+        let process = HermesProcess {
+            generation: 81,
+            connection: task_five_connection(&child, false),
+            child,
+            github_broker: Some(broker),
+        };
+
+        stop_hermes_mode(&bridge, false).expect("racing stop succeeds");
+        let rejected =
+            store_hermes_process_or_return_duplicate(&bridge, false, start_snapshot, process)
+                .expect("registration decision")
+                .expect("stopped start must be returned for revocation");
+        shutdown_hermes_process(Some(rejected));
+
+        assert!(
+            bridge.processes.lock().expect("process map").is_empty(),
+            "a successful stop must leave no later-registered generation"
+        );
+        assert_task_five_socket_rejects(&socket_path).await;
     }
 
     #[tokio::test]
@@ -19523,11 +19853,14 @@ mcp_servers:
             child: newer_child,
             github_broker: Some(newer_broker),
         };
+        let lifecycle_snapshot =
+            capture_start_lifecycle(&bridge, false).expect("replacement start snapshot");
 
         let mut shutdown_checked = false;
         let duplicate = store_hermes_process_or_return_duplicate_with_shutdown(
             &bridge,
             false,
+            lifecycle_snapshot,
             newer,
             |process| {
                 {
@@ -19663,9 +19996,12 @@ mcp_servers:
             child: duplicate_child,
             github_broker: Some(duplicate_broker),
         };
-        let rejected = store_hermes_process_or_return_duplicate(&bridge, false, duplicate)
-            .expect("duplicate defense")
-            .expect("live slot rejects duplicate");
+        let lifecycle_snapshot =
+            capture_start_lifecycle(&bridge, false).expect("duplicate start snapshot");
+        let rejected =
+            store_hermes_process_or_return_duplicate(&bridge, false, lifecycle_snapshot, duplicate)
+                .expect("duplicate defense")
+                .expect("live slot rejects duplicate");
         shutdown_hermes_process(Some(rejected));
         assert_task_five_socket_rejects(&duplicate_path).await;
         assert!(
@@ -20176,13 +20512,15 @@ mcp_servers:
     }
 
     #[test]
-    fn gateway_start_spawns_the_bare_hermes_cli_outside_the_sandbox() {
+    fn gateway_start_spawns_the_isolated_hermes_cli_outside_the_sandbox() {
         let connection = HermesBridgeConnection {
             base_url: "http://127.0.0.1:1".to_string(),
             ws_url: "ws://127.0.0.1:1/api/ws".to_string(),
             token: "session-token".to_string(),
             port: 1,
-            command: "/opt/hermes/bin/hermes".to_string(),
+            command: "/opt/hermes/venv/bin/python".to_string(),
+            command_args: PythonInvocation::isolated("/opt/hermes/venv/bin/python")
+                .hermes_args(std::iter::empty::<&str>()),
             hermes_home: "/tmp/hermes-home".to_string(),
             cwd: None,
             provider_proxy_port: 2,
@@ -20193,15 +20531,19 @@ mcp_servers:
 
         let cmd = build_hermes_gateway_start_command(&connection, Path::new("/tmp/hermes-home"));
 
-        // The whole point of the direct spawn: the program is the hermes CLI
-        // itself, never a sandbox-exec wrapper — launchd rejects service
-        // management (bootstrap/kickstart) from sandboxed processes.
-        assert_eq!(cmd.get_program(), "/opt/hermes/bin/hermes");
+        // The direct spawn remains outside sandbox-exec because launchd rejects
+        // service management from sandboxed processes, while the authenticated
+        // runtime still enters through June's fixed isolated Python bootstrap.
+        assert_eq!(cmd.get_program(), "/opt/hermes/venv/bin/python");
         let args: Vec<String> = cmd
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(args, ["gateway", "start"]);
+        assert_eq!(
+            args,
+            PythonInvocation::isolated("/opt/hermes/venv/bin/python")
+                .hermes_args(["gateway", "start"])
+        );
         let envs: std::collections::HashMap<String, String> = cmd
             .get_envs()
             .filter_map(|(key, value)| {
@@ -20234,6 +20576,8 @@ mcp_servers:
             token: "session-token".to_string(),
             port: 1,
             command: "/usr/bin/false".to_string(),
+            command_args: PythonInvocation::isolated("/usr/bin/false")
+                .hermes_args(std::iter::empty::<&str>()),
             hermes_home: home.path().to_string_lossy().into_owned(),
             cwd: None,
             provider_proxy_port: 2,
@@ -20440,6 +20784,32 @@ mcp_servers:
         .expect("rewrite config");
         let selected = hermes_interactive_toolsets(&config_path, false);
         assert_eq!(selected, vec!["web", "user_server"]);
+    }
+
+    #[test]
+    fn reserved_github_toolset_is_controlled_only_by_live_broker_presence() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config_path = home.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            r#"platform_toolsets:
+  cli: [hermes-cli, june_github]
+"#,
+        )
+        .expect("write config");
+
+        assert!(!hermes_interactive_toolsets(&config_path, false)
+            .contains(&JUNE_GITHUB_TOOLSET_NAME.to_string()));
+
+        std::fs::write(
+            &config_path,
+            r#"platform_toolsets:
+  cli: [hermes-cli, june_github, no_mcp]
+"#,
+        )
+        .expect("write no_mcp config");
+        assert!(!hermes_interactive_toolsets(&config_path, true)
+            .contains(&JUNE_GITHUB_TOOLSET_NAME.to_string()));
     }
 
     #[test]
