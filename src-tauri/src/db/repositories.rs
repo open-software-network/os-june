@@ -46,6 +46,37 @@ pub struct ConnectorAccountRecord {
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Provider-specific, non-secret details as a JSON object (e.g. Linear's
+    /// workspace name/url key). `"{}"` for providers (Google) that carry
+    /// none. The connectors layer owns parsing this; the repository treats
+    /// it as an opaque string.
+    pub metadata: String,
+}
+
+/// One Linear team a connected workspace account is scoped to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedTeamRecord {
+    pub team_id: String,
+    pub team_key: String,
+    pub team_name: String,
+}
+
+/// One journaled connector mutation attempt. The `action_id` is the
+/// client-minted v4 UUID that is ALSO the created object's id at the
+/// provider, so an ambiguous outcome can be reconciled by querying that id.
+/// Status lifecycle: `pending` (written before the mutation) then exactly
+/// one of `committed` / `ambiguous` / `failed`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectorActionRecord {
+    pub action_id: String,
+    pub account_id: String,
+    pub tool: String,
+    /// Short human description of the mutation target (e.g. "ENG: Fix the
+    /// flaky test"); never carries tokens or full content bodies.
+    pub summary: String,
+    pub status: String,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -238,7 +269,7 @@ impl Repositories {
             .collect())
     }
 
-    // --- Private connectors (Google) --------------------------------------
+    // --- Private connectors (Google, Linear) --------------------------------
     //
     // Non-secret account index only: tokens live in the OS keychain
     // (src/connectors/store.rs), never in SQLite.
@@ -250,17 +281,19 @@ impl Repositories {
         email: &str,
         scopes: &[String],
         status: &str,
+        metadata: &str,
     ) -> Result<(), sqlx::error::Error> {
         let now = timestamp();
         let scopes_json = string_vec_to_json(scopes);
         query(
-            "INSERT INTO connector_accounts (account_id, provider, email, scopes, status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+            "INSERT INTO connector_accounts (account_id, provider, email, scopes, status, metadata, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(account_id) DO UPDATE SET
                provider = excluded.provider,
                email = excluded.email,
                scopes = excluded.scopes,
                status = excluded.status,
+               metadata = excluded.metadata,
                updated_at = excluded.updated_at",
         )
         .bind(account_id)
@@ -268,6 +301,7 @@ impl Repositories {
         .bind(email)
         .bind(&scopes_json)
         .bind(status)
+        .bind(metadata)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -279,7 +313,7 @@ impl Repositories {
         &self,
     ) -> Result<Vec<ConnectorAccountRecord>, sqlx::error::Error> {
         let rows = query(
-            "SELECT account_id, provider, email, scopes, status, created_at, updated_at
+            "SELECT account_id, provider, email, scopes, status, metadata, created_at, updated_at
              FROM connector_accounts ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
@@ -292,13 +326,117 @@ impl Repositories {
         account_id: &str,
     ) -> Result<Option<ConnectorAccountRecord>, sqlx::error::Error> {
         let row = query(
-            "SELECT account_id, provider, email, scopes, status, created_at, updated_at
+            "SELECT account_id, provider, email, scopes, status, metadata, created_at, updated_at
              FROM connector_accounts WHERE account_id = ?",
         )
         .bind(account_id)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(connector_account_from_row))
+    }
+
+    /// Replace the set of Linear teams an account is scoped to. DELETE +
+    /// re-INSERT in one transaction (never diffed): "manage teams" always
+    /// submits the full desired set, and a partial failure must not leave a
+    /// mix of old and new rows. One `created_at` for the whole batch keeps
+    /// rows from the same save trivially group-able.
+    pub async fn set_selected_teams(
+        &self,
+        account_id: &str,
+        teams: &[SelectedTeamRecord],
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        let mut tx = self.pool.begin().await?;
+        query("DELETE FROM connector_selected_teams WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        for team in teams {
+            query(
+                "INSERT INTO connector_selected_teams (account_id, team_id, team_key, team_name, created_at)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(account_id)
+            .bind(&team.team_id)
+            .bind(&team.team_key)
+            .bind(&team.team_name)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
+    }
+
+    pub async fn list_selected_teams(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<SelectedTeamRecord>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT team_id, team_key, team_name
+             FROM connector_selected_teams WHERE account_id = ? ORDER BY team_name ASC",
+        )
+        .bind(account_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(selected_team_from_row).collect())
+    }
+
+    /// Journal a mutation attempt as `pending` BEFORE the provider call. The
+    /// action id is the client-minted UUID handed to the provider as the
+    /// object id, so the row exists even if the process dies mid-mutation.
+    pub async fn insert_connector_action(
+        &self,
+        action_id: &str,
+        account_id: &str,
+        tool: &str,
+        summary: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        query(
+            "INSERT INTO connector_actions (action_id, account_id, tool, summary, status, created_at)
+             VALUES (?, ?, ?, ?, 'pending', ?)",
+        )
+        .bind(action_id)
+        .bind(account_id)
+        .bind(tool)
+        .bind(summary)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Record a journaled mutation's outcome: `committed`, `ambiguous`, or
+    /// `failed` (the table's CHECK constraint rejects anything else). Also
+    /// stamps `resolved_at`. Resolving an unknown action id is a no-op, not
+    /// an error: the pending write is best-effort and may not exist.
+    pub async fn resolve_connector_action(
+        &self,
+        action_id: &str,
+        status: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        query("UPDATE connector_actions SET status = ?, resolved_at = ? WHERE action_id = ?")
+            .bind(status)
+            .bind(&now)
+            .bind(action_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_connector_action(
+        &self,
+        action_id: &str,
+    ) -> Result<Option<ConnectorActionRecord>, sqlx::error::Error> {
+        let row = query(
+            "SELECT action_id, account_id, tool, summary, status, created_at, resolved_at
+             FROM connector_actions WHERE action_id = ?",
+        )
+        .bind(action_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(connector_action_from_row))
     }
 
     pub async fn set_connector_account_status(
@@ -317,10 +455,11 @@ impl Repositories {
     }
 
     /// Remove the account row plus everything keyed to it (triggers, polling
-    /// cursors, and autonomy grants) in one transaction. Clearing the grants
-    /// matters for security: without it, reconnecting the same email would
-    /// silently revive the per-job autonomous action servers the user granted
-    /// to the old connection.
+    /// cursors, autonomy grants, selected teams, and journaled actions) in
+    /// one transaction.
+    /// Clearing the grants matters for security: without it, reconnecting the
+    /// same email would silently revive the per-job autonomous action servers
+    /// the user granted to the old connection.
     pub async fn delete_connector_account(
         &self,
         account_id: &str,
@@ -335,6 +474,14 @@ impl Repositories {
             .execute(&mut *tx)
             .await?;
         query("DELETE FROM connector_grants WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM connector_selected_teams WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
+        query("DELETE FROM connector_actions WHERE account_id = ?")
             .bind(account_id)
             .execute(&mut *tx)
             .await?;
@@ -4691,8 +4838,29 @@ fn connector_account_from_row(row: sqlx_sqlite::SqliteRow) -> ConnectorAccountRe
         email: row.get("email"),
         scopes: string_vec_from_json(&row.get::<String, _>("scopes")),
         status: row.get("status"),
+        metadata: row.get("metadata"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+fn selected_team_from_row(row: sqlx_sqlite::SqliteRow) -> SelectedTeamRecord {
+    SelectedTeamRecord {
+        team_id: row.get("team_id"),
+        team_key: row.get("team_key"),
+        team_name: row.get("team_name"),
+    }
+}
+
+fn connector_action_from_row(row: sqlx_sqlite::SqliteRow) -> ConnectorActionRecord {
+    ConnectorActionRecord {
+        action_id: row.get("action_id"),
+        account_id: row.get("account_id"),
+        tool: row.get("tool"),
+        summary: row.get("summary"),
+        status: row.get("status"),
+        created_at: row.get("created_at"),
+        resolved_at: row.get::<Option<String>, _>("resolved_at"),
     }
 }
 
@@ -5911,6 +6079,7 @@ mod tests {
                 "user@example.com",
                 &scopes(&["openid", "email"]),
                 "connected",
+                "{}",
             )
             .await
             .expect("insert account");
@@ -5920,6 +6089,7 @@ mod tests {
         assert_eq!(accounts[0].account_id, "user@example.com");
         assert_eq!(accounts[0].scopes, scopes(&["openid", "email"]));
         assert_eq!(accounts[0].status, "connected");
+        assert_eq!(accounts[0].metadata, "{}");
 
         // Upsert widens scopes without duplicating the row.
         repos
@@ -5933,6 +6103,7 @@ mod tests {
                     "https://www.googleapis.com/auth/gmail.readonly",
                 ]),
                 "connected",
+                "{}",
             )
             .await
             .expect("upsert account");
@@ -5958,7 +6129,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_connector_account_cascades_triggers_and_cursors() {
+    async fn delete_connector_account_cascades_triggers_cursors_and_teams() {
         let repos = test_repositories().await;
         repos
             .upsert_connector_account(
@@ -5967,6 +6138,7 @@ mod tests {
                 "user@example.com",
                 &scopes(&["openid"]),
                 "connected",
+                "{}",
             )
             .await
             .expect("insert account");
@@ -5992,6 +6164,26 @@ mod tests {
             )
             .await
             .expect("set grant");
+        repos
+            .set_selected_teams(
+                "user@example.com",
+                &[super::SelectedTeamRecord {
+                    team_id: "team-1".to_string(),
+                    team_key: "ENG".to_string(),
+                    team_name: "Engineering".to_string(),
+                }],
+            )
+            .await
+            .expect("set selected teams");
+        repos
+            .insert_connector_action(
+                "action-1",
+                "user@example.com",
+                "create_issue",
+                "ENG: Fix the flaky test",
+            )
+            .await
+            .expect("insert action");
 
         repos
             .delete_connector_account("user@example.com")
@@ -6020,6 +6212,196 @@ mod tests {
             .await
             .expect("grants")
             .is_empty());
+        // Selected teams must not survive either: reconnecting the same
+        // workspace should require re-picking teams, not silently inherit the
+        // old scope.
+        assert!(repos
+            .list_selected_teams("user@example.com")
+            .await
+            .expect("teams")
+            .is_empty());
+        // The action journal rows for the account go with it.
+        assert!(repos
+            .get_connector_action("action-1")
+            .await
+            .expect("action")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn connector_action_insert_resolve_and_get_round_trip() {
+        let repos = test_repositories().await;
+
+        // Unknown action id: no row, and resolving it is a harmless no-op
+        // (the pending write is best-effort).
+        assert!(repos
+            .get_connector_action("missing")
+            .await
+            .expect("get")
+            .is_none());
+        repos
+            .resolve_connector_action("missing", "committed")
+            .await
+            .expect("resolving an unknown action id is a no-op");
+
+        repos
+            .insert_connector_action(
+                "0d1f2e3a-0000-4000-8000-000000000001",
+                "workspace-1",
+                "create_issue",
+                "ENG: Fix the flaky test",
+            )
+            .await
+            .expect("insert");
+        let action = repos
+            .get_connector_action("0d1f2e3a-0000-4000-8000-000000000001")
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(action.account_id, "workspace-1");
+        assert_eq!(action.tool, "create_issue");
+        assert_eq!(action.summary, "ENG: Fix the flaky test");
+        assert_eq!(action.status, "pending");
+        assert!(!action.created_at.is_empty());
+        assert_eq!(action.resolved_at, None);
+
+        repos
+            .resolve_connector_action("0d1f2e3a-0000-4000-8000-000000000001", "committed")
+            .await
+            .expect("resolve");
+        let action = repos
+            .get_connector_action("0d1f2e3a-0000-4000-8000-000000000001")
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(action.status, "committed");
+        assert!(action.resolved_at.is_some());
+
+        // The action id is a PRIMARY KEY: journaling the same mutation twice
+        // is a bug the database surfaces rather than silently absorbing.
+        assert!(repos
+            .insert_connector_action(
+                "0d1f2e3a-0000-4000-8000-000000000001",
+                "workspace-1",
+                "create_issue",
+                "duplicate",
+            )
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn connector_action_status_check_rejects_unknown_values() {
+        let repos = test_repositories().await;
+        repos
+            .insert_connector_action("action-1", "workspace-1", "add_comment", "ENG-42")
+            .await
+            .expect("insert");
+        // The CHECK constraint is the last line of defense against a typo'd
+        // status string reaching the journal.
+        assert!(repos
+            .resolve_connector_action("action-1", "bogus")
+            .await
+            .is_err());
+        let action = repos
+            .get_connector_action("action-1")
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(action.status, "pending");
+        // Every legal terminal status passes the constraint.
+        for status in ["committed", "ambiguous", "failed"] {
+            repos
+                .resolve_connector_action("action-1", status)
+                .await
+                .unwrap_or_else(|_| panic!("status {status} should pass the CHECK"));
+        }
+    }
+
+    #[tokio::test]
+    async fn selected_teams_set_replaces_wholesale_and_orders_by_name() {
+        let repos = test_repositories().await;
+        assert!(repos
+            .list_selected_teams("workspace-1")
+            .await
+            .expect("list")
+            .is_empty());
+
+        repos
+            .set_selected_teams(
+                "workspace-1",
+                &[
+                    super::SelectedTeamRecord {
+                        team_id: "team-eng".to_string(),
+                        team_key: "ENG".to_string(),
+                        team_name: "Engineering".to_string(),
+                    },
+                    super::SelectedTeamRecord {
+                        team_id: "team-design".to_string(),
+                        team_key: "DES".to_string(),
+                        team_name: "Design".to_string(),
+                    },
+                ],
+            )
+            .await
+            .expect("set teams");
+        let teams = repos
+            .list_selected_teams("workspace-1")
+            .await
+            .expect("list");
+        // Ordered by team_name, not insertion order.
+        assert_eq!(teams.len(), 2);
+        assert_eq!(teams[0].team_name, "Design");
+        assert_eq!(teams[1].team_name, "Engineering");
+
+        // A second save replaces the set wholesale rather than appending: a
+        // team dropped from the picker must actually disappear.
+        repos
+            .set_selected_teams(
+                "workspace-1",
+                &[super::SelectedTeamRecord {
+                    team_id: "team-design".to_string(),
+                    team_key: "DES".to_string(),
+                    team_name: "Design".to_string(),
+                }],
+            )
+            .await
+            .expect("replace teams");
+        let teams = repos
+            .list_selected_teams("workspace-1")
+            .await
+            .expect("list after replace");
+        assert_eq!(teams.len(), 1);
+        assert_eq!(teams[0].team_id, "team-design");
+
+        // A different account's teams are untouched.
+        repos
+            .set_selected_teams(
+                "workspace-2",
+                &[super::SelectedTeamRecord {
+                    team_id: "team-other".to_string(),
+                    team_key: "OTH".to_string(),
+                    team_name: "Other".to_string(),
+                }],
+            )
+            .await
+            .expect("set other account teams");
+        assert_eq!(
+            repos
+                .list_selected_teams("workspace-1")
+                .await
+                .expect("list")
+                .len(),
+            1
+        );
+        assert_eq!(
+            repos
+                .list_selected_teams("workspace-2")
+                .await
+                .expect("list")
+                .len(),
+            1
+        );
     }
 
     // Far enough ahead that a recorded run always lands after the approval
@@ -6168,6 +6550,7 @@ mod tests {
                 "user@example.com",
                 &scopes(&["openid"]),
                 "connected",
+                "{}",
             )
             .await
             .expect("account");

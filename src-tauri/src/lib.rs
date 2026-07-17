@@ -319,6 +319,8 @@ pub fn run() {
             connectors::commands::connectors_connect,
             connectors::commands::connectors_cancel_connect,
             connectors::commands::connectors_disconnect,
+            connectors::commands::connectors_linear_teams,
+            connectors::commands::connectors_selected_teams_set,
             connectors::commands::notion_connector_status,
             connectors::commands::notion_connector_connect,
             connectors::commands::notion_connector_cancel_connect,

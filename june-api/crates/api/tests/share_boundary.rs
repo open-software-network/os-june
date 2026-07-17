@@ -387,6 +387,38 @@ async fn viewer_shell_fails_closed_when_sharing_disabled() {
 }
 
 #[tokio::test]
+async fn viewer_router_exposes_reads_but_not_owner_or_product_routes() {
+    let router = june_api::viewer_router(state_with_share(None));
+
+    for path in ["/v1/shares", "/v1/models", "/v1/issue-reports"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router responds");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+
+    let health = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/healthz")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("router responds");
+    assert_eq!(health.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn anonymous_link_view_only_serves_the_reserved_link_acl() {
     let router = share_router();
     let (status, body) = call(

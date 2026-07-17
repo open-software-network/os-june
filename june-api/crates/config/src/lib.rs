@@ -478,6 +478,11 @@ pub struct ShareConfig {
     /// Public OAuth client id registered for the browser viewer.
     #[serde(default)]
     pub viewer_client_id: String,
+    /// Restrict this process to the read-only browser viewer surface. This is
+    /// used by the isolated june.link CVM so its ingress and certificate
+    /// lifecycle cannot expose or disrupt the primary June API deployment.
+    #[serde(default)]
+    pub viewer_only: bool,
     /// Max accepted ciphertext, in bytes.
     #[serde(default = "default_share_max_ciphertext_bytes")]
     pub max_ciphertext_bytes: usize,
@@ -495,6 +500,7 @@ impl Default for ShareConfig {
             database_url: String::new(),
             viewer_accounts_url: String::new(),
             viewer_client_id: String::new(),
+            viewer_only: false,
             max_ciphertext_bytes: default_share_max_ciphertext_bytes(),
         }
     }
@@ -522,6 +528,7 @@ impl Debug for RedactedShare<'_> {
             )
             .field("viewer_accounts_url", &self.0.viewer_accounts_url)
             .field("viewer_client_id", &self.0.viewer_client_id)
+            .field("viewer_only", &self.0.viewer_only)
             .field("max_ciphertext_bytes", &self.0.max_ciphertext_bytes)
             .finish()
     }
@@ -1122,6 +1129,10 @@ const VENICE_API_KEY_PLACEHOLDERS: &[&str] = &["VENICE_API_KEY_REPLACE_ME"];
 const LOCAL_DEV_BEARER_TOKEN_PLACEHOLDERS: &[&str] = &[LOCAL_DEV_BEARER_TOKEN_PLACEHOLDER];
 
 fn validate(config: &AppConfig) -> Result<(), ConfigError> {
+    if config.share.viewer_only {
+        return validate_viewer_only(config);
+    }
+
     if config.local_dev.enabled {
         validate_local_dev_bearer_token(config)?;
         validate_required_text("local_dev.user_id", &config.local_dev.user_id)?;
@@ -1220,6 +1231,34 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     }
     validate_image_pricing(config)?;
     validate_video_pricing(config)?;
+    Ok(())
+}
+
+/// The isolated short-link process does not expose product routes and must not
+/// need their billing/provider credentials. Validate only the network origins
+/// and limits its viewer routes actually use. Sharing itself still fails closed
+/// at runtime (501) when the database or public client id is absent; the deploy
+/// contract probes the shell and a missing link so a partially sealed CVM
+/// cannot pass activation.
+fn validate_viewer_only(config: &AppConfig) -> Result<(), ConfigError> {
+    validate_absolute_http_url("os_accounts.api_url", &config.os_accounts.api_url)?;
+    let (viewer_accounts_field, viewer_accounts_url) =
+        if config.share.viewer_accounts_url.trim().is_empty() {
+            ("os_accounts.iss", &config.os_accounts.iss)
+        } else {
+            (
+                "share.viewer_accounts_url",
+                &config.share.viewer_accounts_url,
+            )
+        };
+    validate_absolute_http_url(viewer_accounts_field, viewer_accounts_url)?;
+    validate_request_limits(config)?;
+    if config.share.max_ciphertext_bytes == 0 {
+        return Err(ConfigError::InvalidRequired {
+            field: "share.max_ciphertext_bytes",
+            reason: "must be > 0",
+        });
+    }
     Ok(())
 }
 
@@ -1635,6 +1674,59 @@ mod tests {
             .extract()?;
         assert_eq!(config.share.max_ciphertext_bytes, 10 * 1024 * 1024);
         Ok(())
+    }
+
+    #[test]
+    fn viewer_only_config_does_not_require_product_secrets() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "https://accounts-api.example".to_string();
+        config.os_accounts.iss = "https://accounts.example".to_string();
+
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn viewer_only_config_still_validates_its_accounts_origin() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "not-a-url".to_string();
+        config.os_accounts.iss = "https://accounts.example".to_string();
+
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn viewer_only_config_names_the_invalid_fallback_accounts_origin() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "https://accounts-api.example".to_string();
+        config.os_accounts.iss = "not-a-url".to_string();
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "os_accounts.iss",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn viewer_only_config_names_an_invalid_explicit_accounts_origin() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "https://accounts-api.example".to_string();
+        config.os_accounts.iss = "https://accounts.example".to_string();
+        config.share.viewer_accounts_url = "not-a-url".to_string();
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "share.viewer_accounts_url",
+                ..
+            })
+        ));
     }
 
     #[test]

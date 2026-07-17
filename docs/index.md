@@ -82,7 +82,7 @@ Per-repo config the engineering skills read before acting (see the
   - [Computer use](plugins/computer-use-prd.md) — [implementation plan](plugins/computer-use-implementation-plan.md)
   - [Notion](plugins/notion-prd.md) — [implementation plan](plugins/notion-implementation-plan.md)
   - [GitHub](plugins/github-prd.md) — [implementation plan](plugins/github-implementation-plan.md)
-  - [Linear](plugins/linear-prd.md) — [implementation plan](plugins/linear-implementation-plan.md)
+  - [Linear](plugins/linear-prd.md) — [implementation plan](plugins/linear-implementation-plan.md), [Phase 0 OAuth spike findings](plugins/linear-oauth-spike.md)
   - [Documents](plugins/documents-prd.md) — [implementation plan](plugins/documents-implementation-plan.md)
   - [Spreadsheets](plugins/spreadsheets-prd.md) — [implementation plan](plugins/spreadsheets-implementation-plan.md)
 - [plugins/integrations-next-ten.md](plugins/integrations-next-ten.md) - follow-on provider portfolio: ranks 11-20, auth feasibility, sequencing, and decision gates
