@@ -119,6 +119,7 @@ import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/fe
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { ConnectorsSection } from "./ConnectorsSection";
+import { LinkedDevicesSection } from "./LinkedDevicesSection";
 import { ExternalDirsSection } from "./ExternalDirsSection";
 import { InstalledSkillsSection } from "./InstalledSkillsSection";
 import { SkillDetailSection } from "./SkillDetailSection";
@@ -303,6 +304,7 @@ export type SettingsTab =
   | "agent"
   | "memory"
   | "connectors"
+  | "linked-devices"
   | "skills"
   | "external-dirs"
   | "skill-review"
@@ -330,6 +332,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "agent", label: "Agent" },
   { id: "memory", label: "Memory" },
   { id: "connectors", label: "Connectors" },
+  { id: "linked-devices", label: "Linked devices" },
   { id: "skills", label: "Installed skills" },
   { id: "external-dirs", label: "External skill directories" },
   { id: "skill-review", label: "Pending skill changes" },
@@ -2358,6 +2361,7 @@ export function AppSettings({
         ) : null}
 
         {activeTab === "connectors" ? <ConnectorsSection /> : null}
+        {activeTab === "linked-devices" ? <LinkedDevicesSection /> : null}
 
         {activeTab === "skills" ? <InstalledSkillsSection onOpenSkill={setOpenSkill} /> : null}
         {activeTab === "external-dirs" ? <ExternalDirsSection /> : null}

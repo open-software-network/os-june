@@ -96,6 +96,8 @@ pub struct NoteListItemDto {
     pub folder_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Monotonic compare-and-swap revision for remote-safe edits.
+    pub revision: u64,
     pub duration_ms: Option<i64>,
 }
 
@@ -109,6 +111,8 @@ pub struct NoteDto {
     pub folder_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Monotonic compare-and-swap revision for remote-safe edits.
+    pub revision: u64,
     pub duration_ms: Option<i64>,
     pub generated_content: Option<String>,
     pub edited_content: Option<String>,

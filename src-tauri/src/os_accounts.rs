@@ -651,10 +651,12 @@ pub async fn os_accounts_status_local() -> Result<AccountStatus, AppError> {
 
 #[tauri::command]
 pub async fn os_accounts_login(
+    app: tauri::AppHandle,
     flow: tauri::State<'_, LoginFlow>,
 ) -> Result<AccountStatus, AppError> {
     if local_dev_enabled() {
         set_cached_signed_in(true);
+        crate::companion::resume_account_transport(&app);
         return Ok(local_dev_account_status());
     }
     let cfg = Config::load();
@@ -699,6 +701,7 @@ pub async fn os_accounts_login(
     // Otherwise an in-flight operation for the previous User could land after
     // this token pair and attach its result to the new session.
     store_tokens(&StoredAccount::new(pair, None)).await?;
+    crate::companion::resume_account_transport(&app);
     let (user, balance, subscription) = fetch_snapshot(&cfg).await?;
     // Warm the cache from first sign-in so the next launch fast-path paints the
     // real identity instead of fallbacks.
@@ -736,10 +739,17 @@ pub fn os_accounts_cancel_login(flow: tauri::State<'_, LoginFlow>) -> Result<(),
 }
 
 #[tauri::command]
-pub async fn os_accounts_logout(request: Option<AccountsLogoutRequest>) -> Result<(), AppError> {
+pub async fn os_accounts_logout(
+    app: tauri::AppHandle,
+    request: Option<AccountsLogoutRequest>,
+) -> Result<(), AppError> {
     if local_dev_enabled() {
         set_cached_signed_in(true);
         return Ok(());
+    }
+    if let Err(error) = crate::companion::prepare_account_logout(&app).await {
+        crate::companion::resume_account_transport(&app);
+        return Err(error);
     }
     let cfg = Config::load();
     // Take locks in the same operation -> refresh order as status, login, and
@@ -1592,6 +1602,40 @@ pub async fn access_token() -> Result<String, AppError> {
     Ok(pair.access_token.clone())
 }
 
+pub(crate) async fn current_user_id() -> Result<String, AppError> {
+    if local_dev_enabled() {
+        return Ok(local_dev_user_id());
+    }
+    access_token_subject(&access_token().await?).ok_or_else(|| {
+        AppError::new(
+            "os_accounts_identity_invalid",
+            "The OS Accounts session has no user identity.",
+        )
+    })
+}
+
+/// Read the locally stored account subject without refreshing or contacting OS
+/// Accounts. Logout uses this path so an expired token plus an offline network
+/// cannot skip local, account-scoped companion cleanup.
+pub(crate) async fn stored_user_id() -> Result<Option<String>, AppError> {
+    if local_dev_enabled() {
+        return Ok(Some(local_dev_user_id()));
+    }
+    Ok(load_account_for_logout()
+        .await?
+        .as_ref()
+        .and_then(stored_account_user_id))
+}
+
+fn stored_account_user_id(stored: &StoredAccount) -> Option<String> {
+    access_token_subject(&stored.pair.access_token).or_else(|| {
+        stored
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.user.id.clone())
+    })
+}
+
 const ACCESS_TOKEN_REFRESH_SKEW_SECS: i64 = 30;
 
 fn access_token_is_stale(jwt: &str) -> bool {
@@ -1981,6 +2025,14 @@ async fn load_account() -> Option<StoredAccount> {
     load_platform_tokens().await
 }
 
+async fn load_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    #[cfg(debug_assertions)]
+    if use_dev_plaintext_token_store() {
+        return load_dev_plaintext_account_for_logout().await;
+    }
+    load_platform_account_for_logout().await
+}
+
 /// Token-only convenience for callers that don't need the cached snapshot.
 async fn load_tokens() -> Option<TokenPair> {
     load_account().await.map(|account| account.pair)
@@ -1999,9 +2051,35 @@ async fn load_platform_tokens() -> Option<StoredAccount> {
     serde_json::from_str(&raw).ok()
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+async fn load_platform_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    let service = keychain_service().to_string();
+    let raw = tokio::task::spawn_blocking(move || {
+        let entry = keyring::Entry::new(&service, KEYCHAIN_USER)?;
+        match entry.get_password() {
+            Ok(raw) => Ok(Some(raw)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error),
+        }
+    })
+    .await
+    .map_err(|error| AppError::new("keychain_read_failed", error.to_string()))?
+    .map_err(|error| AppError::new("keychain_read_failed", error.to_string()))?;
+    raw.map(|raw| {
+        serde_json::from_str(&raw)
+            .map_err(|error| AppError::new("token_deserialize_failed", error.to_string()))
+    })
+    .transpose()
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 async fn load_platform_tokens() -> Option<StoredAccount> {
     None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+async fn load_platform_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    Ok(None)
 }
 
 async fn clear_tokens() {
@@ -2107,6 +2185,27 @@ async fn load_dev_plaintext_tokens() -> Option<StoredAccount> {
         .ok()?
         .ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+#[cfg(debug_assertions)]
+async fn load_dev_plaintext_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    let result =
+        tokio::task::spawn_blocking(|| std::fs::read_to_string(dev_plaintext_token_path()))
+            .await
+            .map_err(|error| AppError::new("dev_token_store_read_failed", error.to_string()))?;
+    let raw = match result {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::new(
+                "dev_token_store_read_failed",
+                error.to_string(),
+            ));
+        }
+    };
+    serde_json::from_str(&raw)
+        .map(Some)
+        .map_err(|error| AppError::new("token_deserialize_failed", error.to_string()))
 }
 
 fn pkce() -> (String, String) {
@@ -2784,6 +2883,26 @@ mod tests {
         assert_eq!(
             access_token_subject(&sample_token_for_user("usr_abc")).as_deref(),
             Some("usr_abc")
+        );
+    }
+
+    #[test]
+    fn stored_account_subject_does_not_require_a_fresh_access_token() {
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"alg":"ES256","typ":"JWT"}"#);
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"sub":"usr_offline","exp":1}"#);
+        let stored = StoredAccount::new(
+            TokenPair {
+                access_token: format!("{header}.{payload}.signature"),
+                refresh_token: "offline".to_string(),
+            },
+            None,
+        );
+
+        assert_eq!(
+            stored_account_user_id(&stored).as_deref(),
+            Some("usr_offline")
         );
     }
 

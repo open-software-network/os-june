@@ -26901,6 +26901,147 @@ button.connector-approvals-info {
 
 /* PDF export uses the platform print sheet. Strip the application chrome and
  * release every viewport-bound scroller so the full formatted note paginates. */
+.companion-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.companion-settings .settings-page-header {
+  margin-bottom: var(--sp-5);
+}
+
+.companion-pairing-card,
+.companion-device-heading,
+.companion-device-actions,
+.companion-pairing-flow,
+.companion-pairing-copy {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.companion-pairing-card,
+.companion-device-heading {
+  justify-content: space-between;
+}
+
+.companion-pairing-flow {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.companion-pairing-copy {
+  align-items: flex-start;
+  flex: 1;
+  flex-direction: column;
+  min-width: var(--companion-pairing-copy-min-w);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.companion-pairing-copy strong {
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+}
+
+.companion-manual-pairing {
+  width: 100%;
+  padding-top: var(--sp-1);
+}
+
+.companion-manual-pairing summary {
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.companion-manual-pairing p {
+  margin: var(--sp-2) 0;
+}
+
+.companion-manual-pairing code {
+  display: block;
+  padding: var(--sp-3);
+  border: var(--line-width) solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.companion-manual-pairing .primary-action {
+  margin-top: var(--sp-2);
+}
+
+.companion-pairing-qr {
+  display: block;
+  width: min(var(--companion-pairing-qr-size), 100%);
+  border: var(--sp-1) solid var(--background);
+  border-radius: var(--r-lg);
+  background: var(--companion-pairing-qr-canvas);
+}
+
+.companion-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.companion-device-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.companion-device-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.companion-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.companion-capability {
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-pill);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
+.companion-name-input {
+  height: var(--control-lg);
+  padding: 0 var(--sp-3);
+  border: var(--line-width) solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+
+.companion-name-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 var(--focus-outline-width) var(--focus-ring);
+}
+
+.companion-empty-device {
+  text-align: center;
+}
+
 @media print {
   @page {
     margin: 18mm;

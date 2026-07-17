@@ -37,6 +37,14 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0025](adr/0025-targeted-hermes-approval-protocol.md) - MCP approvals use stable request identity, targeted resolution, bounded queues, and fail-closed retirement
 - [adr/0026](adr/0026-durable-note-transcription-jobs.md) - saved-audio Source spans use durable, fingerprinted, idempotent note-transcription jobs
 - [adr/0027](adr/0027-june-owned-project-memory-store.md) — memory entries live in June's SQLite (not the Hermes memory toolset), scoped by project, agent writes via the loopback proxy, project context by prompt injection
+- [adr/0028](adr/0028-june-companion-trust-boundaries.md) - original companion trust boundaries, relay-first E2EE, and desktop authority
+- [adr/0029](adr/0029-june-companion-native-swiftui.md) - native SwiftUI companion presentation; its mobile-login decision is superseded by ADRs 0030, 0033, and 0034
+- [adr/0030](adr/0030-companion-desktop-authorized-device-credential.md) - desktop-authorized pairing and revocable device credentials; its authorization model is current again through ADR 0034
+- [adr/0031](adr/0031-companion-device-generates-relay-credential.md) - companion-generated relay credentials; June API receives and stores only their hashes
+- [adr/0032](adr/0032-companion-relay-single-replica-mvp.md) - the MVP relay is single-replica until pairing and live routing have shared cross-instance state
+- [adr/0033](adr/0033-companion-native-os-accounts-login.md) - superseded by ADR-0034
+- [adr/0034](adr/0034-companion-pairing-is-mobile-authorization.md) - the authenticated Desktop-created QR pairing is the phone's short-lived authorization; the phone has no account session
+- [adr/0035](adr/0035-companion-mutations-use-durable-at-most-once-reservations.md) - companion mutations reserve their operation id durably before side effects and never redispatch an outcome-unknown request
 
 ## Enforceable rules (spec/)
 
@@ -70,6 +78,12 @@ Per-repo config the engineering skills read before acting (see the
 
 ## Subsystems
 
+- [companion-architecture.md](companion-architecture.md) - iPhone/iPad companion topology, responsibility split, data flow, and limits
+- [companion-protocol.md](companion-protocol.md) - versioned encrypted application protocol and capability allowlist
+- [companion-threat-model.md](companion-threat-model.md) - assets, attackers, mitigations, and accepted risks
+- [companion-privacy.md](companion-privacy.md) - relay-visible metadata and data that remains end-to-end encrypted
+- [companion-revocation.md](companion-revocation.md) - online and future-connection revocation behavior
+- [companion-development.md](companion-development.md) - local relay, desktop, iPhone, and iPad development workflow
 - [hermes-architecture.md](hermes-architecture.md) — the agent runtime: bridge, gateway, control plane, sessions, models
 - [hermes-gateway-gotchas.md](hermes-gateway-gotchas.md) — integration gotchas: restart discipline, config contract, MCP OAuth, event types, upstream tool-schema quirks
 - [browser-computer-use-prd.md](browser-computer-use-prd.md) — PRD: Browser use + Computer use plugins (JUN-278); extension in the user's browser + routines-only managed browser, phase-2 computer use
@@ -120,6 +134,10 @@ Per-repo config the engineering skills read before acting (see the
 
 ## Release & ops runbooks
 
+- [companion-relay-runbook.md](companion-relay-runbook.md) - relay deployment, health, limits, and incident response
+- [companion-apns-setup.md](companion-apns-setup.md) - Apple push setup for content-free wake hints
+- [companion-app-store-readiness.md](companion-app-store-readiness.md) - TestFlight and App Store checklist
+- [companion-security-review.md](companion-security-review.md) - required independent review checklist
 - [release-macos.md](release-macos.md) / [release-windows.md](release-windows.md) — the release runbooks
 - [desktop-release-runner.md](desktop-release-runner.md) — Mac Studio self-hosted runner setup for signed desktop releases
 - [reproducible-builds.md](reproducible-builds.md) — June API source → TEE trust chain (Phase A shipped)

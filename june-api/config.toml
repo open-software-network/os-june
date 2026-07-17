@@ -81,6 +81,7 @@ authorize_hold_ttl_web_secs = 30
 [share]
 # Private sharing (JUN-308). Sharing endpoints answer 501 until a share
 # database is configured. Set via JUNE__SHARE__DATABASE_URL per environment.
+
 database_url = ""
 # OS Accounts sign-in origin for the browser viewer; empty falls back to
 # os_accounts.iss. The viewer OAuth client id must be registered in OS
@@ -88,6 +89,16 @@ database_url = ""
 viewer_accounts_url = ""
 viewer_client_id = ""
 max_ciphertext_bytes = 10485760
+
+# June Companion is fail-closed outside local development until a dedicated
+# Postgres URL is configured. APNs signing values are secret env-only inputs.
+[companion]
+database_url = ""
+apns_team_id = ""
+apns_key_id = ""
+apns_private_key_pem = ""
+apns_bundle_id = "co.opensoftware.june.companion"
+apns_production = false
 
 [upstreams.openai]
 base_url = "https://api.openai.com/v1"

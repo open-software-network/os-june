@@ -2,6 +2,7 @@ pub mod agent_hud;
 pub mod app_paths;
 pub mod audio;
 pub mod commands;
+pub mod companion;
 pub mod connectors;
 pub mod db;
 pub mod dictation;
@@ -143,6 +144,15 @@ pub fn run() {
             theme_icon::set_dock_icon,
             print_current_webview,
             commands::bootstrap_app,
+            companion::companion_begin_pairing,
+            companion::companion_pairing_status,
+            companion::companion_approve_pairing,
+            companion::companion_list_devices,
+            companion::companion_rename_device,
+            companion::companion_revoke_device,
+            companion::companion_complete_frontend_request,
+            companion::companion_cancel_frontend_request,
+            companion::companion_publish_agent_event,
             commands::create_note,
             commands::list_notes,
             commands::get_note,
@@ -339,6 +349,7 @@ pub fn run() {
             updates::relaunch_for_update,
         ])
         .manage(RecordingPresenceBoundsState::default())
+        .manage(companion::CompanionRuntime::default())
         .manage(hermes_bridge::HermesBridge::default())
         .manage(os_accounts::LoginFlow::default())
         .manage(connectors::ConnectFlow::default())
@@ -355,6 +366,7 @@ pub fn run() {
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);
+            companion::start(app.handle());
             // Poll Google for the events routines subscribe to (email arrivals,
             // upcoming meetings) and wake the matching routine. Runs after the
             // bridge init so cron triggers have a runtime to fire into.

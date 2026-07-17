@@ -13,9 +13,12 @@ workspace = true
 [dependencies]
 axum.workspace = true
 base64.workspace = true
+futures-util.workspace = true
+jsonwebtoken.workspace = true
 reqwest.workspace = true
 sha2.workspace = true
 june-config.workspace = true
+june-companion-protocol = { path = "../../../crates/june-companion-protocol" }
 june-domain.workspace = true
 june-services.workspace = true
 serde.workspace = true
@@ -27,6 +30,7 @@ tower = { workspace = true, features = ["timeout", "util"] }
 tower-http.workspace = true
 tracing.workspace = true
 url.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

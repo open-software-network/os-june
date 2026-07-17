@@ -55,10 +55,18 @@ raw Tauri app config directory are unaffected.
 | `JUNE__UPSTREAMS__OPENAI__API_KEY` | OpenAI key (optional; OpenAI ASR only) |
 | `JUNE__OS_ACCOUNTS__APP_API_KEY` | The `osk_` App API key June API uses to authorize/charge |
 | `JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY` | Bot key to file issue reports as os-platform Issues (else log-only) |
+| `JUNE__COMPANION__DATABASE_URL` | Postgres trust-metadata store; required to enable the production companion relay |
+| `JUNE__COMPANION__APNS_PRIVATE_KEY_PEM` | Apple APNs `.p8` key; literal newlines or `\\n` escapes are accepted |
 
 Non-secret (usually left to `config.toml`): `JUNE__SERVER__HOST` / `PORT`,
 `JUNE__OS_ACCOUNTS__API_URL`, `JUNE__LOCAL_DEV__ENABLED` / `BEARER_TOKEN` /
 `USER_ID`, `JUNE__UPSTREAMS__*__BASE_URL`.
+
+Companion APNs configuration also needs
+`JUNE__COMPANION__APNS_TEAM_ID`, `JUNE__COMPANION__APNS_KEY_ID`,
+`JUNE__COMPANION__APNS_BUNDLE_ID`, and
+`JUNE__COMPANION__APNS_PRODUCTION`. If any APNs value is missing, relay and
+foreground reconnect still work but background wake hints are disabled.
 
 ## Backend knobs (`june-api/config.toml`)
 

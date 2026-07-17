@@ -43,7 +43,9 @@ pub use handlers::video::{
     VideoAnimateRequest, VideoGenerateRequest, VideoJobResponse, VideoStatusResponse,
 };
 pub use handlers::web::{WebFetchRequest, WebSearchRequest};
-pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, ShareViewerInfo};
+pub use state::{
+    ApiLimits, ApiState, ApiStateParams, AttestationInfo, CompanionPushConfig, ShareViewerInfo,
+};
 
 /// Real shipped app version, sent by the desktop client on every request.
 /// Old stable builds keep calling production long after main moves on; this
@@ -86,6 +88,38 @@ pub fn router(state: ApiState) -> Router {
             get(handlers::share::link_view),
         )
         .route("/v1/models", get(handlers::models::list_models))
+        .route(
+            "/v1/companion/pairings",
+            post(handlers::companion::create_pairing),
+        )
+        .route(
+            "/v1/companion/pairings/{pairing_id}",
+            get(handlers::companion::pairing_status),
+        )
+        .route(
+            "/v1/companion/pairings/{pairing_id}/propose",
+            post(handlers::companion::propose_pairing),
+        )
+        .route(
+            "/v1/companion/pairings/{pairing_id}/mobile-status",
+            post(handlers::companion::mobile_pairing_status),
+        )
+        .route(
+            "/v1/companion/pairings/{pairing_id}/approve",
+            post(handlers::companion::approve_pairing),
+        )
+        .route(
+            "/v1/companion/devices/{device_id}/revoke",
+            post(handlers::companion::revoke_device),
+        )
+        .route(
+            "/v1/companion/devices/{device_id}/push",
+            post(handlers::companion::register_push),
+        )
+        .route(
+            "/v1/companion/relay",
+            get(handlers::companion::relay_socket),
+        )
         .route(
             "/v1/notes/generate",
             post(handlers::notes::generate).layer(DefaultBodyLimit::max(limits.max_json_bytes)),

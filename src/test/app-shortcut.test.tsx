@@ -64,6 +64,7 @@ const mocks = vi.hoisted(() => ({
   deleteNote: vi.fn(),
   updateNote: vi.fn(),
   checkRecordingSourceReadiness: vi.fn(),
+  companionCompleteFrontendRequest: vi.fn(),
   openPrivacySettings: vi.fn(),
   startRecording: vi.fn(),
   pauseRecording: vi.fn(),
@@ -195,6 +196,7 @@ vi.mock("../lib/tauri", () => ({
   deleteNote: mocks.deleteNote,
   updateNote: mocks.updateNote,
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
+  companionCompleteFrontendRequest: mocks.companionCompleteFrontendRequest,
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
   pauseRecording: mocks.pauseRecording,
@@ -345,6 +347,7 @@ describe("App shortcuts", () => {
         { source: "system", ready: true, permissionState: "granted" },
       ],
     });
+    mocks.companionCompleteFrontendRequest.mockResolvedValue(undefined);
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.listDictationHistory.mockResolvedValue({
       items: [],
@@ -445,6 +448,160 @@ describe("App shortcuts", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("serves companion agent reads without opening the agent workspace", async () => {
+    const user = userEvent.setup();
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-companion",
+        title: "Companion planning",
+        status: "completed",
+        last_active: "2026-07-16T10:00:00.000Z",
+      },
+    ]);
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Meeting notes" }));
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+        true,
+      ),
+    );
+    const payload = {
+      operationId: "operation-companion",
+      intent: { type: "agentSessionsList", data: { limit: 50 } },
+    };
+    act(() => {
+      for (const [event, handler] of mocks.listen.mock.calls) {
+        if (event === "june://companion-request") handler({ payload });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-companion", {
+        type: "agentSessions",
+        data: {
+          items: [
+            {
+              id: "session-companion",
+              title: "Companion planning",
+              status: "completed",
+              updatedAt: "2026-07-16T10:00:00.000Z",
+            },
+          ],
+        },
+      }),
+    );
+    expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument();
+  });
+
+  it("pages companion agent messages backward from the newest turns", async () => {
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-companion",
+        title: "Companion planning",
+        status: "completed",
+        last_active: "2026-07-16T10:03:00.000Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "user",
+        content: "Oldest question",
+        timestamp: "2026-07-16T10:01:00.000Z",
+      },
+      {
+        id: "message-2",
+        role: "assistant",
+        content: "Recent answer",
+        timestamp: "2026-07-16T10:02:00.000Z",
+      },
+      {
+        id: "message-3",
+        role: "user",
+        content: "Newest question",
+        timestamp: "2026-07-16T10:03:00.000Z",
+      },
+    ]);
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+        true,
+      ),
+    );
+    const dispatch = (cursor?: string) => {
+      const payload = {
+        operationId: cursor ? "operation-older" : "operation-latest",
+        intent: {
+          type: "agentMessagesList",
+          data: {
+            storedSessionId: "session-companion",
+            limit: 2,
+            ...(cursor ? { cursor } : {}),
+          },
+        },
+      };
+      act(() => {
+        for (const [event, handler] of mocks.listen.mock.calls) {
+          if (event === "june://companion-request") handler({ payload });
+        }
+      });
+    };
+
+    dispatch();
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-latest", {
+        type: "agentMessages",
+        data: {
+          items: [
+            expect.objectContaining({ id: "message-2", text: "Recent answer" }),
+            expect.objectContaining({ id: "message-3", text: "Newest question" }),
+          ],
+          nextCursor: "2",
+        },
+      }),
+    );
+
+    dispatch("2");
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-older", {
+        type: "agentMessages",
+        data: {
+          items: [expect.objectContaining({ id: "message-1", text: "Oldest question" })],
+        },
+      }),
+    );
+  });
+
+  it("opens the stored agent session requested by the companion", async () => {
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-companion",
+        title: "Companion planning",
+        status: "completed",
+        last_active: "2026-07-16T10:03:00.000Z",
+      },
+    ]);
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-focus")).toBe(
+        true,
+      ),
+    );
+    act(() => {
+      for (const [event, handler] of mocks.listen.mock.calls) {
+        if (event === "june://companion-focus") {
+          handler({ payload: { agent: { storedSessionId: "session-companion" } } });
+        }
+      }
+    });
+
+    expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument();
   });
 
   it("clears the OS Accounts browser session from sidebar sign-out", async () => {

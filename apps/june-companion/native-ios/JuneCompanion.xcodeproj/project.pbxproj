@@ -1,0 +1,650 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0649EDCE6D337E848327247A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 182C4952DF80A120053856AE /* Assets.xcassets */; };
+		09965C2C9BBDE30369ED38D6 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = BA095B14BC0B14E207D9E397 /* PrivacyInfo.xcprivacy */; };
+		11A4D9675995F81455361B91 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 694CD5AD0502AEFDD8EDD49D /* RootView.swift */; };
+		2BB8B6443B9BCBA2AB69B7E2 /* JuneMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6642B45D122600AB8CE4CAE /* JuneMotion.swift */; };
+		31D2A855C1613C0A2FF83B17 /* BerkeleyMono-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 771FAFC2B95D9AD9FB3808FF /* BerkeleyMono-Regular.ttf */; };
+		4BF37B2E168625E53BDB3942 /* Transport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50B620963EA2C11FC61871C8 /* Transport.swift */; };
+		57AB5917E97A69968A796D15 /* JuneDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3617ADC50BB3B96FC9EFF4E3 /* JuneDesignSystem.swift */; };
+		683C624C91198F3255772353 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1190803EB8E4810D56139E6 /* AppModel.swift */; };
+		6EE6F54F54F4D2199021E874 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B44D94930EF6ABF462FA8B92 /* SettingsView.swift */; };
+		715829209255AAEBAF04AE34 /* AuthAndModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6770133DC7E8234DD3CFC9E /* AuthAndModelTests.swift */; };
+		7D36E6CE5D30C2E94B755381 /* Security.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8070051D3F195DA03E20F2D /* Security.swift */; };
+		823401ECCDE7729FE667FFCB /* CompanionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 435266A4B094C0084647046F /* CompanionService.swift */; };
+		998C7101E8F9575CAA6AEAFA /* JuneCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC6CF14B05E3DB79E36144A2 /* JuneCompanionApp.swift */; };
+		A72CB6474701DCFADF6D89A7 /* NotesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D384E197A35ADE2FBE2616B4 /* NotesView.swift */; };
+		B75207572A6D605D8F894E27 /* ABCDiatype-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 4BADED2B19C1224BABE91854 /* ABCDiatype-Regular.ttf */; };
+		BDA01F59E45B1343C42F67AA /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 503EAF40DABC508A3129E5AE /* PairingView.swift */; };
+		CD2306F28841CB49A40D6D83 /* ABCDiatype-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = B3514CB1BF4A9784765E15E4 /* ABCDiatype-Medium.ttf */; };
+		DE1D99CF455102626AFD8F90 /* CompanionAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8D2433A920C1EBDA94DA806 /* CompanionAppDelegate.swift */; };
+		E940B56584CF47FA9F9B2F71 /* AgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75159D76F7DBDFD02911FF6D /* AgentView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B817EE61DE8CDF13CE85860F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 48A9E36AE3BA041303A98A18 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 00BB77BB32EF1D80BB501093;
+			remoteInfo = JuneCompanion;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		182C4952DF80A120053856AE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		3617ADC50BB3B96FC9EFF4E3 /* JuneDesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JuneDesignSystem.swift; sourceTree = "<group>"; };
+		435266A4B094C0084647046F /* CompanionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionService.swift; sourceTree = "<group>"; };
+		4BADED2B19C1224BABE91854 /* ABCDiatype-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "ABCDiatype-Regular.ttf"; sourceTree = "<group>"; };
+		503EAF40DABC508A3129E5AE /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		50B620963EA2C11FC61871C8 /* Transport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transport.swift; sourceTree = "<group>"; };
+		694CD5AD0502AEFDD8EDD49D /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		71BC1D38D31FA0740C454070 /* JuneCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = JuneCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		75159D76F7DBDFD02911FF6D /* AgentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentView.swift; sourceTree = "<group>"; };
+		771FAFC2B95D9AD9FB3808FF /* BerkeleyMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BerkeleyMono-Regular.ttf"; sourceTree = "<group>"; };
+		B3514CB1BF4A9784765E15E4 /* ABCDiatype-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "ABCDiatype-Medium.ttf"; sourceTree = "<group>"; };
+		B44D94930EF6ABF462FA8B92 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		BA095B14BC0B14E207D9E397 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		BE6482D8F54592FE6CF8D687 /* JuneCompanion-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "JuneCompanion-Bridging-Header.h"; sourceTree = "<group>"; };
+		C6642B45D122600AB8CE4CAE /* JuneMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JuneMotion.swift; sourceTree = "<group>"; };
+		CE2AE13D03B2DC2C85935FA3 /* JuneCompanionTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = JuneCompanionTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D384E197A35ADE2FBE2616B4 /* NotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesView.swift; sourceTree = "<group>"; };
+		D6770133DC7E8234DD3CFC9E /* AuthAndModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthAndModelTests.swift; sourceTree = "<group>"; };
+		E1190803EB8E4810D56139E6 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		E8070051D3F195DA03E20F2D /* Security.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Security.swift; sourceTree = "<group>"; };
+		E8D2433A920C1EBDA94DA806 /* CompanionAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionAppDelegate.swift; sourceTree = "<group>"; };
+		EC6CF14B05E3DB79E36144A2 /* JuneCompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JuneCompanionApp.swift; sourceTree = "<group>"; };
+		F23BC3586F7BD7E81738ECBB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0FA00EAE4452455375E6C42D /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				435266A4B094C0084647046F /* CompanionService.swift */,
+				BE6482D8F54592FE6CF8D687 /* JuneCompanion-Bridging-Header.h */,
+				E8070051D3F195DA03E20F2D /* Security.swift */,
+				50B620963EA2C11FC61871C8 /* Transport.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		171785B68C58948A5B8204E1 /* Pairing */ = {
+			isa = PBXGroup;
+			children = (
+				503EAF40DABC508A3129E5AE /* PairingView.swift */,
+			);
+			path = Pairing;
+			sourceTree = "<group>";
+		};
+		1BFE78E7E5484C93D68B4326 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				E1190803EB8E4810D56139E6 /* AppModel.swift */,
+				E8D2433A920C1EBDA94DA806 /* CompanionAppDelegate.swift */,
+				EC6CF14B05E3DB79E36144A2 /* JuneCompanionApp.swift */,
+				694CD5AD0502AEFDD8EDD49D /* RootView.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		22EFE9159817282F84BAF27D = {
+			isa = PBXGroup;
+			children = (
+				DDDFAE98B947F78FC55ECA2E /* JuneCompanion */,
+				6A2DC6E64C7349ECE9DD976C /* JuneCompanionTests */,
+				89A2B8B5CC9BB6A8D8333404 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		3ABCD815929E6F41ED386867 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				5FB845B8B7119D6473A371DB /* Fonts */,
+				182C4952DF80A120053856AE /* Assets.xcassets */,
+				F23BC3586F7BD7E81738ECBB /* Info.plist */,
+				BA095B14BC0B14E207D9E397 /* PrivacyInfo.xcprivacy */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		56FE0EA869BB0C42C1DC5E44 /* Notes */ = {
+			isa = PBXGroup;
+			children = (
+				D384E197A35ADE2FBE2616B4 /* NotesView.swift */,
+			);
+			path = Notes;
+			sourceTree = "<group>";
+		};
+		5FB845B8B7119D6473A371DB /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				B3514CB1BF4A9784765E15E4 /* ABCDiatype-Medium.ttf */,
+				4BADED2B19C1224BABE91854 /* ABCDiatype-Regular.ttf */,
+				771FAFC2B95D9AD9FB3808FF /* BerkeleyMono-Regular.ttf */,
+			);
+			path = Fonts;
+			sourceTree = "<group>";
+		};
+		6A2DC6E64C7349ECE9DD976C /* JuneCompanionTests */ = {
+			isa = PBXGroup;
+			children = (
+				D6770133DC7E8234DD3CFC9E /* AuthAndModelTests.swift */,
+			);
+			path = JuneCompanionTests;
+			sourceTree = "<group>";
+		};
+		89A2B8B5CC9BB6A8D8333404 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				71BC1D38D31FA0740C454070 /* JuneCompanion.app */,
+				CE2AE13D03B2DC2C85935FA3 /* JuneCompanionTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		920E727BF324505381C2BC76 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				D7744CE1A39DCD31C2C1D378 /* Agent */,
+				56FE0EA869BB0C42C1DC5E44 /* Notes */,
+				171785B68C58948A5B8204E1 /* Pairing */,
+				ACA3102F7A99BD9015086E28 /* Settings */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		ACA3102F7A99BD9015086E28 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				B44D94930EF6ABF462FA8B92 /* SettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		C81283AFAA88F30C0E7DEC67 /* DesignSystem */ = {
+			isa = PBXGroup;
+			children = (
+				3617ADC50BB3B96FC9EFF4E3 /* JuneDesignSystem.swift */,
+				C6642B45D122600AB8CE4CAE /* JuneMotion.swift */,
+			);
+			path = DesignSystem;
+			sourceTree = "<group>";
+		};
+		D7744CE1A39DCD31C2C1D378 /* Agent */ = {
+			isa = PBXGroup;
+			children = (
+				75159D76F7DBDFD02911FF6D /* AgentView.swift */,
+			);
+			path = Agent;
+			sourceTree = "<group>";
+		};
+		DDDFAE98B947F78FC55ECA2E /* JuneCompanion */ = {
+			isa = PBXGroup;
+			children = (
+				1BFE78E7E5484C93D68B4326 /* App */,
+				C81283AFAA88F30C0E7DEC67 /* DesignSystem */,
+				920E727BF324505381C2BC76 /* Features */,
+				3ABCD815929E6F41ED386867 /* Resources */,
+				0FA00EAE4452455375E6C42D /* Services */,
+			);
+			path = JuneCompanion;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		00BB77BB32EF1D80BB501093 /* JuneCompanion */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BC9FD3FB6C3319BBE73BDF05 /* Build configuration list for PBXNativeTarget "JuneCompanion" */;
+			buildPhases = (
+				C4A90BF4DF5B135A20616DB9 /* Build companion crypto */,
+				7CB4C60C76B74B4D0D4A66E3 /* Sources */,
+				E1767A37A5D20C18E1282DF9 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = JuneCompanion;
+			packageProductDependencies = (
+			);
+			productName = JuneCompanion;
+			productReference = 71BC1D38D31FA0740C454070 /* JuneCompanion.app */;
+			productType = "com.apple.product-type.application";
+		};
+		CCA47A8512B2BAF7A3B77B47 /* JuneCompanionTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C3976091E49EABED2F02100A /* Build configuration list for PBXNativeTarget "JuneCompanionTests" */;
+			buildPhases = (
+				ACDF8361804693E7D803C6D8 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5A57BF50B4FC3D2615C36DF4 /* PBXTargetDependency */,
+			);
+			name = JuneCompanionTests;
+			packageProductDependencies = (
+			);
+			productName = JuneCompanionTests;
+			productReference = CE2AE13D03B2DC2C85935FA3 /* JuneCompanionTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		48A9E36AE3BA041303A98A18 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					00BB77BB32EF1D80BB501093 = {
+						ProvisioningStyle = Automatic;
+					};
+					CCA47A8512B2BAF7A3B77B47 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 00396DEEA2D1DF17A9C43F59 /* Build configuration list for PBXProject "JuneCompanion" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 22EFE9159817282F84BAF27D;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 89A2B8B5CC9BB6A8D8333404 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				00BB77BB32EF1D80BB501093 /* JuneCompanion */,
+				CCA47A8512B2BAF7A3B77B47 /* JuneCompanionTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E1767A37A5D20C18E1282DF9 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CD2306F28841CB49A40D6D83 /* ABCDiatype-Medium.ttf in Resources */,
+				B75207572A6D605D8F894E27 /* ABCDiatype-Regular.ttf in Resources */,
+				0649EDCE6D337E848327247A /* Assets.xcassets in Resources */,
+				31D2A855C1613C0A2FF83B17 /* BerkeleyMono-Regular.ttf in Resources */,
+				09965C2C9BBDE30369ED38D6 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		C4A90BF4DF5B135A20616DB9 /* Build companion crypto */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/scripts/build-ios-crypto.sh",
+				"$(SRCROOT)/../../../crates/june-companion-crypto/Cargo.toml",
+				"$(SRCROOT)/../../../crates/june-companion-crypto/src/lib.rs",
+			);
+			name = "Build companion crypto";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/CompanionCrypto/lib/$(PLATFORM_NAME)/libjune_companion_crypto.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"$SRCROOT/scripts/build-ios-crypto.sh\"";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		7CB4C60C76B74B4D0D4A66E3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E940B56584CF47FA9F9B2F71 /* AgentView.swift in Sources */,
+				683C624C91198F3255772353 /* AppModel.swift in Sources */,
+				DE1D99CF455102626AFD8F90 /* CompanionAppDelegate.swift in Sources */,
+				823401ECCDE7729FE667FFCB /* CompanionService.swift in Sources */,
+				998C7101E8F9575CAA6AEAFA /* JuneCompanionApp.swift in Sources */,
+				57AB5917E97A69968A796D15 /* JuneDesignSystem.swift in Sources */,
+				2BB8B6443B9BCBA2AB69B7E2 /* JuneMotion.swift in Sources */,
+				A72CB6474701DCFADF6D89A7 /* NotesView.swift in Sources */,
+				BDA01F59E45B1343C42F67AA /* PairingView.swift in Sources */,
+				11A4D9675995F81455361B91 /* RootView.swift in Sources */,
+				7D36E6CE5D30C2E94B755381 /* Security.swift in Sources */,
+				6EE6F54F54F4D2199021E874 /* SettingsView.swift in Sources */,
+				4BF37B2E168625E53BDB3942 /* Transport.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ACDF8361804693E7D803C6D8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				715829209255AAEBAF04AE34 /* AuthAndModelTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		5A57BF50B4FC3D2615C36DF4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 00BB77BB32EF1D80BB501093 /* JuneCompanion */;
+			targetProxy = B817EE61DE8CDF13CE85860F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		1B9AB5B865796EEF594DE3F6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		2189E74E2A9567202137BF7E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = production;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = JuneCompanion/Resources/JuneCompanion.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/CompanionCrypto/include",
+				);
+				INFOPLIST_FILE = JuneCompanion/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/CompanionCrypto/lib/$(PLATFORM_NAME)",
+				);
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ljune_companion_crypto",
+					"-framework",
+					Security,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = co.opensoftware.june.companion;
+				PRODUCT_NAME = "June Companion";
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "JuneCompanion/Services/JuneCompanion-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		636D0048569B0BA6629A01FD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		98EFDBD97CE6B2DA15AE85D8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APS_ENVIRONMENT = development;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = JuneCompanion/Resources/JuneCompanion.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/CompanionCrypto/include",
+				);
+				INFOPLIST_FILE = JuneCompanion/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/CompanionCrypto/lib/$(PLATFORM_NAME)",
+				);
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ljune_companion_crypto",
+					"-framework",
+					Security,
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = co.opensoftware.june.companion;
+				PRODUCT_NAME = "June Companion";
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "JuneCompanion/Services/JuneCompanion-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D7800A0C4269C1E03CBE8F34 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/CompanionCrypto/include",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = co.opensoftware.june.companion.tests;
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/June Companion.app/June Companion";
+			};
+			name = Debug;
+		};
+		F19511E8F725D2CE0AF34C54 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/CompanionCrypto/include",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = co.opensoftware.june.companion.tests;
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/June Companion.app/June Companion";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		00396DEEA2D1DF17A9C43F59 /* Build configuration list for PBXProject "JuneCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				636D0048569B0BA6629A01FD /* Debug */,
+				1B9AB5B865796EEF594DE3F6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		BC9FD3FB6C3319BBE73BDF05 /* Build configuration list for PBXNativeTarget "JuneCompanion" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				98EFDBD97CE6B2DA15AE85D8 /* Debug */,
+				2189E74E2A9567202137BF7E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C3976091E49EABED2F02100A /* Build configuration list for PBXNativeTarget "JuneCompanionTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D7800A0C4269C1E03CBE8F34 /* Debug */,
+				F19511E8F725D2CE0AF34C54 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 48A9E36AE3BA041303A98A18 /* Project object */;
+}

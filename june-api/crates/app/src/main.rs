@@ -103,11 +103,79 @@ async fn serve() -> anyhow::Result<()> {
                 }
             },
         };
-    let app = build_router(&config, clients, pricing, share_store);
+    let companion = load_companion_runtime(&config).await;
+    let app = build_router(
+        &config,
+        clients,
+        pricing,
+        RuntimeStores {
+            share: share_store,
+            companion,
+        },
+    );
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "june-api listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn load_companion_runtime(config: &AppConfig) -> CompanionRuntime {
+    let (store, snapshot): (
+        Option<Arc<dyn june_domain::CompanionStore>>,
+        june_domain::CompanionSnapshot,
+    ) = match config.companion.database_url.trim() {
+        "" => {
+            if !config.local_dev.enabled {
+                tracing::warn!(
+                    "companion store not configured; companion relay endpoints disabled"
+                );
+            }
+            (None, june_domain::CompanionSnapshot::default())
+        }
+        database_url => match june_persistence::PgCompanionStore::connect(database_url).await {
+            Ok(store) => match june_domain::CompanionStore::snapshot(&store).await {
+                Ok(snapshot) => {
+                    tracing::info!(
+                        devices = snapshot.devices.len(),
+                        links = snapshot.links.len(),
+                        "companion store connected"
+                    );
+                    (Some(Arc::new(store)), snapshot)
+                }
+                Err(error) => {
+                    tracing::error!(%error, "companion store load failed; relay disabled");
+                    (None, june_domain::CompanionSnapshot::default())
+                }
+            },
+            Err(error) => {
+                tracing::error!(%error, "companion store connection failed; relay disabled");
+                (None, june_domain::CompanionSnapshot::default())
+            }
+        },
+    };
+    let enabled = config.local_dev.enabled || store.is_some();
+    let push = if config.companion.apns_team_id.trim().is_empty()
+        || config.companion.apns_key_id.trim().is_empty()
+        || config.companion.apns_private_key_pem.trim().is_empty()
+        || config.companion.apns_bundle_id.trim().is_empty()
+    {
+        tracing::info!("APNs credentials not configured; opaque companion wakes disabled");
+        None
+    } else {
+        Some(june_api::CompanionPushConfig {
+            team_id: config.companion.apns_team_id.clone(),
+            key_id: config.companion.apns_key_id.clone(),
+            private_key_pem: config.companion.apns_private_key_pem.replace("\\n", "\n"),
+            bundle_id: config.companion.apns_bundle_id.clone(),
+            production: config.companion.apns_production,
+        })
+    };
+    CompanionRuntime {
+        store,
+        snapshot,
+        enabled,
+        push,
+    }
 }
 
 async fn load_pricing(
@@ -175,7 +243,7 @@ fn build_router(
     config: &AppConfig,
     clients: HttpClients<'_>,
     mut pricing_config: BTreeMap<String, ModelPriceConfig>,
-    share_store: Option<Arc<dyn june_domain::ShareStore>>,
+    stores: RuntimeStores,
 ) -> axum::Router {
     if config.local_dev.enabled {
         pricing_config = filter_unconfigured_provider_models(config, pricing_config);
@@ -338,7 +406,7 @@ fn build_router(
         flat_estimate_credits,
     }));
 
-    let share = share_store.map(|store| {
+    let share = stores.share.map(|store| {
         Arc::new(june_services::ShareService::new(
             june_services::ShareServiceDeps {
                 store,
@@ -373,6 +441,10 @@ fn build_router(
         pricing,
         local_dev_enabled: config.local_dev.enabled,
         token_verifier,
+        companion_store: stores.companion.store,
+        companion_snapshot: stores.companion.snapshot,
+        companion_enabled: stores.companion.enabled,
+        companion_push: stores.companion.push,
         note_transcribe,
         note_generate,
         agent_chat,
@@ -410,6 +482,18 @@ fn build_router(
     } else {
         june_api::router(state)
     }
+}
+
+struct CompanionRuntime {
+    store: Option<Arc<dyn june_domain::CompanionStore>>,
+    snapshot: june_domain::CompanionSnapshot,
+    enabled: bool,
+    push: Option<june_api::CompanionPushConfig>,
+}
+
+struct RuntimeStores {
+    share: Option<Arc<dyn june_domain::ShareStore>>,
+    companion: CompanionRuntime,
 }
 
 #[derive(Clone, Copy)]

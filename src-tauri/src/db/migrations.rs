@@ -1,5 +1,10 @@
 use sqlx::query::query;
+use sqlx::row::Row;
 use sqlx_sqlite::SqlitePool;
+
+const LEGACY_PENDING_COMPANION_MESSAGE: &str =
+    "This request may already have reached June. Check your Mac before trying a different request.";
+const OUTCOME_UNKNOWN_COMPANION_MESSAGE: &str = "This request may already have reached June. Check your Mac, then choose the action again only if it is still needed.";
 
 pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error> {
     for statement in include_str!("../../migrations/001_init.sql").split(';') {
@@ -188,16 +193,7 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
-    // Marks when a routine most recently entered approval mode; approval-run
-    // crediting only counts runs that finished at or after this instant, so
-    // earlier read-only runs never retroactively unlock autonomy.
-    ensure_column(_pool, "routine_trust", "approval_since", "TEXT").await?;
-    for statement in include_str!("../../migrations/014_share_keys.sql").split(';') {
-        let statement = statement.trim();
-        if !statement.is_empty() {
-            query(statement).execute(_pool).await?;
-        }
-    }
+    ensure_column(_pool, "notes", "revision", "INTEGER NOT NULL DEFAULT 1").await?;
     for statement in include_str!("../../migrations/016_linear_connector.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
@@ -209,6 +205,99 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;
         }
+    }
+    for statement in include_str!("../../migrations/018_companion.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    ensure_column(
+        _pool,
+        "companion_devices",
+        "account_user_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
+    for statement in include_str!("../../migrations/019_companion_account_scope.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    ensure_column(
+        _pool,
+        "companion_operations",
+        "operation_state",
+        "TEXT NOT NULL DEFAULT 'completed'",
+    )
+    .await?;
+    migrate_legacy_companion_reservations(_pool).await?;
+    for statement in include_str!("../../migrations/020_companion_operation_state.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    // Marks when a routine most recently entered approval mode; approval-run
+    // crediting only counts runs that finished at or after this instant, so
+    // earlier read-only runs never retroactively unlock autonomy.
+    ensure_column(_pool, "routine_trust", "approval_since", "TEXT").await?;
+    for statement in include_str!("../../migrations/014_share_keys.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn migrate_legacy_companion_reservations(
+    pool: &SqlitePool,
+) -> Result<(), sqlx::error::Error> {
+    use june_companion_protocol::{FailureCode, ResultPayload};
+
+    let rows = query(
+        "SELECT device_id, operation_id, response
+         FROM companion_operations
+         WHERE operation_state = 'completed'
+           AND instr(CAST(response AS TEXT), ?) > 0",
+    )
+    .bind(LEGACY_PENDING_COMPANION_MESSAGE)
+    .fetch_all(pool)
+    .await?;
+    for row in rows {
+        let encoded: Vec<u8> = row.get("response");
+        let Ok(mut response) =
+            serde_json::from_slice::<june_companion_protocol::Response>(&encoded)
+        else {
+            continue;
+        };
+        let ResultPayload::Error(failure) = &mut response.result else {
+            continue;
+        };
+        if failure.code != FailureCode::Busy
+            || !failure.retryable
+            || failure.message != LEGACY_PENDING_COMPANION_MESSAGE
+        {
+            continue;
+        }
+        failure.code = FailureCode::OutcomeUnknown;
+        failure.message = OUTCOME_UNKNOWN_COMPANION_MESSAGE.to_string();
+        failure.retryable = false;
+        let Ok(encoded) = serde_json::to_vec(&response) else {
+            continue;
+        };
+        query(
+            "UPDATE companion_operations
+             SET operation_state = 'pending', response = ?
+             WHERE device_id = ? AND operation_id = ?",
+        )
+        .bind(encoded)
+        .bind(row.get::<String, _>("device_id"))
+        .bind(row.get::<String, _>("operation_id"))
+        .execute(pool)
+        .await?;
     }
     Ok(())
 }
@@ -229,10 +318,9 @@ async fn ensure_column(
 ) -> Result<(), sqlx::error::Error> {
     let pragma = format!("PRAGMA table_info({table})");
     let rows = query(&pragma).fetch_all(pool).await?;
-    let exists = rows.iter().any(|row| {
-        use sqlx::row::Row;
-        row.get::<String, _>("name") == column
-    });
+    let exists = rows
+        .iter()
+        .any(|row| row.get::<String, _>("name") == column);
     if !exists {
         let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
         match query(&alter).execute(pool).await {

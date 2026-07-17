@@ -88,6 +88,8 @@ import { Spinner } from "../ui/Spinner";
 import { Switch } from "../ui/Switch";
 import {
   cancelAgentTask,
+  companionCompleteFrontendRequest,
+  companionPublishAgentEvent,
   dictationHelperCommand,
   explainAgentApproval,
   finalizeHermesBridgeBranch,
@@ -133,6 +135,7 @@ import {
   videoStatus,
   type AgentTaskDto,
   type AgentTaskStatus,
+  type CompanionFrontendRequest,
   type HermesBridgeStatus,
   type HermesFilesystemEntry,
   type HermesFilesystemSnapshot,
@@ -368,6 +371,11 @@ import {
   type AgentChatPart,
   type AgentChatTurn,
 } from "../../lib/agent-chat-runtime";
+import {
+  COMPANION_FRONTEND_QUEUE_EVENT,
+  registerCompanionFrontendConsumer,
+  takeCompanionFrontendRequests,
+} from "../../lib/companion-frontend-router";
 import { toolActivitySentence } from "../../lib/agent-tool-labels";
 import {
   COMPACTED_CONTEXT_SIGNATURE,
@@ -3069,6 +3077,65 @@ export function AgentWorkspace({
     waitingSessionIds,
     workingSessionIds,
   ]);
+
+  useEffect(() => {
+    async function handleCompanionRequest(payload: CompanionFrontendRequest) {
+      try {
+        switch (payload.intent.type) {
+          case "agentSessionsList":
+          case "agentMessagesList":
+            return;
+          case "agentSend": {
+            const { storedSessionId: requestedStoredSessionId, message } = payload.intent.data;
+            const explicitSession = requestedStoredSessionId
+              ? hermesSessionItemsRef.current.find(
+                  (session) => session.id === requestedStoredSessionId,
+                )
+              : undefined;
+            if (requestedStoredSessionId && !explicitSession) {
+              throw new Error("That agent session is no longer available.");
+            }
+            const storedSessionId = await submitHermesSession(message, explicitSession, {
+              selectSession: false,
+            });
+            if (!storedSessionId) throw new Error("June could not identify the agent session.");
+            await companionCompleteFrontendRequest(payload.operationId, {
+              type: "agentAccepted",
+              data: { storedSessionId },
+            });
+            return;
+          }
+          case "agentCancel":
+            await stopHermesSession(payload.intent.data.storedSessionId);
+            await companionCompleteFrontendRequest(payload.operationId, { type: "accepted" });
+            return;
+        }
+      } catch (error) {
+        await companionCompleteFrontendRequest(payload.operationId, {
+          type: "error",
+          data: {
+            code: "internal",
+            message: messageFromError(error),
+            retryable: true,
+          },
+        }).catch(() => undefined);
+      }
+    }
+
+    function consumeQueuedRequests() {
+      for (const request of takeCompanionFrontendRequests()) {
+        void handleCompanionRequest(request);
+      }
+    }
+
+    const unregisterConsumer = registerCompanionFrontendConsumer();
+    window.addEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
+    consumeQueuedRequests();
+    return () => {
+      unregisterConsumer();
+      window.removeEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
+    };
+  }, []);
 
   function recordSessionRunningActivity(sessionId: string) {
     hermesActivityStore.record(
@@ -6763,6 +6830,16 @@ export function AgentWorkspace({
       // and the Stage B status helpers below.
       const classified = classifyHermesEvent(liveEvent);
       const storedClassified = withStoredHermesSessionId(classified, storedSessionId);
+      if (
+        storedClassified.kind === "transcript" &&
+        storedClassified.role === "assistant" &&
+        storedClassified.delta
+      ) {
+        void companionPublishAgentEvent({
+          type: "delta",
+          data: { storedSessionId, text: storedClassified.delta },
+        }).catch(() => undefined);
+      }
       // Feature 15: record every inbound frame (raw type + the kind it
       // classified to) into the bounded, sanitized trace buffer so the dev/debug
       // trace panel can reconstruct the session. recordInbound re-classifies and
@@ -6855,6 +6932,13 @@ export function AgentWorkspace({
         pendingActionStore.resolveSession(storedSessionId);
       }
       if (status) {
+        void companionPublishAgentEvent({
+          type: "status",
+          data: {
+            storedSessionId,
+            status: status === "received" || status === "starting" ? "running" : status,
+          },
+        }).catch(() => undefined);
         if (status === "completed") {
           markAgentRunSucceeded(storedSessionId);
         } else if (status === "failed" || status === "cancelled") {
@@ -7479,7 +7563,7 @@ export function AgentWorkspace({
         });
         throw err;
       }
-      return undefined;
+      return storedSessionId;
     };
 
     return activeDispatchReservation.run(dispatchPreparedSession);
