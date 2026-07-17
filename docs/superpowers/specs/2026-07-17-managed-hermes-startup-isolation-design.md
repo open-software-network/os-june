@@ -23,26 +23,30 @@ already the signal-receiving process. On the pinned runtime,
 stdout and both invalid-argument runs produced identical stdout, stderr, and
 exit status 2. The module ends in `if __name__ == "__main__": main()`.
 
-June will therefore replace the console-script hop with the equivalent direct
-invocation:
+June therefore replaces the console-script hop with an authenticated startup
+bootstrap:
 
 ```text
-<authenticated-python> -I -B -m hermes_cli.main <Hermes arguments>
+<authenticated-python> -I -S -B -c <fixed-bootstrap> <Hermes arguments>
 ```
 
 `-I` implies isolated mode, ignores every `PYTHON*` environment variable,
 omits the user site, and removes the working directory from the safe import
-path. `-B` preserves the existing no-bytecode-write behavior because `-I`
-also implies `-E` and would otherwise ignore `PYTHONDONTWRITEBYTECODE`.
+path. `-S` delays authenticated site initialization until the fixed bootstrap
+has removed the dashboard bearer. The bootstrap calls `site.main()`, restores
+the bearer, and executes `hermes_cli.main` with `runpy`. `-B` preserves the
+existing no-bytecode-write behavior because `-I` also implies `-E` and would
+otherwise ignore `PYTHONDONTWRITEBYTECODE`.
 
 ## Invocation model and environment
 
 A `PythonInvocation` value carries one interpreter program and the exact
-prefix arguments `-I`, `-B`. `HermesCommandResolution` adds `-m
-hermes_cli.main` before dashboard or TUI arguments. Every first-party MCP
-configuration renders the same interpreter prefix before its script path,
-including context, web, image, video, recorder, GitHub, Gmail, and Calendar
-read/action servers plus earned-autonomy variants.
+prefix arguments `-I`, `-S`, `-B`. `HermesCommandResolution` adds the fixed
+bootstrap before dashboard or TUI arguments. All 11 rendered first-party MCP
+registrations render the same interpreter prefix before one of ten distinct
+script paths: context, web, image, video, recorder, GitHub, Gmail, and Calendar
+read/action scripts. Earned-autonomy registrations reuse an authenticated
+action script.
 
 The process environment removes `PYTHONPATH`, `PYTHONHOME`, `PYTHONUSERBASE`,
 `PYTHONSTARTUP`, `PYTHONINSPECT`, `PYTHONWARNINGS`, `PYTHONBREAKPOINT`,
@@ -128,7 +132,8 @@ uses the same admission and downgrade rules under the shared preparation lock.
 
 Strict RED/GREEN tests cover:
 
-- exact `-I -B` ordering for Hermes and every first-party MCP renderer;
+- exact `-I -S -B` ordering for Hermes and every first-party MCP renderer,
+  plus the fixed bearer-hiding bootstrap for Hermes;
 - a real disposable venv with poisoned `PYTHONPATH` `sitecustomize`, shadow
   modules, user-site `.pth`, invalid `PYTHONHOME`, attacker `PYTHONUSERBASE`,
   and bearer-token sentinels; Hermes and all ten MCP modules must import their

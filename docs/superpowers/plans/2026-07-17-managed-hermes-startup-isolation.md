@@ -4,7 +4,7 @@
 
 **Goal:** Make Hermes and all first-party MCPs execute through isolated Python, move archive trust into Rust, and restore downgrade-resistant general-runtime fallback.
 
-**Architecture:** A shared `PythonInvocation` owns the exact `-I -B` prefix for Hermes and MCP rendering. Rust performs capped, checksum-pinned download and pure-Rust archive validation/extraction before an environment-cleared locked installer runs. Final managed admission either returns the authenticated invocation, selects and rerenders a GitHub-ineligible pre-launch fallback, or fails closed for integrity/downgrade conditions.
+**Architecture:** A shared `PythonInvocation` owns the exact `-I -S -B` prefix for Hermes and MCP rendering. Hermes then uses a fixed bearer-hiding bootstrap before authenticated site initialization and `hermes_cli.main`; MCP scripts execute directly with site initialization disabled. Rust performs capped, checksum-pinned download and pure-Rust archive validation/extraction before an environment-cleared locked installer runs. Final managed admission either returns the authenticated invocation, selects and rerenders a GitHub-ineligible pre-launch fallback, or fails closed for integrity/downgrade conditions.
 
 **Tech Stack:** Rust 1.80, Tokio, reqwest/rustls, SHA-256, already-locked `flate2` 1.1.9 and `tar` 0.4.46, Tauri command spawning, Python 3.11 isolated mode.
 
@@ -17,7 +17,7 @@
 - Modify `scripts/check-cargo-release-age.py` only if its unchanged lockfile check identifies a real policy issue; otherwise leave it untouched.
 - Modify `.superpowers/sdd/capability-isolation-task-4-report.md`: append third-review RED/GREEN and qualification evidence.
 
-### Task 1: Isolated Python invocation for Hermes and ten MCP scripts
+### Task 1: Isolated Python invocation for Hermes and 11 MCP registrations
 
 **Interfaces:**
 
@@ -25,7 +25,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PythonInvocation {
     program: String,
-    prefix_args: Vec<String>, // exactly ["-I", "-B"]
+    prefix_args: Vec<String>, // exactly ["-I", "-S", "-B"]
 }
 
 impl PythonInvocation {
@@ -35,14 +35,14 @@ impl PythonInvocation {
 }
 ```
 
-The exact ten scripts from current registration call sites are context, web,
+The 11 rendered registrations use ten distinct scripts: context, web,
 image, video, recorder, GitHub, Gmail read, Gmail actions, Calendar read, and
 Calendar actions. Connector-auto instances reuse the authenticated Calendar or
 Gmail action script invocation and do not add an eleventh script.
 
-- [ ] Write renderer tests asserting every MCP entry places `-I`, then `-B`, then the script path in YAML args and that dashboard/TUI command construction places `-I -B -m hermes_cli.main` before Hermes arguments.
+- [ ] Write renderer tests asserting every MCP entry places `-I`, then `-S`, then `-B`, then the script path in YAML args and that dashboard/TUI command construction places `-I -S -B -c <fixed-bootstrap>` before Hermes arguments.
 - [ ] Run `CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --manifest-path src-tauri/Cargo.toml python_isolation -- --nocapture`; verify RED because configs contain only the script and Hermes launches the console script.
-- [ ] Add `PythonInvocation`; replace `HermesCommandResolution.command/python_command` with the isolated invocation plus source; thread it through all ten MCP config types and renderers; invoke the authenticated Python directly for dashboard and TUI.
+- [ ] Add `PythonInvocation`; replace `HermesCommandResolution.command/python_command` with the isolated invocation plus source; thread it through all 11 rendered registrations over ten distinct scripts; invoke the authenticated Python directly for dashboard and TUI.
 - [ ] Extend `ISOLATED_HERMES_ENV_VARS` with `PYTHONPATH`, `PYTHONHOME`, `PYTHONUSERBASE`, `PYTHONSTARTUP`, `PYTHONINSPECT`, `PYTHONWARNINGS`, `PYTHONBREAKPOINT`, `PYTHONPLATLIBDIR`, `PYTHONEXECUTABLE`, `__PYVENV_LAUNCHER__`, `PYTHONNOUSERSITE`, and `PYTHONSAFEPATH`; re-set the three safe values to `1` in process and TUI environments.
 - [ ] Build a real temporary venv poison test. Install a fixture `hermes_cli.main`, create external `sitecustomize.py`/shadow modules, a version-correct user-site `.pth`, invalid `PYTHONHOME`, attacker `PYTHONUSERBASE`, and a startup hook that attempts to copy a bearer sentinel. Execute Hermes plus all ten embedded MCP modules with the production invocation and assert required imports work while no poison sentinel exists.
 - [ ] Re-run the focused test and all existing config/TUI tests; verify GREEN.
