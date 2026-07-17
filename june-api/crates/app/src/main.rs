@@ -405,7 +405,11 @@ fn build_router(
             trust_center_url: config.attestation.trust_center_url.clone(),
         },
     });
-    june_api::router(state)
+    if config.share.viewer_only {
+        june_api::viewer_router(state)
+    } else {
+        june_api::router(state)
+    }
 }
 
 #[derive(Clone, Copy)]

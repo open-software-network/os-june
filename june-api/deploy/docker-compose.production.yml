@@ -1,11 +1,10 @@
 services:
-  # TLS terminator + custom-domain manager for june-api.opensoftware.co and
-  # the short share-link origin june.link.
+  # TLS terminator + custom-domain manager for june-api.opensoftware.co.
   # Terminates HTTPS on 443, auto-provisions the Let's Encrypt cert and the
   # Cloudflare DNS records (via CLOUDFLARE_API_TOKEN), and reverse-proxies to the
-  # app over the internal compose network. SET_CAA pins cert issuance to the
-  # TEE's Let's Encrypt account for domain attestation. Cloudflare can override
-  # CAA at the june.link apex, so that zone must leave managed CAA disabled.
+  # app over the internal compose network (TARGET_ENDPOINT). SET_CAA pins cert
+  # issuance to the TEE's Let's Encrypt account for domain attestation — this
+  # works only because we use a SUBDOMAIN; Cloudflare overrides CAA at the apex.
   # Digest-pinned per Phala guidance; public docker.io image, pulled anonymously
   # (independent of the GHCR prelaunch login / DSTACK_DOCKER_REGISTRY).
   # Docs: https://docs.phala.com/phala-cloud/networking/setup-custom-domain
@@ -21,13 +20,8 @@ services:
     ports:
       - "443:443"
     environment:
-      - DNS_PROVIDER=cloudflare
-      - |-
-        DOMAINS=june-api.opensoftware.co
-        june.link
-      - |-
-        ROUTING_MAP=june-api.opensoftware.co=june-api:8080
-        june.link=june-api:8080
+      - DOMAIN=june-api.opensoftware.co
+      - TARGET_ENDPOINT=http://june-api:8080
       - GATEWAY_DOMAIN=_.${DSTACK_GATEWAY_DOMAIN}
       - SET_CAA=true
       # nginx's default client_max_body_size (1m) rejects large multipart and
@@ -45,8 +39,8 @@ services:
     image: ${JUNE_IMAGE}
     restart: unless-stopped
     # No published ports: dstack-ingress is the sole external entry point
-    # (https://june-api.opensoftware.co and https://june.link). The ingress
-    # reaches the app over the internal compose network at june-api:8080.
+    # (https://june-api.opensoftware.co). The ingress reaches the app over the
+    # internal compose network via TARGET_ENDPOINT=http://june-api:8080.
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
     # App secrets are encrypted per-CVM via Phala sealed env (`phala envs`) and
