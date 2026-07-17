@@ -441,10 +441,10 @@ export function App() {
   // session persist in the order the user made them (see
   // handleToggleSessionCompleted).
   const sessionCompletionWritesRef = useRef(new Map<string, Promise<unknown>>());
-  // Set once the user has toggled completion locally. The initial load is a
-  // snapshot of the pre-toggle database, so it must not clobber a toggle that
-  // landed while it was still in flight (see the boot effect).
-  const sessionCompletionTouchedRef = useRef(false);
+  // Stored session ids the user has toggled locally. The initial load is a
+  // snapshot of the pre-toggle database, so those ids must survive it, while
+  // every other row it carries still applies (see the boot effect).
+  const sessionCompletionTouchedRef = useRef(new Set<string>());
   const [moveDialogSessionIds, setMoveDialogSessionIds] = useState<string[] | null>(null);
   // Where an open agent session was drilled into from — a project or the
   // Routines run history — drives the breadcrumb above the agent workspace,
@@ -1958,14 +1958,24 @@ export function App() {
       });
     void listCompletedSessions()
       .then((rows) => {
+        if (cancelled) return;
         // The session list can be interactive before this settles on a cold
-        // launch. If the user already toggled completion, this snapshot predates
-        // that write — applying it would show the session active again while the
-        // database has it completed, until the next restart (JUN-203 review).
-        if (cancelled || sessionCompletionTouchedRef.current) return;
-        const next: Record<string, string> = {};
-        for (const row of rows) next[row.sessionId] = row.completedAt;
-        setCompletedSessions(next);
+        // launch. Merge rather than replace: this snapshot predates any toggle
+        // the user already made, so locally toggled ids keep their local value
+        // (applying the snapshot over them would show a completed session as
+        // active while the database has it completed, until restart). Every
+        // other row still applies, so the rest of the persisted completed
+        // sessions are not lost (JUN-203 review).
+        setCompletedSessions((prev) => {
+          const next: Record<string, string> = {};
+          for (const row of rows) next[row.sessionId] = row.completedAt;
+          for (const touchedId of sessionCompletionTouchedRef.current) {
+            const local = prev[touchedId];
+            if (local === undefined) delete next[touchedId];
+            else next[touchedId] = local;
+          }
+          return next;
+        });
       })
       .catch(() => {});
     return () => {
@@ -2792,8 +2802,8 @@ export function App() {
   }
 
   async function handleToggleSessionCompleted(sessionId: string, completed: boolean) {
-    // A local toggle always outranks the initial load's pre-toggle snapshot.
-    sessionCompletionTouchedRef.current = true;
+    // A local toggle outranks the initial load's pre-toggle snapshot for this id.
+    sessionCompletionTouchedRef.current.add(sessionId);
     setCompletedSessions((prev) => {
       const next = { ...prev };
       if (completed) next[sessionId] = new Date().toISOString();
@@ -2813,15 +2823,18 @@ export function App() {
     pending.set(sessionId, chained);
     try {
       await write;
-    } catch {
-      // reload truth on failure
+    } catch (err: unknown) {
+      // Restore authoritative state, then tell the user: completion is a direct
+      // context-menu action, so a silent revert would look like the menu simply
+      // did nothing, with no way to know it never persisted (JUN-203 review).
       void listCompletedSessions()
         .then((rows) => {
           const fresh: Record<string, string> = {};
           for (const row of rows) fresh[row.sessionId] = row.completedAt;
           setCompletedSessions(fresh);
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => setError(messageFromError(err)));
     } finally {
       // Drop the chain only when no newer toggle queued behind this one.
       if (pending.get(sessionId) === chained) pending.delete(sessionId);
