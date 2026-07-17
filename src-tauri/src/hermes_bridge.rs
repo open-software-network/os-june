@@ -12702,27 +12702,9 @@ fn provider_proxy_required_token<'a>(
         memory_token
     } else if path.starts_with("/v1/recorder/") {
         recorder_token
-<<<<<<< HEAD
-    } else if provider_proxy_is_connector_route(path) {
-||||||| 41618a3aa
-    } else if path.starts_with("/v1/gmail/")
-        || path.starts_with("/v1/gmail-actions/")
-        || path.starts_with("/v1/gcal/")
-        || path.starts_with("/v1/gcal-actions/")
-        || path.starts_with("/v1/linear/")
-        || path.starts_with("/v1/linear-actions/")
-    {
-=======
     } else if path == crate::computer_use::PROXY_PATH {
         computer_use_token
-    } else if path.starts_with("/v1/gmail/")
-        || path.starts_with("/v1/gmail-actions/")
-        || path.starts_with("/v1/gcal/")
-        || path.starts_with("/v1/gcal-actions/")
-        || path.starts_with("/v1/linear/")
-        || path.starts_with("/v1/linear-actions/")
-    {
->>>>>>> origin/main
+    } else if provider_proxy_is_connector_route(path) {
         connector_token
     } else {
         provider_token
@@ -15486,13 +15468,8 @@ assert capped["has_more"] is True, capped
 
         let provider_bearer = request_with_authorization("Bearer provider-tok");
         let recorder_bearer = request_with_authorization("Bearer recorder-tok");
-<<<<<<< HEAD
-        let connector_bearer = request_with_authorization("Bearer connector-tok");
-||||||| 41618a3aa
-=======
         let connector_bearer = request_with_authorization("Bearer connector-tok");
         let computer_use_bearer = request_with_authorization("Bearer computer-use-tok");
->>>>>>> origin/main
         let recorder_required = provider_proxy_required_token(
             "/v1/recorder/start",
             "provider-tok",
@@ -15539,6 +15516,7 @@ assert capped["has_more"] is True, capped
             "memory-tok",
             "recorder-tok",
             "connector-tok",
+            "computer-use-tok",
         );
         assert!(!provider_proxy_authorized(
             &provider_bearer,
@@ -15759,18 +15737,15 @@ assert capped["has_more"] is True, capped
         let image_message = provider_proxy_body_too_large_message("/v1/image/edit");
         assert!(image_message.contains("image_request_too_large"));
         assert!(!image_message.contains("maximum context length"));
-<<<<<<< HEAD
 
         let notion_message = provider_proxy_body_too_large_message("/v1/notion-actions/call");
         assert!(notion_message.contains("notion_request_too_large"));
         assert!(!notion_message.contains("maximum context length"));
-||||||| 41618a3aa
-=======
+
         let computer_use_message =
             provider_proxy_body_too_large_message(crate::computer_use::PROXY_PATH);
         assert!(computer_use_message.contains("computer_use_request_too_large"));
         assert!(!computer_use_message.contains("maximum context length"));
->>>>>>> origin/main
     }
 
     #[test]
