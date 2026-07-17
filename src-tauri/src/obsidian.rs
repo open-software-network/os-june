@@ -48,6 +48,8 @@ pub fn obsidian_configure(
 ) -> Result<ObsidianStatus, AppError> {
     reject_dotenv_unsafe_path(request.vault_path.trim())?;
     let vault_path = validate_vault_path(Path::new(request.vault_path.trim()))?;
+    ensure_readable(&vault_path)?;
+    ensure_writable(&vault_path)?;
     let config = ObsidianConfig {
         vault_path: vault_path.to_string_lossy().into_owned(),
     };
@@ -79,7 +81,25 @@ pub(crate) fn configured_vault_path(app: &AppHandle) -> Result<Option<PathBuf>, 
     let Some(config) = read_config_optional(app)? else {
         return Ok(None);
     };
-    validate_vault_path(Path::new(&config.vault_path)).map(Some)
+    Ok(runtime_vault_path(&config))
+}
+
+fn runtime_vault_path(config: &ObsidianConfig) -> Option<PathBuf> {
+    match validate_vault_path(Path::new(&config.vault_path)) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            // A selected vault can disappear temporarily when an external drive
+            // is ejected or a network share goes offline. Obsidian is optional:
+            // omit its runtime capability until the path returns rather than
+            // preventing every Hermes session from starting.
+            tracing::warn!(
+                ?error,
+                vault_path = %config.vault_path,
+                "configured Obsidian vault is unavailable; starting Hermes without it"
+            );
+            None
+        }
+    }
 }
 
 /// Synchronizes June's selected vault into the Hermes runtime's `.env` file.
@@ -376,8 +396,6 @@ fn validate_vault_path(path: &Path) -> Result<PathBuf, AppError> {
             "Choose a folder that contains an .obsidian directory.",
         ));
     }
-    ensure_readable(&canonical)?;
-    ensure_writable(&canonical)?;
     Ok(normalize_vault_path_for_external_use(canonical))
 }
 
@@ -430,8 +448,9 @@ mod tests {
     use super::normalize_vault_path_for_external_use;
     use super::{
         acquire_hermes_env_projection_lock, dotenv_single_quote, is_active_obsidian_assignment,
-        reject_dotenv_unsafe_path, render_hermes_env_projection, sync_hermes_env_projection,
-        validate_vault_path, HERMES_ENV_PROJECTION_LOCK_FILE,
+        reject_dotenv_unsafe_path, render_hermes_env_projection, runtime_vault_path,
+        sync_hermes_env_projection, validate_vault_path, ObsidianConfig,
+        HERMES_ENV_PROJECTION_LOCK_FILE,
     };
 
     #[test]
@@ -443,6 +462,35 @@ mod tests {
         let child = vault.join("folder").join("..");
         let validated = validate_vault_path(&child).expect("valid vault");
         assert_eq!(validated, vault.canonicalize().expect("canonical"));
+    }
+
+    #[test]
+    fn runtime_omits_a_configured_vault_that_is_no_longer_available() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let vault = temp.path().join("External Vault");
+        std::fs::create_dir_all(vault.join(".obsidian")).expect("vault");
+        let config = ObsidianConfig {
+            vault_path: vault.to_string_lossy().into_owned(),
+        };
+        assert_eq!(
+            runtime_vault_path(&config),
+            Some(vault.canonicalize().expect("canonical"))
+        );
+
+        std::fs::remove_dir_all(&vault).expect("unmount vault");
+        assert_eq!(runtime_vault_path(&config), None);
+    }
+
+    #[test]
+    fn runtime_validation_does_not_create_a_write_probe() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let vault = temp.path().join("Vault");
+        std::fs::create_dir_all(vault.join(".obsidian")).expect("vault");
+
+        validate_vault_path(&vault).expect("runtime validation");
+
+        let probe = vault.join(format!(".june-obsidian-write-probe-{}", std::process::id()));
+        assert!(!probe.exists());
     }
 
     #[test]

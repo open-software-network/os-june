@@ -1709,6 +1709,13 @@ pub(crate) async fn reapply_hermes_runtime(
             first_error.get_or_insert(error);
         }
     }
+    // The long-lived routine Gateway is deliberately not restarted here. Both
+    // known Hermes restart paths are unsafe for a Settings apply: the CLI can
+    // enter an interactive service-install flow when its service state drifts,
+    // while `/api/gateway/restart` launches an unsupervised replacement from
+    // the dying dashboard process. Keep interactive Hermes stable by limiting
+    // this operation to June-supervised Bridge modes; routine configuration is
+    // picked up on the Gateway's next normal lifecycle.
     match first_error {
         Some(error) => Err(error),
         None => Ok(()),
@@ -6976,7 +6983,11 @@ fn sandbox_obsidian_write_root(path: &Path) -> Option<PathBuf> {
         return None;
     }
     let canonical = path.canonicalize().ok()?;
-    if canonical.parent().is_none() || !canonical.is_dir() || !canonical.join(".obsidian").is_dir()
+    let marker = std::fs::symlink_metadata(canonical.join(".obsidian")).ok()?;
+    if canonical.parent().is_none()
+        || !canonical.is_dir()
+        || marker.file_type().is_symlink()
+        || !marker.is_dir()
     {
         return None;
     }
@@ -16625,11 +16636,32 @@ mcp_servers:
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn sandbox_rejects_non_vault_and_filesystem_roots() {
+    fn sandbox_rejects_unresolved_non_vault_and_filesystem_roots() {
         let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join("missing-vault");
+        let hermes_home = temp.path().join("hermes");
+        let runtime_dir = temp.path().join("runtime");
+
         assert!(sandbox_obsidian_write_root(Path::new("/")).is_none());
         assert!(sandbox_obsidian_write_root(temp.path()).is_none());
         assert!(sandbox_obsidian_write_root(Path::new("relative")).is_none());
+        assert!(sandbox_obsidian_write_root(&missing).is_none());
+        assert!(
+            !sandbox_write_roots(&hermes_home, &runtime_dir, Some(&missing)).contains(&missing)
+        );
+    }
+
+    #[cfg(all(target_os = "macos", unix))]
+    #[test]
+    fn sandbox_rejects_a_symlinked_obsidian_marker() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let vault = temp.path().join("Vault");
+        let external = temp.path().join("External Marker");
+        std::fs::create_dir_all(&vault).expect("vault");
+        std::fs::create_dir_all(&external).expect("external marker");
+        std::os::unix::fs::symlink(&external, vault.join(".obsidian")).expect("symlink");
+
+        assert!(sandbox_obsidian_write_root(&vault).is_none());
     }
 
     #[cfg(target_os = "macos")]
