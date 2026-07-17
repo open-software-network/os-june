@@ -6,6 +6,7 @@ import {
   buildHermesSessionChatTurns,
   completedHermesMessageText,
   displayedComposerUserMessageText,
+  hasFinalContentBearingAssistantReply,
   imagePartsFromHermesContent,
   mediaVideoReferences,
   repairContractionSpacing,
@@ -248,6 +249,31 @@ describe("terminal media reference cleanup", () => {
 });
 
 describe("Agent chat runtime", () => {
+  it.each([
+    ["stringified null", "null", true],
+    ["stringified empty array", "[]", true],
+    ["stringified null-only array", "[null]", true],
+    ["stringified empty object", "{}", false],
+    ["malformed serialized calls", "not-json", false],
+    [
+      "a serialized tool request",
+      '[{"id":"call-1","function":{"name":"search","arguments":"{}"}}]',
+      false,
+    ],
+  ])("classifies %s before proving a final persisted reply", (_name, toolCalls, expected) => {
+    const messages: HermesSessionMessage[] = [
+      { id: "user-1", role: "user", content: "Finish this." },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "Finished.",
+        tool_calls: toolCalls,
+      },
+    ];
+
+    expect(hasFinalContentBearingAssistantReply(messages, 0)).toBe(expected);
+  });
+
   it("extracts video MEDIA references into video parts", () => {
     const content = {
       content: [

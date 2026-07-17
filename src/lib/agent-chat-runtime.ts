@@ -1858,12 +1858,15 @@ function hasRenderableHermesMedia(value: unknown) {
 
 function hermesAssistantMessageHasToolCalls(message: HermesSessionMessage) {
   const toolCalls = message.tool_calls;
-  if (Array.isArray(toolCalls)) return toolCalls.length > 0;
   if (typeof toolCalls === "string") {
     const serialized = toolCalls.trim();
-    return serialized !== "" && serialized !== "[]";
+    if (!serialized) return false;
+    const parsed = safeJsonParse(serialized);
+    // Match the renderer for valid persisted JSON, including `null` and
+    // null-only arrays. Unparseable nonempty serialized calls remain fail closed.
+    return parsed === undefined || parseToolCalls(parsed).length > 0;
   }
-  return toolCalls !== undefined && toolCalls !== null;
+  return parseToolCalls(toolCalls).length > 0;
 }
 
 export function textFromHermesContent(
