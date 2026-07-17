@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -20,6 +21,7 @@ from typing import Any
 PROTOCOL_VERSION = "2025-03-26"
 SERVER_INFO = {"name": "june-notion-actions", "version": "0.1.0"}
 REQUEST_TIMEOUT_SECONDS = 630
+CALLER_DEADLINE_SAFETY_SECONDS = 10
 TOKEN_ENV_VAR = "JUNE_CONNECTOR_PROXY_TOKEN"
 
 INJECTION_WARNING = (
@@ -124,11 +126,14 @@ def call_tool(base_url: str, token: str, request_id: Any, params: dict[str, Any]
     if not name:
         return error_response(request_id, -32602, "Tool name is required")
     try:
+        deadline_unix_ms = int(
+            (time.time() + REQUEST_TIMEOUT_SECONDS - CALLER_DEADLINE_SAFETY_SECONDS) * 1000
+        )
         result = call_proxy(
             base_url,
             token,
             "/notion-actions/call",
-            {"toolName": name, "arguments": arguments},
+            {"toolName": name, "arguments": arguments, "deadlineUnixMs": deadline_unix_ms},
         )
     except ValueError as exc:
         return error_response(request_id, -32602, str(exc))

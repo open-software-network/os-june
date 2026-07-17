@@ -10796,6 +10796,7 @@ async fn handle_notion_connector_route(
                 crate::connectors::notion::NotionHostedToolCallRequest {
                     tool_name,
                     arguments,
+                    deadline_unix_ms: None,
                 },
             )
             .await
@@ -10819,11 +10820,15 @@ async fn handle_notion_connector_route(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
+            let deadline_unix_ms = body
+                .get("deadlineUnixMs")
+                .and_then(serde_json::Value::as_i64);
             crate::connectors::notion::call_hosted_action_tool(
                 app,
                 crate::connectors::notion::NotionHostedToolCallRequest {
                     tool_name,
                     arguments,
+                    deadline_unix_ms,
                 },
             )
             .await

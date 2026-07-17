@@ -132,12 +132,12 @@ describe("ConnectorsSection", () => {
     expect(screen.queryByText(/OpenSoftware's servers cannot read your data/i)).toBeNull();
   });
 
-  it("lists Notion as a connectable hosted preview", async () => {
+  it("lists Notion as a connectable connector", async () => {
     render(<ConnectorsSection />);
 
     const connect = await findEnabledConnect("Connect Notion");
     expect(screen.getByText("Notion")).toBeInTheDocument();
-    expect(screen.getByText("Preview")).toBeInTheDocument();
+    expect(screen.queryByText("Preview")).toBeNull();
     expect(screen.getByText(/Search and read Notion content/i)).toBeInTheDocument();
     expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
     expect(screen.getByText(/Create and update pages with approval/i)).toBeInTheDocument();

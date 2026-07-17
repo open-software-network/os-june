@@ -155,7 +155,7 @@ function NotionConnectorRow({
   const details = {
     disconnected: {
       subtitle: NOTION_CONNECTOR_BLURB,
-      statusLabel: "Preview",
+      statusLabel: null,
       statusTone: "warning",
     },
     connected: { subtitle: NOTION_CONNECTED_BLURB, statusLabel: "Connected", statusTone: "ok" },
@@ -179,9 +179,11 @@ function NotionConnectorRow({
         </p>
       </div>
       <div className="connector-actions">
-        <span className="status-pill" data-tone={statusTone}>
-          {statusLabel}
-        </span>
+        {statusLabel ? (
+          <span className="status-pill" data-tone={statusTone}>
+            {statusLabel}
+          </span>
+        ) : null}
         <NotionConnectorActions
           state={state}
           connecting={connecting}

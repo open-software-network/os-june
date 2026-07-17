@@ -13,7 +13,11 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{future::Future, sync::OnceLock, time::Duration};
+use std::{
+    future::Future,
+    sync::OnceLock,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tauri::AppHandle;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -174,6 +178,8 @@ pub struct NotionHostedToolCallRequest {
     pub tool_name: String,
     #[serde(default)]
     pub arguments: serde_json::Value,
+    #[serde(default)]
+    pub deadline_unix_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -533,17 +539,39 @@ pub async fn call_hosted_action_tool(
     {
         return Err(AppError::new("connector_action_denied", reason));
     }
-    tokio::time::timeout(
-        MCP_ACTION_REQUEST_TIMEOUT,
-        call_hosted_tool_unchecked(app, tool_name, request.arguments),
-    )
-    .await
-    .map_err(|_| {
-        AppError::new(
-            "notion_mcp_action_timeout",
-            "Notion did not finish the approved action before June's safety timeout. Check Notion before retrying.",
-        )
-    })?
+    let timeout = action_request_timeout(request.deadline_unix_ms)?;
+    tokio::time::timeout(timeout, call_hosted_tool_unchecked(app, tool_name, request.arguments))
+        .await
+        .map_err(|_| {
+            AppError::new(
+                "notion_mcp_action_timeout",
+                "Notion did not finish the approved action before June's safety timeout. Check Notion before retrying.",
+            )
+        })?
+}
+
+fn action_request_timeout(deadline_unix_ms: Option<i64>) -> Result<Duration, AppError> {
+    let Some(deadline_unix_ms) = deadline_unix_ms else {
+        return Ok(MCP_ACTION_REQUEST_TIMEOUT);
+    };
+    const DEADLINE_SAFETY_BUFFER_MS: i64 = 5_000;
+    let now_ms = now_unix_ms();
+    let remaining_ms = deadline_unix_ms - now_ms - DEADLINE_SAFETY_BUFFER_MS;
+    if remaining_ms <= 0 {
+        return Err(AppError::new(
+            "notion_mcp_action_deadline_expired",
+            "Notion approval completed too late to run safely. Please try again.",
+        ));
+    }
+    let remaining = Duration::from_millis(remaining_ms as u64);
+    Ok(remaining.min(MCP_ACTION_REQUEST_TIMEOUT))
+}
+
+fn now_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
 }
 
 async fn call_hosted_tool_unchecked(
@@ -2086,6 +2114,35 @@ mod tests {
 
         stored.expires_at_unix = Some(999);
         assert!(notion_token_expired_at(&stored, 1_000));
+    }
+
+    #[test]
+    fn action_request_timeout_uses_deadline_budget() {
+        let future_deadline = now_unix_ms() + 10_000;
+        let timeout = action_request_timeout(Some(future_deadline)).unwrap();
+        assert!(timeout <= Duration::from_secs(5));
+        assert!(timeout > Duration::from_secs(4));
+
+        let far_future_deadline = now_unix_ms() + 300_000;
+        assert_eq!(
+            action_request_timeout(Some(far_future_deadline)).unwrap(),
+            MCP_ACTION_REQUEST_TIMEOUT
+        );
+        assert_eq!(
+            action_request_timeout(None).unwrap(),
+            MCP_ACTION_REQUEST_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn action_request_timeout_rejects_expired_deadline() {
+        let expired_deadline = now_unix_ms() + 1_000;
+        assert_eq!(
+            action_request_timeout(Some(expired_deadline))
+                .unwrap_err()
+                .code,
+            "notion_mcp_action_deadline_expired"
+        );
     }
 
     #[test]
