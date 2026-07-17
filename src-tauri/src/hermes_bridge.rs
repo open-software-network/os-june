@@ -16720,7 +16720,7 @@ assert [item.key for item in PluginManager()._scan_directory('/trusted/runtime/p
             let temp = tempfile::tempdir().expect("python isolation tempdir");
             let venv = temp.path().join("venv");
             let venv_result = std::process::Command::new(default_python_command())
-                .args(["-m", "venv", "--copies"])
+                .args(["-m", "venv"])
                 .arg(&venv)
                 .output()
                 .expect("create disposable venv");
@@ -16756,6 +16756,16 @@ assert [item.key for item in PluginManager()._scan_directory('/trusted/runtime/p
                 "import json, os, pathlib\npathlib.Path(os.environ['JUNE_ISOLATION_SUCCESS']).write_text(json.dumps({'ok': True}))\n",
             )
             .expect("fake Hermes module");
+            fs::write(
+                hermes_package.join("env_loader.py"),
+                "def load_hermes_dotenv(*args, **kwargs):\n return []\n",
+            )
+            .expect("fake Hermes environment loader");
+            fs::write(
+                hermes_package.join("plugins.py"),
+                "class PluginManager:\n def _scan_directory(self, path, source, skip_names=None):\n  return []\n",
+            )
+            .expect("fake Hermes plugin loader");
             let runtime_hook_bearer = temp.path().join("runtime-hook-bearer");
             fs::write(
                 site_packages.join("june_runtime_hook.pth"),
