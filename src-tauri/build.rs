@@ -1,5 +1,25 @@
 const SYSTEM_AUDIO_MIN_MACOS_VERSION_FILE: &str = "system-audio-min-macos-version.txt";
 const DICTATION_HELPER_MIN_MACOS_VERSION: &str = "14.0";
+const JUNE_GITHUB_PLUGIN_MANIFEST: &str = "resources/hermes-plugins/june_github/plugin.yaml";
+const JUNE_GITHUB_PLUGIN_SOURCE: &str = "resources/hermes-plugins/june_github/__init__.py";
+const JUNE_GITHUB_TOOLS: [&str; 16] = [
+    "list_repositories",
+    "get_repository",
+    "list_directory",
+    "read_file",
+    "search_code",
+    "list_issues",
+    "get_issue",
+    "list_issue_comments",
+    "list_pull_requests",
+    "get_pull_request",
+    "list_pull_request_files",
+    "read_pull_request_file_diff",
+    "list_pull_request_commits",
+    "list_pull_request_reviews",
+    "list_pull_request_review_comments",
+    "list_pull_request_checks",
+];
 
 fn main() {
     println!("cargo:rerun-if-changed=tauri.conf.json");
@@ -9,6 +29,8 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/32x32.png");
     println!("cargo:rerun-if-changed=icons/128x128.png");
     println!("cargo:rerun-if-changed=icons/128x128@2x.png");
+    println!("cargo:rerun-if-changed={JUNE_GITHUB_PLUGIN_MANIFEST}");
+    println!("cargo:rerun-if-changed={JUNE_GITHUB_PLUGIN_SOURCE}");
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_URL");
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_API_URL");
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_CLIENT_ID");
@@ -21,10 +43,62 @@ fn main() {
         println!("cargo:rustc-link-lib=framework=AVFoundation");
     }
     clean_legacy_helper_bundles();
+    validate_june_github_plugin_manifest();
     build_system_audio_helper();
     build_dictation_helper();
     ensure_bundled_hermes_dir();
     tauri_build::build();
+}
+
+fn validate_june_github_plugin_manifest() {
+    use std::collections::HashSet;
+
+    let manifest = std::fs::read_to_string(JUNE_GITHUB_PLUGIN_MANIFEST)
+        .expect("bundled june_github plugin manifest should be readable");
+    let tools = parse_provides_tools(&manifest)
+        .expect("bundled june_github plugin manifest should have a provides_tools block");
+    let actual: HashSet<&str> = tools.iter().map(String::as_str).collect();
+    let expected: HashSet<&str> = JUNE_GITHUB_TOOLS.into_iter().collect();
+    if tools.len() != JUNE_GITHUB_TOOLS.len() || actual != expected {
+        let mut missing: Vec<_> = expected.difference(&actual).copied().collect();
+        let mut unexpected: Vec<_> = actual.difference(&expected).copied().collect();
+        missing.sort_unstable();
+        unexpected.sort_unstable();
+        panic!(
+            "bundled june_github provides_tools must contain exactly the canonical 16 names; \
+             missing={missing:?}, unexpected={unexpected:?}, entries={}",
+            tools.len()
+        );
+    }
+}
+
+fn parse_provides_tools(manifest: &str) -> Result<Vec<String>, &'static str> {
+    let mut in_block = false;
+    let mut tools = Vec::new();
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if !in_block {
+            if trimmed == "provides_tools:" {
+                in_block = true;
+            }
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let Some(name) = trimmed.strip_prefix("- ") else {
+            break;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("provides_tools contains an empty name");
+        }
+        tools.push(name.to_string());
+    }
+    if !in_block || tools.is_empty() {
+        return Err("provides_tools block is missing or empty");
+    }
+    Ok(tools)
 }
 
 /// `tauri_build::build()` validates every `bundle.resources` source path at

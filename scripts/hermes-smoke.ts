@@ -47,12 +47,21 @@
  * 1 = a phase failed (an artifact with logs is written next to this run).
  */
 
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { PINNED_HERMES_VERSION } from "../src/lib/hermes-control-plane/compatibility/matrix.ts";
@@ -72,6 +81,24 @@ import {
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..");
 const HOST = "127.0.0.1";
+const JUNE_GITHUB_TOOL_NAMES = [
+  "list_repositories",
+  "get_repository",
+  "list_directory",
+  "read_file",
+  "search_code",
+  "list_issues",
+  "get_issue",
+  "list_issue_comments",
+  "list_pull_requests",
+  "get_pull_request",
+  "list_pull_request_files",
+  "read_pull_request_file_diff",
+  "list_pull_request_commits",
+  "list_pull_request_reviews",
+  "list_pull_request_review_comments",
+  "list_pull_request_checks",
+] as const;
 
 const RPC_TIMEOUT_MS = numberEnv("HERMES_SMOKE_TIMEOUT_MS", 120_000);
 const READY_TIMEOUT_MS = numberEnv("HERMES_SMOKE_READY_MS", 45_000);
@@ -114,14 +141,24 @@ async function main(): Promise<void> {
   const port = await allocatePort();
   const token = generateSessionToken();
   const home = mkdtempSync(join(tmpdir(), "june-hermes-smoke-"));
-  const smokeProvider = await startSmokeProvider();
-  writeMinimalConfig(home, smokeProvider.port);
-
   const log: string[] = [];
   const record = (line: string) => {
     log.push(line);
     console.log(line);
   };
+
+  try {
+    overlayAndVerifyJuneGitHubPlugin(resolved.command, home);
+  } catch (error) {
+    rmSync(home, { recursive: true, force: true });
+    throw error;
+  }
+  record(
+    `hermes-smoke: PASS pinned plugin loader registered exactly ${JUNE_GITHUB_TOOL_NAMES.length} ` +
+      "june_github tools under one toolset",
+  );
+  const smokeProvider = await startSmokeProvider();
+  writeMinimalConfig(home, smokeProvider.port);
 
   const child = spawn(resolved.command, buildHermesDashboardArgs(HOST, port), {
     cwd: home,
@@ -130,6 +167,7 @@ async function main(): Promise<void> {
       HERMES_HOME: home,
       JUNE_HERMES_HOME: home,
       HERMES_DASHBOARD_SESSION_TOKEN: token,
+      PYTHONDONTWRITEBYTECODE: "1",
       NO_PROXY: "127.0.0.1,localhost,::1",
       no_proxy: "127.0.0.1,localhost,::1",
     },
@@ -228,6 +266,99 @@ async function main(): Promise<void> {
   }
 
   process.exit(failed ? 1 : 0);
+}
+
+/** Replaces the pinned checkout's app-owned extension with the repository
+ * resource, then asks the real pinned plugin loader and tool registry to prove
+ * the exact 16-name contract. This is intentionally a real-runtime gate, not a
+ * YAML-only assertion. */
+function overlayAndVerifyJuneGitHubPlugin(command: string, hermesHome: string): void {
+  const agentRoot = resolveHermesAgentRoot(command);
+  const source = join(REPO_ROOT, "src-tauri", "resources", "hermes-plugins", "june_github");
+  const destination = join(agentRoot, "plugins", "june_github");
+  const files = ["plugin.yaml", "__init__.py"] as const;
+
+  rmSync(destination, { recursive: true, force: true });
+  mkdirSync(destination, { recursive: true });
+  for (const file of files) {
+    const sourceFile = join(source, file);
+    const destinationFile = join(destination, file);
+    copyFileSync(sourceFile, destinationFile);
+    if (!readFileSync(destinationFile).equals(readFileSync(sourceFile))) {
+      throw new Error(`pinned june_github overlay did not match ${file}`);
+    }
+  }
+
+  const python = resolveHermesPython(command, agentRoot);
+  const expected = JSON.stringify([...JUNE_GITHUB_TOOL_NAMES].sort());
+  const registryProbe = [
+    "import json, os",
+    "from hermes_cli.plugins import discover_plugins",
+    "discover_plugins(force=True)",
+    "from tools.registry import registry",
+    "expected = json.loads(os.environ['JUNE_GITHUB_EXPECTED_TOOLS'])",
+    "actual = registry.get_tool_names_for_toolset('june_github')",
+    "assert actual == expected, (actual, expected)",
+    "toolsets = {registry.get_entry(name).toolset for name in actual}",
+    "assert toolsets == {'june_github'}, toolsets",
+  ].join("; ");
+  execFileSync(python, ["-c", registryProbe], {
+    cwd: agentRoot,
+    env: {
+      ...process.env,
+      HERMES_HOME: hermesHome,
+      JUNE_HERMES_HOME: hermesHome,
+      JUNE_GITHUB_EXPECTED_TOOLS: expected,
+      PYTHONDONTWRITEBYTECODE: "1",
+      PYTHONNOUSERSITE: "1",
+    },
+    stdio: "pipe",
+  });
+}
+
+function resolveHermesAgentRoot(command: string): string {
+  const realCommand = realpathSync(command);
+  const commandDir = dirname(realCommand);
+  const commandParent = dirname(commandDir);
+  const candidates = [
+    basename(commandParent).toLowerCase() === "venv"
+      ? dirname(commandParent)
+      : join(commandParent, "hermes-agent"),
+    join(homedir(), ".hermes", "hermes-agent"),
+  ];
+  const root = candidates.find((candidate) =>
+    existsSync(join(candidate, "hermes_cli", "plugins.py")),
+  );
+  if (!root) {
+    throw new Error(`could not resolve pinned Hermes checkout from ${command}`);
+  }
+  return realpathSync(root);
+}
+
+function resolveHermesPython(command: string, agentRoot: string): string {
+  const commandDir = dirname(realpathSync(command));
+  const bundleRoot = dirname(agentRoot);
+  const candidates =
+    process.platform === "win32"
+      ? [
+          join(agentRoot, "venv", "Scripts", "python.exe"),
+          join(bundleRoot, "python", "current", "python.exe"),
+          join(commandDir, "python.exe"),
+        ]
+      : [
+          join(agentRoot, "venv", "bin", "python3.11"),
+          join(agentRoot, "venv", "bin", "python3"),
+          join(agentRoot, "venv", "bin", "python"),
+          join(bundleRoot, "python", "current", "bin", "python3.11"),
+          join(commandDir, "python3.11"),
+          join(commandDir, "python3"),
+          join(commandDir, "python"),
+        ];
+  const python = candidates.find(existsSync);
+  if (!python) {
+    throw new Error(`could not resolve pinned Hermes Python from ${command}`);
+  }
+  return python;
 }
 
 /**

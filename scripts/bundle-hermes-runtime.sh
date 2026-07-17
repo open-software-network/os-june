@@ -48,6 +48,21 @@ ensure_no_symlinks() {
 $leftover_links"
 }
 
+sync_june_plugins() {
+  local source="$root/src-tauri/resources/hermes-plugins/june_github"
+  local destination="$out/hermes-agent/plugins/june_github"
+  local plugin_file
+  [ -f "$source/plugin.yaml" ] || die "June GitHub plugin manifest missing: $source/plugin.yaml"
+  [ -f "$source/__init__.py" ] || die "June GitHub plugin source missing: $source/__init__.py"
+  rm -rf "$destination"
+  mkdir -p "$destination"
+  for plugin_file in plugin.yaml __init__.py; do
+    cp "$source/$plugin_file" "$destination/$plugin_file"
+    cmp -s "$source/$plugin_file" "$destination/$plugin_file" \
+      || die "June GitHub plugin overlay mismatch: $plugin_file"
+  done
+}
+
 sign_macho_files() {
   if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
     log "signing Mach-O files as: $APPLE_SIGNING_IDENTITY"
@@ -83,6 +98,9 @@ run_self_test() {
   esac
   "$selftest/hermes/python/current/bin/python3.11" -c "import hermes_cli.main" \
     || die "self-test failed: bare interpreter cannot import hermes_cli (pth broken)"
+  HERMES_HOME="$test_home" PYTHONDONTWRITEBYTECODE=1 \
+    "$selftest/hermes/python/current/bin/python3.11" -c "from hermes_cli.plugins import discover_plugins; discover_plugins(force=True); from tools.registry import registry; expected = sorted(['list_repositories', 'get_repository', 'list_directory', 'read_file', 'search_code', 'list_issues', 'get_issue', 'list_issue_comments', 'list_pull_requests', 'get_pull_request', 'list_pull_request_files', 'read_pull_request_file_diff', 'list_pull_request_commits', 'list_pull_request_reviews', 'list_pull_request_review_comments', 'list_pull_request_checks']); actual = registry.get_tool_names_for_toolset('june_github'); assert actual == expected, (actual, expected); assert {registry.get_entry(name).toolset for name in actual} == {'june_github'}" \
+    || die "self-test failed: june_github did not register the exact 16-tool toolset"
   HERMES_PLUGIN_ROOT="$selftest/hermes/hermes-agent/plugins" \
     "$selftest/hermes/python/current/bin/python3.11" \
     -c "import os, sys; sys.path.insert(0, os.environ['HERMES_PLUGIN_ROOT']); from cron import jobs; assert '/hermes-agent/cron/jobs.py' in jobs.__file__.replace('\\\\', '/'), jobs.__file__" \
@@ -131,6 +149,7 @@ log "pin: $commit"
 work="$out_parent/work"
 if bundle_is_reusable; then
   log "using cached Hermes bundle for pin: $commit"
+  sync_june_plugins
   ensure_no_symlinks
   # Always sign restored binaries with the currently imported Developer ID cert.
   sign_macho_files
@@ -283,6 +302,11 @@ log "precompiling bytecode (checked-hash)"
 # Some shipped templates/vendored files don't compile; that only costs them
 # the precompile (sitecustomize stops runtime writes), so don't fail the build.
 "$py" -m compileall -q --invalidation-mode checked-hash "$out/hermes-agent" "$base_sp" >/dev/null 2>&1 || true
+
+# Apply the app-owned extension after bytecode precompilation so its runtime
+# directory contains exactly the two signed source files and no generated
+# cache. Cached bundles take the same replacement path above.
+sync_june_plugins
 
 # No symlinks may survive anywhere in the bundle (Tauri bundler limitation,
 # see above) — fail loudly here instead of opaquely at app-bundling time.

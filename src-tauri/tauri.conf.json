@@ -128,6 +128,7 @@
     ],
     "resources": {
       "../.tauri-hermes/hermes": "native/hermes",
+      "resources/hermes-plugins": "native/hermes-plugins",
       "resources/hermes-skills": "native/hermes-skills"
     }
   }

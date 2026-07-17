@@ -41,6 +41,16 @@ const HERMES_SOURCE_TARBALL_URL: &str =
 const HERMES_SOURCE_TARBALL_SHA256: &str =
     "7a9bd367066183898831c2760f269368ab54b458a1d1b51d14ef1f484dd490cc";
 const BUNDLED_HERMES_SKILLS_RESOURCE_DIR: &str = "native/hermes-skills";
+const BUNDLED_HERMES_PLUGINS_RESOURCE_DIR: &str = "native/hermes-plugins";
+const JUNE_GITHUB_PLUGIN_DIR_NAME: &str = "june_github";
+const JUNE_GITHUB_PLUGIN_MANIFEST: &[u8] =
+    include_bytes!("../resources/hermes-plugins/june_github/plugin.yaml");
+const JUNE_GITHUB_PLUGIN_SOURCE: &[u8] =
+    include_bytes!("../resources/hermes-plugins/june_github/__init__.py");
+const JUNE_GITHUB_PLUGIN_FILES: [(&str, &[u8]); 2] = [
+    ("plugin.yaml", JUNE_GITHUB_PLUGIN_MANIFEST),
+    ("__init__.py", JUNE_GITHUB_PLUGIN_SOURCE),
+];
 const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
 const HERMES_IMAGE_EDIT_SOURCE_MAX_BYTES: usize = 50 * 1024 * 1024;
@@ -404,6 +414,7 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_TUI_TOOLSETS",
     "HERMES_MODEL",
     "HERMES_PROVIDER",
+    "PYTHONDONTWRITEBYTECODE",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "VENICE_API_KEY",
@@ -5601,6 +5612,7 @@ fn build_hermes_tui_debug_launcher_script(
     ));
     script.push_str("export NO_PROXY='127.0.0.1,localhost,::1'\n");
     script.push_str("export no_proxy='127.0.0.1,localhost,::1'\n");
+    script.push_str("export PYTHONDONTWRITEBYTECODE='1'\n");
     if let Some(hint) = environment_hint {
         script.push_str(&format!(
             "export HERMES_ENVIRONMENT_HINT={}\n",
@@ -5857,6 +5869,7 @@ async fn resolve_hermes_command(
     }
 
     if let Some(command) = bundled_hermes_command(app) {
+        let _ = github_plugin_verified_for_source(app, HermesCommandSource::BundledRuntime)?;
         return Ok(HermesCommandResolution {
             command: command.to_string_lossy().into_owned(),
             source: HermesCommandSource::BundledRuntime,
@@ -5866,6 +5879,7 @@ async fn resolve_hermes_command(
     let managed_install_dir = managed_hermes_runtime_dir(app)?.join("hermes-agent");
     let managed_command = hermes_venv_command(&managed_install_dir.join("venv"));
     if managed_command.exists() && managed_hermes_runtime_current(app)? {
+        let _ = github_plugin_verified_for_source(app, HermesCommandSource::ManagedRuntime)?;
         ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
         return Ok(HermesCommandResolution {
             command: managed_command.to_string_lossy().into_owned(),
@@ -5888,6 +5902,7 @@ async fn resolve_hermes_command(
     }
 
     if managed_command.exists() {
+        let _ = github_plugin_verified_for_source(app, HermesCommandSource::ManagedRuntime)?;
         ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
         return Ok(HermesCommandResolution {
             command: managed_command.to_string_lossy().into_owned(),
@@ -5972,6 +5987,166 @@ fn hermes_venv_command(venv_dir: &Path) -> PathBuf {
         venv_dir.join("Scripts").join("hermes.exe")
     } else {
         venv_dir.join("bin").join("hermes")
+    }
+}
+
+fn sync_managed_june_github_plugin(install_dir: &Path) -> Result<PathBuf, AppError> {
+    let plugins_dir = install_dir.join("plugins");
+    match fs::symlink_metadata(&plugins_dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => {
+            return Err(AppError::new(
+                "hermes_github_plugin_sync_failed",
+                "Managed Hermes plugins path is not a trusted directory.",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir_all(&plugins_dir).map_err(|error| {
+                AppError::new("hermes_github_plugin_sync_failed", error.to_string())
+            })?;
+        }
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_github_plugin_sync_failed",
+                error.to_string(),
+            ));
+        }
+    }
+
+    let plugin_dir = plugins_dir.join(JUNE_GITHUB_PLUGIN_DIR_NAME);
+    match fs::symlink_metadata(&plugin_dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(metadata) if metadata.is_dir() => {
+            fs::remove_dir_all(&plugin_dir).map_err(|error| {
+                AppError::new("hermes_github_plugin_sync_failed", error.to_string())
+            })?;
+        }
+        Ok(_) => {
+            fs::remove_file(&plugin_dir).map_err(|error| {
+                AppError::new("hermes_github_plugin_sync_failed", error.to_string())
+            })?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_github_plugin_sync_failed",
+                error.to_string(),
+            ));
+        }
+    }
+    fs::create_dir_all(&plugin_dir)
+        .map_err(|error| AppError::new("hermes_github_plugin_sync_failed", error.to_string()))?;
+
+    for (name, bytes) in JUNE_GITHUB_PLUGIN_FILES {
+        atomic_replace_plugin_file(&plugin_dir.join(name), bytes)?;
+    }
+    if !june_github_plugin_matches_embedded(&plugin_dir) {
+        return Err(AppError::new(
+            "hermes_github_plugin_sync_failed",
+            "Managed GitHub extension did not match the signed app bytes after replacement.",
+        ));
+    }
+
+    Ok(plugin_dir)
+}
+
+fn atomic_replace_plugin_file(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    let parent = path.parent().ok_or_else(|| {
+        AppError::new(
+            "hermes_github_plugin_sync_failed",
+            "Managed GitHub extension path has no parent directory.",
+        )
+    })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        AppError::new(
+            "hermes_github_plugin_sync_failed",
+            "Managed GitHub extension path has no file name.",
+        )
+    })?;
+    let temp_path = parent.join(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    let write_result = (|| -> io::Result<()> {
+        let mut temp_file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)?;
+        temp_file.write_all(bytes)?;
+        temp_file.sync_all()?;
+        drop(temp_file);
+        replace_file(&temp_path, path)?;
+        if fs::read(path)? != bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "GitHub extension readback differs from embedded bytes",
+            ));
+        }
+        #[cfg(unix)]
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(AppError::new(
+            "hermes_github_plugin_sync_failed",
+            error.to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn june_github_plugin_matches_embedded(plugin_dir: &Path) -> bool {
+    JUNE_GITHUB_PLUGIN_FILES
+        .iter()
+        .all(|(name, bytes)| fs::read(plugin_dir.join(name)).is_ok_and(|actual| actual == *bytes))
+}
+
+fn github_plugin_verified_for_source(
+    app: &AppHandle,
+    source: HermesCommandSource,
+) -> Result<bool, AppError> {
+    github_plugin_verified_for_source_with(
+        source,
+        || {
+            let resource_dir = app.path().resource_dir().map_err(|error| {
+                AppError::new("hermes_github_plugin_verify_failed", error.to_string())
+            })?;
+            let signed_resource_plugin = resource_dir
+                .join(BUNDLED_HERMES_PLUGINS_RESOURCE_DIR)
+                .join(JUNE_GITHUB_PLUGIN_DIR_NAME);
+            let runtime_plugin = resource_dir
+                .join("native")
+                .join("hermes")
+                .join("hermes-agent")
+                .join("plugins")
+                .join(JUNE_GITHUB_PLUGIN_DIR_NAME);
+            Ok(june_github_plugin_matches_embedded(&signed_resource_plugin)
+                && june_github_plugin_matches_embedded(&runtime_plugin))
+        },
+        || managed_hermes_runtime_dir(app).map(|dir| dir.join("hermes-agent")),
+    )
+}
+
+fn github_plugin_verified_for_source_with<B, M>(
+    source: HermesCommandSource,
+    verify_bundled: B,
+    managed_install_dir: M,
+) -> Result<bool, AppError>
+where
+    B: FnOnce() -> Result<bool, AppError>,
+    M: FnOnce() -> Result<PathBuf, AppError>,
+{
+    match source {
+        HermesCommandSource::BundledRuntime => verify_bundled(),
+        HermesCommandSource::ManagedRuntime => {
+            let plugin_dir = sync_managed_june_github_plugin(&managed_install_dir()?)?;
+            Ok(june_github_plugin_matches_embedded(&plugin_dir))
+        }
+        HermesCommandSource::EnvOverride
+        | HermesCommandSource::UserLocalFallback
+        | HermesCommandSource::PathFallback => Ok(false),
     }
 }
 
@@ -6504,6 +6679,7 @@ fn apply_isolated_hermes_env(
     }
     cmd.env("HERMES_HOME", hermes_home)
         .env("HERMES_DASHBOARD_SESSION_TOKEN", token)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("NO_PROXY", "127.0.0.1,localhost,::1")
         .env("no_proxy", "127.0.0.1,localhost,::1");
     if let Some(hint) = environment_hint {
@@ -6518,9 +6694,8 @@ fn apply_isolated_hermes_env(
 /// sandboxed" and surface that honestly in the UI.
 ///
 /// The profile is written to `app_data_dir` itself, deliberately *outside* every
-/// granted write root (the `hermes/` and `hermes-runtime/` subdirs), so the
-/// jailed agent can't rewrite the policy that governs it or the one the next
-/// spawn will read.
+/// granted write root, so the jailed agent can't rewrite the policy that
+/// governs it or the one the next spawn will read.
 #[cfg(target_os = "macos")]
 fn sandbox_secret_read_paths(manifest_dir: &Path, image_source_key_path: PathBuf) -> Vec<PathBuf> {
     vec![
@@ -6544,10 +6719,9 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
         return None;
     }
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let runtime_dir = managed_hermes_runtime_dir(app).ok()?;
     let app_data_dir = crate::app_paths::app_data_dir(app).ok()?;
     let image_source_key_path = image_source_capability_secret_path(&app_data_dir);
-    let write_roots = sandbox_write_roots(hermes_home, &runtime_dir);
+    let write_roots = sandbox_write_roots(hermes_home);
     let config_write_path = sandbox_config_write_path(hermes_home);
     let config_temp_prefix = sandbox_config_temp_prefix(hermes_home);
     // Block the jailed agent from reading the connector token stores: the
@@ -6641,10 +6815,9 @@ fn env_flag_enabled(name: &str) -> bool {
 /// arbitrary directory — a project-dir feature would need an explicit, validated
 /// grant instead.
 #[cfg(target_os = "macos")]
-fn sandbox_write_roots(hermes_home: &Path, runtime_dir: &Path) -> Vec<PathBuf> {
+fn sandbox_write_roots(hermes_home: &Path) -> Vec<PathBuf> {
     let mut roots = vec![
         hermes_home.to_path_buf(),
-        runtime_dir.to_path_buf(),
         // Shared temp dirs, used mainly as a fallback when $TMPDIR is unset.
         PathBuf::from("/private/tmp"),
         PathBuf::from("/private/var/tmp"),
@@ -11321,6 +11494,117 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
+    mod github_plugin_tests {
+        use super::*;
+
+        #[test]
+        fn managed_github_plugin_overlay_replaces_tampered_files_with_embedded_bytes() {
+            let runtime = tempfile::tempdir().expect("runtime tempdir");
+            let plugin_dir = runtime
+                .path()
+                .join("hermes-agent")
+                .join("plugins")
+                .join("june_github");
+            fs::create_dir_all(&plugin_dir).expect("plugin dir");
+            fs::write(plugin_dir.join("plugin.yaml"), b"tampered").expect("tampered manifest");
+            fs::write(plugin_dir.join("__init__.py"), b"tampered").expect("tampered source");
+
+            let synced = sync_managed_june_github_plugin(&runtime.path().join("hermes-agent"))
+                .expect("sync managed plugin");
+
+            assert_eq!(synced, plugin_dir);
+            assert_eq!(
+                fs::read(synced.join("plugin.yaml")).expect("read manifest"),
+                JUNE_GITHUB_PLUGIN_MANIFEST
+            );
+            assert_eq!(
+                fs::read(synced.join("__init__.py")).expect("read source"),
+                JUNE_GITHUB_PLUGIN_SOURCE
+            );
+        }
+
+        #[test]
+        fn unsupported_or_user_local_runtime_source_disables_github_extension() {
+            for source in [
+                HermesCommandSource::EnvOverride,
+                HermesCommandSource::UserLocalFallback,
+                HermesCommandSource::PathFallback,
+            ] {
+                let verified = github_plugin_verified_for_source_with(
+                    source,
+                    || panic!("unverified source must not resolve a bundled plugin path"),
+                    || panic!("unverified source must not resolve a managed command path"),
+                )
+                .expect("unverified source result");
+                assert!(!verified, "{source:?} must fail closed");
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn sandbox_write_roots_exclude_managed_runtime_and_plugin_source() {
+            let home = PathBuf::from("/Users/test");
+            let hermes_home = home
+                .join("Library")
+                .join("Application Support")
+                .join("june")
+                .join("hermes");
+            let managed_runtime = home
+                .join("Library")
+                .join("Application Support")
+                .join("june")
+                .join("hermes-runtime");
+            let resource_plugin = PathBuf::from("/Applications/June.app")
+                .join("Contents")
+                .join("Resources")
+                .join(BUNDLED_HERMES_PLUGINS_RESOURCE_DIR)
+                .join(JUNE_GITHUB_PLUGIN_DIR_NAME);
+            let roots = sandbox_write_roots(&hermes_home);
+
+            assert!(!roots.contains(&managed_runtime));
+            assert!(!roots.contains(&resource_plugin));
+
+            let profile = build_sandbox_profile(
+                &home,
+                &roots,
+                &sandbox_config_write_path(&hermes_home),
+                &sandbox_config_temp_prefix(&hermes_home),
+                &[],
+                false,
+            );
+            assert!(!profile.contains(&format!(
+                "(subpath {})",
+                sbpl_quote(&managed_runtime.to_string_lossy())
+            )));
+            assert!(!profile.contains(&format!(
+                "(subpath {})",
+                sbpl_quote(&resource_plugin.to_string_lossy())
+            )));
+        }
+
+        #[test]
+        fn isolated_env_disables_python_bytecode_writes() {
+            let mut command = Command::new("hermes");
+            apply_isolated_hermes_env(&mut command, Path::new("/tmp/hermes-home"), "token", None);
+            let envs: HashMap<String, String> = command
+                .get_envs()
+                .filter_map(|(key, value)| {
+                    value.map(|value| {
+                        (
+                            key.to_string_lossy().into_owned(),
+                            value.to_string_lossy().into_owned(),
+                        )
+                    })
+                })
+                .collect();
+
+            assert_eq!(
+                envs.get("PYTHONDONTWRITEBYTECODE").map(String::as_str),
+                Some("1")
+            );
+        }
+    }
+
     #[test]
     fn ensure_video_defaults_injects_missing_knobs_under_the_keys_june_api_reads() {
         let mut body = serde_json::json!({ "prompt": "a calm lake" });
@@ -15456,10 +15740,13 @@ mcp_servers:
     fn write_roots_are_scoped_and_exclude_the_var_folders_blanket() {
         let hermes_home = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
         let runtime_dir = PathBuf::from("/Users/test/Library/Application Support/june/runtime");
-        let roots = sandbox_write_roots(&hermes_home, &runtime_dir);
+        let roots = sandbox_write_roots(&hermes_home);
 
         assert!(roots.contains(&hermes_home), "workspace root missing");
-        assert!(roots.contains(&runtime_dir), "runtime root missing");
+        assert!(
+            !roots.contains(&runtime_dir),
+            "managed runtime source must stay read-only"
+        );
         // The blanket /private/var/folders (parent of every app's caches) must
         // not be a write root — only this app's $TMPDIR may slip under it.
         assert!(
@@ -15644,13 +15931,20 @@ mcp_servers:
     /// that a string-content assertion would miss.
     #[cfg(target_os = "macos")]
     #[test]
-    fn generated_profile_is_enforced_by_the_kernel() {
+    fn sandbox_generated_profile_is_enforced_by_the_kernel() {
         let dir = tempfile::tempdir().expect("tempdir");
         // Canonicalize so the profile's subpaths match the realpaths the kernel
         // resolves (/var/folders -> /private/var/folders).
         let home = std::fs::canonicalize(dir.path()).expect("canonicalize home");
         let workspace = home.join("workspace");
         std::fs::create_dir_all(&workspace).expect("create workspace");
+        let managed_runtime = home.join("hermes-runtime").join("hermes-agent");
+        let plugin_source = managed_runtime
+            .join("plugins")
+            .join(JUNE_GITHUB_PLUGIN_DIR_NAME);
+        std::fs::create_dir_all(&plugin_source).expect("create plugin source");
+        std::fs::write(plugin_source.join("__init__.py"), "PROBE = 'ok'\n")
+            .expect("seed plugin source");
         std::fs::create_dir_all(home.join(".ssh")).expect("create .ssh");
         std::fs::write(home.join(".ssh").join("id_secret"), "TOPSECRET").expect("seed secret");
 
@@ -15712,6 +16006,47 @@ mcp_servers:
             out.status.success() && config.exists(),
             "atomic config replacement should be allowed: {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Python must still import from the now read-only managed runtime. The
+        // bytecode env prevents an import from trying to create __pycache__ in
+        // the signed or managed extension source.
+        let plugin_parent = plugin_source.parent().expect("plugin parent");
+        let plugin_source_json =
+            serde_json::to_string(&plugin_parent.to_string_lossy()).expect("encode plugin path");
+        let python_probe = format!(
+            "import sys; sys.path.insert(0, {plugin_source_json}); import june_github; assert june_github.PROBE == 'ok'"
+        );
+        let out = run(&format!(
+            "PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -c {}",
+            shell_single_quote(&python_probe)
+        ));
+        assert!(
+            out.status.success(),
+            "Python should import from read-only runtime source: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !plugin_source.join("__pycache__").exists(),
+            "Python must not write bytecode into extension source"
+        );
+
+        let runtime_tamper = managed_runtime.join("tampered.txt");
+        let out = run(&format!("echo bad > {}", sbpl_shell_quote(&runtime_tamper)));
+        assert!(
+            !out.status.success() && !runtime_tamper.exists(),
+            "managed runtime source must be read-only"
+        );
+        let extension_source = plugin_source.join("__init__.py");
+        let out = run(&format!(
+            "echo tampered > {}",
+            sbpl_shell_quote(&extension_source)
+        ));
+        assert!(
+            !out.status.success()
+                && std::fs::read_to_string(&extension_source).expect("read extension")
+                    == "PROBE = 'ok'\n",
+            "extension source must be read-only"
         );
 
         // Denied: write outside the workspace (home root is not a write root here).

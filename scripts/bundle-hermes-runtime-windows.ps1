@@ -14,6 +14,29 @@ function Fail([string]$Message) {
   throw "[bundle-hermes-windows] $Message"
 }
 
+function Sync-JunePlugins([string]$AgentDirectory) {
+  $source = Join-Path $root "src-tauri\resources\hermes-plugins\june_github"
+  $destination = Join-Path $AgentDirectory "plugins\june_github"
+  foreach ($file in @("plugin.yaml", "__init__.py")) {
+    if (!(Test-Path -LiteralPath (Join-Path $source $file) -PathType Leaf)) {
+      Fail "June GitHub plugin resource is missing: $file."
+    }
+  }
+
+  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $destination
+  New-Item -ItemType Directory -Force -Path $destination | Out-Null
+  foreach ($file in @("plugin.yaml", "__init__.py")) {
+    $sourceFile = Join-Path $source $file
+    $destinationFile = Join-Path $destination $file
+    Copy-Item -LiteralPath $sourceFile -Destination $destinationFile -Force
+    $sourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceFile).Hash
+    $destinationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $destinationFile).Hash
+    if ($sourceHash -ne $destinationHash) {
+      Fail "June GitHub plugin overlay SHA-256 mismatch: $file."
+    }
+  }
+}
+
 function Invoke-Native {
   param(
     [Parameter(Mandatory = $true)][string]$FilePath,
@@ -320,6 +343,10 @@ try {
 } catch {
   Log "bytecode precompile skipped some files"
 }
+
+# Replace the app-owned extension after bytecode precompilation so the runtime
+# overlay contains exactly the two canonical source files and no cache.
+Sync-JunePlugins $agentDir
 
 $links = Get-ChildItem -Path $out -Recurse -Force -Attributes ReparsePoint -ErrorAction SilentlyContinue |
   Select-Object -First 5
