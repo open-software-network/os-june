@@ -134,3 +134,4 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #825 | Greptile (stale initial SHA) | 1 | 0 | suggested forward-compatible attribute-style decorator discovery, but the exact pinned source hash rejects any decorator-shape drift before the smoke runs |
 | #825 | Octopus (bot) | 0 | — | unavailable because the organization monthly AI quota was exhausted; no review verdict was produced |
 | #825 | Codex (bot, exact head) | 1 | 1 | found failed Hermes initialization discarded a batch while the client retained attached chip state; drove ordered batch restoration plus executable retry coverage |
+| #825 | Adversarial (codex, retry convergence) | 1 | 1 | found a stale initialization callback could outlive reset and overwrite a newer prompt's queue and running state; drove prompt-generation ownership plus combined reset and stale-failure coverage |

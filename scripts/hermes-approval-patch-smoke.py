@@ -325,6 +325,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
             "history_version": 3,
             "image_counter": 1,
             "running": False,
+            "prompt_generation": 7,
         }
         namespace["_sessions"]["reset-session"] = reset_session
         reset_result = {}
@@ -366,11 +367,13 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert reset_attachment_result["response"].get("result", {}).get("attached") is True
         assert len(reset_session["attached_images"]) == 1, reset_session
         assert "stale-before-reset.png" not in reset_session["attached_images"]
+        assert reset_session["prompt_generation"] == 8, reset_session
 
     # Lock the queue ownership boundary across prompt.submit. Acceptance must
     # detach an immutable batch under the same history lock used by queue writes,
     # then hand only that batch to the asynchronous success path. Initialization
     # failure restores the local batch ahead of later attachments for retry.
+    # Reset and newer-prompt generations must invalidate stale callbacks.
     prompt_submit = _rpc_method(tree, "prompt.submit")
     history_lock_blocks = [
         node
@@ -404,6 +407,22 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         len(submitted_batch_assigns),
         len(prompt_queue_clears),
     )
+    generation_assigns = [
+        node
+        for node in ast.walk(prompt_lock)
+        if isinstance(node, ast.Assign)
+        and any(_session_subscript(target, "prompt_generation") for target in node.targets)
+    ]
+    captured_generation_assigns = [
+        node
+        for node in ast.walk(prompt_lock)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "prompt_generation"
+            for target in node.targets
+        )
+    ]
+    assert len(generation_assigns) == len(captured_generation_assigns) == 1
     run_after_ready = next(
         node
         for node in ast.walk(prompt_submit)
@@ -417,9 +436,11 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         and node.func.id == "_run_prompt_submit"
     ]
     assert len(prompt_run_calls) == 1, len(prompt_run_calls)
-    assert len(prompt_run_calls[0].args) == 5, ast.dump(prompt_run_calls[0])
+    assert len(prompt_run_calls[0].args) == 6, ast.dump(prompt_run_calls[0])
     assert isinstance(prompt_run_calls[0].args[4], ast.Name)
     assert prompt_run_calls[0].args[4].id == "submitted_images"
+    assert isinstance(prompt_run_calls[0].args[5], ast.Name)
+    assert prompt_run_calls[0].args[5].id == "prompt_generation"
     failure_queue_assignments = [
         node
         for node in ast.walk(run_after_ready)
@@ -436,6 +457,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     failure_session = {
         "attached_images": ["later-attachment.png"],
         "history_lock": threading.Lock(),
+        "prompt_generation": 1,
         "running": True,
     }
     failure_namespace = {
@@ -444,6 +466,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         "session": failure_session,
         "text": "retry me",
         "submitted_images": ["submitted-attachment.png"],
+        "prompt_generation": 1,
         "_wait_agent": lambda _session, _rid: {
             "error": {"message": "synthetic Hermes initialization failure"}
         },
@@ -465,8 +488,52 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         "later-attachment.png",
     ], failure_session
     assert failure_session["running"] is False
+
+    # A reset invalidates the original prompt generation. If a newer prompt is
+    # accepted before the old initialization waiter reports failure, the stale
+    # callback must not restore pre-reset images, emit an obsolete error, or
+    # clear the newer prompt's running/inflight state.
+    reset_session["prompt_generation"] += 1
+    reset_session["running"] = True
+    newer_inflight = {"user": "newer prompt", "streaming": True}
+    reset_session["inflight_turn"] = newer_inflight
+    queue_after_reset = list(reset_session["attached_images"])
+    stale_events = []
+    stale_namespace = {
+        "rid": "stale-failed-prompt",
+        "sid": "reset-session",
+        "session": reset_session,
+        "text": "stale prompt",
+        "submitted_images": ["pre-reset-attachment.png"],
+        "prompt_generation": 7,
+        "_wait_agent": lambda _session, _rid: {
+            "error": {"message": "stale Hermes initialization failure"}
+        },
+        "_emit": lambda *args: stale_events.append(args),
+        "_clear_inflight_turn": lambda target: target.__setitem__(
+            "inflight_turn", None
+        ),
+        "_run_prompt_submit": lambda *_args: None,
+    }
+    exec(
+        compile(
+            "from __future__ import annotations\n" + ast.unparse(run_after_ready),
+            str(root / "tui_gateway" / "server.py"),
+            "exec",
+        ),
+        stale_namespace,
+    )
+    stale_namespace["run_after_agent_ready"]()
+    assert reset_session["attached_images"] == queue_after_reset, reset_session
+    assert reset_session["running"] is True
+    assert reset_session["inflight_turn"] is newer_inflight
+    assert stale_events == [], stale_events
+
     run_prompt_submit = _function(tree, "_run_prompt_submit")
     assert any(argument.arg == "images" for argument in run_prompt_submit.args.args)
+    assert any(
+        argument.arg == "prompt_generation" for argument in run_prompt_submit.args.args
+    )
     all_prompt_run_calls = [
         node
         for node in ast.walk(tree)
@@ -475,7 +542,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         and node.func.id == "_run_prompt_submit"
     ]
     assert len(all_prompt_run_calls) == 5, len(all_prompt_run_calls)
-    assert all(len(node.args) == 5 for node in all_prompt_run_calls)
+    assert all(len(node.args) == 6 for node in all_prompt_run_calls)
     explicit_batches = [node.args[4] for node in all_prompt_run_calls]
     assert sum(
         isinstance(batch, ast.Name) and batch.id == "submitted_images"
@@ -484,6 +551,23 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     assert sum(
         isinstance(batch, ast.List) and not batch.elts for batch in explicit_batches
     ) == 4
+    explicit_generations = [node.args[5] for node in all_prompt_run_calls]
+    assert sum(
+        isinstance(generation, ast.Name) and generation.id == "prompt_generation"
+        for generation in explicit_generations
+    ) == 1
+    assert sum(
+        isinstance(generation, ast.Constant) and generation.value is None
+        for generation in explicit_generations
+    ) == 4
+    reset_agent = _function(tree, "_reset_session_agent")
+    reset_generation_assigns = [
+        node
+        for node in ast.walk(reset_agent)
+        if isinstance(node, ast.Assign)
+        and any(_session_subscript(target, "prompt_generation") for target in node.targets)
+    ]
+    assert len(reset_generation_assigns) == 1, reset_generation_assigns
     queue_helper = _function(tree, "_queue_attached_image")
     serialized_appends = [
         node

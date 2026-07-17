@@ -40,7 +40,7 @@ note (copy `docs/hermes-upstream-template.md` to
 
 ## June compatibility patch set
 
-The current pin also carries the checksum-gated `june-approval-memory-v6` patch set
+The current pin also carries the checksum-gated `june-approval-memory-v7` patch set
 documented in `docs/hermes-upstream-v2026.6.19.md`. Its targeted-approval portion
 follows ADR 0025. On every pin bump:
 
@@ -71,7 +71,8 @@ follows ADR 0025. On every pin bump:
    lightweight runtime session returned by `session.create` without waiting
    for full Hermes initialization. Confirm `prompt.submit` atomically detaches
    its image batch, failed Hermes initialization restores that batch ahead of
-   later image attachments for retry, and a successful prompt consumes it exactly
+   later image attachments for retry, reset or a newer prompt invalidates stale
+   initialization callbacks, and a successful prompt consumes its batch exactly
    once. Exercise these invariants against a new runtime session in the
    compatibility smoke.
 7. Build both macOS and Windows bundles. Confirm both packaging paths apply the

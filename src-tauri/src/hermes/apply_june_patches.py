@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v6"
+PATCH_SET = "june-approval-memory-v7"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "b0bab3ffceaa0d70f1209707d57e911769a3a6878ae381b0c7ff4a22d44fc485",
+    "tui_gateway/server.py": "725b742c38b15a8e72dd6dfc6104613377470911093245f6790fc293b380fb8a",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -772,7 +772,9 @@ def patch_server(source: str) -> str:
 
     # Persist the DB row lazily, now that the user has actually sent a message.
 ''',
-        '''        _start_inflight_turn(session, text)
+        '''        session["prompt_generation"] = int(session.get("prompt_generation", 0)) + 1
+        prompt_generation = session["prompt_generation"]
+        _start_inflight_turn(session, text)
         # Detach this prompt's immutable image batch at the same boundary that
         # marks the session running. Later attachments remain queued for the next
         # prompt, regardless of whether Hermes initialization succeeds.
@@ -791,7 +793,9 @@ def patch_server(source: str) -> str:
     threading.Thread(target=run_after_agent_ready, daemon=True).start()
 ''',
         '''            return
-        _run_prompt_submit(rid, sid, session, text, submitted_images)
+        _run_prompt_submit(
+            rid, sid, session, text, submitted_images, prompt_generation
+        )
 
     threading.Thread(target=run_after_agent_ready, daemon=True).start()
 ''',
@@ -799,13 +803,31 @@ def patch_server(source: str) -> str:
     )
     source = replace_once(
         source,
-        '''            with session["history_lock"]:
+        '''        if err:
+            _emit(
+                "error",
+                sid,
+                {
+                    "message": err.get("error", {}).get(
+                        "message", "agent initialization failed"
+                    )
+                },
+            )
+            with session["history_lock"]:
                 session["running"] = False
                 _clear_inflight_turn(session)
             return
-        _run_prompt_submit(rid, sid, session, text, submitted_images)
+        _run_prompt_submit(
+            rid, sid, session, text, submitted_images, prompt_generation
+        )
 ''',
-        '''            with session["history_lock"]:
+        '''        if err:
+            with session["history_lock"]:
+                # A reset or newer accepted prompt owns the session now. A stale
+                # initialization callback must not restore pre-reset images or
+                # clear the newer prompt's running and inflight state.
+                if session.get("prompt_generation") != prompt_generation:
+                    return
                 # The client already marked this batch attached. Put it back
                 # ahead of later attachments so a retry preserves both the UI
                 # contract and the original prompt's attachment order.
@@ -814,8 +836,19 @@ def patch_server(source: str) -> str:
                 )
                 session["running"] = False
                 _clear_inflight_turn(session)
+            _emit(
+                "error",
+                sid,
+                {
+                    "message": err.get("error", {}).get(
+                        "message", "agent initialization failed"
+                    )
+                },
+            )
             return
-        _run_prompt_submit(rid, sid, session, text, submitted_images)
+        _run_prompt_submit(
+            rid, sid, session, text, submitted_images, prompt_generation
+        )
 ''',
         "failed prompt image batch restoration",
     )
@@ -827,14 +860,25 @@ def patch_server(source: str) -> str:
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
+        if not isinstance(session.get("inflight_turn"), dict):
+            _start_inflight_turn(session, text)
+    agent = session["agent"]
 ''',
         '''def _run_prompt_submit(
-    rid, sid: str, session: dict, text: Any, images
+    rid, sid: str, session: dict, text: Any, images, prompt_generation
 ) -> None:
     with session["history_lock"]:
+        if (
+            prompt_generation is not None
+            and session.get("prompt_generation") != prompt_generation
+        ):
+            return
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(images)
+        if not isinstance(session.get("inflight_turn"), dict):
+            _start_inflight_turn(session, text)
+        agent = session["agent"]
 ''',
         "prompt image batch consumption",
     )
@@ -842,7 +886,7 @@ def patch_server(source: str) -> str:
         source,
         '''            _run_prompt_submit(rid, sid, session, text)
 ''',
-        '''            _run_prompt_submit(rid, sid, session, text, [])
+        '''            _run_prompt_submit(rid, sid, session, text, [], None)
 ''',
         2,
         "notification prompt image isolation",
@@ -851,7 +895,9 @@ def patch_server(source: str) -> str:
         source,
         '''                _run_prompt_submit(rid, sid, session, goal_followup)
 ''',
-        '''                _run_prompt_submit(rid, sid, session, goal_followup, [])
+        '''                _run_prompt_submit(
+                    rid, sid, session, goal_followup, [], None
+                )
 ''',
         "goal continuation image isolation",
     )
@@ -859,7 +905,7 @@ def patch_server(source: str) -> str:
         source,
         '''                    _run_prompt_submit(rid, sid, session, synth)
 ''',
-        '''                    _run_prompt_submit(rid, sid, session, synth, [])
+        '''                    _run_prompt_submit(rid, sid, session, synth, [], None)
 ''',
         "completion prompt image isolation",
     )
@@ -872,6 +918,10 @@ def patch_server(source: str) -> str:
     # arrives during the rebuild must wait and queue after reset, never receive
     # an acknowledgement and then get erased by reset's queue clear.
     with session["history_lock"]:
+        # Invalidate callbacks waiting on an earlier lazy agent build before
+        # constructing the replacement agent. They may finish only after this
+        # lock is released and must not mutate the reset session.
+        session["prompt_generation"] = int(session.get("prompt_generation", 0)) + 1
         tokens = _set_session_context(session["session_key"])
         try:
             new_agent = _make_agent(
