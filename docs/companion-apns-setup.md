@@ -24,7 +24,8 @@ device-owner authentication before displaying the cache. Native transport
 requests honor task cancellation, and the background refresh cancels after 20
 seconds so the app reports no data instead of overrunning its wake window. iOS
 may decline to wake the app; foreground reconnect and resynchronization must
-still work.
+still work. Existing credentials created with the older when-unlocked access
+class are migrated after the next successful Keychain access.
 
 Do not add PushKit, VoIP claims, background audio, notification content, or an
 APNs key to the mobile bundle. Remove invalid/unregistered device tokens during

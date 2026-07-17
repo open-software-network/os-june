@@ -12,6 +12,11 @@ struct Snapshot: Codable {
   var activeRecording: [String: JSONValue]?
 }
 
+private struct PendingPairingRevocation: Codable {
+  let relayURL: URL
+  let deviceID: UUID
+}
+
 enum JSONValue: Codable {
   case string(String), unsignedInteger(UInt64), signedInteger(Int64), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
 
@@ -54,6 +59,7 @@ final class CompanionService {
   private var unlocked = false
   private var reconnectAttempt = 0
   private var reconnectTask: Task<Void, Never>?
+  private let pendingRevocationAccount = "pending.pairing-revocation"
 
   private init() {
     linked = try? SecureStore.shared.read(account: "linked.configuration")
@@ -64,18 +70,31 @@ final class CompanionService {
         to: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
       )
     }
+    try? SecureStore.shared.migrateAccessibility(
+      account: "device.credential",
+      to: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    )
     snapshot = restoredSnapshot()
     NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
       Task { @MainActor in self.lock() }
     }
     NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { _ in
-      Task { @MainActor in await self.reconnectIfPossible() }
+      Task { @MainActor in
+        do { _ = try await self.reconcilePendingRevocation() }
+        catch { self.presentPendingRevocationError() }
+        await self.reconnectIfPossible()
+      }
+    }
+    Task { @MainActor in
+      do { _ = try await self.reconcilePendingRevocation() }
+      catch { self.presentPendingRevocationError() }
     }
   }
 
   func snapshotJSON() throws -> String { try jsonString(snapshot) }
 
   func pair(payloadJSON: String) async throws -> String {
+    _ = try await reconcilePendingRevocation()
     guard let data = payloadJSON.data(using: .utf8) else { throw CompanionNativeError.invalidData("The pairing code is invalid.") }
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -95,8 +114,21 @@ final class CompanionService {
     emitSnapshot()
     let identity = try DeviceIdentityService.shared.identity()
     let deviceCredential = try pairingCredential()
-    var approvedByDesktop = false
+    var cleanupRecorded = false
     do {
+      // Persist the cleanup route before the relay can activate this credential,
+      // so every ambiguous network outcome remains recoverable after relaunch.
+      try SecureStore.shared.save(
+        JSONEncoder().encode(
+          PendingPairingRevocation(
+            relayURL: payload.relayUrl,
+            deviceID: identity.deviceID
+          )
+        ),
+        account: pendingRevocationAccount,
+        accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      )
+      cleanupRecorded = true
       _ = try await pairingAPI.propose(
         payload: payload,
         identity: identity,
@@ -107,7 +139,6 @@ final class CompanionService {
         payload: payload,
         pairingProof: pairingProof
       )
-      approvedByDesktop = true
       guard approved.desktopPublicKey.count == 32 else {
         throw CompanionNativeError.invalidData("The Mac identity is invalid.")
       }
@@ -128,6 +159,7 @@ final class CompanionService {
         account: "linked.configuration",
         accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
       )
+      SecureStore.shared.delete(account: pendingRevocationAccount)
       linked = configuration
       unlocked = true
       snapshot.connection = "ready"
@@ -135,18 +167,21 @@ final class CompanionService {
       await registerStoredPushToken()
     } catch {
       transport.disconnect()
-      if approvedByDesktop {
-        try? await pairingAPI.revoke(
-          relayURL: payload.relayUrl,
-          deviceID: identity.deviceID,
-          deviceCredential: deviceCredential.value
-        )
-        SecureStore.shared.delete(account: "linked.configuration")
-        SecureStore.shared.delete(account: "device.credential")
-        DeviceIdentityService.shared.delete()
+      if cleanupRecorded {
+        do {
+          try await pairingAPI.revoke(
+            relayURL: payload.relayUrl,
+            deviceID: identity.deviceID,
+            deviceCredential: deviceCredential.value
+          )
+          clearLocalAuthorization(connection: "unpaired")
+        } catch {
+          presentPendingRevocationError()
+        }
+      } else {
+        snapshot = Snapshot(connection: "unpaired", notes: [], agentSessions: [])
+        emitSnapshot()
       }
-      snapshot.connection = "unpaired"
-      emitSnapshot()
       throw error
     }
     return try await refresh()
@@ -160,6 +195,9 @@ final class CompanionService {
   }
 
   func refresh() async throws -> String {
+    if try await reconcilePendingRevocation() {
+      return try snapshotJSON()
+    }
     try await refreshSnapshot(allowLocked: false, connection: "ready")
     return try snapshotJSON()
   }
@@ -375,6 +413,7 @@ final class CompanionService {
     SecureStore.shared.delete(account: "linked.configuration")
     SecureStore.shared.delete(account: "device.credential")
     SecureStore.shared.delete(account: "cache.key")
+    SecureStore.shared.delete(account: pendingRevocationAccount)
     DeviceIdentityService.shared.delete()
     if let url = try? cacheURL() {
       try? FileManager.default.removeItem(at: url)
@@ -382,6 +421,28 @@ final class CompanionService {
     linked = nil
     unlocked = false
     snapshot = Snapshot(connection: connection, notes: [], agentSessions: [])
+    emitSnapshot()
+  }
+
+  private func reconcilePendingRevocation() async throws -> Bool {
+    guard let data = try SecureStore.shared.read(account: pendingRevocationAccount) else {
+      return false
+    }
+    guard let pending = try? JSONDecoder().decode(PendingPairingRevocation.self, from: data) else {
+      throw CompanionNativeError.invalidData("Pending pairing cleanup could not be restored.")
+    }
+    try await pairingAPI.revoke(
+      relayURL: pending.relayURL,
+      deviceID: pending.deviceID,
+      deviceCredential: try deviceCredential()
+    )
+    clearLocalAuthorization(connection: "unpaired")
+    return true
+  }
+
+  private func presentPendingRevocationError() {
+    snapshot.connection = "error"
+    snapshot.message = "Pairing cleanup could not be confirmed. Keep June Companion installed and try again when online."
     emitSnapshot()
   }
 
@@ -530,6 +591,10 @@ final class CompanionService {
           !credential.isEmpty else {
       throw CompanionNativeError.unavailable("Link this device from June on your Mac.")
     }
+    try SecureStore.shared.migrateAccessibility(
+      account: "device.credential",
+      to: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    )
     return credential
   }
 
@@ -538,6 +603,10 @@ final class CompanionService {
        let value = String(data: stored, encoding: .utf8),
        let bytes = Data(base64URL: value),
        bytes.count == 32 {
+      try SecureStore.shared.migrateAccessibility(
+        account: "device.credential",
+        to: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      )
       return DeviceCredential(value: value, hash: Array(SHA256.hash(data: bytes)))
     }
     let credential = try DeviceCredential.generate()

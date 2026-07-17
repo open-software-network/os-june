@@ -105,6 +105,8 @@ struct PendingPairingApproval {
     desktop: Device,
     mobile: Device,
     link: DeviceLink,
+    expires_at_ms: u64,
+    durably_activated: bool,
 }
 
 enum PairingApprovalPreparation {
@@ -715,26 +717,28 @@ impl CompanionRelay {
         mobile_device_id: Uuid,
     ) -> Result<PairingResponse, ApiError> {
         self.ensure_enabled()?;
-        let approval = match self.prepare_pairing_approval(user_id, pairing_id, mobile_device_id)? {
-            PairingApprovalPreparation::Approved(response) => return Ok(response),
-            PairingApprovalPreparation::Pending(approval) => approval,
-        };
+        let mut approval =
+            match self.prepare_pairing_approval(user_id, pairing_id, mobile_device_id)? {
+                PairingApprovalPreparation::Approved(response) => return Ok(response),
+                PairingApprovalPreparation::Pending(approval) => approval,
+            };
         let mut guard = PairingApprovalGuard::new(self, pairing_id);
         if approval.desktop.credential_hash.is_some() || approval.mobile.credential_hash.is_none() {
             return Err(ApiError::bad_request("device_identity_conflict"));
         }
-        match tokio::time::timeout(
+        let persisted_durably = match tokio::time::timeout(
             PAIRING_APPROVAL_PERSIST_TIMEOUT,
             self.persist_pairing_approval(user_id, &approval),
         )
         .await
         {
-            Ok(Ok(())) => {}
+            Ok(Ok(persisted_durably)) => persisted_durably,
             Ok(Err(error)) => {
                 return Err(match error {
                     CompanionStoreError::IdentityConflict => {
                         ApiError::bad_request("device_identity_conflict")
                     }
+                    CompanionStoreError::PairingExpired => ApiError::not_found("pairing_not_found"),
                     CompanionStoreError::Unavailable { .. } => {
                         tracing::error!(%error, "companion pairing persistence failed");
                         ApiError::service_overloaded()
@@ -748,7 +752,8 @@ impl CompanionRelay {
                 );
                 return Err(ApiError::service_overloaded());
             }
-        }
+        };
+        approval.durably_activated = persisted_durably;
         let response = self.finish_pairing_approval(user_id, pairing_id, &approval)?;
         guard.disarm();
         Ok(response)
@@ -783,6 +788,7 @@ impl CompanionRelay {
             return Err(ApiError::service_overloaded());
         }
         let desktop_device_id = pairing.desktop_device_id;
+        let expires_at_ms = pairing.expires_at_ms;
         let desktop = state
             .devices
             .get(&desktop_device_id)
@@ -822,6 +828,8 @@ impl CompanionRelay {
                 desktop,
                 mobile,
                 link: DeviceLink::new(desktop_device_id, mobile_device_id),
+                expires_at_ms,
+                durably_activated: false,
             },
         )))
     }
@@ -830,9 +838,9 @@ impl CompanionRelay {
         &self,
         user_id: &UserId,
         approval: &PendingPairingApproval,
-    ) -> Result<(), CompanionStoreError> {
+    ) -> Result<bool, CompanionStoreError> {
         let Some(store) = &self.store else {
-            return Ok(());
+            return Ok(false);
         };
         store
             .approve_pairing(
@@ -844,9 +852,11 @@ impl CompanionRelay {
                         left_device_id: approval.link.0,
                         right_device_id: approval.link.1,
                     },
+                    expires_at_ms: approval.expires_at_ms,
                 },
             )
-            .await
+            .await?;
+        Ok(true)
     }
 
     fn reset_pairing_approval(&self, pairing_id: Uuid) {
@@ -874,7 +884,7 @@ impl CompanionRelay {
             .get_mut(&pairing_id)
             .filter(|pairing| &pairing.user_id == user_id)
             .ok_or_else(|| ApiError::not_found("pairing_not_found"))?;
-        if pairing.expires_at_ms < now_ms() {
+        if !approval.durably_activated && pairing.expires_at_ms < now_ms() {
             pairing.approving = false;
             return Err(ApiError::not_found("pairing_not_found"));
         }
@@ -1736,6 +1746,50 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(!state.pairings[&pairing.pairing_id].approved);
         assert!(!state.links.contains(&approval.link));
+    }
+
+    #[test]
+    fn durably_activated_pairing_finishes_after_in_memory_expiry() {
+        let relay = CompanionRelay::default();
+        let desktop = Uuid::new_v4();
+        let mobile = Uuid::new_v4();
+        let proof = [7; SECRET_BYTES];
+        let pairing = relay
+            .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
+            .unwrap();
+        relay
+            .propose_pairing(
+                pairing.pairing_id,
+                mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
+                &proof,
+            )
+            .unwrap();
+        let PairingApprovalPreparation::Pending(approval) = relay
+            .prepare_pairing_approval(&user(), pairing.pairing_id, mobile)
+            .unwrap()
+        else {
+            panic!("pairing should be pending approval")
+        };
+        relay
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pairings
+            .get_mut(&pairing.pairing_id)
+            .unwrap()
+            .expires_at_ms = 0;
+
+        let mut approval = approval;
+        approval.durably_activated = true;
+        relay
+            .finish_pairing_approval(&user(), pairing.pairing_id, &approval)
+            .unwrap();
+        let state = relay
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(state.pairings[&pairing.pairing_id].approved);
+        assert!(state.links.contains(&approval.link));
     }
 
     #[test]

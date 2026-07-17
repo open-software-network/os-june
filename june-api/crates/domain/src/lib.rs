@@ -875,6 +875,7 @@ pub struct CompanionApprovalRecord {
     pub desktop: CompanionDeviceRecord,
     pub mobile: CompanionDeviceRecord,
     pub link: CompanionLinkRecord,
+    pub expires_at_ms: u64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -887,6 +888,8 @@ pub struct CompanionSnapshot {
 pub enum CompanionStoreError {
     #[error("companion device identity conflicts with an existing record")]
     IdentityConflict,
+    #[error("companion pairing expired before it could be persisted")]
+    PairingExpired,
     #[error("companion store unavailable: {reason}")]
     Unavailable { reason: String },
 }

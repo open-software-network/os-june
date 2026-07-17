@@ -72,6 +72,13 @@ private struct APIEnvelope<T: Decodable>: Decodable {
   let message: String?
 }
 
+private struct CompanionAPIRequestError: LocalizedError {
+  let statusCode: Int
+  let message: String
+
+  var errorDescription: String? { message }
+}
+
 struct ValidatedInboundFrame {
   let operationID: UUID
   let sequence: UInt64
@@ -187,13 +194,19 @@ final class PairingAPI {
   }
 
   func revoke(relayURL: URL, deviceID: UUID, deviceCredential: String) async throws {
-    let _: [String: Bool] = try await request(
-      relayURL: relayURL,
-      path: "/v1/companion/devices/\(deviceID.uuidString)/revoke",
-      method: "POST",
-      deviceCredential: deviceCredential,
-      body: [:]
-    )
+    do {
+      let _: [String: Bool] = try await request(
+        relayURL: relayURL,
+        path: "/v1/companion/devices/\(deviceID.uuidString)/revoke",
+        method: "POST",
+        deviceCredential: deviceCredential,
+        body: [:]
+      )
+    } catch let error as CompanionAPIRequestError where [401, 404].contains(error.statusCode) {
+      // The relay has confirmed that this credential no longer authorizes the
+      // device, which is equivalent to a completed revocation for local cleanup.
+      return
+    }
   }
 
   func registerPush(
@@ -235,7 +248,10 @@ final class PairingAPI {
     }
     let envelope = try JSONDecoder().decode(APIEnvelope<T>.self, from: data)
     guard (200..<300).contains(http.statusCode), envelope.success, let result = envelope.data else {
-      throw CompanionNativeError.unavailable(envelope.message ?? "The companion relay rejected the request.")
+      throw CompanionAPIRequestError(
+        statusCode: http.statusCode,
+        message: envelope.message ?? "The companion relay rejected the request."
+      )
     }
     return result
   }

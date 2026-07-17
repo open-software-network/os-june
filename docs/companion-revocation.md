@@ -15,6 +15,14 @@ Keychain, and clears render state. A live desktop revocation event performs the
 same native cleanup immediately, including deletion of the encrypted cache and
 its Keychain key, even if no SwiftUI screen is observing the connection.
 
+Before proposing a pairing, the companion records the relay address and device
+id in Keychain. If any later pairing step fails, it keeps that record, the
+device identity, and the credential until the relay confirms revocation. An
+unavailable or ambiguous relay response retries at launch, foreground, refresh,
+or before another pairing. Only a successful revocation, or a relay response
+confirming that the credential is already unauthorized, deletes the local
+authorization material.
+
 Revocation is per device. It does not sign out or revoke other devices. A
 revoked device cannot reconnect, route/receive frames, or register a push token.
 Relinking creates fresh device identity state through a new desktop-approved QR

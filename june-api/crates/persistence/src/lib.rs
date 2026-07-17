@@ -139,6 +139,8 @@ impl CompanionStore for PgCompanionStore {
         approval: CompanionApprovalRecord,
     ) -> Result<(), CompanionStoreError> {
         let mut transaction = self.pool.begin().await.map_err(companion_query_error)?;
+        let expires_at_ms = i64::try_from(approval.expires_at_ms)
+            .map_err(|_| CompanionStoreError::PairingExpired)?;
         for device in [approval.desktop, approval.mobile] {
             if device.user_id != *user_id {
                 return Err(CompanionStoreError::IdentityConflict);
@@ -173,19 +175,35 @@ impl CompanionStore for PgCompanionStore {
                 return Err(CompanionStoreError::IdentityConflict);
             }
         }
-        sqlx::query(
+        let linked = sqlx::query(
             r"
             INSERT INTO companion_device_links (left_device_id, right_device_id, user_id)
-            VALUES ($1, $2, $3)
+            SELECT $1, $2, $3
+            WHERE clock_timestamp() <= to_timestamp(($4::double precision) / 1000.0)
             ON CONFLICT (left_device_id, right_device_id) DO NOTHING
             ",
         )
         .bind(approval.link.left_device_id)
         .bind(approval.link.right_device_id)
         .bind(&user_id.0)
+        .bind(expires_at_ms)
         .execute(&mut *transaction)
         .await
         .map_err(companion_query_error)?;
+        if linked.rows_affected() != 1 {
+            let expired = sqlx::query_scalar::<_, bool>(
+                "SELECT clock_timestamp() > to_timestamp(($1::double precision) / 1000.0)",
+            )
+            .bind(expires_at_ms)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(companion_query_error)?;
+            return Err(if expired {
+                CompanionStoreError::PairingExpired
+            } else {
+                CompanionStoreError::IdentityConflict
+            });
+        }
         transaction.commit().await.map_err(companion_query_error)?;
         Ok(())
     }

@@ -38,8 +38,10 @@ pairing secret ready locally, and confirms that relay socket is connected. A
 confirmed remote approval failure rolls back that local readiness; an unknown
 network outcome preserves it so an approved phone is never stranded between
 the two boundaries. The relay also refuses to start its bounded persistence
-step in the final 16 seconds of the pairing window and rechecks expiry before
-activating the in-memory link.
+step in the final 16 seconds of the pairing window. Postgres checks the pairing
+expiry in the same transaction that activates the durable device link. Only a
+durably activated link may finish in memory after the wall-clock expiry passes;
+an expired transaction rolls back the device and link writes together.
 
 ## Capabilities
 
