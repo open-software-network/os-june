@@ -289,6 +289,16 @@ on-device. June ships each connector as a read MCP server (`june_gmail`,
 on-device provider proxy (see [ADR-0016](docs/adr/0016-private-connectors-local-mode.md)).
 _Avoid_: integration (unqualified), plugin, the Google API.
 
+**GitHub read broker**:
+The on-device, interactive-session-only Rust boundary for June's fixed GitHub
+read tools. It admits the exact June-managed Hermes dashboard process through
+kernel peer-process identity over a private Unix-domain socket, then delegates
+typed operations to the GitHub read service. The socket path is not authority;
+no GitHub bearer or provider credential enters Hermes configuration. See
+[ADR-0019](docs/adr/0019-kernel-authenticated-github-read-broker.md).
+_Avoid_: GitHub proxy (there is no generic HTTP pass-through), GitHub MCP
+(the privileged boundary is not an MCP server), token broker.
+
 **Local mode**:
 The default (and, in v1, only) connector trust model: the OAuth grant is
 minted to the device and stored in the Keychain, and connector calls go

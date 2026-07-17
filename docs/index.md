@@ -28,6 +28,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0016](adr/0016-private-connectors-local-mode.md) — private connectors (local mode): Keychain-only token custody, app-proxied MCP calls straight to Google, trust modes enforced in the Rust proxy, earned autonomy, event-trigger daemon
 - [adr/0017](adr/0017-browser-use-via-june-extension.md) — browser use in the user's own browser via the June extension, two tracks behind one broker; computer use productizes the pinned toolset
 - [adr/0018](adr/0018-session-model-changes-apply-at-agent-run-boundaries.md) — session model changes are staged at Send and applied only at the next idle agent-run boundary
+- [adr/0019](adr/0019-kernel-authenticated-github-read-broker.md) — interactive GitHub reads use a peer-pid-authenticated Unix-domain broker and a verified bundled tool extension, never a shared bearer
 
 ## Enforceable rules (spec/)
 
@@ -76,6 +77,7 @@ Per-repo config the engineering skills read before acting (see the
     - [Installation return refresh design](superpowers/specs/2026-07-15-github-install-return-refresh-design.md) — one-shot reconciliation after GitHub installation and repository-management browser handoffs
     - [Revocation reconnect design](superpowers/specs/2026-07-16-github-revocation-reconnect-design.md) — [implementation plan](superpowers/plans/2026-07-16-github-revocation-reconnect.md) for fail-closed token revocation classification and immediate reconnect-state synchronization
     - [Agent reads design](superpowers/specs/2026-07-16-github-agent-reads-design.md) — [implementation plan](superpowers/plans/2026-07-16-github-agent-reads.md) for read-only repository, issue, and pull request tools bound to selected repository IDs through the on-device Rust proxy
+    - [Agent-read capability isolation design](superpowers/specs/2026-07-17-github-agent-read-capability-isolation-design.md) — [ADR 0019](adr/0019-kernel-authenticated-github-read-broker.md) replaces the shared bearer/MCP transport with a peer-pid-authenticated broker and verified bundled tool extension
   - [Linear](plugins/linear-prd.md) — [implementation plan](plugins/linear-implementation-plan.md)
   - [Documents](plugins/documents-prd.md) — [implementation plan](plugins/documents-implementation-plan.md)
   - [Spreadsheets](plugins/spreadsheets-prd.md) — [implementation plan](plugins/spreadsheets-implementation-plan.md)

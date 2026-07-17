@@ -1,5 +1,13 @@
 # GitHub agent reads design
 
+> Transport update (2026-07-17): the bearer-authenticated loopback MCP design
+> below was rejected during security review because shared Hermes configuration
+> did not isolate the bearer from sibling subprocesses. The fixed read contract,
+> repository authorization, and content policy remain current; the transport and
+> runtime capability boundary are superseded by
+> [GitHub agent-read capability isolation design](2026-07-17-github-agent-read-capability-isolation-design.md)
+> and [ADR 0019](../../adr/0019-kernel-authenticated-github-read-broker.md).
+
 ## Context
 
 GitHub connector Phase 0 authenticates a GitHub App user, keeps the rotating
