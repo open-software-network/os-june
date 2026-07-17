@@ -606,6 +606,32 @@ pub fn companion_complete_frontend_request(
     })
 }
 
+#[tauri::command]
+pub fn companion_cancel_frontend_request(
+    runtime: State<'_, CompanionRuntime>,
+    operation_id: Uuid,
+) -> Result<(), AppError> {
+    let removed = runtime
+        .pending_frontend
+        .lock()
+        .map_err(|_| {
+            AppError::new(
+                "companion_frontend_unavailable",
+                "Companion response lock failed.",
+            )
+        })?
+        .remove(&operation_id)
+        .is_some();
+    finish_frontend_activity(&runtime, operation_id)?;
+    if !removed {
+        return Err(AppError::new(
+            "companion_request_expired",
+            "The companion request already expired.",
+        ));
+    }
+    Ok(())
+}
+
 fn begin_frontend_activity(runtime: &CompanionRuntime, operation_id: Uuid) -> Result<(), AppError> {
     let inserted = runtime
         .active_frontend_operations

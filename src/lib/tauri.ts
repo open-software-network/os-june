@@ -2519,3 +2519,7 @@ export async function companionCompleteFrontendRequest(
 ) {
   return invoke<void>("companion_complete_frontend_request", { operationId, result });
 }
+
+export async function companionCancelFrontendRequest(operationId: string) {
+  return invoke<void>("companion_cancel_frontend_request", { operationId });
+}

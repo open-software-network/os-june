@@ -1,4 +1,4 @@
-import type { CompanionFrontendRequest } from "./tauri";
+import { companionCancelFrontendRequest, type CompanionFrontendRequest } from "./tauri";
 
 export const COMPANION_FRONTEND_QUEUE_EVENT = "june:companion-frontend-queue";
 
@@ -21,7 +21,10 @@ export function companionFrontendConsumerAvailable() {
 
 export function queueCompanionFrontendRequest(request: CompanionFrontendRequest) {
   queuedRequests.set(request.operationId, request);
-  window.setTimeout(() => queuedRequests.delete(request.operationId), 30_000);
+  window.setTimeout(() => {
+    if (!queuedRequests.delete(request.operationId)) return;
+    void companionCancelFrontendRequest(request.operationId).catch(() => undefined);
+  }, 30_000);
   window.dispatchEvent(new Event(COMPANION_FRONTEND_QUEUE_EVENT));
 }
 

@@ -37,8 +37,9 @@ pairing creation and approval. Pairing insertion is synchronized with the
 logout boundary so an in-flight relay response cannot recreate QR state after
 the map is cleared. Frontend execution remains in the barrier even if its relay
 waiter is cancelled, so emitted or queued companion work must finish before the
-account changes. June then marks that account's local rows revoked and
-removes its Keychain identity without requiring a token refresh or network
+account changes. A queue timeout releases only a request that no consumer took;
+claimed work must complete. June then marks that account's local rows revoked
+and removes its Keychain identity without requiring a token refresh or network
 access. It then
 best-effort revokes every locally known companion plus the account-scoped
 desktop identity before clearing account tokens. Another user on the same Mac

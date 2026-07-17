@@ -151,6 +151,7 @@ pub fn run() {
             companion::companion_rename_device,
             companion::companion_revoke_device,
             companion::companion_complete_frontend_request,
+            companion::companion_cancel_frontend_request,
             companion::companion_publish_agent_event,
             commands::create_note,
             commands::list_notes,

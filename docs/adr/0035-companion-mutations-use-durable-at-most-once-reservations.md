@@ -42,11 +42,12 @@ interrupted cross-boundary mutation completed.
   account-operation barrier, including relay dispatch and pairing approval,
   before it revokes account-scoped local authorization. Frontend execution is
   tracked independently of the relay waiter, so aborting transport cannot hide
-  an emitted or queued React operation from that barrier. Relay connection and
-  send operations are time-bounded; the transport is cancellation-aware and
-  force-joined within the shutdown bound. If frontend, pairing, or other
-  account work cannot stop within its bound, logout fails without clearing
-  tokens.
+  an emitted or queued React operation from that barrier. A frontend queue item
+  releases the barrier on expiry only when the queue atomically proves no
+  consumer took it. Relay connection and send operations are time-bounded; the
+  transport is cancellation-aware and force-joined within the shutdown bound.
+  If claimed frontend, pairing, or other account work cannot stop within its
+  bound, logout fails without clearing tokens.
 
 ## Consequences
 
