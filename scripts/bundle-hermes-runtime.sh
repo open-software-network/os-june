@@ -260,19 +260,15 @@ find "$out/python/current/bin" -type l -delete
 rm -rf "$out/python/current/lib/pkgconfig" "$out/python/current/share"
 
 log "installing python deps (uv sync --extra all --locked)"
-# Same tiers as install.sh "python-deps": the hash-verified lockfile sync
-# first; when the shipped lockfile is out of sync with pyproject (it is at
-# the current pin — install.sh hits the identical fallback on-device), fall
-# back to resolving the curated [all] extra from PyPI.
+# The GitHub-capable runtime never falls back to ordinary resolution. A stale
+# or incomplete lockfile is a release-blocking error, not permission to choose
+# new dependency bytes at build time.
 (
   cd "$out/hermes-agent"
   export UV_PROJECT_ENVIRONMENT="$out/hermes-agent/venv"
   export UV_NO_CONFIG=1
   export UV_PYTHON_INSTALL_DIR="$out/python"
-  if ! "$uv_cmd" sync --extra all --locked --python "$py" >/dev/null 2>&1; then
-    log "lockfile sync unavailable; falling back to: uv pip install -e .[all]"
-    "$uv_cmd" pip install -p "$out/hermes-agent/venv" -e ".[all]" >/dev/null
-  fi
+  "$uv_cmd" sync --extra all --locked --python "$py" >/dev/null
 )
 
 venv_sp="$(find "$out/hermes-agent/venv/lib" -maxdepth 1 -type d -name 'python3.*' | head -1)/site-packages"

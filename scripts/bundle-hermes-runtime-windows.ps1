@@ -308,23 +308,11 @@ if (!(Test-Path -LiteralPath $py -PathType Leaf)) {
 
 Log "installing python deps"
 $venvDir = Join-Path $agentDir "venv"
-$syncSucceeded = $true
-try {
-  Invoke-Uv $uv @("sync", "--extra", "all", "--locked", "--python", $py) @{
-    UV_PROJECT_ENVIRONMENT = $venvDir
-    UV_NO_CONFIG = "1"
-    UV_PYTHON_INSTALL_DIR = $pythonRoot
-  } $agentDir
-} catch {
-  $syncSucceeded = $false
-  Log "lockfile sync unavailable; falling back to: uv pip install -e .[all]"
-}
-if (!$syncSucceeded) {
-  Invoke-Uv $uv @("pip", "install", "-p", $venvDir, "-e", ".[all]") @{
-    UV_NO_CONFIG = "1"
-    UV_PYTHON_INSTALL_DIR = $pythonRoot
-  } $agentDir
-}
+Invoke-Uv $uv @("sync", "--extra", "all", "--locked", "--python", $py) @{
+  UV_PROJECT_ENVIRONMENT = $venvDir
+  UV_NO_CONFIG = "1"
+  UV_PYTHON_INSTALL_DIR = $pythonRoot
+} $agentDir
 
 $venvSp = Join-Path $venvDir "Lib\site-packages"
 $baseSp = Join-Path $pythonRoot "current\Lib\site-packages"
