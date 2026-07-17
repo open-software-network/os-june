@@ -1,14 +1,30 @@
-// Task 2 wires this protocol into the broker listener and production executor.
+// Task 5 wires this broker into the interactive bridge runtime.
 #![allow(dead_code)]
 
+#[cfg(target_os = "macos")]
+use crate::{commands, connectors::github::PlatformGitHubTokenVault};
 use crate::{
-    connectors::github_read::{GitHubReadEnvelope, GitHubReadRequest},
+    connectors::github_read::{GitHubReadEnvelope, GitHubReadRequest, GitHubReadService},
     domain::types::AppError,
 };
-use std::{future::Future, io, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    io,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tauri::AppHandle;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+#[cfg(target_os = "macos")]
+use tokio::net::UnixListener;
 #[cfg(unix)]
-use tokio::{net::UnixStream, sync::watch};
+use tokio::net::UnixStream;
+use tokio::{
+    sync::{oneshot, watch},
+    task::JoinHandle,
+};
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
@@ -40,6 +56,295 @@ enum FrameError {
 enum FrameDisposition {
     Continue,
     Close,
+}
+
+#[derive(Debug)]
+struct Admission {
+    pid: Option<u32>,
+    generation: u64,
+    consumed: bool,
+}
+
+pub(super) struct GitHubReadBroker {
+    socket_path: PathBuf,
+    admission: Arc<Mutex<Admission>>,
+    state_tx: watch::Sender<AdmissionState>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    task: JoinHandle<()>,
+}
+
+impl GitHubReadBroker {
+    #[cfg(target_os = "macos")]
+    pub(super) async fn start(
+        app: &AppHandle,
+        service: Arc<GitHubReadService>,
+        socket_dir: &Path,
+        generation: u64,
+    ) -> Result<Self, AppError> {
+        let executor = production_executor(app.clone(), service);
+        let (broker, _) =
+            Self::start_with_executor(socket_dir, generation, executor, REQUEST_DEADLINE).await?;
+        Ok(broker)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub(super) async fn start(
+        _app: &AppHandle,
+        _service: Arc<GitHubReadService>,
+        _socket_dir: &Path,
+        _generation: u64,
+    ) -> Result<Self, AppError> {
+        Err(AppError::new(
+            "github_read_broker_unsupported",
+            "GitHub reads are not supported on this platform.",
+        ))
+    }
+
+    pub(super) fn socket_path(&self) -> &Path {
+        &self.socket_path
+    }
+
+    pub(super) fn authorize_interactive(&self, pid: u32, generation: u64) -> Result<(), AppError> {
+        let mut admission = self.admission.lock().map_err(|_| {
+            AppError::new(
+                "github_read_broker_admission_failed",
+                "GitHub read admission could not be updated.",
+            )
+        })?;
+        if admission.generation != generation {
+            return Err(AppError::new(
+                "github_read_broker_generation_mismatch",
+                "GitHub read admission generation does not match.",
+            ));
+        }
+        if admission.pid.is_some() || admission.consumed {
+            return Err(AppError::new(
+                "github_read_broker_admission_conflict",
+                "GitHub read admission was already registered.",
+            ));
+        }
+
+        admission.pid = Some(pid);
+        self.state_tx
+            .send_replace(AdmissionState::Active { pid, generation });
+        Ok(())
+    }
+
+    pub(super) fn revoke_interactive(&self, pid: u32, generation: u64) {
+        let Ok(admission) = self.admission.lock() else {
+            self.state_tx.send_replace(AdmissionState::Revoked);
+            return;
+        };
+        if admission.pid == Some(pid) && admission.generation == generation {
+            self.state_tx.send_replace(AdmissionState::Revoked);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn start_with_executor(
+        socket_dir: &Path,
+        generation: u64,
+        executor: RequestExecutor,
+        request_deadline: Duration,
+    ) -> Result<(Self, Arc<std::sync::atomic::AtomicUsize>), AppError> {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::create_dir_all(socket_dir).map_err(|_| broker_start_error())?;
+        let socket_path = socket_dir.join(format!(
+            "grb-{generation}-{:016x}.sock",
+            rand::random::<u64>()
+        ));
+        let listener = UnixListener::bind(&socket_path).map_err(|_| broker_start_error())?;
+        if std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).is_err() {
+            drop(listener);
+            let _ = std::fs::remove_file(&socket_path);
+            return Err(broker_start_error());
+        }
+        let mode = match std::fs::metadata(&socket_path) {
+            Ok(metadata) => metadata.permissions().mode() & 0o777,
+            Err(_) => {
+                drop(listener);
+                let _ = std::fs::remove_file(&socket_path);
+                return Err(broker_start_error());
+            }
+        };
+        if mode != 0o600 {
+            drop(listener);
+            let _ = std::fs::remove_file(&socket_path);
+            return Err(broker_start_error());
+        }
+
+        let admission = Arc::new(Mutex::new(Admission {
+            pid: None,
+            generation,
+            consumed: false,
+        }));
+        let (state_tx, _) = watch::channel(AdmissionState::Revoked);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let accepted_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task = tokio::spawn(serve_listener(
+            listener,
+            admission.clone(),
+            state_tx.clone(),
+            executor,
+            request_deadline,
+            accepted_connections.clone(),
+            shutdown_rx,
+        ));
+
+        Ok((
+            Self {
+                socket_path,
+                admission,
+                state_tx,
+                shutdown_tx: Some(shutdown_tx),
+                task,
+            },
+            accepted_connections,
+        ))
+    }
+}
+
+impl Drop for GitHubReadBroker {
+    fn drop(&mut self) {
+        self.state_tx.send_replace(AdmissionState::Revoked);
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+        self.task.abort();
+        let _ = std::fs::remove_file(&self.socket_path);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn broker_start_error() -> AppError {
+    AppError::new(
+        "github_read_broker_start_failed",
+        "GitHub read broker could not start.",
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn production_executor(app: AppHandle, service: Arc<GitHubReadService>) -> RequestExecutor {
+    Arc::new(move |request| {
+        let app = app.clone();
+        let service = service.clone();
+        Box::pin(async move {
+            let repositories = match commands::repositories(&app).await {
+                Ok(repositories) => repositories,
+                Err(error) => return public_error(error, false).body,
+            };
+            let outcome = service
+                .execute(request, &PlatformGitHubTokenVault, &repositories)
+                .await;
+            match outcome.result {
+                Ok(result) => public_success(result, outcome.connector_state_changed),
+                Err(error) => public_error(error, outcome.connector_state_changed).body,
+            }
+        })
+    })
+}
+
+#[cfg(target_os = "macos")]
+async fn serve_listener(
+    listener: UnixListener,
+    admission: Arc<Mutex<Admission>>,
+    state_tx: watch::Sender<AdmissionState>,
+    executor: RequestExecutor,
+    request_deadline: Duration,
+    accepted_connections: Arc<std::sync::atomic::AtomicUsize>,
+    mut shutdown_rx: oneshot::Receiver<()>,
+) {
+    loop {
+        let stream = tokio::select! {
+            _ = &mut shutdown_rx => return,
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => stream,
+                Err(_) => return,
+            },
+        };
+        if !consume_admission(&admission, &state_tx, &stream) {
+            continue;
+        }
+
+        accepted_connections.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let executor = executor.clone();
+        let state_rx = state_tx.subscribe();
+        tokio::spawn(async move {
+            let _ = serve_admitted_connection(stream, executor, state_rx, request_deadline).await;
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn consume_admission(
+    admission: &Mutex<Admission>,
+    state_tx: &watch::Sender<AdmissionState>,
+    stream: &UnixStream,
+) -> bool {
+    let Ok(mut admission) = admission.lock() else {
+        state_tx.send_replace(AdmissionState::Revoked);
+        return false;
+    };
+    let Ok(peer_pid) = peer_pid(stream) else {
+        return false;
+    };
+    let expected_state = AdmissionState::Active {
+        pid: peer_pid,
+        generation: admission.generation,
+    };
+    if admission.pid != Some(peer_pid) || admission.consumed || *state_tx.borrow() != expected_state
+    {
+        return false;
+    }
+    admission.consumed = true;
+    true
+}
+
+#[cfg(target_os = "macos")]
+fn peer_pid(stream: &UnixStream) -> io::Result<u32> {
+    use std::{
+        ffi::{c_int, c_void},
+        os::fd::AsRawFd,
+    };
+
+    const SOL_LOCAL: c_int = 0;
+    const LOCAL_PEERPID: c_int = 2;
+
+    unsafe extern "C" {
+        fn getsockopt(
+            socket: c_int,
+            level: c_int,
+            option_name: c_int,
+            option_value: *mut c_void,
+            option_len: *mut u32,
+        ) -> c_int;
+    }
+
+    let mut pid: c_int = 0;
+    let mut length = std::mem::size_of::<c_int>() as u32;
+    // SAFETY: `stream` owns a valid socket fd for the duration of this call,
+    // `pid` is a correctly sized writable output buffer, and `length` is
+    // initialized to that buffer's size as required by `getsockopt`.
+    let result = unsafe {
+        getsockopt(
+            stream.as_raw_fd(),
+            SOL_LOCAL,
+            LOCAL_PEERPID,
+            std::ptr::from_mut(&mut pid).cast::<c_void>(),
+            std::ptr::from_mut(&mut length),
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length as usize != std::mem::size_of::<c_int>() || pid <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid local peer pid",
+        ));
+    }
+    Ok(pid as u32)
 }
 
 pub(super) struct PublicErrorResponse {
@@ -310,7 +615,10 @@ async fn serve_request_frame(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         sync::watch,
@@ -356,6 +664,282 @@ mod tests {
             pid: std::process::id(),
             generation: 1,
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn successful_response() -> serde_json::Value {
+        serde_json::json!({
+            "success": true,
+            "result": {
+                "trust": "untrusted_repository_content",
+                "data": {"ok": true}
+            },
+            "connectorStateChanged": false
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn list_repositories_request() -> serde_json::Value {
+        serde_json::json!({
+            "operation": "list_repositories",
+            "arguments": {}
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn assert_stream_eof(stream: &mut tokio::net::UnixStream) {
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_millis(250), stream.read(&mut byte))
+            .await
+            .expect("rejected stream should close promptly")
+            .expect("read rejected stream");
+        assert_eq!(read, 0, "rejected stream should read EOF");
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn start_test_broker(
+        socket_dir: &std::path::Path,
+        generation: u64,
+        seen: Arc<Mutex<Vec<GitHubReadRequest>>>,
+        request_deadline: Duration,
+    ) -> (GitHubReadBroker, Arc<AtomicUsize>) {
+        GitHubReadBroker::start_with_executor(
+            socket_dir,
+            generation,
+            recording_executor(seen, successful_response()),
+            request_deadline,
+        )
+        .await
+        .expect("start test broker")
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn registered_dashboard_pid_reuses_one_persistent_connection() {
+        let socket_dir = tempfile::tempdir().expect("socket tempdir");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (broker, accepted_connections) =
+            start_test_broker(socket_dir.path(), 7, seen.clone(), REQUEST_DEADLINE).await;
+        broker
+            .authorize_interactive(std::process::id(), 7)
+            .expect("authorize dashboard pid");
+        let mut client = tokio::net::UnixStream::connect(broker.socket_path())
+            .await
+            .expect("connect admitted dashboard");
+
+        for _ in 0..2 {
+            write_request_frame(&mut client, &list_repositories_request())
+                .await
+                .expect("write request");
+            let response = read_response_frame(&mut client)
+                .await
+                .expect("read response");
+            assert_eq!(response["success"], true);
+        }
+
+        assert_eq!(seen.lock().expect("seen").len(), 2);
+        assert_eq!(accepted_connections.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn same_user_child_process_is_rejected_even_with_socket_path() {
+        let socket_dir = tempfile::tempdir().expect("socket tempdir");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (broker, accepted_connections) =
+            start_test_broker(socket_dir.path(), 7, seen.clone(), REQUEST_DEADLINE).await;
+        broker
+            .authorize_interactive(std::process::id(), 7)
+            .expect("authorize dashboard pid");
+
+        let socket_path = broker.socket_path().to_path_buf();
+        let child = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("python3")
+                .arg("-c")
+                .arg(
+                    r#"import json, socket, struct, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(1)
+s.connect(sys.argv[1])
+body = json.dumps({"operation":"list_repositories","arguments":{}}, separators=(",", ":")).encode()
+s.sendall(struct.pack(">I", len(body)) + body)
+raise SystemExit(0 if s.recv(1) == b"" else 2)"#,
+                )
+                .arg(socket_path)
+                .status()
+                .expect("run same-user child process")
+        })
+        .await
+        .expect("join same-user child process");
+        assert!(
+            child.success(),
+            "child should read EOF from rejected socket"
+        );
+        assert!(seen.lock().expect("seen").is_empty());
+        assert_eq!(accepted_connections.load(Ordering::SeqCst), 0);
+
+        let mut client = tokio::net::UnixStream::connect(broker.socket_path())
+            .await
+            .expect("connect registered dashboard after rejected child");
+        write_request_frame(&mut client, &list_repositories_request())
+            .await
+            .expect("write admitted request");
+        assert_eq!(
+            read_response_frame(&mut client)
+                .await
+                .expect("read admitted response")["success"],
+            true
+        );
+        assert_eq!(seen.lock().expect("seen").len(), 1);
+        assert_eq!(accepted_connections.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn second_connection_cannot_reuse_consumed_admission() {
+        let socket_dir = tempfile::tempdir().expect("socket tempdir");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (broker, accepted_connections) =
+            start_test_broker(socket_dir.path(), 7, seen.clone(), REQUEST_DEADLINE).await;
+        broker
+            .authorize_interactive(std::process::id(), 7)
+            .expect("authorize dashboard pid");
+        let mut first = tokio::net::UnixStream::connect(broker.socket_path())
+            .await
+            .expect("connect first stream");
+        write_request_frame(&mut first, &list_repositories_request())
+            .await
+            .expect("write first request");
+        assert_eq!(
+            read_response_frame(&mut first)
+                .await
+                .expect("read first response")["success"],
+            true
+        );
+
+        let mut second = tokio::net::UnixStream::connect(broker.socket_path())
+            .await
+            .expect("connect second stream");
+        assert_stream_eof(&mut second).await;
+
+        write_request_frame(&mut first, &list_repositories_request())
+            .await
+            .expect("write another request on persistent stream");
+        assert_eq!(
+            read_response_frame(&mut first)
+                .await
+                .expect("read another response")["success"],
+            true
+        );
+        assert_eq!(seen.lock().expect("seen").len(), 2);
+        assert_eq!(accepted_connections.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn revoked_or_wrong_generation_cannot_return_another_frame() {
+        let socket_dir = tempfile::tempdir().expect("socket tempdir");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (broker, accepted_connections) =
+            start_test_broker(socket_dir.path(), 7, seen.clone(), REQUEST_DEADLINE).await;
+        let wrong_generation = broker
+            .authorize_interactive(std::process::id(), 8)
+            .expect_err("generation 8 must not authorize generation 7");
+        assert_eq!(
+            wrong_generation.code,
+            "github_read_broker_generation_mismatch"
+        );
+        let mut wrong_generation_stream = tokio::net::UnixStream::connect(broker.socket_path())
+            .await
+            .expect("connect before valid authorization");
+        assert_stream_eof(&mut wrong_generation_stream).await;
+        assert_eq!(accepted_connections.load(Ordering::SeqCst), 0);
+
+        broker
+            .authorize_interactive(std::process::id(), 7)
+            .expect("authorize matching generation");
+        let mut client = tokio::net::UnixStream::connect(broker.socket_path())
+            .await
+            .expect("connect admitted dashboard");
+        write_request_frame(&mut client, &list_repositories_request())
+            .await
+            .expect("write request");
+        assert_eq!(
+            read_response_frame(&mut client)
+                .await
+                .expect("read response")["success"],
+            true
+        );
+
+        broker.revoke_interactive(std::process::id(), 7);
+        assert_stream_eof(&mut client).await;
+        assert_eq!(seen.lock().expect("seen").len(), 1);
+        assert_eq!(accepted_connections.load(Ordering::SeqCst), 1);
+
+        let already_revoked_dir = tempfile::tempdir().expect("socket tempdir");
+        let already_revoked_seen = Arc::new(Mutex::new(Vec::new()));
+        let (already_revoked, already_revoked_connections) = start_test_broker(
+            already_revoked_dir.path(),
+            11,
+            already_revoked_seen.clone(),
+            REQUEST_DEADLINE,
+        )
+        .await;
+        already_revoked
+            .authorize_interactive(std::process::id(), 11)
+            .expect("authorize dashboard before immediate revocation");
+        already_revoked.revoke_interactive(std::process::id(), 11);
+        let mut late_stream = tokio::net::UnixStream::connect(already_revoked.socket_path())
+            .await
+            .expect("connect after admission was revoked");
+        assert_stream_eof(&mut late_stream).await;
+        assert!(already_revoked_seen.lock().expect("seen").is_empty());
+        assert_eq!(already_revoked_connections.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn broker_socket_is_owner_only_and_stalled_calls_time_out() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let socket_dir = tempfile::tempdir().expect("socket tempdir");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (broker, accepted_connections) = start_test_broker(
+            socket_dir.path(),
+            7,
+            seen.clone(),
+            Duration::from_millis(25),
+        )
+        .await;
+        assert_eq!(
+            std::fs::metadata(broker.socket_path())
+                .expect("socket metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        broker
+            .authorize_interactive(std::process::id(), 7)
+            .expect("authorize dashboard pid");
+        let mut client = tokio::net::UnixStream::connect(broker.socket_path())
+            .await
+            .expect("connect admitted dashboard");
+        client
+            .write_all(&2_u32.to_be_bytes())
+            .await
+            .expect("write incomplete frame prefix");
+        client.write_all(b"{").await.expect("write partial frame");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_stream_eof(&mut client).await;
+        assert!(seen.lock().expect("seen").is_empty());
+        assert_eq!(accepted_connections.load(Ordering::SeqCst), 1);
+
+        let mut retry = tokio::net::UnixStream::connect(broker.socket_path())
+            .await
+            .expect("connect after consumed admission timed out");
+        assert_stream_eof(&mut retry).await;
+        assert_eq!(accepted_connections.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
