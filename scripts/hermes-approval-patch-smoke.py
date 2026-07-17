@@ -345,12 +345,12 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
 
         # Publication releases history_lock before any setup that can acquire
         # _sessions_lock, while the independent publication lock keeps reset
-        # from interleaving between the agent and worker swaps.
+        # from interleaving between the Hermes instance and slash worker swaps.
         publication_attach_started = threading.Event()
         publication_attach_release = threading.Event()
         publication_reset_started = threading.Event()
-        published_agent = types.SimpleNamespace(model="published-model")
-        reset_agent = types.SimpleNamespace(model="reset-model")
+        published_hermes = types.SimpleNamespace(model="published-model")
+        reset_hermes = types.SimpleNamespace(model="reset-model")
 
         class SyntheticSlashWorker:
             def __init__(self, *_args, **_kwargs):
@@ -373,7 +373,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
 
         namespace.update(
             {
-                "_make_agent": lambda *_args, **_kwargs: published_agent,
+                "_make_agent": lambda *_args, **_kwargs: published_hermes,
                 "_config_model_target": lambda: "published-model",
                 "_SlashWorker": SyntheticSlashWorker,
                 "_resolve_model": lambda: "fallback-model",
@@ -412,12 +412,17 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert publication_attach_started.wait(1), (
             "lazy-build worker publication did not start"
         )
+        assert not publication_session["agent_ready"].is_set()
+        namespace["_start_agent_build"]("publication", publication_session)
+        assert not publication_session["agent_ready"].is_set(), (
+            "a duplicate build request exposed a partially published Hermes instance"
+        )
 
-        def make_publication_reset_agent(*_args, **_kwargs):
+        def make_publication_reset_hermes(*_args, **_kwargs):
             publication_reset_started.set()
-            return reset_agent
+            return reset_hermes
 
-        namespace["_make_agent"] = make_publication_reset_agent
+        namespace["_make_agent"] = make_publication_reset_hermes
         publication_reset_result = {}
         publication_reset_thread = threading.Thread(
             target=lambda: publication_reset_result.setdefault(
@@ -444,7 +449,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
             "reset did not resume after lazy-build publication"
         )
         assert publication_reset_started.is_set()
-        assert publication_session["agent"] is reset_agent
+        assert publication_session["agent"] is reset_hermes
         assert publication_reset_result["info"] == {"model": "reset-model"}
 
         # Reset must own the same lock before Hermes construction starts. An

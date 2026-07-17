@@ -10,7 +10,7 @@
 ## June compatibility patch
 
 The upstream pin remains unchanged. June applies the deterministic
-`june-approval-memory-v10` patch set before building the bundled runtime and before
+`june-approval-memory-v11` patch set before building the bundled runtime and before
 finishing a managed runtime install. See
 [ADR 0025](adr/0025-targeted-hermes-approval-protocol.md).
 
@@ -50,12 +50,12 @@ attachment state and original order. Each accepted prompt owns a generation that
 prevents stale callbacks from restoring pre-reset images or clearing newer prompt
 state. Lazy Hermes builds use a separate reset epoch, so ordinary prompt acceptance
 does not suppress the only build. Slow construction stays outside the image queue
-lock. A separate publication lock serializes the agent and worker swap with reset,
-and the image queue lock is released before session-map setup to preserve teardown
-lock order. Reset invalidates pre-reset builds, and a failed reset restores both
-ownership values so the waiting prompt can recover. A successful reset clears any
-obsolete lazy-build error, and a successful prompt consumes its detached batch
-exactly once.
+lock. A separate publication lock serializes the Hermes instance and slash worker
+swap with reset, and the image queue lock is released before session-map setup to
+preserve teardown lock order. Reset invalidates pre-reset builds, and a failed reset
+restores both ownership values so the waiting prompt can recover. A successful reset
+clears any obsolete lazy-build error, and a successful prompt consumes its detached
+batch exactly once.
 
 The patch also coordinates Hermes' central atomic YAML writer with June's Rust
 config writer through an OS advisory lock. Before any stale Hermes snapshot is
@@ -74,7 +74,7 @@ exact source states:
 | `agent/agent_init.py` | `7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b` | `58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e` |
 | `tools/approval.py` | `e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85` | `56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d` |
 | `tools/mcp_tool.py` | `3f0aca90d076a1b0aa5daffd7bb39b0d1a4fee83265f855e68d556e5c8a29d01` | `48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa` |
-| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `287bfe989f7ad4cc7ec3bd94eac79502d9e8eee622e42c1cd82ef9595023fde4` |
+| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `7b541a491948e98be37a1ddf0cccbdd35f60562e8ce568e1c68b9027a7a6a537` |
 | `cron/scheduler.py` | `2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa` | `2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa` |
 | `model_tools.py` | `d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d` | `d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d` |
 | `utils.py` | `572b08bcbdf4a37116f49d1fc72d22854897a5fd8968c2d358103a97589c206c` | `08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5` |

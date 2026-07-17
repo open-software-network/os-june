@@ -28,7 +28,7 @@ describe("June Hermes compatibility patch", () => {
       expect(patcher.match(new RegExp(`"${escaped}": "[a-f0-9]{64}"`, "g"))).toHaveLength(1);
       expect(bridge).toContain(`"${path}",`);
     }
-    expect(patcher).toContain('PATCH_SET = "june-approval-memory-v10"');
+    expect(patcher).toContain('PATCH_SET = "june-approval-memory-v11"');
     for (const provenanceSource of [
       bridge,
       compatibilityMatrix,
@@ -36,7 +36,7 @@ describe("June Hermes compatibility patch", () => {
       pinNote,
       upgradeChecklist,
     ]) {
-      expect(provenanceSource).toContain("june-approval-memory-v10");
+      expect(provenanceSource).toContain("june-approval-memory-v11");
     }
     expect(patcher).toContain("session, err = _sess_nowait(params, rid)");
     expect(patcher).toContain('upstream_request_id = getattr(context, "request_id", None)');
@@ -70,7 +70,7 @@ describe("June Hermes compatibility patch", () => {
   });
 
   it("pins managed installs to the patch set and verifies them before launch", () => {
-    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v10"');
+    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v11"');
     expect(bridge).toContain('include_str!("hermes/apply_june_patches.py")');
     expect(bridge).toContain("verify_managed_hermes_runtime_patch(&managed_install_dir)?");
     for (const mapName of ["PATCHED_SHA256", "POLICY_SHA256"]) {
