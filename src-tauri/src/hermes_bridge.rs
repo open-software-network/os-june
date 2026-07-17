@@ -2,6 +2,7 @@ mod github_read_broker;
 
 use crate::domain::types::AppError;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use github_read_broker::GitHubReadBroker;
 use rand::{distributions::Alphanumeric, Rng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -165,8 +166,11 @@ const JUNE_GCAL_ACTIONS_MCP_SERVER_NAME: &str = "june_gcal_actions";
 const JUNE_GCAL_ACTIONS_MCP_SCRIPT_NAME: &str = "june_gcal_actions_mcp.py";
 const JUNE_GCAL_ACTIONS_MCP_SCRIPT: &str = include_str!("hermes/june_gcal_actions_mcp.py");
 const JUNE_GITHUB_MCP_SERVER_NAME: &str = "june_github";
+#[allow(dead_code)] // Retained through Task 5 for Task 6's explicit cleanup.
 const JUNE_GITHUB_MCP_SCRIPT_NAME: &str = "june_github_mcp.py";
+#[allow(dead_code)] // Retained through Task 5 for Task 6's explicit cleanup.
 const JUNE_GITHUB_MCP_SCRIPT: &str = include_str!("hermes/june_github_mcp.py");
+const JUNE_GITHUB_BROKER_SOCKET_ENV: &str = "JUNE_GITHUB_BROKER_SOCKET";
 /// Dedicated loopback capability for the fixed GitHub read route. This is not
 /// a GitHub credential and is visible only to the `june_github` subprocess.
 const JUNE_GITHUB_PROXY_TOKEN_ENV: &str = "JUNE_GITHUB_PROXY_TOKEN";
@@ -422,6 +426,8 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_DASHBOARD_SESSION_TOKEN",
     "HERMES_ENVIRONMENT_HINT",
     "HERMES_TUI_TOOLSETS",
+    JUNE_GITHUB_BROKER_SOCKET_ENV,
+    JUNE_GITHUB_PROXY_TOKEN_ENV,
     "HERMES_MODEL",
     "HERMES_PROVIDER",
     "PYTHONDONTWRITEBYTECODE",
@@ -499,6 +505,7 @@ struct HermesProcess {
     generation: u64,
     child: Child,
     connection: HermesBridgeConnection,
+    github_broker: Option<GitHubReadBroker>,
 }
 
 struct SharedProviderProxy {
@@ -641,18 +648,11 @@ enum HermesCommandSource {
 }
 
 fn github_toolset_supported_for_runtime(source: HermesCommandSource) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = source;
-        false
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        matches!(
+    cfg!(target_os = "macos")
+        && matches!(
             source,
             HermesCommandSource::BundledRuntime | HermesCommandSource::ManagedRuntime
         )
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1258,7 +1258,6 @@ async fn start_hermes_bridge_inner(
     let hermes_home = resolve_june_hermes_home(app)?;
     let command_resolution = resolve_hermes_command(app, bridge, &hermes_home).await?;
     let python = command_resolution.python.clone();
-    let command_source = command_resolution.source;
     let default_cwd = hermes_home.join("workspace");
     std::fs::create_dir_all(&default_cwd)
         .map_err(|error| AppError::new("hermes_bridge_workspace_failed", error.to_string()))?;
@@ -1281,12 +1280,6 @@ async fn start_hermes_bridge_inner(
         None
     };
     let june_recorder_mcp = sync_june_recorder_mcp(app, &python)?;
-    let june_github_mcp_registration = sync_june_github_mcp(
-        app,
-        &python,
-        github_toolset_supported_for_runtime(command_source),
-    )
-    .await;
     // The four private-connector MCP servers are registered only when at least
     // one Google account is connected (v1: the first connected account).
     let june_connector_mcp = sync_june_connector_mcps(app, &python).await?;
@@ -1301,28 +1294,20 @@ async fn start_hermes_bridge_inner(
     // capability from Hermes, so June has to declare it via config.
     let supports_vision = crate::providers::generation_model_supports_vision().await;
     let config_path = hermes_home.join("config.yaml");
-    let github_registered = complete_github_registration_for_bridge_start(
-        june_github_mcp_registration,
-        &config_path,
-        |june_github_mcp| {
-            sync_hermes_config(
-                app,
-                &hermes_home,
-                provider_proxy.port,
-                &provider_proxy.token,
-                &provider_proxy.recorder_token,
-                &provider_proxy.connector_token,
-                &provider_proxy.github_token,
-                supports_vision,
-                &june_context_mcp,
-                &june_web_mcp,
-                &june_image_mcp,
-                june_video_mcp.as_ref(),
-                &june_recorder_mcp,
-                june_connector_mcp.as_ref(),
-                june_github_mcp,
-            )
-        },
+    sync_hermes_config(
+        app,
+        &hermes_home,
+        provider_proxy.port,
+        &provider_proxy.token,
+        &provider_proxy.recorder_token,
+        &provider_proxy.connector_token,
+        supports_vision,
+        &june_context_mcp,
+        &june_web_mcp,
+        &june_image_mcp,
+        june_video_mcp.as_ref(),
+        &june_recorder_mcp,
+        june_connector_mcp.as_ref(),
     )?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
@@ -1338,21 +1323,11 @@ async fn start_hermes_bridge_inner(
         prepare_sandbox(app, &hermes_home, agent_cli_access)
     };
     let sandboxed = sandbox_profile.is_some();
-    // SOUL.md is shared by both processes (single home), so its sandbox
-    // section describes the per-session mode split rather than this spawn.
     let sandbox_available = if full_mode {
         sandbox_would_engage(app, &hermes_home)
     } else {
         sandboxed
     };
-    sync_june_soul(
-        &hermes_home,
-        sandbox_available,
-        agent_cli_access,
-        video_generation_enabled,
-        connectors_registered,
-        github_registered,
-    )?;
     if sandboxed {
         eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
     } else if full_mode {
@@ -1364,8 +1339,48 @@ async fn start_hermes_bridge_inner(
     }
     let command_resolution =
         finalize_hermes_command_for_spawn(app, bridge, &hermes_home, command_resolution).await?;
+    let github_runtime_admitted = command_resolution.managed_final_admitted;
     let python = command_resolution.python;
     let command_source = command_resolution.source;
+    let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
+    let github_eligible = github_runtime_admitted
+        && github_read_enabled_for_interactive_config(&config_path)
+        && github_read_tool_eligible(app, command_source).await;
+    let github_broker = match crate::app_paths::app_data_dir(app) {
+        Ok(app_data_dir) => {
+            start_optional_github_read_broker(
+                app,
+                &app_data_dir.join("grb"),
+                generation,
+                github_eligible,
+            )
+            .await
+        }
+        Err(_) => {
+            tracing::warn!(
+                error_code = "github_read_broker_storage_unavailable",
+                "GitHub read broker skipped"
+            );
+            None
+        }
+    };
+    let interactive_toolsets = hermes_interactive_toolsets(&config_path, github_broker.is_some());
+    let github_available = interactive_toolsets
+        .iter()
+        .any(|toolset| toolset == JUNE_GITHUB_MCP_SERVER_NAME);
+
+    // SOUL.md is shared by both processes (single home), so its sandbox
+    // section describes the per-session mode split rather than this spawn.
+    // GitHub is described only when the broker-backed toolset survived the
+    // complete per-start admission sequence.
+    sync_june_soul(
+        &hermes_home,
+        sandbox_available,
+        agent_cli_access,
+        video_generation_enabled,
+        connectors_registered,
+        github_available,
+    )?;
     let port_string = port.to_string();
     // No --tui: upstream removed the flag from the dashboard subcommand before
     // v2026.6.19, and the embedded chat gateway (/api/ws) is always enabled.
@@ -1379,13 +1394,6 @@ async fn start_hermes_bridge_inner(
         port_string.as_str(),
     ];
     let hermes_python_args = python.hermes_args(hermes_args);
-
-    // This is the last userspace integrity check before exec. A hostile
-    // same-user process can still race a filesystem mutation into the narrow
-    // verify-to-spawn window; eliminating that residual race requires an OS
-    // primitive that binds verification to exec. The ordinary agent cannot:
-    // its managed runtime tree is no longer a sandbox write root.
-    verify_runtime_immediately_before_spawn(app, command_source)?;
 
     let mut cmd = match &sandbox_profile {
         Some(profile_path) => {
@@ -1411,23 +1419,28 @@ async fn start_hermes_bridge_inner(
         &token,
         environment_hint_for_spawn(full_mode, sandbox_available),
     );
+    apply_github_broker_environment(&mut cmd, github_broker.as_ref());
     // The pinned runtime otherwise auto-includes every enabled MCP server in
     // interactive chat. Per-routine autonomy servers carry bypass grants, so
     // normal chat must never inherit them; it uses the base action servers,
     // whose calls always enter June's approval surface. Cron jobs are separate
     // launchd processes and continue to use each job's enabled_toolsets.
-    cmd.env(
-        "HERMES_TUI_TOOLSETS",
-        hermes_interactive_toolsets(&hermes_home.join(HERMES_CONFIG_FILE)).join(","),
-    );
+    cmd.env("HERMES_TUI_TOOLSETS", interactive_toolsets.join(","));
     cmd.current_dir(&cwd);
 
+    // This is the last userspace integrity check before exec. A hostile
+    // same-user process can still race a filesystem mutation into the narrow
+    // verify-to-spawn window; eliminating that residual race requires an OS
+    // primitive that binds verification to exec. The ordinary agent cannot:
+    // its managed runtime tree is no longer a sandbox write root.
+    verify_runtime_immediately_before_spawn(app, command_source)?;
     let mut child = cmd.spawn().map_err(|error| {
         AppError::new(
             "hermes_bridge_start_failed",
             format!("Could not start the June-managed Hermes runtime. {error}"),
         )
     })?;
+    authorize_github_broker_for_child(github_broker.as_ref(), &mut child, generation)?;
     let pid = child.id();
     let connection = HermesBridgeConnection {
         base_url: base_url.clone(),
@@ -1443,32 +1456,15 @@ async fn start_hermes_bridge_inner(
         full_mode,
     };
 
-    let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
-    {
-        let mut guard = bridge.processes.lock().map_err(|_| {
-            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
-        })?;
-        // The start guard serializes starts, so no concurrent start can have
-        // populated this mode's slot since the live-connections check above.
-        // Keep a defensive check anyway: if a live process is somehow present
-        // we keep it and tear down the redundant one we just launched instead
-        // of leaking it.
-        if let Some(existing) = guard.get_mut(&full_mode) {
-            if matches!(existing.child.try_wait(), Ok(None)) {
-                let _ = child.kill();
-                let _ = child.wait();
-                drop(guard);
-                return Ok(status_for(live_connections(bridge)?, Some(full_mode)));
-            }
-        }
-        guard.insert(
-            full_mode,
-            HermesProcess {
-                generation,
-                child,
-                connection: connection.clone(),
-            },
-        );
+    let process = HermesProcess {
+        generation,
+        child,
+        connection: connection.clone(),
+        github_broker,
+    };
+    if let Some(duplicate) = store_hermes_process_or_return_duplicate(bridge, full_mode, process)? {
+        shutdown_hermes_process(Some(duplicate));
+        return Ok(status_for(live_connections(bridge)?, Some(full_mode)));
     }
 
     if let Err(error) = wait_for_hermes(&base_url, &token).await {
@@ -1591,12 +1587,6 @@ struct JuneVideoMcpConfig {
 
 #[derive(Debug, Clone)]
 struct JuneRecorderMcpConfig {
-    python: PythonInvocation,
-    script_path: PathBuf,
-}
-
-#[derive(Debug, Clone)]
-struct JuneGitHubMcpConfig {
     python: PythonInvocation,
     script_path: PathBuf,
 }
@@ -6171,8 +6161,51 @@ fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Resu
     Ok(())
 }
 
+fn store_hermes_process_or_return_duplicate(
+    bridge: &HermesBridge,
+    full_mode: bool,
+    mut process: HermesProcess,
+) -> Result<Option<HermesProcess>, AppError> {
+    let mut stale = None;
+    let duplicate = {
+        let mut guard = match bridge.processes.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                if let Some(broker) = process.github_broker.as_ref() {
+                    broker.revoke_interactive(process.child.id(), process.generation);
+                }
+                let _ = process.child.kill();
+                let _ = process.child.wait();
+                return Err(AppError::new(
+                    "hermes_bridge_unavailable",
+                    "Hermes bridge lock failed.",
+                ));
+            }
+        };
+        // The start guard serializes starts, so this is defensive. A live
+        // process already in the slot always wins; its generation and broker
+        // are never mutated by cleanup for the redundant child.
+        if let Some(existing) = guard.get_mut(&full_mode) {
+            if matches!(existing.child.try_wait(), Ok(None)) {
+                Some(process)
+            } else {
+                stale = guard.insert(full_mode, process);
+                None
+            }
+        } else {
+            guard.insert(full_mode, process);
+            None
+        }
+    };
+    shutdown_hermes_process(stale);
+    Ok(duplicate)
+}
+
 fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
     if let Some(process) = process.as_mut() {
+        if let Some(broker) = process.github_broker.as_ref() {
+            broker.revoke_interactive(process.child.id(), process.generation);
+        }
         let _ = process.child.kill();
         let _ = process.child.wait();
     }
@@ -9733,92 +9766,123 @@ fn sync_june_recorder_mcp(
     })
 }
 
-/// Registers the fixed GitHub read server only when the build configuration,
-/// non-secret selected-repository snapshot, and GitHub credential custody are
-/// all currently eligible. Provider credentials remain in the Rust process;
-/// this config identifies only the bundled MCP subprocess.
-async fn sync_june_github_mcp(
-    app: &AppHandle,
-    python: &PythonInvocation,
+/// Dependency-injected eligibility core used by bridge startup and the full
+/// authoritative snapshot/custody matrix. Runtime admission is checked before
+/// this helper is called; it performs no file writes and creates no authority.
+async fn github_read_tool_eligible_with_dependencies(
     runtime_eligible: bool,
-) -> Result<Option<JuneGitHubMcpConfig>, AppError> {
+    app_config: Result<crate::connectors::github::GitHubAppConfig, AppError>,
+    vault: &dyn crate::connectors::github::GitHubTokenVault,
+    repositories: &crate::db::repositories::Repositories,
+) -> bool {
     if !runtime_eligible {
-        return Ok(None);
+        return false;
     }
-    let repositories = crate::commands::repositories(app).await?;
-    let data_dir = crate::app_paths::app_data_dir(app)
-        .map_err(|error| AppError::new("june_github_mcp_failed", error.to_string()))?;
-    sync_june_github_mcp_with_dependencies(
-        python,
+    let result = async {
+        app_config?;
+        crate::connectors::github::github_tool_eligibility(vault, repositories).await?;
+        Ok::<(), AppError>(())
+    }
+    .await;
+    github_read_tool_eligibility_or_false(result)
+}
+
+fn github_read_tool_eligibility_or_false(result: Result<(), AppError>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(error_code = %error.code, "GitHub read tool skipped");
+            false
+        }
+    }
+}
+
+/// GitHub is exposed only after Task 4 returned a fully admitted first-party
+/// runtime source and its extension still matches June's signed bytes.
+async fn github_read_tool_eligible(app: &AppHandle, source: HermesCommandSource) -> bool {
+    if !github_toolset_supported_for_runtime(source) {
+        return false;
+    }
+    let verified = match github_plugin_verified_for_source(app, source) {
+        Ok(verified) => verified,
+        Err(error) => {
+            tracing::warn!(error_code = %error.code, "GitHub read tool skipped");
+            return false;
+        }
+    };
+    if !verified {
+        return false;
+    }
+    let repositories = match crate::commands::repositories(app).await {
+        Ok(repositories) => repositories,
+        Err(error) => {
+            tracing::warn!(error_code = %error.code, "GitHub read tool skipped");
+            return false;
+        }
+    };
+    github_read_tool_eligible_with_dependencies(
+        true,
         crate::connectors::github::github_app_config(),
         &crate::connectors::github::PlatformGitHubTokenVault,
         &repositories,
-        &data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME),
     )
     .await
 }
 
-/// Dependency-injected registration core used by bridge startup and security
-/// gate tests. The App configuration result is consumed first, then the live
-/// snapshot and credential vault are checked by the connector's authoritative
-/// eligibility function before any MCP script is written.
-async fn sync_june_github_mcp_with_dependencies(
-    python: &PythonInvocation,
-    app_config: Result<crate::connectors::github::GitHubAppConfig, AppError>,
-    vault: &dyn crate::connectors::github::GitHubTokenVault,
-    repositories: &crate::db::repositories::Repositories,
-    mcp_dir: &Path,
-) -> Result<Option<JuneGitHubMcpConfig>, AppError> {
-    let _app_config = app_config?;
-    crate::connectors::github::github_tool_eligibility(vault, repositories).await?;
-
-    fs::create_dir_all(mcp_dir)
-        .map_err(|error| AppError::new("june_github_mcp_failed", error.to_string()))?;
-    let script_path = mcp_dir.join(JUNE_GITHUB_MCP_SCRIPT_NAME);
-    fs::write(&script_path, JUNE_GITHUB_MCP_SCRIPT)
-        .map_err(|error| AppError::new("june_github_mcp_failed", error.to_string()))?;
-
-    Ok(Some(JuneGitHubMcpConfig {
-        python: python.clone(),
-        script_path,
-    }))
-}
-
-/// GitHub is an optional first-party capability. Eligibility and local
-/// custody failures must not prevent the Bridge from starting, and logs carry
-/// only the stable error code so credentials, provider bodies, and repository
-/// content cannot leak through diagnostics.
-fn github_mcp_registration_or_none(
-    result: Result<Option<JuneGitHubMcpConfig>, AppError>,
-) -> Option<JuneGitHubMcpConfig> {
-    match result {
-        Ok(config) => config,
+async fn start_optional_github_read_broker_with<F, Fut>(
+    eligible: bool,
+    start: F,
+) -> Option<GitHubReadBroker>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<GitHubReadBroker, AppError>>,
+{
+    if !eligible {
+        return None;
+    }
+    match start().await {
+        Ok(broker) => Some(broker),
         Err(error) => {
-            tracing::warn!(error_code = %error.code, "GitHub MCP registration skipped");
+            tracing::warn!(error_code = %error.code, "GitHub read broker skipped");
             None
         }
     }
 }
 
-/// Completes the GitHub portion of bridge startup without letting an optional
-/// connector failure wedge the rest of config generation. Availability is
-/// derived from the merged interactive toolsets, so an explicit `no_mcp`
-/// opt-out cannot leave GitHub instructions in `SOUL.md`.
-fn complete_github_registration_for_bridge_start<F>(
-    registration: Result<Option<JuneGitHubMcpConfig>, AppError>,
-    config_path: &Path,
-    sync_config: F,
-) -> Result<bool, AppError>
-where
-    F: FnOnce(Option<&JuneGitHubMcpConfig>) -> Result<(), AppError>,
-{
-    let github_mcp = github_mcp_registration_or_none(registration);
-    let registered = github_mcp.is_some();
-    sync_config(github_mcp.as_ref())?;
-    Ok(registered
-        && hermes_interactive_toolsets(config_path)
-            .iter()
-            .any(|toolset| toolset == JUNE_GITHUB_MCP_SERVER_NAME))
+async fn start_optional_github_read_broker(
+    app: &AppHandle,
+    socket_dir: &Path,
+    generation: u64,
+    eligible: bool,
+) -> Option<GitHubReadBroker> {
+    start_optional_github_read_broker_with(eligible, || async {
+        let service = crate::connectors::github_read::GitHubReadService::production()?;
+        GitHubReadBroker::start(app, Arc::new(service), socket_dir, generation).await
+    })
+    .await
+}
+
+fn apply_github_broker_environment(cmd: &mut Command, broker: Option<&GitHubReadBroker>) {
+    if let Some(broker) = broker {
+        cmd.env(JUNE_GITHUB_BROKER_SOCKET_ENV, broker.socket_path());
+    }
+}
+
+fn authorize_github_broker_for_child(
+    broker: Option<&GitHubReadBroker>,
+    child: &mut Child,
+    generation: u64,
+) -> Result<(), AppError> {
+    let Some(broker) = broker else {
+        return Ok(());
+    };
+    if let Err(error) = broker.authorize_interactive(child.id(), generation) {
+        broker.revoke_interactive(child.id(), generation);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(AppError::new("hermes_bridge_start_failed", error.code));
+    }
+    Ok(())
 }
 
 /// Writes the four connector MCP scripts and returns their configs, but ONLY
@@ -10215,7 +10279,6 @@ fn sync_hermes_config(
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
-    github_proxy_token: &str,
     supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
@@ -10223,7 +10286,6 @@ fn sync_hermes_config(
     june_video_mcp: Option<&JuneVideoMcpConfig>,
     june_recorder_mcp: &JuneRecorderMcpConfig,
     june_connector_mcp: Option<&ConnectorMcpConfigs>,
-    june_github_mcp: Option<&JuneGitHubMcpConfig>,
 ) -> Result<(), AppError> {
     sync_hermes_config_with_external_dirs(
         hermes_home,
@@ -10231,7 +10293,6 @@ fn sync_hermes_config(
         provider_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
-        github_proxy_token,
         supports_vision,
         june_context_mcp,
         june_web_mcp,
@@ -10239,7 +10300,6 @@ fn sync_hermes_config(
         june_video_mcp,
         june_recorder_mcp,
         june_connector_mcp,
-        june_github_mcp,
         &builtin_external_skill_dirs(app),
     )
 }
@@ -10251,7 +10311,6 @@ fn sync_hermes_config_with_external_dirs(
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
-    github_proxy_token: &str,
     supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
@@ -10259,7 +10318,6 @@ fn sync_hermes_config_with_external_dirs(
     june_video_mcp: Option<&JuneVideoMcpConfig>,
     june_recorder_mcp: &JuneRecorderMcpConfig,
     june_connector_mcp: Option<&ConnectorMcpConfigs>,
-    june_github_mcp: Option<&JuneGitHubMcpConfig>,
     default_external_skill_dirs: &[PathBuf],
 ) -> Result<(), AppError> {
     let model = crate::providers::generation_model();
@@ -10278,7 +10336,6 @@ fn sync_hermes_config_with_external_dirs(
         gmail_actions: connector_base.map(|base| &base.gmail_actions),
         gcal: connector_base.map(|base| &base.gcal),
         gcal_actions: connector_base.map(|base| &base.gcal_actions),
-        github: june_github_mcp,
         connector_autos: june_connector_mcp
             .map(|configs| configs.autos.as_slice())
             .unwrap_or(&[]),
@@ -10291,7 +10348,6 @@ fn sync_hermes_config_with_external_dirs(
         provider_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
-        github_proxy_token,
         &cron_toolsets,
         &external_skill_dirs,
         mcp_configs,
@@ -10366,7 +10422,7 @@ fn is_june_connector_server_name(name: &str) -> bool {
 /// pinned runtime's CLI-platform behavior: an explicit MCP name is an
 /// allowlist; otherwise all enabled MCP servers are included. User-added MCPs
 /// and native toolset choices survive unchanged.
-fn hermes_interactive_toolsets(config_path: &Path) -> Vec<String> {
+fn hermes_interactive_toolsets(config_path: &Path, github_available: bool) -> Vec<String> {
     let config = std::fs::read_to_string(config_path)
         .ok()
         .and_then(|text| serde_yaml::from_str::<serde_yaml::Value>(&text).ok());
@@ -10409,20 +10465,21 @@ fn hermes_interactive_toolsets(config_path: &Path) -> Vec<String> {
         if !has_explicit_mcp {
             selected.extend(enabled_mcp.iter().cloned());
         }
-        // Unlike user-managed and Google MCP servers, the read-only GitHub
-        // server is a first-party interactive capability. Append it even when
-        // the user already has an explicit MCP allowlist, while preserving
-        // `no_mcp` as the global opt-out.
-        if enabled_mcp
-            .iter()
-            .any(|name| name == JUNE_GITHUB_MCP_SERVER_NAME)
-        {
+        // The broker is not an MCP server and therefore never appears in the
+        // config. Its toolset is admitted only for this interactive child.
+        if github_available {
             selected.push(JUNE_GITHUB_MCP_SERVER_NAME.to_string());
         }
     }
     let mut seen = std::collections::HashSet::new();
     selected.retain(|name| seen.insert(name.clone()));
     selected
+}
+
+fn github_read_enabled_for_interactive_config(config_path: &Path) -> bool {
+    !hermes_interactive_toolsets(config_path, false)
+        .iter()
+        .any(|toolset| toolset == "no_mcp")
 }
 
 fn is_june_connector_auto_server_name(name: &str) -> bool {
@@ -10457,9 +10514,6 @@ struct BuiltinMcpConfigs<'a> {
     gmail_actions: Option<&'a JuneConnectorMcpConfig>,
     gcal: Option<&'a JuneConnectorMcpConfig>,
     gcal_actions: Option<&'a JuneConnectorMcpConfig>,
-    /// Fixed read-only GitHub server. Interactive only: deliberately omitted
-    /// from `cron_platform_toolsets` and all per-routine auto patterns.
-    github: Option<&'a JuneGitHubMcpConfig>,
     /// Per-job earned-autonomy servers (0..N). Never in the cron allowlist;
     /// reached only via a routine's explicit per-job `enabled_toolsets`.
     connector_autos: &'a [ConnectorAutoMcpConfig],
@@ -10621,7 +10675,6 @@ fn render_hermes_config(
     provider_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
-    github_proxy_token: &str,
     cron_toolsets: &str,
     external_skill_dirs: &[PathBuf],
     mcp_configs: BuiltinMcpConfigs<'_>,
@@ -10641,7 +10694,6 @@ fn render_hermes_config(
         provider_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
-        github_proxy_token,
     );
     format!(
         r#"model:
@@ -10673,7 +10725,6 @@ fn render_mcp_servers_config(
     proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
-    github_proxy_token: &str,
 ) -> String {
     let mut entries = String::new();
     if let Some(config) = configs.context {
@@ -10731,13 +10782,6 @@ fn render_mcp_servers_config(
             base_url,
             connector_proxy_token,
             JUNE_CONNECTOR_ACTIONS_TOOL_TIMEOUT_SECS,
-        ));
-    }
-    if let Some(config) = configs.github {
-        entries.push_str(&render_github_mcp_entry(
-            config,
-            base_url,
-            github_proxy_token,
         ));
     }
     // Per-job earned-autonomy servers: same action script, but with a grant
@@ -10917,39 +10961,6 @@ fn render_recorder_mcp_entry(
         base_url = yaml_string(base_url),
         token_env = JUNE_RECORDER_MCP_TOKEN_ENV,
         token = yaml_string(proxy_token),
-    )
-}
-
-/// The GitHub MCP receives only the fixed loopback `/v1` base URL in argv and
-/// the dedicated proxy capability in its environment. It never receives the
-/// GitHub access token, refresh token, repository names, or provider URLs.
-fn render_github_mcp_entry(
-    config: &JuneGitHubMcpConfig,
-    base_url: &str,
-    github_proxy_token: &str,
-) -> String {
-    format!(
-        r#"  {server_name}:
-    enabled: true
-    command: {command}
-    args:
-      - "-I"
-      - "-S"
-      - "-B"
-      - {script_path}
-      - {base_url}
-    env:
-      PYTHONUNBUFFERED: "1"
-      {token_env}: {token}
-    timeout: 40
-    connect_timeout: 10
-"#,
-        server_name = JUNE_GITHUB_MCP_SERVER_NAME,
-        command = yaml_string(&config.python.program),
-        script_path = rendered_mcp_script_arg(&config.python, &config.script_path),
-        base_url = yaml_string(base_url),
-        token_env = JUNE_GITHUB_PROXY_TOKEN_ENV,
-        token = yaml_string(github_proxy_token),
     )
 }
 
@@ -14608,10 +14619,10 @@ mod tests {
         }
 
         #[test]
-        fn github_toolset_is_compile_time_fail_closed_on_windows() {
+        fn github_toolset_is_compile_time_fail_closed_off_macos() {
             let supported =
                 github_toolset_supported_for_runtime(HermesCommandSource::ManagedRuntime);
-            assert_eq!(supported, !cfg!(target_os = "windows"));
+            assert_eq!(supported, cfg!(target_os = "macos"));
         }
 
         #[test]
@@ -15717,7 +15728,7 @@ esac
                 .find("finalize_hermes_command_for_spawn(")
                 .expect("dashboard final admission");
             let dashboard_spawn = dashboard.find("cmd.spawn()").expect("dashboard spawn");
-            assert!(dashboard_soul < dashboard_final && dashboard_final < dashboard_spawn);
+            assert!(dashboard_final < dashboard_soul && dashboard_soul < dashboard_spawn);
 
             let tui = source
                 .split("pub async fn open_hermes_tui_debug")
@@ -18486,7 +18497,6 @@ mcp_servers:
             "new-token",
             "recorder-token",
             "connector-token",
-            "github-token",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -18499,7 +18509,6 @@ mcp_servers:
                 gmail_actions: None,
                 gcal: None,
                 gcal_actions: None,
-                github: None,
                 connector_autos: &[],
             },
         );
@@ -18577,7 +18586,6 @@ mcp_servers:
             "t",
             "recorder",
             "connector",
-            "github-token",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -18590,7 +18598,6 @@ mcp_servers:
                 gmail_actions: None,
                 gcal: None,
                 gcal_actions: None,
-                github: None,
                 connector_autos: &[],
             },
         );
@@ -18796,14 +18803,12 @@ mcp_servers:
             "proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
-            "github-proxy-token",
             false,
             &test_june_context_mcp_config(),
             &test_june_web_mcp_config(),
             &test_june_image_mcp_config(),
             None,
             &test_june_recorder_mcp_config(),
-            None,
             None,
             std::slice::from_ref(&default_dir),
         )
@@ -18849,7 +18854,6 @@ mcp_servers:
             "tok",
             "recorder-tok",
             "connector-tok",
-            "github-token",
             "web, memory",
             &dirs,
             BuiltinMcpConfigs {
@@ -18862,7 +18866,6 @@ mcp_servers:
                 gmail_actions: None,
                 gcal: None,
                 gcal_actions: None,
-                github: None,
                 connector_autos: &[],
             },
         );
@@ -18893,7 +18896,6 @@ mcp_servers:
             "tok",
             "recorder-tok",
             "connector-tok",
-            "github-token",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -18906,7 +18908,6 @@ mcp_servers:
                 gmail_actions: None,
                 gcal: None,
                 gcal_actions: None,
-                github: None,
                 connector_autos: &[],
             },
         );
@@ -18953,13 +18954,6 @@ mcp_servers:
         }
     }
 
-    fn test_june_github_mcp_config() -> JuneGitHubMcpConfig {
-        JuneGitHubMcpConfig {
-            python: test_python_invocation(),
-            script_path: PathBuf::from("/tmp/june/hermes-mcp/june_github_mcp.py"),
-        }
-    }
-
     #[test]
     fn every_rendered_first_party_mcp_uses_the_isolated_interpreter_prefix() {
         let context = test_june_context_mcp_config();
@@ -18971,7 +18965,6 @@ mcp_servers:
         let gmail_actions = test_june_connector_mcp_config(JUNE_GMAIL_ACTIONS_MCP_SCRIPT_NAME);
         let gcal = test_june_connector_mcp_config(JUNE_GCAL_MCP_SCRIPT_NAME);
         let gcal_actions = test_june_connector_mcp_config(JUNE_GCAL_ACTIONS_MCP_SCRIPT_NAME);
-        let github = test_june_github_mcp_config();
         let auto = ConnectorAutoMcpConfig {
             server_name: "june_gmail_auto_test".to_string(),
             python: test_python_invocation(),
@@ -18991,18 +18984,16 @@ mcp_servers:
                 gmail_actions: Some(&gmail_actions),
                 gcal: Some(&gcal),
                 gcal_actions: Some(&gcal_actions),
-                github: Some(&github),
                 connector_autos: &[auto],
             },
             "http://127.0.0.1:4242/v1",
             "provider",
             "recorder",
             "connector",
-            "github",
         );
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("MCP YAML");
         let servers = parsed["mcp_servers"].as_mapping().expect("MCP server map");
-        assert_eq!(servers.len(), 11);
+        assert_eq!(servers.len(), 10);
         for (name, config) in servers {
             let args = config["args"].as_sequence().expect("MCP args");
             assert_eq!(args[0].as_str(), Some("-I"), "{name:?}");
@@ -19031,14 +19022,12 @@ mcp_servers:
                 gmail_actions: None,
                 gcal: None,
                 gcal_actions: None,
-                github: None,
                 connector_autos: &[],
             },
             "http://127.0.0.1:4242/v1",
             "provider",
             "recorder",
             "connector",
-            "github",
         );
         let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("fallback MCP YAML");
         assert_eq!(
@@ -19177,20 +19166,24 @@ mcp_servers:
 
     const TEST_GITHUB_READ_PERMISSIONS: &str = r#"{"metadata":"read","contents":"read","issues":"read","pull_requests":"read","checks":"read","statuses":"read"}"#;
 
-    fn render_test_config_with_github(github: Option<&JuneGitHubMcpConfig>) -> String {
-        let cron_toolsets = cron_platform_toolsets(&BuiltinMcpConfigs {
-            context: None,
-            web: None,
-            image: None,
+    fn render_task_five_config() -> String {
+        let context = test_june_context_mcp_config();
+        let web = test_june_web_mcp_config();
+        let image = test_june_image_mcp_config();
+        let recorder = test_june_recorder_mcp_config();
+        let mcp_configs = BuiltinMcpConfigs {
+            context: Some(&context),
+            web: Some(&web),
+            image: Some(&image),
             video: None,
-            recorder: None,
+            recorder: Some(&recorder),
             gmail: None,
             gmail_actions: None,
             gcal: None,
             gcal_actions: None,
-            github,
             connector_autos: &[],
-        });
+        };
+        let cron_toolsets = cron_platform_toolsets(&mcp_configs);
         render_hermes_config(
             "glm",
             false,
@@ -19198,297 +19191,321 @@ mcp_servers:
             "provider-token",
             "recorder-token",
             "connector-token",
-            "github-token",
             &cron_toolsets,
             &[],
-            BuiltinMcpConfigs {
-                context: None,
-                web: None,
-                image: None,
-                video: None,
-                recorder: None,
-                gmail: None,
-                gmail_actions: None,
-                gcal: None,
-                gcal_actions: None,
-                github,
-                connector_autos: &[],
-            },
+            mcp_configs,
         )
     }
 
-    fn sync_test_config_for_github_registration(
-        hermes_home: &Path,
-        registration: Result<Option<JuneGitHubMcpConfig>, AppError>,
-    ) -> Result<bool, AppError> {
-        let context = test_june_context_mcp_config();
-        let web = test_june_web_mcp_config();
-        let image = test_june_image_mcp_config();
-        let recorder = test_june_recorder_mcp_config();
-        let config_path = hermes_home.join("config.yaml");
-        complete_github_registration_for_bridge_start(registration, &config_path, |github| {
-            sync_hermes_config_with_external_dirs(
-                hermes_home,
-                4242,
-                "provider-token",
-                "recorder-token",
-                "connector-token",
-                "github-token",
-                false,
-                &context,
-                &web,
-                &image,
-                None,
-                &recorder,
-                None,
-                github,
-                &[],
-            )
-        })
-    }
+    fn assert_no_github_bearer_material(rendered: &str) {
+        const ACCESS_TOKEN_FIXTURE: &str = "github-access-token";
+        const REFRESH_TOKEN_FIXTURE: &str = "github-refresh-token";
 
-    #[tokio::test]
-    async fn github_mcp_renders_only_when_tool_eligible() {
-        let repositories =
-            github_registration_repositories("connected", TEST_GITHUB_READ_PERMISSIONS, true).await;
-        let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
-        let eligible = sync_june_github_mcp_with_dependencies(
-            &test_python_invocation(),
-            Ok(valid_github_app_config()),
-            &TestGitHubTokenVault::present(),
-            &repositories,
-            mcp_dir.path(),
-        )
-        .await
-        .expect("eligible registration")
-        .expect("registered GitHub MCP");
-
-        let rendered = render_test_config_with_github(Some(&eligible));
-        assert!(rendered.contains("  june_github:\n"));
-        assert!(mcp_dir.path().join(JUNE_GITHUB_MCP_SCRIPT_NAME).is_file());
-
-        let invalid_config_dir = tempfile::tempdir().expect("invalid config tempdir");
-        let error = sync_june_github_mcp_with_dependencies(
-            &test_python_invocation(),
-            Err(AppError::new(
-                "github_not_configured",
-                "GitHub is not configured for this build.",
-            )),
-            &TestGitHubTokenVault::present(),
-            &repositories,
-            invalid_config_dir.path(),
-        )
-        .await
-        .expect_err("invalid app config must be ineligible");
-        assert_eq!(error.code, "github_not_configured");
-        assert!(!invalid_config_dir
-            .path()
-            .join(JUNE_GITHUB_MCP_SCRIPT_NAME)
-            .exists());
-    }
-
-    #[tokio::test]
-    async fn github_mcp_registration_uses_authoritative_snapshot_status_selection_and_permissions()
-    {
-        for (status, permissions, selected_repository, expected_code) in [
-            (
-                "setup_incomplete",
-                TEST_GITHUB_READ_PERMISSIONS,
-                true,
-                "github_setup_required",
-            ),
-            (
-                "connected",
-                TEST_GITHUB_READ_PERMISSIONS,
-                false,
-                "github_setup_required",
-            ),
-            (
-                "connected",
-                r#"{"metadata":"read","contents":"read","issues":"read","pull_requests":"read","checks":"read"}"#,
-                true,
-                "github_setup_required",
-            ),
-        ] {
-            let repositories =
-                github_registration_repositories(status, permissions, selected_repository).await;
-            let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
-            let error = sync_june_github_mcp_with_dependencies(
-                &test_python_invocation(),
-                Ok(valid_github_app_config()),
-                &TestGitHubTokenVault::present(),
-                &repositories,
-                mcp_dir.path(),
-            )
-            .await
-            .expect_err("ineligible authoritative snapshot");
-            assert_eq!(error.code, expected_code);
-            assert!(!mcp_dir.path().join(JUNE_GITHUB_MCP_SCRIPT_NAME).exists());
+        assert!(!rendered.contains(JUNE_GITHUB_PROXY_TOKEN_ENV));
+        assert!(!rendered.contains(ACCESS_TOKEN_FIXTURE));
+        assert!(!rendered.contains(REFRESH_TOKEN_FIXTURE));
+        let value: serde_yaml::Value = serde_yaml::from_str(rendered).expect("rendered YAML");
+        for (name, server) in value["mcp_servers"].as_mapping().expect("MCP server map") {
+            let env = server["env"].as_mapping();
+            assert!(
+                env.is_none_or(|env| {
+                    !env.keys().any(|key| {
+                        key.as_str() == Some(JUNE_GITHUB_PROXY_TOKEN_ENV)
+                            || key
+                                .as_str()
+                                .is_some_and(|key| key.contains("GITHUB") && key.contains("TOKEN"))
+                    })
+                }),
+                "sibling MCP {name:?} received GitHub bearer material"
+            );
         }
     }
 
-    #[tokio::test]
-    async fn github_mcp_registration_requires_credential_custody() {
-        let repositories =
-            github_registration_repositories("connected", TEST_GITHUB_READ_PERMISSIONS, true).await;
-        for (vault, expected_code) in [
-            (TestGitHubTokenVault::missing(), "github_reconnect_required"),
-            (
-                TestGitHubTokenVault::storage_error(),
-                "github_storage_unavailable",
-            ),
+    fn github_permissions_without(missing: &str) -> String {
+        let mut permissions = serde_json::Map::new();
+        for permission in [
+            "metadata",
+            "contents",
+            "issues",
+            "pull_requests",
+            "checks",
+            "statuses",
         ] {
-            let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
-            let error = sync_june_github_mcp_with_dependencies(
-                &test_python_invocation(),
-                Ok(valid_github_app_config()),
-                &vault,
-                &repositories,
-                mcp_dir.path(),
-            )
+            if permission != missing {
+                permissions.insert(
+                    permission.to_string(),
+                    serde_json::Value::String("read".to_string()),
+                );
+            }
+        }
+        serde_json::Value::Object(permissions).to_string()
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn task_five_test_broker(
+        socket_dir: &Path,
+        generation: u64,
+    ) -> github_read_broker::GitHubReadBroker {
+        github_read_broker::GitHubReadBroker::start_for_bridge_test(socket_dir, generation)
             .await
-            .expect_err("credential custody must gate registration");
-            assert_eq!(error.code, expected_code);
-            assert!(!mcp_dir.path().join(JUNE_GITHUB_MCP_SCRIPT_NAME).exists());
+            .expect("start test broker")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_task_five_child() -> Child {
+        Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn test dashboard child")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn task_five_connection(child: &Child, full_mode: bool) -> HermesBridgeConnection {
+        HermesBridgeConnection {
+            base_url: "http://127.0.0.1:4242".to_string(),
+            ws_url: "ws://127.0.0.1:4242/api/ws?token=test".to_string(),
+            token: "dashboard-session".to_string(),
+            port: 4242,
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            hermes_home: "/tmp/hermes-home".to_string(),
+            cwd: Some("/tmp/hermes-home/workspace".to_string()),
+            provider_proxy_port: 4343,
+            pid: child.id(),
+            sandboxed: !full_mode,
+            full_mode,
         }
     }
 
-    #[test]
-    fn github_mcp_receives_only_base_url_and_dedicated_token() {
-        let eligible = test_june_github_mcp_config();
-        let rendered = render_test_config_with_github(Some(&eligible));
-        let value: serde_yaml::Value = serde_yaml::from_str(&rendered).expect("rendered YAML");
-        let github = &value["mcp_servers"][JUNE_GITHUB_MCP_SERVER_NAME];
-
-        assert_eq!(
-            github["args"],
-            serde_yaml::to_value([
-                "-I",
-                "-S",
-                "-B",
-                "/tmp/june/hermes-mcp/june_github_mcp.py",
-                "http://127.0.0.1:4242/v1",
-            ])
-            .expect("args YAML")
-        );
-        assert_eq!(github["env"]["PYTHONUNBUFFERED"], "1");
-        assert_eq!(github["env"][JUNE_GITHUB_PROXY_TOKEN_ENV], "github-token");
-        assert_eq!(github["env"].as_mapping().expect("env map").len(), 2);
-        assert!(!github["args"]
-            .as_sequence()
-            .expect("args")
-            .iter()
-            .any(|arg| { arg.as_str().is_some_and(|arg| arg.contains("github-token")) }));
+    #[cfg(target_os = "macos")]
+    async fn assert_task_five_socket_rejects(path: &Path) {
+        let Ok(mut stream) = tokio::net::UnixStream::connect(path).await else {
+            return;
+        };
+        let body = br#"{"operation":"list_repositories","arguments":{}}"#;
+        stream
+            .write_all(&(body.len() as u32).to_be_bytes())
+            .await
+            .expect("write rejected frame prefix");
+        stream.write_all(body).await.expect("write rejected frame");
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_millis(250), stream.read(&mut byte))
+            .await
+            .expect("rejected socket should close promptly")
+            .expect("read rejected socket");
+        assert_eq!(read, 0, "revoked broker must reject the frame");
     }
 
-    #[test]
-    fn github_mcp_is_pruned_after_eligibility_is_removed() {
-        let home = tempfile::tempdir().expect("tempdir");
-        let config_path = home.path().join("config.yaml");
-        std::fs::write(
-            &config_path,
-            r#"mcp_servers:
-  june_github:
-    enabled: true
-    command: "/old/python"
-  user_server:
-    enabled: true
-    url: "https://mcp.example.com"
-"#,
-        )
-        .expect("seed config");
-
-        let merged = merge_hermes_config(&config_path, &render_test_config_with_github(None));
-        let value: serde_yaml::Value = serde_yaml::from_str(&merged).expect("merged YAML");
-        assert!(value["mcp_servers"][JUNE_GITHUB_MCP_SERVER_NAME].is_null());
-        assert_eq!(
-            value["mcp_servers"]["user_server"]["url"],
-            "https://mcp.example.com"
-        );
-    }
-
-    #[test]
-    fn github_mcp_is_appended_to_an_explicit_interactive_mcp_allowlist() {
-        let home = tempfile::tempdir().expect("tempdir");
-        let config_path = home.path().join("config.yaml");
-        std::fs::write(
-            &config_path,
-            r#"platform_toolsets:
-  cli: [web, user_server]
-mcp_servers:
-  june_github: { enabled: true }
-  user_server: { enabled: true }
-"#,
-        )
-        .expect("write config");
-
-        assert_eq!(
-            hermes_interactive_toolsets(&config_path),
-            vec!["web", "user_server", "june_github"]
-        );
-    }
-
+    #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn no_mcp_remains_an_explicit_global_opt_out() {
-        let home = tempfile::tempdir().expect("tempdir");
-        let config_path = home.path().join("config.yaml");
-        std::fs::write(
-            &config_path,
-            r#"platform_toolsets:
-  cli: [web, no_mcp]
-mcp_servers:
-  june_github: { enabled: true }
-  user_server: { enabled: true }
-"#,
-        )
-        .expect("write config");
-
+    async fn eligible_interactive_start_selects_tool_sets_socket_and_authorizes_spawned_pid() {
         let repositories =
             github_registration_repositories("connected", TEST_GITHUB_READ_PERMISSIONS, true).await;
-        let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
-        let registration = sync_june_github_mcp_with_dependencies(
-            &test_python_invocation(),
+        let eligible = github_read_tool_eligible_with_dependencies(
+            true,
             Ok(valid_github_app_config()),
             &TestGitHubTokenVault::present(),
             &repositories,
-            mcp_dir.path(),
         )
         .await;
-        let github_available = sync_test_config_for_github_registration(home.path(), registration)
-            .expect("sync bridge config");
-        sync_june_soul(home.path(), false, false, false, false, github_available)
-            .expect("sync soul");
+        assert!(eligible);
+
+        let home = tempfile::tempdir().expect("Hermes home");
+        let config_path = home.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            r#"platform_toolsets:
+  cli: [hermes-cli, user_server]
+mcp_servers:
+  user_server: { enabled: true }
+"#,
+        )
+        .expect("seed interactive config");
+        let merged = merge_hermes_config(&config_path, &render_task_five_config());
+        std::fs::write(&config_path, &merged).expect("write merged config");
+        assert!(github_read_enabled_for_interactive_config(&config_path));
+
+        let socket_dir = tempfile::tempdir().expect("socket dir");
+        let generation = 41;
+        let broker = task_five_test_broker(socket_dir.path(), generation).await;
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30");
+        apply_isolated_hermes_env(&mut command, home.path(), "dashboard-session", None);
+        apply_github_broker_environment(&mut command, Some(&broker));
+        let toolsets = hermes_interactive_toolsets(&config_path, true);
+        command.env("HERMES_TUI_TOOLSETS", toolsets.join(","));
+        let mut child = command.spawn().expect("spawn fake dashboard");
+        authorize_github_broker_for_child(Some(&broker), &mut child, generation)
+            .expect("authorize spawned dashboard");
 
         assert_eq!(
-            hermes_interactive_toolsets(&config_path),
-            vec!["web", "no_mcp"]
+            toolsets,
+            vec!["hermes-cli", "user_server", JUNE_GITHUB_MCP_SERVER_NAME]
         );
-        assert!(!github_available);
-        let config = std::fs::read_to_string(&config_path).expect("read config");
-        assert!(config.contains("  june_github:\n"));
+        let envs: Vec<_> = command
+            .get_envs()
+            .filter(|(key, value)| {
+                key == &std::ffi::OsStr::new(JUNE_GITHUB_BROKER_SOCKET_ENV) && value.is_some()
+            })
+            .collect();
+        assert_eq!(envs.len(), 1);
+        assert_eq!(
+            envs[0].1,
+            Some(broker.socket_path().as_os_str()),
+            "dashboard receives exactly its broker socket"
+        );
+        assert_eq!(
+            broker.admission_for_bridge_test(),
+            (Some(child.id()), generation, false)
+        );
+        assert!(!command
+            .get_args()
+            .any(|arg| arg.to_string_lossy().contains("github-token")));
+        assert_no_github_bearer_material(&merged);
+
+        let github_available = toolsets
+            .iter()
+            .any(|toolset| toolset == JUNE_GITHUB_MCP_SERVER_NAME);
+        sync_june_soul(home.path(), false, false, false, false, github_available)
+            .expect("sync eligible soul");
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("GitHub tools:"));
+
+        broker.revoke_interactive(child.id(), generation);
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[tokio::test]
+    async fn invalid_app_config_snapshot_permission_or_custody_starts_without_github() {
+        let mut cases = Vec::new();
+        cases.push((
+            "invalid app config".to_string(),
+            Err(AppError::new("github_not_configured", "private fixture")),
+            "connected".to_string(),
+            TEST_GITHUB_READ_PERMISSIONS.to_string(),
+            true,
+            TestGitHubTokenVault::present(),
+        ));
+        cases.push((
+            "invalid status".to_string(),
+            Ok(valid_github_app_config()),
+            "setup_incomplete".to_string(),
+            TEST_GITHUB_READ_PERMISSIONS.to_string(),
+            true,
+            TestGitHubTokenVault::present(),
+        ));
+        cases.push((
+            "no selected repository".to_string(),
+            Ok(valid_github_app_config()),
+            "connected".to_string(),
+            TEST_GITHUB_READ_PERMISSIONS.to_string(),
+            false,
+            TestGitHubTokenVault::present(),
+        ));
+        for permission in [
+            "metadata",
+            "contents",
+            "issues",
+            "pull_requests",
+            "checks",
+            "statuses",
+        ] {
+            cases.push((
+                format!("missing {permission}"),
+                Ok(valid_github_app_config()),
+                "connected".to_string(),
+                github_permissions_without(permission),
+                true,
+                TestGitHubTokenVault::present(),
+            ));
+        }
+        cases.push((
+            "missing token".to_string(),
+            Ok(valid_github_app_config()),
+            "connected".to_string(),
+            TEST_GITHUB_READ_PERMISSIONS.to_string(),
+            true,
+            TestGitHubTokenVault::missing(),
+        ));
+        cases.push((
+            "vault error".to_string(),
+            Ok(valid_github_app_config()),
+            "connected".to_string(),
+            TEST_GITHUB_READ_PERMISSIONS.to_string(),
+            true,
+            TestGitHubTokenVault::storage_error(),
+        ));
+
+        for (name, app_config, status, permissions, selected, vault) in cases {
+            let repositories =
+                github_registration_repositories(&status, &permissions, selected).await;
+            assert!(
+                !github_read_tool_eligible_with_dependencies(
+                    true,
+                    app_config,
+                    &vault,
+                    &repositories,
+                )
+                .await,
+                "{name}"
+            );
+
+            let home = tempfile::tempdir().expect("Hermes home");
+            let config = render_task_five_config();
+            std::fs::write(home.path().join("config.yaml"), &config).expect("render config");
+            let toolsets = hermes_interactive_toolsets(&home.path().join("config.yaml"), false);
+            sync_june_soul(home.path(), false, false, false, false, false).expect("render soul");
+            let mut command = Command::new("/bin/true");
+            apply_isolated_hermes_env(&mut command, home.path(), "dashboard-session", None);
+            apply_github_broker_environment(&mut command, None);
+            assert!(
+                !toolsets.contains(&JUNE_GITHUB_MCP_SERVER_NAME.to_string()),
+                "{name}"
+            );
+            assert!(
+                !command.get_envs().any(|(key, value)| {
+                    key == JUNE_GITHUB_BROKER_SOCKET_ENV && value.is_some()
+                }),
+                "{name}"
+            );
+            assert_no_github_bearer_material(&config);
+            let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+            assert!(!soul.contains("GitHub tools:"), "{name}");
+        }
+    }
+
+    #[test]
+    fn no_mcp_omits_github_toolset_and_soul_even_when_eligible() {
+        let home = tempfile::tempdir().expect("Hermes home");
+        let config_path = home.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "platform_toolsets:\n  cli: [hermes-cli, no_mcp]\n",
+        )
+        .expect("write no_mcp config");
+
+        let toolsets = hermes_interactive_toolsets(&config_path, true);
+        assert!(!github_read_enabled_for_interactive_config(&config_path));
+        let github_available = toolsets
+            .iter()
+            .any(|toolset| toolset == JUNE_GITHUB_MCP_SERVER_NAME);
+        sync_june_soul(home.path(), false, false, false, false, github_available)
+            .expect("render no_mcp soul");
+
+        assert_eq!(toolsets, vec!["hermes-cli", "no_mcp"]);
+        let mut command = Command::new("/bin/true");
+        apply_isolated_hermes_env(&mut command, home.path(), "dashboard-session", None);
+        apply_github_broker_environment(&mut command, None);
+        assert!(!command
+            .get_envs()
+            .any(|(key, value)| key == JUNE_GITHUB_BROKER_SOCKET_ENV && value.is_some()));
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(!soul.contains("GitHub tools:"));
         assert!(!soul.contains("`june_github`"));
     }
 
     #[test]
-    fn github_mcp_is_never_added_to_cron_toolsets() {
-        let eligible = test_june_github_mcp_config();
-        let rendered = render_test_config_with_github(Some(&eligible));
-        let value: serde_yaml::Value = serde_yaml::from_str(&rendered).expect("rendered YAML");
-        let cron = value["platform_toolsets"]["cron"]
-            .as_sequence()
-            .expect("cron sequence");
-
-        assert!(!cron
-            .iter()
-            .any(|name| name.as_str() == Some(JUNE_GITHUB_MCP_SERVER_NAME)));
-        assert!(!value["mcp_servers"][JUNE_GITHUB_MCP_SERVER_NAME].is_null());
-    }
-
-    #[test]
-    fn cron_platform_toolsets_exclude_github_mcp() {
-        let eligible = test_june_github_mcp_config();
+    fn cron_platform_toolsets_and_unrestricted_routine_lists_never_include_june_github() {
         let configs = BuiltinMcpConfigs {
             context: None,
             web: None,
@@ -19499,103 +19516,208 @@ mcp_servers:
             gmail_actions: None,
             gcal: None,
             gcal_actions: None,
-            github: Some(&eligible),
             connector_autos: &[],
         };
+        assert_eq!(
+            cron_platform_toolsets(&configs),
+            "web, vision, todo, memory, session_search, context_engine"
+        );
 
-        assert!(!cron_platform_toolsets(&configs)
-            .split(',')
-            .map(str::trim)
-            .any(|name| name == JUNE_GITHUB_MCP_SERVER_NAME));
+        let routines = include_str!("../../src/lib/hermes-routines.ts");
+        let start = routines
+            .find("export const UNRESTRICTED_ROUTINE_TOOLSETS = [")
+            .expect("unrestricted list start");
+        let rest = &routines[start..];
+        let end = rest.find("];\n").expect("unrestricted list end");
+        let list = &rest[..end];
+        let actual: Vec<_> = list
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix('"'))
+            .filter_map(|line| line.strip_suffix("\","))
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                "terminal",
+                "file",
+                "code_execution",
+                "web",
+                "browser",
+                "vision",
+                "tts",
+                "skills",
+                "todo",
+                "memory",
+                "context_engine",
+                "session_search",
+                "delegation",
+                "computer_use",
+            ]
+        );
+        assert!(!actual.contains(&JUNE_GITHUB_MCP_SERVER_NAME));
     }
 
-    #[test]
-    fn github_token_is_visible_only_to_the_github_mcp_sandbox_profile() {
-        let context = test_june_context_mcp_config();
-        let web = test_june_web_mcp_config();
-        let image = test_june_image_mcp_config();
-        let recorder = test_june_recorder_mcp_config();
-        let gmail = test_june_connector_mcp_config("june_gmail_mcp.py");
-        let gcal = test_june_connector_mcp_config("june_gcal_mcp.py");
-        let github = test_june_github_mcp_config();
-        let rendered = render_hermes_config(
-            "glm",
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn broker_service_bind_or_setup_failure_starts_the_dashboard_without_github() {
+        for code in [
+            "github_read_service_failed",
+            "github_read_broker_start_failed",
+            "github_read_broker_setup_failed",
+        ] {
+            let broker = start_optional_github_read_broker_with(true, || async move {
+                Err(AppError::new(code, "private setup fixture"))
+            })
+            .await;
+            assert!(broker.is_none(), "{code}");
+
+            let home = tempfile::tempdir().expect("Hermes home");
+            let config_path = home.path().join("config.yaml");
+            let config = render_task_five_config();
+            std::fs::write(&config_path, &config).expect("write config");
+            let toolsets = hermes_interactive_toolsets(&config_path, broker.is_some());
+            let github_available = toolsets
+                .iter()
+                .any(|toolset| toolset == JUNE_GITHUB_MCP_SERVER_NAME);
+            sync_june_soul(home.path(), false, false, false, false, github_available)
+                .expect("write soul");
+            let mut command = Command::new("/bin/true");
+            apply_isolated_hermes_env(&mut command, home.path(), "dashboard-session", None);
+            apply_github_broker_environment(&mut command, broker.as_ref());
+
+            assert_no_github_bearer_material(&config);
+            assert!(!toolsets.contains(&JUNE_GITHUB_MCP_SERVER_NAME.to_string()));
+            assert!(!command
+                .get_envs()
+                .any(|(key, value)| key == JUNE_GITHUB_BROKER_SOCKET_ENV && value.is_some()));
+            let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+            assert!(!soul.contains("GitHub tools:"));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn spawn_failure_readiness_failure_stop_and_restart_revoke_broker_generation() {
+        let bridge = HermesBridge::default();
+
+        let spawn_dir = tempfile::tempdir().expect("spawn socket dir");
+        let spawn_path = {
+            let broker = task_five_test_broker(spawn_dir.path(), 51).await;
+            let path = broker.socket_path().to_path_buf();
+            let spawn = Command::new("/definitely/missing/june-hermes").spawn();
+            assert!(spawn.is_err());
+            drop(broker);
+            path
+        };
+        assert_task_five_socket_rejects(&spawn_path).await;
+
+        let readiness_dir = tempfile::tempdir().expect("readiness socket dir");
+        let readiness_broker = task_five_test_broker(readiness_dir.path(), 52).await;
+        let readiness_path = readiness_broker.socket_path().to_path_buf();
+        let mut readiness_child = spawn_task_five_child();
+        authorize_github_broker_for_child(Some(&readiness_broker), &mut readiness_child, 52)
+            .expect("authorize readiness child");
+        bridge.processes.lock().expect("processes").insert(
             false,
-            "http://127.0.0.1:4242/v1",
-            "provider-token",
-            "recorder-token",
-            "connector-token",
-            "github-token",
-            "web",
-            &[],
-            BuiltinMcpConfigs {
-                context: Some(&context),
-                web: Some(&web),
-                image: Some(&image),
-                video: None,
-                recorder: Some(&recorder),
-                gmail: Some(&gmail),
-                gmail_actions: None,
-                gcal: Some(&gcal),
-                gcal_actions: None,
-                github: Some(&github),
-                connector_autos: &[],
+            HermesProcess {
+                generation: 52,
+                connection: task_five_connection(&readiness_child, false),
+                child: readiness_child,
+                github_broker: Some(readiness_broker),
             },
         );
-        let value: serde_yaml::Value = serde_yaml::from_str(&rendered).expect("rendered YAML");
+        stop_hermes_bridge_generation(&bridge, 52).expect("readiness cleanup");
+        assert_task_five_socket_rejects(&readiness_path).await;
 
-        assert_eq!(
-            value["mcp_servers"][JUNE_GITHUB_MCP_SERVER_NAME]["env"][JUNE_GITHUB_PROXY_TOKEN_ENV],
-            "github-token"
+        let stop_dir = tempfile::tempdir().expect("stop socket dir");
+        let stop_broker = task_five_test_broker(stop_dir.path(), 53).await;
+        let stop_path = stop_broker.socket_path().to_path_buf();
+        let mut stop_child = spawn_task_five_child();
+        authorize_github_broker_for_child(Some(&stop_broker), &mut stop_child, 53)
+            .expect("authorize stop child");
+        bridge.processes.lock().expect("processes").insert(
+            false,
+            HermesProcess {
+                generation: 53,
+                connection: task_five_connection(&stop_child, false),
+                child: stop_child,
+                github_broker: Some(stop_broker),
+            },
         );
-        for server in [
-            JUNE_CONTEXT_MCP_SERVER_NAME,
-            JUNE_WEB_MCP_SERVER_NAME,
-            JUNE_IMAGE_MCP_SERVER_NAME,
-            JUNE_RECORDER_MCP_SERVER_NAME,
-            JUNE_GMAIL_MCP_SERVER_NAME,
-            JUNE_GCAL_MCP_SERVER_NAME,
-        ] {
-            assert!(
-                value["mcp_servers"][server]["env"][JUNE_GITHUB_PROXY_TOKEN_ENV].is_null(),
-                "{server} received the GitHub token"
+        stop_hermes_bridge_inner(&bridge).expect("ordinary stop cleanup");
+        assert_task_five_socket_rejects(&stop_path).await;
+
+        let newer_dir = tempfile::tempdir().expect("newer socket dir");
+        let newer_broker = task_five_test_broker(newer_dir.path(), 54).await;
+        let newer_path = newer_broker.socket_path().to_path_buf();
+        let mut newer_child = spawn_task_five_child();
+        authorize_github_broker_for_child(Some(&newer_broker), &mut newer_child, 54)
+            .expect("authorize newer child");
+        bridge.processes.lock().expect("processes").insert(
+            false,
+            HermesProcess {
+                generation: 54,
+                connection: task_five_connection(&newer_child, false),
+                child: newer_child,
+                github_broker: Some(newer_broker),
+            },
+        );
+        stop_hermes_bridge_generation(&bridge, 53).expect("stale cleanup");
+        {
+            let mut processes = bridge.processes.lock().expect("processes");
+            let newer = processes.get_mut(&false).expect("newer process survives");
+            assert_eq!(newer.generation, 54);
+            assert!(matches!(newer.child.try_wait(), Ok(None)));
+            assert_eq!(
+                newer
+                    .github_broker
+                    .as_ref()
+                    .expect("newer broker")
+                    .admission_for_bridge_test(),
+                (Some(newer.child.id()), 54, false)
             );
         }
-        assert_ne!(value["model"]["api_key"], "github-token");
-        assert_eq!(rendered.matches("github-token").count(), 1);
+        assert!(newer_path.exists());
+
+        let duplicate_dir = tempfile::tempdir().expect("duplicate socket dir");
+        let duplicate_broker = task_five_test_broker(duplicate_dir.path(), 55).await;
+        let duplicate_path = duplicate_broker.socket_path().to_path_buf();
+        let mut duplicate_child = spawn_task_five_child();
+        authorize_github_broker_for_child(Some(&duplicate_broker), &mut duplicate_child, 55)
+            .expect("authorize duplicate child");
+        let duplicate = HermesProcess {
+            generation: 55,
+            connection: task_five_connection(&duplicate_child, false),
+            child: duplicate_child,
+            github_broker: Some(duplicate_broker),
+        };
+        let rejected = store_hermes_process_or_return_duplicate(&bridge, false, duplicate)
+            .expect("duplicate defense")
+            .expect("live slot rejects duplicate");
+        shutdown_hermes_process(Some(rejected));
+        assert_task_five_socket_rejects(&duplicate_path).await;
+        assert!(
+            newer_path.exists(),
+            "duplicate cleanup touched newer broker"
+        );
+
+        stop_hermes_bridge_inner(&bridge).expect("final newer cleanup");
+        assert_task_five_socket_rejects(&newer_path).await;
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn github_registration_failure_does_not_wedge_bridge_start() {
-        let home = tempfile::tempdir().expect("Hermes home");
-        let repositories =
-            github_registration_repositories("connected", TEST_GITHUB_READ_PERMISSIONS, true).await;
-        let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
-        let failed_registration = sync_june_github_mcp_with_dependencies(
-            &test_python_invocation(),
-            Ok(valid_github_app_config()),
-            &TestGitHubTokenVault::storage_error(),
-            &repositories,
-            mcp_dir.path(),
-        )
-        .await;
+    async fn authorization_poison_kills_waits_child_and_fails_bridge() {
+        let socket_dir = tempfile::tempdir().expect("socket dir");
+        let broker = task_five_test_broker(socket_dir.path(), 61).await;
+        broker.poison_admission_for_bridge_test();
+        let mut child = spawn_task_five_child();
 
-        let github_available =
-            sync_test_config_for_github_registration(home.path(), failed_registration)
-                .expect("non-GitHub bridge config must still sync");
-        sync_june_soul(home.path(), false, false, false, false, github_available)
-            .expect("non-GitHub soul must still sync");
+        let error = authorize_github_broker_for_child(Some(&broker), &mut child, 61)
+            .expect_err("poisoned admission fails the bridge");
 
-        assert!(!github_available);
-        let config =
-            std::fs::read_to_string(home.path().join("config.yaml")).expect("read bridge config");
-        assert!(config.contains("model:\n"));
-        assert!(config.contains("  june_context:\n"));
-        assert!(config.contains("  june_web:\n"));
-        assert!(!config.contains("  june_github:\n"));
-        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
-        assert!(soul.contains("You are June"));
-        assert!(!soul.contains("GitHub tools:"));
+        assert_eq!(error.code, "hermes_bridge_start_failed");
+        assert!(matches!(child.try_wait(), Ok(Some(_))), "child was waited");
     }
 
     #[test]
@@ -19644,7 +19766,6 @@ mcp_servers:
             "proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
-            "github-proxy-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -19657,7 +19778,6 @@ mcp_servers:
                 gmail_actions: Some(&gmail_actions),
                 gcal: Some(&gcal),
                 gcal_actions: Some(&gcal_actions),
-                github: None,
                 connector_autos: &autos,
             },
         );
@@ -19746,7 +19866,6 @@ mcp_servers:
             "proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
-            "github-proxy-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -19759,7 +19878,6 @@ mcp_servers:
                 gmail_actions: Some(&gmail_actions),
                 gcal: Some(&gcal),
                 gcal_actions: Some(&gcal_actions),
-                github: None,
                 connector_autos: &[],
             },
         );
@@ -19781,7 +19899,6 @@ mcp_servers:
             "proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
-            "github-proxy-tok",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -19794,7 +19911,6 @@ mcp_servers:
                 gmail_actions: None,
                 gcal: None,
                 gcal_actions: None,
-                github: None,
                 connector_autos: &[],
             },
         );
@@ -19816,7 +19932,6 @@ mcp_servers:
             "tok",
             "recorder-tok",
             "connector-tok",
-            "github-token",
             "web",
             &[],
             BuiltinMcpConfigs {
@@ -19829,7 +19944,6 @@ mcp_servers:
                 gmail_actions: None,
                 gcal: None,
                 gcal_actions: None,
-                github: None,
                 connector_autos: &[],
             },
         );
@@ -19851,7 +19965,6 @@ mcp_servers:
             "proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
-            "github-proxy-token",
             "web, memory",
             &[],
             BuiltinMcpConfigs {
@@ -19864,7 +19977,6 @@ mcp_servers:
                 gmail_actions: None,
                 gcal: None,
                 gcal_actions: None,
-                github: None,
                 connector_autos: &[],
             },
         );
@@ -19877,7 +19989,6 @@ mcp_servers:
             "proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
-            "github-proxy-token",
             "web, memory",
             &[],
             BuiltinMcpConfigs {
@@ -19890,7 +20001,6 @@ mcp_servers:
                 gmail_actions: None,
                 gcal: None,
                 gcal_actions: None,
-                github: None,
                 connector_autos: &[],
             },
         );
@@ -20205,7 +20315,7 @@ mcp_servers:
         )
         .expect("write config");
 
-        let selected = hermes_interactive_toolsets(&config_path);
+        let selected = hermes_interactive_toolsets(&config_path, false);
         assert!(selected.contains(&"hermes-cli".to_string()));
         assert!(selected.contains(&"june_context".to_string()));
         assert!(selected.contains(&"june_gmail".to_string()));
@@ -20227,7 +20337,7 @@ mcp_servers:
 "#,
         )
         .expect("rewrite config");
-        let selected = hermes_interactive_toolsets(&config_path);
+        let selected = hermes_interactive_toolsets(&config_path, false);
         assert_eq!(selected, vec!["web", "user_server"]);
     }
 
@@ -20294,7 +20404,6 @@ mcp_servers:
             "proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
-            "github-proxy-token",
             false,
             &mcp,
             &web,
@@ -20302,7 +20411,6 @@ mcp_servers:
             Some(&video),
             &recorder,
             Some(&connectors),
-            None,
             &[],
         )
         .expect("sync config");

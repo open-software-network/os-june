@@ -149,6 +149,44 @@ impl GitHubReadBroker {
         }
     }
 
+    #[cfg(all(test, target_os = "macos"))]
+    pub(super) async fn start_for_bridge_test(
+        socket_dir: &Path,
+        generation: u64,
+    ) -> Result<Self, AppError> {
+        let executor: RequestExecutor = Arc::new(|_request| {
+            Box::pin(async {
+                serde_json::json!({
+                    "success": true,
+                    "result": {
+                        "trust": "untrusted_repository_content",
+                        "data": {"repositories": []}
+                    },
+                    "connectorStateChanged": false
+                })
+            })
+        });
+        Self::start_with_executor(socket_dir, generation, executor, REQUEST_DEADLINE)
+            .await
+            .map(|(broker, _)| broker)
+    }
+
+    #[cfg(test)]
+    pub(super) fn admission_for_bridge_test(&self) -> (Option<u32>, u64, bool) {
+        let admission = self.admission.lock().expect("test admission lock");
+        (admission.pid, admission.generation, admission.consumed)
+    }
+
+    #[cfg(test)]
+    pub(super) fn poison_admission_for_bridge_test(&self) {
+        let admission = self.admission.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = admission.lock().expect("lock before poison");
+            panic!("poison GitHub broker admission for bridge test");
+        }));
+        assert!(result.is_err(), "test poison panic must be caught");
+    }
+
     #[cfg(target_os = "macos")]
     async fn start_with_executor(
         socket_dir: &Path,
