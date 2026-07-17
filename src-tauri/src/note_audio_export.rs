@@ -233,7 +233,143 @@ fn open_anchored_source(
     )
 }
 
-#[cfg(not(unix))]
+#[cfg(target_os = "windows")]
+fn open_anchored_source(
+    _app_paths: &AppPaths,
+    _note_id: &str,
+    _source: &NoteAudioExportSource,
+    path: &Path,
+    _legacy: bool,
+) -> io::Result<File> {
+    use std::{
+        ffi::OsString,
+        mem::size_of,
+        os::windows::{
+            ffi::{OsStrExt, OsStringExt},
+            fs::OpenOptionsExt,
+            io::AsRawHandle,
+        },
+    };
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{
+            FileAttributeTagInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
+            FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_OPEN_REPARSE_POINT,
+            VOLUME_NAME_DOS,
+        },
+    };
+
+    fn windows_error(error: windows::core::Error) -> io::Error {
+        io::Error::other(error.to_string())
+    }
+
+    fn final_path(file: &File) -> io::Result<PathBuf> {
+        let handle = HANDLE(file.as_raw_handle());
+        let mut buffer = vec![0u16; 512];
+        loop {
+            // SAFETY: `handle` remains owned by `file`, and `buffer` is a
+            // writable UTF-16 slice for the duration of the call.
+            let length = unsafe { GetFinalPathNameByHandleW(handle, &mut buffer, VOLUME_NAME_DOS) };
+            if length == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let length = length as usize;
+            if length < buffer.len() {
+                buffer.truncate(length);
+                return Ok(PathBuf::from(OsString::from_wide(&buffer)));
+            }
+            // When the buffer is too small, Windows returns the required size
+            // including the terminating NUL.
+            buffer.resize(length + 1, 0);
+        }
+    }
+
+    fn comparison_key(path: &Path) -> Vec<u16> {
+        const BACKSLASH: u16 = b'\\' as u16;
+        const FORWARD_SLASH: u16 = b'/' as u16;
+        const UNC_NAMESPACE: &[u16] = &[
+            BACKSLASH,
+            BACKSLASH,
+            b'?' as u16,
+            BACKSLASH,
+            b'U' as u16,
+            b'N' as u16,
+            b'C' as u16,
+            BACKSLASH,
+        ];
+        const DOS_NAMESPACE: &[u16] = &[BACKSLASH, BACKSLASH, b'?' as u16, BACKSLASH];
+
+        let mut normalized = path
+            .as_os_str()
+            .encode_wide()
+            .map(|unit| {
+                if unit == FORWARD_SLASH {
+                    BACKSLASH
+                } else {
+                    unit
+                }
+            })
+            .collect::<Vec<_>>();
+        if normalized.starts_with(UNC_NAMESPACE) {
+            normalized.splice(..UNC_NAMESPACE.len(), [BACKSLASH, BACKSLASH]);
+        } else if normalized.starts_with(DOS_NAMESPACE) {
+            normalized.drain(..DOS_NAMESPACE.len());
+        }
+        // The two path-producing Win32 APIs can disagree only on drive-letter
+        // casing. Keep every other code unit exact so case-sensitive Windows
+        // directories cannot compare as the same path.
+        if normalized.get(1) == Some(&(b':' as u16)) {
+            if let Some(drive) = normalized.first_mut() {
+                if (*drive >= b'a' as u16) && (*drive <= b'z' as u16) {
+                    *drive -= (b'a' - b'A') as u16;
+                }
+            }
+        }
+        while normalized.len() > 3 && normalized.last() == Some(&BACKSLASH) {
+            normalized.pop();
+        }
+        normalized
+    }
+
+    // OPEN_REPARSE_POINT prevents the final component from being followed.
+    // The handle attribute check rejects that component when it is a reparse
+    // point, while the handle-derived final path detects redirected ancestor
+    // directories. The retained handle then closes the validate-to-read race.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path)?;
+    let handle = HANDLE(file.as_raw_handle());
+    let mut attributes = FILE_ATTRIBUTE_TAG_INFO::default();
+    // SAFETY: `handle` remains owned by `file`; `attributes` points to a
+    // correctly sized writable FILE_ATTRIBUTE_TAG_INFO value.
+    unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileAttributeTagInfo,
+            (&raw mut attributes).cast(),
+            size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        )
+    }
+    .map_err(windows_error)?;
+    if attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "audio path is a Windows reparse point",
+        ));
+    }
+
+    let opened_path = final_path(&file)?;
+    if comparison_key(&opened_path) != comparison_key(path) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "opened audio file no longer matches its validated path",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
 fn open_anchored_source(
     _app_paths: &AppPaths,
     _note_id: &str,
